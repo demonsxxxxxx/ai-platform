@@ -86,11 +86,11 @@ select:-webkit-autofill,
 select:-webkit-autofill:hover,
 select:-webkit-autofill:focus,
 select:-webkit-autofill:active {
-  -webkit-box-shadow: 0 0 0 30px white inset !important;
+  -webkit-box-shadow: 0 0 0 30px var(--theme-bg-card) inset !important;
   -webkit-text-fill-color: #1c1917 !important;
   caret-color: #1c1917 !important;
   outline: none !important;
-  border-color: #e7e5e4 !important;
+  border-color: var(--theme-border) !important;
 }
 
 .dark input:-webkit-autofill,
@@ -117,21 +117,21 @@ select:-webkit-autofill:active {
   /* Enterprise workbench tokens */
   --theme-primary: #0f766e;
   --theme-primary-hover: #115e59;
-  --theme-primary-light: #e1e8f0;
+  --theme-primary-light: #d8e4ee;
   --theme-primary-foreground: #ffffff;
   --theme-primary-foreground-muted: rgba(255, 255, 255, 0.8);
   --theme-primary-foreground-subtle: rgba(255, 255, 255, 0.72);
   --theme-ring: #0f766e;
-  --theme-bg: #e9eef5;
-  --theme-workbench-canvas: #e9eef5;
-  --theme-workbench-panel: #f6f8fb;
-  --theme-bg-card: #ffffff;
-  --theme-bg-sidebar: #eef2f7;
+  --theme-bg: #dfe7f1;
+  --theme-workbench-canvas: #dfe7f1;
+  --theme-workbench-panel: #edf3f8;
+  --theme-bg-card: #f2f6fa;
+  --theme-bg-sidebar: #e7eef6;
   --theme-sidebar-rail: #111827;
   --theme-sidebar-panel: #111827;
   --theme-sidebar-panel-muted: #1f2937;
-  --theme-border: #e2e8f0;
-  --theme-border-strong: #cbd5e1;
+  --theme-border: #d4deea;
+  --theme-border-strong: #b9c7d8;
   --theme-text: #0f172a;
   --theme-text-secondary: #64748b;
   --theme-text-tertiary: #94a3b8;
@@ -148,7 +148,7 @@ select:-webkit-autofill:active {
   --theme-danger: #be123c;
   --theme-danger-soft: #fff1f2;
   --theme-danger-ring: #fecdd3;
-  --theme-hover: #e6ebf2;
+  --theme-hover: #d6e0ec;
   --theme-overlay: rgba(0, 0, 0, 0.4);
   --theme-overlay-strong: rgba(0, 0, 0, 0.5);
   --theme-shadow-sm: rgba(0, 0, 0, 0.04);
