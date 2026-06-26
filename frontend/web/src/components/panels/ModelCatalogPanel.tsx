@@ -305,7 +305,7 @@ export function ModelCatalogPanel() {
                       </div>
                     </div>
                     {isDefault ? (
-                      <span className="shrink-0 rounded-md bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-900/25 dark:text-emerald-200">
+                      <span className="shrink-0 rounded-md bg-[var(--theme-success-soft)] px-2 py-1 text-[11px] font-semibold text-[var(--theme-success)] ring-1 ring-[var(--theme-success-ring)]">
                         {t("models.defaultModel", "默认")}
                       </span>
                     ) : null}

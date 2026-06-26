@@ -291,11 +291,12 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   );
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
-  assert.match(theme, /--theme-bg:\s*#e9eef5;/);
-  assert.match(theme, /--theme-bg-sidebar:\s*#eef2f7;/);
-  assert.match(theme, /--theme-workbench-panel:\s*#f6f8fb;/);
-  assert.match(theme, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#e9eef5;/);
+  assert.match(theme, /--theme-bg:\s*#dfe7f1;/);
+  assert.match(theme, /--theme-bg-sidebar:\s*#e7eef6;/);
+  assert.match(theme, /--theme-workbench-panel:\s*#edf3f8;/);
+  assert.match(theme, /--theme-bg-card:\s*#f2f6fa;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#dfe7f1;/);
+  assert.doesNotMatch(theme, /--theme-bg-card:\s*#ffffff;/);
   assert.match(surface, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(chatView, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(authTheme, /html,\s*body\s*\{\s*background:\s*var\(--theme-bg\);/);
@@ -363,8 +364,8 @@ test("authenticated workbench adopts one dark-rail enterprise shell", () => {
   assert.match(theme, /--theme-sidebar-rail:\s*#111827;/);
   assert.match(theme, /--theme-sidebar-panel:\s*#111827;/);
   assert.match(theme, /--theme-sidebar-panel-muted:\s*#1f2937;/);
-  assert.match(theme, /--theme-bg:\s*#e9eef5;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#e9eef5;/);
+  assert.match(theme, /--theme-bg:\s*#dfe7f1;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#dfe7f1;/);
   assert.match(sidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /data-workbench-sidebar-panel/);

@@ -103,7 +103,7 @@ function StatusPill({
     <span
       className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
         active
-          ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+          ? "bg-[var(--theme-success-soft)] text-[var(--theme-success)] ring-1 ring-[var(--theme-success-ring)]"
           : "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]"
       }`}
     >
@@ -534,13 +534,13 @@ export function MemoryPanel() {
                 <div className="flex items-center gap-2">
                   <ShieldCheck
                     size={16}
-                    className="text-stone-500 dark:text-stone-400"
+                    className="text-[var(--theme-text-secondary)]"
                   />
                   <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("memory.workbench.policyProjection")}
                   </h3>
                 </div>
-                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                   {t("memory.workbench.policyProjectionDescription")}
                 </p>
               </div>
@@ -556,13 +556,13 @@ export function MemoryPanel() {
                 <div className="flex items-center gap-2">
                   <History
                     size={16}
-                    className="text-stone-500 dark:text-stone-400"
+                    className="text-[var(--theme-text-secondary)]"
                   />
                   <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("memory.workbench.sessionRecordsProjection")}
                   </h3>
                 </div>
-                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                   {t("memory.workbench.sessionRecordsProjectionDescription")}
                 </p>
               </div>
@@ -581,13 +581,13 @@ export function MemoryPanel() {
                 <div className="flex items-center gap-2">
                   <LockKeyhole
                     size={16}
-                    className="text-stone-500 dark:text-stone-400"
+                    className="text-[var(--theme-text-secondary)]"
                   />
                   <h3 className="text-sm font-semibold text-[var(--theme-text)]">
                     {t("memory.workbench.adminGovernance")}
                   </h3>
                 </div>
-                <p className="mt-1 text-xs leading-5 text-stone-500 dark:text-stone-400">
+                <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                   {t("memory.workbench.adminGovernanceDescription")}
                 </p>
               </div>

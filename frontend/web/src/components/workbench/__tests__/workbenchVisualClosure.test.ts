@@ -118,11 +118,15 @@ test("light workbench tokens avoid returning to a white chat canvas", () => {
   const surface = read("src/components/workbench/workbenchSurface.ts");
   const welcome = read("src/components/chat/WelcomePage.tsx");
 
-  assert.match(baseCss, /--theme-bg:\s*#e9eef5;/);
-  assert.match(baseCss, /--theme-workbench-canvas:\s*#e9eef5;/);
-  assert.match(baseCss, /--theme-workbench-panel:\s*#f6f8fb;/);
+  assert.match(baseCss, /--theme-bg:\s*#dfe7f1;/);
+  assert.match(baseCss, /--theme-workbench-canvas:\s*#dfe7f1;/);
+  assert.match(baseCss, /--theme-workbench-panel:\s*#edf3f8;/);
+  assert.match(baseCss, /--theme-bg-card:\s*#f2f6fa;/);
+  assert.match(baseCss, /--theme-bg-sidebar:\s*#e7eef6;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#f(?:3f5f8|fffff);/);
   assert.doesNotMatch(baseCss, /--theme-workbench-panel:\s*#f(?:8fafc|fffff);/);
+  assert.doesNotMatch(baseCss, /--theme-bg-card:\s*#ffffff;/);
+  assert.doesNotMatch(baseCss, /--theme-bg-sidebar:\s*#ffffff;/);
   assert.match(surface, /root:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /thread:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(welcome, /data-chat-start-surface/);
@@ -681,6 +685,25 @@ test("launchpad and public directory pages use one workbench catalog layout", ()
   assert.doesNotMatch(launchpad, /border-b border-slate-200/);
   assert.match(mcp, /workbenchSurface\.catalog\.summaryGridFour/);
   assert.doesNotMatch(mcp, /workbenchSurface\.catalog\.summaryGrid[^\w]/);
+});
+
+test("public catalog pages use semantic workbench status tokens", () => {
+  const sources = new Map([
+    ["AgentDirectoryPanel", read("src/components/panels/AgentDirectoryPanel.tsx")],
+    ["ModelCatalogPanel", read("src/components/panels/ModelCatalogPanel.tsx")],
+    ["MemoryPanel", read("src/components/panels/MemoryPanel/index.tsx")],
+  ]);
+
+  for (const [name, source] of sources) {
+    assert.match(source, /var\(--theme-success-soft\)/, name);
+    assert.match(source, /var\(--theme-success\)/, name);
+    assert.doesNotMatch(
+      source,
+      /\b(?:bg|text|border|ring|hover:bg|hover:text)-emerald-/,
+      name,
+    );
+    assert.doesNotMatch(source, /dark:(?:bg|text|border)-emerald-/, name);
+  }
 });
 
 test("composer and command surfaces use stable dimensions", () => {
