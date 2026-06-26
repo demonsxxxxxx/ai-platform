@@ -286,11 +286,11 @@ export function SkillsList({
 
       {/* Error */}
       {error && (
-        <div className="mx-4 mt-4 flex items-center justify-between rounded-lg bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-400">
+        <div className="mx-4 mt-4 flex items-center justify-between rounded-lg bg-[var(--theme-danger-soft)] p-3 text-sm text-[var(--theme-danger)] ring-1 ring-[var(--theme-danger-ring)]">
           <span>{error}</span>
           <button
             onClick={clearError}
-            className="btn-icon hover:text-red-900 dark:hover:text-red-300"
+            className="btn-icon hover:text-[var(--theme-danger)]"
           >
             <X size={18} />
           </button>

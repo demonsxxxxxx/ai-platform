@@ -4,14 +4,15 @@ import type { GovernanceAvailabilityState } from "./groupAvailability";
 
 const BADGE_STYLE: Record<GovernanceAvailabilityState, string> = {
   enabled:
-    "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
+    "bg-[var(--theme-success-soft)] text-[var(--theme-success)] ring-[var(--theme-success-ring)]",
   disabled:
-    "bg-slate-100 text-slate-600 dark:bg-stone-800 dark:text-stone-300",
-  inherited: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300",
+    "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] ring-[var(--theme-border)]",
+  inherited:
+    "bg-[var(--theme-info-soft)] text-[var(--theme-info)] ring-[var(--theme-info-ring)]",
   "admin-only":
-    "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
+    "bg-[var(--theme-warning-soft)] text-[var(--theme-warning)] ring-[var(--theme-warning-ring)]",
   unavailable:
-    "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300",
+    "bg-[var(--theme-danger-soft)] text-[var(--theme-danger)] ring-[var(--theme-danger-ring)]",
 };
 
 const ICONS: Record<GovernanceAvailabilityState, typeof CheckCircle2> = {
@@ -36,7 +37,7 @@ export function GovernanceAvailabilityBadge({
 
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium ${BADGE_STYLE[state]}`}
+      className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium ring-1 ${BADGE_STYLE[state]}`}
       data-governance-state={state}
     >
       <Icon size={13} />
