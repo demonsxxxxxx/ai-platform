@@ -177,13 +177,26 @@ test("post-login projection panels share workbench surface tokens", () => {
 });
 
 test("workbench governance surfaces do not hard-code slate or stone palettes", () => {
+  const baseCss = read("src/styles/base.css");
   const sharedSources = new Map([
     ["workbenchSurface", read("src/components/workbench/workbenchSurface.ts")],
     [
       "WorkbenchStateSurface",
       read("src/components/workbench/WorkbenchStateSurface.tsx"),
     ],
+    [
+      "WorkbenchRightPanel",
+      read("src/components/workbench/WorkbenchRightPanel.tsx"),
+    ],
     ["TabContent", read("src/components/layout/AppContent/TabContent.tsx")],
+    [
+      "GovernanceAvailabilityBadge",
+      read("src/components/governance/GovernanceAvailabilityBadge.tsx"),
+    ],
+    [
+      "GroupAvailabilityToggleRow",
+      read("src/components/governance/GroupAvailabilityToggleRow.tsx"),
+    ],
   ]);
   const governedSources = new Map([
     ["RolesPanel", read("src/components/panels/RolesPanel.tsx")],
@@ -201,11 +214,23 @@ test("workbench governance surfaces do not hard-code slate or stone palettes", (
 
   for (const [name, source] of sharedSources) {
     assert.doesNotMatch(source, legacyPalette, name);
+    assert.doesNotMatch(source, /bg-\[var\(--theme-bg-card\)\]/, name);
   }
 
   for (const [name, source] of governedSources) {
     assert.doesNotMatch(source, legacyPalette, name);
     assert.doesNotMatch(source, /bg-\[var\(--theme-bg-card\)\]/, name);
+  }
+
+  for (const token of [
+    "success",
+    "info",
+    "warning",
+    "danger",
+  ]) {
+    assert.match(baseCss, new RegExp(`--theme-${token}:`), token);
+    assert.match(baseCss, new RegExp(`--theme-${token}-soft:`), token);
+    assert.match(baseCss, new RegExp(`--theme-${token}-ring:`), token);
   }
 });
 
@@ -344,10 +369,14 @@ test("safe projection pages render a full workbench instead of thin lists", () =
   assert.ok(zh.workbench.projections.feedback.status.open);
   assert.ok(en.workbench.projections.notifications.readState.unread);
   assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg\)\]/);
+  assert.doesNotMatch(projectionPages, /bg-\[var\(--theme-bg-card\)\]/);
   assert.doesNotMatch(projectionPages, /text-stone-(?:700|800|900)/);
+  assert.doesNotMatch(projectionPages, /text-slate-(?:400|500|600|700|800|900)/);
   assert.doesNotMatch(projectionPages, /bg-(?:emerald|amber|rose|slate)-50/);
   assert.doesNotMatch(projectionPages, /text-(?:emerald|amber|rose|slate)-[67]00/);
   assert.doesNotMatch(projectionPages, /ring-(?:emerald|amber|rose|slate)-[12]00/);
+  assert.match(projectionPages, /var\(--theme-warning-soft\)/);
+  assert.match(projectionPages, /var\(--theme-danger-soft\)/);
   assert.doesNotMatch(projectionPages, /<div className="mt-3">\{children\}<\/div>/);
 });
 
@@ -489,11 +518,15 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
   assert.match(marketplace, /workbenchSurface\.catalog\.cardGrid/);
   assert.match(skillsList, /workbenchSurface\.catalog\.emptyState/);
   assert.match(marketplace, /workbenchSurface\.catalog\.emptyState/);
+  assert.match(skillsList, /var\(--theme-danger-soft\)/);
+  assert.match(marketplace, /var\(--theme-danger-soft\)/);
   assert.doesNotMatch(skillsList, /auto-grid-cols/);
   assert.doesNotMatch(marketplace, /auto-grid-cols/);
   assert.doesNotMatch(skillsList, /text-stone-(?:400|500|600|700|800|900)/);
   assert.doesNotMatch(marketplace, /text-stone-(?:400|500|600|700|800|900)/);
   assert.doesNotMatch(marketplace, /text-slate-(?:400|500|600|700|800|900)/);
+  assert.doesNotMatch(skillsList, /\b(?:bg|text|hover:bg|hover:text)-red-/);
+  assert.doesNotMatch(marketplace, /\b(?:bg|text|hover:bg|hover:text)-red-/);
   assert.doesNotMatch(hub, /data-skills-catalog-sidebar/);
   assert.doesNotMatch(hub, /<aside/);
   assert.doesNotMatch(hub, /showTabSwitcher/);
@@ -517,6 +550,27 @@ test("skills marketplace hub uses one workbench canvas instead of split page bac
     skillCss,
     /\.skill-content-area\s*{\s*background:\s*var\(--theme-bg\);/,
   );
+});
+
+test("skills marketplace action surfaces use semantic workbench state colors", () => {
+  const batchActionBar = read("src/components/panels/SkillsPanel/BatchActionBar.tsx");
+  const publishDialog = read("src/components/panels/SkillsPanel/PublishDialog.tsx");
+  const mcp = read("src/components/panels/MCPPanel.tsx");
+
+  for (const [name, source] of new Map([
+    ["BatchActionBar", batchActionBar],
+    ["PublishDialog", publishDialog],
+    ["MCPPanel", mcp],
+  ])) {
+    assert.match(source, /var\(--theme-danger-soft\)/, name);
+    assert.match(source, /var\(--theme-danger\)/, name);
+    assert.doesNotMatch(source, /\b(?:bg|text|border|hover:bg|hover:text)-red-/, name);
+    assert.doesNotMatch(source, /\b(?:bg|text|border)-(?:stone|slate)-/, name);
+    assert.doesNotMatch(source, /dark:(?:bg|text|border)-/, name);
+  }
+
+  assert.match(batchActionBar, /bg-\[var\(--theme-workbench-panel\)\]/);
+  assert.match(publishDialog, /bg-\[var\(--theme-border-strong\)\]/);
 });
 
 test("reachable catalog pages delegate page backgrounds to workbench surface tokens", () => {

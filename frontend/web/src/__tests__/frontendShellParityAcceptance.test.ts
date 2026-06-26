@@ -1218,7 +1218,8 @@ test("mcp workbench route exposes the same frontend governance state machine as 
   assert.match(mcpState, /resolveFrontendGovernanceState/);
   assert.match(mcpState, /isPermissionError\(loadError\)/);
   assert.match(mcpState, /featureEnabled:\s*true/);
-  assert.match(mcpState, /adminOnly:\s*true/);
+  assert.match(mcpState, /adminOnly:\s*!canManageMcp/);
+  assert.match(mcpState, /enabled:\s*canManageMcp/);
   assert.doesNotMatch(mcpPanel, /data-frontend-governance-state="ready"/);
   assert.doesNotMatch(mcpPanel, /hasPermission:\s*canReadMcp/);
   assert.doesNotMatch(mcpPanel, /createServer|updateServer|deleteServer|toggleServer|promoteServer|demoteServer/);

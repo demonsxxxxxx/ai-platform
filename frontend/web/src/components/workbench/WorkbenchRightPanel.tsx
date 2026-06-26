@@ -43,11 +43,11 @@ export function WorkbenchRightPanel({
             <p className={workbenchSurface.label}>
               {t("workbench.contextLabel", "Context")}
             </p>
-            <h2 className="mt-1 text-sm font-semibold text-stone-900 dark:text-stone-100">
+            <h2 className="mt-1 text-sm font-semibold text-[var(--theme-text)]">
               {t("workbench.workspaceContext", "Workspace context")}
             </h2>
           </div>
-          <History size={18} className="text-stone-400" />
+          <History size={18} className="text-[var(--theme-text-tertiary)]" />
         </div>
 
         <dl className="mt-4 space-y-3">
@@ -55,7 +55,7 @@ export function WorkbenchRightPanel({
             <dt className={workbenchSurface.mutedText}>
               {t("workbench.session", "Session")}
             </dt>
-            <dd className="max-w-36 truncate font-medium text-stone-700 dark:text-stone-200">
+            <dd className="max-w-36 truncate font-medium text-[var(--theme-text)]">
               {sessionId ?? t("workbench.unsaved", "Unsaved")}
             </dd>
           </div>
@@ -63,7 +63,7 @@ export function WorkbenchRightPanel({
             <dt className={workbenchSurface.mutedText}>
               {t("workbench.messages", "Messages")}
             </dt>
-            <dd className="font-medium text-stone-700 dark:text-stone-200">
+            <dd className="font-medium text-[var(--theme-text)]">
               {messageCount}
             </dd>
           </div>
@@ -84,13 +84,13 @@ export function WorkbenchRightPanel({
                 <div className="flex items-center gap-2">
                   <Icon
                     size={15}
-                    className="text-slate-500 dark:text-stone-400"
+                    className="text-[var(--theme-text-secondary)]"
                   />
-                  <span className="text-xs font-medium text-slate-800 dark:text-stone-100">
+                  <span className="text-xs font-medium text-[var(--theme-text)]">
                     {item.label}
                   </span>
                 </div>
-                <p className="mt-1 text-xs leading-5 text-slate-500 dark:text-stone-400">
+                <p className="mt-1 text-xs leading-5 text-[var(--theme-text-secondary)]">
                   {item.value}
                 </p>
               </div>

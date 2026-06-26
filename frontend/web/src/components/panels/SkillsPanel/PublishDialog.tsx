@@ -39,7 +39,7 @@ export function PublishDialog({
       >
         {/* Mobile drag handle */}
         <div className="flex justify-center pt-3 pb-1 sm:hidden">
-          <div className="w-9 h-1 rounded-full bg-stone-300 dark:bg-stone-600" />
+          <div className="h-1 w-9 rounded-full bg-[var(--theme-border-strong)]" />
         </div>
         <div className="skill-modal-header">
           <div className="flex items-center gap-3">
@@ -157,7 +157,7 @@ export function PublishDialog({
             </div>
           </div>
           {publishConfirm.error && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-600 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-400">
+            <div className="rounded-lg bg-[var(--theme-danger-soft)] px-4 py-2.5 text-sm text-[var(--theme-danger)] ring-1 ring-[var(--theme-danger-ring)]">
               {publishConfirm.error}
             </div>
           )}

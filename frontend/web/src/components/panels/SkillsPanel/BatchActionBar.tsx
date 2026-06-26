@@ -25,8 +25,8 @@ export function BatchActionBar({
 
   return (
     <div className="fixed bottom-4 left-4 right-4 z-40 flex justify-center sm:bottom-6 sm:left-1/2 sm:right-auto sm:-translate-x-1/2">
-      <div className="flex items-center gap-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2 py-1.5 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
-        <span className="mr-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--theme-primary)] px-1 text-[10px] font-bold leading-none text-white dark:text-[var(--theme-bg)]">
+      <div className="flex items-center gap-1 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-2 py-1.5 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
+        <span className="mr-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--theme-primary)] px-1 text-[10px] font-bold leading-none text-[var(--theme-primary-foreground)]">
           {selectedCount}
         </span>
         <span className="mr-1 text-xs text-[var(--theme-text-secondary)] hidden sm:inline">
@@ -63,7 +63,7 @@ export function BatchActionBar({
           <button
             onClick={onBatchDelete}
             disabled={batchLoading}
-            className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-red-500 transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-40 disabled:pointer-events-none dark:text-red-400 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+            className="inline-flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-[var(--theme-danger)] transition-colors hover:bg-[var(--theme-danger-soft)] disabled:opacity-40 disabled:pointer-events-none"
           >
             {batchLoading ? <LoadingSpinner size="xs" /> : <Trash2 size={13} />}
             <span className="hidden sm:inline">{t("common.delete")}</span>

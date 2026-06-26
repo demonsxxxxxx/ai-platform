@@ -259,9 +259,9 @@ function projectionStatusToneClass(tone: ProjectionStatusTone) {
     case "primary":
       return "border-[color-mix(in_srgb,var(--theme-primary)_28%,var(--theme-border))] bg-[color-mix(in_srgb,var(--theme-primary)_8%,var(--theme-workbench-panel))] text-[var(--theme-primary)]";
     case "warning":
-      return "border-[color-mix(in_srgb,#d97706_24%,var(--theme-border))] bg-[color-mix(in_srgb,#d97706_8%,var(--theme-workbench-panel))] text-[color-mix(in_srgb,#92400e_76%,var(--theme-text))]";
+      return "border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] text-[var(--theme-warning)]";
     case "danger":
-      return "border-[color-mix(in_srgb,#dc2626_22%,var(--theme-border))] bg-[color-mix(in_srgb,#dc2626_7%,var(--theme-workbench-panel))] text-[color-mix(in_srgb,#991b1b_74%,var(--theme-text))]";
+      return "border-[var(--theme-danger-ring)] bg-[var(--theme-danger-soft)] text-[var(--theme-danger)]";
     case "muted":
     default:
       return "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]";
@@ -670,7 +670,7 @@ export function WorkbenchUsersProjectionPanel() {
             <div className="relative min-w-0 md:w-72">
               <Search
                 size={17}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-tertiary)]"
               />
               <input
                 value={searchQuery}
@@ -736,7 +736,7 @@ export function WorkbenchUsersProjectionPanel() {
                   {user.roles.slice(0, 4).map((role) => (
                     <span
                       key={role}
-                      className="rounded-md bg-[var(--theme-bg-card)] px-2 py-1 text-xs font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
+                      className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 text-xs font-medium text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]"
                     >
                       {roleLabel(t, role)}
                     </span>
@@ -833,7 +833,7 @@ export function WorkbenchSettingsProjectionPanel() {
                         ) : null}
                       </div>
                     </div>
-                    <p className="truncate rounded-md bg-[var(--theme-bg-card)] px-2 py-1.5 text-xs text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+                    <p className="truncate rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-xs text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
                       {item.is_secret
                         ? t("workbench.projections.settings.redacted")
                         : formatValue(item.value)}
@@ -940,7 +940,7 @@ export function WorkbenchFeedbackProjectionPanel() {
                   </div>
                 </div>
                 {item.comment ? (
-                  <p className="rounded-md bg-[var(--theme-bg-card)] px-3 py-2 text-xs leading-5 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+                  <p className="rounded-md bg-[var(--theme-bg-sidebar)] px-3 py-2 text-xs leading-5 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
                     {item.comment}
                   </p>
                 ) : null}
@@ -1042,11 +1042,11 @@ export function WorkbenchNotificationsProjectionPanel() {
                       {localizedText(item.content_i18n, i18n.language)}
                     </p>
                     <div className="mt-2 flex flex-wrap gap-2 text-xs text-[var(--theme-text-secondary)]">
-                      <span className="inline-flex items-center gap-1 rounded-md bg-[var(--theme-bg-card)] px-2 py-1 ring-1 ring-[var(--theme-border)]">
+                      <span className="inline-flex items-center gap-1 rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 ring-1 ring-[var(--theme-border)]">
                         <Clock3 size={12} />
                         {item.created_at || item.updated_at || "-"}
                       </span>
-                      <span className="rounded-md bg-[var(--theme-bg-card)] px-2 py-1 ring-1 ring-[var(--theme-border)]">
+                      <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 ring-1 ring-[var(--theme-border)]">
                         {notificationTypeLabel(t, item.type)}
                       </span>
                     </div>
@@ -1129,7 +1129,7 @@ function ProjectionEmptyItem({
   return (
     <div className="min-w-0 flex-1 rounded-md bg-[var(--theme-bg-sidebar)] p-3 ring-1 ring-[var(--theme-border)]">
       <div className="flex items-center gap-2">
-        <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-[var(--theme-bg-card)] text-[11px] font-semibold text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
+        <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-[var(--theme-workbench-panel)] text-[11px] font-semibold text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
           {index}
         </span>
         <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
