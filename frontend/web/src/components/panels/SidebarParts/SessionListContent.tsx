@@ -176,32 +176,32 @@ export function SessionListContent({
     <div
       data-workbench-sidebar-panel
       data-librechat-expanded-panel="sidebar"
-      className="flex h-full min-h-0 flex-col bg-[var(--theme-sidebar-panel)] text-slate-100"
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-sidebar-panel)] text-[var(--theme-text)]"
     >
       {/* Header */}
       <div className="flex items-center justify-between px-3 pt-3 pb-1 sm:px-4">
         <div className="flex h-7 items-center gap-2">
-          <span className="flex size-6 items-center justify-center rounded-md bg-slate-100/10 text-white shadow-sm ring-1 ring-slate-100/10">
+          <span className="flex size-6 items-center justify-center rounded-md bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm ring-1 ring-[var(--theme-border)]">
             <Bot size={15} strokeWidth={2.2} aria-hidden="true" />
           </span>
           <button
             type="button"
             onClick={onNewSession}
-            className="text-[15px] font-semibold leading-none text-slate-100 transition-colors hover:text-white"
+            className="text-[15px] font-semibold leading-none text-[var(--theme-text)] transition-colors hover:text-[var(--theme-primary)]"
           >
             {APP_NAME}
           </button>
         </div>
         <button
           onClick={onCollapse}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-300 hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-white transition-colors cursor-w-resize rtl:cursor-e-resize"
+          className="flex h-8 w-8 cursor-w-resize items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-sidebar-panel-muted)] hover:text-[var(--theme-text)] rtl:cursor-e-resize"
           title={t("sidebar.collapseSidebar")}
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
             fill="none"
             viewBox="0 0 24 24"
-            className="w-5 h-5 text-slate-300"
+            className="h-5 w-5 text-[var(--theme-text-secondary)]"
           >
             <path
               fillRule="evenodd"
@@ -224,7 +224,7 @@ export function SessionListContent({
         >
           <MessageSquarePlus size={20} />
           <span className="flex-1 text-left">{t("sidebar.newChat")}</span>
-          <kbd className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 rounded opacity-0 group-hover:opacity-100 transition-opacity">
+          <kbd className="hidden items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100 sm:inline-flex">
             {t("sidebar.newChatShortcut")}
           </kbd>
         </button>
@@ -302,18 +302,18 @@ export function SessionListContent({
                 className="flex items-center justify-between px-[9px] h-9 cursor-pointer select-none group/section"
               >
                 <div className="flex min-w-0 items-center gap-2">
-                  <span className="text-[13px] font-medium text-slate-500 group-hover/section:text-slate-300 transition-colors">
+                  <span className="text-[13px] font-medium text-[var(--theme-text-secondary)] transition-colors group-hover/section:text-[var(--theme-text)]">
                     {t("sidebar.chats")}
                   </span>
                   {chatsUnreadCount > 0 && (
-                    <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium leading-none text-white">
+                    <span className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[var(--theme-danger)] px-1 text-[10px] font-medium leading-none text-[var(--theme-primary-foreground)]">
                       {formatUnreadCount(chatsUnreadCount)}
                     </span>
                   )}
                 </div>
                 <ChevronDown
                   size={14}
-                  className={`text-slate-600 transition-transform duration-200 ${
+                  className={`text-[var(--theme-text-tertiary)] transition-transform duration-200 ${
                     isChatsCollapsed ? "-rotate-90" : ""
                   }`}
                 />
@@ -347,7 +347,7 @@ export function SessionListContent({
                   ) : (
                     groupedUncategorized.map((group) => (
                       <div key={group.label}>
-                        <div className="px-[9px] h-7 flex items-center text-[13px] font-medium text-slate-500 select-none">
+                        <div className="flex h-7 select-none items-center px-[9px] text-[13px] font-medium text-[var(--theme-text-tertiary)]">
                           {group.label}
                         </div>
                         <div className="flex flex-col gap-px">
@@ -393,7 +393,7 @@ export function SessionListContent({
                   {hasMoreUncategorized && (
                     <div ref={loadMoreRef} className="flex justify-center py-2">
                       {isLoadingMoreUncategorized && (
-                        <div className="flex items-center gap-2 text-slate-500">
+                        <div className="flex items-center gap-2 text-[var(--theme-text-tertiary)]">
                           <LoadingSpinner size="xs" />
                           <span className="text-xs">{t("common.loading")}</span>
                         </div>
@@ -408,12 +408,12 @@ export function SessionListContent({
       </div>
 
       {/* Footer */}
-      <div className="shrink-0 px-2 py-1 border-t border-slate-800">
+      <div className="shrink-0 border-t border-[var(--theme-border)] px-2 py-1">
         <div
           onClick={onShowProfile}
           className="group flex items-center rounded-lg py-3 px-2 w-full hover:bg-[var(--theme-sidebar-panel-muted)] transition cursor-pointer"
         >
-          <div className="shrink-0 w-8 h-8 rounded-full overflow-hidden ring-1 ring-slate-700 group-hover:ring-slate-500 transition mr-3">
+          <div className="mr-3 h-8 w-8 shrink-0 overflow-hidden rounded-full ring-1 ring-[var(--theme-border-strong)] transition group-hover:ring-[var(--theme-primary)]">
             {user?.avatar_url && !imgError ? (
               <img
                 src={user.avatar_url}
@@ -423,24 +423,24 @@ export function SessionListContent({
                 draggable={false}
               />
             ) : (
-              <div className="flex w-full h-full items-center justify-center rounded-full bg-teal-700">
-                <span className="text-xs font-semibold text-white">
+              <div className="flex h-full w-full items-center justify-center rounded-full bg-[var(--theme-primary)]">
+                <span className="text-xs font-semibold text-[var(--theme-primary-foreground)]">
                   {user?.username?.charAt(0).toUpperCase() || "U"}
                 </span>
               </div>
             )}
           </div>
           <div className="flex-1 text-left min-w-0">
-            <div className="text-sm font-medium text-slate-100 truncate">
+            <div className="truncate text-sm font-medium text-[var(--theme-text)]">
               {user?.username || "User"}
             </div>
-            <div className="text-xs text-slate-500 whitespace-nowrap">
+            <div className="whitespace-nowrap text-xs text-[var(--theme-text-secondary)]">
               {(user?.roles?.[0] || "User").replace(/^./, (c) =>
                 c.toUpperCase(),
               )}
             </div>
           </div>
-          <ChevronsUpDown className="size-4 text-slate-500 shrink-0" />
+          <ChevronsUpDown className="size-4 shrink-0 text-[var(--theme-text-secondary)]" />
         </div>
       </div>
     </div>

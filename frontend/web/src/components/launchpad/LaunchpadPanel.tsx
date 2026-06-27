@@ -96,7 +96,7 @@ export function LaunchpadPanel() {
             }}
             className={`h-10 min-w-[6.75rem] shrink-0 rounded-md px-4 text-sm font-medium transition-colors ${
               activeTab === tab.key
-                ? "bg-[var(--theme-sidebar-panel)] text-white"
+                ? "bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]"
                 : "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
             }`}
           >
