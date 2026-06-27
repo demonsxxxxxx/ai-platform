@@ -10,7 +10,10 @@ import {
   Dot,
 } from "lucide-react";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
-import type { FrontendGovernanceState } from "../governance/frontendGovernanceState";
+import {
+  buildFrontendGovernanceSmokeAttributes,
+  type FrontendGovernanceState,
+} from "../governance/frontendGovernanceState";
 import type { GovernanceAvailabilityState } from "../governance/groupAvailability";
 import { workbenchSurface } from "./workbenchSurface";
 
@@ -100,7 +103,7 @@ export function WorkbenchStateSurface({
   return (
     <section
       data-workbench-state-surface
-      data-frontend-governance-state={state}
+      {...buildFrontendGovernanceSmokeAttributes(state)}
       data-fail-closed-surface={surface}
       className={`${workbenchSurface.stateSurface} mx-auto w-full max-w-xl ${className}`}
     >

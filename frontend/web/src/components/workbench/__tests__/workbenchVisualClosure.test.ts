@@ -178,7 +178,11 @@ test("post-login projection panels share workbench surface tokens", () => {
   ]);
 
   for (const [name, source] of panels) {
-    assert.match(source, /data-frontend-governance-state/, name);
+    assert.match(
+      source,
+      /data-frontend-governance-state|buildFrontendGovernanceSmokeAttributes/,
+      name,
+    );
     assert.match(source, /workbenchSurface\.(?:page|statePage|compactPanel|panel)/, name);
     assert.match(source, /workbenchSurface\.(?:compactPanel|panel|catalog)/, name);
     assert.doesNotMatch(source, /bg-\[var\(--theme-bg\)\]/, name);
@@ -347,6 +351,29 @@ test("governed route fallback states use workbench status tokens", () => {
   assert.doesNotMatch(governedRoute, /text-stone-(?:700|800|900)/);
 });
 
+test("governed workbench states expose a shared browser smoke selector", () => {
+  const stateResolver = read("src/components/governance/frontendGovernanceState.ts");
+  const stateSurface = read("src/components/workbench/WorkbenchStateSurface.tsx");
+  const governedRoute = read("src/components/workbench/GovernedRouteWorkbench.tsx");
+  const skillsHub = read("src/components/panels/SkillsHubPanel.tsx");
+  const rolePlaza = read("src/components/panels/RolesPanel.tsx");
+  const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
+
+  assert.match(stateResolver, /FRONTEND_GOVERNANCE_SMOKE_STATES/);
+  assert.match(stateResolver, /buildFrontendGovernanceSmokeAttributes/);
+  assert.match(stateResolver, /getFrontendGovernanceStateAssertSelector/);
+
+  for (const [name, source] of new Map([
+    ["WorkbenchStateSurface", stateSurface],
+    ["GovernedRouteWorkbench", governedRoute],
+    ["SkillsHubPanel", skillsHub],
+    ["RolesPanel", rolePlaza],
+    ["WorkbenchProjectionPages", projectionPages],
+  ])) {
+    assert.match(source, /buildFrontendGovernanceSmokeAttributes/, name);
+  }
+});
+
 test("safe projection pages render a full workbench instead of thin lists", () => {
   const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
@@ -426,7 +453,7 @@ test("role plaza state is resolver-driven instead of hard-coded ready", () => {
 
   assert.match(roles, /resolveRoleGovernanceState/);
   assert.match(roles, /roleGovernanceApi\.getOverview/);
-  assert.match(roles, /data-frontend-governance-state=\{roleGovernance\.pageState\}/);
+  assert.match(roles, /buildFrontendGovernanceSmokeAttributes\(roleGovernance\.pageState\)/);
   assert.doesNotMatch(roles, /data-frontend-governance-state="ready"/);
   assert.doesNotMatch(roles, /roleDirectoryBacked:\s*false/);
   assert.match(resolver, /overview/);

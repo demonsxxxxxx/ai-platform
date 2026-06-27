@@ -16,7 +16,10 @@ import { useTranslation } from "react-i18next";
 import { PanelHeader } from "../common/PanelHeader";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
 import type { GovernanceAvailabilityState } from "../governance/groupAvailability";
-import type { FrontendGovernanceState } from "../governance/frontendGovernanceState";
+import {
+  buildFrontendGovernanceSmokeAttributes,
+  type FrontendGovernanceState,
+} from "../governance/frontendGovernanceState";
 import type { TabType } from "../layout/AppContent/types";
 import { workbenchSurface } from "./workbenchSurface";
 
@@ -101,7 +104,7 @@ export function GovernedRouteWorkbench({
   return (
     <div
       data-governed-route-workbench
-      data-frontend-governance-state={config.state}
+      {...buildFrontendGovernanceSmokeAttributes(config.state)}
       data-fail-closed-surface={config.surface}
       className={workbenchSurface.page}
     >

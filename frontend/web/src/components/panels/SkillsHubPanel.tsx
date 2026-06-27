@@ -11,6 +11,7 @@ import {
 } from "./SkillsHubPanel/state";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
 import { resolveGroupAvailability } from "../governance/groupAvailability";
+import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGovernanceState";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 
 const TAB_PATHS: Record<SkillsHubTab, string> = {
@@ -162,7 +163,7 @@ export function SkillsHubPanel() {
     <div
       data-phase1c-surface="skills-hub"
       data-skills-catalog-workbench
-      data-frontend-governance-state={governanceState}
+      {...buildFrontendGovernanceSmokeAttributes(governanceState)}
       data-required-permission={hubGovernance.requiredPermission}
       data-auth-projection-has-permission={hubGovernance.authProjectionHasPermission}
       data-effective-projection-has-permission={hubGovernance.effectiveProjectionHasPermission}

@@ -142,7 +142,7 @@ test("roles route is login reachable and does not load legacy role management AP
   assert.match(rolesPanel, /data-role-plaza-shell/);
   assert.match(rolesPanel, /resolveRoleGovernanceState/);
   assert.match(rolesPanel, /roleGovernanceApi\.getOverview/);
-  assert.match(rolesPanel, /data-frontend-governance-state=\{roleGovernance\.pageState\}/);
+  assert.match(rolesPanel, /buildFrontendGovernanceSmokeAttributes\(roleGovernance\.pageState\)/);
   assert.doesNotMatch(rolesPanel, /data-frontend-governance-state="ready"/);
   assert.doesNotMatch(rolesPanel, /roleDirectoryBacked:\s*false/);
   assert.doesNotMatch(rolesPanel, /data-role-plaza-backend-gap/);
@@ -251,7 +251,7 @@ test("post-login navigation keeps governed MCP entry discoverable without stale 
   assert.doesNotMatch(chatInput, /totalSkillsCount > 0/);
 });
 
-test("authenticated chat workspace keeps one enterprise surface instead of split white canvas", () => {
+test("authenticated chat workspace keeps one LibreChat white canvas instead of split backgrounds", () => {
   const surface = readFileSync(
     join(root, "src/components/workbench/workbenchSurface.ts"),
     "utf8",
@@ -320,12 +320,13 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(libreSidePanel, /workbenchSurface\.secondaryPanel/);
-  assert.match(theme, /--theme-bg:\s*#e5e8ed;/);
-  assert.match(theme, /--theme-bg-sidebar:\s*#edf0f4;/);
-  assert.match(theme, /--theme-workbench-panel:\s*#f3f4f6;/);
-  assert.match(theme, /--theme-bg-card:\s*#f8fafc;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#e5e8ed;/);
-  assert.doesNotMatch(theme, /--theme-bg-card:\s*#ffffff;/);
+  assert.match(theme, /--theme-bg:\s*#ffffff;/);
+  assert.match(theme, /--theme-bg-sidebar:\s*#f4f4f5;/);
+  assert.match(theme, /--theme-workbench-panel:\s*#ffffff;/);
+  assert.match(theme, /--theme-bg-card:\s*#ffffff;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#ffffff;/);
+  assert.doesNotMatch(theme, /--theme-workbench-canvas:\s*#e5e8ed;/);
+  assert.doesNotMatch(theme, /--theme-workbench-panel:\s*#f3f4f6;/);
   assert.match(libreSurface, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(chatView, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(authTheme, /html,\s*body\s*\{\s*background:\s*var\(--theme-bg\);/);
@@ -345,7 +346,7 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   }
 });
 
-test("authenticated workbench adopts one dark-rail enterprise shell", () => {
+test("authenticated workbench adopts one LibreChat light application shell", () => {
   const packageJson = JSON.parse(
     readFileSync(join(root, "package.json"), "utf8"),
   ) as { name?: string };
@@ -390,26 +391,24 @@ test("authenticated workbench adopts one dark-rail enterprise shell", () => {
   assert.doesNotMatch(enterpriseSelect, /GlassSelect|glass-/);
   assert.match(settingsHook, /ai-platform-settings-\$\{date\}\.json/);
   assert.doesNotMatch(settingsHook, /lamb-agent-settings/);
-  assert.match(theme, /--theme-sidebar-rail:\s*#111827;/);
-  assert.match(theme, /--theme-sidebar-panel:\s*#111827;/);
-  assert.match(theme, /--theme-sidebar-panel-muted:\s*#1f2937;/);
-  assert.match(theme, /--theme-bg:\s*#e5e8ed;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#e5e8ed;/);
+  assert.match(theme, /--theme-sidebar-rail:\s*#f4f4f5;/);
+  assert.match(theme, /--theme-sidebar-panel:\s*#f4f4f5;/);
+  assert.match(theme, /--theme-sidebar-panel-muted:\s*#e9e9eb;/);
+  assert.match(theme, /--theme-bg:\s*#ffffff;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#ffffff;/);
   assert.match(sidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /data-workbench-sidebar-panel/);
-  assert.match(sidebarList, /text-slate-100/);
   assert.match(sidebarRail, /bg-\[var\(--theme-sidebar-rail\)\]/);
-  assert.match(sidebarRail, /text-slate-200/);
   assert.match(projectItem, /hover:bg-\[var\(--theme-sidebar-panel-muted\)\]/);
   assert.match(sessionItem, /hover:bg-\[var\(--theme-sidebar-panel-muted\)\]/);
-  assert.match(projectItem, /text-slate-300/);
-  assert.match(sessionItem, /text-slate-300/);
+  assert.doesNotMatch(sidebarList, /text-slate-100|text-white|border-slate-800/);
+  assert.doesNotMatch(sidebarRail, /text-slate-200|text-white|rgba\(255,255,255,0\.1\)/);
+  assert.doesNotMatch(projectItem, /text-slate-300/);
+  assert.doesNotMatch(sessionItem, /text-slate-300/);
   assert.doesNotMatch(sidebarList, /rounded-\[10px\]/);
   assert.doesNotMatch(projectItem, /rounded-\[10px\]/);
   assert.doesNotMatch(sessionItem, /rounded-\[10px\]/);
-  assert.doesNotMatch(projectItem, /text-stone-600|text-stone-700|bg-stone-100/);
-  assert.doesNotMatch(sessionItem, /text-stone-600|text-stone-700|bg-stone-100/);
   assert.doesNotMatch(sidebarRail, /style=\{\{[\s\S]{0,160}backgroundColor/);
 });
 
@@ -804,7 +803,7 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
   assert.doesNotMatch(skillsHub, /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/);
   assert.doesNotMatch(marketplace, /className="[^"]*bg-\[var\(--theme-workbench-canvas\)\][^"]*"/);
   assert.match(marketplace, /data-marketplace-catalog-shell/);
-  assert.match(marketplace, /data-frontend-governance-state/);
+  assert.match(marketplace, /data-frontend-governance-state|buildFrontendGovernanceSmokeAttributes/);
   assert.match(marketplace, /effectiveGovernedUnavailable/);
   assert.match(groupAvailability, /flex flex-col[\s\S]*sm:flex-row/);
   assert.match(marketplaceCard, /versionLabel/);
