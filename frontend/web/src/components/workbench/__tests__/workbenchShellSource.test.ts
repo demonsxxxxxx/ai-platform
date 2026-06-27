@@ -10,11 +10,16 @@ test("workbench shell exposes the required enterprise regions", () => {
     join(root, "src/components/workbench/WorkbenchShell.tsx"),
     "utf8",
   );
+  const libreShell = readFileSync(
+    join(root, "src/components/librechatShell/LibreChatShell.tsx"),
+    "utf8",
+  );
 
-  assert.match(shell, /data-workbench-region="thread"/);
-  assert.match(shell, /data-workbench-region="composer"/);
-  assert.match(shell, /data-workbench-region="context"/);
-  assert.match(shell, /rightPanel/);
+  assert.match(shell, /LibreChatShell/);
+  assert.match(libreShell, /data-workbench-region="thread"/);
+  assert.match(libreShell, /data-workbench-region="composer"/);
+  assert.match(libreShell, /data-workbench-region="context"/);
+  assert.match(libreShell, /rightPanel/);
 });
 
 test("workbench shell does not duplicate the primary sidebar rail", () => {
@@ -33,9 +38,15 @@ test("workbench context drawer is visible on normal desktop widths", () => {
     join(root, "src/components/workbench/workbenchSurface.ts"),
     "utf8",
   );
+  const libreSurface = readFileSync(
+    join(root, "src/components/librechatShell/libreChatSurface.ts"),
+    "utf8",
+  );
 
-  assert.match(surface, /xl:grid-cols-\[minmax\(0,1fr\)_20rem\]/);
-  assert.match(surface, /xl:flex/);
+  assert.match(surface, /libreChatSurface\.workspace/);
+  assert.match(surface, /libreChatSurface\.context/);
+  assert.match(libreSurface, /xl:grid-cols-\[minmax\(0,1fr\)_20rem\]/);
+  assert.match(libreSurface, /xl:flex/);
   assert.doesNotMatch(surface, /2xl:grid-cols-\[minmax\(0,1fr\)_20rem\]/);
   assert.doesNotMatch(surface, /2xl:flex/);
 });
@@ -77,6 +88,10 @@ test("empty chat starts as a LibreChat-style chat-first surface", () => {
     join(root, "src/components/workbench/workbenchSurface.ts"),
     "utf8",
   );
+  const libreSurface = readFileSync(
+    join(root, "src/components/librechatShell/libreChatSurface.ts"),
+    "utf8",
+  );
 
   assert.match(welcome, /welcome-chat-start/);
   assert.match(welcome, /data-chat-start-surface/);
@@ -90,5 +105,6 @@ test("empty chat starts as a LibreChat-style chat-first surface", () => {
   assert.doesNotMatch(welcome, /font-serif/);
   assert.doesNotMatch(surface, /cockpit:/);
   assert.doesNotMatch(surface, /grid-cols-\[minmax\(220px,280px\)_minmax\(0,1fr\)\]/);
-  assert.match(surface, /workbench-thread-frame/);
+  assert.match(surface, /libreChatSurface\.thread/);
+  assert.match(libreSurface, /workbench-thread-frame/);
 });

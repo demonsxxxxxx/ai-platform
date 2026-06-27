@@ -10,18 +10,21 @@ function read(path: string): string {
 }
 
 test("workbench shell exposes dense chat regions", () => {
-  const shell = read("src/components/workbench/WorkbenchShell.tsx");
-  const surface = read("src/components/workbench/workbenchSurface.ts");
+  const shell = read("src/components/librechatShell/LibreChatShell.tsx");
+  const workbenchShell = read("src/components/workbench/WorkbenchShell.tsx");
+  const surface = read("src/components/librechatShell/libreChatSurface.ts");
+  const workbenchSurface = read("src/components/workbench/workbenchSurface.ts");
 
   assert.match(shell, /data-workbench-region="thread"/);
   assert.match(shell, /data-workbench-region="composer"/);
   assert.match(shell, /data-workbench-region="context"/);
+  assert.match(workbenchShell, /LibreChatShell/);
   assert.match(surface, /workspace:/);
   assert.match(surface, /thread:/);
   assert.match(surface, /composer:/);
   assert.match(surface, /context:/);
   assert.match(surface, /commandSurface:/);
-  assert.match(surface, /unavailable:/);
+  assert.match(workbenchSurface, /unavailable:/);
 });
 
 test("authenticated workbench source avoids marketing and nested-card patterns", () => {
@@ -72,13 +75,16 @@ test("expanded sidebar uses one dark enterprise navigation system", () => {
   const sessionList = read(
     "src/components/panels/SidebarParts/SessionListContent.tsx",
   );
+  const panel = read("src/components/librechatShell/LibreChatPanel.tsx");
   const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
   const baseCss = read("src/styles/base.css");
 
   assert.match(sessionList, /data-workbench-sidebar-panel/);
   assert.match(sessionList, /data-workbench-primary-nav/);
-  assert.match(sessionList, /data-workbench-nav-group="tasks"/);
-  assert.match(sessionList, /data-workbench-nav-group="governance"/);
+  assert.match(sessionList, /LibreChatPanelSection group="tasks"/);
+  assert.match(sessionList, /LibreChatPanelSection[\s\S]*group="governance"/);
+  assert.match(panel, /data-workbench-nav-group=\{group\}/);
+  assert.match(panel, /data-librechat-expanded-panel=\{group\}/);
   assert.match(sessionList, /data-workbench-session-region/);
   assert.match(sessionList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sessionSidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
@@ -115,16 +121,16 @@ test("post-login workbench defaults to expanded application navigation", () => {
 
 test("light workbench tokens avoid returning to a white chat canvas", () => {
   const baseCss = read("src/styles/base.css");
-  const surface = read("src/components/workbench/workbenchSurface.ts");
+  const surface = read("src/components/librechatShell/libreChatSurface.ts");
   const welcome = read("src/components/chat/WelcomePage.tsx");
 
-  assert.match(baseCss, /--theme-bg:\s*#dfe7f1;/);
-  assert.match(baseCss, /--theme-workbench-canvas:\s*#dfe7f1;/);
-  assert.match(baseCss, /--theme-workbench-panel:\s*#edf3f8;/);
-  assert.match(baseCss, /--theme-bg-card:\s*#f2f6fa;/);
-  assert.match(baseCss, /--theme-bg-sidebar:\s*#e7eef6;/);
+  assert.match(baseCss, /--theme-bg:\s*#e5e8ed;/);
+  assert.match(baseCss, /--theme-workbench-canvas:\s*#e5e8ed;/);
+  assert.match(baseCss, /--theme-workbench-panel:\s*#f3f4f6;/);
+  assert.match(baseCss, /--theme-bg-card:\s*#f8fafc;/);
+  assert.match(baseCss, /--theme-bg-sidebar:\s*#edf0f4;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#f(?:3f5f8|fffff);/);
-  assert.doesNotMatch(baseCss, /--theme-workbench-panel:\s*#f(?:8fafc|fffff);/);
+  assert.doesNotMatch(baseCss, /--theme-workbench-panel:\s*#ffffff;/);
   assert.doesNotMatch(baseCss, /--theme-bg-card:\s*#ffffff;/);
   assert.doesNotMatch(baseCss, /--theme-bg-sidebar:\s*#ffffff;/);
   assert.match(surface, /root:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
@@ -134,13 +140,15 @@ test("light workbench tokens avoid returning to a white chat canvas", () => {
 });
 
 test("workbench right context uses the same canvas as the main workspace", () => {
-  const surface = read("src/components/workbench/workbenchSurface.ts");
+  const surface = read("src/components/librechatShell/libreChatSurface.ts");
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
+  const sidePanel = read("src/components/librechatShell/LibreChatSidePanel.tsx");
   const chatInput = read("src/components/chat/ChatInput.tsx");
 
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(rightPanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
+  assert.match(rightPanel, /LibreChatSidePanel/);
+  assert.match(sidePanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(sidePanel, /workbenchSurface\.secondaryPanel/);
   assert.match(chatInput, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
   assert.doesNotMatch(chatInput, /backgroundColor: "var\(--theme-bg\)"/);
 });
@@ -184,13 +192,14 @@ test("workbench governance surfaces do not hard-code slate or stone palettes", (
   const baseCss = read("src/styles/base.css");
   const sharedSources = new Map([
     ["workbenchSurface", read("src/components/workbench/workbenchSurface.ts")],
+    ["libreChatSurface", read("src/components/librechatShell/libreChatSurface.ts")],
     [
       "WorkbenchStateSurface",
       read("src/components/workbench/WorkbenchStateSurface.tsx"),
     ],
     [
-      "WorkbenchRightPanel",
-      read("src/components/workbench/WorkbenchRightPanel.tsx"),
+      "LibreChatSidePanel",
+      read("src/components/librechatShell/LibreChatSidePanel.tsx"),
     ],
     ["TabContent", read("src/components/layout/AppContent/TabContent.tsx")],
     [
@@ -746,6 +755,7 @@ test("expanded app sidebar keeps governed catalogs as first-level smoke targets"
     "src/components/panels/SidebarParts/SessionListContent.tsx",
   );
   const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
+  const railPrimitive = read("src/components/librechatShell/LibreChatRail.tsx");
 
   assert.match(sidebar, /data-workbench-nav-item=\{key\}/);
   assert.match(sidebar, /key: "skills"[\s\S]*navigate\("\/skills"\)/);
@@ -753,9 +763,10 @@ test("expanded app sidebar keeps governed catalogs as first-level smoke targets"
   assert.match(sidebar, /key: "roles"[\s\S]*navigate\("\/roles"\)/);
   assert.doesNotMatch(sidebar, /data-workbench-nav-item="admin-skills"/);
   assert.doesNotMatch(sidebar, /data-workbench-nav-item="admin-roles"/);
-  assert.match(rail, /data-workbench-rail-item="skills"/);
-  assert.match(rail, /data-workbench-rail-item="marketplace"/);
-  assert.match(rail, /data-workbench-rail-item="roles"/);
+  assert.match(rail, /itemKey="skills"/);
+  assert.match(rail, /itemKey="marketplace"/);
+  assert.match(rail, /itemKey="roles"/);
+  assert.match(railPrimitive, /data-workbench-rail-item=\{itemKey\}/);
 });
 
 test("post-login sidebar marks the current governed route in expanded and rail modes", () => {
@@ -763,6 +774,7 @@ test("post-login sidebar marks the current governed route in expanded and rail m
     "src/components/panels/SidebarParts/SessionListContent.tsx",
   );
   const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
+  const railPrimitive = read("src/components/librechatShell/LibreChatRail.tsx");
   const baseCss = read("src/styles/base.css");
 
   assert.match(sidebar, /useLocation\(\)/);
@@ -777,8 +789,9 @@ test("post-login sidebar marks the current governed route in expanded and rail m
   );
   assert.match(
     rail,
-    /data-active=\{isRailItemActive\("[a-z]+"\) \? "true" : "false"\}/,
+    /active=\{isRailItemActive\("[a-z]+"\)\}/,
   );
+  assert.match(railPrimitive, /data-active=\{active \? "true" : "false"\}/);
   assert.match(baseCss, /\.sidebar-nav-btn\[data-active="true"\]/);
   assert.match(baseCss, /\.sidebar-rail-btn\[data-active="true"\]/);
 });

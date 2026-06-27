@@ -1,0 +1,62 @@
+import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import test from "node:test";
+
+const root = process.cwd();
+
+function read(path: string): string {
+  return readFileSync(join(root, path), "utf8");
+}
+
+test("librechat shell records pinned source provenance", () => {
+  const source = read("src/components/librechatShell/libreChatSurface.ts");
+
+  assert.match(source, /9e74cc0e57b395926122bd4062c1fcedc48ed465/);
+  assert.match(
+    source,
+    /client\/src\/components\/UnifiedSidebar\/UnifiedSidebar\.tsx/,
+  );
+  assert.match(source, /client\/src\/components\/Chat\/Input\/ChatForm\.tsx/);
+  assert.match(source, /client\/src\/components\/SidePanel\/Nav\.tsx/);
+  assert.match(source, /concept-only where license posture is ambiguous/);
+});
+
+test("active librechat shell layer forbids LibreChat backend authority imports", () => {
+  const files = [
+    "src/components/librechatShell/libreChatSurface.ts",
+    "src/components/librechatShell/LibreChatShell.tsx",
+    "src/components/librechatShell/LibreChatRail.tsx",
+    "src/components/librechatShell/LibreChatPanel.tsx",
+    "src/components/librechatShell/LibreChatSidePanel.tsx",
+  ];
+  const combinedImports = files
+    .filter((file) => existsSync(join(root, file)))
+    .map((file) => read(file))
+    .join("\n")
+    .split(/\r?\n/)
+    .filter((line) => /^\s*(import|export)\s+.+\s+from\s+/.test(line))
+    .join("\n");
+
+  for (const forbidden of [
+    "librechat-data-provider",
+    "useRecoilState",
+    "~/Providers",
+    "~/store",
+    "useChatHelpers",
+    "useGetStartupConfig",
+  ]) {
+    assert.doesNotMatch(
+      combinedImports,
+      new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+  }
+});
+
+test("librechat shell geometry keeps the approved rail and panel widths", () => {
+  const source = read("src/components/librechatShell/libreChatSurface.ts");
+
+  assert.match(source, /railWidthPx:\s*52/);
+  assert.match(source, /expandedMinWidthPx:\s*360/);
+  assert.match(source, /mobileMaxWidth:\s*"min\(85vw, 380px\)"/);
+});

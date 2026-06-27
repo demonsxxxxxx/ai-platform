@@ -10,6 +10,7 @@ import {
   useMemo,
   forwardRef,
   useImperativeHandle,
+  type CSSProperties,
 } from "react";
 import { useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
@@ -32,6 +33,7 @@ import {
   SidebarRail,
 } from "./SidebarParts";
 import type { SessionActions } from "./SidebarParts";
+import { LIBRECHAT_SHELL_GEOMETRY } from "../librechatShell/libreChatSurface";
 
 interface SessionSidebarProps {
   currentSessionId: string | null;
@@ -104,6 +106,10 @@ export const SessionSidebar = forwardRef<
 
   const isCollapsed = externalCollapsed ?? internalCollapsed;
   const setIsCollapsed = onToggleCollapsed ?? setInternalCollapsed;
+  const sidebarGeometryStyle = {
+    "--sidebar-rail-width": `${LIBRECHAT_SHELL_GEOMETRY.railWidthPx}px`,
+    "--sidebar-width": `${LIBRECHAT_SHELL_GEOMETRY.expandedMinWidthPx}px`,
+  } as CSSProperties;
 
   // ─── Hooks ──────────────────────────────────────────────────────
 
@@ -289,6 +295,15 @@ export const SessionSidebar = forwardRef<
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [onNewSession]);
 
+  useEffect(() => {
+    if (!mobileOpen) return undefined;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onMobileClose?.();
+    };
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [mobileOpen, onMobileClose]);
+
   // ─── Select session helper (mobile close) ───────────────────────
 
   const selectAndClose = useCallback(
@@ -345,10 +360,13 @@ export const SessionSidebar = forwardRef<
       />
 
       <div
+        data-librechat-mobile-sidebar
         className={`rounded-r-lg fixed left-0 top-0 z-[70] w-64 flex flex-col sm:hidden bg-[var(--theme-sidebar-panel)] transition-transform duration-300 ease-in-out ${
           mobileOpen ? "translate-x-0" : "-translate-x-full"
         }`}
         style={{
+          ...sidebarGeometryStyle,
+          width: LIBRECHAT_SHELL_GEOMETRY.mobileMaxWidth,
           height: "var(--app-viewport-height, 100dvh)",
           paddingTop: "env(safe-area-inset-top)",
           paddingBottom: "env(safe-area-inset-bottom)",
@@ -389,6 +407,7 @@ export const SessionSidebar = forwardRef<
       <div
         className="hidden sm:flex h-full relative shrink-0 overflow-hidden"
         style={{
+          ...sidebarGeometryStyle,
           width: isCollapsed
             ? "var(--sidebar-rail-width)"
             : "var(--sidebar-width)",

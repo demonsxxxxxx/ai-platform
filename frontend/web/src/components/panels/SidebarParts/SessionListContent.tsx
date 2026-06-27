@@ -32,6 +32,7 @@ import {
   getWorkbenchNavItemFromPathname,
   type WorkbenchNavItem,
 } from "./navigationState";
+import { LibreChatPanelSection } from "../../librechatShell/LibreChatPanel";
 
 export interface SessionActions {
   onDeleteSession: (id: string) => void;
@@ -174,6 +175,7 @@ export function SessionListContent({
   return (
     <div
       data-workbench-sidebar-panel
+      data-librechat-expanded-panel="sidebar"
       className="flex h-full min-h-0 flex-col bg-[var(--theme-sidebar-panel)] text-slate-100"
     >
       {/* Header */}
@@ -227,10 +229,7 @@ export function SessionListContent({
           </kbd>
         </button>
 
-        <div data-workbench-nav-group="tasks" className="space-y-1">
-          <p className="px-[9px] pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-            {t("sidebar.tasks")}
-          </p>
+        <LibreChatPanelSection group="tasks" label={t("sidebar.tasks")}>
           {taskNavItems.map(({ key, icon: Icon, label, onClick }) => {
             const isActive = activeNavItem === key;
             return (
@@ -247,12 +246,12 @@ export function SessionListContent({
               </button>
             );
           })}
-        </div>
+        </LibreChatPanelSection>
 
-        <div data-workbench-nav-group="governance" className="space-y-1">
-          <p className="px-[9px] pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-            {t("sidebar.governance")}
-          </p>
+        <LibreChatPanelSection
+          group="governance"
+          label={t("sidebar.governance")}
+        >
           {governanceNavItems.map(({ key, icon: Icon, label, onClick }) => {
             const isActive = activeNavItem === key;
             return (
@@ -269,7 +268,7 @@ export function SessionListContent({
               </button>
             );
           })}
-        </div>
+        </LibreChatPanelSection>
 
         <button
           onClick={onOpenSearch}

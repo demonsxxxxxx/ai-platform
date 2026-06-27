@@ -19,9 +19,9 @@ import {
   getWorkbenchNavItemFromPathname,
   type WorkbenchNavItem,
 } from "./navigationState";
+import { LibreChatRailButton } from "../../librechatShell/LibreChatRail";
 
-const railBtn =
-  "sidebar-rail-btn workbench-rail-btn flex h-11 w-11 items-center justify-center rounded-lg text-slate-200 transition-colors mx-1 touch-manipulation";
+const railBtn = "";
 
 interface SidebarRailProps {
   user: { username?: string; avatar_url?: string } | null;
@@ -74,12 +74,13 @@ export function SidebarRail({
 
   return (
     <nav
+      data-librechat-rail
       className="workbench-rail absolute inset-0 flex h-full w-[--sidebar-rail-width] flex-col items-start border-r border-slate-950/20 bg-[var(--theme-sidebar-rail)] text-slate-200 select-none transition-opacity duration-150 ease-[steps(1,end)] opacity-100 pointer-events-auto"
       aria-label={t("sidebarView")}
     >
       {/* Expand button — default: app icon, hover: expand icon */}
       <div className="flex items-center justify-center w-full pt-3">
-        <button
+        <LibreChatRailButton
           onClick={onExpand}
           className={`${railBtn} group cursor-e-resize rtl:cursor-w-resize`}
           aria-label={t("sidebar.expandSidebar")}
@@ -100,7 +101,7 @@ export function SidebarRail({
               fill="currentColor"
             />
           </svg>
-        </button>
+        </LibreChatRailButton>
       </div>
 
       {/* Action icons — scrollable when overflowing, no scrollbar */}
@@ -108,7 +109,7 @@ export function SidebarRail({
         className="mt-3 flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col items-center w-full space-y-1"
         style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
       >
-        <button
+        <LibreChatRailButton
           type="button"
           onClick={onNewSession}
           className={railBtn}
@@ -116,8 +117,8 @@ export function SidebarRail({
           aria-label={t("sidebar.newChat")}
         >
           <MessageSquarePlus size={20} />
-        </button>
-        <button
+        </LibreChatRailButton>
+        <LibreChatRailButton
           type="button"
           onClick={onOpenSearch}
           className={railBtn}
@@ -125,128 +126,128 @@ export function SidebarRail({
           aria-label={t("sidebar.searchSessions")}
         >
           <Search size={20} />
-        </button>
-        <button
+        </LibreChatRailButton>
+        <LibreChatRailButton
           type="button"
           onClick={onOpenLaunchpad}
           className={railBtn}
           aria-current={isRailItemActive("apps") ? "page" : undefined}
-          data-active={isRailItemActive("apps") ? "true" : "false"}
-          data-workbench-rail-item="apps"
           title={t("nav.apps")}
           aria-label={t("nav.apps")}
+          itemKey="apps"
+          active={isRailItemActive("apps")}
         >
           <LayoutGrid size={20} />
-        </button>
-        <button
+        </LibreChatRailButton>
+        <LibreChatRailButton
           type="button"
           onClick={onOpenSkills}
           className={railBtn}
           aria-current={isRailItemActive("skills") ? "page" : undefined}
-          data-active={isRailItemActive("skills") ? "true" : "false"}
-          data-workbench-rail-item="skills"
           title={t("nav.skills")}
           aria-label={t("nav.skills")}
+          itemKey="skills"
+          active={isRailItemActive("skills")}
         >
           <Package size={20} />
-        </button>
-        <button
+        </LibreChatRailButton>
+        <LibreChatRailButton
           type="button"
           onClick={onOpenMarketplace}
           className={railBtn}
           aria-current={isRailItemActive("marketplace") ? "page" : undefined}
-          data-active={isRailItemActive("marketplace") ? "true" : "false"}
-          data-workbench-rail-item="marketplace"
           title={t("nav.marketplace")}
           aria-label={t("nav.marketplace")}
+          itemKey="marketplace"
+          active={isRailItemActive("marketplace")}
         >
           <ShoppingBag size={20} />
-        </button>
-        <button
+        </LibreChatRailButton>
+        <LibreChatRailButton
           type="button"
           onClick={onOpenMcp}
           className={railBtn}
           aria-current={isRailItemActive("mcp") ? "page" : undefined}
-          data-active={isRailItemActive("mcp") ? "true" : "false"}
-          data-workbench-rail-item="mcp"
           title={t("featureMenu.mcpTools")}
           aria-label={t("featureMenu.mcpTools")}
+          itemKey="mcp"
+          active={isRailItemActive("mcp")}
         >
           <Server size={20} />
-        </button>
-        <button
+        </LibreChatRailButton>
+        <LibreChatRailButton
           type="button"
           onClick={onOpenChannels}
           className={railBtn}
           aria-current={isRailItemActive("channels") ? "page" : undefined}
-          data-active={isRailItemActive("channels") ? "true" : "false"}
-          data-workbench-rail-item="channels"
           title={t("nav.channels")}
           aria-label={t("nav.channels")}
+          itemKey="channels"
+          active={isRailItemActive("channels")}
         >
           <MessageCircle size={20} />
-        </button>
-        <button
+        </LibreChatRailButton>
+        <LibreChatRailButton
           type="button"
           onClick={onOpenAgents}
           className={railBtn}
           aria-current={isRailItemActive("agents") ? "page" : undefined}
-          data-active={isRailItemActive("agents") ? "true" : "false"}
-          data-workbench-rail-item="agents"
           title={t("nav.agents")}
           aria-label={t("nav.agents")}
+          itemKey="agents"
+          active={isRailItemActive("agents")}
         >
           <Bot size={20} />
-        </button>
-        <button
+        </LibreChatRailButton>
+        <LibreChatRailButton
           type="button"
           onClick={onOpenModels}
           className={railBtn}
           aria-current={isRailItemActive("models") ? "page" : undefined}
-          data-active={isRailItemActive("models") ? "true" : "false"}
-          data-workbench-rail-item="models"
           title={t("nav.models")}
           aria-label={t("nav.models")}
+          itemKey="models"
+          active={isRailItemActive("models")}
         >
           <Cpu size={20} />
-        </button>
-        <button
+        </LibreChatRailButton>
+        <LibreChatRailButton
           type="button"
           onClick={onOpenPersona}
           className={railBtn}
           aria-current={isRailItemActive("persona") ? "page" : undefined}
-          data-active={isRailItemActive("persona") ? "true" : "false"}
-          data-workbench-rail-item="persona"
           title={t("nav.persona")}
           aria-label={t("nav.persona")}
+          itemKey="persona"
+          active={isRailItemActive("persona")}
         >
           <UserRound size={20} />
-        </button>
-        <button
+        </LibreChatRailButton>
+        <LibreChatRailButton
           type="button"
           onClick={onOpenFiles}
           className={railBtn}
           aria-current={isRailItemActive("files") ? "page" : undefined}
-          data-active={isRailItemActive("files") ? "true" : "false"}
-          data-workbench-rail-item="files"
           title={t("nav.files")}
           aria-label={t("nav.files")}
+          itemKey="files"
+          active={isRailItemActive("files")}
         >
           <FileStack size={20} />
-        </button>
-        <button
+        </LibreChatRailButton>
+        <LibreChatRailButton
           type="button"
           onClick={onOpenRoles}
           className={railBtn}
           aria-current={isRailItemActive("roles") ? "page" : undefined}
-          data-active={isRailItemActive("roles") ? "true" : "false"}
-          data-workbench-rail-item="roles"
           title={t("nav.roles")}
           aria-label={t("nav.roles")}
+          itemKey="roles"
+          active={isRailItemActive("roles")}
         >
           <ShieldCheck size={20} />
-        </button>
-        <button
+        </LibreChatRailButton>
+        <LibreChatRailButton
           type="button"
           ref={recentChatsBtnRef}
           onClick={onOpenRecentChats}
@@ -255,7 +256,7 @@ export function SidebarRail({
           aria-label={t("sidebar.recentChats")}
         >
           <Clock size={20} />
-        </button>
+        </LibreChatRailButton>
       </div>
 
       {/* Profile avatar */}
@@ -263,7 +264,7 @@ export function SidebarRail({
         className="shrink-0 py-4 border-t flex flex-col items-center w-full"
         style={{ borderColor: "rgba(255,255,255,0.1)" }}
       >
-        <button
+        <LibreChatRailButton
           onClick={onShowProfile}
           className={`${railBtn} rounded-full transition cursor-pointer`}
           aria-label={t("sidebar.expandSidebar")}
@@ -288,7 +289,7 @@ export function SidebarRail({
               </div>
             )}
           </div>
-        </button>
+        </LibreChatRailButton>
       </div>
     </nav>
   );

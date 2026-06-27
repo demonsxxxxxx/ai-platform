@@ -149,6 +149,9 @@ test("roles route is login reachable and does not load legacy role management AP
   assert.match(rolesPanel, /Permission\.ROLE_READ/);
   assert.match(rolesPanel, /Permission\.ROLE_REQUEST/);
   assert.match(rolesPanel, /Permission\.ROLE_MANAGE/);
+  assert.match(rolesPanel, /roles\.plaza\.degraded\.detail/);
+  assert.doesNotMatch(rolesPanel, /details=\{\[loadError\]/);
+  assert.doesNotMatch(rolesPanel, /setLoadError\(\s*err instanceof Error \? err\.message/);
   assert.doesNotMatch(rolesPanel, /roleApi|authApi|getPermissions\(|RoleFormModal/);
   assert.doesNotMatch(rolesPanel, /\/api\/roles/);
   assert.match(roleGovernanceApi, /\/api\/role-governance\/overview/);
@@ -253,6 +256,10 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
     join(root, "src/components/workbench/workbenchSurface.ts"),
     "utf8",
   );
+  const libreSurface = readFileSync(
+    join(root, "src/components/librechatShell/libreChatSurface.ts"),
+    "utf8",
+  );
   const chatView = readFileSync(
     join(root, "src/components/layout/AppContent/ChatView.tsx"),
     "utf8",
@@ -269,6 +276,10 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
     join(root, "src/components/workbench/WorkbenchRightPanel.tsx"),
     "utf8",
   );
+  const libreSidePanel = readFileSync(
+    join(root, "src/components/librechatShell/LibreChatSidePanel.tsx"),
+    "utf8",
+  );
   const skillsHub = readFileSync(
     join(root, "src/components/panels/SkillsHubPanel.tsx"),
     "utf8",
@@ -280,24 +291,42 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
   const theme = readFileSync(join(root, "src/styles/base.css"), "utf8");
   const authTheme = readFileSync(join(root, "src/styles/auth.css"), "utf8");
 
-  assert.match(surface, /root:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(surface, /thread:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(surface, /composer:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
-  assert.match(surface, /panel:[\s\S]*bg-\[var\(--theme-workbench-panel\)\]/);
+  assert.match(surface, /root:\s*libreChatSurface\.root/);
+  assert.match(surface, /thread:\s*libreChatSurface\.thread/);
+  assert.match(surface, /composer:\s*libreChatSurface\.composer/);
+  assert.match(surface, /context:\s*libreChatSurface\.context/);
+  assert.match(surface, /panel:\s*libreChatSurface\.panel/);
+  assert.match(surface, /secondaryPanel:\s*libreChatSurface\.panel/);
   assert.match(
-    surface,
-    /secondaryPanel:[\s\S]*bg-\[var\(--theme-workbench-panel\)\]/,
+    libreSurface,
+    /root:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/,
+  );
+  assert.match(
+    libreSurface,
+    /thread:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/,
+  );
+  assert.match(
+    libreSurface,
+    /composer:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/,
+  );
+  assert.match(
+    libreSurface,
+    /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/,
+  );
+  assert.match(
+    libreSurface,
+    /panel:[\s\S]*bg-\[var\(--theme-workbench-panel\)\]/,
   );
   assert.match(surface, /secondaryPanel:/);
-  assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
-  assert.match(theme, /--theme-bg:\s*#dfe7f1;/);
-  assert.match(theme, /--theme-bg-sidebar:\s*#e7eef6;/);
-  assert.match(theme, /--theme-workbench-panel:\s*#edf3f8;/);
-  assert.match(theme, /--theme-bg-card:\s*#f2f6fa;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#dfe7f1;/);
+  assert.match(rightPanel, /LibreChatSidePanel/);
+  assert.match(libreSidePanel, /workbenchSurface\.secondaryPanel/);
+  assert.match(theme, /--theme-bg:\s*#e5e8ed;/);
+  assert.match(theme, /--theme-bg-sidebar:\s*#edf0f4;/);
+  assert.match(theme, /--theme-workbench-panel:\s*#f3f4f6;/);
+  assert.match(theme, /--theme-bg-card:\s*#f8fafc;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#e5e8ed;/);
   assert.doesNotMatch(theme, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(surface, /bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(libreSurface, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(chatView, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(authTheme, /html,\s*body\s*\{\s*background:\s*var\(--theme-bg\);/);
   assert.doesNotMatch(authTheme, /html,\s*body\s*\{\s*background:\s*#ffffff;/);
@@ -364,8 +393,8 @@ test("authenticated workbench adopts one dark-rail enterprise shell", () => {
   assert.match(theme, /--theme-sidebar-rail:\s*#111827;/);
   assert.match(theme, /--theme-sidebar-panel:\s*#111827;/);
   assert.match(theme, /--theme-sidebar-panel-muted:\s*#1f2937;/);
-  assert.match(theme, /--theme-bg:\s*#dfe7f1;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#dfe7f1;/);
+  assert.match(theme, /--theme-bg:\s*#e5e8ed;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#e5e8ed;/);
   assert.match(sidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /data-workbench-sidebar-panel/);
