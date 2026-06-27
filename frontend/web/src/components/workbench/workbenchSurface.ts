@@ -1,34 +1,19 @@
 import { clsx } from "clsx";
+import { libreChatSurface } from "../librechatShell/libreChatSurface";
 
 export const workbenchSurface = {
-  root: clsx(
-    "flex min-h-0 flex-1 bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]",
-  ),
+  root: libreChatSurface.root,
   page:
     "flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]",
   statePage:
     "flex h-full min-h-0 items-center justify-center bg-[var(--theme-workbench-canvas)] px-4 text-[var(--theme-text)]",
-  workspace: clsx(
-    "grid min-h-0 w-full flex-1 grid-cols-1",
-    "xl:grid-cols-[minmax(0,1fr)_20rem]",
-  ),
-  thread: clsx(
-    "workbench-thread-frame flex min-w-0 flex-1 flex-col",
-    "border-r border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)]",
-  ),
-  threadBody: "flex min-h-0 flex-1 flex-col px-3 pb-2 sm:px-4",
-  composer: clsx(
-    "shrink-0 border-t border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] px-3 py-2.5",
-  ),
-  context: clsx(
-    "hidden min-h-0 w-80 shrink-0 flex-col border-l border-[var(--theme-border)] bg-[var(--theme-workbench-canvas)] xl:flex",
-  ),
-  panel: clsx(
-    "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
-  ),
-  secondaryPanel: clsx(
-    "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_1px_2px_rgba(18,38,63,0.04)]",
-  ),
+  workspace: libreChatSurface.workspace,
+  thread: libreChatSurface.thread,
+  threadBody: libreChatSurface.threadBody,
+  composer: libreChatSurface.composer,
+  context: libreChatSurface.context,
+  panel: libreChatSurface.panel,
+  secondaryPanel: libreChatSurface.panel,
   sectionPanel:
     "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-3 shadow-[0_4px_12px_rgba(18,38,63,0.03)]",
   compactPanel: clsx(
@@ -38,9 +23,7 @@ export const workbenchSurface = {
     "rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4",
     "shadow-[0_1px_2px_rgba(18,38,63,0.03)]",
   ),
-  commandSurface: clsx(
-    "rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_18px_40px_rgba(15,23,42,0.12)]",
-  ),
+  commandSurface: libreChatSurface.commandSurface,
   unavailable: clsx(
     "rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] p-4 text-sm leading-6 text-[var(--theme-text-secondary)]",
   ),
