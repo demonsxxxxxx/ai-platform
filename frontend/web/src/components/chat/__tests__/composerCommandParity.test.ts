@@ -461,6 +461,47 @@ test("composer user-facing copy avoids backend implementation jargon", () => {
   }
 });
 
+test("composer workflow exposes stable browser smoke selectors for PRD evidence", () => {
+  const chatInput = readFileSync(
+    join(root, "src/components/chat/ChatInput.tsx"),
+    "utf8",
+  );
+  const chips = readFileSync(
+    join(root, "src/components/chat/ComposerChips.tsx"),
+    "utf8",
+  );
+  const slashMenu = readFileSync(
+    join(root, "src/components/chat/SlashCommandMenu.tsx"),
+    "utf8",
+  );
+  const skillSelector = readFileSync(
+    join(root, "src/components/selectors/SkillSelector.tsx"),
+    "utf8",
+  );
+  const toolSelector = readFileSync(
+    join(root, "src/components/selectors/ToolSelector.tsx"),
+    "utf8",
+  );
+  const attachmentList = readFileSync(
+    join(root, "src/components/chat/ChatInputAttachments.tsx"),
+    "utf8",
+  );
+
+  assert.match(slashMenu, /data-composer-command-menu/);
+  assert.match(slashMenu, /data-composer-command-item=\{item\.command\}/);
+  assert.match(skillSelector, /data-composer-skill-selector/);
+  assert.match(skillSelector, /data-composer-skill-row=\{skill\.name\}/);
+  assert.match(toolSelector, /data-composer-mcp-selector/);
+  assert.match(toolSelector, /data-composer-mcp-row=\{tool\.name\}/);
+  assert.match(chips, /data-composer-chip-kind=\{selection\.kind\}/);
+  assert.match(chips, /data-composer-chip-state=\{selection\.state\}/);
+  assert.match(chips, /data-composer-chip-reference=\{selection\.referenceId/);
+  assert.match(attachmentList, /data-composer-file-reference/);
+  assert.match(attachmentList, /data-composer-file-state/);
+  assert.match(chatInput, /data-composer-command-menu-anchor/);
+  assert.match(chatInput, /data-librechat-composer-region="chips"/);
+});
+
 test("all supported placeholders are slash and dollar skills first", () => {
   for (const locale of ["en", "zh", "ja", "ko", "ru"]) {
     const source = readFileSync(

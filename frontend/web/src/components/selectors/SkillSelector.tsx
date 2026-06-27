@@ -183,6 +183,7 @@ export function SkillSelector({
     <div
       ref={swipeRef as React.RefObject<HTMLDivElement>}
       className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
+      data-composer-skill-selector
       style={{ background: "var(--theme-bg-card)" }}
       onClick={(e) => e.stopPropagation()}
     >
@@ -406,6 +407,10 @@ export function SkillSelector({
                           <button
                             type="button"
                             disabled={personaControlled || isMutating}
+                            data-composer-skill-row={skill.name}
+                            data-composer-skill-state={
+                              skill.enabled ? "enabled" : "disabled"
+                            }
                             className={`flex w-full items-center gap-1.5 sm:gap-2 px-2 sm:px-2.5 py-2 sm:py-2 rounded-lg transition-all duration-200 disabled:cursor-not-allowed ${
                               skill.enabled
                                 ? "hover:bg-[var(--theme-bg-sidebar)] active:bg-[var(--theme-bg-sidebar)]"
