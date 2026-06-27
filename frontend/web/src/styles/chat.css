@@ -6,6 +6,14 @@
   display: none;
 }
 
+.librechat-composer-shell {
+  background: var(--theme-workbench-canvas);
+}
+
+.librechat-composer-shell .chat-input-container {
+  background: var(--theme-bg-card);
+}
+
 .chat-input-container {
   border-radius: 8px;
   min-height: 44px;

@@ -1046,7 +1046,8 @@ export const ChatInput = memo(function ChatInput({
 
   return (
     <div
-      className="chat-input-shell sm:px-4 pb-3"
+      className="chat-input-shell librechat-composer-shell sm:px-4 pb-3"
+      data-librechat-composer="phase1"
       style={{ backgroundColor: "var(--theme-workbench-canvas)" }}
     >
       <form
@@ -1110,20 +1111,25 @@ export const ChatInput = memo(function ChatInput({
               onImageViewerOpen={(url) => setImageViewerSrc(url)}
             />
 
-            <ComposerChips
-              selections={composerSelections}
-              onRemove={handleRemoveComposerSelection}
-            />
+            <div data-librechat-composer-region="chips">
+              <ComposerChips
+                selections={composerSelections}
+                onRemove={handleRemoveComposerSelection}
+              />
 
-            <ComposerCommandHintBar
-              onCommand={handleComposerCommandShortcut}
-              skillsAvailable={commandPanelAvailability.skills}
-              mcpAvailable={commandPanelAvailability.tools}
-              filesAvailable={commandPanelAvailability.files}
-              contextAvailable={commandPanelAvailability.context}
-            />
+              <ComposerCommandHintBar
+                onCommand={handleComposerCommandShortcut}
+                skillsAvailable={commandPanelAvailability.skills}
+                mcpAvailable={commandPanelAvailability.tools}
+                filesAvailable={commandPanelAvailability.files}
+                contextAvailable={commandPanelAvailability.context}
+              />
+            </div>
 
-            <div className="px-2.5 pt-1">
+            <div
+              className="px-2.5 pt-1"
+              data-librechat-composer-region="textarea"
+            >
               <div className="relative">
                 <textarea
                   ref={textareaRef}
@@ -1153,42 +1159,44 @@ export const ChatInput = memo(function ChatInput({
               </div>
             </div>
 
-            <ChatInputToolbar
-              activePanel={activePanel}
-              onActivePanelChange={handlePanelChange}
-              canSend={canSend}
-              isLoading={isLoading}
-              canSubmit={canSubmit}
-              hasUploadingAttachment={hasUploadingAttachment}
-              enabledToolsCount={enabledToolsCount}
-              totalToolsCount={totalToolsCount}
-              enabledSkillsCount={enabledSkillsCount}
-              totalSkillsCount={totalSkillsCount}
-              hasPersonaSelector={!!onUsePersonaPreset}
-              personaName={selectedPersonaName}
-              hasAgentSelector={agents.length > 1 && !!onSelectAgent}
-              agentName={agents.find((a) => a.id === currentAgent)?.name}
-              hasThinkingOption={
-                !!(
-                  agentOptions &&
-                  onToggleAgentOption &&
-                  Object.keys(agentOptions).length > 0
-                )
-              }
-              thinkingLabel={thinkingLabel}
-              thinkingLevel={thinkingLevel}
-              uploadCategories={uploadCategories}
-              uploadLimits={uploadLimits}
-              uploadFiles={uploadFiles}
-              onFileCommandReady={(openFileCommand) => {
-                openFileCommandRef.current = openFileCommand;
-              }}
-              selectedPersonaName={selectedPersonaName}
-              personaAvatar={personaAvatar}
-              onClearPersonaPreset={onClearPersonaPreset}
-              onStopClick={() => setStopConfirmOpen(true)}
-              onNoPermissionClick={() => setContactAdminOpen(true)}
-            />
+            <div data-librechat-composer-region="toolbar">
+              <ChatInputToolbar
+                activePanel={activePanel}
+                onActivePanelChange={handlePanelChange}
+                canSend={canSend}
+                isLoading={isLoading}
+                canSubmit={canSubmit}
+                hasUploadingAttachment={hasUploadingAttachment}
+                enabledToolsCount={enabledToolsCount}
+                totalToolsCount={totalToolsCount}
+                enabledSkillsCount={enabledSkillsCount}
+                totalSkillsCount={totalSkillsCount}
+                hasPersonaSelector={!!onUsePersonaPreset}
+                personaName={selectedPersonaName}
+                hasAgentSelector={agents.length > 1 && !!onSelectAgent}
+                agentName={agents.find((a) => a.id === currentAgent)?.name}
+                hasThinkingOption={
+                  !!(
+                    agentOptions &&
+                    onToggleAgentOption &&
+                    Object.keys(agentOptions).length > 0
+                  )
+                }
+                thinkingLabel={thinkingLabel}
+                thinkingLevel={thinkingLevel}
+                uploadCategories={uploadCategories}
+                uploadLimits={uploadLimits}
+                uploadFiles={uploadFiles}
+                onFileCommandReady={(openFileCommand) => {
+                  openFileCommandRef.current = openFileCommand;
+                }}
+                selectedPersonaName={selectedPersonaName}
+                personaAvatar={personaAvatar}
+                onClearPersonaPreset={onClearPersonaPreset}
+                onStopClick={() => setStopConfirmOpen(true)}
+                onNoPermissionClick={() => setContactAdminOpen(true)}
+              />
+            </div>
           </div>
         </div>
       </form>

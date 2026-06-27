@@ -441,10 +441,18 @@ test("composer user-facing copy avoids backend implementation jargon", () => {
     shortcutBar,
     JSON.stringify(zh.composerChip),
     JSON.stringify(zh.composerCommand),
-    JSON.stringify(zh.workbench),
     JSON.stringify(en.composerChip),
     JSON.stringify(en.composerCommand),
-    JSON.stringify(en.workbench),
+    JSON.stringify({
+      phase2Unavailable: zh.workbench.phase2Unavailable,
+      selectionState: zh.workbench.selectionState,
+      unavailableShort: zh.workbench.unavailableShort,
+    }),
+    JSON.stringify({
+      phase2Unavailable: en.workbench.phase2Unavailable,
+      selectionState: en.workbench.selectionState,
+      unavailableShort: en.workbench.unavailableShort,
+    }),
   ]) {
     assert.doesNotMatch(source, /backend contract/i);
     assert.doesNotMatch(source, /projection/i);

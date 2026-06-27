@@ -59,3 +59,26 @@ test("sidebar transplants LibreChat rail geometry and mobile close behavior", ()
   assert.match(rail, /data-librechat-rail/);
   assert.match(surface, /expandedMinWidthPx:\s*360/);
 });
+
+test("composer and right panel expose LibreChat-style regions without backend authority imports", () => {
+  const sidePanel = read("src/components/librechatShell/LibreChatSidePanel.tsx");
+  const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
+  const chatInput = read("src/components/chat/ChatInput.tsx");
+  const chatCss = read("src/styles/chat.css");
+
+  assert.match(sidePanel, /data-librechat-side-panel/);
+  assert.match(sidePanel, /data-librechat-side-tab="context"/);
+  assert.match(sidePanel, /data-librechat-side-tab="artifacts"/);
+  assert.match(sidePanel, /data-librechat-side-tab="run"/);
+  assert.match(sidePanel, /data-librechat-side-tab="permissions"/);
+  assert.match(rightPanel, /LibreChatSidePanel/);
+  assert.match(chatInput, /data-librechat-composer="phase1"/);
+  assert.match(chatInput, /data-librechat-composer-region="chips"/);
+  assert.match(chatInput, /data-librechat-composer-region="textarea"/);
+  assert.match(chatInput, /data-librechat-composer-region="toolbar"/);
+  assert.match(chatCss, /\.librechat-composer-shell/);
+  assert.doesNotMatch(
+    sidePanel + rightPanel + chatInput,
+    /librechat-data-provider|useRecoilState|~\/Providers|~\/store/,
+  );
+});
