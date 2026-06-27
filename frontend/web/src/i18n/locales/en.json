@@ -1917,6 +1917,7 @@
       },
       "degraded": {
         "description": "The role governance entry remains visible, but current data did not fully return; writes and approvals stay locked.",
+        "detail": "Role directory, approval, and audit projections are not fully available. Refresh later or ask an administrator to verify the backend role-governance contract.",
         "title": "Role governance is degraded"
       },
       "forbidden": {

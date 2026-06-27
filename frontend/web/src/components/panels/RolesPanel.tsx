@@ -33,6 +33,10 @@ type OperationState = {
   id: string;
 } | null;
 
+function getRoleGovernanceLoadErrorMessage(): string {
+  return "role-governance-projection-unavailable";
+}
+
 function formatCapability(value: string): string {
   return value.replace(/[:_]/g, " ");
 }
@@ -206,10 +210,9 @@ export function RolesPanel() {
       const response = await roleGovernanceApi.getOverview("default");
       setOverview(response);
     } catch (err) {
+      console.warn("[RolesPanel] Failed to load role governance overview:", err);
       setOverview(null);
-      setLoadError(
-        err instanceof Error ? err.message : t("roles.plaza.loadFailed"),
-      );
+      setLoadError(getRoleGovernanceLoadErrorMessage());
     } finally {
       setIsLoading(false);
     }
@@ -358,7 +361,9 @@ export function RolesPanel() {
                 })
               : t("workbench.states.logged-out.description")
           }
-          details={[loadError].filter((item): item is string => Boolean(item))}
+          details={
+            loadError ? [t("roles.plaza.degraded.detail")] : undefined
+          }
         />
       </div>
     );
@@ -408,7 +413,9 @@ export function RolesPanel() {
               surface="roles-governance"
               title={t("roles.plaza.degraded.title")}
               description={t("roles.plaza.degraded.description")}
-              details={[loadError].filter((item): item is string => Boolean(item))}
+              details={
+                loadError ? [t("roles.plaza.degraded.detail")] : undefined
+              }
               className="max-w-none text-left"
             />
           ) : null}

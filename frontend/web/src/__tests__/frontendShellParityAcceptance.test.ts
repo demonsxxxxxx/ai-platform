@@ -149,6 +149,9 @@ test("roles route is login reachable and does not load legacy role management AP
   assert.match(rolesPanel, /Permission\.ROLE_READ/);
   assert.match(rolesPanel, /Permission\.ROLE_REQUEST/);
   assert.match(rolesPanel, /Permission\.ROLE_MANAGE/);
+  assert.match(rolesPanel, /roles\.plaza\.degraded\.detail/);
+  assert.doesNotMatch(rolesPanel, /details=\{\[loadError\]/);
+  assert.doesNotMatch(rolesPanel, /setLoadError\(\s*err instanceof Error \? err\.message/);
   assert.doesNotMatch(rolesPanel, /roleApi|authApi|getPermissions\(|RoleFormModal/);
   assert.doesNotMatch(rolesPanel, /\/api\/roles/);
   assert.match(roleGovernanceApi, /\/api\/role-governance\/overview/);
