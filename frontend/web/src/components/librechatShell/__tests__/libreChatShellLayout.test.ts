@@ -32,3 +32,30 @@ test("surface tokens expose one neutral chat canvas", () => {
   assert.match(baseCss, /--theme-bg-card:\s*#f8fafc;/);
   assert.doesNotMatch(baseCss, /--theme-bg-card:\s*#ffffff;/);
 });
+
+test("sidebar transplants LibreChat rail geometry and mobile close behavior", () => {
+  const sessionSidebar = read("src/components/panels/SessionSidebar.tsx");
+  const list = read(
+    "src/components/panels/SidebarParts/SessionListContent.tsx",
+  );
+  const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
+  const surface = read("src/components/librechatShell/libreChatSurface.ts");
+
+  assert.match(sessionSidebar, /LIBRECHAT_SHELL_GEOMETRY/);
+  assert.match(
+    sessionSidebar,
+    /--sidebar-rail-width":\s*`\$\{LIBRECHAT_SHELL_GEOMETRY\.railWidthPx\}px`/,
+  );
+  assert.match(
+    sessionSidebar,
+    /--sidebar-width":\s*`\$\{LIBRECHAT_SHELL_GEOMETRY\.expandedMinWidthPx\}px`/,
+  );
+  assert.match(sessionSidebar, /keydown/);
+  assert.match(sessionSidebar, /Escape/);
+  assert.match(sessionSidebar, /data-librechat-mobile-sidebar/);
+  assert.match(list, /LibreChatPanelSection/);
+  assert.match(list, /data-librechat-expanded-panel/);
+  assert.match(rail, /LibreChatRailButton/);
+  assert.match(rail, /data-librechat-rail/);
+  assert.match(surface, /expandedMinWidthPx:\s*360/);
+});
