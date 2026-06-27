@@ -273,6 +273,10 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
     join(root, "src/components/workbench/WorkbenchRightPanel.tsx"),
     "utf8",
   );
+  const libreSidePanel = readFileSync(
+    join(root, "src/components/librechatShell/LibreChatSidePanel.tsx"),
+    "utf8",
+  );
   const skillsHub = readFileSync(
     join(root, "src/components/panels/SkillsHubPanel.tsx"),
     "utf8",
@@ -311,7 +315,8 @@ test("authenticated chat workspace keeps one enterprise surface instead of split
     /panel:[\s\S]*bg-\[var\(--theme-workbench-panel\)\]/,
   );
   assert.match(surface, /secondaryPanel:/);
-  assert.match(rightPanel, /workbenchSurface\.secondaryPanel/);
+  assert.match(rightPanel, /LibreChatSidePanel/);
+  assert.match(libreSidePanel, /workbenchSurface\.secondaryPanel/);
   assert.match(theme, /--theme-bg:\s*#e5e8ed;/);
   assert.match(theme, /--theme-bg-sidebar:\s*#edf0f4;/);
   assert.match(theme, /--theme-workbench-panel:\s*#f3f4f6;/);
