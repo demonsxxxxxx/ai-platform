@@ -1237,7 +1237,7 @@ test("mcp workbench route exposes the same frontend governance state machine as 
 
   assert.match(mcpPanel, /resolveMcpGovernanceState/);
   assert.match(mcpPanel, /data-mcp-directory-shell/);
-  assert.match(mcpPanel, /data-frontend-governance-state=\{mcpGovernance\.pageState\}/);
+  assert.match(mcpPanel, /buildFrontendGovernanceSmokeAttributes\(mcpGovernance\.pageState\)/);
   assert.match(mcpPanel, /data-required-permission=\{mcpGovernance\.requiredPermission\}/);
   assert.match(mcpPanel, /data-auth-projection-has-permission/);
   assert.match(mcpPanel, /WorkbenchStateSurface/);

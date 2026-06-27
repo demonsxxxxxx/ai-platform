@@ -357,6 +357,7 @@ test("governed workbench states expose a shared browser smoke selector", () => {
   const governedRoute = read("src/components/workbench/GovernedRouteWorkbench.tsx");
   const skillsHub = read("src/components/panels/SkillsHubPanel.tsx");
   const rolePlaza = read("src/components/panels/RolesPanel.tsx");
+  const mcpPanel = read("src/components/panels/MCPPanel.tsx");
   const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
 
   assert.match(stateResolver, /FRONTEND_GOVERNANCE_SMOKE_STATES/);
@@ -368,6 +369,7 @@ test("governed workbench states expose a shared browser smoke selector", () => {
     ["GovernedRouteWorkbench", governedRoute],
     ["SkillsHubPanel", skillsHub],
     ["RolesPanel", rolePlaza],
+    ["MCPPanel", mcpPanel],
     ["WorkbenchProjectionPages", projectionPages],
   ])) {
     assert.match(source, /buildFrontendGovernanceSmokeAttributes/, name);

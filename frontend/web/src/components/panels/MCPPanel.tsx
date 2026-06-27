@@ -13,7 +13,10 @@ import { PanelHeader } from "../common/PanelHeader";
 import { MCPPanelSkeleton } from "../skeletons";
 import { Pagination } from "../common/Pagination";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
-import { isPermissionError } from "../governance/frontendGovernanceState";
+import {
+  buildFrontendGovernanceSmokeAttributes,
+  isPermissionError,
+} from "../governance/frontendGovernanceState";
 import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
@@ -111,7 +114,7 @@ export function MCPPanel() {
       <div
         data-phase1c-surface="mcp"
         data-mcp-directory-shell
-        data-frontend-governance-state={mcpGovernance.pageState}
+        {...buildFrontendGovernanceSmokeAttributes(mcpGovernance.pageState)}
         data-required-permission={mcpGovernance.requiredPermission}
         data-auth-projection-has-permission={
           mcpGovernance.authProjectionHasPermission
@@ -132,7 +135,7 @@ export function MCPPanel() {
       <div
         data-phase1c-surface="mcp"
         data-mcp-directory-shell
-        data-frontend-governance-state={mcpGovernance.pageState}
+        {...buildFrontendGovernanceSmokeAttributes(mcpGovernance.pageState)}
         data-required-permission={mcpGovernance.requiredPermission}
         data-auth-projection-has-permission={
           mcpGovernance.authProjectionHasPermission
@@ -176,7 +179,7 @@ export function MCPPanel() {
     <div
       data-phase1c-surface="mcp"
       data-mcp-directory-shell
-      data-frontend-governance-state={mcpGovernance.pageState}
+      {...buildFrontendGovernanceSmokeAttributes(mcpGovernance.pageState)}
       data-required-permission={mcpGovernance.requiredPermission}
       data-auth-projection-has-permission={
         mcpGovernance.authProjectionHasPermission
