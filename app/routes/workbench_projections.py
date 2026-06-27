@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
 from app import repositories
@@ -64,6 +64,15 @@ def _effective_permission_set(principal: AuthPrincipal) -> set[str]:
 def _require_permission(principal: AuthPrincipal, permission: str) -> None:
     if permission not in _effective_permission_set(principal):
         raise HTTPException(status_code=403, detail=f"missing_permission:{permission}")
+
+
+async def _optional_principal(request: Request) -> AuthPrincipal | None:
+    try:
+        return await require_principal(request)
+    except HTTPException as exc:
+        if exc.status_code == 401 and exc.detail == "missing_authenticated_principal":
+            return None
+        raise
 
 
 def _request_model(model_type: type[BaseModel], payload: Any) -> BaseModel:
@@ -237,10 +246,13 @@ async def delete_user(user_id: str, principal: AuthPrincipal = Depends(require_p
     return await _record_operation(principal=principal, target_type="user", target_id=user_id, operation="delete")
 
 
-@router.get("/settings/", response_model=WorkbenchSettingsResponse)
-async def list_settings(principal: AuthPrincipal = Depends(require_principal)) -> WorkbenchSettingsResponse:
+@router.get("/settings/", response_model=None)
+async def list_settings(request: Request) -> WorkbenchSettingsResponse | dict[str, object]:
     """Return personal preferences and masked system/runtime settings."""
 
+    principal = await _optional_principal(request)
+    if principal is None:
+        return {"settings": {}}
     _require_permission(principal, "settings:read")
     personal = WorkbenchSettingGroupResponse(
         category="personal_preferences",
@@ -448,12 +460,15 @@ def _notification(*, include_admin: bool = False, read_state: str | None = "unre
     )
 
 
-@router.get("/notifications/active", response_model=list[WorkbenchNotificationResponse], response_model_exclude_none=True)
-async def active_notifications(principal: AuthPrincipal = Depends(require_principal)) -> list[WorkbenchNotificationResponse]:
+@router.get("/notifications/active", response_model=None)
+async def active_notifications(request: Request) -> list[WorkbenchNotificationResponse] | dict[str, object]:
     """Return active notifications with per-user read state only."""
 
+    principal = await _optional_principal(request)
+    if principal is None:
+        return {"notifications": []}
     _require_permission(principal, "notification:read")
-    return [_notification(include_admin=False, read_state="unread")]
+    return [_notification(include_admin=False, read_state="unread").model_dump(exclude_none=True)]
 
 
 @router.post("/notifications/{notification_id}/dismiss", response_model=WorkbenchOperationResponse)

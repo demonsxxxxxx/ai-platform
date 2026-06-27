@@ -240,6 +240,28 @@ def test_lambchat_bootstrap_endpoints_match_frontend_contract():
                 assert payload[key] == value, path
 
 
+def test_lambchat_bootstrap_routes_do_not_shadow_authenticated_workbench_projections(monkeypatch):
+    from tests.test_workbench_projection_routes import install_workbench_route_fakes
+    from tests.test_workbench_projection_routes import user_headers
+
+    install_workbench_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    anonymous_settings = client.get("/api/settings/")
+    authenticated_settings = client.get("/api/settings/", headers=user_headers())
+    anonymous_notifications = client.get("/api/notifications/active")
+    authenticated_notifications = client.get("/api/notifications/active", headers=user_headers())
+
+    assert anonymous_settings.status_code == 200
+    assert anonymous_settings.json() == {"settings": {}}
+    assert authenticated_settings.status_code == 200
+    assert set(authenticated_settings.json()["settings"]) == {"personal_preferences", "system_runtime"}
+    assert anonymous_notifications.status_code == 200
+    assert anonymous_notifications.json() == {"notifications": []}
+    assert authenticated_notifications.status_code == 200
+    assert authenticated_notifications.json()[0]["id"] == "platform-announcement"
+
+
 def test_lambchat_model_catalog_comes_from_settings(monkeypatch):
     current_settings = type(
         "S",
