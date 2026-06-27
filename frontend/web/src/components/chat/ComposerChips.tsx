@@ -48,6 +48,9 @@ export function ComposerChips({
                 ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
                 : "border-stone-200 bg-stone-50 text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200"
             }`}
+            data-composer-chip-kind={selection.kind}
+            data-composer-chip-reference={selection.referenceId ?? selection.id}
+            data-composer-chip-state={selection.state}
             data-state={selection.state}
             title={selection.description ?? `${selection.kind}: ${selection.label}`}
           >

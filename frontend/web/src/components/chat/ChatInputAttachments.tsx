@@ -23,7 +23,10 @@ export function ChatInputAttachments({
   if (attachments.length === 0) return null;
 
   return (
-    <div className="mx-3 mt-2.5 -mb-1 flex gap-3 overflow-x-auto attachment-scroll pb-1">
+    <div
+      className="mx-3 mt-2.5 -mb-1 flex gap-3 overflow-x-auto attachment-scroll pb-1"
+      data-composer-file-reference-list
+    >
       {attachments.map((attachment) => {
         const handleRemove = () => {
           onAttachmentsChange((prev) =>
@@ -35,26 +38,34 @@ export function ChatInputAttachments({
         };
 
         return (
-          <AttachmentCard
+          <div
             key={attachment.id}
-            attachment={attachment}
-            variant="editable"
-            size="compact"
-            isUploading={attachment.isUploading}
-            onClick={(previewSrc) => {
-              if (previewSrc) {
-                onImageViewerOpen(previewSrc);
-              } else {
-                openAttachmentPreview(attachment, "chat-input");
-              }
-            }}
-            onRemove={handleRemove}
-            onCancel={
-              attachment.isUploading
-                ? () => onCancelUpload(attachment.id)
-                : undefined
+            data-composer-file-reference={attachment.id}
+            data-composer-file-state={
+              attachment.isUploading ? "uploading" : "ready"
             }
-          />
+            data-composer-file-type={attachment.type}
+          >
+            <AttachmentCard
+              attachment={attachment}
+              variant="editable"
+              size="compact"
+              isUploading={attachment.isUploading}
+              onClick={(previewSrc) => {
+                if (previewSrc) {
+                  onImageViewerOpen(previewSrc);
+                } else {
+                  openAttachmentPreview(attachment, "chat-input");
+                }
+              }}
+              onRemove={handleRemove}
+              onCancel={
+                attachment.isUploading
+                  ? () => onCancelUpload(attachment.id)
+                  : undefined
+              }
+            />
+          </div>
         );
       })}
     </div>

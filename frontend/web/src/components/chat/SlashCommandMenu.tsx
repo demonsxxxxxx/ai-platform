@@ -65,6 +65,7 @@ export function SlashCommandMenu({
               onMouseEnter={() => onHighlight(index)}
               onClick={() => onSelect(item)}
               className="flex min-h-12 w-full items-center gap-3 rounded-md px-2.5 py-2 text-left text-sm transition-colors hover:bg-[var(--theme-bg-sidebar)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--theme-ring)]"
+              data-composer-command-item={item.command}
               data-active={active ? "" : undefined}
             >
               <span
