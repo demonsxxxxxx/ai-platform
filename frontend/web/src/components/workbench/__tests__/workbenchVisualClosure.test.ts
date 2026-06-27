@@ -70,7 +70,7 @@ test("post-login routes do not fall back to public landing or split backgrounds"
   assert.match(sidebar, /onClick=\{onNewSession\}/);
 });
 
-test("expanded sidebar uses one dark enterprise navigation system", () => {
+test("expanded sidebar uses the LibreChat light navigation system", () => {
   const sessionSidebar = read("src/components/panels/SessionSidebar.tsx");
   const sessionList = read(
     "src/components/panels/SidebarParts/SessionListContent.tsx",
@@ -89,9 +89,10 @@ test("expanded sidebar uses one dark enterprise navigation system", () => {
   assert.match(sessionList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sessionSidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(rail, /bg-\[var\(--theme-sidebar-rail\)\]/);
-  assert.match(baseCss, /--theme-sidebar-panel:\s*#111827/);
-  assert.match(baseCss, /--theme-sidebar-rail:\s*#111827/);
-  assert.doesNotMatch(sessionList, /bg-\[var\(--theme-bg-card\)\]/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#f4f4f5/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#f4f4f5/);
+  assert.doesNotMatch(sessionList, /text-slate-100|text-white|border-slate-800/);
+  assert.doesNotMatch(rail, /text-slate-200|text-white|rgba\(255,255,255,0\.1\)/);
 });
 
 test("post-login shell removes legacy LambChat runtime identifiers", () => {
@@ -119,20 +120,18 @@ test("post-login workbench defaults to expanded application navigation", () => {
   assert.match(sessionSidebar, /useState\(false\)/);
 });
 
-test("light workbench tokens avoid returning to a white chat canvas", () => {
+test("light workbench tokens match the LibreChat white chat canvas", () => {
   const baseCss = read("src/styles/base.css");
   const surface = read("src/components/librechatShell/libreChatSurface.ts");
   const welcome = read("src/components/chat/WelcomePage.tsx");
 
-  assert.match(baseCss, /--theme-bg:\s*#e5e8ed;/);
-  assert.match(baseCss, /--theme-workbench-canvas:\s*#e5e8ed;/);
-  assert.match(baseCss, /--theme-workbench-panel:\s*#f3f4f6;/);
-  assert.match(baseCss, /--theme-bg-card:\s*#f8fafc;/);
-  assert.match(baseCss, /--theme-bg-sidebar:\s*#edf0f4;/);
-  assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#f(?:3f5f8|fffff);/);
-  assert.doesNotMatch(baseCss, /--theme-workbench-panel:\s*#ffffff;/);
-  assert.doesNotMatch(baseCss, /--theme-bg-card:\s*#ffffff;/);
-  assert.doesNotMatch(baseCss, /--theme-bg-sidebar:\s*#ffffff;/);
+  assert.match(baseCss, /--theme-bg:\s*#ffffff;/);
+  assert.match(baseCss, /--theme-workbench-canvas:\s*#ffffff;/);
+  assert.match(baseCss, /--theme-workbench-panel:\s*#ffffff;/);
+  assert.match(baseCss, /--theme-bg-card:\s*#ffffff;/);
+  assert.match(baseCss, /--theme-bg-sidebar:\s*#f4f4f5;/);
+  assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#e5e8ed;/);
+  assert.doesNotMatch(baseCss, /--theme-workbench-panel:\s*#f3f4f6;/);
   assert.match(surface, /root:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /thread:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(welcome, /data-chat-start-surface/);

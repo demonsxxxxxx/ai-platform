@@ -20,7 +20,7 @@ export const LibreChatRailButton = forwardRef<
       ref={ref}
       data-active={active ? "true" : "false"}
       data-workbench-rail-item={itemKey}
-      className={`sidebar-rail-btn workbench-rail-btn flex h-11 w-11 items-center justify-center rounded-lg text-slate-200 transition-colors mx-1 touch-manipulation ${className}`}
+      className={`sidebar-rail-btn workbench-rail-btn mx-1 flex h-11 w-11 touch-manipulation items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors ${className}`}
     >
       {children}
     </button>

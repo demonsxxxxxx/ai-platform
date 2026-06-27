@@ -75,7 +75,7 @@ export function SidebarRail({
   return (
     <nav
       data-librechat-rail
-      className="workbench-rail absolute inset-0 flex h-full w-[--sidebar-rail-width] flex-col items-start border-r border-slate-950/20 bg-[var(--theme-sidebar-rail)] text-slate-200 select-none transition-opacity duration-150 ease-[steps(1,end)] opacity-100 pointer-events-auto"
+      className="workbench-rail pointer-events-auto absolute inset-0 flex h-full w-[--sidebar-rail-width] select-none flex-col items-start border-r border-[var(--theme-border)] bg-[var(--theme-sidebar-rail)] text-[var(--theme-text-secondary)] opacity-100 transition-opacity duration-150 ease-[steps(1,end)]"
       aria-label={t("sidebarView")}
     >
       {/* Expand button — default: app icon, hover: expand icon */}
@@ -85,7 +85,7 @@ export function SidebarRail({
           className={`${railBtn} group cursor-e-resize rtl:cursor-w-resize`}
           aria-label={t("sidebar.expandSidebar")}
         >
-          <span className="flex size-8 items-center justify-center rounded-lg bg-slate-100/10 text-white shadow-sm ring-1 ring-slate-100/10 group-hover:hidden">
+          <span className="flex size-8 items-center justify-center rounded-lg bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm ring-1 ring-[var(--theme-border)] group-hover:hidden">
             <Bot size={17} strokeWidth={2.2} aria-hidden="true" />
           </span>
           <svg
@@ -262,7 +262,7 @@ export function SidebarRail({
       {/* Profile avatar */}
       <div
         className="shrink-0 py-4 border-t flex flex-col items-center w-full"
-        style={{ borderColor: "rgba(255,255,255,0.1)" }}
+        style={{ borderColor: "var(--theme-border)" }}
       >
         <LibreChatRailButton
           onClick={onShowProfile}
@@ -282,8 +282,8 @@ export function SidebarRail({
                 draggable={false}
               />
             ) : (
-              <div className="flex w-full h-full items-center justify-center rounded-full bg-teal-700">
-                <span className="text-xs font-semibold text-white">
+              <div className="flex h-full w-full items-center justify-center rounded-full bg-[var(--theme-primary)]">
+                <span className="text-xs font-semibold text-[var(--theme-primary-foreground)]">
                   {user?.username?.charAt(0).toUpperCase() || "U"}
                 </span>
               </div>

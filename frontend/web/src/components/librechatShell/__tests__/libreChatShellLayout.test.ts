@@ -27,10 +27,11 @@ test("surface tokens expose one neutral chat canvas", () => {
   const baseCss = read("src/styles/base.css");
 
   assert.match(surface, /libreChatSurface/);
-  assert.match(baseCss, /--theme-workbench-canvas:\s*#e5e8ed;/);
-  assert.match(baseCss, /--theme-workbench-panel:\s*#f3f4f6;/);
-  assert.match(baseCss, /--theme-bg-card:\s*#f8fafc;/);
-  assert.doesNotMatch(baseCss, /--theme-bg-card:\s*#ffffff;/);
+  assert.match(baseCss, /--theme-workbench-canvas:\s*#ffffff;/);
+  assert.match(baseCss, /--theme-workbench-panel:\s*#ffffff;/);
+  assert.match(baseCss, /--theme-bg-card:\s*#ffffff;/);
+  assert.match(baseCss, /--theme-bg-sidebar:\s*#f4f4f5;/);
+  assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#e5e8ed;/);
 });
 
 test("sidebar transplants LibreChat rail geometry and mobile close behavior", () => {

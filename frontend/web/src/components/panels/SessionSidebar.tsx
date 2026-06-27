@@ -361,7 +361,7 @@ export const SessionSidebar = forwardRef<
 
       <div
         data-librechat-mobile-sidebar
-        className={`rounded-r-lg fixed left-0 top-0 z-[70] w-64 flex flex-col sm:hidden bg-[var(--theme-sidebar-panel)] transition-transform duration-300 ease-in-out ${
+        className={`fixed left-0 top-0 z-[70] flex w-64 flex-col rounded-r-lg border-r border-[var(--theme-border)] bg-[var(--theme-sidebar-panel)] transition-transform duration-300 ease-in-out sm:hidden ${
           mobileOpen ? "translate-x-0" : "-translate-x-full"
         }`}
         style={{
@@ -414,7 +414,7 @@ export const SessionSidebar = forwardRef<
         }}
       >
         <div
-          className={`h-full w-full flex flex-col bg-[var(--theme-sidebar-panel)] border-r border-slate-950/20 dark:border-stone-800/60 ${
+          className={`flex h-full w-full flex-col border-r border-[var(--theme-border)] bg-[var(--theme-sidebar-panel)] ${
             isCollapsed ? "hidden" : ""
           }`}
         >

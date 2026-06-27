@@ -260,15 +260,15 @@ export function SessionItem({
               onKeyDown={handleKeyDown}
               onBlur={handleSaveTitle}
               disabled={isSaving}
-              className="w-full rounded border border-slate-600 bg-transparent px-1.5 py-0.5 text-[13px] text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-400"
+              className="w-full rounded border border-[var(--theme-border-strong)] bg-transparent px-1.5 py-0.5 text-[13px] text-[var(--theme-text)] focus:outline-none focus:ring-1 focus:ring-[var(--theme-ring)]"
               onClick={(e) => e.stopPropagation()}
             />
           ) : (
             <div
               className={`truncate text-[13px] transition-colors ${
                 isActive
-                  ? "text-slate-100 font-medium"
-                  : "text-slate-300 group-hover:text-slate-100"
+                  ? "font-medium text-[var(--theme-text)]"
+                  : "text-[var(--theme-text-secondary)] group-hover:text-[var(--theme-text)]"
               }`}
             >
               {displayTitle}
@@ -278,7 +278,7 @@ export function SessionItem({
 
         {/* Unread dot - hidden when session is active (user is viewing it) */}
         {!isEditing && !isActive && (session.unread_count ?? 0) > 0 && (
-          <span className="shrink-0 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium leading-none text-white">
+          <span className="inline-flex h-4 min-w-[16px] shrink-0 items-center justify-center rounded-full bg-[var(--theme-danger)] px-1 text-[10px] font-medium leading-none text-[var(--theme-primary-foreground)]">
             {session.unread_count}
           </span>
         )}
@@ -286,7 +286,7 @@ export function SessionItem({
           <button
             ref={menuButtonRef}
             onClick={handleMenuClick}
-            className="flex-shrink-0 rounded p-1 text-slate-500 opacity-0 transition-all hover:bg-slate-700/60 hover:text-slate-200 group-hover:opacity-100"
+            className="flex-shrink-0 rounded p-1 text-[var(--theme-text-tertiary)] opacity-0 transition-all hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)] group-hover:opacity-100"
             style={isTouched ? { opacity: 1 } : undefined}
             title={t("sidebar.moreOptions")}
           >

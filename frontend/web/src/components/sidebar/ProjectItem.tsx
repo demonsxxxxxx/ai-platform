@@ -310,7 +310,7 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
           className={`group relative flex cursor-pointer items-center gap-3 h-10 rounded-lg px-[9px] transition-colors ${
             (!favoritesOnly && isDragOver) ||
             (!favoritesOnly && draggingSessionId)
-              ? "bg-[var(--theme-sidebar-panel-muted)] ring-1 ring-inset ring-slate-600/70"
+              ? "bg-[var(--theme-sidebar-panel-muted)] ring-1 ring-inset ring-[var(--theme-border-strong)]"
               : isExpanded
                 ? "bg-[var(--theme-sidebar-panel-muted)]"
                 : "hover:bg-[var(--theme-sidebar-panel-muted)]"
@@ -327,7 +327,7 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
                 if (e.key === "Enter") handleSaveIcon();
                 if (e.key === "Escape") setIsEditingIcon(false);
               }}
-              className="w-16 rounded border border-slate-600 bg-slate-950/60 px-1 py-0.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-400"
+              className="w-16 rounded border border-[var(--theme-border-strong)] bg-[var(--theme-workbench-panel)] px-1 py-0.5 text-xs text-[var(--theme-text)] focus:outline-none focus:ring-1 focus:ring-[var(--theme-ring)]"
               autoFocus
             />
           ) : (
@@ -339,7 +339,7 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
               <DynamicIcon
                 name={project.icon}
                 size={20}
-                className="text-slate-400 fill-current text-[20px]"
+                className="fill-current text-[20px] text-[var(--theme-text-secondary)]"
               />
             </button>
           )}
@@ -355,18 +355,18 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
                 onKeyDown={handleKeyDown}
                 onBlur={handleSaveName}
                 disabled={isSaving}
-                className="w-full rounded border border-slate-600 bg-transparent px-1.5 py-0.5 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-400"
+                className="w-full rounded border border-[var(--theme-border-strong)] bg-transparent px-1.5 py-0.5 text-sm text-[var(--theme-text)] focus:outline-none focus:ring-1 focus:ring-[var(--theme-ring)]"
                 onClick={(e) => e.stopPropagation()}
               />
             ) : (
-              <div className="truncate text-[13px] text-slate-300 transition-colors group-hover:text-slate-100">
+              <div className="truncate text-[13px] text-[var(--theme-text-secondary)] transition-colors group-hover:text-[var(--theme-text)]">
                 {isFavorites ? t("sidebar.favorites") : project.name}
               </div>
             )}
           </div>
 
           {!isEditing && unreadCount > 0 && (
-            <span className="inline-flex h-4 min-w-[16px] flex-shrink-0 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium leading-none text-white">
+            <span className="inline-flex h-4 min-w-[16px] flex-shrink-0 items-center justify-center rounded-full bg-[var(--theme-danger)] px-1 text-[10px] font-medium leading-none text-[var(--theme-primary-foreground)]">
               {formatUnreadCount(unreadCount)}
             </span>
           )}
@@ -376,7 +376,7 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
             <button
               ref={menuButtonRef}
               onClick={handleMenuClick}
-              className="flex-shrink-0 rounded p-0.5 text-slate-500 opacity-0 transition-all hover:bg-slate-700/60 hover:text-slate-200 group-hover:opacity-100 [&:not(:placeholder-shown)]:opacity-100"
+              className="flex-shrink-0 rounded p-0.5 text-[var(--theme-text-tertiary)] opacity-0 transition-all hover:bg-[var(--theme-hover)] hover:text-[var(--theme-text)] group-hover:opacity-100 [&:not(:placeholder-shown)]:opacity-100"
               style={isTouched ? { opacity: 1 } : undefined}
               title={t("sidebar.moreOptions")}
             >
