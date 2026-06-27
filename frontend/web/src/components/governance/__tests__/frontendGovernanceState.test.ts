@@ -2,6 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  FRONTEND_GOVERNANCE_SMOKE_STATES,
+  buildFrontendGovernanceSmokeAttributes,
+  getFrontendGovernanceStateAssertSelector,
   isPermissionError,
   resolveFrontendGovernanceState,
 } from "../frontendGovernanceState.ts";
@@ -70,4 +73,26 @@ test("frontend governance state machine covers ready", () => {
     }),
     "ready",
   );
+});
+
+test("frontend governance state machine exposes a browser smoke contract for every state", () => {
+  assert.deepEqual(FRONTEND_GOVERNANCE_SMOKE_STATES, [
+    "logged-out",
+    "loading",
+    "no-workspace",
+    "forbidden",
+    "degraded",
+    "ready",
+  ]);
+
+  for (const state of FRONTEND_GOVERNANCE_SMOKE_STATES) {
+    assert.deepEqual(buildFrontendGovernanceSmokeAttributes(state), {
+      "data-frontend-governance-state": state,
+      "data-frontend-governance-smoke": `frontend-governance:${state}`,
+    });
+    assert.equal(
+      getFrontendGovernanceStateAssertSelector(state),
+      `[data-frontend-governance-state="${state}"][data-frontend-governance-smoke="frontend-governance:${state}"]`,
+    );
+  }
 });

@@ -22,6 +22,7 @@ import type { SkillResponse, SkillCreate } from "../../types";
 import { SkillCard } from "./MarketplacePanel/SkillCard";
 import { SkillPreviewModal } from "./MarketplacePanel/SkillPreviewModal";
 import {
+  buildFrontendGovernanceSmokeAttributes,
   isPermissionError,
   resolveFrontendGovernanceState,
 } from "../governance/frontendGovernanceState";
@@ -430,7 +431,7 @@ export function MarketplacePanel({
   return (
     <div
       data-phase1c-surface="marketplace"
-      data-frontend-governance-state={governanceState}
+      {...buildFrontendGovernanceSmokeAttributes(governanceState)}
       data-marketplace-catalog-shell
       className={workbenchSurface.page}
     >

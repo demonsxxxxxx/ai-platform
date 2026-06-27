@@ -6,6 +6,20 @@ export type FrontendGovernanceState =
   | "degraded"
   | "ready";
 
+export const FRONTEND_GOVERNANCE_SMOKE_STATES = [
+  "logged-out",
+  "loading",
+  "no-workspace",
+  "forbidden",
+  "degraded",
+  "ready",
+] as const satisfies readonly FrontendGovernanceState[];
+
+export type FrontendGovernanceSmokeAttributes = {
+  "data-frontend-governance-state": FrontendGovernanceState;
+  "data-frontend-governance-smoke": `frontend-governance:${FrontendGovernanceState}`;
+};
+
 export interface FrontendGovernanceStateInput {
   isAuthenticated: boolean;
   isLoading?: boolean;
@@ -49,4 +63,19 @@ export function resolveFrontendGovernanceState({
     return "degraded";
   }
   return "ready";
+}
+
+export function buildFrontendGovernanceSmokeAttributes(
+  state: FrontendGovernanceState,
+): FrontendGovernanceSmokeAttributes {
+  return {
+    "data-frontend-governance-state": state,
+    "data-frontend-governance-smoke": `frontend-governance:${state}`,
+  };
+}
+
+export function getFrontendGovernanceStateAssertSelector(
+  state: FrontendGovernanceState,
+): string {
+  return `[data-frontend-governance-state="${state}"][data-frontend-governance-smoke="frontend-governance:${state}"]`;
 }

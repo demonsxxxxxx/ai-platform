@@ -18,6 +18,7 @@ import { useTranslation } from "react-i18next";
 import { PanelHeader } from "../common/PanelHeader";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
 import {
+  buildFrontendGovernanceSmokeAttributes,
   resolveFrontendGovernanceState,
   type FrontendGovernanceState,
 } from "../governance/frontendGovernanceState";
@@ -327,7 +328,7 @@ function ProjectionShell({
     return (
       <div
         data-workbench-projection-page={kind}
-        data-frontend-governance-state={state}
+        {...buildFrontendGovernanceSmokeAttributes(state)}
         className="flex h-full min-h-0 items-center justify-center bg-[var(--theme-workbench-canvas)] px-4"
       >
         <WorkbenchStateSurface
@@ -354,7 +355,7 @@ function ProjectionShell({
   return (
     <div
       data-workbench-projection-page={kind}
-      data-frontend-governance-state={state}
+      {...buildFrontendGovernanceSmokeAttributes(state)}
       className="flex h-full min-h-0 flex-col bg-[var(--theme-workbench-canvas)] text-[var(--theme-text)]"
     >
       <PanelHeader

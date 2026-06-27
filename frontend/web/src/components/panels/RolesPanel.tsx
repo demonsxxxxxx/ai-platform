@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import { PanelHeader } from "../common/PanelHeader";
 import { PanelLoadingState } from "../common/PanelLoadingState";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
+import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGovernanceState";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { useAuth } from "../../hooks/useAuth";
@@ -331,7 +332,7 @@ export function RolesPanel() {
     return (
       <div
         data-role-plaza-shell
-        data-frontend-governance-state={roleGovernance.pageState}
+        {...buildFrontendGovernanceSmokeAttributes(roleGovernance.pageState)}
         className={workbenchSurface.statePage}
       >
         <PanelLoadingState text={t("roles.plaza.loading")} />
@@ -343,7 +344,7 @@ export function RolesPanel() {
     return (
       <div
         data-role-plaza-shell
-        data-frontend-governance-state={roleGovernance.pageState}
+        {...buildFrontendGovernanceSmokeAttributes(roleGovernance.pageState)}
         className={workbenchSurface.statePage}
       >
         <WorkbenchStateSurface
@@ -372,7 +373,7 @@ export function RolesPanel() {
   return (
     <div
       data-role-plaza-shell
-      data-frontend-governance-state={roleGovernance.pageState}
+      {...buildFrontendGovernanceSmokeAttributes(roleGovernance.pageState)}
       className={workbenchSurface.page}
     >
       <PanelHeader
