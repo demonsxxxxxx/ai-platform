@@ -2802,14 +2802,6 @@
       "description": "Search allowed Skills and add a durable Skill chip.",
       "label": "Skill"
     },
-    "shortcut": {
-      "context": "/context Context",
-      "file": "/file File",
-      "label": "Composer shortcuts",
-      "mcp": "/mcp MCP",
-      "skills": "$ Skills",
-      "unavailable": "Visible, but not enabled for your workspace yet"
-    },
     "contextSelector": {
       "chip": "/context",
       "description": "Context selection is visible in the composer, but your workspace cannot use saved context yet.",

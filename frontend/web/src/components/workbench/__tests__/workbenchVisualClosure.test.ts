@@ -89,8 +89,8 @@ test("expanded sidebar uses the LibreChat light navigation system", () => {
   assert.match(sessionList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sessionSidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(rail, /bg-\[var\(--theme-sidebar-rail\)\]/);
-  assert.match(baseCss, /--theme-sidebar-panel:\s*#f4f4f5/);
-  assert.match(baseCss, /--theme-sidebar-rail:\s*#f4f4f5/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#f0f0ef/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#f0f0ef/);
   assert.doesNotMatch(sessionList, /text-slate-100|text-white|border-slate-800/);
   assert.doesNotMatch(rail, /text-slate-200|text-white|rgba\(255,255,255,0\.1\)/);
 });
@@ -120,16 +120,20 @@ test("post-login workbench defaults to expanded application navigation", () => {
   assert.match(sessionSidebar, /useState\(false\)/);
 });
 
-test("light workbench tokens match the LibreChat white chat canvas", () => {
+test("light workbench tokens keep the LibreChat shell on one warm-neutral canvas", () => {
   const baseCss = read("src/styles/base.css");
   const surface = read("src/components/librechatShell/libreChatSurface.ts");
   const welcome = read("src/components/chat/WelcomePage.tsx");
 
-  assert.match(baseCss, /--theme-bg:\s*#ffffff;/);
-  assert.match(baseCss, /--theme-workbench-canvas:\s*#ffffff;/);
+  assert.match(baseCss, /--theme-bg:\s*#f7f7f6;/);
+  assert.match(baseCss, /--theme-workbench-canvas:\s*#f7f7f6;/);
   assert.match(baseCss, /--theme-workbench-panel:\s*#ffffff;/);
   assert.match(baseCss, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(baseCss, /--theme-bg-sidebar:\s*#f4f4f5;/);
+  assert.match(baseCss, /--theme-bg-sidebar:\s*#ececeb;/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#f0f0ef;/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#f0f0ef;/);
+  assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#ffffff;/);
+  assert.doesNotMatch(baseCss, /--theme-sidebar-panel:\s*#f4f4f5;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#e5e8ed;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-panel:\s*#f3f4f6;/);
   assert.match(surface, /root:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
@@ -759,7 +763,11 @@ test("empty chat keeps the command dock compact and composer-first", () => {
   assert.match(welcome, /welcome-chat-start/);
   assert.match(welcome, /data-chat-start-surface/);
   assert.match(welcome, /data-chat-start-header/);
-  assert.match(welcome, /data-chat-quick-actions/);
+  assert.match(welcome, /data-chat-composer-first/);
+  assert.doesNotMatch(welcome, /data-chat-quick-actions/);
+  assert.doesNotMatch(welcome, /QuickActionItem/);
+  assert.doesNotMatch(welcome, /quickActions/);
+  assert.doesNotMatch(welcome, /ComposerCommandHintBar/);
   assert.doesNotMatch(welcome, /data-composer-command-dock/);
   assert.doesNotMatch(welcome, /data-composer-selection-summary/);
   assert.doesNotMatch(welcome, /workbench\.commandDock/);
