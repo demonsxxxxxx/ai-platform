@@ -380,6 +380,31 @@ test("governed workbench states expose a shared browser smoke selector", () => {
   }
 });
 
+test("phase 1c logged-in route surfaces expose shared governance smoke attributes", () => {
+  const tabContent = read("src/components/layout/AppContent/TabContent.tsx");
+  const launchpad = read("src/components/launchpad/LaunchpadPanel.tsx");
+  const channelImport = read("src/components/channels/ChannelImportPanel.tsx");
+  const memoryPanel = read("src/components/panels/MemoryPanel/index.tsx");
+
+  for (const [name, source] of new Map([
+    ["TabContent", tabContent],
+    ["LaunchpadPanel", launchpad],
+    ["ChannelImportPanel", channelImport],
+    ["MemoryPanel", memoryPanel],
+  ])) {
+    assert.match(source, /buildFrontendGovernanceSmokeAttributes/, name);
+  }
+
+  assert.match(tabContent, /buildFrontendGovernanceSmokeAttributes\(routeUnavailable\.state\)/);
+  assert.match(launchpad, /buildFrontendGovernanceSmokeAttributes\("ready"\)/);
+  assert.match(channelImport, /buildFrontendGovernanceSmokeAttributes\(governanceState\)/);
+  assert.match(memoryPanel, /buildFrontendGovernanceSmokeAttributes\(governanceState\)/);
+  assert.doesNotMatch(
+    [tabContent, launchpad, channelImport, memoryPanel].join("\n"),
+    /data-frontend-governance-state=\{(?:routeUnavailable\.state|governanceState)\}/,
+  );
+});
+
 test("safe projection pages render a full workbench instead of thin lists", () => {
   const projectionPages = read("src/components/workbench/WorkbenchProjectionPages.tsx");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));

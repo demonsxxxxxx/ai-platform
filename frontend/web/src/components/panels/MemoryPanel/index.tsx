@@ -14,6 +14,7 @@ import toast from "react-hot-toast";
 import { PanelHeader } from "../../common/PanelHeader";
 import { GovernanceAvailabilityBadge } from "../../governance/GovernanceAvailabilityBadge";
 import {
+  buildFrontendGovernanceSmokeAttributes,
   isPermissionError,
   resolveFrontendGovernanceState,
 } from "../../governance/frontendGovernanceState";
@@ -478,7 +479,7 @@ export function MemoryPanel() {
     return (
       <div
         data-memory-workbench-shell
-        data-frontend-governance-state={governanceState}
+        {...buildFrontendGovernanceSmokeAttributes(governanceState)}
         className={workbenchSurface.statePage}
       >
         <WorkbenchStateSurface
@@ -503,7 +504,7 @@ export function MemoryPanel() {
   return (
     <div
       data-memory-workbench-shell
-      data-frontend-governance-state={governanceState}
+      {...buildFrontendGovernanceSmokeAttributes(governanceState)}
       className={workbenchSurface.page}
     >
       <PanelHeader
