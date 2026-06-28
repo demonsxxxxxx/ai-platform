@@ -95,6 +95,24 @@ test("expanded sidebar uses the LibreChat light navigation system", () => {
   assert.doesNotMatch(rail, /text-slate-200|text-white|rgba\(255,255,255,0\.1\)/);
 });
 
+test("expanded desktop sidebar uses a LibreChat rail plus side panel structure", () => {
+  const sessionSidebar = read("src/components/panels/SessionSidebar.tsx");
+  const sessionList = read(
+    "src/components/panels/SidebarParts/SessionListContent.tsx",
+  );
+  const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
+
+  assert.match(sessionSidebar, /data-librechat-desktop-sidebar/);
+  assert.match(sessionSidebar, /data-librechat-expanded-rail/);
+  assert.match(sessionSidebar, /data-librechat-expanded-panel/);
+  assert.match(sessionSidebar, /<SidebarRail[\s\S]*isExpanded/);
+  assert.match(sessionSidebar, /showFooter=\{false\}/);
+  assert.match(sessionList, /showFooter = true/);
+  assert.match(sessionList, /\{showFooter && \(/);
+  assert.match(rail, /isExpanded = false/);
+  assert.match(rail, /sidebar\.collapseSidebar/);
+});
+
 test("post-login shell removes legacy LambChat runtime identifiers", () => {
   const auth = read("src/hooks/useAuth.tsx");
   const sources = [
@@ -144,11 +162,15 @@ test("light workbench tokens keep the LibreChat shell on one warm-neutral canvas
 
 test("workbench right context uses the same canvas as the main workspace", () => {
   const surface = read("src/components/librechatShell/libreChatSurface.ts");
+  const shell = read("src/components/librechatShell/LibreChatShell.tsx");
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
   const sidePanel = read("src/components/librechatShell/LibreChatSidePanel.tsx");
   const chatInput = read("src/components/chat/ChatInput.tsx");
 
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(shell, /data-librechat-context-toggle/);
+  assert.match(shell, /contextOpen/);
+  assert.match(shell, /aria-expanded=\{contextOpen\}/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(sidePanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(sidePanel, /workbenchSurface\.secondaryPanel/);
@@ -852,6 +874,16 @@ test("expanded app sidebar keeps governed catalogs as first-level smoke targets"
   assert.match(rail, /itemKey="marketplace"/);
   assert.match(rail, /itemKey="roles"/);
   assert.match(railPrimitive, /data-workbench-rail-item=\{itemKey\}/);
+});
+
+test("post-login Chinese sidebar labels distinguish persona presets from role governance", () => {
+  const zh = JSON.parse(read("src/i18n/locales/zh.json"));
+  const en = JSON.parse(read("src/i18n/locales/en.json"));
+
+  assert.notEqual(zh.nav.persona, zh.nav.roles);
+  assert.equal(zh.nav.persona, "人设");
+  assert.equal(zh.nav.roles, "角色广场");
+  assert.notEqual(en.nav.persona, en.nav.roles);
 });
 
 test("post-login sidebar marks the current governed route in expanded and rail modes", () => {

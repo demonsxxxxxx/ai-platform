@@ -36,6 +36,9 @@ export const libreChatSurface = {
   ),
   workspace: clsx(
     "librechat-shell-workspace grid min-h-0 w-full flex-1 grid-cols-1",
+  ),
+  workspaceWithContext: clsx(
+    "librechat-shell-workspace grid min-h-0 w-full flex-1 grid-cols-1",
     "xl:grid-cols-[minmax(0,1fr)_20rem]",
   ),
   thread: clsx(

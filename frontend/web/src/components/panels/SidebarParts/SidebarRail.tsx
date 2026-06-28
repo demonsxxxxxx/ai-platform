@@ -27,7 +27,9 @@ interface SidebarRailProps {
   user: { username?: string; avatar_url?: string } | null;
   imgError: boolean;
   onImgError: () => void;
+  isExpanded?: boolean;
   onExpand: () => void;
+  onCollapse: () => void;
   onNewSession: () => void;
   onOpenSearch: () => void;
   onOpenRecentChats: () => void;
@@ -49,7 +51,9 @@ export function SidebarRail({
   user,
   imgError,
   onImgError,
+  isExpanded = false,
   onExpand,
+  onCollapse,
   onNewSession,
   onOpenSearch,
   onOpenRecentChats,
@@ -81,18 +85,38 @@ export function SidebarRail({
       {/* Expand button — default: app icon, hover: expand icon */}
       <div className="flex items-center justify-center w-full pt-3">
         <LibreChatRailButton
-          onClick={onExpand}
-          className={`${railBtn} group cursor-e-resize rtl:cursor-w-resize`}
-          aria-label={t("sidebar.expandSidebar")}
+          onClick={isExpanded ? onCollapse : onExpand}
+          className={`${railBtn} group ${
+            isExpanded
+              ? "cursor-w-resize rtl:cursor-e-resize"
+              : "cursor-e-resize rtl:cursor-w-resize"
+          }`}
+          aria-expanded={isExpanded}
+          aria-label={
+            isExpanded
+              ? t("sidebar.collapseSidebar")
+              : t("sidebar.expandSidebar")
+          }
+          title={
+            isExpanded
+              ? t("sidebar.collapseSidebar")
+              : t("sidebar.expandSidebar")
+          }
         >
-          <span className="flex size-8 items-center justify-center rounded-lg bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm ring-1 ring-[var(--theme-border)] group-hover:hidden">
+          <span
+            className={`flex size-8 items-center justify-center rounded-lg bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm ring-1 ring-[var(--theme-border)] ${
+              isExpanded ? "hidden" : "group-hover:hidden"
+            }`}
+          >
             <Bot size={17} strokeWidth={2.2} aria-hidden="true" />
           </span>
           <svg
             xmlns="http://www.w3.org/2000/svg"
             fill="none"
             viewBox="0 0 24 24"
-            className="w-5 h-5 hidden group-hover:block"
+            className={`w-5 h-5 ${
+              isExpanded ? "block" : "hidden group-hover:block"
+            }`}
           >
             <path
               fillRule="evenodd"
