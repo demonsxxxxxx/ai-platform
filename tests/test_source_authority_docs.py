@@ -1498,6 +1498,9 @@ def test_frontend_prd_closure_matrix_records_current_211_boundary_without_overcl
         "ordinary workflow",
         "admin workflow",
         "Right context panel",
+        "shareChannelFailClosedSource.test.ts",
+        "governancePhase1Closure.test.ts",
+        "frontendPhase1ClosureContract.test.ts",
         "Phase 2 backend-backed expansion is not a frontend-only closure item.",
     ):
         assert expected in matrix_text
@@ -1509,6 +1512,10 @@ def test_frontend_prd_closure_matrix_records_current_211_boundary_without_overcl
         "Credentials are read only from gitignored environment files",
         "Evidence and comments must record only the source variable names and `redacted` placeholders",
         "not a full-program `gate closable` issue until Phase 2 backend-backed expansion",
+        "share ACL unavailable/denied/revoked/expired states",
+        "governed channel import unavailable state",
+        "fail-closed group availability toggles",
+        "MCP lifecycle governance without raw server controls",
     ):
         assert boundary in compact_text
 

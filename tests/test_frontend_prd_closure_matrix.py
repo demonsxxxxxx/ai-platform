@@ -34,6 +34,13 @@ def test_frontend_prd_closure_matrix_records_single_pr_evidence_boundary():
     assert "158353a2ed6879c5fd7a062c445e1ca23f227cf8febe61064b89b37def6f050d" in text
     assert "loading for skills" in text
     assert "Right context panel" in text
+    assert "shareChannelFailClosedSource.test.ts" in text
+    assert "governed channel import without fake import success" in text
+    assert "governancePhase1Closure.test.ts" in text
+    assert "fail-closed group availability toggle UI" in text
+    assert "MCP lifecycle governance without raw controls" in text
+    assert "frontendPhase1ClosureContract.test.ts" in text
+    assert "/shared/:shareId" in text
     assert "Credentials are read only from gitignored environment files" in text
     assert "AI_PLATFORM_LOGIN_PASSWORD" in text
     assert "redacted" in text
