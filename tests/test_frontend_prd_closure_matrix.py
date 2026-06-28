@@ -22,15 +22,18 @@ def test_frontend_prd_closure_matrix_records_single_pr_evidence_boundary():
     assert "Single active closure PR" in text
     assert "Refs #81" in text
     assert "must not use `Closes #81`" in text
-    assert "PR #262" in text
-    assert "c9866a8919bbe0dddce40320538717a691c79375" in text
+    assert "PR #264" in text
+    assert "94f0b20fcf441fdcbde730a1edafb2c1dbdcbf59" in text
     assert "merged-main 211 verified" in text
     assert "not a full-program `gate closable` claim" in text
     assert "Formal GitHub review metadata is still absent" in text
-    assert "/home/xinlin.jiang/ai-platform-frontend-releases/evidence/pr-262-c9866a8919bb/smoke-summary.json" in text
-    assert "/home/xinlin.jiang/ai-platform-frontend-releases/evidence/pr-262-c9866a8919bb/screenshots.zip" in text
-    assert "502fefa62e4ce310a9c359afebbacaad573cdc64a3df31269150280ea5762855" in text
-    assert "8b4ac17101cd7f33130fd1dc8139845f744130cc3b92fc4148165f3259902bb6" in text
+    assert "/home/xinlin.jiang/frontend-releases/20260628-94f0b20/ai-platform-frontend-94f0b20-dist.tar.gz" in text
+    assert "/home/xinlin.jiang/frontend-releases/evidence/pr264-94f0b20-211-browser-smoke/211-smoke-94f0b20.json" in text
+    assert "/home/xinlin.jiang/frontend-releases/evidence/pr264-94f0b20-211-browser-smoke-evidence.tar.gz" in text
+    assert "e71185e112f7fc92b89fba262e9f1ba5bdc0c170c2357c7f2d28c8af0122134b" in text
+    assert "158353a2ed6879c5fd7a062c445e1ca23f227cf8febe61064b89b37def6f050d" in text
+    assert "loading for skills" in text
+    assert "Right context panel" in text
     assert "Credentials are read only from gitignored environment files" in text
     assert "AI_PLATFORM_LOGIN_PASSWORD" in text
     assert "redacted" in text

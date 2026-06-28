@@ -1491,12 +1491,13 @@ def test_frontend_prd_closure_matrix_records_current_211_boundary_without_overcl
     for expected in (
         "Single active closure PR",
         "Refs #81",
-        "PR #262",
-        "c9866a8919bbe0dddce40320538717a691c79375",
+        "PR #264",
+        "94f0b20fcf441fdcbde730a1edafb2c1dbdcbf59",
         "merged-main 211 verified",
         "company-account browser login",
         "ordinary workflow",
         "admin workflow",
+        "Right context panel",
         "Phase 2 backend-backed expansion is not a frontend-only closure item.",
     ):
         assert expected in matrix_text
