@@ -64,7 +64,7 @@ test("skills and marketplace remain catalog shells when backend enablement is un
   assert.match(skillsHub, /onCatalogStateChange=\{handleCatalogStateChange\}/);
   assert.match(skillsHub, /data-skill-catalog-shell/);
   assert.match(skillsHub, /data-marketplace-catalog-shell/);
-  assert.match(skillsHub, /data-frontend-governance-state/);
+  assert.match(skillsHub, /buildFrontendGovernanceSmokeAttributes\(governanceState\)/);
   assert.match(skillsPanel, /governedUnavailable/);
   assert.match(skillsPanel, /effectivePermissions:\s*actions\.effectivePermissions/);
   assert.doesNotMatch(skillsPanel, /!enableSkills/);
@@ -507,7 +507,10 @@ test("role plaza stays reachable without claiming missing backend projection", (
   }
   assert.match(rolesPanel, /resolveRoleGovernanceState/);
   assert.match(rolesPanel, /roleGovernanceApi\.getOverview/);
-  assert.match(rolesPanel, /data-frontend-governance-state=\{roleGovernance\.pageState\}/);
+  assert.match(
+    rolesPanel,
+    /buildFrontendGovernanceSmokeAttributes\(roleGovernance\.pageState\)/,
+  );
   assert.doesNotMatch(rolesPanel, /data-frontend-governance-state="ready"/);
   assert.doesNotMatch(rolesPanel, /roleDirectoryBacked:\s*false/);
   assert.match(roleGovernanceApi, /\/api\/role-governance\/overview/);

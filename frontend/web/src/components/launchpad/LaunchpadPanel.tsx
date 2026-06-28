@@ -19,6 +19,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { PanelHeader } from "../common/PanelHeader";
+import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGovernanceState";
 import {
   filterLaunchpadGroups,
   launchpadGroups,
@@ -111,6 +112,7 @@ export function LaunchpadPanel() {
     <section
       data-launchpad-directory-shell
       data-launchpad-workbench
+      {...buildFrontendGovernanceSmokeAttributes("ready")}
       className={workbenchSurface.page}
     >
       <PanelHeader

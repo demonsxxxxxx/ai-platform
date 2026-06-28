@@ -16,7 +16,11 @@ import { PanelHeader } from "../common/PanelHeader";
 import { PanelLoadingState } from "../common/PanelLoadingState";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
 import { resolveGroupAvailability } from "../governance/groupAvailability";
-import { isPermissionError, resolveFrontendGovernanceState } from "../governance/frontendGovernanceState";
+import {
+  buildFrontendGovernanceSmokeAttributes,
+  isPermissionError,
+  resolveFrontendGovernanceState,
+} from "../governance/frontendGovernanceState";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { channelApi } from "../../services/api/channel";
@@ -114,7 +118,7 @@ export function ChannelImportPanel() {
     <div
       data-phase1c-surface="channel-import"
       data-channel-workbench-shell
-      data-frontend-governance-state={governanceState}
+      {...buildFrontendGovernanceSmokeAttributes(governanceState)}
       className={workbenchSurface.page}
     >
       <PanelHeader

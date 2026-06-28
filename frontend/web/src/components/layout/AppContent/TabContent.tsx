@@ -1,4 +1,5 @@
 import { Suspense, lazy } from "react";
+import { buildFrontendGovernanceSmokeAttributes } from "../../governance/frontendGovernanceState";
 import { GovernedRouteWorkbench } from "../../workbench/GovernedRouteWorkbench";
 import type { RouteUnavailableConfig, TabType } from "./types";
 
@@ -115,7 +116,7 @@ export function TabContent({
       <main
         className="flex-1 overflow-hidden bg-[var(--theme-workbench-canvas)]"
         data-authenticated-workbench-page={activeTab}
-        data-frontend-governance-state={routeUnavailable.state}
+        {...buildFrontendGovernanceSmokeAttributes(routeUnavailable.state)}
       >
         <GovernedRouteWorkbench
           activeTab={activeTab}
