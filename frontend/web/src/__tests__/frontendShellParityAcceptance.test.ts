@@ -1384,6 +1384,7 @@ test("company baseline permissions include backed role plaza and marketplace rea
   const enLocale = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
 
   assert.match(authRoute, /"marketplace:read"/);
+  assert.match(authRoute, /"persona_preset:read"/);
   assert.match(authRoute, /"role:read"/);
   assert.match(authRoute, /"role:request"/);
   assert.match(marketplaceApi, /catalog_read_resolved/);

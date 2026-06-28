@@ -14,6 +14,7 @@ from app.routes.channels import router as channels_router
 from app.routes.chat import router as chat_router
 from app.routes.context import router as context_router
 from app.routes.files import router as files_router
+from app.routes.frontend_projections import router as frontend_projections_router
 from app.routes.health import router as health_router
 from app.routes.lambchat_compat import router as lambchat_compat_router
 from app.routes.mcp import router as mcp_router
@@ -70,6 +71,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_skills_router, prefix="/api/ai")
     app.include_router(admin_tool_policies_router, prefix="/api/ai")
     app.include_router(skills_marketplace_router, prefix="/api")
+    app.include_router(frontend_projections_router, prefix="/api")
     app.include_router(channels_router, prefix="/api")
     app.include_router(role_governance_router, prefix="/api")
     app.include_router(workbench_projections_router, prefix="/api")

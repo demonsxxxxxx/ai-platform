@@ -15,6 +15,7 @@ from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.db import transaction
 from app.models import (
     MarketplaceInstallResponse,
+    MarketplaceListResponse,
     MarketplaceSkillFilesResponse,
     MarketplaceSkillResponse,
     MarketplaceTagsResponse,
@@ -1134,21 +1135,29 @@ async def install_github_skills(
     return {"message": "Skills installed", "installed": installed, "errors": errors}
 
 
-@router.get("/marketplace/", response_model=list[MarketplaceSkillResponse])
+@router.get("/marketplace/", response_model=MarketplaceListResponse)
 async def list_marketplace(
     tags: str | None = Query(default=None),
     search: str | None = Query(default=None),
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     principal: AuthPrincipal = Depends(require_principal),
-) -> list[MarketplaceSkillResponse]:
+) -> MarketplaceListResponse:
     """List active marketplace skills for authenticated users."""
 
     _require_permission(principal, "marketplace:read")
     rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
     tag_values = [tag.strip() for tag in (tags or "").split(",") if tag.strip()]
     filtered = _filter_rows(rows, query=search, tags=tag_values)
-    return [_marketplace_item(row, principal) for row in filtered[skip : skip + limit]]
+    page = filtered[skip : skip + limit]
+    return MarketplaceListResponse(
+        skills=[_marketplace_item(row, principal) for row in page],
+        total=len(filtered),
+        skip=skip,
+        limit=limit,
+        available_tags=_available_tags(rows),
+        effective_permissions=_effective_permissions(principal),
+    )
 
 
 @router.post("/marketplace/")

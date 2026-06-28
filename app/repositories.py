@@ -6506,6 +6506,109 @@ async def get_admin_artifact(conn: AsyncConnection, *, tenant_id: str, artifact_
     return await cursor.fetchone()
 
 
+async def list_revealed_artifacts(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    session_id: str | None = None,
+    project_id: str | None = None,
+    search: str | None = None,
+    sort_by: str = "created_at",
+    sort_order: str = "desc",
+) -> list[dict[str, Any]]:
+    """Return ACL-scoped artifacts for the public revealed-files projection."""
+
+    order_column = "artifacts.created_at" if sort_by not in {"file_name", "file_size"} else {
+        "file_name": "artifacts.label",
+        "file_size": "artifacts.size_bytes",
+    }[sort_by]
+    order_direction = "asc" if str(sort_order).lower() == "asc" else "desc"
+    filters = [
+        "artifacts.tenant_id = %s",
+        "runs.user_id = %s",
+    ]
+    params: list[Any] = [tenant_id, user_id]
+    if session_id:
+        filters.append("runs.session_id = %s")
+        params.append(session_id)
+    if project_id:
+        filters.append("runs.workspace_id = %s")
+        params.append(project_id)
+    if search:
+        filters.append("(artifacts.label ilike %s or artifacts.storage_key ilike %s)")
+        like = f"%{search}%"
+        params.extend([like, like])
+    cursor = await conn.execute(
+        f"""
+        select
+          artifacts.id,
+          artifacts.storage_key,
+          artifacts.label,
+          artifacts.content_type,
+          artifacts.size_bytes,
+          artifacts.artifact_type,
+          artifacts.created_at,
+          artifacts.trace_id,
+          runs.id as run_id,
+          runs.session_id,
+          runs.workspace_id,
+          runs.user_id,
+          sessions.title as session_name
+        from artifacts
+        join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
+        left join sessions on sessions.id = runs.session_id and sessions.tenant_id = runs.tenant_id
+        where {" and ".join(filters)}
+        order by {order_column} {order_direction}, artifacts.created_at desc
+        limit 500
+        """,
+        tuple(params),
+    )
+    return list(await cursor.fetchall())
+
+
+async def list_revealed_artifact_sessions(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    project_id: str | None = None,
+    search: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return session summaries for ACL-scoped revealed artifact rows."""
+
+    filters = [
+        "artifacts.tenant_id = %s",
+        "runs.user_id = %s",
+    ]
+    params: list[Any] = [tenant_id, user_id]
+    if project_id:
+        filters.append("runs.workspace_id = %s")
+        params.append(project_id)
+    if search:
+        filters.append("(artifacts.label ilike %s or artifacts.storage_key ilike %s)")
+        like = f"%{search}%"
+        params.extend([like, like])
+    cursor = await conn.execute(
+        f"""
+        select
+          runs.session_id,
+          max(sessions.title) as session_name,
+          count(*) as file_count,
+          max(artifacts.created_at) as updated_at
+        from artifacts
+        join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
+        left join sessions on sessions.id = runs.session_id and sessions.tenant_id = runs.tenant_id
+        where {" and ".join(filters)}
+        group by runs.session_id
+        order by updated_at desc
+        limit 200
+        """,
+        tuple(params),
+    )
+    return list(await cursor.fetchall())
+
+
 async def append_audit_log(
     conn: AsyncConnection,
     *,
