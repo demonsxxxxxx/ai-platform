@@ -541,7 +541,14 @@ async def list_revealed_file_sessions(
             project_id=safe_project_id,
             search=search,
         )
-    return [RevealedFileSessionResponse.model_validate(row) for row in rows]
+    return [
+        RevealedFileSessionResponse(
+            session_id=str(row.get("session_id") or ""),
+            session_name=row.get("session_name"),
+            file_count=int(row.get("file_count") or 0),
+        )
+        for row in rows
+    ]
 
 
 @router.patch("/files/revealed/{file_id}/favorite")
