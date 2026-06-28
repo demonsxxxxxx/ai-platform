@@ -1519,7 +1519,8 @@ def test_frontend_prd_closure_matrix_records_current_211_boundary_without_overcl
     ):
         assert remaining_backend_scope in compact_text
 
-    assert "zxsw" not in matrix_text
+    assert "AI_PLATFORM_LOGIN_PASSWORD=" not in matrix_text
+    assert "password:" not in matrix_text
     assert "C:\\Users" not in matrix_text
     assert "\nCloses #81" not in matrix_text
 

@@ -3166,10 +3166,32 @@
       "stateLabel": "Page state",
       "surfaceLabel": "Governed boundary"
     },
+    "artifacts": "Artifacts",
+    "contextLabel": "Context",
+    "messages": "Messages",
     "newConversation": "New conversation",
+    "noRun": "No active run",
     "none": "None",
+    "permissions": "Permissions",
+    "runState": "Run state",
+    "runSurfaces": "Run surfaces",
+    "session": "Session",
     "selectionState": "Selection state",
+    "unsaved": "Unsaved",
     "unavailableShort": "Unavailable",
+    "workspaceContext": "Workspace context",
+    "contextPanel": {
+      "run": "Run context",
+      "selectedSkills": "Selected Skills",
+      "selectedTools": "MCP tools",
+      "files": "Files",
+      "permissions": "Permissions",
+      "noSkills": "No Skill chip selected.",
+      "noTools": "No MCP tool selected.",
+      "noFiles": "No file attached.",
+      "noApprovals": "No permission request is waiting.",
+      "pendingApprovals": "{{count}} permission request waiting."
+    },
     "phase2Unavailable": "Artifacts, selected context, and run details stay read-only until your workspace enables them."
   },
   "governance": {
