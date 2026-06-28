@@ -383,8 +383,14 @@ def test_skills_and_marketplace_read_contracts_project_catalog_and_files(monkeyp
 
     marketplace_response = client.get("/api/marketplace/", headers=headers())
     assert marketplace_response.status_code == 200
-    assert marketplace_response.json()[0]["skill_name"] == "qa-file-reviewer"
-    assert marketplace_response.json()[0]["file_count"] == 2
+    marketplace_body = marketplace_response.json()
+    assert marketplace_body["total"] == 1
+    assert marketplace_body["skip"] == 0
+    assert marketplace_body["limit"] == 50
+    assert marketplace_body["available_tags"] == ["document"]
+    assert marketplace_body["effective_permissions"] == ["skill:read", "marketplace:read"]
+    assert marketplace_body["skills"][0]["skill_name"] == "qa-file-reviewer"
+    assert marketplace_body["skills"][0]["file_count"] == 2
 
     tags_response = client.get("/api/marketplace/tags", headers=headers())
     assert tags_response.status_code == 200
@@ -444,6 +450,21 @@ def test_skill_and_marketplace_write_contracts_fail_closed_without_permissions(m
     )
     assert install_response.status_code == 403
     assert install_response.json()["detail"] == "missing_permission:skill:write"
+
+
+def test_marketplace_list_fails_closed_and_projects_openapi_object_shape(monkeypatch):
+    install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    denied_response = client.get("/api/marketplace/", headers=headers("skill:read"))
+    assert denied_response.status_code == 403
+    assert denied_response.json()["detail"] == "missing_permission:marketplace:read"
+
+    openapi_response = client.get("/openapi.json")
+    assert openapi_response.status_code == 200
+    operation = openapi_response.json()["paths"]["/api/marketplace/"]["get"]
+    schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+    assert schema == {"$ref": "#/components/schemas/MarketplaceListResponse"}
 
 
 def test_skill_toggle_and_marketplace_install_update_tenant_availability(monkeypatch):

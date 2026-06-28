@@ -805,6 +805,19 @@ class MarketplaceSkillResponse(BaseModel):
     file_count: int = 0
 
 
+class MarketplaceListResponse(BaseModel):
+    """Paginated marketplace response consumed by the frontend shell."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skills: list[MarketplaceSkillResponse] = Field(default_factory=list)
+    total: int = 0
+    skip: int = 0
+    limit: int = 50
+    available_tags: list[str] = Field(default_factory=list)
+    effective_permissions: list[str] = Field(default_factory=list)
+
+
 class MarketplaceSkillFilesResponse(BaseModel):
     """Marketplace skill file listing."""
 
@@ -829,6 +842,165 @@ class MarketplaceTagsResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     tags: list[str] = Field(default_factory=list)
+
+
+class PersonaStarterPromptResponse(BaseModel):
+    """Starter prompt projected with a persona preset."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    icon: str | None = None
+    text: str | dict[str, str]
+
+
+class PersonaPresetResponse(BaseModel):
+    """Public persona preset projection for the post-login workbench."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    scope: Literal["global", "user"] = "global"
+    owner_user_id: str | None = None
+    name: str
+    description: str = ""
+    avatar: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    system_prompt: str
+    starter_prompts: list[PersonaStarterPromptResponse] = Field(default_factory=list)
+    skill_names: list[str] = Field(default_factory=list)
+    visibility: Literal["public", "private"] = "public"
+    status: Literal["draft", "published", "archived"] = "published"
+    source_preset_id: str | None = None
+    copied_from_version: int | None = None
+    version: int = 1
+    usage_count: int = 0
+    is_favorite: bool = False
+    is_pinned: bool = False
+    last_used_at: Any | None = None
+    created_by: str | None = None
+    updated_by: str | None = None
+    created_at: Any
+    updated_at: Any
+
+
+class PersonaPresetListResponse(BaseModel):
+    """Paginated persona preset response consumed by the frontend."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    presets: list[PersonaPresetResponse] = Field(default_factory=list)
+    total: int = 0
+    skip: int = 0
+    limit: int = 12
+
+
+class PersonaPresetPreferenceRequest(BaseModel):
+    """User-local persona preset preference update."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    is_favorite: bool | None = None
+    is_pinned: bool | None = None
+
+
+class PersonaPresetSnapshotResponse(BaseModel):
+    """Persona preset snapshot applied to a chat session."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    preset_id: str
+    name: str
+    system_prompt: str
+    starter_prompts: list[PersonaStarterPromptResponse] = Field(default_factory=list)
+    skill_names: list[str] = Field(default_factory=list)
+    missing_skill_names: list[str] = Field(default_factory=list)
+    version: int = 1
+    avatar: str | None = None
+
+
+class RevealedFileCardPreviewResponse(BaseModel):
+    """Optional card preview metadata for revealed files."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["image", "text", "code", "markdown", "project", "document", "fallback"] = "fallback"
+    title: str | None = None
+    subtitle: str | None = None
+    text: str | None = None
+    lines: list[str] | None = None
+    language: str | None = None
+    image_url: str | None = None
+    badge: str | None = None
+    accent: str | None = None
+
+
+class RevealedFileItemResponse(BaseModel):
+    """Safe file/artifact projection for the post-login files workbench."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    file_key: str
+    file_name: str
+    file_type: Literal["image", "video", "document", "code", "project", "other"] = "other"
+    mime_type: str | None = None
+    file_size: int = 0
+    url: str | None = None
+    session_id: str
+    session_name: str | None = None
+    trace_id: str
+    project_id: str | None = None
+    user_id: str
+    source: Literal["reveal_file", "reveal_project"] = "reveal_file"
+    description: str | None = None
+    original_path: str | None = None
+    created_at: Any
+    is_favorite: bool = False
+    card_preview: RevealedFileCardPreviewResponse | None = None
+    project_meta: dict[str, Any] | None = None
+
+
+class RevealedFileListResponse(BaseModel):
+    """Paginated revealed file list."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[RevealedFileItemResponse] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 20
+
+
+class RevealedFileSessionGroupResponse(BaseModel):
+    """One session group in the revealed files workbench."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    session_name: str | None = None
+    file_count: int = 0
+    files: list[RevealedFileItemResponse] = Field(default_factory=list)
+
+
+class RevealedFileGroupedListResponse(BaseModel):
+    """Paginated session-grouped revealed file list."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sessions: list[RevealedFileSessionGroupResponse] = Field(default_factory=list)
+    total_sessions: int = 0
+    page: int = 1
+    page_size: int = 20
+
+
+class RevealedFileSessionResponse(BaseModel):
+    """Session summary for revealed file filters."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    session_name: str | None = None
+    file_count: int = 0
 
 
 class PublicChannelResponse(BaseModel):
