@@ -167,12 +167,12 @@ export function PersonaWorkbenchPanel() {
               title={t("personaPresets.degradedTitle", "角色投影已降级")}
               description={t(
                 "personaPresets.degradedDescription",
-                "后端角色预设投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空角色目录。",
+                "角色预设投影请求暂时不可用；页面保留工作台入口，并避免把异常误显示为空角色目录。",
               )}
               details={[
                 t(
                   "personaPresets.issueReferenceDetail",
-                  "后端 issue #229 仍跟踪 persona preset 公共投影；前端保持降级工作台，不把缺失合同显示为空角色目录。",
+                  "角色预设投影已经接入公开工作台接口；当前降级表示请求失败、权限不足或服务状态异常，这是运行态可用性信号。",
                 ),
                 t(
                   "personaPresets.degradedSafeDetail",
@@ -227,7 +227,7 @@ export function PersonaWorkbenchPanel() {
                 <h2 className="mt-1 text-sm font-semibold text-[var(--theme-text)]">
                   {t(
                     "personaPresets.contractBoundaryTitle",
-                    "等待 persona preset 投影",
+                    "角色预设投影暂时不可用",
                   )}
                 </h2>
               </div>
@@ -235,7 +235,7 @@ export function PersonaWorkbenchPanel() {
             <p className="mt-3 text-xs leading-5 text-[var(--theme-text-secondary)]">
               {t(
                 "personaPresets.contractBoundaryDescription",
-                "前端只读取公开投影；接口缺失时保持降级工作台，不回退旧广场或直连管理接口。",
+                "前端只读取公开投影；请求失败、权限不足或服务异常时保持降级工作台，不回退旧广场或直连管理接口。",
               )}
             </p>
             <div
@@ -248,7 +248,7 @@ export function PersonaWorkbenchPanel() {
               <p className="mt-1">
                 {t(
                   "personaPresets.recoveryDetail",
-                  "恢复条件：#229 完成后，以下接口返回可读目录、权限和审计元数据，页面才能从 degraded 切换到 ready。",
+                  "恢复条件：登录态、权限和以下角色预设接口恢复正常后，页面会从 degraded 切换到 ready。",
                 )}
               </p>
             </div>

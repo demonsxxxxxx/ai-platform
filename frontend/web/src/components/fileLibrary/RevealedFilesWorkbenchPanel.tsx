@@ -101,12 +101,12 @@ export function RevealedFilesWorkbenchPanel() {
               title={t("fileLibrary.degradedTitle", "文件投影已降级")}
               description={t(
                 "fileLibrary.degradedDescription",
-                "后端文件投影暂不可用；页面保留工作台入口，并避免把缺路由误显示为空文件工作台。",
+                "文件投影请求暂时不可用；页面保留工作台入口，并避免把异常误显示为空文件工作台。",
               )}
               details={[
                 t(
                   "fileLibrary.issueReferenceDetail",
-                  "后端 issue #229 仍跟踪 revealed files 公共投影；前端保持降级工作台，不把缺失合同显示为空文件工作台。",
+                  "文件投影已经接入公开工作台接口；当前降级表示请求失败、权限不足或服务状态异常，这是运行态可用性信号。",
                 ),
                 t(
                   "fileLibrary.degradedSafeDetail",
@@ -152,7 +152,7 @@ export function RevealedFilesWorkbenchPanel() {
                 <h2 className="mt-1 text-sm font-semibold text-[var(--theme-text)]">
                   {t(
                     "fileLibrary.contractBoundaryTitle",
-                    "等待 revealed files 投影",
+                    "文件投影暂时不可用",
                   )}
                 </h2>
               </div>
@@ -160,7 +160,7 @@ export function RevealedFilesWorkbenchPanel() {
             <p className="mt-3 text-xs leading-5 text-[var(--theme-text-secondary)]">
               {t(
                 "fileLibrary.contractBoundaryDescription",
-                "前端只展示公开文件投影；接口缺失时保持降级工作台，不把 404 当作空文件工作台。",
+                "前端只展示公开文件投影；请求失败、权限不足或服务异常时保持降级工作台，不把异常当作空文件工作台。",
               )}
             </p>
             <div
@@ -173,7 +173,7 @@ export function RevealedFilesWorkbenchPanel() {
               <p className="mt-1">
                 {t(
                   "fileLibrary.recoveryDetail",
-                  "恢复条件：#229 完成后，以下接口返回会话分组、统计、预览 URL 策略和权限元数据，页面才能从 degraded 切换到 ready。",
+                  "恢复条件：登录态、权限和以下文件投影接口恢复正常后，页面会从 degraded 切换到 ready。",
                 )}
               </p>
             </div>
