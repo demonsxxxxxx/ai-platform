@@ -157,7 +157,14 @@ def test_revealed_files_project_authorized_artifacts(monkeypatch):
             "created_at": "2026-06-28T08:00:00Z",
         }
     ]
-    sessions = [{"session_id": "ses_a", "session_name": "QA session", "file_count": 1}]
+    sessions = [
+        {
+            "session_id": "ses_a",
+            "session_name": "QA session",
+            "file_count": 1,
+            "updated_at": "2026-06-28T08:00:00Z",
+        }
+    ]
     install_projection_route_fakes(monkeypatch, artifacts=artifacts, sessions=sessions)
     client = TestClient(create_app())
 
