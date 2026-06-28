@@ -25,7 +25,6 @@ import { ChatInputToolbar } from "./ChatInputToolbar";
 import { ChatInputSelectors } from "./ChatInputSelectors";
 import { ChatInputHelpMenu } from "./ChatInputHelpMenu";
 import { ChatInputAttachments } from "./ChatInputAttachments";
-import { ComposerCommandHintBar } from "./ComposerCommandHintBar";
 import {
   parseComposerCommand,
   resolveComposerCommandDraft,
@@ -52,8 +51,6 @@ import type { FeaturePanel } from "../selectors/FeatureMenu";
 import type { MessageAttachment, PersonaPreset } from "../../types";
 
 export type { ChatInputProps } from "./chatInputTypes";
-
-type ComposerShortcutCommand = "$" | "/skill" | "/mcp" | "/file" | "/context";
 
 export const ChatInput = memo(function ChatInput({
   onSend,
@@ -483,18 +480,6 @@ export const ChatInput = memo(function ChatInput({
       uploadCategories.length,
     ],
   );
-  const shortcutAvailabilityByCommand = useMemo<
-    Record<ComposerShortcutCommand, boolean>
-  >(
-    () => ({
-      $: commandPanelAvailability.skills,
-      "/skill": commandPanelAvailability.skills,
-      "/mcp": commandPanelAvailability.tools,
-      "/file": commandPanelAvailability.files,
-      "/context": commandPanelAvailability.context,
-    }),
-    [commandPanelAvailability],
-  );
   const canSubmit =
     hasContent && canSend && !isLoading && !hasUploadingAttachment;
 
@@ -764,82 +749,6 @@ export const ChatInput = memo(function ChatInput({
       closeSlashMenu();
     },
     [closeSlashMenu, markContextUnavailableCommand],
-  );
-
-  const handleComposerCommandShortcut = useCallback(
-    (command: ComposerShortcutCommand) => {
-      if (!shortcutAvailabilityByCommand[command]) {
-        const unavailableCommand =
-          command === "$" || command === "/skill"
-            ? ({
-                trigger: command === "$" ? "$" : "/",
-                command: "skill",
-                panel: "skills",
-                query: "",
-                unavailable: true,
-              } as const)
-            : command === "/mcp"
-              ? ({
-                  trigger: "/",
-                  command: "mcp",
-                  panel: "tools",
-                  query: "",
-                  unavailable: true,
-                } as const)
-              : command === "/file"
-                ? ({
-                    trigger: "/",
-                    command: "file",
-                    panel: "file",
-                    query: "",
-                    unavailable: true,
-                  } as const)
-                : ({
-                    trigger: "/",
-                    command: "context",
-                    panel: "context",
-                    query: "",
-                    unavailable: true,
-                  } as const);
-        upsertUnavailableCommandChip(unavailableCommand);
-        setInput("");
-        setCursorPosition(0);
-        setActivePanel(null);
-        setCommandSearchSeed(null);
-        closeSlashMenu();
-        requestAnimationFrame(scheduleTextareaResize);
-        return;
-      }
-      if (command === "/file" && commandPanelAvailability.files) {
-        executeAvailableFileCommand();
-        return;
-      }
-      if (command === "/context") {
-        markContextUnavailableCommand();
-        return;
-      }
-      const nextValue = command === "$" ? "$ " : `${command} `;
-      setInput(nextValue);
-      setCursorPosition(nextValue.length);
-      openCommandPanel(nextValue);
-      requestAnimationFrame(() => {
-        const textarea = textareaRef.current;
-        if (!textarea) return;
-        textarea.focus();
-        textarea.selectionStart = textarea.selectionEnd = nextValue.length;
-        scheduleTextareaResize();
-      });
-    },
-    [
-      commandPanelAvailability.files,
-      closeSlashMenu,
-      executeAvailableFileCommand,
-      markContextUnavailableCommand,
-      openCommandPanel,
-      scheduleTextareaResize,
-      shortcutAvailabilityByCommand,
-      upsertUnavailableCommandChip,
-    ],
   );
 
   useEffect(() => {
@@ -1115,14 +1024,6 @@ export const ChatInput = memo(function ChatInput({
               <ComposerChips
                 selections={composerSelections}
                 onRemove={handleRemoveComposerSelection}
-              />
-
-              <ComposerCommandHintBar
-                onCommand={handleComposerCommandShortcut}
-                skillsAvailable={commandPanelAvailability.skills}
-                mcpAvailable={commandPanelAvailability.tools}
-                filesAvailable={commandPanelAvailability.files}
-                contextAvailable={commandPanelAvailability.context}
               />
             </div>
 

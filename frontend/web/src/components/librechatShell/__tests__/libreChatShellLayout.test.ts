@@ -27,10 +27,13 @@ test("surface tokens expose one neutral chat canvas", () => {
   const baseCss = read("src/styles/base.css");
 
   assert.match(surface, /libreChatSurface/);
-  assert.match(baseCss, /--theme-workbench-canvas:\s*#ffffff;/);
+  assert.match(baseCss, /--theme-workbench-canvas:\s*#f7f7f6;/);
   assert.match(baseCss, /--theme-workbench-panel:\s*#ffffff;/);
   assert.match(baseCss, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(baseCss, /--theme-bg-sidebar:\s*#f4f4f5;/);
+  assert.match(baseCss, /--theme-bg-sidebar:\s*#ececeb;/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#f0f0ef;/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#f0f0ef;/);
+  assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#ffffff;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#e5e8ed;/);
 });
 

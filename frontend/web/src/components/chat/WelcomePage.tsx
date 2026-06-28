@@ -1,14 +1,9 @@
 import { memo, useMemo, useState, useCallback, useRef } from "react";
 import {
-  ArrowRight,
-  Boxes,
-  FileText,
-  type LucideIcon,
   MessageSquareText,
   RefreshCw,
   Sparkles,
   UserRound,
-  Wrench,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ChatInput } from "./ChatInput";
@@ -44,15 +39,6 @@ interface WelcomePageProps {
     preset: PersonaPreset,
   ) => Promise<PersonaPresetSnapshot | null>;
   onClearPersonaPreset?: () => void;
-}
-
-interface QuickActionItem {
-  id: string;
-  label: string;
-  description: string;
-  command: string;
-  state: "enabled" | "unavailable";
-  icon: LucideIcon;
 }
 
 export const WelcomePage = memo(function WelcomePage({
@@ -183,103 +169,6 @@ export const WelcomePage = memo(function WelcomePage({
     personaPresetsLoading,
     displayCards.length,
   );
-  const enabledSkillsCount = chatInputProps.enabledSkillsCount ?? 0;
-  const totalSkillsCount = chatInputProps.totalSkillsCount ?? 0;
-  const enabledToolsCount = chatInputProps.enabledToolsCount ?? 0;
-  const totalToolsCount = chatInputProps.totalToolsCount ?? 0;
-  const attachedFilesCount = chatInputProps.attachments?.length ?? 0;
-  const quickActions = useMemo<QuickActionItem[]>(
-    () => [
-      {
-        id: "chat",
-        label: t("workbench.quickActions.chat", "Write a prompt"),
-        description: t(
-          "workbench.quickActions.chatDescription",
-          "Start from the plain composer.",
-        ),
-        command: "",
-        state: "enabled",
-        icon: MessageSquareText,
-      },
-      {
-        id: "skills",
-        label: t("featureMenu.skills", "Skills"),
-        description:
-          totalSkillsCount > 0
-            ? t("workbench.quickActions.skillsDescription", {
-                count: enabledSkillsCount,
-                total: totalSkillsCount,
-                defaultValue: "{{count}}/{{total}} enabled",
-              })
-            : t(
-                "workbench.quickActions.skillsUnavailable",
-                "No readable skills for this workspace.",
-              ),
-        command: "$ ",
-        state: totalSkillsCount > 0 ? "enabled" : "unavailable",
-        icon: Boxes,
-      },
-      {
-        id: "mcp",
-        label: t("featureMenu.mcpTools", "MCP tools"),
-        description:
-          totalToolsCount > 0
-            ? t("workbench.quickActions.mcpDescription", {
-                count: enabledToolsCount,
-                total: totalToolsCount,
-                defaultValue: "{{count}}/{{total}} enabled",
-              })
-            : t(
-                "workbench.quickActions.mcpUnavailable",
-                "No approved MCP tools for this workspace.",
-              ),
-        command: "/mcp ",
-        state: totalToolsCount > 0 ? "enabled" : "unavailable",
-        icon: Wrench,
-      },
-      {
-        id: "files",
-        label: t("chat.fileReferences", "File references"),
-        description:
-          attachedFilesCount > 0
-            ? t("workbench.quickActions.filesDescription", {
-                count: attachedFilesCount,
-                defaultValue: "{{count}} attached",
-              })
-            : t(
-                "workbench.quickActions.filesUnavailable",
-                "Attach or reference files after upload.",
-              ),
-        command: "/file ",
-        state: "enabled",
-        icon: FileText,
-      },
-    ],
-    [
-      attachedFilesCount,
-      enabledSkillsCount,
-      enabledToolsCount,
-      t,
-      totalSkillsCount,
-      totalToolsCount,
-    ],
-  );
-
-  const handleQuickActionClick = (action: QuickActionItem) => {
-    if (!canSendMessage || action.state === "unavailable") {
-      setContactAdminOpen(true);
-      return;
-    }
-    if (action.id === "chat") {
-      requestAnimationFrame(() => {
-        rootRef.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
-      });
-      return;
-    }
-    if (action.command) {
-      setPendingInput(action.command);
-    }
-  };
 
   return (
     <div
@@ -289,37 +178,22 @@ export const WelcomePage = memo(function WelcomePage({
     >
       <section
         data-chat-start-surface
-        className="chat-start-surface flex w-full max-w-5xl flex-col gap-3"
+        data-chat-composer-first
+        className="chat-start-surface flex w-full max-w-4xl flex-col gap-3"
       >
         <div
           data-chat-start-header
-          className="flex flex-col gap-3 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-3 shadow-[0_1px_2px_rgba(18,38,63,0.04)] sm:flex-row sm:items-center sm:justify-between"
+          className="flex flex-col items-center gap-1.5 px-3 py-1 text-center"
         >
-          <div className="min-w-0">
-            <p className="text-[11px] font-semibold uppercase text-[var(--theme-text-tertiary)]">
-              {t("workbench.newConversation", "New conversation")}
-            </p>
-            <h1 className="mt-1 truncate text-xl font-semibold leading-7 text-[var(--theme-text)] sm:text-2xl">
-              {greeting}
-            </h1>
-            <p className="mt-1 max-w-2xl text-sm leading-5 text-[var(--theme-text-secondary)]">
-              {subtitle}
-            </p>
-          </div>
-          <div className="grid shrink-0 grid-cols-2 gap-2 text-xs sm:w-52">
-            <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
-              <span className="font-semibold text-[var(--theme-text)]">
-                {enabledSkillsCount}
-              </span>{" "}
-              {t("featureMenu.skills", "Skills")}
-            </span>
-            <span className="rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1.5 text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
-              <span className="font-semibold text-[var(--theme-text)]">
-                {enabledToolsCount}
-              </span>{" "}
-              {t("featureMenu.mcpTools", "MCP")}
-            </span>
-          </div>
+          <p className="text-[11px] font-medium text-[var(--theme-text-tertiary)]">
+            {t("workbench.newConversation", "New conversation")}
+          </p>
+          <h1 className="max-w-full truncate text-2xl font-semibold leading-8 text-[var(--theme-text)] sm:text-[28px]">
+            {greeting}
+          </h1>
+          <p className="max-w-2xl text-sm leading-5 text-[var(--theme-text-secondary)]">
+            {subtitle}
+          </p>
         </div>
 
         <div className="welcome-input">
@@ -328,46 +202,8 @@ export const WelcomePage = memo(function WelcomePage({
             onMentionQueryChange={handleMentionQueryChange}
             pendingInput={pendingInput}
             onPendingInputConsumed={() => setPendingInput(null)}
-            className="w-full max-w-5xl px-0"
+            className="w-full max-w-4xl px-0"
           />
-        </div>
-
-        <div
-          data-chat-quick-actions
-          className="grid w-full max-w-5xl gap-2 sm:grid-cols-2 xl:grid-cols-4"
-        >
-          {quickActions.map((action) => {
-            const Icon = action.icon;
-            const unavailable = action.state === "unavailable";
-            return (
-              <button
-                key={action.id}
-                type="button"
-                onClick={() => handleQuickActionClick(action)}
-                className={`group flex min-h-20 items-start gap-3 rounded-lg border bg-[var(--theme-workbench-panel)] p-3 text-left shadow-[0_1px_2px_rgba(18,38,63,0.04)] transition-colors duration-200 ${
-                  unavailable
-                    ? "border-dashed border-[var(--theme-border)] opacity-70 hover:opacity-100"
-                    : "border-[var(--theme-border)] hover:border-[var(--theme-border-strong)] hover:bg-[var(--theme-bg-sidebar)]"
-                }`}
-              >
-                <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)] ring-1 ring-[var(--theme-border)]">
-                  <Icon size={16} />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-1 text-sm font-semibold text-[var(--theme-text)]">
-                    {action.label}
-                    <ArrowRight
-                      size={14}
-                      className="opacity-40 transition-transform group-hover:translate-x-0.5 group-hover:opacity-70"
-                    />
-                  </span>
-                  <span className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                    {action.description}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
         </div>
       </section>
 

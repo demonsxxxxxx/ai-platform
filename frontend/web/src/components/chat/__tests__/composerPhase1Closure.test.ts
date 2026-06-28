@@ -93,10 +93,8 @@ test("context command converts to an unavailable chip without leaving command te
     input,
     /if \(panel === "context"\) \{\s*markContextUnavailableCommand\(\);\s*return;/,
   );
-  assert.match(
-    input,
-    /if \(command === "\/context"\) \{\s*markContextUnavailableCommand\(\);\s*return;/,
-  );
+  assert.doesNotMatch(input, /handleComposerCommandShortcut/);
+  assert.doesNotMatch(input, /<ComposerCommandHintBar/);
 });
 
 test("removing the model chip is local-only and does not silently switch models", () => {
@@ -229,10 +227,6 @@ test("authenticated chat support surfaces use restrained enterprise workbench to
     ["ErrorBoundary", read("src/components/common/ErrorBoundary.tsx")],
     ["AttachmentPreview", read("src/components/chat/AttachmentPreview.tsx")],
     ["SlashCommandMenu", read("src/components/chat/SlashCommandMenu.tsx")],
-    [
-      "ComposerCommandHintBar",
-      read("src/components/chat/ComposerCommandHintBar.tsx"),
-    ],
     ["ChatMessage", read("src/components/chat/ChatMessage/index.tsx")],
     [
       "UserMessageBubble",

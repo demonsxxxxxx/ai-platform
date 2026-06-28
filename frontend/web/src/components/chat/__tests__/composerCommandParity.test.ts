@@ -318,13 +318,9 @@ test("chat input routes the available /file command to the safe upload picker", 
   );
 });
 
-test("composer first screen exposes slash dollar skills and governed shortcuts", () => {
+test("composer first screen keeps slash and dollar commands typed-first", () => {
   const chatInput = readFileSync(
     join(root, "src/components/chat/ChatInput.tsx"),
-    "utf8",
-  );
-  const shortcutBar = readFileSync(
-    join(root, "src/components/chat/ComposerCommandHintBar.tsx"),
     "utf8",
   );
   const slashMenu = readFileSync(
@@ -334,15 +330,11 @@ test("composer first screen exposes slash dollar skills and governed shortcuts",
   const zh = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
   const en = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
 
-  assert.match(chatInput, /<ComposerCommandHintBar/);
-  assert.match(chatInput, /handleComposerCommandShortcut/);
-  assert.match(shortcutBar, /data-composer-command-hints/);
-  assert.match(shortcutBar, /composerCommand\.shortcut\.skills/);
-  assert.match(shortcutBar, /composerCommand\.shortcut\.mcp/);
-  assert.match(shortcutBar, /composerCommand\.shortcut\.file/);
-  assert.match(shortcutBar, /composerCommand\.shortcut\.context/);
-  assert.match(shortcutBar, /\$ Skills/);
-  assert.match(shortcutBar, /\/mcp/);
+  assert.doesNotMatch(chatInput, /<ComposerCommandHintBar/);
+  assert.doesNotMatch(chatInput, /data-composer-command-hints/);
+  assert.doesNotMatch(chatInput, /handleComposerCommandShortcut/);
+  assert.match(chatInput, /resolveComposerCommandDraft/);
+  assert.match(chatInput, /resolveSlashCommandMenu/);
   assert.match(slashMenu, /data-composer-command-menu/);
   assert.match(slashMenu, /commandAlias/);
   assert.match(slashMenu, /\$/);
@@ -354,24 +346,16 @@ test("composer first screen exposes slash dollar skills and governed shortcuts",
   assert.match(en, /Skills/);
 });
 
-test("composer shortcut hints fail closed when a governed surface is unavailable", () => {
-  const shortcutBar = readFileSync(
-    join(root, "src/components/chat/ComposerCommandHintBar.tsx"),
-    "utf8",
-  );
+test("composer commands fail closed when a governed surface is unavailable", () => {
   const chatInput = readFileSync(
     join(root, "src/components/chat/ChatInput.tsx"),
     "utf8",
   );
 
-  assert.match(shortcutBar, /disabled=\{!available\}/);
-  assert.match(shortcutBar, /aria-disabled=\{!available\}/);
-  assert.match(shortcutBar, /data-governed-unavailable/);
-  assert.doesNotMatch(shortcutBar, /cursor-not-allowed/);
-  assert.doesNotMatch(shortcutBar, /border-amber-200 bg-amber-50/);
-  assert.match(chatInput, /shortcutAvailabilityByCommand/);
-  assert.match(chatInput, /if \(!shortcutAvailabilityByCommand\[command\]\) \{/);
+  assert.doesNotMatch(chatInput, /shortcutAvailabilityByCommand/);
+  assert.match(chatInput, /draft\.command\.unavailable/);
   assert.match(chatInput, /upsertUnavailableCommandChip/);
+  assert.match(chatInput, /setInput\(""\)/);
 });
 
 test("typed unavailable commands fail closed before opening missing selectors", () => {
@@ -425,10 +409,6 @@ test("composer user-facing copy avoids backend implementation jargon", () => {
     join(root, "src/components/chat/ChatInput.tsx"),
     "utf8",
   );
-  const shortcutBar = readFileSync(
-    join(root, "src/components/chat/ComposerCommandHintBar.tsx"),
-    "utf8",
-  );
   const zh = JSON.parse(
     readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8"),
   );
@@ -438,7 +418,6 @@ test("composer user-facing copy avoids backend implementation jargon", () => {
 
   for (const source of [
     chatInput,
-    shortcutBar,
     JSON.stringify(zh.composerChip),
     JSON.stringify(zh.composerCommand),
     JSON.stringify(en.composerChip),

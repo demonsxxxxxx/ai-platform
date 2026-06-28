@@ -2803,14 +2803,6 @@
       "description": "搜索允许的 Skills，并加入持久 Skill chip。",
       "label": "Skill"
     },
-    "shortcut": {
-      "context": "/context 上下文",
-      "file": "/file 文件",
-      "label": "输入框快捷入口",
-      "mcp": "/mcp MCP",
-      "skills": "$ Skills",
-      "unavailable": "已展示，但当前工作区尚未启用"
-    },
     "contextSelector": {
       "chip": "/context",
       "description": "上下文选择器已在输入框展示，但当前工作区还不能使用保存的上下文。",
