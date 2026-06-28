@@ -88,8 +88,9 @@ def test_frontend_prd_closure_matrix_maps_prd_done_items_without_local_paths_or_
     forbidden_fragments = (
         "C:\\",
         "C:/",
-        "zxsw",
         "raw password",
+        "AI_PLATFORM_LOGIN_PASSWORD=",
+        "password:",
         "\nCloses #81",
         "\nFixes #81",
         "full program is gate closable",
