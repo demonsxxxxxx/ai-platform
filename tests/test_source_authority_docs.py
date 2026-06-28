@@ -17,6 +17,7 @@ GITIGNORE = ROOT / ".gitignore"
 FRONTEND_WEB = ROOT / "frontend/web"
 FRONTEND_README = FRONTEND_WEB / "README.md"
 FRONTEND_MIGRATION_DOC = ROOT / "docs/frontend/ai-platform-frontend-migration.md"
+FRONTEND_PRD_CLOSURE_MATRIX = ROOT / "docs/frontend/prd-frontend-closure-matrix.md"
 SKILLS_MARKETPLACE_PUBLIC_API = ROOT / "docs/frontend/skills-marketplace-public-api.md"
 CAPACITY_BASELINE_DOC = ROOT / "docs/operations/ai-platform-capacity-baseline.md"
 OBSERVABILITY_READINESS_DOC = ROOT / "docs/operations/ai-platform-observability-readiness.md"
@@ -1481,6 +1482,46 @@ def test_frontend_docs_record_packaged_runtime_smoke_contract_and_211_blocker():
         assert "docker_capable_host_only_no_local_windows_docker" in text
         assert "frontend_packaged_image_delivery_and_release_acceptance" in text
         assert "does not close" in text or "does not by itself close" in text
+
+
+def test_frontend_prd_closure_matrix_records_current_211_boundary_without_overclosing_parent():
+    matrix_text = read(FRONTEND_PRD_CLOSURE_MATRIX)
+    compact_text = " ".join(matrix_text.split())
+
+    for expected in (
+        "Single active closure PR",
+        "Refs #81",
+        "PR #262",
+        "c9866a8919bbe0dddce40320538717a691c79375",
+        "merged-main 211 verified",
+        "company-account browser login",
+        "ordinary workflow",
+        "admin workflow",
+        "Phase 2 backend-backed expansion is not a frontend-only closure item.",
+    ):
+        assert expected in matrix_text
+
+    for boundary in (
+        "Status boundary: this is not a full-program `gate closable` claim.",
+        "Formal GitHub review metadata is still absent",
+        "must not use `Closes #81`",
+        "Credentials are read only from gitignored environment files",
+        "Evidence and comments must record only the source variable names and `redacted` placeholders",
+        "not a full-program `gate closable` issue until Phase 2 backend-backed expansion",
+    ):
+        assert boundary in compact_text
+
+    for remaining_backend_scope in (
+        "department/group Skill marketplace policy writes",
+        "MCP lifecycle and policy assignment",
+        "session-share ACL creation and lifecycle",
+        "users/roles/departments, model admin, settings, and notifications",
+    ):
+        assert remaining_backend_scope in compact_text
+
+    assert "zxsw" not in matrix_text
+    assert "C:\\Users" not in matrix_text
+    assert "\nCloses #81" not in matrix_text
 
 
 def test_prd_records_claude_sdk_execution_boundary_without_second_runtime():
