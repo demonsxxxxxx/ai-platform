@@ -1491,9 +1491,18 @@ def test_frontend_prd_closure_matrix_records_current_211_boundary_without_overcl
     for expected in (
         "Single active closure PR",
         "Refs #81",
+        "PR #267",
+        "matrix necessarily changes the head SHA after the file is written",
+        "`PR ready` after checks; `211 verified` only when live provenance",
+        "not `reviewed`, not `merged`, not `gate closable` while open",
+        "GitHub `reviewDecision` empty at the latest check",
+        "projection audit, lint, build, trace",
+        "packaged image build",
+        "Must be checked live against the current PR head before claiming `211 verified`",
+        "Latest PR #267 211 deploy evidence comment; it must use `Refs #81` only",
         "PR #264",
         "94f0b20fcf441fdcbde730a1edafb2c1dbdcbf59",
-        "merged-main 211 verified",
+        "Prior merged evidence remains PR #264",
         "company-account browser login",
         "ordinary workflow",
         "admin workflow",
@@ -1508,10 +1517,12 @@ def test_frontend_prd_closure_matrix_records_current_211_boundary_without_overcl
     for boundary in (
         "Status boundary: this is not a full-program `gate closable` claim.",
         "Formal GitHub review metadata is still absent",
+        "Codex usage-limit blocker instead of a review",
         "must not use `Closes #81`",
         "Credentials are read only from gitignored environment files",
         "Evidence and comments must record only the source variable names and `redacted` placeholders",
-        "not a full-program `gate closable` issue until Phase 2 backend-backed expansion",
+        "does not support `reviewed`, `merged`, or a full-program `gate closable` claim",
+        "not a full-program `gate closable` issue until the active PR is reviewed and merged",
         "share ACL unavailable/denied/revoked/expired states",
         "governed channel import unavailable state",
         "fail-closed group availability toggles",
@@ -1531,6 +1542,7 @@ def test_frontend_prd_closure_matrix_records_current_211_boundary_without_overcl
     assert "password:" not in matrix_text
     assert "C:\\Users" not in matrix_text
     assert "\nCloses #81" not in matrix_text
+    assert "merged-main 211 verified" not in matrix_text
 
 
 def test_prd_records_claude_sdk_execution_boundary_without_second_runtime():

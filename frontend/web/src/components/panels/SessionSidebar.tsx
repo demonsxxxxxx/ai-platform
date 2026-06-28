@@ -405,6 +405,7 @@ export const SessionSidebar = forwardRef<
 
       {/* Desktop: always render sidebar container */}
       <div
+        data-librechat-desktop-sidebar
         className="hidden sm:flex h-full relative shrink-0 overflow-hidden"
         style={{
           ...sidebarGeometryStyle,
@@ -414,11 +415,53 @@ export const SessionSidebar = forwardRef<
         }}
       >
         <div
-          className={`flex h-full w-full flex-col border-r border-[var(--theme-border)] bg-[var(--theme-sidebar-panel)] ${
-            isCollapsed ? "hidden" : ""
+          data-librechat-expanded-rail
+          className={`relative flex h-full w-[--sidebar-rail-width] shrink-0 border-r border-[var(--theme-border)] bg-[var(--theme-sidebar-rail)] ${
+            isCollapsed
+              ? "pointer-events-none opacity-0"
+              : "pointer-events-auto opacity-100"
           }`}
         >
-          {!isMobile ? (
+          <SidebarRail
+            user={user}
+            imgError={imgError}
+            onImgError={() => setImgError(true)}
+            isExpanded
+            onExpand={() => setIsCollapsed(false)}
+            onCollapse={() => setIsCollapsed(true)}
+            onNewSession={() => {
+              onNewSession();
+              setIsRecentChatsOpen(false);
+            }}
+            onOpenSearch={() => {
+              setIsSearchOpen(true);
+              setIsRecentChatsOpen(false);
+            }}
+            onOpenRecentChats={() => setIsRecentChatsOpen(true)}
+            onOpenLaunchpad={() => navigate("/apps")}
+            onOpenSkills={() => navigate("/skills")}
+            onOpenMarketplace={() => navigate("/marketplace")}
+            onOpenMcp={() => navigate("/mcp")}
+            onOpenChannels={() => navigate("/channels")}
+            onOpenAgents={() => navigate("/agents")}
+            onOpenModels={() => navigate("/models")}
+            onOpenPersona={() => navigate("/persona")}
+            onOpenFiles={() => navigate("/files")}
+            onOpenRoles={() => navigate("/roles")}
+            recentChatsBtnRef={recentChatsBtnRef}
+            onShowProfile={onShowProfile!}
+          />
+        </div>
+
+        <div
+          data-librechat-expanded-panel
+          className={`flex h-full min-w-0 flex-1 flex-col border-r border-[var(--theme-border)] bg-[var(--theme-sidebar-panel)] ${
+            isCollapsed
+              ? "pointer-events-none opacity-0"
+              : "pointer-events-auto opacity-100"
+          }`}
+        >
+          {!isMobile && !isCollapsed ? (
             <SessionListContent
               user={user}
               imgError={imgError}
@@ -440,6 +483,7 @@ export const SessionSidebar = forwardRef<
               sessionActions={sessionActions}
               isChatsCollapsed={isChatsCollapsed}
               onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
+              showFooter={false}
             />
           ) : (
             <div className="flex-1" />
@@ -457,7 +501,9 @@ export const SessionSidebar = forwardRef<
             user={user}
             imgError={imgError}
             onImgError={() => setImgError(true)}
+            isExpanded={false}
             onExpand={() => setIsCollapsed(false)}
+            onCollapse={() => setIsCollapsed(true)}
             onNewSession={() => {
               onNewSession();
               setIsRecentChatsOpen(false);

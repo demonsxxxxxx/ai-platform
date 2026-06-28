@@ -22,17 +22,22 @@ def test_frontend_prd_closure_matrix_records_single_pr_evidence_boundary():
     assert "Single active closure PR" in text
     assert "Refs #81" in text
     assert "must not use `Closes #81`" in text
-    assert "PR #264" in text
+    assert "PR #267" in text
+    assert "matrix necessarily changes the head SHA after the file is written" in text
+    assert "`PR ready` after checks; `211 verified` only when live provenance" in text
+    assert "not `reviewed`, not `merged`, not `gate closable` while open" in text
+    assert "GitHub `reviewDecision` empty at the latest check" in text
+    assert "projection audit, lint, build, trace" in text
+    assert "packaged image build" in text
+    assert "Must be checked live against the current PR head before claiming `211 verified`" in text
+    assert "Latest PR #267 211 deploy evidence comment; it must use `Refs #81` only" in text
     assert "94f0b20fcf441fdcbde730a1edafb2c1dbdcbf59" in text
-    assert "merged-main 211 verified" in text
+    assert "Prior merged evidence remains PR #264" in text
     assert "not a full-program `gate closable` claim" in text
     assert "Formal GitHub review metadata is still absent" in text
-    assert "/home/xinlin.jiang/frontend-releases/20260628-94f0b20/ai-platform-frontend-94f0b20-dist.tar.gz" in text
-    assert "/home/xinlin.jiang/frontend-releases/evidence/pr264-94f0b20-211-browser-smoke/211-smoke-94f0b20.json" in text
-    assert "/home/xinlin.jiang/frontend-releases/evidence/pr264-94f0b20-211-browser-smoke-evidence.tar.gz" in text
-    assert "e71185e112f7fc92b89fba262e9f1ba5bdc0c170c2357c7f2d28c8af0122134b" in text
-    assert "158353a2ed6879c5fd7a062c445e1ca23f227cf8febe61064b89b37def6f050d" in text
-    assert "loading for skills" in text
+    assert "Codex usage-limit blocker instead of a review" in text
+    assert "does not support `reviewed`, `merged`, or a full-program `gate closable` claim" in text
+    assert "ready for apps, skills, marketplace, roles, MCP, persona, files, channels, and settings" in text
     assert "Right context panel" in text
     assert "shareChannelFailClosedSource.test.ts" in text
     assert "governed channel import without fake import success" in text
@@ -104,6 +109,7 @@ def test_frontend_prd_closure_matrix_maps_prd_done_items_without_local_paths_or_
         "\nCloses #81",
         "\nFixes #81",
         "full program is gate closable",
+        "merged-main 211 verified",
     )
     for fragment in forbidden_fragments:
         assert fragment not in text
