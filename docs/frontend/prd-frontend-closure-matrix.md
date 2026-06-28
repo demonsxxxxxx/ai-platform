@@ -61,7 +61,7 @@ variable names and `redacted` placeholders, never credential values.
 | --- | --- | --- |
 | Phase 1A foundation | Accepted as historical frontend foundation evidence. | Existing auth, session, RBAC, projection audit, build, packaged/static entry, and 211 entry evidence. |
 | Phase 1B shell and composer parity | Frontend evidence is present through the merged PR chain ending with PR #264. | LibreChat-style shell, slash command menu, `$ Skills selector`, selected Skill chip, MCP selector evidence, file upload affordance, route hydration, and forbidden shared route are covered by the committed browser-smoke helper and 211 evidence. |
-| Phase 1C governance and collaboration surface parity | Frontend evidence is present where current backend projections exist; missing backend write products remain fail-closed or read-only. | `/apps`, `/skills`, `/marketplace`, `/roles`, `/mcp`, `/persona`, `/files`, `/channels`, `/settings`, and `/shared/smoke-denied` are covered by company-account route smoke, governance states, and the authenticated right context panel. |
+| Phase 1C governance and collaboration surface parity | Frontend evidence is present where current backend projections exist; missing backend write products remain fail-closed or read-only. | `/apps`, `/skills`, `/marketplace`, `/roles`, `/mcp`, `/persona`, `/files`, `/channels`, `/settings`, and `/shared/smoke-denied` are covered by company-account route smoke, governance states, and the authenticated right context panel. Source-level closure tests also cover share ACL unavailable/denied/revoked/expired states, governed channel import unavailable state, read-only Skills/Marketplace catalog shells, fail-closed group availability toggles, and MCP lifecycle governance without raw server controls. |
 | Phase 2 backend-backed expansion | Not a frontend-only closure item. | Requires backend contracts and runtime evidence before any real product closure claim. |
 
 ## PRD Acceptance Mapping
@@ -79,6 +79,9 @@ variable names and `redacted` placeholders, never credential values.
 | Route coverage | Smoke covers `/chat`, `/apps`, `/skills`, `/marketplace`, `/roles`, `/mcp`, `/persona`, `/files`, `/channels`, `/settings`, and `/shared/smoke-denied`. |
 | Runtime identity | 211 static provenance for the active frontend matches the merge commit used in evidence. |
 | Right context panel | PR #264 projects run state, selected Skills, MCP tools, file attachments, and pending permission request counts from governed client state. |
+| Phase 1C share and channel surfaces | `shareChannelFailClosedSource.test.ts` covers `/shared/:shareId` fail-closed unavailable states and `/channels` governed channel import without fake import success. |
+| Phase 1C marketplace/group toggle surfaces | `governancePhase1Closure.test.ts` covers read-only Skills/Marketplace catalog shells, permission-gated marketplace writes, fail-closed group availability toggle UI, and MCP lifecycle governance without raw controls. |
+| Phase 1C active route contract | `frontendPhase1ClosureContract.test.ts` covers active routes for `/apps`, `/skills`, `/marketplace`, `/mcp`, `/channels`, and `/shared/:shareId` plus the fail-closed write surfaces used by Phase 1C. |
 
 ## Phase 2 Boundary
 
