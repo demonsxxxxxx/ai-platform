@@ -102,26 +102,26 @@ Expected: PASS.
 - Consumes: completed Tasks 1 and 2.
 - Produces: a verified branch ready to push and attach to the one remaining #81 closure PR.
 
-- [ ] **Step 1: Run focused backend route tests**
+- [x] **Step 1: Run focused backend route tests**
 
 ```powershell
 python -m pytest tests\test_skills_marketplace_routes.py tests\test_frontend_projection_routes.py tests\test_auth_routes.py -q --basetemp .pytest-tmp
 ```
 
-- [ ] **Step 2: Run frontend static contract tests**
+- [x] **Step 2: Run frontend static contract tests**
 
 ```powershell
-pnpm --dir frontend/web test -- frontendShellParityAcceptance.test.ts
+pnpm exec tsx --test src/__tests__/frontendShellParityAcceptance.test.ts
 ```
 
-- [ ] **Step 3: Run compile and whitespace checks**
+- [x] **Step 3: Run compile and whitespace checks**
 
 ```powershell
 python -m compileall -q app tools scripts
 git diff --check
 ```
 
-- [ ] **Step 4: Commit and push**
+- [x] **Step 4: Commit and push**
 
 ```powershell
 git add app frontend docs tests
