@@ -251,7 +251,7 @@ test("post-login navigation keeps governed MCP entry discoverable without stale 
   assert.doesNotMatch(chatInput, /totalSkillsCount > 0/);
 });
 
-test("authenticated chat workspace keeps one LibreChat white canvas instead of split backgrounds", () => {
+test("authenticated chat workspace keeps one warm-neutral LibreChat canvas instead of split backgrounds", () => {
   const surface = readFileSync(
     join(root, "src/components/workbench/workbenchSurface.ts"),
     "utf8",
@@ -320,11 +320,12 @@ test("authenticated chat workspace keeps one LibreChat white canvas instead of s
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(libreSidePanel, /workbenchSurface\.secondaryPanel/);
-  assert.match(theme, /--theme-bg:\s*#ffffff;/);
-  assert.match(theme, /--theme-bg-sidebar:\s*#f4f4f5;/);
+  assert.match(theme, /--theme-bg:\s*#f7f7f6;/);
+  assert.match(theme, /--theme-bg-sidebar:\s*#ececeb;/);
   assert.match(theme, /--theme-workbench-panel:\s*#ffffff;/);
   assert.match(theme, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#ffffff;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#f7f7f6;/);
+  assert.doesNotMatch(theme, /--theme-workbench-canvas:\s*#ffffff;/);
   assert.doesNotMatch(theme, /--theme-workbench-canvas:\s*#e5e8ed;/);
   assert.doesNotMatch(theme, /--theme-workbench-panel:\s*#f3f4f6;/);
   assert.match(libreSurface, /bg-\[var\(--theme-workbench-canvas\)\]/);
@@ -391,11 +392,11 @@ test("authenticated workbench adopts one LibreChat light application shell", () 
   assert.doesNotMatch(enterpriseSelect, /GlassSelect|glass-/);
   assert.match(settingsHook, /ai-platform-settings-\$\{date\}\.json/);
   assert.doesNotMatch(settingsHook, /lamb-agent-settings/);
-  assert.match(theme, /--theme-sidebar-rail:\s*#f4f4f5;/);
-  assert.match(theme, /--theme-sidebar-panel:\s*#f4f4f5;/);
-  assert.match(theme, /--theme-sidebar-panel-muted:\s*#e9e9eb;/);
-  assert.match(theme, /--theme-bg:\s*#ffffff;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#ffffff;/);
+  assert.match(theme, /--theme-sidebar-rail:\s*#f0f0ef;/);
+  assert.match(theme, /--theme-sidebar-panel:\s*#f0f0ef;/);
+  assert.match(theme, /--theme-sidebar-panel-muted:\s*#e5e5e3;/);
+  assert.match(theme, /--theme-bg:\s*#f7f7f6;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#f7f7f6;/);
   assert.match(sidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /data-workbench-sidebar-panel/);

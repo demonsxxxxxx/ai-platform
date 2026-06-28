@@ -715,6 +715,10 @@ export function ChatView({
       sessionId={sessionId}
       currentRunId={currentRunId}
       messageCount={messages.length}
+      skills={skills}
+      tools={tools}
+      attachments={attachments}
+      approvals={approvals}
     />
   );
 

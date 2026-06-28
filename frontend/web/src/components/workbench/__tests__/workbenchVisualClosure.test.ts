@@ -156,6 +156,30 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   assert.doesNotMatch(chatInput, /backgroundColor: "var\(--theme-bg\)"/);
 });
 
+test("workbench right context is a real run context panel, not a blank placeholder", () => {
+  const sidePanel = read("src/components/librechatShell/LibreChatSidePanel.tsx");
+
+  assert.match(sidePanel, /data-librechat-context-overview/);
+  assert.match(sidePanel, /data-librechat-context-section=\{section\}/);
+  assert.match(sidePanel, /section="run"/);
+  assert.match(sidePanel, /section="skills"/);
+  assert.match(sidePanel, /section="mcp"/);
+  assert.match(sidePanel, /section="files"/);
+  assert.match(sidePanel, /section="permissions"/);
+  assert.match(sidePanel, /selectedSkillsCount/);
+  assert.match(sidePanel, /selectedToolsCount/);
+  assert.match(sidePanel, /attachmentsCount/);
+  assert.match(sidePanel, /approvalCount/);
+  assert.match(sidePanel, /workbench\.contextPanel\.selectedSkills/);
+  assert.match(sidePanel, /workbench\.contextPanel\.selectedTools/);
+  assert.match(sidePanel, /workbench\.contextPanel\.files/);
+  assert.match(sidePanel, /workbench\.contextPanel\.permissions/);
+  assert.doesNotMatch(
+    sidePanel,
+    /phase2Unavailable[\s\S]{0,120}mt-auto/,
+  );
+});
+
 test("post-login projection panels share workbench surface tokens", () => {
   const panels = new Map([
     ["MCPPanel", read("src/components/panels/MCPPanel.tsx")],

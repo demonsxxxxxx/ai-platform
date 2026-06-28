@@ -3167,10 +3167,32 @@
       "stateLabel": "页面状态",
       "surfaceLabel": "受治理边界"
     },
+    "artifacts": "产物",
+    "contextLabel": "上下文",
+    "messages": "消息",
     "newConversation": "新对话",
+    "noRun": "无活动运行",
     "none": "无",
+    "permissions": "权限",
+    "runState": "运行状态",
+    "runSurfaces": "运行面板",
+    "session": "会话",
     "selectionState": "已选能力",
+    "unsaved": "未保存",
     "unavailableShort": "不可用",
+    "workspaceContext": "工作区上下文",
+    "contextPanel": {
+      "run": "运行上下文",
+      "selectedSkills": "已选 Skills",
+      "selectedTools": "MCP 工具",
+      "files": "文件",
+      "permissions": "权限",
+      "noSkills": "尚未选择 Skill chip。",
+      "noTools": "尚未选择 MCP 工具。",
+      "noFiles": "尚未附加文件。",
+      "noApprovals": "暂无待处理权限请求。",
+      "pendingApprovals": "{{count}} 个权限请求待处理。"
+    },
     "phase2Unavailable": "产物、已选上下文和运行详情在当前工作区启用前保持只读。"
   },
   "governance": {
