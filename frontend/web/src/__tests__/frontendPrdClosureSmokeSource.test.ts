@@ -118,3 +118,26 @@ test("PRD closure browser smoke waits for route-specific workbench content befor
   assert.match(waitForHydrationSource, /route_hydration:\$\{route\}/);
   assert.doesNotMatch(waitForHydrationSource, /async function waitForRouteContent/);
 });
+
+test("PRD closure browser smoke records every frontend governance state", () => {
+  const source = readFileSync(smokeScript, "utf8");
+
+  assert.match(source, /GOVERNANCE_SMOKE_STATES/);
+  assert.match(source, /collectGovernanceStateMachineEvidence/);
+  assert.match(source, /stateMachineEvidenceReady/);
+
+  for (const state of [
+    "logged-out",
+    "loading",
+    "no-workspace",
+    "forbidden",
+    "degraded",
+    "ready",
+  ]) {
+    assert.match(source, new RegExp(`["']${state}["']`));
+    assert.match(
+      source,
+      new RegExp(`frontend-governance:\\$\\{state\\}|frontend-governance:${state}`),
+    );
+  }
+});
