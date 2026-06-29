@@ -30,6 +30,7 @@ SOURCE_RUNTIME_RELATION_MANIFEST = (
 )
 ACTIVE_RUNTIME_SUBJECT_SHA = "e4c0e9d0298c684df369afecd29ec902fcc2221d"
 ACTIVE_SOURCE_TREE_SHA = "e4c0e9d0298c684df369afecd29ec902fcc2221d"
+CURRENT_SOURCE_RUNTIME_RELATION_SHA = "448e130b98cdadf3aaea3097acb15a9a0c15e446"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
@@ -575,8 +576,8 @@ def test_committed_source_runtime_relation_manifest_keeps_clean_checkout_readine
     payload = json.loads(read(SOURCE_RUNTIME_RELATION_MANIFEST))
 
     assert payload["schema_version"] == "ai-platform.source-runtime-relation-manifest.v1"
-    assert payload["source_tree_commit_sha"] == ACTIVE_SOURCE_TREE_SHA
-    assert payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert payload["source_tree_commit_sha"] == CURRENT_SOURCE_RUNTIME_RELATION_SHA
+    assert payload["runtime_subject_commit_sha"] == CURRENT_SOURCE_RUNTIME_RELATION_SHA
     assert payload["runtime_affecting_changes_since_runtime_subject"] == []
     assert payload["runtime_affecting_dirty_paths"] == []
     assert "C:\\Users" not in json.dumps(payload)
