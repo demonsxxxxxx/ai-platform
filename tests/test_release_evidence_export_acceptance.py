@@ -158,6 +158,7 @@ def test_release_evidence_export_acceptance_fails_closed_on_each_host_or_socket_
         "/home/service/ai-platform/.env",
         "/Users/service/ai-platform/.env",
         "/var/run/docker.sock",
+        "/tmp/ai-platform-compose.env",
     ]
 
     for index, unsafe_value in enumerate(unsafe_values):
@@ -209,6 +210,80 @@ def test_release_evidence_export_acceptance_excludes_non_entry_evidence_namespac
             "path": "skill-release/qa-file-reviewer/sbom.json",
             "reasons": ["non_release_evidence_entry_path"],
         }
+    ]
+
+
+def test_release_evidence_export_acceptance_excludes_dedicated_foundation_runtime_concurrency_namespace(tmp_path):
+    _write_entry(tmp_path, _valid_entry())
+    concurrency_dir = (
+        tmp_path
+        / "foundation-runtime-concurrency"
+        / f"{VALID_COMMIT}-frc-b0-20260629"
+    )
+    concurrency_dir.mkdir(parents=True, exist_ok=True)
+    (concurrency_dir / "foundation-runtime-concurrency.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.foundation-runtime-concurrency.v1",
+                "artifact_kind": "foundation_runtime_concurrency",
+                "commit_sha": VALID_COMMIT,
+                "runtime_subject_commit_sha": VALID_COMMIT,
+                "source_tree_commit_sha": VALID_COMMIT,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    acceptance = build_release_evidence_export_acceptance(evidence_root=tmp_path)
+
+    assert acceptance["status"] == "ready_for_operator_review"
+    assert acceptance["safe_entry_count"] == 1
+    assert acceptance["blocked_entry_count"] == 0
+    assert acceptance["excluded_entries"] == [
+        {
+            "path": (
+                "foundation-runtime-concurrency/"
+                f"{VALID_COMMIT}-frc-b0-20260629/"
+                "foundation-runtime-concurrency.json"
+            ),
+            "reasons": ["non_release_evidence_entry_path"],
+        }
+    ]
+
+
+def test_release_evidence_export_acceptance_blocks_raw_frc_under_release_entry_namespace(tmp_path):
+    raw_dir = tmp_path / "foundation-alpha-poc" / VALID_COMMIT
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "foundation-runtime-concurrency.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.foundation-runtime-concurrency.v1",
+                "artifact_kind": "foundation_runtime_concurrency",
+                "commit_sha": VALID_COMMIT,
+                "runtime_subject_commit_sha": VALID_COMMIT,
+                "source_tree_commit_sha": VALID_COMMIT,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    acceptance = build_release_evidence_export_acceptance(evidence_root=tmp_path)
+
+    assert acceptance["status"] == "blocked_invalid_evidence"
+    assert acceptance["safe_entry_count"] == 0
+    assert acceptance["blocked_entry_count"] == 1
+    assert acceptance["blocked_entries"][0]["reasons"] == [
+        "invalid_schema_version",
+        "missing_captured_at",
+        "missing_evidence_id",
+        "missing_evidence_ref",
+        "missing_gate",
+        "missing_issue_refs",
+        "missing_redaction_scan_status",
+        "missing_review_status",
+        "missing_source_ref",
+        "redaction_scan_not_passed",
+        "review_status_not_accepted",
     ]
 
 

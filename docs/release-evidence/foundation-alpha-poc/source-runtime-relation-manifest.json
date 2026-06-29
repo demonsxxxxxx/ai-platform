@@ -1,8 +1,8 @@
 {
-  "note": "B0 211 runtime-only rollout evidence for the c701974 runtime subject. The live API/worker containers use ai-platform:c701974-b0-current-main-runtime-only-v2 with matching runtime subject, runtime source marker, OCI revision, and hyphen/underscore source-revision labels. Current local source e0df6d2 differs from c701974 only in frontend/web paths, which are backend runtime-neutral for this B0 backend readiness relation. The POC smoke used the active 211 frontend dist served from /home/xinlin.jiang/frontend-pr111-smoke/dist; packaged current-repo frontend runtime acceptance remains a separate followup and is not closed by this manifest.",
+  "note": "B0 211 runtime-only rollout evidence for the 448e130 runtime subject. The live API/worker containers use ai-platform:448e130-b0-current-main-runtime-only-v2 with matching runtime subject, runtime source marker, OCI revision, and hyphen/underscore source-revision labels. The POC smoke used the active 211 frontend dist served from a redacted operator path; packaged current-repo frontend runtime acceptance remains a separate followup and is not closed by this manifest.",
   "runtime_affecting_changes_since_runtime_subject": [],
   "runtime_affecting_dirty_paths": [],
-  "runtime_subject_commit_sha": "c701974f5d66b54ff9255b5d033ee4f0ce3d8bb8",
+  "runtime_subject_commit_sha": "448e130b98cdadf3aaea3097acb15a9a0c15e446",
   "schema_version": "ai-platform.source-runtime-relation-manifest.v1",
-  "source_tree_commit_sha": "e0df6d2ef0b27216b2f443bcd71495cda766d97d"
+  "source_tree_commit_sha": "448e130b98cdadf3aaea3097acb15a9a0c15e446"
 }

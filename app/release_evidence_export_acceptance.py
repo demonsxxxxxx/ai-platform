@@ -57,6 +57,7 @@ _FORBIDDEN_VALUE_PATTERNS = (
     re.compile(r"\bc:\\users\\", re.IGNORECASE),
     re.compile(r"/home/[^\s\"']+", re.IGNORECASE),
     re.compile(r"/users/[^\s\"']+", re.IGNORECASE),
+    re.compile(r"/tmp/ai-platform-compose[^\s\"']*", re.IGNORECASE),
     re.compile(r"/var/run/docker\.sock", re.IGNORECASE),
 )
 _LEGACY_EXCLUSION_REASONS = {

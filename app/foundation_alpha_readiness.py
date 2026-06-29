@@ -50,10 +50,16 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "app/governance_readiness.py",
     "app/memory_erasure_readiness.py",
     "app/office_context_readiness.py",
+    "app/release_evidence_export_acceptance.py",
+    "app/release_evidence_readiness.py",
+    "app/release_evidence_runtime_acceptance.py",
     "tools/foundation_alpha_readiness.py",
     "tools/frontend_release_traceability.py",
+    "tools/release_evidence_export_acceptance.py",
+    "tools/release_evidence_readiness.py",
     "tools/verify_auth_rbac_smoke.py",
     "tools/verify_governance_runtime_smoke.py",
+    "tools/verify_release_evidence_runtime_acceptance.py",
     "tools/verify_multiuser_poc.py",
     "tools/wrap_foundation_alpha_evidence.py",
     "tests/test_source_authority_docs.py",
@@ -1677,6 +1683,7 @@ def _top_level_open_followups(
 def _stage_acceptance_status(
     *,
     runtime_relevant_source_matches: bool,
+    runtime_matches_source_tree: bool,
     context_projection_verified: bool,
     stage_acceptance_blockers: list[str],
 ) -> str:
@@ -1684,7 +1691,7 @@ def _stage_acceptance_status(
         return "runtime_rollout_required"
     if not context_projection_verified:
         return "context_snapshot_public_summary_followup_required"
-    if stage_acceptance_blockers:
+    if stage_acceptance_blockers or not runtime_matches_source_tree:
         return "core_poc_loop_verified_followups_open"
     return "foundation_alpha_stage_complete"
 
@@ -2325,6 +2332,7 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
     stage_acceptance_blockers = _ordered_stage_blockers(domains)
     stage_acceptance_status = _stage_acceptance_status(
         runtime_relevant_source_matches=runtime_relevant_source_matches,
+        runtime_matches_source_tree=runtime_matches_source_tree,
         context_projection_verified=context_projection_verified,
         stage_acceptance_blockers=stage_acceptance_blockers,
     )
