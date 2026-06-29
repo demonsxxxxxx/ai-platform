@@ -17,7 +17,7 @@ export const LIBRECHAT_SHELL_REFERENCE = {
 
 export const LIBRECHAT_SHELL_GEOMETRY = {
   railWidthPx: 52,
-  expandedMinWidthPx: 360,
+  expandedMinWidthPx: 288,
   mobileMaxWidth: "min(85vw, 380px)",
 } as const;
 
@@ -39,7 +39,7 @@ export const libreChatSurface = {
   ),
   workspaceWithContext: clsx(
     "librechat-shell-workspace grid min-h-0 w-full flex-1 grid-cols-1",
-    "xl:grid-cols-[minmax(0,1fr)_20rem]",
+    "xl:grid-cols-[minmax(0,1fr)_18rem]",
   ),
   thread: clsx(
     "librechat-shell-thread workbench-thread-frame flex min-w-0 flex-1 flex-col bg-[var(--theme-workbench-canvas)]",

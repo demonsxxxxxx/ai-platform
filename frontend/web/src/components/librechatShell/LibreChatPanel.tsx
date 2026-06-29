@@ -15,9 +15,9 @@ export function LibreChatPanelSection({
     <div
       data-workbench-nav-group={group}
       data-librechat-expanded-panel={group}
-      className="space-y-1"
+      className="space-y-0.5"
     >
-      <p className="px-[9px] pb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)]">
+      <p className="px-[9px] pb-1 pt-1 text-[11px] font-semibold tracking-normal text-[var(--theme-text-tertiary)]">
         {label}
       </p>
       {children}

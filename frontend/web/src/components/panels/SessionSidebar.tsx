@@ -406,7 +406,7 @@ export const SessionSidebar = forwardRef<
       {/* Desktop: always render sidebar container */}
       <div
         data-librechat-desktop-sidebar
-        className="hidden sm:flex h-full relative shrink-0 overflow-hidden"
+        className="hidden sm:flex h-full relative shrink-0 overflow-hidden bg-[var(--theme-sidebar-panel)]"
         style={{
           ...sidebarGeometryStyle,
           width: isCollapsed
@@ -414,54 +414,11 @@ export const SessionSidebar = forwardRef<
             : "var(--sidebar-width)",
         }}
       >
-        <div
-          data-librechat-expanded-rail
-          className={`relative flex h-full w-[--sidebar-rail-width] shrink-0 border-r border-[var(--theme-border)] bg-[var(--theme-sidebar-rail)] ${
-            isCollapsed
-              ? "pointer-events-none opacity-0"
-              : "pointer-events-auto opacity-100"
-          }`}
-        >
-          <SidebarRail
-            user={user}
-            imgError={imgError}
-            onImgError={() => setImgError(true)}
-            isExpanded
-            onExpand={() => setIsCollapsed(false)}
-            onCollapse={() => setIsCollapsed(true)}
-            onNewSession={() => {
-              onNewSession();
-              setIsRecentChatsOpen(false);
-            }}
-            onOpenSearch={() => {
-              setIsSearchOpen(true);
-              setIsRecentChatsOpen(false);
-            }}
-            onOpenRecentChats={() => setIsRecentChatsOpen(true)}
-            onOpenLaunchpad={() => navigate("/apps")}
-            onOpenSkills={() => navigate("/skills")}
-            onOpenMarketplace={() => navigate("/marketplace")}
-            onOpenMcp={() => navigate("/mcp")}
-            onOpenChannels={() => navigate("/channels")}
-            onOpenAgents={() => navigate("/agents")}
-            onOpenModels={() => navigate("/models")}
-            onOpenPersona={() => navigate("/persona")}
-            onOpenFiles={() => navigate("/files")}
-            onOpenRoles={() => navigate("/roles")}
-            recentChatsBtnRef={recentChatsBtnRef}
-            onShowProfile={onShowProfile!}
-          />
-        </div>
-
-        <div
-          data-librechat-expanded-panel
-          className={`flex h-full min-w-0 flex-1 flex-col border-r border-[var(--theme-border)] bg-[var(--theme-sidebar-panel)] ${
-            isCollapsed
-              ? "pointer-events-none opacity-0"
-              : "pointer-events-auto opacity-100"
-          }`}
-        >
-          {!isMobile && !isCollapsed ? (
+        {!isCollapsed ? (
+          <div
+            data-librechat-expanded-panel
+            className="flex h-full w-full min-w-0 flex-col border-r border-[var(--theme-border)] bg-[var(--theme-sidebar-panel)]"
+          >
             <SessionListContent
               user={user}
               imgError={imgError}
@@ -483,50 +440,41 @@ export const SessionSidebar = forwardRef<
               sessionActions={sessionActions}
               isChatsCollapsed={isChatsCollapsed}
               onToggleChatsCollapsed={() => setIsChatsCollapsed((v) => !v)}
-              showFooter={false}
             />
-          ) : (
-            <div className="flex-1" />
-          )}
-        </div>
-
-        <div
-          className={`absolute inset-0 ${
-            isCollapsed
-              ? "opacity-100 pointer-events-auto"
-              : "pointer-events-none opacity-0"
-          }`}
-        >
-          <SidebarRail
-            user={user}
-            imgError={imgError}
-            onImgError={() => setImgError(true)}
-            isExpanded={false}
-            onExpand={() => setIsCollapsed(false)}
-            onCollapse={() => setIsCollapsed(true)}
-            onNewSession={() => {
-              onNewSession();
-              setIsRecentChatsOpen(false);
-            }}
-            onOpenSearch={() => {
-              setIsSearchOpen(true);
-              setIsRecentChatsOpen(false);
-            }}
-            onOpenRecentChats={() => setIsRecentChatsOpen(true)}
-            onOpenLaunchpad={() => navigate("/apps")}
-            onOpenSkills={() => navigate("/skills")}
-            onOpenMarketplace={() => navigate("/marketplace")}
-            onOpenMcp={() => navigate("/mcp")}
-            onOpenChannels={() => navigate("/channels")}
-            onOpenAgents={() => navigate("/agents")}
-            onOpenModels={() => navigate("/models")}
-            onOpenPersona={() => navigate("/persona")}
-            onOpenFiles={() => navigate("/files")}
-            onOpenRoles={() => navigate("/roles")}
-            recentChatsBtnRef={recentChatsBtnRef}
-            onShowProfile={onShowProfile!}
-          />
-        </div>
+          </div>
+        ) : (
+          <div className="absolute inset-0">
+            <SidebarRail
+              user={user}
+              imgError={imgError}
+              onImgError={() => setImgError(true)}
+              isExpanded={false}
+              onExpand={() => setIsCollapsed(false)}
+              onCollapse={() => setIsCollapsed(true)}
+              onNewSession={() => {
+                onNewSession();
+                setIsRecentChatsOpen(false);
+              }}
+              onOpenSearch={() => {
+                setIsSearchOpen(true);
+                setIsRecentChatsOpen(false);
+              }}
+              onOpenRecentChats={() => setIsRecentChatsOpen(true)}
+              onOpenLaunchpad={() => navigate("/apps")}
+              onOpenSkills={() => navigate("/skills")}
+              onOpenMarketplace={() => navigate("/marketplace")}
+              onOpenMcp={() => navigate("/mcp")}
+              onOpenChannels={() => navigate("/channels")}
+              onOpenAgents={() => navigate("/agents")}
+              onOpenModels={() => navigate("/models")}
+              onOpenPersona={() => navigate("/persona")}
+              onOpenFiles={() => navigate("/files")}
+              onOpenRoles={() => navigate("/roles")}
+              recentChatsBtnRef={recentChatsBtnRef}
+              onShowProfile={onShowProfile!}
+            />
+          </div>
+        )}
       </div>
 
       {isSearchOpen && (

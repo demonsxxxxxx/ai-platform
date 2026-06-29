@@ -57,6 +57,6 @@ test("librechat shell geometry keeps the approved rail and panel widths", () => 
   const source = read("src/components/librechatShell/libreChatSurface.ts");
 
   assert.match(source, /railWidthPx:\s*52/);
-  assert.match(source, /expandedMinWidthPx:\s*360/);
+  assert.match(source, /expandedMinWidthPx:\s*288/);
   assert.match(source, /mobileMaxWidth:\s*"min\(85vw, 380px\)"/);
 });

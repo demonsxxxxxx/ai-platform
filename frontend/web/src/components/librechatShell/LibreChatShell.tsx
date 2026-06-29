@@ -15,7 +15,7 @@ export function LibreChatShell({
   rightPanel,
 }: LibreChatShellProps) {
   const { t } = useTranslation();
-  const [contextOpen, setContextOpen] = useState(true);
+  const [contextOpen, setContextOpen] = useState(false);
   const ContextIcon = contextOpen ? PanelRightClose : PanelRightOpen;
 
   return (
