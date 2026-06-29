@@ -17,6 +17,10 @@ import type {
   PersonaPreset,
   PersonaPresetSnapshot,
 } from "../../types";
+import {
+  LibreChatSelectorLayer,
+  LibreChatSelectorModal,
+} from "../../librechat-ui/Selector";
 
 export interface ChatInputSelectorsProps {
   activePanel: FeaturePanel;
@@ -126,123 +130,136 @@ export function ChatInputSelectors({
   const { t } = useTranslation();
 
   return (
-    <>
+    <LibreChatSelectorLayer>
       {onToggleTool && onToggleCategory && onToggleAll && (
-        <ToolSelector
-          tools={tools}
-          onToggleTool={onToggleTool}
-          onToggleCategory={onToggleCategory}
-          onToggleAll={onToggleAll}
-          enabledCount={enabledToolsCount}
-          totalCount={totalToolsCount}
-          isOpen={activePanel === "tools"}
-          onOpenChange={(open) => onActivePanelChange(open ? "tools" : null)}
-          searchSeed={
-            commandSearchSeed?.panel === "tools"
-              ? commandSearchSeed.query
-              : undefined
-          }
-        />
+        <LibreChatSelectorModal panel="tools">
+          <ToolSelector
+            tools={tools}
+            onToggleTool={onToggleTool}
+            onToggleCategory={onToggleCategory}
+            onToggleAll={onToggleAll}
+            enabledCount={enabledToolsCount}
+            totalCount={totalToolsCount}
+            isOpen={activePanel === "tools"}
+            onOpenChange={(open) => onActivePanelChange(open ? "tools" : null)}
+            searchSeed={
+              commandSearchSeed?.panel === "tools"
+                ? commandSearchSeed.query
+                : undefined
+            }
+          />
+        </LibreChatSelectorModal>
       )}
       {enableSkills &&
         onToggleSkill &&
         onToggleSkillCategory &&
         onToggleAllSkills && (
-          <SkillSelector
-            skills={skills}
-            onToggleSkill={onToggleSkill}
-            onToggleCategory={onToggleSkillCategory}
-            onToggleAll={onToggleAllSkills}
-            pendingSkillNames={pendingSkillNames}
-            isMutating={skillsMutating}
-            enabledCount={enabledSkillsCount}
-            totalCount={totalSkillsCount}
-            controlledByPersonaName={
-              personaSkillsControlled ? selectedPersonaName : null
-            }
-            isOpen={activePanel === "skills"}
-            onOpenChange={(open) => onActivePanelChange(open ? "skills" : null)}
-            searchSeed={
-              commandSearchSeed?.panel === "skills"
-                ? commandSearchSeed.query
-                : undefined
-            }
-          />
+          <LibreChatSelectorModal panel="skills">
+            <SkillSelector
+              skills={skills}
+              onToggleSkill={onToggleSkill}
+              onToggleCategory={onToggleSkillCategory}
+              onToggleAll={onToggleAllSkills}
+              pendingSkillNames={pendingSkillNames}
+              isMutating={skillsMutating}
+              enabledCount={enabledSkillsCount}
+              totalCount={totalSkillsCount}
+              controlledByPersonaName={
+                personaSkillsControlled ? selectedPersonaName : null
+              }
+              isOpen={activePanel === "skills"}
+              onOpenChange={(open) => onActivePanelChange(open ? "skills" : null)}
+              searchSeed={
+                commandSearchSeed?.panel === "skills"
+                  ? commandSearchSeed.query
+                  : undefined
+              }
+            />
+          </LibreChatSelectorModal>
         )}
       {onUsePersonaPreset && onCopyPersonaPreset && onClearPersonaPreset && (
-        <PersonaPresetSelector
-          presets={personaPresets}
-          total={personaPresetsTotal}
-          page={personaPresetsPage}
-          selectedPresetId={selectedPersonaPresetId}
-          isOpen={activePanel === "persona"}
-          isLoading={personaPresetsLoading}
-          isMutating={personaPresetsMutating}
-          canManagePresets={canManagePersonaPresets}
-          onOpenChange={(open) => onActivePanelChange(open ? "persona" : null)}
-          onPageChange={onPersonaPresetsPageChange}
-          onSearchChange={onPersonaPresetsSearchChange}
-          onTagChange={onPersonaPresetsTagChange}
-          onUsePreset={onUsePersonaPreset}
-          onTogglePreference={onTogglePersonaPreference}
-          onCopyPreset={onCopyPersonaPreset}
-          onClearPreset={() => {
-            onClearPersonaPreset();
-            onActivePanelChange(null);
-          }}
-        />
+        <LibreChatSelectorModal panel="persona">
+          <PersonaPresetSelector
+            presets={personaPresets}
+            total={personaPresetsTotal}
+            page={personaPresetsPage}
+            selectedPresetId={selectedPersonaPresetId}
+            isOpen={activePanel === "persona"}
+            isLoading={personaPresetsLoading}
+            isMutating={personaPresetsMutating}
+            canManagePresets={canManagePersonaPresets}
+            onOpenChange={(open) => onActivePanelChange(open ? "persona" : null)}
+            onPageChange={onPersonaPresetsPageChange}
+            onSearchChange={onPersonaPresetsSearchChange}
+            onTagChange={onPersonaPresetsTagChange}
+            onUsePreset={onUsePersonaPreset}
+            onTogglePreference={onTogglePersonaPreference}
+            onCopyPreset={onCopyPersonaPreset}
+            onClearPreset={() => {
+              onClearPersonaPreset();
+              onActivePanelChange(null);
+            }}
+          />
+        </LibreChatSelectorModal>
       )}
-      <AgentModeSelector
-        agents={agents}
-        currentAgent={currentAgent || ""}
-        onSelectAgent={onSelectAgent}
-        isOpen={activePanel === "agent"}
-        onOpenChange={(open) => onActivePanelChange(open ? "agent" : null)}
-        searchSeed={
-          commandSearchSeed?.panel === "agent"
-            ? commandSearchSeed.query
-            : undefined
-        }
-      />
-      {onSelectModel && availableModels.length > 0 && (
-        <ComposerModelPanel
-          models={availableModels}
-          currentModelId={currentModelId}
-          isOpen={activePanel === "model"}
-          onOpenChange={(open) => onActivePanelChange(open ? "model" : null)}
-          onSelectModel={onSelectModel}
+      <LibreChatSelectorModal panel="agent">
+        <AgentModeSelector
+          agents={agents}
+          currentAgent={currentAgent || ""}
+          onSelectAgent={onSelectAgent}
+          isOpen={activePanel === "agent"}
+          onOpenChange={(open) => onActivePanelChange(open ? "agent" : null)}
           searchSeed={
-            commandSearchSeed?.panel === "model"
+            commandSearchSeed?.panel === "agent"
               ? commandSearchSeed.query
               : undefined
           }
         />
+      </LibreChatSelectorModal>
+      {onSelectModel && availableModels.length > 0 && (
+        <LibreChatSelectorModal panel="model">
+          <ComposerModelPanel
+            models={availableModels}
+            currentModelId={currentModelId}
+            isOpen={activePanel === "model"}
+            onOpenChange={(open) => onActivePanelChange(open ? "model" : null)}
+            onSelectModel={onSelectModel}
+            searchSeed={
+              commandSearchSeed?.panel === "model"
+                ? commandSearchSeed.query
+                : undefined
+            }
+          />
+        </LibreChatSelectorModal>
       )}
-      <ComposerUnavailablePanel
-        isOpen={activePanel === "context"}
-        onOpenChange={(open) => onActivePanelChange(open ? "context" : null)}
-        surface="context-selector"
-        title={t("composerCommand.contextSelector.title")}
-        description={t("composerCommand.contextSelector.description")}
-      />
+      <LibreChatSelectorModal panel="context">
+        <ComposerUnavailablePanel
+          isOpen={activePanel === "context"}
+          onOpenChange={(open) => onActivePanelChange(open ? "context" : null)}
+          surface="context-selector"
+          title={t("composerCommand.contextSelector.title")}
+          description={t("composerCommand.contextSelector.description")}
+        />
+      </LibreChatSelectorModal>
       {agentOptions &&
         onToggleAgentOption &&
         Object.keys(agentOptions).length > 0 &&
         Object.entries(agentOptions)
           .filter(([, opt]) => opt.options && opt.options.length > 0)
           .map(([key, option]) => (
-            <AgentOptionButton
-              key={key}
-              optionKey={key}
-              option={option}
-              value={agentOptionValues[key] ?? option.default}
-              onChange={(value) => onToggleAgentOption(key, value)}
-              isOpen={activePanel === "thinking"}
-              onOpenChange={(open) =>
-                onActivePanelChange(open ? "thinking" : null)
-              }
-            />
+            <LibreChatSelectorModal key={key} panel="thinking">
+              <AgentOptionButton
+                optionKey={key}
+                option={option}
+                value={agentOptionValues[key] ?? option.default}
+                onChange={(value) => onToggleAgentOption(key, value)}
+                isOpen={activePanel === "thinking"}
+                onOpenChange={(open) =>
+                  onActivePanelChange(open ? "thinking" : null)
+                }
+              />
+            </LibreChatSelectorModal>
           ))}
-    </>
+    </LibreChatSelectorLayer>
   );
 }

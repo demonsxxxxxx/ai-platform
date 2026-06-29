@@ -32,7 +32,7 @@ import {
   getWorkbenchNavItemFromPathname,
   type WorkbenchNavItem,
 } from "./navigationState";
-import { LibreChatPanelSection } from "../../librechatShell/LibreChatPanel";
+import { LibreChatPanelSection } from "../../../librechat-ui/Panel";
 
 export interface SessionActions {
   onDeleteSession: (id: string) => void;

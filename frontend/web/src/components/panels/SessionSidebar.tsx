@@ -33,7 +33,7 @@ import {
   SidebarRail,
 } from "./SidebarParts";
 import type { SessionActions } from "./SidebarParts";
-import { LIBRECHAT_SHELL_GEOMETRY } from "../librechatShell/libreChatSurface";
+import { LIBRECHAT_SHELL_GEOMETRY } from "../../librechat-ui/surface";
 
 interface SessionSidebarProps {
   currentSessionId: string | null;

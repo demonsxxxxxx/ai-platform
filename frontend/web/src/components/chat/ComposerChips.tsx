@@ -1,9 +1,10 @@
-import { Bot, Boxes, FileText, Sparkles, Wrench, X } from "lucide-react";
+import { Bot, Boxes, FileText, Sparkles, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
   ComposerSelection,
   ComposerSelectionKind,
 } from "./composerSelections";
+import { LibreChatComposerChip } from "../../librechat-ui/Chips";
 
 const chipIcons: Record<ComposerSelectionKind, typeof Sparkles> = {
   skill: Sparkles,
@@ -36,40 +37,20 @@ export function ComposerChips({
     >
       {visibleSelections.map((selection) => {
         const Icon = chipIcons[selection.kind];
-        const unavailable =
-          selection.state === "unavailable" ||
-          selection.state === "admin-only" ||
-          selection.state === "denied";
         return (
-          <span
+          <LibreChatComposerChip
             key={selection.id}
-            className={`inline-flex max-w-[220px] items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs ${
-              unavailable
-                ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
-                : "border-stone-200 bg-stone-50 text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200"
-            }`}
-            data-composer-chip-kind={selection.kind}
-            data-composer-chip-reference={selection.referenceId ?? selection.id}
-            data-composer-chip-state={selection.state}
-            data-state={selection.state}
-            title={selection.description ?? `${selection.kind}: ${selection.label}`}
-          >
-            <Icon size={13} className="shrink-0" />
-            <span className="truncate font-medium">{selection.label}</span>
-            {selection.state !== "enabled" && (
-              <span className="shrink-0 text-[10px] opacity-80">
-                {t(`composerChip.status.${selection.state}`, selection.state)}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={() => onRemove(selection.id)}
-              className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded hover:bg-black/10 dark:hover:bg-white/10"
-              aria-label={t("common.remove")}
-            >
-              <X size={11} />
-            </button>
-          </span>
+            id={selection.id}
+            kind={selection.kind}
+            label={selection.label}
+            state={selection.state}
+            description={selection.description}
+            referenceId={selection.referenceId}
+            icon={Icon}
+            statusLabel={t(`composerChip.status.${selection.state}`, selection.state)}
+            removeLabel={t("common.remove")}
+            onRemove={onRemove}
+          />
         );
       })}
     </div>

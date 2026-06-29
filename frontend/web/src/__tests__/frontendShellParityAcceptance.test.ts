@@ -257,7 +257,7 @@ test("authenticated chat workspace keeps one warm-neutral LibreChat canvas inste
     "utf8",
   );
   const libreSurface = readFileSync(
-    join(root, "src/components/librechatShell/libreChatSurface.ts"),
+    join(root, "src/librechat-ui/surface.ts"),
     "utf8",
   );
   const chatView = readFileSync(
@@ -277,7 +277,7 @@ test("authenticated chat workspace keeps one warm-neutral LibreChat canvas inste
     "utf8",
   );
   const libreSidePanel = readFileSync(
-    join(root, "src/components/librechatShell/LibreChatSidePanel.tsx"),
+    join(root, "src/librechat-ui/SidePanel.tsx"),
     "utf8",
   );
   const skillsHub = readFileSync(

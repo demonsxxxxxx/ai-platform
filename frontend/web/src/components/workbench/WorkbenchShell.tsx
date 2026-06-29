@@ -1,7 +1,7 @@
 import {
   LibreChatShell,
   type LibreChatShellProps,
-} from "../librechatShell/LibreChatShell";
+} from "../../librechat-ui/Shell";
 
 export type WorkbenchShellProps = LibreChatShellProps;
 

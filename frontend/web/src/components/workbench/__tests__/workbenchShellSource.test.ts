@@ -11,7 +11,7 @@ test("workbench shell exposes the required enterprise regions", () => {
     "utf8",
   );
   const libreShell = readFileSync(
-    join(root, "src/components/librechatShell/LibreChatShell.tsx"),
+    join(root, "src/librechat-ui/Shell.tsx"),
     "utf8",
   );
 
@@ -39,13 +39,14 @@ test("workbench context drawer is visible on normal desktop widths", () => {
     "utf8",
   );
   const libreSurface = readFileSync(
-    join(root, "src/components/librechatShell/libreChatSurface.ts"),
+    join(root, "src/librechat-ui/surface.ts"),
     "utf8",
   );
 
   assert.match(surface, /libreChatSurface\.workspace/);
   assert.match(surface, /libreChatSurface\.context/);
-  assert.match(libreSurface, /xl:grid-cols-\[minmax\(0,1fr\)_20rem\]/);
+  assert.match(libreSurface, /xl:grid-cols-\[minmax\(0,1fr\)_18rem\]/);
+  assert.match(libreSurface, /w-80/);
   assert.match(libreSurface, /xl:flex/);
   assert.doesNotMatch(surface, /2xl:grid-cols-\[minmax\(0,1fr\)_20rem\]/);
   assert.doesNotMatch(surface, /2xl:flex/);
@@ -89,7 +90,7 @@ test("empty chat starts as a LibreChat-style chat-first surface", () => {
     "utf8",
   );
   const libreSurface = readFileSync(
-    join(root, "src/components/librechatShell/libreChatSurface.ts"),
+    join(root, "src/librechat-ui/surface.ts"),
     "utf8",
   );
 
