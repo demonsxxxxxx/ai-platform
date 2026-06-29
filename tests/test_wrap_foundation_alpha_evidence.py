@@ -314,6 +314,41 @@ def test_redacts_runtime_paths_and_storage_keys_from_wrapped_checks():
     }
 
 
+def test_redacts_host_paths_from_wrapped_command():
+    verifier_output = {
+        "schema_version": "ai-platform.poc-gate.v1",
+        "ok": True,
+        "redaction_scan_status": "passed",
+        "checks": {"lambchat_frontend": {"status": 200}},
+    }
+
+    entry = build_release_evidence_entry(
+        evidence_id="redacted-command",
+        verifier="tools/verify_poc_gate.py",
+        artifact_kind="211_runtime_smoke",
+        verifier_output=verifier_output,
+        commit_sha=COMMIT,
+        runtime_subject_commit_sha=COMMIT,
+        captured_at="2026-06-16T22:45:00+08:00",
+        image=IMAGE,
+        image_id=IMAGE_ID,
+        image_labels=image_labels(),
+        source_snapshot=source_snapshot(),
+        command=(
+            "python3 tools/verify_poc_gate.py --env-path "
+            "/tmp/ai-platform-compose.env --frontend-dist "
+            "/home/example.user/frontend-pr111-smoke/dist"
+        ),
+        review_status="reviewed",
+    )
+
+    command = entry["evidence_ref"]["command"]
+    assert "/home/example.user" not in command
+    assert "/tmp/ai-platform-compose.env" not in command
+    assert "--frontend-dist <redacted-path>" in command
+    assert "--env-path <redacted-path>" in command
+
+
 def test_redacts_host_paths_from_source_ref_image_labels():
     labels = image_labels()
     labels.update(
@@ -327,6 +362,9 @@ def test_redacts_host_paths_from_source_ref_image_labels():
             ),
             "com.docker.compose.project.working_dir": (
                 "/home/example.user/ai-platform-phaseb/services/ai-platform/deploy/ai-platform"
+            ),
+            "com.docker.compose.project.environment_file_tmp": (
+                "/tmp/ai-platform-compose-53abc85.1782622187.env"
             ),
             "com.docker.compose.project.windows_env_file": (
                 "C:\\Users\\Example.User\\deploy\\ai-platform\\.env"
@@ -359,9 +397,11 @@ def test_redacts_host_paths_from_source_ref_image_labels():
     assert image_label_projection["org.opencontainers.image.revision"] == COMMIT
     assert image_label_projection["com.docker.compose.project.config_files"] == "<redacted-path>"
     assert image_label_projection["com.docker.compose.project.environment_file"] == "<redacted-path>"
+    assert image_label_projection["com.docker.compose.project.environment_file_tmp"] == "<redacted-path>"
     assert image_label_projection["com.docker.compose.project.working_dir"] == "<redacted-path>"
     assert image_label_projection["com.docker.compose.project.windows_env_file"] == "<redacted-path>"
     assert "/home/example.user" not in json.dumps(image_label_projection)
+    assert "/tmp/ai-platform-compose" not in json.dumps(image_label_projection)
     assert "C:\\Users" not in json.dumps(image_label_projection)
 
 

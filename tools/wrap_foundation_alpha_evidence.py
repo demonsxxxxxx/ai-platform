@@ -4,6 +4,7 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import shlex
 from typing import Any
 
 
@@ -46,6 +47,7 @@ _PATH_KEYS = {
     "workspace",
     "workspace_root",
 }
+_PATH_KEY_PARTS = ("config", "dir", "file", "path", "workdir", "workspace")
 _SECRET_KEY_PARTS = ("api_key", "authorization", "callback_token", "password", "secret", "token")
 _REDACTION_SCAN_STATUSES = {"failed", "passed"}
 _REVIEW_STATUSES = {"reviewed"}
@@ -54,6 +56,16 @@ _RUNTIME_SOURCE_SAFE_KEYS = {
     "evidence_root",
     "image",
     "runtime_subject_commit_sha",
+}
+_COMMAND_PATH_FLAGS = {
+    "--api-health-json",
+    "--evidence-root",
+    "--env-path",
+    "--frontend-dist",
+    "--image-labels-json",
+    "--output",
+    "--source-snapshot-json",
+    "--verifier-output",
 }
 
 
@@ -87,7 +99,8 @@ def _redact_runtime_value(key: str | None, value: Any) -> Any:
         if any(part in normalized_key for part in _SECRET_KEY_PARTS):
             return "<redacted-secret>"
         is_windows_absolute_path = len(normalized) >= 3 and normalized[1:3] == ":/"
-        if key in _PATH_KEYS and (normalized.startswith("/") or is_windows_absolute_path):
+        is_path_key = key in _PATH_KEYS or any(part in normalized_key for part in _PATH_KEY_PARTS)
+        if is_path_key and (normalized.startswith("/") or is_windows_absolute_path):
             return "<redacted-path>"
         if is_windows_absolute_path:
             return "<redacted-path>"
@@ -111,6 +124,31 @@ def _redact_runtime_source(source: dict[str, Any]) -> dict[str, Any]:
     }
     redacted = _redact_runtime_value(None, safe_source)
     return redacted if isinstance(redacted, dict) else {}
+
+
+def _redact_command(command: str) -> str:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return str(_redact_runtime_value("path", command))
+    redacted: list[str] = []
+    redact_next = False
+    for token in tokens:
+        if redact_next:
+            redacted.append("<redacted-path>")
+            redact_next = False
+            continue
+        if token in _COMMAND_PATH_FLAGS:
+            redacted.append(token)
+            redact_next = True
+            continue
+        flag, sep, value = token.partition("=")
+        if sep and flag in _COMMAND_PATH_FLAGS:
+            redacted.append(f"{flag}=<redacted-path>")
+            continue
+        redacted_value = _redact_runtime_value("path", token)
+        redacted.append(str(redacted_value))
+    return " ".join(redacted)
 
 
 def _runtime_checks(verifier: str, verifier_output: dict[str, Any]) -> dict[str, Any]:
@@ -300,7 +338,7 @@ def build_release_evidence_entry(
         "evidence_ref": {
             "verifier": verifier,
             "schema_version": _schema_version(verifier, verifier_output),
-            "command": command,
+            "command": _redact_command(command),
             "result": _result(verifier_output),
             "runtime_checks": runtime_checks,
             "runtime_source": _redact_runtime_source(runtime_source),

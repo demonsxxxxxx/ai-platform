@@ -212,6 +212,44 @@ def test_release_evidence_export_acceptance_excludes_non_entry_evidence_namespac
     ]
 
 
+def test_release_evidence_export_acceptance_excludes_dedicated_foundation_runtime_concurrency_namespace(tmp_path):
+    _write_entry(tmp_path, _valid_entry())
+    concurrency_dir = (
+        tmp_path
+        / "foundation-runtime-concurrency"
+        / f"{VALID_COMMIT}-frc-b0-20260629"
+    )
+    concurrency_dir.mkdir(parents=True, exist_ok=True)
+    (concurrency_dir / "foundation-runtime-concurrency.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.foundation-runtime-concurrency.v1",
+                "artifact_kind": "foundation_runtime_concurrency",
+                "commit_sha": VALID_COMMIT,
+                "runtime_subject_commit_sha": VALID_COMMIT,
+                "source_tree_commit_sha": VALID_COMMIT,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    acceptance = build_release_evidence_export_acceptance(evidence_root=tmp_path)
+
+    assert acceptance["status"] == "ready_for_operator_review"
+    assert acceptance["safe_entry_count"] == 1
+    assert acceptance["blocked_entry_count"] == 0
+    assert acceptance["excluded_entries"] == [
+        {
+            "path": (
+                "foundation-runtime-concurrency/"
+                f"{VALID_COMMIT}-frc-b0-20260629/"
+                "foundation-runtime-concurrency.json"
+            ),
+            "reasons": ["non_release_evidence_entry_path"],
+        }
+    ]
+
+
 def test_release_evidence_export_acceptance_requires_runtime_subject_for_b1_smoke(tmp_path):
     entry = _valid_entry(
         evidence_id="b1-memory-context-smoke",
