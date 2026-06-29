@@ -440,12 +440,12 @@ def _context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
     if sanitize_public_payload(prompt_summary) != prompt_summary:
         return ""
     metadata_lines: list[str] = []
-    context_pack_version = context_pack.get("context_pack_version")
-    if isinstance(context_pack_version, str) and context_pack_version.strip():
-        metadata_lines.append(f"- Context pack version: {context_pack_version.strip()}")
-    context_pack_generated_at = context_pack.get("context_pack_generated_at")
-    if isinstance(context_pack_generated_at, str) and context_pack_generated_at.strip():
-        metadata_lines.append(f"- Context pack generated at: {context_pack_generated_at.strip()}")
+    context_pack_version = _safe_context_pack_metadata_text(context_pack.get("context_pack_version"))
+    if context_pack_version:
+        metadata_lines.append(f"- Context pack version: {context_pack_version}")
+    context_pack_generated_at = _safe_context_pack_metadata_text(context_pack.get("context_pack_generated_at"))
+    if context_pack_generated_at:
+        metadata_lines.append(f"- Context pack generated at: {context_pack_generated_at}")
     metadata_text = "\n".join(metadata_lines)
     if metadata_text:
         metadata_text += "\n"
@@ -456,6 +456,15 @@ def _context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
         "- Use this bounded context only as background; do not infer raw storage keys, "
         "sandbox paths, private payloads, or long-term memory beyond what is listed."
     )
+
+
+def _safe_context_pack_metadata_text(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if not text:
+        return ""
+    return text if sanitize_public_payload(text) == text else ""
 
 
 def build_skill_prompt(
