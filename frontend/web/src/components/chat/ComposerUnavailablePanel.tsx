@@ -36,13 +36,13 @@ export function ComposerUnavailablePanel({
         <section
           data-composer-unavailable-panel
           data-fail-closed-surface={surface}
-          className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[560px] sm:rounded-lg"
+          className="flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[560px] sm:rounded-lg"
           onClick={(event) => event.stopPropagation()}
         >
           <header className="relative flex items-center justify-between border-b border-[var(--theme-border)] px-4 py-3 sm:px-5">
             <div className="absolute left-1/2 top-2 h-1 w-10 -translate-x-1/2 rounded-full bg-[var(--theme-border)] sm:hidden" />
             <div className="mt-2 flex items-center gap-3 sm:mt-0">
-              <div className="flex size-9 items-center justify-center rounded-lg bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-200">
+              <div className="flex size-9 items-center justify-center rounded-lg bg-[var(--theme-warning-soft)] text-[var(--theme-warning)] ring-1 ring-[var(--theme-warning-ring)]">
                 <ShieldAlert size={17} />
               </div>
               <div>
@@ -77,9 +77,9 @@ export function ComposerUnavailablePanel({
                 "Fail-closed surface",
               )}
               description={description}
-              className="border-dashed border-amber-200 bg-amber-50 text-left dark:border-amber-500/30 dark:bg-amber-500/10"
+              className="border-dashed border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] text-left"
             >
-              <p className="mt-3 text-xs font-medium text-amber-700 dark:text-amber-200">
+              <p className="mt-3 text-xs font-medium text-[var(--theme-warning)]">
                 {surface === "context-selector" ? "context-selector" : surface}
               </p>
             </LibreChatStateSurface>

@@ -124,7 +124,7 @@ test("composer model selector uses restrained workbench overlay styling", () => 
   const modelPanel = read("src/components/chat/ComposerModelPanel.tsx");
 
   assert.match(modelPanel, /data-composer-model-panel/);
-  assert.match(modelPanel, /bg-\[var\(--theme-bg-card\)\]/);
+  assert.match(modelPanel, /bg-\[var\(--theme-workbench-panel\)\]/);
   assert.match(modelPanel, /bg-\[var\(--theme-bg-sidebar\)\]/);
   assert.match(modelPanel, /shadow-\[0_8px_24px_rgba\(18,38,63,0\.12\)\]/);
   assert.doesNotMatch(modelPanel, /shadow-xl|shadow-2xl/);
@@ -172,7 +172,7 @@ test("governed composer selector sheets use one workbench token palette", () => 
   for (const path of selectorFiles) {
     const source = read(path);
 
-    assert.match(source, /var\(--theme-bg-card\)/, path);
+    assert.match(source, /var\(--theme-workbench-panel\)/, path);
     assert.match(source, /var\(--theme-text\)/, path);
     assert.match(source, /var\(--theme-text-secondary\)/, path);
     assert.match(source, /var\(--theme-primary\)|var\(--theme-ring\)/, path);
@@ -265,7 +265,7 @@ test("authenticated chat support surfaces use restrained enterprise workbench to
   for (const [name, source] of sources) {
     assert.match(
       source,
-      /var\(--theme-bg-card\)|panel-card|enterprise-modal-shell|workbenchSurface/,
+      /var\(--theme-bg-card\)|var\(--theme-workbench-panel\)|panel-card|enterprise-modal-shell|workbenchSurface|data-librechat-command-entrypoint/,
       `${name} should use shared enterprise surface tokens`,
     );
     assert.doesNotMatch(source, /rounded-xl|rounded-2xl|rounded-3xl/, name);

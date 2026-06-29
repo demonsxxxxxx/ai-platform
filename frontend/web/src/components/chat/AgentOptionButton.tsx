@@ -66,7 +66,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
         ? createPortal(
             <>
               <div
-                className="fixed inset-0 z-[300] bg-slate-950/35 animate-fade-in"
+                className="fixed inset-0 z-[300] bg-[var(--theme-overlay)] animate-fade-in"
                 onClick={() => setShowDropdown(false)}
               />
               <div
@@ -76,7 +76,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
                 <div
                   className="rounded-t-lg border border-[var(--theme-border)] px-4 pt-3 pb-6 shadow-[0_8px_24px_rgba(18,38,63,0.12)] animate-in fade-in slide-in-from-bottom-4 duration-200 sm:w-[28rem] sm:max-w-[90vw] sm:rounded-lg sm:pb-4 sm:scale-in-95 sm:slide-in-from-bottom-0"
                   style={{
-                    background: "var(--theme-bg-card)",
+                    background: "var(--theme-workbench-panel)",
                     maxHeight: "60vh",
                   }}
                   onClick={(e) => e.stopPropagation()}
@@ -220,11 +220,11 @@ export const AgentOptionButton = memo(function AgentOptionButton({
                 className="sm:hidden fixed inset-0 z-[9999] flex flex-col justify-end"
                 onClick={() => setShowDropdown(false)}
               >
-                <div className="absolute inset-0 bg-slate-950/35" />
+                <div className="absolute inset-0 bg-[var(--theme-overlay)]" />
                 <div
                   className="relative rounded-t-lg border border-[var(--theme-border)] px-4 pt-3 pb-6 shadow-[0_8px_24px_rgba(18,38,63,0.12)] animate-in fade-in slide-in-from-bottom-4 duration-200"
                   style={{
-                    background: "var(--theme-bg-card)",
+                    background: "var(--theme-workbench-panel)",
                     maxHeight: "60vh",
                   }}
                   onClick={(e) => e.stopPropagation()}
@@ -295,7 +295,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
                 className="hidden sm:block w-72 rounded-xl px-2 py-1.5 border shadow-sm animate-in fade-in slide-in-from-bottom-2 duration-200"
                 style={{
                   ...getDropdownStyle(),
-                  background: "var(--theme-bg-card)",
+                  background: "var(--theme-workbench-panel)",
                   borderColor: "var(--theme-border)",
                 }}
               >
@@ -388,7 +388,7 @@ export const AgentOptionButton = memo(function AgentOptionButton({
                           }%`,
                           background:
                             levelColor.text ?? "var(--theme-text-secondary)",
-                          border: "2px solid var(--theme-bg-card)",
+                          border: "2px solid var(--theme-workbench-panel)",
                         }}
                       />
                     </div>

@@ -156,7 +156,7 @@ export function ToolSelector({
       ref={swipeRef as React.RefObject<HTMLDivElement>}
       className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
       data-composer-mcp-selector
-      style={{ background: "var(--theme-bg-card)" }}
+      style={{ background: "var(--theme-workbench-panel)" }}
       onClick={(e) => e.stopPropagation()}
     >
       {/* Header */}
@@ -197,14 +197,14 @@ export function ToolSelector({
       <div className="flex items-center gap-2 px-4 sm:px-5 py-2 sm:py-2.5 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)]">
         <button
           onClick={() => onToggleAll(true)}
-          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-bg-card)] active:bg-[var(--theme-bg-card)] rounded-lg transition-colors"
+          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors"
         >
           {t("tools.selectAll")}
         </button>
         <div className="w-px h-4 bg-[var(--theme-border)]" />
         <button
           onClick={() => onToggleAll(false)}
-          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-bg-card)] active:bg-[var(--theme-bg-card)] rounded-lg transition-colors"
+          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors"
         >
           {t("tools.deselectAll")}
         </button>
@@ -228,7 +228,7 @@ export function ToolSelector({
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           placeholder={t("tools.searchPlaceholder", "Search tools")}
-          className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 text-sm text-[var(--theme-text)] outline-none transition-colors placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
+          className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm text-[var(--theme-text)] outline-none transition-colors placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
         />
       </div>
 
@@ -247,7 +247,7 @@ export function ToolSelector({
             return (
               <div
                 key={category}
-                className="rounded-lg border border-[var(--theme-border)] overflow-hidden bg-[var(--theme-bg-card)]"
+                className="rounded-lg border border-[var(--theme-border)] overflow-hidden bg-[var(--theme-workbench-panel)]"
               >
                 {/* Category Header */}
                 <div
@@ -295,7 +295,7 @@ export function ToolSelector({
                             <div
                               className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-2.5 py-2 sm:py-2 rounded-lg cursor-pointer transition-all duration-150 ${
                                 tool.system_disabled
-                                  ? "cursor-not-allowed bg-red-50/60 opacity-70 dark:bg-red-500/10"
+                                  ? "cursor-not-allowed bg-[var(--theme-danger-soft)] opacity-70"
                                   : tool.enabled
                                   ? "hover:bg-[var(--theme-bg-sidebar)] active:bg-[var(--theme-bg-sidebar)]"
                                   : "bg-[var(--theme-primary)]/[0.06] hover:bg-[var(--theme-primary)]/[0.12] active:bg-[var(--theme-primary)]/[0.18]"
@@ -349,7 +349,7 @@ export function ToolSelector({
                                     </span>
                                   )}
                                   {tool.system_disabled && (
-                                    <span className="text-[9px] sm:text-xs px-1.5 py-0.5 rounded-md bg-red-100 dark:bg-red-500/20 text-red-600 dark:text-red-400 font-medium">
+                                    <span className="text-[9px] sm:text-xs px-1.5 py-0.5 rounded-md bg-[var(--theme-danger-soft)] text-[var(--theme-danger)] ring-1 ring-[var(--theme-danger-ring)] font-medium">
                                       {t("tools.systemDisabled")}
                                     </span>
                                   )}
@@ -380,7 +380,7 @@ export function ToolSelector({
                                     </span>
                                   </div>
                                   {/* Table Body */}
-                                  <div className="bg-[var(--theme-bg-card)]">
+                                  <div className="bg-[var(--theme-workbench-panel)]">
                                     <table className="w-full text-xs sm:text-xs">
                                       <thead>
                                         <tr className="border-b border-[var(--theme-border)]">
@@ -408,7 +408,7 @@ export function ToolSelector({
                                                     {param.name}
                                                   </code>
                                                   {param.required && (
-                                                    <span className="text-[8px] px-1 py-0.5 rounded bg-red-50 dark:bg-red-900/30 text-red-500 dark:text-red-400 font-medium">
+                                                    <span className="text-[8px] px-1 py-0.5 rounded bg-[var(--theme-danger-soft)] text-[var(--theme-danger)] font-medium">
                                                       *
                                                     </span>
                                                   )}
@@ -442,7 +442,7 @@ export function ToolSelector({
           },
         )}
         {filteredTools.length === 0 && (
-          <div className="rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-6 text-center text-sm text-[var(--theme-text-secondary)]">
+          <div className="rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-6 text-center text-sm text-[var(--theme-text-secondary)]">
             {t("tools.noMatchingTools", "No matching tools")}
           </div>
         )}

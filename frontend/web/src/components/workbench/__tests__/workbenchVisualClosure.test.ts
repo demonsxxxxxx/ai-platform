@@ -972,3 +972,49 @@ test("post-login shell uses a single compact LibreChat-style sidebar", () => {
   assert.match(themeDom, /light:\s*"#f5f5f3"/);
   assert.doesNotMatch(themeDom, /#eef2f6/);
 });
+
+test("post-login composer and selector surfaces use shared semantic workbench tokens", () => {
+  const sources = new Map([
+    ["LibreChatComposer", read("src/librechat-ui/Composer.tsx")],
+    ["LibreChatCommandMenu", read("src/librechat-ui/CommandMenu.tsx")],
+    ["LibreChatComposerChip", read("src/librechat-ui/Chips.tsx")],
+    [
+      "ComposerUnavailablePanel",
+      read("src/components/chat/ComposerUnavailablePanel.tsx"),
+    ],
+    ["SkillSelector", read("src/components/selectors/SkillSelector.tsx")],
+    ["ToolSelector", read("src/components/selectors/ToolSelector.tsx")],
+  ]);
+
+  for (const [name, source] of sources) {
+    assert.match(
+      source,
+      /theme-workbench-panel|theme-bg-sidebar|theme-warning|theme-danger|theme-info/,
+      name,
+    );
+    assert.doesNotMatch(source, /theme-bg-card/, name);
+    assert.doesNotMatch(source, /\b(?:bg|text|border)-(?:stone|amber|red|blue)-/, name);
+    assert.doesNotMatch(
+      source,
+      /dark:(?:bg|text|border)-(?:stone|amber|red|blue)-/,
+      name,
+    );
+  }
+
+  const commandMenu = sources.get("LibreChatCommandMenu")!;
+  const chips = sources.get("LibreChatComposerChip")!;
+  const unavailablePanel = sources.get("ComposerUnavailablePanel")!;
+  const toolSelector = sources.get("ToolSelector")!;
+  const skillSelector = sources.get("SkillSelector")!;
+
+  assert.match(commandMenu, /data-librechat-command-menu/);
+  assert.match(commandMenu, /bg-\[var\(--theme-workbench-panel\)\]/);
+  assert.match(chips, /data-librechat-composer-chip/);
+  assert.match(chips, /theme-warning-soft/);
+  assert.match(unavailablePanel, /data-composer-unavailable-panel/);
+  assert.match(unavailablePanel, /theme-warning-soft/);
+  assert.match(toolSelector, /data-composer-mcp-selector/);
+  assert.match(toolSelector, /theme-danger-soft/);
+  assert.match(skillSelector, /data-composer-skill-selector/);
+  assert.match(skillSelector, /theme-info-soft/);
+});

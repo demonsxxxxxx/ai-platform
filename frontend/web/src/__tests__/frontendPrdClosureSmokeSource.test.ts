@@ -79,3 +79,42 @@ test("PRD closure browser smoke helper fails closed on route hydration and file 
   assert.match(source, /fileEvidenceReady/);
   assert.match(source, /statusReasons/);
 });
+
+test("PRD closure browser smoke waits for route-specific workbench content before screenshots", () => {
+  const source = readFileSync(smokeScript, "utf8");
+
+  assert.match(source, /ROUTE_CONTENT_SELECTORS/);
+  assert.match(source, /waitForRouteContent/);
+  assert.match(source, /ROUTE_CONTENT_SELECTORS\.get\(route\)/);
+
+  for (const [route, selector] of [
+    ["/chat", "data-librechat-shell"],
+    ["/apps", "data-launchpad-directory-shell"],
+    ["/skills", "data-skill-workbench-shell"],
+    ["/marketplace", "data-marketplace-catalog-shell"],
+    ["/roles", "data-role-plaza-shell"],
+    ["/mcp", "data-mcp-directory-shell"],
+    ["/persona", "data-persona-workbench-shell"],
+    ["/files", "data-files-workbench-shell"],
+    ["/channels", "data-channel-workbench-shell"],
+    ["/settings", "data-workbench-projection-page"],
+  ]) {
+    assert.match(source, new RegExp(route.replace(/\//g, "\\/")));
+    assert.match(source, new RegExp(selector));
+  }
+
+  const collectRouteSource = source.slice(
+    source.indexOf("async function navigateAndCollectRoute"),
+    source.indexOf("async function waitForRouteHydration"),
+  );
+  const waitForHydrationSource = source.slice(
+    source.indexOf("async function waitForRouteHydration"),
+    source.indexOf("async function waitForRouteContent"),
+  );
+  assert.ok(
+    collectRouteSource.indexOf("waitForRouteContent") <
+      collectRouteSource.indexOf("captureScreenshot"),
+  );
+  assert.match(waitForHydrationSource, /route_hydration:\$\{route\}/);
+  assert.doesNotMatch(waitForHydrationSource, /async function waitForRouteContent/);
+});

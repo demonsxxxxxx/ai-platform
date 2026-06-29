@@ -86,7 +86,7 @@ export function AgentModeSelector({
               <div
                 ref={sheetRef as React.Ref<HTMLDivElement>}
                 className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
-                style={{ background: "var(--theme-bg-card)" }}
+                style={{ background: "var(--theme-workbench-panel)" }}
                 onClick={(e) => e.stopPropagation()}
               >
                 {/* Header */}
@@ -125,7 +125,7 @@ export function AgentModeSelector({
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder={t("agent.searchPlaceholder", "Search agents")}
-                    className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-3 text-sm text-[var(--theme-text)] outline-none transition-colors placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
+                    className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-3 text-sm text-[var(--theme-text)] outline-none transition-colors placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-primary)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
                   />
                 </div>
 
@@ -194,7 +194,7 @@ export function AgentModeSelector({
                     );
                   })}
                   {filteredAgents.length === 0 && (
-                    <div className="rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-6 text-center text-sm text-[var(--theme-text-secondary)]">
+                    <div className="rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-6 text-center text-sm text-[var(--theme-text-secondary)]">
                       {t("agent.noMatchingAgents", "No matching agents")}
                     </div>
                   )}
@@ -244,7 +244,7 @@ export function AgentModeSelector({
               <div
                 ref={sheetRef as React.Ref<HTMLDivElement>}
                 className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
-                style={{ background: "var(--theme-bg-card)" }}
+                style={{ background: "var(--theme-workbench-panel)" }}
                 onClick={(e) => e.stopPropagation()}
               >
                 {/* Header */}

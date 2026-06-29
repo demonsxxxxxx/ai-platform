@@ -51,7 +51,7 @@ export const LibreChatComposerBox = forwardRef<
       )}
       data-mention-active={mentionActive || undefined}
       style={{
-        backgroundColor: "var(--theme-bg-card)",
+        backgroundColor: "var(--theme-workbench-panel)",
         borderColor: dragging ? "var(--theme-primary)" : "var(--theme-border)",
         boxShadow: dragging ? undefined : "0 1px 2px rgba(15,23,42,0.04)",
         ...style,

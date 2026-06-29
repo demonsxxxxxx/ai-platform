@@ -47,7 +47,8 @@ export function SlashCommandMenu({
   const menuLabel = t("composerCommand.menuLabel", "Composer command menu");
 
   return (
-    <LibreChatCommandMenu label={menuLabel} closeLabel="Esc" onClose={onClose}>
+    <div className="contents" data-librechat-command-entrypoint="slash-menu">
+      <LibreChatCommandMenu label={menuLabel} closeLabel="Esc" onClose={onClose}>
       {items.map((item, index) => {
         const Icon = commandIcons[item.command];
         const active = index === highlightedIndex;
@@ -69,6 +70,7 @@ export function SlashCommandMenu({
           />
         );
       })}
-    </LibreChatCommandMenu>
+      </LibreChatCommandMenu>
+    </div>
   );
 }
