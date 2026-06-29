@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from app.control_plane_contracts import sanitize_public_payload
 from app.settings import get_settings
 
 _SDK_ENV_ALLOWLIST = {
@@ -435,6 +436,8 @@ def _context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
         return ""
     prompt_summary = prompt_summary.strip()
     if not prompt_summary:
+        return ""
+    if sanitize_public_payload(prompt_summary) != prompt_summary:
         return ""
     metadata_lines: list[str] = []
     context_pack_version = context_pack.get("context_pack_version")

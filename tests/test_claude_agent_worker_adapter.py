@@ -1921,6 +1921,26 @@ def test_build_skill_prompt_ignores_unknown_context_pack_schema():
     assert "s3://private" not in prompt
 
 
+def test_build_skill_prompt_rejects_leaky_context_pack_summary():
+    prompt = build_skill_prompt(
+        skill_id="general-chat",
+        user_message="continue the proposal",
+        file_names=[],
+        context_pack={
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "prompt_summary": "raw_storage_key=s3://private/object sandbox_workdir=/tmp/private",
+            "context_pack_version": "v4",
+            "context_pack_generated_at": "2026-06-12T01:23:45Z",
+        },
+    )
+
+    assert "Office context pack:" not in prompt
+    assert "raw_storage_key" not in prompt
+    assert "s3://private" not in prompt
+    assert "sandbox_workdir" not in prompt
+    assert "/tmp/private" not in prompt
+
+
 def test_build_skill_prompt_frontloads_qa_review_fast_path():
     prompt = build_skill_prompt(
         skill_id="qa-file-reviewer",
