@@ -1,0 +1,29 @@
+{
+  "artifact_kind": "foundation_runtime_concurrency",
+  "cleanup_after_status": "verified",
+  "commit_sha": "c701974f5d66b54ff9255b5d033ee4f0ce3d8bb8",
+  "evidence_path": "/tmp/ai-platform-b0-current-c701974-frc-20260629T145035Z/foundation-runtime-concurrency.raw.json",
+  "failures": [],
+  "readiness_path": "/tmp/ai-platform-b0-current-c701974-frc-20260629T145035Z/foundation-runtime-concurrency-readiness.json",
+  "readiness_status": "verified_foundation_runtime_concurrency",
+  "runtime_subject_commit_sha": "c701974f5d66b54ff9255b5d033ee4f0ce3d8bb8",
+  "scenario_counts": {
+    "cancel": 3,
+    "execution": 3,
+    "retry": 3,
+    "run_creation": 3
+  },
+  "schema_version": "ai-platform.foundation-runtime-concurrency.v1",
+  "source_tree_commit_sha": "c701974f5d66b54ff9255b5d033ee4f0ce3d8bb8",
+  "summary": {
+    "concurrency_probe_source": "client_case_timestamps",
+    "concurrency_window_sample_count": 12,
+    "concurrent_request_count": 12,
+    "max_observed_concurrency": 12,
+    "run_count": 12,
+    "session_count": 12,
+    "tenant_count": 2,
+    "user_count": 4
+  },
+  "verified": true
+}

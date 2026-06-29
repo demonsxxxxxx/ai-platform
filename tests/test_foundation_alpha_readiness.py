@@ -1,5 +1,7 @@
 import json
 import inspect
+from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -1113,6 +1115,61 @@ def test_foundation_alpha_readiness_discovers_dedicated_runtime_evidence_artifac
     )
 
 
+def test_foundation_alpha_readiness_accepts_wrapper_short_gate_names_for_dedicated_runtime_evidence(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_root = tmp_path / "fa"
+    runtime_commit = "ded1749"
+    image = "ai-platform:dde1749-issue104-runtime-only-v1"
+    smoke_path, auth_path = _write_release_evidence_pair(
+        evidence_root,
+        runtime_commit,
+        image=image,
+    )
+    auth_payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    auth_payload["gate"] = "Auth/RBAC Smoke"
+    auth_payload["artifact_kind"] = "auth_rbac_smoke"
+    auth_path.write_text(json.dumps(auth_payload), encoding="utf-8")
+
+    governance_path = _write_governance_evidence(
+        evidence_root,
+        runtime_commit,
+        image=image,
+    )
+    governance_payload = json.loads(governance_path.read_text(encoding="utf-8"))
+    governance_payload["gate"] = "Governance Runtime Smoke"
+    governance_payload["artifact_kind"] = "governance_runtime_smoke"
+    governance_path.write_text(json.dumps(governance_payload), encoding="utf-8")
+
+    release_path = _write_release_evidence_runtime_acceptance(
+        evidence_root,
+        runtime_commit,
+        image=image,
+    )
+    release_payload = json.loads(release_path.read_text(encoding="utf-8"))
+    release_payload["gate"] = "Release Evidence Runtime Acceptance"
+    release_payload["artifact_kind"] = "release_evidence_runtime_acceptance"
+    release_path.write_text(json.dumps(release_payload), encoding="utf-8")
+
+    alert_path = _write_alert_trace_export_runtime_acceptance(
+        evidence_root,
+        runtime_commit,
+        image=image,
+    )
+    alert_payload = json.loads(alert_path.read_text(encoding="utf-8"))
+    alert_payload["gate"] = "Alert Trace Export Runtime Acceptance"
+    alert_payload["artifact_kind"] = "alert_trace_export_runtime_acceptance"
+    alert_path.write_text(json.dumps(alert_payload), encoding="utf-8")
+
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+
+    assert foundation_alpha_readiness._discover_release_evidence_pair(runtime_commit) == (smoke_path, auth_path)
+    assert foundation_alpha_readiness._discover_governance_runtime_evidence(runtime_commit) == governance_path
+    assert foundation_alpha_readiness._discover_release_evidence_runtime_acceptance_evidence(runtime_commit) == release_path
+    assert foundation_alpha_readiness._discover_alert_trace_export_runtime_acceptance_evidence(runtime_commit) == alert_path
+
+
 def test_foundation_alpha_readiness_accepts_stage_bundle_gate_for_dedicated_artifacts(
     monkeypatch,
     tmp_path,
@@ -1847,6 +1904,13 @@ def test_foundation_alpha_readiness_classifies_source_metadata_paths_as_runtime_
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/verify_governance_runtime_smoke.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tools/wrap_foundation_alpha_evidence.py") is False
     assert foundation_alpha_readiness._is_runtime_affecting_path("tests/test_wrap_foundation_alpha_evidence.py") is False
+    assert foundation_alpha_readiness._is_runtime_affecting_path("frontend/web/src/App.tsx") is False
+    assert (
+        foundation_alpha_readiness._is_runtime_affecting_path(
+            "frontend/web/scripts/prd-closure-browser-smoke.mjs"
+        )
+        is False
+    )
     assert (
         foundation_alpha_readiness._is_runtime_affecting_path(
             "assets/ai-platform-architecture-illustrations/01-controlled-execution-cabin.svg"
@@ -4233,8 +4297,17 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
         == payload["decision"]["controlled_poc_loop_verified_for_current_source"]
     )
     assert payload["foundation_alpha_stage_complete"] == payload["decision"]["foundation_alpha_stage_complete"]
-    assert payload["runtime_subject_commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
-    assert payload["verified_runtime_subject"]["commit_sha"] == ACTIVE_RUNTIME_SUBJECT_SHA
+    assert payload["runtime_subject_commit_sha"] == payload["runtime_source_relation"]["runtime_subject_commit_sha"]
+    assert payload["verified_runtime_subject"]["commit_sha"] == payload["runtime_subject_commit_sha"]
+    if payload["runtime_source_relation"]["runtime_matches_source_tree"]:
+        assert payload["verified_runtime_subject"]["evidence_scope"] == "current_source_tree"
+        assert payload["runtime_subject_commit_sha"] == payload["source_tree_commit_sha"]
+    else:
+        assert payload["verified_runtime_subject"]["evidence_scope"] in {
+            "current_runtime_relevant_source",
+            "reviewed_historical_runtime_evidence",
+        }
+        assert payload["runtime_source_relation"]["runtime_relevant_source_matches"] is True
     assert "release_evidence_runtime_acceptance" in payload["evidence_entries"]
     assert "g9_runtime_export_and_retention_acceptance" not in payload["decision"]["stage_acceptance_blockers"]
     assert "runtime_image" not in payload
@@ -4251,6 +4324,26 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
         text=True,
     )
     assert "# ai-platform Foundation Alpha POC Readiness" in markdown_result.stdout
+
+
+def test_committed_c701974_release_evidence_commands_do_not_include_secret_env_assignments():
+    evidence_root = (
+        Path("docs/release-evidence/foundation-alpha-poc")
+        / "c701974f5d66b54ff9255b5d033ee4f0ce3d8bb8"
+    )
+    secret_assignment = re.compile(
+        r"\b[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY|AUTHORIZATION)[A-Z0-9_]*=<redacted>",
+        re.IGNORECASE,
+    )
+    offenders = []
+
+    for evidence_file in sorted(evidence_root.glob("*.json")):
+        payload = json.loads(evidence_file.read_text(encoding="utf-8"))
+        command = str(payload.get("evidence_ref", {}).get("command", ""))
+        if secret_assignment.search(command):
+            offenders.append(evidence_file.as_posix())
+
+    assert offenders == []
 
 
 def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_dependencies_are_unavailable(monkeypatch):
@@ -4365,6 +4458,36 @@ def test_runtime_relevant_diff_treats_multiuser_verifier_as_runtime_neutral(monk
             args[0],
             0,
             stdout="tools/verify_multiuser_poc.py\n",
+            stderr="",
+        ),
+    )
+
+    assert (
+        foundation_alpha_readiness._resolve_runtime_affecting_changes_between(
+            HISTORICAL_RUNTIME_SUBJECT_SHA,
+            ACTIVE_RUNTIME_SUBJECT_SHA,
+        )
+        == []
+    )
+
+
+def test_runtime_relevant_diff_treats_frontend_source_as_backend_runtime_neutral(monkeypatch):
+    frontend_paths = "\n".join(
+        [
+            "frontend/web/scripts/prd-closure-browser-smoke.mjs",
+            "frontend/web/src/__tests__/frontendPrdClosureSmokeSource.test.ts",
+            "frontend/web/src/components/chat/AgentOptionButton.tsx",
+            "frontend/web/src/components/selectors/SkillSelector.tsx",
+            "frontend/web/src/librechat-ui/Composer.tsx",
+        ]
+    )
+    monkeypatch.setattr(
+        foundation_alpha_readiness.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout=f"{frontend_paths}\n",
             stderr="",
         ),
     )
