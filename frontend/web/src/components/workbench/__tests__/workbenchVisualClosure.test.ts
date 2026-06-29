@@ -89,13 +89,13 @@ test("expanded sidebar uses the LibreChat light navigation system", () => {
   assert.match(sessionList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sessionSidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(rail, /bg-\[var\(--theme-sidebar-rail\)\]/);
-  assert.match(baseCss, /--theme-sidebar-panel:\s*#f0f0ef/);
-  assert.match(baseCss, /--theme-sidebar-rail:\s*#f0f0ef/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#eeeeec/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#eeeeec/);
   assert.doesNotMatch(sessionList, /text-slate-100|text-white|border-slate-800/);
   assert.doesNotMatch(rail, /text-slate-200|text-white|rgba\(255,255,255,0\.1\)/);
 });
 
-test("expanded desktop sidebar uses a LibreChat rail plus side panel structure", () => {
+test("expanded desktop sidebar uses one primary navigation surface", () => {
   const sessionSidebar = read("src/components/panels/SessionSidebar.tsx");
   const sessionList = read(
     "src/components/panels/SidebarParts/SessionListContent.tsx",
@@ -103,10 +103,11 @@ test("expanded desktop sidebar uses a LibreChat rail plus side panel structure",
   const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
 
   assert.match(sessionSidebar, /data-librechat-desktop-sidebar/);
-  assert.match(sessionSidebar, /data-librechat-expanded-rail/);
   assert.match(sessionSidebar, /data-librechat-expanded-panel/);
-  assert.match(sessionSidebar, /<SidebarRail[\s\S]*isExpanded/);
-  assert.match(sessionSidebar, /showFooter=\{false\}/);
+  assert.doesNotMatch(sessionSidebar, /data-librechat-expanded-rail/);
+  assert.doesNotMatch(sessionSidebar, /<SidebarRail[\s\S]*\bisExpanded(?:\s|>)/);
+  assert.doesNotMatch(sessionSidebar, /<SidebarRail[\s\S]*isExpanded=\{true\}/);
+  assert.doesNotMatch(sessionSidebar, /showFooter=\{false\}/);
   assert.match(sessionList, /showFooter = true/);
   assert.match(sessionList, /\{showFooter && \(/);
   assert.match(rail, /isExpanded = false/);
@@ -143,13 +144,13 @@ test("light workbench tokens keep the LibreChat shell on one warm-neutral canvas
   const surface = read("src/components/librechatShell/libreChatSurface.ts");
   const welcome = read("src/components/chat/WelcomePage.tsx");
 
-  assert.match(baseCss, /--theme-bg:\s*#f7f7f6;/);
-  assert.match(baseCss, /--theme-workbench-canvas:\s*#f7f7f6;/);
+  assert.match(baseCss, /--theme-bg:\s*#f5f5f3;/);
+  assert.match(baseCss, /--theme-workbench-canvas:\s*#f5f5f3;/);
   assert.match(baseCss, /--theme-workbench-panel:\s*#ffffff;/);
   assert.match(baseCss, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(baseCss, /--theme-bg-sidebar:\s*#ececeb;/);
-  assert.match(baseCss, /--theme-sidebar-panel:\s*#f0f0ef;/);
-  assert.match(baseCss, /--theme-sidebar-rail:\s*#f0f0ef;/);
+  assert.match(baseCss, /--theme-bg-sidebar:\s*#eeeeec;/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#eeeeec;/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#eeeeec;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#ffffff;/);
   assert.doesNotMatch(baseCss, /--theme-sidebar-panel:\s*#f4f4f5;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#e5e8ed;/);
@@ -168,8 +169,11 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   const chatInput = read("src/components/chat/ChatInput.tsx");
 
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
+  assert.match(surface, /workspaceWithContext:[\s\S]*18rem/);
   assert.match(shell, /data-librechat-context-toggle/);
   assert.match(shell, /contextOpen/);
+  assert.match(shell, /useState\(false\)/);
+  assert.doesNotMatch(shell, /useState\(true\)/);
   assert.match(shell, /aria-expanded=\{contextOpen\}/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(sidePanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
@@ -911,4 +915,58 @@ test("post-login sidebar marks the current governed route in expanded and rail m
   assert.match(railPrimitive, /data-active=\{active \? "true" : "false"\}/);
   assert.match(baseCss, /\.sidebar-nav-btn\[data-active="true"\]/);
   assert.match(baseCss, /\.sidebar-rail-btn\[data-active="true"\]/);
+});
+
+test("post-login sidebar avoids competing rail and panel active states", () => {
+  const sidebar = read(
+    "src/components/panels/SidebarParts/SessionListContent.tsx",
+  );
+  const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
+  const railPrimitive = read("src/components/librechatShell/LibreChatRail.tsx");
+  const panelPrimitive = read("src/components/librechatShell/LibreChatPanel.tsx");
+  const baseCss = read("src/styles/base.css");
+
+  assert.doesNotMatch(
+    read("src/components/panels/SessionSidebar.tsx"),
+    /<SidebarRail[\s\S]*\bisExpanded(?:\s|>)/,
+  );
+  assert.doesNotMatch(
+    read("src/components/panels/SessionSidebar.tsx"),
+    /<SidebarRail[\s\S]*isExpanded=\{true\}/,
+  );
+  assert.match(rail, /const showActiveRailState = !isExpanded/);
+  assert.match(
+    rail,
+    /showActiveRailState && activeRailItem === item/,
+  );
+  assert.match(railPrimitive, /h-10 w-10/);
+  assert.match(sidebar, /onClick=\{onOpenSearch\}[\s\S]*LibreChatPanelSection group="tasks"/);
+  assert.match(sidebar, /data-workbench-session-region[\s\S]*border-t border-\[var\(--theme-border\)\]\/70/);
+  assert.match(sidebar, /className="sidebar-nav-btn flex h-9 w-full items-center gap-3 rounded-md/);
+  assert.doesNotMatch(sidebar, /rounded-lg flex items-center gap-3 px-\[9px\] text-sm/);
+  assert.match(panelPrimitive, /tracking-normal/);
+  assert.doesNotMatch(panelPrimitive, /uppercase tracking-wide/);
+  assert.match(baseCss, /--theme-sidebar-hover:/);
+  assert.match(baseCss, /--theme-sidebar-active:/);
+  assert.match(baseCss, /\.sidebar-nav-btn\[data-active="true"\]::before/);
+  assert.match(baseCss, /\.sidebar-rail-btn\[data-active="true"\]::before/);
+  assert.doesNotMatch(baseCss, /inset 3px 0 0 var\(--theme-primary\)/);
+});
+
+test("post-login shell uses a single compact LibreChat-style sidebar", () => {
+  const surface = read("src/components/librechatShell/libreChatSurface.ts");
+  const sessionSidebar = read("src/components/panels/SessionSidebar.tsx");
+  const baseCss = read("src/styles/base.css");
+  const themeDom = read("src/utils/themeDom.ts");
+
+  assert.match(surface, /expandedMinWidthPx:\s*288/);
+  assert.doesNotMatch(surface, /expandedMinWidthPx:\s*360/);
+  assert.match(
+    sessionSidebar,
+    /width:\s*isCollapsed\s*\?\s*"var\(--sidebar-rail-width\)"\s*:\s*"var\(--sidebar-width\)"/,
+  );
+  assert.match(baseCss, /--theme-bg:\s*#f5f5f3;/);
+  assert.match(baseCss, /--theme-workbench-canvas:\s*#f5f5f3;/);
+  assert.match(themeDom, /light:\s*"#f5f5f3"/);
+  assert.doesNotMatch(themeDom, /#eef2f6/);
 });

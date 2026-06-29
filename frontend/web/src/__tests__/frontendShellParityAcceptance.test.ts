@@ -320,11 +320,11 @@ test("authenticated chat workspace keeps one warm-neutral LibreChat canvas inste
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(libreSidePanel, /workbenchSurface\.secondaryPanel/);
-  assert.match(theme, /--theme-bg:\s*#f7f7f6;/);
-  assert.match(theme, /--theme-bg-sidebar:\s*#ececeb;/);
+  assert.match(theme, /--theme-bg:\s*#f5f5f3;/);
+  assert.match(theme, /--theme-bg-sidebar:\s*#eeeeec;/);
   assert.match(theme, /--theme-workbench-panel:\s*#ffffff;/);
   assert.match(theme, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#f7f7f6;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#f5f5f3;/);
   assert.doesNotMatch(theme, /--theme-workbench-canvas:\s*#ffffff;/);
   assert.doesNotMatch(theme, /--theme-workbench-canvas:\s*#e5e8ed;/);
   assert.doesNotMatch(theme, /--theme-workbench-panel:\s*#f3f4f6;/);
@@ -392,11 +392,11 @@ test("authenticated workbench adopts one LibreChat light application shell", () 
   assert.doesNotMatch(enterpriseSelect, /GlassSelect|glass-/);
   assert.match(settingsHook, /ai-platform-settings-\$\{date\}\.json/);
   assert.doesNotMatch(settingsHook, /lamb-agent-settings/);
-  assert.match(theme, /--theme-sidebar-rail:\s*#f0f0ef;/);
-  assert.match(theme, /--theme-sidebar-panel:\s*#f0f0ef;/);
-  assert.match(theme, /--theme-sidebar-panel-muted:\s*#e5e5e3;/);
-  assert.match(theme, /--theme-bg:\s*#f7f7f6;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#f7f7f6;/);
+  assert.match(theme, /--theme-sidebar-rail:\s*#eeeeec;/);
+  assert.match(theme, /--theme-sidebar-panel:\s*#eeeeec;/);
+  assert.match(theme, /--theme-sidebar-panel-muted:\s*#e5e5e1;/);
+  assert.match(theme, /--theme-bg:\s*#f5f5f3;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#f5f5f3;/);
   assert.match(sidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /data-workbench-sidebar-panel/);
@@ -678,7 +678,7 @@ test("persona and files are governed authenticated workbench pages", () => {
     assert.match(source, /var\(--theme-border\)/, name);
   }
   assert.match(fileCardPreview, /var\(--theme-bg-sidebar\)/);
-  assert.doesNotMatch(zhLocale, /角色广场/);
+  assert.match(zhLocale, /"roles":\s*"角色广场"/);
 });
 
 test("persona degraded state does not render a false empty catalog", () => {

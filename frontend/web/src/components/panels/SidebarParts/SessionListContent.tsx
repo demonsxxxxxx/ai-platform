@@ -181,15 +181,15 @@ export function SessionListContent({
       className="flex h-full min-h-0 flex-col bg-[var(--theme-sidebar-panel)] text-[var(--theme-text)]"
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-3 pt-3 pb-1 sm:px-4">
-        <div className="flex h-7 items-center gap-2">
-          <span className="flex size-6 items-center justify-center rounded-md bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm ring-1 ring-[var(--theme-border)]">
+      <div className="flex items-center justify-between px-3 pb-1 pt-3 sm:px-4">
+        <div className="flex h-7 min-w-0 items-center gap-2">
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm ring-1 ring-[var(--theme-border)]">
             <Bot size={15} strokeWidth={2.2} aria-hidden="true" />
           </span>
           <button
             type="button"
             onClick={onNewSession}
-            className="text-[15px] font-semibold leading-none text-[var(--theme-text)] transition-colors hover:text-[var(--theme-primary)]"
+            className="min-w-0 truncate text-[15px] font-semibold leading-none text-[var(--theme-text)] transition-colors hover:text-[var(--theme-primary)]"
           >
             {APP_NAME}
           </button>
@@ -218,18 +218,38 @@ export function SessionListContent({
       {/* Primary navigation */}
       <div
         data-workbench-primary-nav
-        className="flex flex-col gap-3 px-2 py-2"
+        className="flex flex-col gap-2 px-2 pb-2 pt-2"
       >
-        <button
-          onClick={onNewSession}
-          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm font-medium focus:outline-none transition-colors group"
-        >
-          <MessageSquarePlus size={20} />
-          <span className="flex-1 text-left">{t("sidebar.newChat")}</span>
-          <kbd className="hidden items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100 sm:inline-flex">
-            {t("sidebar.newChatShortcut")}
-          </kbd>
-        </button>
+        <div className="space-y-1">
+          <button
+            onClick={onNewSession}
+            className="sidebar-nav-btn group flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm font-medium transition-colors focus:outline-none"
+          >
+            <MessageSquarePlus size={19} />
+            <span className="flex-1 text-left">{t("sidebar.newChat")}</span>
+            <kbd className="hidden items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-[var(--theme-text-tertiary)] opacity-0 transition-opacity group-hover:opacity-100 sm:inline-flex">
+              {t("sidebar.newChatShortcut")}
+            </kbd>
+          </button>
+
+          <button
+            onClick={onOpenSearch}
+            className="sidebar-nav-btn group flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
+          >
+            <Search size={19} />
+            <span className="flex-1 text-left">
+              {t("sidebar.searchSessions")}
+            </span>
+            <kbd
+              className="hidden items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium opacity-0 transition-opacity group-hover:opacity-100 sm:inline-flex"
+              style={{ color: "var(--theme-text-tertiary)" }}
+            >
+              ⌘K
+            </kbd>
+          </button>
+        </div>
+
+        <div className="h-px bg-[var(--theme-border)]/70" />
 
         <LibreChatPanelSection group="tasks" label={t("sidebar.tasks")}>
           {taskNavItems.map(({ key, icon: Icon, label, onClick }) => {
@@ -241,10 +261,10 @@ export function SessionListContent({
                 aria-current={isActive ? "page" : undefined}
                 data-active={isActive ? "true" : "false"}
                 data-workbench-nav-item={key}
-                className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+                className="sidebar-nav-btn flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
               >
-                <Icon size={20} />
-                <span>{label}</span>
+                <Icon size={19} />
+                <span className="min-w-0 truncate">{label}</span>
               </button>
             );
           })}
@@ -263,30 +283,14 @@ export function SessionListContent({
                 aria-current={isActive ? "page" : undefined}
                 data-active={isActive ? "true" : "false"}
                 data-workbench-nav-item={key}
-                className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors"
+                className="sidebar-nav-btn flex h-9 w-full items-center gap-3 rounded-md px-[9px] text-sm transition-colors focus:outline-none"
               >
-                <Icon size={20} />
-                <span>{label}</span>
+                <Icon size={19} />
+                <span className="min-w-0 truncate">{label}</span>
               </button>
             );
           })}
         </LibreChatPanelSection>
-
-        <button
-          onClick={onOpenSearch}
-          className="sidebar-nav-btn w-full h-9 rounded-lg flex items-center gap-3 px-[9px] text-sm focus:outline-none transition-colors group"
-        >
-          <Search size={20} />
-          <span className="flex-1 text-left">
-            {t("sidebar.searchSessions")}
-          </span>
-          <kbd
-            className="hidden sm:inline-flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-medium rounded opacity-0 group-hover:opacity-100 transition-opacity"
-            style={{ color: "var(--theme-text-tertiary)" }}
-          >
-            ⌘K
-          </kbd>
-        </button>
       </div>
 
       {/* Session list */}
@@ -294,17 +298,17 @@ export function SessionListContent({
         ref={onSetScrollEl}
         data-workbench-session-region
         data-sidebar-scroll
-        className="flex-1 overflow-y-auto px-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="flex-1 overflow-y-auto border-t border-[var(--theme-border)]/70 px-2 pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         <div className="flex flex-col gap-px">
           {groupedUncategorized.length > 0 || isUncategorizedLoading ? (
             <>
               <div
                 onClick={onToggleChatsCollapsed}
-                className="flex items-center justify-between px-[9px] h-9 cursor-pointer select-none group/section"
+                className="group/section flex h-8 cursor-pointer select-none items-center justify-between px-[9px]"
               >
                 <div className="flex min-w-0 items-center gap-2">
-                  <span className="text-[13px] font-medium text-[var(--theme-text-secondary)] transition-colors group-hover/section:text-[var(--theme-text)]">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--theme-text-tertiary)] transition-colors group-hover/section:text-[var(--theme-text-secondary)]">
                     {t("sidebar.chats")}
                   </span>
                   {chatsUnreadCount > 0 && (

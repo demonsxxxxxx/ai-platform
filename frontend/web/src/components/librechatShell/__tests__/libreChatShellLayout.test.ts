@@ -27,12 +27,12 @@ test("surface tokens expose one neutral chat canvas", () => {
   const baseCss = read("src/styles/base.css");
 
   assert.match(surface, /libreChatSurface/);
-  assert.match(baseCss, /--theme-workbench-canvas:\s*#f7f7f6;/);
+  assert.match(baseCss, /--theme-workbench-canvas:\s*#f5f5f3;/);
   assert.match(baseCss, /--theme-workbench-panel:\s*#ffffff;/);
   assert.match(baseCss, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(baseCss, /--theme-bg-sidebar:\s*#ececeb;/);
-  assert.match(baseCss, /--theme-sidebar-panel:\s*#f0f0ef;/);
-  assert.match(baseCss, /--theme-sidebar-rail:\s*#f0f0ef;/);
+  assert.match(baseCss, /--theme-bg-sidebar:\s*#eeeeec;/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#eeeeec;/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#eeeeec;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#ffffff;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#e5e8ed;/);
 });
@@ -61,7 +61,7 @@ test("sidebar transplants LibreChat rail geometry and mobile close behavior", ()
   assert.match(list, /data-librechat-expanded-panel/);
   assert.match(rail, /LibreChatRailButton/);
   assert.match(rail, /data-librechat-rail/);
-  assert.match(surface, /expandedMinWidthPx:\s*360/);
+  assert.match(surface, /expandedMinWidthPx:\s*288/);
 });
 
 test("composer and right panel expose LibreChat-style regions without backend authority imports", () => {

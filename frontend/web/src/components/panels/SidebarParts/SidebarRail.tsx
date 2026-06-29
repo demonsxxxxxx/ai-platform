@@ -73,8 +73,9 @@ export function SidebarRail({
   const { t } = useTranslation();
   const location = useLocation();
   const activeRailItem = getWorkbenchNavItemFromPathname(location.pathname);
+  const showActiveRailState = !isExpanded;
   const isRailItemActive = (item: WorkbenchNavItem) =>
-    activeRailItem === item;
+    showActiveRailState && activeRailItem === item;
 
   return (
     <nav
@@ -130,7 +131,7 @@ export function SidebarRail({
 
       {/* Action icons — scrollable when overflowing, no scrollbar */}
       <div
-        className="mt-3 flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col items-center w-full space-y-1"
+        className="mt-2 flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col items-center w-full gap-0.5 py-1"
         style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
       >
         <LibreChatRailButton
@@ -192,8 +193,8 @@ export function SidebarRail({
           onClick={onOpenMcp}
           className={railBtn}
           aria-current={isRailItemActive("mcp") ? "page" : undefined}
-          title={t("featureMenu.mcpTools")}
-          aria-label={t("featureMenu.mcpTools")}
+          title={t("nav.mcp")}
+          aria-label={t("nav.mcp")}
           itemKey="mcp"
           active={isRailItemActive("mcp")}
         >
