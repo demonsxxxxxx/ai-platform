@@ -580,11 +580,12 @@ class ClaudeAgentWorkerAdapter:
                 },
             )
 
+        context_pack = payload.context_pack or executor_context_pack_from_snapshot(payload.context_snapshot)
         prompt = build_skill_prompt(
             skill_id=payload.skill_id,
             user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
             file_names=file_names,
-            context_pack=executor_context_pack_from_snapshot(payload.context_snapshot),
+            context_pack=context_pack,
         )
         sdk_result = await self._try_run_sdk(
             payload,
@@ -871,11 +872,12 @@ class ClaudeAgentWorkerAdapter:
             )
             workspace.mkdir(parents=True, exist_ok=True)
         file_names = file_names if file_names is not None else await self._materialize_files(payload, workspace)
+        context_pack = payload.context_pack or executor_context_pack_from_snapshot(payload.context_snapshot)
         prompt = prompt or build_skill_prompt(
             skill_id=payload.skill_id,
             user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
             file_names=file_names,
-            context_pack=executor_context_pack_from_snapshot(payload.context_snapshot),
+            context_pack=context_pack,
         )
         async def on_text(delta: str) -> None:
             if event_sink:

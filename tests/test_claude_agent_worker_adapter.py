@@ -610,6 +610,65 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_agent_run_prefers_worker_context_pack_over_snapshot_reparse(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_skill(tmp_path / "skills")
+    calls = {}
+
+    async def fake_try_run_sdk(payload, event_sink=None, **kwargs):
+        calls["prompt"] = kwargs["prompt"]
+        return FakeQueryResult()
+
+    async def no_files(payload, workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    monkeypatch.setattr(adapter, "_try_run_sdk", fake_try_run_sdk)
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="qa-file-reviewer",
+            agent_id="qa-word-review",
+            input={"message": "审核一下"},
+            context_snapshot={
+                "source": "stored_context_snapshot",
+                "referenced_materials": {
+                    "message_count": 99,
+                    "file_count": 99,
+                    "artifact_count": 99,
+                    "memory_record_count": 99,
+                },
+                "used_context_summary": {
+                    "source": "stored_context_snapshot",
+                    "input_keys": ["raw_storage_key"],
+                    "memory_policy_source": "not_recorded",
+                    "long_term_memory_read": True,
+                },
+                "raw_storage_key": "s3://private/object",
+            },
+            context_pack={
+                "schema_version": "ai-platform.executor-context-pack.v1",
+                "prompt_summary": (
+                    "Context pack: 1 message(s), 0 file(s), 0 artifact(s), "
+                    "0 long-term memory record(s). Inputs: message. "
+                    "Execution tier: document_worker. Context pack version: v4."
+                ),
+                "context_pack_generated_at": "2026-06-12T01:23:45Z",
+            },
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert "Context pack: 1 message(s), 0 file(s), 0 artifact(s)" in calls["prompt"]
+    assert "Context pack version: v4" in calls["prompt"]
+    assert "99 message(s)" not in calls["prompt"]
+    assert "raw_storage_key" not in calls["prompt"]
+    assert "s3://private" not in calls["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_file_skill_uses_controlled_runner_when_sdk_tool_schema_loops(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_runner_skill(tmp_path / "skills")
@@ -1860,6 +1919,68 @@ def test_build_skill_prompt_ignores_unknown_context_pack_schema():
     assert "Office context pack:" not in prompt
     assert "raw_storage_key" not in prompt
     assert "s3://private" not in prompt
+
+
+def test_build_skill_prompt_rejects_leaky_context_pack_summary():
+    prompt = build_skill_prompt(
+        skill_id="general-chat",
+        user_message="continue the proposal",
+        file_names=[],
+        context_pack={
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "prompt_summary": "raw_storage_key=s3://private/object sandbox_workdir=/tmp/private",
+            "context_pack_version": "v4",
+            "context_pack_generated_at": "2026-06-12T01:23:45Z",
+        },
+    )
+
+    assert "Office context pack:" not in prompt
+    assert "raw_storage_key" not in prompt
+    assert "s3://private" not in prompt
+    assert "sandbox_workdir" not in prompt
+    assert "/tmp/private" not in prompt
+
+
+def test_build_skill_prompt_sanitizes_context_pack_metadata():
+    prompt = build_skill_prompt(
+        skill_id="general-chat",
+        user_message="continue the proposal",
+        file_names=[],
+        context_pack={
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "prompt_summary": "Context pack: 1 message(s), 0 file(s), 0 artifact(s).",
+            "context_pack_version": "/tmp/private-version",
+            "context_pack_generated_at": "C:\\private\\generated-at",
+        },
+    )
+
+    assert "Office context pack:" in prompt
+    assert "Context pack: 1 message(s), 0 file(s), 0 artifact(s)." in prompt
+    assert "Context pack version:" not in prompt
+    assert "Context pack generated at:" not in prompt
+    assert "/tmp/private-version" not in prompt
+    assert "C:\\private\\generated-at" not in prompt
+
+
+def test_build_skill_prompt_rejects_semantically_private_context_pack_metadata():
+    prompt = build_skill_prompt(
+        skill_id="general-chat",
+        user_message="continue the proposal",
+        file_names=[],
+        context_pack={
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "prompt_summary": "Context pack: 1 message(s), 0 file(s), 0 artifact(s).",
+            "context_pack_version": "raw_storage_key=tenant/private/object",
+            "context_pack_generated_at": "run_id=run-a raw_memory_content=customer-note",
+        },
+    )
+
+    assert "Office context pack:" in prompt
+    assert "Context pack: 1 message(s), 0 file(s), 0 artifact(s)." in prompt
+    assert "Context pack version:" not in prompt
+    assert "Context pack generated at:" not in prompt
+    assert "raw_storage_key" not in prompt
+    assert "raw_memory_content" not in prompt
 
 
 def test_build_skill_prompt_frontloads_qa_review_fast_path():

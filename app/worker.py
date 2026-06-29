@@ -17,7 +17,11 @@ from app.control_plane_contracts import (
     sanitize_public_text,
     standard_trace_id,
 )
-from app.context_builder import ensure_public_context_provenance, record_initial_context_snapshot
+from app.context_builder import (
+    ensure_public_context_provenance,
+    executor_context_pack_from_snapshot,
+    record_initial_context_snapshot,
+)
 from app.db import transaction
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
@@ -1449,6 +1453,7 @@ async def process_run_payload(
         skill_manifests=payload.skill_manifests,
         context_snapshot_id=str(context_ref["context_snapshot_id"]),
         context_snapshot=context_ref["context_snapshot"],
+        context_pack=executor_context_pack_from_snapshot(context_ref["context_snapshot"]),
         model_id=payload.model_id or "",
         model_value=payload.model_value or "",
     )

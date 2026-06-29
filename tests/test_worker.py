@@ -1863,6 +1863,112 @@ async def test_worker_rebuilds_db_context_snapshot_with_public_provenance(monkey
 
 
 @pytest.mark.asyncio
+async def test_worker_payload_includes_bounded_context_pack_from_scoped_db_snapshot(monkeypatch):
+    captured = {}
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            captured["payload"] = payload
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="capture/1",
+                capabilities={},
+                result={"message": "done"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-context-pack"
+
+    async def get_context_snapshot_for_worker(conn, **kwargs):
+        return {
+            "id": "ctx-existing",
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "session_id": kwargs["session_id"],
+            "run_id": kwargs["run_id"],
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": "executor",
+            "included_message_ids": ["msg-a", "msg-b"],
+            "included_file_ids": ["file-a"],
+            "included_artifact_ids": ["artifact-a"],
+            "included_memory_record_ids": ["mem-a"],
+            "redaction_summary_json": {},
+            "payload_json": {
+                "window": "current",
+                "message": "review this file",
+                "raw_storage_key": "tenant/private/object",
+                "sandbox_workdir": "/tmp/private-workdir",
+                "used_context_summary": {
+                    "source": "runs_api",
+                    "input_keys": ["message", "raw_storage_key", "sandbox_workdir"],
+                    "memory_policy_source": "stored",
+                    "long_term_memory_read": True,
+                },
+                "execution_tier": "document_worker",
+                "latest_artifact_version": "v3",
+                "context_pack_version": "v4",
+                "context_pack_generated_at": "2026-06-12T01:23:45Z",
+            },
+            "created_at": None,
+        }
+
+    async def fail_record_context(*args, **kwargs):
+        raise AssertionError("worker must derive context pack from the scoped DB snapshot")
+
+    async def complete_run(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr("app.worker.record_initial_context_snapshot", fail_record_context)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(executor_type="claude-agent-worker"),
+        AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    context_pack = getattr(captured["payload"], "context_pack", None)
+    assert isinstance(context_pack, dict)
+    assert context_pack["schema_version"] == "ai-platform.executor-context-pack.v1"
+    assert context_pack["source"] == "runs_api"
+    assert context_pack["referenced_materials"] == {
+        "message_count": 2,
+        "file_count": 1,
+        "artifact_count": 1,
+        "memory_record_count": 1,
+    }
+    assert context_pack["used_context_summary"] == {
+        "source": "runs_api",
+        "input_keys": ["attachments", "message"],
+        "memory_policy_source": "stored",
+        "long_term_memory_read": False,
+    }
+    assert context_pack["execution_tier"] == "document_worker"
+    assert context_pack["latest_artifact_version"] == "v3"
+    assert context_pack["context_pack_version"] == "v4"
+    assert context_pack["context_pack_generated_at"] == "2026-06-12T01:23:45Z"
+    assert "1 long-term memory record(s)" not in context_pack["prompt_summary"]
+    serialized = json.dumps(context_pack, ensure_ascii=False).lower()
+    assert "raw_storage_key" not in serialized
+    assert "tenant/private/object" not in serialized
+    assert "sandbox_workdir" not in serialized
+    assert "/tmp/private-workdir" not in serialized
+
+
+@pytest.mark.asyncio
 async def test_worker_refreshes_unscoped_context_snapshot_before_executor(monkeypatch):
     calls = []
     captured = {}
