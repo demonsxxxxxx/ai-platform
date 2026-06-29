@@ -31,6 +31,22 @@ const FILE_REFERENCE_SELECTOR = "[data-composer-file-reference]";
 const GOVERNANCE_STATE_SELECTOR = "[data-frontend-governance-state]";
 const ROUTE_READY_SELECTOR =
   '[data-librechat-shell], [data-authenticated-workbench-page], [data-workbench-sidebar-panel], [data-frontend-governance-state], [data-shared-page], [data-yields-sidebar]';
+const ROUTE_CONTENT_SELECTORS = new Map([
+  ["/chat", "[data-librechat-shell]"],
+  ["/apps", "[data-launchpad-directory-shell], [data-frontend-governance-state]"],
+  ["/skills", "[data-skill-workbench-shell], [data-frontend-governance-state]"],
+  [
+    "/marketplace",
+    "[data-marketplace-catalog-shell], [data-marketplace-forbidden-shell], [data-frontend-governance-state]",
+  ],
+  ["/roles", "[data-role-plaza-shell]"],
+  ["/mcp", "[data-mcp-directory-shell]"],
+  ["/persona", "[data-persona-workbench-shell]"],
+  ["/files", "[data-files-workbench-shell]"],
+  ["/channels", "[data-channel-workbench-shell]"],
+  ["/settings", '[data-workbench-projection-page="settings"], [data-workbench-projection-page]'],
+  ["/shared/smoke-denied", '[data-shared-page], [data-frontend-governance-state="forbidden"]'],
+]);
 
 function parseArgs(argv) {
   const args = {
@@ -492,6 +508,7 @@ async function verifyProvenance(baseUrl, expectedCommit) {
 async function navigateAndCollectRoute(client, baseUrl, route, timeoutMs, screenshotDir) {
   await client.navigate(`${baseUrl}${route}`, timeoutMs);
   const hydrated = await waitForRouteHydration(client, route, timeoutMs);
+  const contentReady = await waitForRouteContent(client, route, timeoutMs);
   const shellPresent = await client.evaluate(`Boolean(document.querySelector(${jsString(ROUTE_READY_SELECTOR)}))`);
   const governanceState = await client.evaluate(`(() => {
     const node = document.querySelector("${GOVERNANCE_STATE_SELECTOR}");
@@ -508,6 +525,7 @@ async function navigateAndCollectRoute(client, baseUrl, route, timeoutMs, screen
     path: await client.evaluate("location.pathname"),
     shellPresent,
     hydrated,
+    contentReady,
     governanceState,
     loginRedirected,
     screenshot: screenshotPath ? basename(screenshotPath) : null,
@@ -530,6 +548,29 @@ async function waitForRouteHydration(client, route, timeoutMs) {
       `Boolean(document.querySelector(${jsString(ROUTE_READY_SELECTOR)}))`,
       timeoutMs,
       `route_hydration:${route}`,
+    )
+    .then(() => true)
+    .catch(() => false);
+}
+
+async function waitForRouteContent(client, route, timeoutMs) {
+  const selector = ROUTE_CONTENT_SELECTORS.get(route);
+  if (!selector) return true;
+  return client
+    .waitFor(
+      `(() => {
+        const nodes = Array.from(document.querySelectorAll(${jsString(selector)}));
+        if (nodes.length === 0) return false;
+        const activeStates = nodes
+          .map((node) => node.getAttribute("data-frontend-governance-state"))
+          .filter(Boolean);
+        if (activeStates.includes("loading")) {
+          return activeStates.some((state) => state !== "loading");
+        }
+        return true;
+      })()`,
+      timeoutMs,
+      `route_content:${route}`,
     )
     .then(() => true)
     .catch(() => false);
@@ -739,7 +780,10 @@ function summarizeStatus({
 }) {
   const statusReasons = [];
   const routeEvidenceReady = routeEvidence.every(
-    (item) => item.loginRedirected === false && item.hydrated === true,
+    (item) =>
+      item.loginRedirected === false &&
+      item.hydrated === true &&
+      item.contentReady === true,
   );
   const composerEvidenceReady =
     composerEvidence.commandMenu.commands.includes("skill") &&

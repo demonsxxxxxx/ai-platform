@@ -239,7 +239,7 @@ export const FeatureMenu = memo(function FeatureMenu({
             className="feature-menu-dropdown"
             style={{
               ...getDropdownStyle(),
-              background: "var(--theme-bg-card)",
+              background: "var(--theme-workbench-panel)",
               borderColor: "var(--theme-border)",
             }}
           >

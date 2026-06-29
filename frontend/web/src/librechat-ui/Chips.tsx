@@ -36,8 +36,8 @@ export function LibreChatComposerChip({
       className={clsx(
         "inline-flex max-w-[220px] items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs",
         unavailable
-          ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
-          : "border-stone-200 bg-stone-50 text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200",
+          ? "border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] text-[var(--theme-warning)]"
+          : "border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]",
       )}
       data-librechat-composer-chip
       data-composer-chip-kind={kind}
@@ -54,7 +54,7 @@ export function LibreChatComposerChip({
       <button
         type="button"
         onClick={() => onRemove(id)}
-        className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded hover:bg-black/10 dark:hover:bg-white/10"
+        className="ml-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded hover:bg-[var(--theme-sidebar-hover)] hover:text-[var(--theme-text)]"
         aria-label={removeLabel}
       >
         <X size={11} />

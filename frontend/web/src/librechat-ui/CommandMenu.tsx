@@ -17,7 +17,7 @@ export function LibreChatCommandMenu({
 }: LibreChatCommandMenuProps) {
   return (
     <div
-      className="composer-command-surface absolute bottom-full left-2 right-2 z-40 mb-2 border border-[var(--theme-border)] bg-[var(--theme-bg-card)] shadow-[0_12px_28px_rgba(15,23,42,0.12)] dark:bg-stone-900"
+      className="composer-command-surface absolute bottom-full left-2 right-2 z-40 mb-2 border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_12px_28px_rgba(15,23,42,0.12)]"
       role="listbox"
       data-composer-command-menu
       data-librechat-command-menu
@@ -83,7 +83,7 @@ export function LibreChatCommandMenuItem({
         className={clsx(
           "flex h-8 w-8 shrink-0 items-center justify-center rounded-md",
           active
-            ? "bg-[var(--theme-primary)] text-white dark:text-stone-950"
+            ? "bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]"
             : "bg-[var(--theme-bg-sidebar)] text-[var(--theme-text-secondary)]",
         )}
       >

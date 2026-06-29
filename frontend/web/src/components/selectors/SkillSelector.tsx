@@ -184,7 +184,7 @@ export function SkillSelector({
       ref={swipeRef as React.RefObject<HTMLDivElement>}
       className="w-full min-h-[40vh] max-h-[85vh] max-h-[85dvh] flex flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[600px] sm:max-h-[80vh] sm:rounded-lg"
       data-composer-skill-selector
-      style={{ background: "var(--theme-bg-card)" }}
+      style={{ background: "var(--theme-workbench-panel)" }}
       onClick={(e) => e.stopPropagation()}
     >
       {/* Header */}
@@ -233,7 +233,7 @@ export function SkillSelector({
             showBatchToggleToast(true, changedCount, ok);
           }}
           disabled={personaControlled || isMutating || allSkillsEnabled}
-          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-bg-card)] active:bg-[var(--theme-bg-card)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t("skillSelector.selectAll")}
         </button>
@@ -247,7 +247,7 @@ export function SkillSelector({
             showBatchToggleToast(false, enabledCount, ok);
           }}
           disabled={personaControlled || isMutating || noSkillsEnabled}
-          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-bg-card)] active:bg-[var(--theme-bg-card)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          className="px-3 py-2 sm:py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-workbench-panel)] active:bg-[var(--theme-workbench-panel)] rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
         >
           {t("skillSelector.deselectAll")}
         </button>
@@ -266,7 +266,7 @@ export function SkillSelector({
       </div>
 
       {personaControlled && (
-        <div className="border-b border-blue-200/70 bg-blue-50/80 px-4 py-3 text-xs leading-relaxed text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-200 sm:px-5">
+        <div className="border-b border-[var(--theme-info-ring)] bg-[var(--theme-info-soft)] px-4 py-3 text-xs leading-relaxed text-[var(--theme-info)] sm:px-5">
           {t(
             "personaPresets.skillsControlledHint",
             "当前角色「{{name}}」正在控制可用 Skills。要调整本次对话的技能，请先清除当前角色，或编辑该角色预设。",
@@ -342,7 +342,7 @@ export function SkillSelector({
             return (
               <div
                 key={source}
-                className="rounded-lg border border-[var(--theme-border)] overflow-hidden bg-[var(--theme-bg-card)]"
+                className="rounded-lg border border-[var(--theme-border)] overflow-hidden bg-[var(--theme-workbench-panel)]"
               >
                 {/* Category Header */}
                 <div
@@ -470,7 +470,7 @@ export function SkillSelector({
           },
         )}
         {filteredSkills.length === 0 && (
-          <div className="rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-4 py-6 text-center text-sm text-[var(--theme-text-secondary)]">
+          <div className="rounded-lg border border-dashed border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] px-4 py-6 text-center text-sm text-[var(--theme-text-secondary)]">
             {t("skills.noMatchingSkills")}
           </div>
         )}

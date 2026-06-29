@@ -60,7 +60,7 @@ export function ComposerModelPanel({
       >
         <section
           data-composer-model-panel
-          className="flex max-h-[85dvh] min-h-[40vh] w-full flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[600px] sm:rounded-lg"
+          className="flex max-h-[85dvh] min-h-[40vh] w-full flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:w-[40%] sm:min-w-[600px] sm:rounded-lg"
           onClick={(event) => event.stopPropagation()}
         >
           <header className="relative flex items-center justify-between border-b border-[var(--theme-border)] px-4 py-3 sm:px-5">
@@ -105,7 +105,7 @@ export function ComposerModelPanel({
                   "composerCommand.modelSelector.searchPlaceholder",
                   "Search models",
                 )}
-                className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] pl-9 pr-3 text-sm text-[var(--theme-text)] outline-none transition-colors placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-ring)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
+                className="h-10 w-full rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] pl-9 pr-3 text-sm text-[var(--theme-text)] outline-none transition-colors placeholder:text-[var(--theme-text-secondary)] focus:border-[var(--theme-ring)] focus:ring-2 focus:ring-[var(--theme-primary-light)]"
               />
             </label>
           </div>
