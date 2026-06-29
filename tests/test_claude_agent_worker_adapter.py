@@ -1962,6 +1962,27 @@ def test_build_skill_prompt_sanitizes_context_pack_metadata():
     assert "C:\\private\\generated-at" not in prompt
 
 
+def test_build_skill_prompt_rejects_semantically_private_context_pack_metadata():
+    prompt = build_skill_prompt(
+        skill_id="general-chat",
+        user_message="continue the proposal",
+        file_names=[],
+        context_pack={
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "prompt_summary": "Context pack: 1 message(s), 0 file(s), 0 artifact(s).",
+            "context_pack_version": "raw_storage_key=tenant/private/object",
+            "context_pack_generated_at": "run_id=run-a raw_memory_content=customer-note",
+        },
+    )
+
+    assert "Office context pack:" in prompt
+    assert "Context pack: 1 message(s), 0 file(s), 0 artifact(s)." in prompt
+    assert "Context pack version:" not in prompt
+    assert "Context pack generated at:" not in prompt
+    assert "raw_storage_key" not in prompt
+    assert "raw_memory_content" not in prompt
+
+
 def test_build_skill_prompt_frontloads_qa_review_fast_path():
     prompt = build_skill_prompt(
         skill_id="qa-file-reviewer",
