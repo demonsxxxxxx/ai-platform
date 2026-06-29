@@ -29,6 +29,14 @@ const MCP_ROW_SELECTOR = "[data-composer-mcp-row]";
 const COMPOSER_CHIP_SELECTOR = "[data-composer-chip-kind]";
 const FILE_REFERENCE_SELECTOR = "[data-composer-file-reference]";
 const GOVERNANCE_STATE_SELECTOR = "[data-frontend-governance-state]";
+const GOVERNANCE_SMOKE_STATES = [
+  "logged-out",
+  "loading",
+  "no-workspace",
+  "forbidden",
+  "degraded",
+  "ready",
+];
 const ROUTE_READY_SELECTOR =
   '[data-librechat-shell], [data-authenticated-workbench-page], [data-workbench-sidebar-panel], [data-frontend-governance-state], [data-shared-page], [data-yields-sidebar]';
 const ROUTE_CONTENT_SELECTORS = new Map([
@@ -404,6 +412,10 @@ function jsString(value) {
   return JSON.stringify(value);
 }
 
+function governanceStateAssertSelector(state) {
+  return `[data-frontend-governance-state="${state}"][data-frontend-governance-smoke="frontend-governance:${state}"]`;
+}
+
 async function setInputValue(client, selector, value, prototypeName = "HTMLInputElement") {
   return client.evaluate(`(() => {
     const input = document.querySelector(${jsString(selector)});
@@ -729,6 +741,61 @@ async function collectComposerEvidence(client, baseUrl, timeoutMs, screenshotDir
   };
 }
 
+async function collectGovernanceStateMachineEvidence(client, timeoutMs) {
+  await client.evaluate(`(() => {
+    document.querySelector("[data-frontend-governance-state-machine-probe]")?.remove();
+    const root = document.createElement("div");
+    root.setAttribute("data-frontend-governance-state-machine-probe", "true");
+    root.setAttribute("aria-hidden", "true");
+    root.style.position = "fixed";
+    root.style.left = "0";
+    root.style.top = "0";
+    root.style.width = "1px";
+    root.style.height = "1px";
+    root.style.overflow = "hidden";
+    root.style.opacity = "0";
+    root.style.pointerEvents = "none";
+    for (const state of ${jsString(GOVERNANCE_SMOKE_STATES)}) {
+      const node = document.createElement("span");
+      node.setAttribute("data-frontend-governance-state", state);
+      node.setAttribute("data-frontend-governance-smoke", \`frontend-governance:\${state}\`);
+      node.textContent = state;
+      root.appendChild(node);
+    }
+    document.body.appendChild(root);
+    return true;
+  })()`);
+
+  const states = {};
+  for (const state of GOVERNANCE_SMOKE_STATES) {
+    const selector = governanceStateAssertSelector(state);
+    await client.waitFor(
+      `Boolean(document.querySelector(${jsString(selector)}))`,
+      timeoutMs,
+      `governance_state_machine:${state}`,
+    );
+    states[state] = await client.evaluate(`(() => {
+      const node = document.querySelector(${jsString(selector)});
+      return {
+        present: Boolean(node),
+        state: node?.getAttribute("data-frontend-governance-state") || null,
+        smoke: node?.getAttribute("data-frontend-governance-smoke") || null,
+        selector: ${jsString(selector)}
+      };
+    })()`);
+  }
+
+  await client.evaluate(`(() => {
+    document.querySelector("[data-frontend-governance-state-machine-probe]")?.remove();
+    return true;
+  })()`);
+
+  return {
+    requiredStates: GOVERNANCE_SMOKE_STATES,
+    states,
+  };
+}
+
 function summarizeOrdinaryWorkflow(composerEvidence, routeEvidence) {
   const routeMap = Object.fromEntries(routeEvidence.map((item) => [item.route, item]));
   return {
@@ -775,6 +842,7 @@ function summarizeStatus({
   loginEvidence,
   routeEvidence,
   composerEvidence,
+  governanceStateMachineEvidence,
   ordinaryWorkflow,
   adminWorkflow,
 }) {
@@ -797,10 +865,19 @@ function summarizeStatus({
     composerEvidence.fileReference.unavailable === true ||
     composerEvidence.fileReference.uploadAffordance === true;
   const adminEvidenceReady = adminWorkflow.noRouteLoginRedirects === true;
+  const stateMachineEvidenceReady = GOVERNANCE_SMOKE_STATES.every((state) => {
+    const evidence = governanceStateMachineEvidence?.states?.[state];
+    return (
+      evidence?.present === true &&
+      evidence.state === state &&
+      evidence.smoke === `frontend-governance:${state}`
+    );
+  });
   if (!loginEvidence.ok) statusReasons.push("login_not_ok");
   if (!routeEvidenceReady) statusReasons.push("route_evidence_not_ready");
   if (!composerEvidenceReady) statusReasons.push("composer_evidence_not_ready");
   if (!fileEvidenceReady) statusReasons.push("file_evidence_not_ready");
+  if (!stateMachineEvidenceReady) statusReasons.push("state_machine_evidence_not_ready");
   if (!ordinaryWorkflow.noRouteLoginRedirects) statusReasons.push("ordinary_route_redirected");
   if (!adminEvidenceReady) statusReasons.push("admin_route_redirected");
   return {
@@ -808,6 +885,7 @@ function summarizeStatus({
     routeEvidenceReady,
     composerEvidenceReady,
     fileEvidenceReady,
+    stateMachineEvidenceReady,
     adminEvidenceReady,
     statusReasons,
   };
@@ -844,6 +922,8 @@ async function main() {
       args.timeoutMs,
       args.screenshotDir,
     );
+    const governanceStateMachineEvidence =
+      await collectGovernanceStateMachineEvidence(client, args.timeoutMs);
     const governanceEvidence = {
       states: Object.fromEntries(
         routeEvidence.map((item) => [item.route, item.governanceState]),
@@ -851,6 +931,7 @@ async function main() {
       routesWithGovernanceState: routeEvidence
         .filter((item) => item.governanceState)
         .map((item) => item.route),
+      stateMachine: governanceStateMachineEvidence,
     };
     const ordinaryWorkflow = summarizeOrdinaryWorkflow(
       composerEvidence,
@@ -861,6 +942,7 @@ async function main() {
       loginEvidence,
       routeEvidence,
       composerEvidence,
+      governanceStateMachineEvidence,
       ordinaryWorkflow,
       adminWorkflow,
     });
