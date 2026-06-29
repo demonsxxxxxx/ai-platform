@@ -1,0 +1,49 @@
+{
+  "check_statuses": {
+    "artifact_acl": "passed",
+    "memory_context": "passed",
+    "queue_admission": "passed",
+    "run_playback": "passed",
+    "sandbox_workspace": "passed",
+    "skill_snapshots": "passed",
+    "tool_permission": "passed"
+  },
+  "commit_sha": "f67986a6fcf009d5e22c38be4ed71cc979f24f27",
+  "evidence_path": "docs/release-evidence/foundation-runtime-concurrency/f67986a6fcf009d5e22c38be4ed71cc979f24f27-frc-b0-20260629/2026-06-29-211-foundation-alpha-poc-f67986a-foundation-runtime-concurrency.json",
+  "failures": [],
+  "non_expansion_invariants": {
+    "department_rollout_allowed": false,
+    "docker_sandbox_hardened_claim_allowed": false,
+    "long_term_cross_session_memory_enabled": false,
+    "ordinary_user_multi_agent_allowed": false,
+    "production_concurrency_increase_allowed": false
+  },
+  "raw_run_root": "/tmp/ai-platform-b0-current-f67986a-frc-20260629T221314Z-fg",
+  "readiness_path": "docs/release-evidence/foundation-runtime-concurrency/f67986a6fcf009d5e22c38be4ed71cc979f24f27-frc-b0-20260629/2026-06-29-211-foundation-alpha-poc-f67986a-foundation-runtime-concurrency-readiness.json",
+  "role_provenance": {
+    "admin_probe_role": "developer",
+    "ordinary_user_multi_agent_opened": false,
+    "public_probe_role": "user",
+    "run_creation_role": "developer"
+  },
+  "runtime_subject_commit_sha": "f67986a6fcf009d5e22c38be4ed71cc979f24f27",
+  "scenario_counts": {
+    "cancel": 3,
+    "execution": 3,
+    "retry": 3,
+    "run_creation": 3
+  },
+  "schema_version": "ai-platform.foundation-runtime-concurrency-summary.v1",
+  "status": "verified_foundation_runtime_concurrency",
+  "summary": {
+    "concurrency_probe_source": "client_case_timestamps",
+    "concurrency_window_sample_count": 12,
+    "concurrent_request_count": 12,
+    "max_observed_concurrency": 12,
+    "run_count": 12,
+    "session_count": 12,
+    "tenant_count": 2,
+    "user_count": 4
+  },
+  "verified": true
+}
