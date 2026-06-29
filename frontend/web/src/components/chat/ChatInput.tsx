@@ -49,6 +49,12 @@ import {
 import type { ChatInputProps } from "./chatInputTypes";
 import type { FeaturePanel } from "../selectors/FeatureMenu";
 import type { MessageAttachment, PersonaPreset } from "../../types";
+import {
+  LibreChatComposerBox,
+  LibreChatComposerFrame,
+  LibreChatComposerRegion,
+  LibreChatComposerTextarea,
+} from "../../librechat-ui/Composer";
 
 export type { ChatInputProps } from "./chatInputTypes";
 
@@ -954,11 +960,7 @@ export const ChatInput = memo(function ChatInput({
     : undefined;
 
   return (
-    <div
-      className="chat-input-shell librechat-composer-shell sm:px-4 pb-3"
-      data-librechat-composer="phase1"
-      style={{ backgroundColor: "var(--theme-workbench-canvas)" }}
-    >
+    <LibreChatComposerFrame>
       <form
         onSubmit={handleSubmit}
         className={
@@ -978,24 +980,13 @@ export const ChatInput = memo(function ChatInput({
               onClose={closeSlashMenu}
             />
           )}
-          <div
+          <LibreChatComposerBox
             ref={containerRef}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            className={`chat-input-container flex flex-col relative w-full rounded-lg px-1 border transition-all duration-300 ${
-              isDraggingOver ? "border-dashed shadow-lg border-2" : ""
-            }`}
-            data-mention-active={mention.isActive || undefined}
-            style={{
-              backgroundColor: "var(--theme-bg-card)",
-              borderColor: isDraggingOver
-                ? "var(--theme-primary)"
-                : "var(--theme-border)",
-              boxShadow: isDraggingOver
-                ? undefined
-                : "0 1px 2px rgba(15,23,42,0.04)",
-            }}
+            dragging={isDraggingOver}
+            mentionActive={mention.isActive}
           >
             {mention.isActive && !onMentionQueryChange && (
               <MentionPopup
@@ -1020,19 +1011,16 @@ export const ChatInput = memo(function ChatInput({
               onImageViewerOpen={(url) => setImageViewerSrc(url)}
             />
 
-            <div data-librechat-composer-region="chips">
+            <LibreChatComposerRegion region="chips">
               <ComposerChips
                 selections={composerSelections}
                 onRemove={handleRemoveComposerSelection}
               />
-            </div>
+            </LibreChatComposerRegion>
 
-            <div
-              className="px-2.5 pt-1"
-              data-librechat-composer-region="textarea"
-            >
+            <LibreChatComposerRegion region="textarea">
               <div className="relative">
-                <textarea
+                <LibreChatComposerTextarea
                   ref={textareaRef}
                   value={input}
                 onChange={(e) => {
@@ -1050,17 +1038,12 @@ export const ChatInput = memo(function ChatInput({
                   canSend ? t("chat.placeholder") : t("chat.noPermission")
                 }
                 disabled={disabled || !canSend}
-                className="bg-transparent outline-none w-full pt-[10px] resize-none text-[15px] disabled:opacity-50 leading-relaxed overflow-y-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] min-h-[40px] sm:min-h-[44px]"
-                style={{
-                  color: "var(--theme-text)",
-                  paddingLeft: 4,
-                }}
                 rows={1}
                 />
               </div>
-            </div>
+            </LibreChatComposerRegion>
 
-            <div data-librechat-composer-region="toolbar">
+            <LibreChatComposerRegion region="toolbar">
               <ChatInputToolbar
                 activePanel={activePanel}
                 onActivePanelChange={handlePanelChange}
@@ -1097,8 +1080,8 @@ export const ChatInput = memo(function ChatInput({
                 onStopClick={() => setStopConfirmOpen(true)}
                 onNoPermissionClick={() => setContactAdminOpen(true)}
               />
-            </div>
-          </div>
+            </LibreChatComposerRegion>
+          </LibreChatComposerBox>
         </div>
       </form>
 
@@ -1191,6 +1174,6 @@ export const ChatInput = memo(function ChatInput({
         onClose={() => setContactAdminOpen(false)}
         reason="noPermission"
       />
-    </div>
+    </LibreChatComposerFrame>
   );
 });

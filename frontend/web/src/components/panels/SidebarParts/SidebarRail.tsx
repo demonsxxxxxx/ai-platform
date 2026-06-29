@@ -19,7 +19,7 @@ import {
   getWorkbenchNavItemFromPathname,
   type WorkbenchNavItem,
 } from "./navigationState";
-import { LibreChatRailButton } from "../../librechatShell/LibreChatRail";
+import { LibreChatRailButton } from "../../../librechat-ui/Rail";
 
 const railBtn = "";
 

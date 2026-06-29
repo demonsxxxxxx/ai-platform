@@ -7,7 +7,6 @@ import {
   LogIn,
   ShieldAlert,
   WifiOff,
-  Dot,
 } from "lucide-react";
 import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilityBadge";
 import {
@@ -16,6 +15,7 @@ import {
 } from "../governance/frontendGovernanceState";
 import type { GovernanceAvailabilityState } from "../governance/groupAvailability";
 import { workbenchSurface } from "./workbenchSurface";
+import { LibreChatStateSurface } from "../../librechat-ui/StateSurface";
 
 const stateIcons: Record<FrontendGovernanceState, ElementType> = {
   "logged-out": LogIn,
@@ -101,39 +101,18 @@ export function WorkbenchStateSurface({
       : "text-[var(--theme-text-secondary)]";
 
   return (
-    <section
-      data-workbench-state-surface
-      {...buildFrontendGovernanceSmokeAttributes(state)}
-      data-fail-closed-surface={surface}
-      className={`${workbenchSurface.stateSurface} mx-auto w-full max-w-xl ${className}`}
+    <LibreChatStateSurface
+      state={state}
+      title={title ?? t(copy.title)}
+      description={description ?? t(copy.description)}
+      icon={Icon}
+      iconClassName={iconClass}
+      surface={surface}
+      actions={actions}
+      details={details}
+      smokeAttributes={buildFrontendGovernanceSmokeAttributes(state)}
+      className={`mx-auto w-full max-w-xl ${className}`}
     >
-      <div className={workbenchSurface.stateIcon}>
-        <Icon className={iconClass} size={22} strokeWidth={1.9} />
-      </div>
-      <h1 className="mt-4 text-base font-semibold text-[var(--theme-text)]">
-        {title ?? t(copy.title)}
-      </h1>
-      <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-[var(--theme-text-secondary)]">
-        {description ?? t(copy.description)}
-      </p>
-      {details && details.length > 0 ? (
-        <div className="mx-auto mt-5 grid max-w-md gap-2 text-left">
-          {details.map((detail) => (
-            <div
-              key={detail}
-              data-workbench-state-detail
-              className={`${workbenchSurface.statusTile} flex items-start gap-2 text-xs leading-5 text-[var(--theme-text-secondary)]`}
-            >
-              <Dot
-                size={18}
-                strokeWidth={3}
-                className="mt-0.5 shrink-0 text-[var(--theme-text-tertiary)]"
-              />
-              <span>{detail}</span>
-            </div>
-          ))}
-        </div>
-      ) : null}
       {capabilities && capabilities.length > 0 ? (
         <div className="mx-auto mt-5 grid max-w-lg gap-2 text-left">
           {capabilities.map((capability) => (
@@ -162,7 +141,6 @@ export function WorkbenchStateSurface({
           ))}
         </div>
       ) : null}
-      {actions && <div className="mt-4 flex justify-center">{actions}</div>}
-    </section>
+    </LibreChatStateSurface>
   );
 }

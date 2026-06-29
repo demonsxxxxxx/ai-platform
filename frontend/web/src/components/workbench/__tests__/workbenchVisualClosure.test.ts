@@ -10,9 +10,9 @@ function read(path: string): string {
 }
 
 test("workbench shell exposes dense chat regions", () => {
-  const shell = read("src/components/librechatShell/LibreChatShell.tsx");
+  const shell = read("src/librechat-ui/Shell.tsx");
   const workbenchShell = read("src/components/workbench/WorkbenchShell.tsx");
-  const surface = read("src/components/librechatShell/libreChatSurface.ts");
+  const surface = read("src/librechat-ui/surface.ts");
   const workbenchSurface = read("src/components/workbench/workbenchSurface.ts");
 
   assert.match(shell, /data-workbench-region="thread"/);
@@ -75,7 +75,7 @@ test("expanded sidebar uses the LibreChat light navigation system", () => {
   const sessionList = read(
     "src/components/panels/SidebarParts/SessionListContent.tsx",
   );
-  const panel = read("src/components/librechatShell/LibreChatPanel.tsx");
+  const panel = read("src/librechat-ui/Panel.tsx");
   const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
   const baseCss = read("src/styles/base.css");
 
@@ -141,7 +141,7 @@ test("post-login workbench defaults to expanded application navigation", () => {
 
 test("light workbench tokens keep the LibreChat shell on one warm-neutral canvas", () => {
   const baseCss = read("src/styles/base.css");
-  const surface = read("src/components/librechatShell/libreChatSurface.ts");
+  const surface = read("src/librechat-ui/surface.ts");
   const welcome = read("src/components/chat/WelcomePage.tsx");
 
   assert.match(baseCss, /--theme-bg:\s*#f5f5f3;/);
@@ -162,11 +162,12 @@ test("light workbench tokens keep the LibreChat shell on one warm-neutral canvas
 });
 
 test("workbench right context uses the same canvas as the main workspace", () => {
-  const surface = read("src/components/librechatShell/libreChatSurface.ts");
-  const shell = read("src/components/librechatShell/LibreChatShell.tsx");
+  const surface = read("src/librechat-ui/surface.ts");
+  const shell = read("src/librechat-ui/Shell.tsx");
   const rightPanel = read("src/components/workbench/WorkbenchRightPanel.tsx");
-  const sidePanel = read("src/components/librechatShell/LibreChatSidePanel.tsx");
+  const sidePanel = read("src/librechat-ui/SidePanel.tsx");
   const chatInput = read("src/components/chat/ChatInput.tsx");
+  const composer = read("src/librechat-ui/Composer.tsx");
 
   assert.match(surface, /context:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /workspaceWithContext:[\s\S]*18rem/);
@@ -178,12 +179,13 @@ test("workbench right context uses the same canvas as the main workspace", () =>
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(sidePanel, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(sidePanel, /workbenchSurface\.secondaryPanel/);
-  assert.match(chatInput, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
+  assert.match(chatInput, /LibreChatComposerFrame/);
+  assert.match(composer, /backgroundColor: "var\(--theme-workbench-canvas\)"/);
   assert.doesNotMatch(chatInput, /backgroundColor: "var\(--theme-bg\)"/);
 });
 
 test("workbench right context is a real run context panel, not a blank placeholder", () => {
-  const sidePanel = read("src/components/librechatShell/LibreChatSidePanel.tsx");
+  const sidePanel = read("src/librechat-ui/SidePanel.tsx");
 
   assert.match(sidePanel, /data-librechat-context-overview/);
   assert.match(sidePanel, /data-librechat-context-section=\{section\}/);
@@ -249,14 +251,14 @@ test("workbench governance surfaces do not hard-code slate or stone palettes", (
   const baseCss = read("src/styles/base.css");
   const sharedSources = new Map([
     ["workbenchSurface", read("src/components/workbench/workbenchSurface.ts")],
-    ["libreChatSurface", read("src/components/librechatShell/libreChatSurface.ts")],
+    ["libreChatSurface", read("src/librechat-ui/surface.ts")],
     [
       "WorkbenchStateSurface",
       read("src/components/workbench/WorkbenchStateSurface.tsx"),
     ],
     [
       "LibreChatSidePanel",
-      read("src/components/librechatShell/LibreChatSidePanel.tsx"),
+      read("src/librechat-ui/SidePanel.tsx"),
     ],
     ["TabContent", read("src/components/layout/AppContent/TabContent.tsx")],
     [
@@ -866,7 +868,7 @@ test("expanded app sidebar keeps governed catalogs as first-level smoke targets"
     "src/components/panels/SidebarParts/SessionListContent.tsx",
   );
   const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
-  const railPrimitive = read("src/components/librechatShell/LibreChatRail.tsx");
+  const railPrimitive = read("src/librechat-ui/Rail.tsx");
 
   assert.match(sidebar, /data-workbench-nav-item=\{key\}/);
   assert.match(sidebar, /key: "skills"[\s\S]*navigate\("\/skills"\)/);
@@ -895,7 +897,7 @@ test("post-login sidebar marks the current governed route in expanded and rail m
     "src/components/panels/SidebarParts/SessionListContent.tsx",
   );
   const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
-  const railPrimitive = read("src/components/librechatShell/LibreChatRail.tsx");
+  const railPrimitive = read("src/librechat-ui/Rail.tsx");
   const baseCss = read("src/styles/base.css");
 
   assert.match(sidebar, /useLocation\(\)/);
@@ -922,8 +924,8 @@ test("post-login sidebar avoids competing rail and panel active states", () => {
     "src/components/panels/SidebarParts/SessionListContent.tsx",
   );
   const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
-  const railPrimitive = read("src/components/librechatShell/LibreChatRail.tsx");
-  const panelPrimitive = read("src/components/librechatShell/LibreChatPanel.tsx");
+  const railPrimitive = read("src/librechat-ui/Rail.tsx");
+  const panelPrimitive = read("src/librechat-ui/Panel.tsx");
   const baseCss = read("src/styles/base.css");
 
   assert.doesNotMatch(
@@ -954,7 +956,7 @@ test("post-login sidebar avoids competing rail and panel active states", () => {
 });
 
 test("post-login shell uses a single compact LibreChat-style sidebar", () => {
-  const surface = read("src/components/librechatShell/libreChatSurface.ts");
+  const surface = read("src/librechat-ui/surface.ts");
   const sessionSidebar = read("src/components/panels/SessionSidebar.tsx");
   const baseCss = read("src/styles/base.css");
   const themeDom = read("src/utils/themeDom.ts");

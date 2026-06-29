@@ -1,7 +1,7 @@
 import {
   LibreChatSidePanel,
   type LibreChatSidePanelProps,
-} from "../librechatShell/LibreChatSidePanel";
+} from "../../librechat-ui/SidePanel";
 
 export type WorkbenchRightPanelProps = LibreChatSidePanelProps;
 

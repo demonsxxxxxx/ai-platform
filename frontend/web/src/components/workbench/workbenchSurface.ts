@@ -1,5 +1,5 @@
 import { clsx } from "clsx";
-import { libreChatSurface } from "../librechatShell/libreChatSurface";
+import { libreChatSurface } from "../../librechat-ui/surface";
 
 export const workbenchSurface = {
   root: libreChatSurface.root,

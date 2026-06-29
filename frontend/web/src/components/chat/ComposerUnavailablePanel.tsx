@@ -1,6 +1,7 @@
 import { Layers, ShieldAlert, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
+import { LibreChatStateSurface } from "../../librechat-ui/StateSurface";
 
 export interface ComposerUnavailablePanelProps {
   isOpen: boolean;
@@ -67,30 +68,21 @@ export function ComposerUnavailablePanel({
           </header>
 
           <div className="p-5">
-            <div className="rounded-lg border border-dashed border-amber-200 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-500/10">
-              <div className="flex items-start gap-3">
-                <Layers
-                  size={18}
-                  className="mt-0.5 shrink-0 text-amber-700 dark:text-amber-200"
-                />
-                <div>
-                  <p className="text-sm font-medium text-amber-900 dark:text-amber-100">
-                    {t(
-                      "composerCommand.unavailable.failClosed",
-                      "Fail-closed surface",
-                    )}
-                  </p>
-                  <p className="mt-1 text-sm leading-6 text-amber-800 dark:text-amber-100/80">
-                    {description}
-                  </p>
-                  <p className="mt-3 text-xs font-medium text-amber-700 dark:text-amber-200">
-                    {surface === "context-selector"
-                      ? "context-selector"
-                      : surface}
-                  </p>
-                </div>
-              </div>
-            </div>
+            <LibreChatStateSurface
+              state="forbidden"
+              surface={surface}
+              icon={Layers}
+              title={t(
+                "composerCommand.unavailable.failClosed",
+                "Fail-closed surface",
+              )}
+              description={description}
+              className="border-dashed border-amber-200 bg-amber-50 text-left dark:border-amber-500/30 dark:bg-amber-500/10"
+            >
+              <p className="mt-3 text-xs font-medium text-amber-700 dark:text-amber-200">
+                {surface === "context-selector" ? "context-selector" : surface}
+              </p>
+            </LibreChatStateSurface>
           </div>
         </section>
       </div>
