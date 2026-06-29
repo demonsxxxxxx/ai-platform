@@ -30,7 +30,24 @@ SOURCE_RUNTIME_RELATION_MANIFEST = (
 )
 ACTIVE_RUNTIME_SUBJECT_SHA = "e4c0e9d0298c684df369afecd29ec902fcc2221d"
 ACTIVE_SOURCE_TREE_SHA = "e4c0e9d0298c684df369afecd29ec902fcc2221d"
-CURRENT_SOURCE_RUNTIME_RELATION_SHA = "448e130b98cdadf3aaea3097acb15a9a0c15e446"
+CURRENT_SOURCE_RUNTIME_RELATION_SHA = "f67986a6fcf009d5e22c38be4ed71cc979f24f27"
+CURRENT_SOURCE_FRC_EVIDENCE_DIR = (
+    ROOT
+    / "docs/release-evidence/foundation-runtime-concurrency/"
+    / f"{CURRENT_SOURCE_RUNTIME_RELATION_SHA}-frc-b0-20260629"
+)
+CURRENT_SOURCE_FRC_EVIDENCE = (
+    CURRENT_SOURCE_FRC_EVIDENCE_DIR
+    / "2026-06-29-211-foundation-alpha-poc-f67986a-foundation-runtime-concurrency.json"
+)
+CURRENT_SOURCE_FRC_READINESS = (
+    CURRENT_SOURCE_FRC_EVIDENCE_DIR
+    / "2026-06-29-211-foundation-alpha-poc-f67986a-foundation-runtime-concurrency-readiness.json"
+)
+CURRENT_SOURCE_FRC_SUMMARY = (
+    CURRENT_SOURCE_FRC_EVIDENCE_DIR
+    / "2026-06-29-211-foundation-alpha-poc-f67986a-foundation-runtime-concurrency-summary.json"
+)
 FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
@@ -582,6 +599,59 @@ def test_committed_source_runtime_relation_manifest_keeps_clean_checkout_readine
     assert payload["runtime_affecting_dirty_paths"] == []
     assert "C:\\Users" not in json.dumps(payload)
     assert TARGET_211_HOME_ROOT not in json.dumps(payload)
+
+
+def test_current_source_foundation_runtime_concurrency_evidence_bundle_is_bounded():
+    import json
+
+    release_evidence_index = read(RELEASE_EVIDENCE_INDEX)
+    assert f"{CURRENT_SOURCE_RUNTIME_RELATION_SHA}-frc-b0-20260629" in release_evidence_index
+    for path in (CURRENT_SOURCE_FRC_EVIDENCE, CURRENT_SOURCE_FRC_READINESS, CURRENT_SOURCE_FRC_SUMMARY):
+        relative_path = path.relative_to(RELEASE_EVIDENCE_INDEX.parent).as_posix()
+        assert path.exists()
+        assert relative_path in release_evidence_index
+
+    evidence = json.loads(read(CURRENT_SOURCE_FRC_EVIDENCE))
+    readiness = json.loads(read(CURRENT_SOURCE_FRC_READINESS))
+    summary = json.loads(read(CURRENT_SOURCE_FRC_SUMMARY))
+
+    assert evidence["schema_version"] == "ai-platform.foundation-runtime-concurrency.v1"
+    assert evidence["source_tree_commit_sha"] == CURRENT_SOURCE_RUNTIME_RELATION_SHA
+    assert evidence["runtime_subject_commit_sha"] == CURRENT_SOURCE_RUNTIME_RELATION_SHA
+    assert evidence["commit_sha"] == CURRENT_SOURCE_RUNTIME_RELATION_SHA
+    assert evidence["artifact_kind"] == "foundation_runtime_concurrency"
+    assert evidence["summary"]["concurrency_probe_source"] == "client_case_timestamps"
+    assert evidence["summary"]["concurrency_window_sample_count"] == 12
+    assert evidence["summary"]["concurrent_request_count"] == 12
+    assert evidence["summary"]["tenant_count"] == 2
+    assert evidence["summary"]["user_count"] == 4
+    assert evidence["non_expansion_invariants"] == {
+        "department_rollout_allowed": False,
+        "docker_sandbox_hardened_claim_allowed": False,
+        "long_term_cross_session_memory_enabled": False,
+        "ordinary_user_multi_agent_allowed": False,
+        "production_concurrency_increase_allowed": False,
+    }
+
+    assert readiness["status"] == "verified_foundation_runtime_concurrency"
+    assert readiness["verified"] is True
+    assert readiness["summary"] == evidence["summary"]
+    assert readiness["non_expansion_invariants"] == evidence["non_expansion_invariants"]
+
+    assert summary["schema_version"] == "ai-platform.foundation-runtime-concurrency-summary.v1"
+    assert summary["status"] == "verified_foundation_runtime_concurrency"
+    assert summary["runtime_subject_commit_sha"] == CURRENT_SOURCE_RUNTIME_RELATION_SHA
+    assert (ROOT / summary["evidence_path"]).resolve() == CURRENT_SOURCE_FRC_EVIDENCE.resolve()
+    assert (ROOT / summary["readiness_path"]).resolve() == CURRENT_SOURCE_FRC_READINESS.resolve()
+    assert summary["summary"] == evidence["summary"]
+    assert summary["non_expansion_invariants"] == evidence["non_expansion_invariants"]
+    assert summary["role_provenance"]["ordinary_user_multi_agent_opened"] is False
+
+    serialized = json.dumps([evidence, readiness, summary], sort_keys=True)
+    assert "C:\\Users" not in serialized
+    assert TARGET_211_HOME_ROOT not in serialized
+    for forbidden in ("client_secret", "api_key", "AI_PLATFORM_LOGIN_PASSWORD", "BEGIN PRIVATE"):
+        assert forbidden.lower() not in serialized.lower()
 
 
 def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded():

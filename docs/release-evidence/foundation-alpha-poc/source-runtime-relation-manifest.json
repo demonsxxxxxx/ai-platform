@@ -1,8 +1,8 @@
 {
-  "note": "B0 211 runtime-only rollout evidence for the 448e130 runtime subject. The live API/worker containers use ai-platform:448e130-b0-current-main-runtime-only-v2 with matching runtime subject, runtime source marker, OCI revision, and hyphen/underscore source-revision labels. The POC smoke used the active 211 frontend dist served from a redacted operator path; packaged current-repo frontend runtime acceptance remains a separate followup and is not closed by this manifest.",
+  "note": "B0 211 runtime-only rollout evidence for the f67986a current main runtime subject. The live API/worker containers use ai-platform:f67986a-b0-current-main-runtime-only-v2 with matching runtime subject, runtime source marker, OCI revision, and source-revision labels. This manifest records source/runtime parity only; Foundation Runtime concurrency, packaged frontend runtime acceptance, B1-B4, and issue closure remain separate followups.",
   "runtime_affecting_changes_since_runtime_subject": [],
   "runtime_affecting_dirty_paths": [],
-  "runtime_subject_commit_sha": "448e130b98cdadf3aaea3097acb15a9a0c15e446",
+  "runtime_subject_commit_sha": "f67986a6fcf009d5e22c38be4ed71cc979f24f27",
   "schema_version": "ai-platform.source-runtime-relation-manifest.v1",
-  "source_tree_commit_sha": "448e130b98cdadf3aaea3097acb15a9a0c15e446"
+  "source_tree_commit_sha": "f67986a6fcf009d5e22c38be4ed71cc979f24f27"
 }
