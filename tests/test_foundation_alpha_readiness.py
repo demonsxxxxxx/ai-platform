@@ -2110,6 +2110,32 @@ def test_foundation_alpha_readiness_accepts_runtime_neutral_uncommitted_records(
     assert readiness["decision"]["current_source_verified_by_running_runtime"] is False
     assert readiness["decision"]["current_source_exact_runtime_commit_match"] is False
     assert readiness["decision"]["runtime_rollout_required_for_current_source"] is False
+    assert readiness["decision"]["foundation_alpha_stage_complete"] is False
+    assert readiness["decision"]["foundation_alpha_stage_status"] == "core_poc_loop_verified_followups_open"
+
+
+def test_stage_acceptance_status_requires_exact_current_source_match():
+    status = foundation_alpha_readiness._stage_acceptance_status(
+        runtime_relevant_source_matches=True,
+        runtime_matches_source_tree=False,
+        context_projection_verified=True,
+        stage_acceptance_blockers=[],
+    )
+
+    assert status == "core_poc_loop_verified_followups_open"
+
+
+def test_release_evidence_operator_modules_are_runtime_neutral():
+    neutral_paths = [
+        "app/release_evidence_export_acceptance.py",
+        "app/release_evidence_readiness.py",
+        "app/release_evidence_runtime_acceptance.py",
+    ]
+
+    for path in neutral_paths:
+        assert foundation_alpha_readiness._is_runtime_affecting_path(path) is False
+
+    assert foundation_alpha_readiness._is_runtime_affecting_path("app/worker.py") is True
 
 
 def test_foundation_alpha_readiness_fails_closed_when_dirty_state_is_unknown(monkeypatch, tmp_path):

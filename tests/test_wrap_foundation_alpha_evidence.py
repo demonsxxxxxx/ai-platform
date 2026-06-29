@@ -337,7 +337,8 @@ def test_redacts_host_paths_from_wrapped_command():
         command=(
             "python3 tools/verify_poc_gate.py --env-path "
             "/tmp/ai-platform-compose.env --frontend-dist "
-            "/home/example.user/frontend-pr111-smoke/dist"
+            "/home/example.user/frontend-pr111-smoke/dist "
+            "--runtime-check-payload frc=/tmp/ai-platform-frc.raw.json"
         ),
         review_status="reviewed",
     )
@@ -345,8 +346,10 @@ def test_redacts_host_paths_from_wrapped_command():
     command = entry["evidence_ref"]["command"]
     assert "/home/example.user" not in command
     assert "/tmp/ai-platform-compose.env" not in command
+    assert "/tmp/ai-platform-frc.raw.json" not in command
     assert "--frontend-dist <redacted-path>" in command
     assert "--env-path <redacted-path>" in command
+    assert "--runtime-check-payload frc=<redacted-path>" in command
 
 
 def test_redacts_host_paths_from_source_ref_image_labels():

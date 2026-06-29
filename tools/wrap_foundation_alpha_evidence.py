@@ -64,6 +64,7 @@ _COMMAND_PATH_FLAGS = {
     "--frontend-dist",
     "--image-labels-json",
     "--output",
+    "--runtime-check-payload",
     "--source-snapshot-json",
     "--verifier-output",
 }
@@ -126,6 +127,17 @@ def _redact_runtime_source(source: dict[str, Any]) -> dict[str, Any]:
     return redacted if isinstance(redacted, dict) else {}
 
 
+def _looks_like_path(value: str) -> bool:
+    normalized = value.replace("\\", "/")
+    is_windows_absolute_path = len(normalized) >= 3 and normalized[1:3] == ":/"
+    return (
+        normalized.startswith("/")
+        or is_windows_absolute_path
+        or normalized.startswith("tenants/")
+        or "/tenants/" in normalized
+    )
+
+
 def _redact_command(command: str) -> str:
     try:
         tokens = shlex.split(command)
@@ -135,7 +147,11 @@ def _redact_command(command: str) -> str:
     redact_next = False
     for token in tokens:
         if redact_next:
-            redacted.append("<redacted-path>")
+            key, sep, value = token.partition("=")
+            if sep and _looks_like_path(value):
+                redacted.append(f"{key}=<redacted-path>")
+            else:
+                redacted.append("<redacted-path>")
             redact_next = False
             continue
         if token in _COMMAND_PATH_FLAGS:
@@ -144,6 +160,9 @@ def _redact_command(command: str) -> str:
             continue
         flag, sep, value = token.partition("=")
         if sep and flag in _COMMAND_PATH_FLAGS:
+            redacted.append(f"{flag}=<redacted-path>")
+            continue
+        if sep and _looks_like_path(value):
             redacted.append(f"{flag}=<redacted-path>")
             continue
         redacted_value = _redact_runtime_value("path", token)
