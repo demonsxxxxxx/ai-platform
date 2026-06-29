@@ -610,6 +610,65 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_agent_run_prefers_worker_context_pack_over_snapshot_reparse(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_skill(tmp_path / "skills")
+    calls = {}
+
+    async def fake_try_run_sdk(payload, event_sink=None, **kwargs):
+        calls["prompt"] = kwargs["prompt"]
+        return FakeQueryResult()
+
+    async def no_files(payload, workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    monkeypatch.setattr(adapter, "_try_run_sdk", fake_try_run_sdk)
+
+    result = await adapter.submit_run(
+        payload(
+            skill_id="qa-file-reviewer",
+            agent_id="qa-word-review",
+            input={"message": "审核一下"},
+            context_snapshot={
+                "source": "stored_context_snapshot",
+                "referenced_materials": {
+                    "message_count": 99,
+                    "file_count": 99,
+                    "artifact_count": 99,
+                    "memory_record_count": 99,
+                },
+                "used_context_summary": {
+                    "source": "stored_context_snapshot",
+                    "input_keys": ["raw_storage_key"],
+                    "memory_policy_source": "not_recorded",
+                    "long_term_memory_read": True,
+                },
+                "raw_storage_key": "s3://private/object",
+            },
+            context_pack={
+                "schema_version": "ai-platform.executor-context-pack.v1",
+                "prompt_summary": (
+                    "Context pack: 1 message(s), 0 file(s), 0 artifact(s), "
+                    "0 long-term memory record(s). Inputs: message. "
+                    "Execution tier: document_worker. Context pack version: v4."
+                ),
+                "context_pack_generated_at": "2026-06-12T01:23:45Z",
+            },
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert "Context pack: 1 message(s), 0 file(s), 0 artifact(s)" in calls["prompt"]
+    assert "Context pack version: v4" in calls["prompt"]
+    assert "99 message(s)" not in calls["prompt"]
+    assert "raw_storage_key" not in calls["prompt"]
+    assert "s3://private" not in calls["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_file_skill_uses_controlled_runner_when_sdk_tool_schema_loops(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_runner_skill(tmp_path / "skills")

@@ -64,6 +64,7 @@ class RunPayload:
     skill_manifests: list[dict[str, Any]] = field(default_factory=list)
     context_snapshot_id: str = ""
     context_snapshot: dict[str, Any] = field(default_factory=dict)
+    context_pack: dict[str, Any] = field(default_factory=dict)
     model_id: str = ""
     model_value: str = ""
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
