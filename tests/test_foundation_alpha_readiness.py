@@ -41,6 +41,9 @@ REQUIRED_MEMORY_CONTEXT_CLOSED_RUNTIME_GAPS = {
     "sandbox_cold_start_latency_split_211_acceptance",
 }
 REQUIRED_MEMORY_CONTEXT_OPEN_RUNTIME_GAPS = set()
+ORIGINAL_RESOLVE_RUNTIME_AFFECTING_DIRTY_PATHS = (
+    foundation_alpha_readiness._resolve_runtime_affecting_dirty_paths
+)
 
 
 class SecretBearingSettings:
@@ -86,6 +89,43 @@ def test_foundation_alpha_readiness_unit_default_uses_blocked_projection_audit_s
         == DEFAULT_FRONTEND_PROJECTION_AUDIT_SUMMARY
     )
     assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in readiness["open_followups"]
+
+
+def test_runtime_affecting_dirty_paths_ignore_local_agent_artifacts_but_keep_runtime_sources(monkeypatch):
+    def fake_run(command, **_kwargs):
+        if command == ["git", "status", "--porcelain", "--untracked-files=all"]:
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=(
+                    "?? .codex/tmp/ai-platform-source.tar.gz\n"
+                    "?? .codex/skills/local-only/SKILL.md\n"
+                    "?? .superpowers/sdd/review.diff\n"
+                    " M app/worker.py\n"
+                    " M docs/notes.md\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"unexpected subprocess.run: {command!r}")
+
+    monkeypatch.setattr(foundation_alpha_readiness.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_dirty_paths",
+        ORIGINAL_RESOLVE_RUNTIME_AFFECTING_DIRTY_PATHS,
+        raising=False,
+    )
+
+    assert foundation_alpha_readiness._resolve_source_tree_dirty_paths() == [
+        ".codex/tmp/ai-platform-source.tar.gz",
+        ".codex/skills/local-only/SKILL.md",
+        ".superpowers/sdd/review.diff",
+        "app/worker.py",
+        "docs/notes.md",
+    ]
+    assert foundation_alpha_readiness._resolve_runtime_affecting_dirty_paths() == [
+        "app/worker.py",
+    ]
 
 
 def _minimal_smoke_payload(commit_sha: str, *, image: str, captured_at: str = "2026-06-11T10:00:00+08:00") -> dict:
@@ -2345,7 +2385,7 @@ def test_foundation_alpha_readiness_uses_committed_source_runtime_manifest_when_
     def runtime_subject_diff_missing(command, **_kwargs):
         if command == ["git", "diff", "--name-only", f"{CURRENT_SOURCE_SHA}..HEAD"]:
             raise subprocess.CalledProcessError(128, command, stderr="bad revision")
-        if command == ["git", "status", "--porcelain"]:
+        if command == ["git", "status", "--porcelain", "--untracked-files=all"]:
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
         raise AssertionError(f"unexpected subprocess.run: {command!r}")
 
@@ -2458,7 +2498,7 @@ def test_foundation_alpha_readiness_rejects_stale_source_runtime_manifest_with_r
     def runtime_subject_diff_missing(command, **_kwargs):
         if command == ["git", "diff", "--name-only", f"{CURRENT_SOURCE_SHA}..HEAD"]:
             raise subprocess.CalledProcessError(128, command, stderr="bad revision")
-        if command == ["git", "status", "--porcelain"]:
+        if command == ["git", "status", "--porcelain", "--untracked-files=all"]:
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
         raise AssertionError(f"unexpected subprocess.run: {command!r}")
 
@@ -4334,7 +4374,11 @@ def test_foundation_alpha_readiness_markdown_and_cli_are_operator_usable(monkeyp
             "current_runtime_relevant_source",
             "reviewed_historical_runtime_evidence",
         }
-        assert payload["runtime_source_relation"]["runtime_relevant_source_matches"] is True
+        if payload["verified_runtime_subject"]["evidence_scope"] == "current_runtime_relevant_source":
+            assert payload["runtime_source_relation"]["runtime_relevant_source_matches"] is True
+        else:
+            assert payload["runtime_source_relation"]["runtime_relevant_source_matches"] is False
+            assert payload["decision"]["runtime_rollout_required_for_current_source"] is True
     assert "release_evidence_runtime_acceptance" in payload["evidence_entries"]
     assert "g9_runtime_export_and_retention_acceptance" not in payload["decision"]["stage_acceptance_blockers"]
     assert "runtime_image" not in payload
