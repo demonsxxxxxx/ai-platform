@@ -33,6 +33,10 @@ import {
   SidebarRail,
 } from "./SidebarParts";
 import type { SessionActions } from "./SidebarParts";
+import {
+  getWorkbenchNavPath,
+  type WorkbenchNavItem,
+} from "./SidebarParts/navigationState";
 import { LIBRECHAT_SHELL_GEOMETRY } from "../../librechat-ui/surface";
 
 interface SessionSidebarProps {
@@ -42,6 +46,7 @@ interface SessionSidebarProps {
   refreshKey?: number;
   newSession?: BackendSession | null;
   mobileOpen?: boolean;
+  onMobileOpen?: () => void;
   onMobileClose?: () => void;
   isCollapsed?: boolean;
   onToggleCollapsed?: (collapsed: boolean) => void;
@@ -68,6 +73,7 @@ export const SessionSidebar = forwardRef<
     refreshKey,
     newSession,
     mobileOpen = false,
+    onMobileOpen,
     onMobileClose,
     isCollapsed: externalCollapsed,
     onToggleCollapsed,
@@ -96,6 +102,11 @@ export const SessionSidebar = forwardRef<
   );
 
   const navigate = useNavigate();
+
+  const navigateWorkbenchItem = useCallback(
+    (item: WorkbenchNavItem) => navigate(getWorkbenchNavPath(item)),
+    [navigate],
+  );
 
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 639px)");
@@ -145,7 +156,11 @@ export const SessionSidebar = forwardRef<
   );
 
   const lastAppliedNewSessionKeyRef = useRef<string | null>(null);
-  const recentChatsBtnRef = useRef<HTMLButtonElement>(null);
+  const desktopRecentChatsBtnRef = useRef<HTMLButtonElement>(null);
+  const mobileRecentChatsBtnRef = useRef<HTMLButtonElement>(null);
+  const [recentChatsAnchor, setRecentChatsAnchor] = useState<
+    "desktop" | "mobile"
+  >("desktop");
 
   const projectManager = useProjectManager();
   const { projects } = projectManager;
@@ -459,22 +474,67 @@ export const SessionSidebar = forwardRef<
                 setIsSearchOpen(true);
                 setIsRecentChatsOpen(false);
               }}
-              onOpenRecentChats={() => setIsRecentChatsOpen(true)}
+              onOpenRecentChats={() => {
+                setRecentChatsAnchor("desktop");
+                setIsRecentChatsOpen(true);
+              }}
               onOpenLaunchpad={() => navigate("/apps")}
               onOpenSkills={() => navigate("/skills")}
               onOpenMarketplace={() => navigate("/marketplace")}
               onOpenMcp={() => navigate("/mcp")}
-              onOpenChannels={() => navigate("/channels")}
-              onOpenAgents={() => navigate("/agents")}
-              onOpenModels={() => navigate("/models")}
-              onOpenPersona={() => navigate("/persona")}
-              onOpenFiles={() => navigate("/files")}
-              onOpenRoles={() => navigate("/roles")}
-              recentChatsBtnRef={recentChatsBtnRef}
+              onOpenChannels={() => navigateWorkbenchItem("channels")}
+              onOpenAgents={() => navigateWorkbenchItem("agents")}
+              onOpenModels={() => navigateWorkbenchItem("models")}
+              onOpenPersona={() => navigateWorkbenchItem("persona")}
+              onOpenFiles={() => navigateWorkbenchItem("files")}
+              onOpenRoles={() => navigateWorkbenchItem("roles")}
+              recentChatsBtnRef={desktopRecentChatsBtnRef}
               onShowProfile={onShowProfile!}
             />
           </div>
         )}
+      </div>
+
+      <div
+        data-librechat-mobile-rail
+        className="sm:hidden h-full relative shrink-0 overflow-hidden bg-[var(--theme-sidebar-rail)]"
+        style={{
+          ...sidebarGeometryStyle,
+          width: "var(--sidebar-rail-width)",
+        }}
+      >
+        <SidebarRail
+          user={user}
+          imgError={imgError}
+          onImgError={() => setImgError(true)}
+          isExpanded={false}
+          onExpand={() => onMobileOpen?.()}
+          onCollapse={() => onMobileClose?.()}
+          onNewSession={() => {
+            onNewSession();
+            setIsRecentChatsOpen(false);
+          }}
+          onOpenSearch={() => {
+            setIsSearchOpen(true);
+            setIsRecentChatsOpen(false);
+          }}
+          onOpenRecentChats={() => {
+            setRecentChatsAnchor("mobile");
+            setIsRecentChatsOpen(true);
+          }}
+          onOpenLaunchpad={() => navigate("/apps")}
+          onOpenSkills={() => navigate("/skills")}
+          onOpenMarketplace={() => navigate("/marketplace")}
+          onOpenMcp={() => navigate("/mcp")}
+          onOpenChannels={() => navigateWorkbenchItem("channels")}
+          onOpenAgents={() => navigateWorkbenchItem("agents")}
+          onOpenModels={() => navigateWorkbenchItem("models")}
+          onOpenPersona={() => navigateWorkbenchItem("persona")}
+          onOpenFiles={() => navigateWorkbenchItem("files")}
+          onOpenRoles={() => navigateWorkbenchItem("roles")}
+          recentChatsBtnRef={mobileRecentChatsBtnRef}
+          onShowProfile={onShowProfile!}
+        />
       </div>
 
       {isSearchOpen && (
@@ -511,7 +571,11 @@ export const SessionSidebar = forwardRef<
         onClose={() => setIsRecentChatsOpen(false)}
         onSelectSession={(id) => selectAndClose(id)}
         currentSessionId={currentSessionId}
-        anchorEl={recentChatsBtnRef.current}
+        anchorEl={
+          recentChatsAnchor === "mobile"
+            ? mobileRecentChatsBtnRef.current
+            : desktopRecentChatsBtnRef.current
+        }
       />
     </>
   );

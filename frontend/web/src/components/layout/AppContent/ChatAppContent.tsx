@@ -745,6 +745,7 @@ export function ChatAppContent({
           onNewSession={handleNewSessionAndClose}
           newSession={newlyCreatedSession}
           mobileOpen={mobileSidebarOpen}
+          onMobileOpen={() => setMobileSidebarOpen(true)}
           onMobileClose={handleMobileClose}
           isCollapsed={sidebarCollapsed}
           onToggleCollapsed={setSidebarCollapsed}
