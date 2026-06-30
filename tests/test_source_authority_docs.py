@@ -28,11 +28,12 @@ RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
-ACTIVE_RUNTIME_SUBJECT_SHA = "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
-ACTIVE_SOURCE_TREE_SHA = "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
-CURRENT_SOURCE_RUNTIME_RELATION_SHA = "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
-LATEST_VERIFIED_FRC_RUNTIME_SUBJECT_SHA = "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
-CURRENT_MAIN_SOURCE_SHA = "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
+ACTIVE_RUNTIME_SUBJECT_SHA = "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c"
+ACTIVE_SOURCE_TREE_SHA = "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c"
+CURRENT_SOURCE_RUNTIME_RELATION_SHA = "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c"
+LATEST_VERIFIED_FRC_RUNTIME_SUBJECT_SHA = "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c"
+CURRENT_MAIN_SOURCE_SHA = "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c"
+ACTIVE_RUNTIME_SUBJECT_SHORT_SHA = ACTIVE_RUNTIME_SUBJECT_SHA[:7]
 CURRENT_SOURCE_FRC_EVIDENCE_DIR = (
     ROOT
     / "docs/release-evidence/foundation-runtime-concurrency/"
@@ -40,38 +41,38 @@ CURRENT_SOURCE_FRC_EVIDENCE_DIR = (
 )
 CURRENT_SOURCE_FRC_EVIDENCE = (
     CURRENT_SOURCE_FRC_EVIDENCE_DIR
-    / "2026-06-30-211-foundation-alpha-poc-c3d6525-foundation-runtime-concurrency.json"
+    / f"2026-06-30-211-foundation-alpha-poc-{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}-foundation-runtime-concurrency.json"
 )
 CURRENT_SOURCE_FRC_READINESS = (
     CURRENT_SOURCE_FRC_EVIDENCE_DIR
-    / "2026-06-30-211-foundation-alpha-poc-c3d6525-foundation-runtime-concurrency-readiness.json"
+    / f"2026-06-30-211-foundation-alpha-poc-{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}-foundation-runtime-concurrency-readiness.json"
 )
 CURRENT_SOURCE_FRC_SUMMARY = (
     CURRENT_SOURCE_FRC_EVIDENCE_DIR
-    / "2026-06-30-211-foundation-alpha-poc-c3d6525-foundation-runtime-concurrency-summary.md"
+    / f"2026-06-30-211-foundation-alpha-poc-{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}-foundation-runtime-concurrency-summary.md"
 )
 FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE = "ai-platform:380de6b-merged-main-runtime"
 FOUNDATION_ALPHA_BASELINE_RUNTIME_IMAGE_ID = "sha256:e36e4dfad072cdd12b841019db3ccbcdef4b63ccf5262869c994757fef5663f9"
-ACTIVE_RUNTIME_IMAGE = "ai-platform:c3d6525-b0-current-main-runtime-only-v1"
-ACTIVE_RUNTIME_IMAGE_ID = "sha256:7e951f2851233008c36f8c1787ed55fcf466843046dd91c4f4376b57df0fcb18"
-ACTIVE_POC_SMOKE_EVIDENCE_FILE_ID = "2026-06-30-211-foundation-alpha-poc-c3d6525-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_FILE_ID = "2026-06-30-211-foundation-alpha-poc-c3d6525-auth-rbac-smoke"
+ACTIVE_RUNTIME_IMAGE = "ai-platform:96f27bb-b0-current-source-runtime-only-v2"
+ACTIVE_RUNTIME_IMAGE_ID = "sha256:2640a006b4995bc01ebba965dc6b5b22be1bd28f6babc4b5a9bee7c91ce71e17"
+ACTIVE_POC_SMOKE_EVIDENCE_FILE_ID = f"2026-06-30-211-foundation-alpha-poc-{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}-runtime-poc-smoke"
+ACTIVE_AUTH_RBAC_EVIDENCE_FILE_ID = f"2026-06-30-211-foundation-alpha-poc-{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}-auth-rbac-smoke"
 ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_FILE_ID = (
-    "2026-06-30-211-foundation-alpha-poc-c3d6525-governance-runtime-smoke"
+    f"2026-06-30-211-foundation-alpha-poc-{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}-governance-runtime-smoke"
 )
 ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_FILE_ID = (
-    "2026-06-30-211-foundation-alpha-poc-c3d6525-release-evidence-runtime-acceptance"
+    f"2026-06-30-211-foundation-alpha-poc-{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}-release-evidence-runtime-acceptance"
 )
 ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_FILE_ID = (
-    "2026-06-30-211-foundation-alpha-poc-c3d6525-alert-trace-export-runtime-acceptance"
+    f"2026-06-30-211-foundation-alpha-poc-{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}-alert-trace-export-runtime-acceptance"
 )
-ACTIVE_POC_SMOKE_EVIDENCE_ID = "2026-06-30-211-foundation-alpha-poc-c3d6525-runtime-poc-smoke"
-ACTIVE_AUTH_RBAC_EVIDENCE_ID = "2026-06-30-211-foundation-alpha-poc-c3d6525-auth-rbac-smoke"
-ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = "2026-06-30-211-foundation-alpha-poc-c3d6525-governance-runtime-smoke"
-ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = "2026-06-30-211-foundation-alpha-poc-c3d6525-release-evidence-runtime-acceptance"
-ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = "2026-06-30-211-foundation-alpha-poc-c3d6525-alert-trace-export-runtime-acceptance"
+ACTIVE_POC_SMOKE_EVIDENCE_ID = ACTIVE_POC_SMOKE_EVIDENCE_FILE_ID
+ACTIVE_AUTH_RBAC_EVIDENCE_ID = ACTIVE_AUTH_RBAC_EVIDENCE_FILE_ID
+ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_ID = ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_FILE_ID
+ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_ID = ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_FILE_ID
+ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_ID = ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_FILE_ID
 CBBFAFF_RUNTIME_SUBJECT_SHA = "cbbfaff9de9f7d18c7524bf6335d35dbf09fbd55"
 CBBFAFF_FRONTEND_PACKAGED_RUNTIME_BLOCKED_EVIDENCE_ID = (
     "2026-06-13-211-foundation-alpha-poc-cbbfaff-frontend-packaged-runtime-smoke-blocked"
@@ -734,10 +735,21 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert f"{ACTIVE_AUTH_RBAC_EVIDENCE_FILE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_POC_SMOKE_EVIDENCE_FILE_ID}.json" in release_evidence_index
     assert f"{ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_FILE_ID}.json" in release_evidence_index
-    assert "Reviewed 211 smoke refresh passed for the `c3d6525` runtime subject" in compact_release_evidence_index
+    assert (
+        f"Reviewed 211 smoke refresh passed for the `{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}` runtime subject"
+        in compact_release_evidence_index
+    )
     assert "The wrapped evidence entries have empty `open_followups`" in compact_release_evidence_index
-    assert "Foundation Runtime concurrency evidence passed with verifier status `verified_foundation_runtime_concurrency` against the `c3d6525` runtime subject" in compact_release_evidence_index
-    assert "This removes the current-subject `foundation_runtime_concurrency_evidence` readiness blocker for `c3d6525`" in compact_release_evidence_index
+    assert (
+        "Foundation Runtime concurrency evidence passed with verifier status "
+        f"`verified_foundation_runtime_concurrency` against the `{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}` runtime subject"
+        in compact_release_evidence_index
+    )
+    assert (
+        "This removes the current-subject `foundation_runtime_concurrency_evidence` readiness blocker for "
+        f"`{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}`"
+        in compact_release_evidence_index
+    )
     assert "clean current source can still be ahead of the running image by runtime-neutral docs/evidence/tests commits" in compact_gate_status_text
     assert "while the local worktree is dirty with documentation/evidence updates" not in compact_gate_status_text
     assert "does not make #164 `gate closable`" in compact_release_evidence_index
@@ -804,21 +816,28 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
 
     changed_evidence_paths = [
         ROOT
-        / "docs/release-evidence/foundation-alpha-poc/c3d6525d8980c43ce9d13a2fd9016bbe61597327/2026-06-30-211-foundation-alpha-poc-c3d6525-runtime-poc-smoke.json",
+        / f"docs/release-evidence/foundation-alpha-poc/{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_POC_SMOKE_EVIDENCE_FILE_ID}.json",
         ROOT
-        / "docs/release-evidence/foundation-alpha-poc/c3d6525d8980c43ce9d13a2fd9016bbe61597327/2026-06-30-211-foundation-alpha-poc-c3d6525-auth-rbac-smoke.json",
+        / f"docs/release-evidence/foundation-alpha-poc/{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_AUTH_RBAC_EVIDENCE_FILE_ID}.json",
         ROOT
-        / "docs/release-evidence/foundation-alpha-poc/c3d6525d8980c43ce9d13a2fd9016bbe61597327/2026-06-30-211-foundation-alpha-poc-c3d6525-governance-runtime-smoke.json",
+        / f"docs/release-evidence/foundation-alpha-poc/{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_FILE_ID}.json",
         ROOT
-        / "docs/release-evidence/foundation-alpha-poc/c3d6525d8980c43ce9d13a2fd9016bbe61597327/2026-06-30-211-foundation-alpha-poc-c3d6525-release-evidence-runtime-acceptance.json",
+        / f"docs/release-evidence/foundation-alpha-poc/{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_FILE_ID}.json",
         ROOT
-        / "docs/release-evidence/foundation-alpha-poc/c3d6525d8980c43ce9d13a2fd9016bbe61597327/2026-06-30-211-foundation-alpha-poc-c3d6525-alert-trace-export-runtime-acceptance.json",
+        / f"docs/release-evidence/foundation-alpha-poc/{ACTIVE_RUNTIME_SUBJECT_SHA}/{ACTIVE_ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_FILE_ID}.json",
         ROOT
-        / "docs/release-evidence/foundation-runtime-concurrency/c3d6525d8980c43ce9d13a2fd9016bbe61597327-frc-b0-20260630/2026-06-30-211-foundation-alpha-poc-c3d6525-foundation-runtime-concurrency.json",
+        / (
+            "docs/release-evidence/foundation-runtime-concurrency/"
+            f"{ACTIVE_RUNTIME_SUBJECT_SHA}-frc-b0-20260630/"
+            f"2026-06-30-211-foundation-alpha-poc-{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}-foundation-runtime-concurrency.json"
+        ),
     ]
-    for path in changed_evidence_paths:
+    for path in changed_evidence_paths[1:5]:
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert "#286" in payload["pr_refs"]
+    for path in (changed_evidence_paths[0], changed_evidence_paths[5]):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert "#164" in payload["issue_refs"]
 
     auth_rbac_text = read(FOUNDATION_ALPHA_POC_ACTIVE_AUTH_RBAC_EVIDENCE)
     auth_rbac_payload = json.loads(auth_rbac_text)
@@ -1312,13 +1331,19 @@ def test_gate_status_does_not_overstate_superseded_evidence_as_current():
     assert "active B0 latest-main reference is `87528bf` / #124" not in gate_status_text
     assert "e8e8a0a` runtime still lacks a passing runtime POC smoke" in gate_status_text
     assert "readiness must keep reporting" in gate_status_text
-    assert "after the `c3d6525` source-runtime relation manifest and reviewed evidence" in compact_text
+    assert (
+        f"after the `{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}` source-runtime relation manifest and reviewed evidence"
+        in compact_text
+    )
     assert "runtime rollout requirement such as `source_synced_runtime_pending`" in gate_status_text
     assert "the `dab7dbc` / #164 evidence is the active B0 latest-main reference" not in gate_status_text
     assert "the `dab7dbc` / #164 evidence is the current reviewed runtime-subject reference" not in compact_text
     assert "the `d94d274` / #164 evidence is the current reviewed runtime-subject reference" not in compact_text
-    assert "the `c3d6525` / B0 evidence is the latest reviewed runtime-subject reference" in compact_text
-    assert "The immediately superseded B0 runtime-subject refresh is `442aa39ca81f2daf00c49747c53491ab978d84b7`" in compact_text
+    assert (
+        f"the `{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}` / B0 evidence is the latest reviewed runtime-subject reference"
+        in compact_text
+    )
+    assert "The immediately superseded B0 runtime-subject refresh is `c3d6525d8980c43ce9d13a2fd9016bbe61597327`" in compact_text
     assert "the `e4c0e9d` / #164 evidence is the latest reviewed runtime-subject reference" not in compact_text
     assert "the `e7558cc` / #164 evidence is the latest reviewed runtime-subject reference" not in compact_text
     assert "the `17dc3ae` / #164 evidence is the latest reviewed runtime-subject reference" not in compact_text
@@ -1351,7 +1376,11 @@ def test_gate_status_records_issue164_b0_runtime_refresh_with_source_caveats():
     assert "This removes the `foundation_runtime_concurrency_evidence` blocker for the named `e4c0e9d` runtime subject only" in compact_text
     assert "G0 source-authority closure remains blocked by the external env-file label caveat" in compact_text
     assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in compact_text
-    assert "The #164 runtime-subject evidence scope now sits behind the newer `c3d6525` B0 runtime-subject refresh" in compact_text
+    assert (
+        "The #164 runtime-subject evidence scope now sits behind the newer "
+        f"`{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}` B0 runtime-subject refresh"
+        in compact_text
+    )
     assert "not exact current-source runtime verification" in compact_text
 
     for boundary in (

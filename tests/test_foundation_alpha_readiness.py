@@ -13,7 +13,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
+ACTIVE_RUNTIME_SUBJECT_SHA = "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -2981,9 +2981,9 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
         "foundation_runtime_concurrency_evidence_subject"
     ] == {
-        "commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
-        "source_tree_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
-        "runtime_subject_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+        "commit_sha": ACTIVE_RUNTIME_SUBJECT_SHA,
+        "source_tree_commit_sha": ACTIVE_RUNTIME_SUBJECT_SHA,
+        "runtime_subject_commit_sha": ACTIVE_RUNTIME_SUBJECT_SHA,
     }
     assert foundation_runtime_concurrency["status"] == "verified_foundation_runtime_concurrency"
     assert foundation_runtime_concurrency["verified"] is True
