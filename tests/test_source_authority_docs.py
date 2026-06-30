@@ -493,9 +493,15 @@ def test_s2_sandbox_runtime_smoke_contract_records_pr44_evidence_without_closing
     assert "does not close `executor_context_pack_211_acceptance`" in release_evidence_text
     assert "closes only the #22 `executor_context_pack_211_acceptance` runtime gap" in release_evidence_text
     assert "G6/G9 closure" in release_evidence_text
+    assert "2026-07-01-211-b1-memory-context-workflow-smoke-96f27bb.json" in release_evidence_text
+    assert "Reviewed 211 B1 memory/context smoke passed against `ai-platform:96f27bb-b0-current-source-runtime-only-v2`" in release_evidence_text
+    assert "Since `96f27bb` has no runtime-affecting delta to current local source `830d352`" in release_evidence_text
+    assert "this closes only the B1 `b1_runtime_evidence_review_against_merged_source` boundary" in release_evidence_text
+    assert "This evidence does not close B1 as a product gate" in release_evidence_text
+    assert "2026-07-01-211-b1-memory-context-workflow-smoke-427c8d1.json" in release_evidence_text
+    assert "retained as superseded reviewed B1 history after the `96f27bb` refresh" in release_evidence_text
     assert "2026-06-19-211-b1-memory-context-workflow-smoke-87528bf.json" in release_evidence_text
     assert "Reviewed #128 B1 memory/context 211 smoke passed" in release_evidence_text
-    assert "this closes only the B1 `b1_runtime_evidence_review_against_merged_source` boundary" in release_evidence_text
     assert "The 211 service checkout and legacy compose env-label caveats remain" in release_evidence_text
     assert "2026-06-19-211-b1-memory-context-workflow-smoke-75ab69b.json" in release_evidence_text
     assert "retained as superseded reviewed B1 history after the #128 `87528bf` refresh" in release_evidence_text
