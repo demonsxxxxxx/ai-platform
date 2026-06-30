@@ -114,6 +114,26 @@ test("expanded desktop sidebar uses one primary navigation surface", () => {
   assert.match(rail, /sidebar\.collapseSidebar/);
 });
 
+test("narrow authenticated shell keeps a visible LibreChat rail", () => {
+  const sessionSidebar = read("src/components/panels/SessionSidebar.tsx");
+  const chatAppContent = read(
+    "src/components/layout/AppContent/ChatAppContent.tsx",
+  );
+  const nonChatAppContent = read(
+    "src/components/layout/AppContent/NonChatAppContent.tsx",
+  );
+
+  assert.match(sessionSidebar, /onMobileOpen\?: \(\) => void/);
+  assert.match(sessionSidebar, /data-librechat-mobile-rail/);
+  assert.match(sessionSidebar, /className="sm:hidden h-full relative shrink-0 overflow-hidden bg-\[var\(--theme-sidebar-rail\)\]"/);
+  assert.doesNotMatch(
+    sessionSidebar,
+    /data-librechat-mobile-rail[\s\S]{0,500}-translate-x-full/,
+  );
+  assert.match(chatAppContent, /onMobileOpen=\{\(\) => setMobileSidebarOpen\(true\)\}/);
+  assert.match(nonChatAppContent, /onMobileOpen=\{\(\) => setMobileSidebarOpen\(true\)\}/);
+});
+
 test("post-login shell removes legacy LambChat runtime identifiers", () => {
   const auth = read("src/hooks/useAuth.tsx");
   const sources = [
@@ -869,6 +889,9 @@ test("expanded app sidebar keeps governed catalogs as first-level smoke targets"
   );
   const rail = read("src/components/panels/SidebarParts/SidebarRail.tsx");
   const railPrimitive = read("src/librechat-ui/Rail.tsx");
+  const navigation = read(
+    "src/components/panels/SidebarParts/navigationState.ts",
+  );
 
   assert.match(sidebar, /data-workbench-nav-item=\{key\}/);
   assert.match(sidebar, /key: "skills"[\s\S]*navigate\("\/skills"\)/);
@@ -880,6 +903,17 @@ test("expanded app sidebar keeps governed catalogs as first-level smoke targets"
   assert.match(rail, /itemKey="marketplace"/);
   assert.match(rail, /itemKey="roles"/);
   assert.match(railPrimitive, /data-workbench-rail-item=\{itemKey\}/);
+  assert.match(navigation, /getWorkbenchNavPath/);
+  for (const route of [
+    "/persona",
+    "/files",
+    "/channels",
+    "/agents",
+    "/models",
+    "/roles",
+  ]) {
+    assert.match(navigation, new RegExp(`"${route}"`), route);
+  }
 });
 
 test("post-login Chinese sidebar labels distinguish persona presets from role governance", () => {

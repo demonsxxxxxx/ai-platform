@@ -23,6 +23,19 @@ const routeToNavItem: Array<[RegExp, WorkbenchNavItem]> = [
   [/^\/roles(?:\/|$)/, "roles"],
 ];
 
+const navItemToPath: Record<WorkbenchNavItem, string> = {
+  apps: "/apps",
+  skills: "/skills",
+  marketplace: "/marketplace",
+  persona: "/persona",
+  files: "/files",
+  mcp: "/mcp",
+  channels: "/channels",
+  agents: "/agents",
+  models: "/models",
+  roles: "/roles",
+};
+
 /** Maps authenticated workbench pathnames to their first-level sidebar item. */
 export function getWorkbenchNavItemFromPathname(
   pathname: string,
@@ -32,4 +45,9 @@ export function getWorkbenchNavItemFromPathname(
     routeToNavItem.find(([pattern]) => pattern.test(normalizedPathname))?.[1] ??
     null
   );
+}
+
+/** Returns the authenticated workbench route for a first-level sidebar item. */
+export function getWorkbenchNavPath(item: WorkbenchNavItem): string {
+  return navItemToPath[item];
 }
