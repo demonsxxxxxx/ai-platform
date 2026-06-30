@@ -1,0 +1,120 @@
+{
+  "artifact_kind": "release_evidence_runtime_acceptance",
+  "captured_at": "2026-06-30T21:11:02+08:00",
+  "commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+  "evidence_id": "2026-06-30-211-foundation-alpha-poc-c3d6525-release-evidence-runtime-acceptance",
+  "evidence_ref": {
+    "command": "python3 tools/verify_release_evidence_runtime_acceptance.py --evidence-root <redacted-path> --commit-sha c3d6525... --runtime-subject-commit-sha c3d6525... --image ai-platform:c3d6525-b0-current-main-runtime-only-v1 --format json",
+    "result": "ok:true",
+    "runtime_checks": {
+      "release_evidence_runtime_acceptance": {
+        "checks": {
+          "retention_runtime_acceptance": {
+            "default_retention_days": 180,
+            "delete_only_reviewed_redacted_entries": true,
+            "forbidden_delete_targets_present": true,
+            "minimum_retention_days": 30,
+            "policy_status": "contract_only_not_runtime_enforced",
+            "requires_review_before_delete": true,
+            "schema_version": "ai-platform.release-evidence-retention-policy.v1",
+            "status": "accepted_review_first_policy"
+          },
+          "runtime_export_acceptance": {
+            "blocked_entry_count": 0,
+            "does_not_export_raw_runtime_payloads": true,
+            "excluded_entry_count": 89,
+            "export_policy": "safe_reviewed_index_only_not_runtime_export",
+            "safe_entry_count": 206,
+            "safe_entry_fields_only": true,
+            "status": "ready_for_operator_review"
+          }
+        },
+        "does_not_close_g9": true,
+        "does_not_export_raw_runtime_payloads": true,
+        "ok": true,
+        "open_gaps": [],
+        "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+        "source": {
+          "commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+          "evidence_root": "docs/release-evidence",
+          "image": "ai-platform:c3d6525-b0-current-main-runtime-only-v1",
+          "runtime_subject_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
+        },
+        "status": "accepted_for_operator_review"
+      }
+    },
+    "runtime_source": {
+      "commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+      "evidence_root": "docs/release-evidence",
+      "image": "ai-platform:c3d6525-b0-current-main-runtime-only-v1",
+      "runtime_subject_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
+    },
+    "schema_version": "ai-platform.release-evidence-runtime-acceptance.v1",
+    "verifier": "tools/verify_release_evidence_runtime_acceptance.py"
+  },
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [],
+  "open_followups": [],
+  "pr_refs": [
+    "#285",
+    "#286"
+  ],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:c3d6525-b0-current-main-runtime-only-v1",
+    "image_id": "sha256:7e951f2851233008c36f8c1787ed55fcf466843046dd91c4f4376b57df0fcb18",
+    "image_labels": {
+      "ai-platform.build-mode": "runtime-only-rebase",
+      "ai-platform.runtime-rollout": "b0-current-main-c3d6525-runtime-only-v1",
+      "ai-platform.runtime-subject": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+      "ai-platform.source-note": "b0-current-main-runtime-only-rebase",
+      "ai-platform.source-revision": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+      "ai-platform.source.note": "b0-current-main-runtime-only-rebase",
+      "ai-platform.source_note": "b0-current-main-runtime-only-rebase",
+      "ai-platform.source_revision": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+      "ai-platform.source_tree_commit": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+      "com.docker.compose.config-hash": "4ef3c78285ea3131138b5a6c1f24517b4a39444235c172491a67a7ba1d7c7fdd",
+      "com.docker.compose.container-number": "1",
+      "com.docker.compose.depends_on": "postgres:service_healthy:false,redis:service_healthy:false,minio:service_healthy:false",
+      "com.docker.compose.image": "sha256:7e951f2851233008c36f8c1787ed55fcf466843046dd91c4f4376b57df0fcb18",
+      "com.docker.compose.oneoff": "False",
+      "com.docker.compose.project": "ai-platform-phaseb",
+      "com.docker.compose.project.config_files": "<redacted-path>",
+      "com.docker.compose.project.environment_file": "<redacted-path>",
+      "com.docker.compose.project.working_dir": "<redacted-path>",
+      "com.docker.compose.replace": "479a007747b523a9ad12164c210eee74c380199f4736b28db5ab41e40c26b5a1",
+      "com.docker.compose.service": "api",
+      "com.docker.compose.version": "2.27.0",
+      "org.opencontainers.image.revision": "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+    "runtime_source_marker": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+      "source_tree_dirty": false
+    },
+    "source_tree_dirty": false
+  }
+}

@@ -13,7 +13,7 @@ from app.foundation_alpha_readiness import (
     render_foundation_alpha_readiness_markdown,
 )
 
-ACTIVE_RUNTIME_SUBJECT_SHA = "442aa39ca81f2daf00c49747c53491ab978d84b7"
+ACTIVE_RUNTIME_SUBJECT_SHA = "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
 HISTORICAL_RUNTIME_SUBJECT_SHA = "8c0cffca63bc747fad0a5771f209acc8a608ab9e"
 RUNTIME_SUBJECT_SHA = HISTORICAL_RUNTIME_SUBJECT_SHA
 CURRENT_SOURCE_SHA = "a3f1d739e12686cba2e0b309de26a4e1127bd3a5"
@@ -2896,7 +2896,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "foundation_alpha_stage_complete": False,
         "foundation_alpha_stage_status": "core_poc_loop_verified_followups_open",
         "stage_acceptance_blockers": [
-            "foundation_runtime_concurrency_evidence",
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
         ],
         "can_enter_next_stage_without_restrictions": False,
@@ -2924,7 +2923,6 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
             "department_rollout",
         ],
         "next_recommended_slices": [
-            "foundation_runtime_concurrency_evidence",
             "ordinary_user_acceptance_for_quarantined_legacy_routes",
         ],
     }
@@ -2964,7 +2962,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     }
     assert (
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["status"]
-        == "partial_followups_open"
+        == "poc_verified_capacity_baseline_keep_defaults_locked"
     )
     assert (
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"]["capacity_default_policy"]
@@ -2977,14 +2975,14 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
             "foundation_runtime_concurrency_evidence_current_subject"
         ]
-        is False
+        is True
     )
     assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["evidence"][
         "foundation_runtime_concurrency_evidence_subject"
     ] == {
-        "commit_sha": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
-        "source_tree_commit_sha": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
-        "runtime_subject_commit_sha": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
+        "commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+        "source_tree_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+        "runtime_subject_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
     }
     assert foundation_runtime_concurrency["status"] == "verified_foundation_runtime_concurrency"
     assert foundation_runtime_concurrency["verified"] is True
@@ -3012,11 +3010,9 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert foundation_runtime_concurrency["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 12
     assert foundation_runtime_concurrency["checks"]["tool_permission"]["negative_reuse_probe_count"] == 48
     assert foundation_runtime_concurrency["checks"]["tool_permission"]["negative_reuse_denied_count"] == 48
-    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == [
-        "foundation_runtime_concurrency_evidence"
-    ]
-    assert "foundation_runtime_concurrency" not in readiness["evidence_entries"]
-    assert "foundation_runtime_concurrency_evidence" in readiness["operator_context"]["next_recommended_slices"]
+    assert readiness["domains"]["g5_run_lifecycle_worker_runtime"]["open_followups"] == []
+    assert "foundation_runtime_concurrency" in readiness["evidence_entries"]
+    assert "foundation_runtime_concurrency_evidence" not in readiness["operator_context"]["next_recommended_slices"]
     assert readiness["domains"]["frontend_poc"]["evidence"]["same_origin_api_health"]["payload_status"] == "ok"
     assert readiness["domains"]["frontend_poc"]["evidence"]["frontend_http_status"] == 200
     assert readiness["domains"]["frontend_poc"]["evidence"]["forbidden_reference_count"] == 0

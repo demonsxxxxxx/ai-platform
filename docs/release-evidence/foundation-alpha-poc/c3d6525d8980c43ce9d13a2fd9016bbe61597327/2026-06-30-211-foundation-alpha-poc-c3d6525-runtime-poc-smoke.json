@@ -1,0 +1,660 @@
+{
+  "artifact_kind": "211_runtime_smoke",
+  "captured_at": "2026-06-30T21:11:02+08:00",
+  "commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+  "evidence_id": "2026-06-30-211-foundation-alpha-poc-c3d6525-runtime-poc-smoke",
+  "evidence_ref": {
+    "command": "python3 tools/verify_poc_gate.py --frontend-url http://127.0.0.1:18001 --api-url http://127.0.0.1:8020 --frontend-dist <redacted-path> --env-path <redacted-path> --api-container ai-platform-api --postgres-container ai-platform-postgres --postgres-user ai_platform --postgres-db ai_platform --word-review-run-wait-seconds 180 --upload-run-wait-seconds 90",
+    "result": "ok:true",
+    "runtime_checks": {
+      "artifact_download_isolation": {
+        "checked_artifacts": 2,
+        "results": [
+          {
+            "artifact_id": "art_08be086a57604975aad5ca26c26a006c",
+            "cross_tenant_status": 404,
+            "cross_user_status": 404,
+            "owner_bytes": 24056,
+            "owner_status": 200,
+            "owner_user": "upload-review-gate-user"
+          },
+          {
+            "artifact_id": "art_a4fab332ce554042b7ca4ad5e8cc1fff",
+            "cross_tenant_status": 404,
+            "cross_user_status": 404,
+            "owner_bytes": 42902,
+            "owner_status": 200,
+            "owner_user": "ZX2834"
+          }
+        ]
+      },
+      "artifact_preview_isolation": {
+        "checked_artifacts": 2,
+        "results": [
+          {
+            "artifact_id": "art_08be086a57604975aad5ca26c26a006c",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "cross_tenant_status": 404,
+            "cross_user_status": 404,
+            "owner_bytes": 24056,
+            "owner_cache_control": "no-store",
+            "owner_content_disposition": "inline; filename*=UTF-8''tmp-smoke-translate_reviewed.docx",
+            "owner_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "owner_status": 200,
+            "owner_user": "upload-review-gate-user",
+            "owner_x_content_type_options": "nosniff"
+          },
+          {
+            "artifact_id": "art_a4fab332ce554042b7ca4ad5e8cc1fff",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "cross_tenant_status": 404,
+            "cross_user_status": 404,
+            "owner_bytes": 42902,
+            "owner_cache_control": "no-store",
+            "owner_content_disposition": "inline; filename*=UTF-8''BD__translated.docx",
+            "owner_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "owner_status": 200,
+            "owner_user": "ZX2834",
+            "owner_x_content_type_options": "nosniff"
+          }
+        ]
+      },
+      "company_auth_bridge": {
+        "login_probe_payload_status": "unsuccessfully!",
+        "login_probe_status": 200,
+        "login_url": "http://10.56.0.25:7263/api/Login/"
+      },
+      "company_login_audit": {
+        "admin_user_count": 169,
+        "all_auth_login_count": 182,
+        "count": 182,
+        "latest_any_payload": {
+          "is_admin": true,
+          "permissions": [
+            "agent:use",
+            "chat:read",
+            "chat:write",
+            "session:read",
+            "session:write",
+            "skill:read",
+            "marketplace:read",
+            "persona_preset:read",
+            "role:read",
+            "role:request",
+            "channel:read",
+            "user:read",
+            "settings:read",
+            "feedback:read",
+            "notification:read",
+            "artifact:download",
+            "file:upload",
+            "file:upload:document",
+            "agent:admin",
+            "model:admin",
+            "settings:manage",
+            "admin:status",
+            "skill:write",
+            "skill:delete",
+            "skill:admin",
+            "marketplace:publish",
+            "marketplace:admin",
+            "channel:write",
+            "channel:delete",
+            "channel:admin",
+            "user:admin",
+            "settings:admin",
+            "feedback:admin",
+            "notification:admin"
+          ],
+          "roles": [
+            "普通user",
+            "developer"
+          ],
+          "source": "company-login",
+          "work_id": "ZX2834"
+        },
+        "latest_any_user_id": "ZX2834",
+        "latest_payload": {
+          "is_admin": true,
+          "permissions": [
+            "agent:use",
+            "chat:read",
+            "chat:write",
+            "session:read",
+            "session:write",
+            "skill:read",
+            "marketplace:read",
+            "persona_preset:read",
+            "role:read",
+            "role:request",
+            "channel:read",
+            "user:read",
+            "settings:read",
+            "feedback:read",
+            "notification:read",
+            "artifact:download",
+            "file:upload",
+            "file:upload:document",
+            "agent:admin",
+            "model:admin",
+            "settings:manage",
+            "admin:status",
+            "skill:write",
+            "skill:delete",
+            "skill:admin",
+            "marketplace:publish",
+            "marketplace:admin",
+            "channel:write",
+            "channel:delete",
+            "channel:admin",
+            "user:admin",
+            "settings:admin",
+            "feedback:admin",
+            "notification:admin"
+          ],
+          "roles": [
+            "普通user",
+            "developer"
+          ],
+          "source": "company-login",
+          "work_id": "ZX2834"
+        },
+        "latest_user_id": "ZX2834",
+        "ordinary_user_count": 13
+      },
+      "context_snapshot_public_projection": {
+        "context_pack_generated_at_present": true,
+        "context_pack_version": "v1",
+        "execution_tier": "document_worker",
+        "forbidden_projection_leaks": [],
+        "input_keys": [
+          "attachments",
+          "message"
+        ],
+        "long_term_memory_read": false,
+        "memory_policy_source": "default",
+        "ok": true,
+        "raw_material_id_fields_present": false,
+        "referenced_material_counts": {
+          "artifact_count": 0,
+          "file_count": 1,
+          "memory_record_count": 0,
+          "message_count": 1
+        },
+        "snapshot_count": 1,
+        "status": 200,
+        "summary_source": "chat_stream"
+      },
+      "general_chat_run": {
+        "agent_id": "general-agent",
+        "artifact_content_type": null,
+        "artifact_id": null,
+        "artifact_label": null,
+        "artifact_size_bytes": null,
+        "run_id": "run_2d55aafdf7e7425e9ec92fe1c6666357",
+        "skill_id": "general-chat",
+        "status": "succeeded",
+        "tenant_id": "default",
+        "user_id": "upload-gate-user-a"
+      },
+      "governed_skill_runs": {
+        "real_task_statuses": {
+          "baoyu-translate": "succeeded",
+          "qa-file-reviewer": "succeeded"
+        },
+        "run_skill_snapshots": {
+          "mismatched_pinned_snapshots": [],
+          "missing_pinned_snapshots": [],
+          "pinned_snapshot_count": 2,
+          "pinned_snapshot_source": "release_decision",
+          "row_count": 2,
+          "used_count": 2,
+          "used_skill_ids": [
+            "baoyu-translate",
+            "qa-file-reviewer"
+          ],
+          "used_skills_source": "executor_hook"
+        },
+        "verified": true
+      },
+      "lambchat_api_compat": {
+        "available_model_ids": [
+          "MiniMax-M2.7",
+          "MiniMax-M2.7-highspeed",
+          "deepseek-v4-flash",
+          "deepseek-v4-pro",
+          "gpt-5.3-codex-spark"
+        ],
+        "default_model_id": "deepseek-v4-flash",
+        "default_model_matches_expected": true,
+        "expected_default_model_id": "deepseek-v4-flash",
+        "missing_permissions": [],
+        "registration_enabled": false,
+        "statuses": {
+          "/api/agent/models/available": 200,
+          "/api/ai/health": 200,
+          "/api/auth/oauth/providers": 200,
+          "/api/auth/permissions": 200,
+          "/api/notifications/active": 200,
+          "/api/projects": 200,
+          "/api/settings/": 200,
+          "/api/tools": 200,
+          "/api/upload/config": 200,
+          "/api/version": 200
+        }
+      },
+      "lambchat_frontend": {
+        "bytes": 10962,
+        "status": 200,
+        "url": "http://127.0.0.1:18001"
+      },
+      "lambchat_frontend_dist_api_boundary": {
+        "api_reference_count": 147,
+        "exists": true,
+        "forbidden_files": [],
+        "forbidden_reference_count": 0,
+        "path": "<redacted-path>"
+      },
+      "lambchat_frontend_origin_api": {
+        "payload": {
+          "status": "ok"
+        },
+        "status": 200,
+        "url": "http://127.0.0.1:18001/api/ai/health"
+      },
+      "review_artifact": {
+        "agent_id": "qa-word-review",
+        "artifact_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "artifact_id": "art_08be086a57604975aad5ca26c26a006c",
+        "artifact_label": "审核 Word",
+        "artifact_size_bytes": 24056,
+        "run_id": "run_3272d6b6ec99433ba3977f42fc4964bb",
+        "skill_id": "qa-file-reviewer",
+        "status": "succeeded",
+        "tenant_id": "default",
+        "user_id": "upload-review-gate-user"
+      },
+      "runtime_config": {
+        "anthropic_model": "deepseek-v4-flash",
+        "available_model_ids": [
+          "MiniMax-M2.7",
+          "MiniMax-M2.7-highspeed",
+          "deepseek-v4-flash",
+          "deepseek-v4-pro",
+          "gpt-5.3-codex-spark"
+        ],
+        "claude_agent_model": "deepseek-v4-flash",
+        "claude_agent_sdk_enabled": "true",
+        "configured_model_id": "deepseek-v4-flash",
+        "default_model_id": "deepseek-v4-flash",
+        "env_path": "<redacted-path>",
+        "model_catalog_contains_configured_model": true,
+        "model_catalog_status": "present",
+        "openai_model": "deepseek-v4-flash",
+        "skills_present": [
+          "baoyu-translate",
+          "general-chat",
+          "qa-file-reviewer"
+        ]
+      },
+      "translate_artifact": {
+        "agent_id": "baoyu-translate",
+        "artifact_content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "artifact_id": "art_a4fab332ce554042b7ca4ad5e8cc1fff",
+        "artifact_label": "翻译 Word",
+        "artifact_size_bytes": 42902,
+        "run_id": "run_6328ea617cf147b19c3bd4b211dae485",
+        "skill_id": "baoyu-translate",
+        "status": "succeeded",
+        "tenant_id": "default",
+        "user_id": "ZX2834"
+      },
+      "upload_attachment_chat": {
+        "attachment_context_recorded": true,
+        "chat_payload": {
+          "intent_decision": {
+            "agent_id": "general-agent",
+            "confidence": 0.74,
+            "confirmed_by_user": false,
+            "intent": "general_chat",
+            "reason": "未检测到文件型或知识库专属意图",
+            "selected_capability": "general_chat",
+            "skill_id": null,
+            "status": "selected",
+            "suggestions": []
+          },
+          "queue_insight": {
+            "capacity": {
+              "available_worker_slots": 2,
+              "max_active_worker_runs": 3,
+              "processing_saturated": false,
+              "queue_lease_scan_limit": 50,
+              "queue_tenant_processing_limit": 0,
+              "queue_user_processing_limit": 0
+            },
+            "depths": {
+              "dead_letter": 42,
+              "processing": 1,
+              "queued": 0,
+              "tenant_processing": 1,
+              "tenant_queued": 0
+            },
+            "processing_state": {
+              "active": 1,
+              "missing_metadata": 0,
+              "reclaimable": 0,
+              "stale": 0
+            },
+            "queue_sample": {
+              "queued_sample_complete": true,
+              "queued_sampled": 0,
+              "queued_scan_limit": 500
+            },
+            "reason": "worker_available",
+            "tenant_id": "default",
+            "throttling": {
+              "current_user": {
+                "processing": 1,
+                "processing_saturated": false,
+                "queued": 0
+              },
+              "tenant_processing": 1,
+              "tenant_processing_limit": 0,
+              "tenant_processing_saturated": false,
+              "user_processing_limit": 0,
+              "users": {}
+            },
+            "workers": {
+              "active": 2
+            }
+          },
+          "queue_position": 1,
+          "run_id": "run_a36a6f30c1d845eda5d61c14fea34654",
+          "session_id": "ses_f75cac216832475eba791e67d86db617",
+          "status": "queued",
+          "suggestions": []
+        },
+        "chat_status": 200,
+        "run": {
+          "context_snapshot": {
+            "context_pack_generated_at": "2026-06-30T13:09:58Z",
+            "context_pack_version": "v1",
+            "context_snapshot_id": "ctx_e53d3c9c07ba48dbaf337436f7330a07",
+            "execution_tier": "sdk_only_writing",
+            "file_count": 1,
+            "latest_artifact_version": null,
+            "memory_policy": {
+              "long_term_memory_enabled": false,
+              "memory_enabled": true,
+              "retention_days": 90,
+              "source": "default"
+            },
+            "memory_record_count": 0,
+            "message_count": 1,
+            "referenced_materials": {
+              "artifact_count": 0,
+              "file_count": 1,
+              "memory_record_count": 0,
+              "message_count": 1
+            },
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "source": "chat_stream",
+            "used_context_summary": {
+              "input_keys": [
+                "attachments",
+                "message"
+              ],
+              "long_term_memory_read": false,
+              "memory_policy_source": "default",
+              "source": "chat_stream"
+            }
+          },
+          "error_code": null,
+          "error_message": null,
+          "executor_type": "claude-agent-worker",
+          "file_ids": [
+            "file_a7b8eacdf6774f4abed03f37156d26bd"
+          ],
+          "run_id": "run_a36a6f30c1d845eda5d61c14fea34654",
+          "status": "succeeded",
+          "worker_events": [
+            {
+              "claude_agent_model": "deepseek-v4-flash",
+              "claude_agent_sdk_enabled": true,
+              "claude_agent_sdk_import": "ok",
+              "executor_type": "claude-agent-worker",
+              "severity": "info",
+              "visible_to_user": true,
+              "worker_id": "7046bfe86dd1:0dae6916f3c2"
+            }
+          ]
+        },
+        "run_accepted_by_worker": true,
+        "run_terminal_sdk_failure": false,
+        "run_terminal_turn_limit": false,
+        "upload_check_payload": {
+          "exists": false
+        },
+        "upload_check_status": 200,
+        "upload_payload": {
+          "file_id": "file_a7b8eacdf6774f4abed03f37156d26bd",
+          "key": "file_a7b8eacdf6774f4abed03f37156d26bd",
+          "mimeType": "text/plain",
+          "mime_type": "text/plain",
+          "name": "upload-gate.txt",
+          "sha256": "8a34511f1e6f90afbeeab3f241dbd927b48100752d2208134eb1848df8c7bbbe",
+          "size": 18,
+          "type": "uploads",
+          "url": "/api/ai/files/file_a7b8eacdf6774f4abed03f37156d26bd"
+        },
+        "upload_status": 200,
+        "worker_started": true
+      },
+      "word_review_attachment_chat": {
+        "chat_payload": {
+          "intent_decision": {
+            "agent_id": "document-review",
+            "confidence": 0.92,
+            "confirmed_by_user": false,
+            "intent": "document_review",
+            "reason": "检测到 Word 文件和审核意图",
+            "selected_capability": "document_review",
+            "skill_id": null,
+            "status": "selected",
+            "suggestions": []
+          },
+          "queue_insight": {
+            "capacity": {
+              "available_worker_slots": 2,
+              "max_active_worker_runs": 3,
+              "processing_saturated": false,
+              "queue_lease_scan_limit": 50,
+              "queue_tenant_processing_limit": 0,
+              "queue_user_processing_limit": 0
+            },
+            "depths": {
+              "dead_letter": 42,
+              "processing": 1,
+              "queued": 0,
+              "tenant_processing": 1,
+              "tenant_queued": 0
+            },
+            "processing_state": {
+              "active": 1,
+              "missing_metadata": 0,
+              "reclaimable": 0,
+              "stale": 0
+            },
+            "queue_sample": {
+              "queued_sample_complete": true,
+              "queued_sampled": 0,
+              "queued_scan_limit": 500
+            },
+            "reason": "workers_busy",
+            "tenant_id": "default",
+            "throttling": {
+              "current_user": {
+                "processing": 1,
+                "processing_saturated": false,
+                "queued": 0
+              },
+              "tenant_processing": 1,
+              "tenant_processing_limit": 0,
+              "tenant_processing_saturated": false,
+              "user_processing_limit": 0,
+              "users": {}
+            },
+            "workers": {
+              "active": 1
+            }
+          },
+          "queue_position": 1,
+          "run_id": "run_38f45a82c69f4dc6bbed12bd3fdd7160",
+          "session_id": "ses_cc0674e177ce4bb798e447af5fb25915",
+          "status": "queued",
+          "suggestions": []
+        },
+        "chat_status": 200,
+        "context_snapshot_public_projection": {
+          "context_pack_generated_at_present": true,
+          "context_pack_version": "v1",
+          "execution_tier": "document_worker",
+          "forbidden_projection_leaks": [],
+          "input_keys": [
+            "attachments",
+            "message"
+          ],
+          "long_term_memory_read": false,
+          "memory_policy_source": "default",
+          "ok": true,
+          "raw_material_id_fields_present": false,
+          "referenced_material_counts": {
+            "artifact_count": 0,
+            "file_count": 1,
+            "memory_record_count": 0,
+            "message_count": 1
+          },
+          "snapshot_count": 1,
+          "status": 200,
+          "summary_source": "chat_stream"
+        },
+        "playback": {
+          "artifact_count": 2,
+          "contract_version": "ai-platform.run-playback.v1",
+          "download_url_count": 2,
+          "matched_download_artifact_count": 1,
+          "matched_preview_artifact_count": 1,
+          "preview_url_count": 1,
+          "private_payload_leaked": false,
+          "status": 200
+        },
+        "run": {
+          "agent_id": "qa-word-review",
+          "artifact_count": 2,
+          "artifacts": [
+            {
+              "artifact_id": "art_0a1c1c12446b495682672a63da657627",
+              "artifact_type": "reviewed_docx",
+              "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            },
+            {
+              "artifact_id": "art_a5d17b7483934b39a9196831c44804bb",
+              "artifact_type": "report_txt",
+              "content_type": "text/plain; charset=utf-8"
+            }
+          ],
+          "error_message": null,
+          "file_ids": [
+            "file_0ad084551778488381de2c02ccc61a9b"
+          ],
+          "run_id": "run_38f45a82c69f4dc6bbed12bd3fdd7160",
+          "skill_id": "qa-file-reviewer",
+          "status": "succeeded",
+          "tenant_id": "default"
+        },
+        "sample_docx_found": true,
+        "sample_docx_name": "tmp-smoke-translate.docx",
+        "upload_payload": {
+          "file_id": "file_0ad084551778488381de2c02ccc61a9b",
+          "key": "file_0ad084551778488381de2c02ccc61a9b",
+          "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          "name": "tmp-smoke-translate.docx",
+          "sha256": "8a568b754d84c0ee98931fefb1750a3b362c5640393dfbe61dc5d89998b1c6e7",
+          "size": 24056,
+          "type": "uploads",
+          "url": "/api/ai/files/file_0ad084551778488381de2c02ccc61a9b"
+        },
+        "upload_status": 200
+      }
+    },
+    "runtime_source": {},
+    "schema_version": "ai-platform.poc-gate.v1",
+    "verifier": "tools/verify_poc_gate.py"
+  },
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [],
+  "open_followups": [],
+  "pr_refs": [
+    "#285",
+    "#286"
+  ],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:c3d6525-b0-current-main-runtime-only-v1",
+    "image_id": "sha256:7e951f2851233008c36f8c1787ed55fcf466843046dd91c4f4376b57df0fcb18",
+    "image_labels": {
+      "ai-platform.build-mode": "runtime-only-rebase",
+      "ai-platform.runtime-rollout": "b0-current-main-c3d6525-runtime-only-v1",
+      "ai-platform.runtime-subject": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+      "ai-platform.source-note": "b0-current-main-runtime-only-rebase",
+      "ai-platform.source-revision": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+      "ai-platform.source.note": "b0-current-main-runtime-only-rebase",
+      "ai-platform.source_note": "b0-current-main-runtime-only-rebase",
+      "ai-platform.source_revision": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+      "ai-platform.source_tree_commit": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+      "com.docker.compose.config-hash": "4ef3c78285ea3131138b5a6c1f24517b4a39444235c172491a67a7ba1d7c7fdd",
+      "com.docker.compose.container-number": "1",
+      "com.docker.compose.depends_on": "postgres:service_healthy:false,redis:service_healthy:false,minio:service_healthy:false",
+      "com.docker.compose.image": "sha256:7e951f2851233008c36f8c1787ed55fcf466843046dd91c4f4376b57df0fcb18",
+      "com.docker.compose.oneoff": "False",
+      "com.docker.compose.project": "ai-platform-phaseb",
+      "com.docker.compose.project.config_files": "<redacted-path>",
+      "com.docker.compose.project.environment_file": "<redacted-path>",
+      "com.docker.compose.project.working_dir": "<redacted-path>",
+      "com.docker.compose.replace": "479a007747b523a9ad12164c210eee74c380199f4736b28db5ab41e40c26b5a1",
+      "com.docker.compose.service": "api",
+      "com.docker.compose.version": "2.27.0",
+      "org.opencontainers.image.revision": "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+    "runtime_source_marker": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source_tree_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+      "source_tree_dirty": false
+    },
+    "source_tree_dirty": false
+  }
+}
