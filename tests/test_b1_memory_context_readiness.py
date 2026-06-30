@@ -31,8 +31,8 @@ FORBIDDEN_PRIVATE_MARKERS = [
 
 CURRENT_B1_EVIDENCE_PATH = Path(
     "docs/release-evidence/b1-memory-context/"
-    "f67986a6fcf009d5e22c38be4ed71cc979f24f27/"
-    "2026-06-30-211-b1-memory-context-workflow-smoke-f67986a.json"
+    "427c8d1712198f0267d2c764f36f22639c44249c/"
+    "2026-07-01-211-b1-memory-context-workflow-smoke-427c8d1.json"
 )
 
 B1_GATE_BOUNDARY_GAPS: list[str] = []
@@ -49,7 +49,8 @@ def test_current_b1_release_evidence_excludes_raw_paths_and_private_markers():
     source_ref = payload["source_ref"]
     assert source_ref["runtime_source_marker"] == payload["runtime_subject_commit_sha"]
     assert source_ref["runtime_commit"] == payload["runtime_subject_commit_sha"]
-    assert source_ref["source_snapshot"]["source_tree_commit_sha"] == payload["runtime_subject_commit_sha"]
+    assert source_ref["source_snapshot"]["source_tree_commit_sha"] == payload["commit_sha"]
+    assert source_ref["source_snapshot"]["runtime_subject_commit_sha"] == payload["runtime_subject_commit_sha"]
     assert source_ref["source_snapshot"]["runtime_affecting_changes_since_runtime_subject"] == []
     assert source_ref["source_snapshot"]["runtime_affecting_dirty_paths"] == []
     assert source_ref["source_snapshot"]["source_tree_dirty"] is False
@@ -150,7 +151,7 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     runtime_review = boundary_evidence["b1_runtime_evidence_review_against_merged_source"]
     assert runtime_review["status"] == "recorded_local_contract"
     assert runtime_review["runtime_subject_commit_sha"] == (
-        "f67986a6fcf009d5e22c38be4ed71cc979f24f27"
+        "427c8d1712198f0267d2c764f36f22639c44249c"
     )
     assert runtime_review["current_source_commit_sha"]
     runtime_delta = runtime_review["runtime_affecting_changes_since_runtime_subject"]
@@ -190,10 +191,10 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert smoke_evidence["status"] == "verified_211_runtime_acceptance"
     assert smoke_evidence["artifact_kind"] == "211_memory_enabled_document_workflow_smoke"
     assert smoke_evidence["verifier"] == "tools/verify_b1_memory_context_workflow.py"
-    assert smoke_evidence["evidence_id"] == "2026-06-30-211-b1-memory-context-workflow-smoke-f67986a"
-    assert smoke_evidence["runtime_subject"] == "f67986a-b0-current-main-runtime-only-v2"
+    assert smoke_evidence["evidence_id"] == "2026-07-01-211-b1-memory-context-workflow-smoke-427c8d1"
+    assert smoke_evidence["runtime_subject"] == "427c8d1-b0-merged-main-runtime-only-v1"
     assert smoke_evidence["runtime_subject_commit_sha"] == (
-        "f67986a6fcf009d5e22c38be4ed71cc979f24f27"
+        "427c8d1712198f0267d2c764f36f22639c44249c"
     )
     assert smoke_evidence["memory_record_count"] == 1
     assert smoke_evidence["checks"]["playback_public_projection"] is True
@@ -202,8 +203,8 @@ def test_b1_memory_context_readiness_records_reviewed_211_smoke_without_closing_
     assert smoke_evidence["does_not_close_b1_gate"] is True
     assert smoke_evidence["path"].endswith(
         "docs/release-evidence/b1-memory-context/"
-        "f67986a6fcf009d5e22c38be4ed71cc979f24f27/"
-        "2026-06-30-211-b1-memory-context-workflow-smoke-f67986a.json"
+        "427c8d1712198f0267d2c764f36f22639c44249c/"
+        "2026-07-01-211-b1-memory-context-workflow-smoke-427c8d1.json"
     )
 
     assert readiness["non_expansion_invariants"] == {
@@ -250,10 +251,10 @@ def test_b1_memory_context_readiness_markdown_is_gap_first_and_boundary_explicit
     assert "### B1 Runtime Evidence Review Against Merged Source" in markdown
     assert "### B1 Issue Closure Evidence" in markdown
     assert "docs/release-evidence/backend-stage-closures/b1-memory-context" in markdown
-    assert "2026-06-30-211-b1-memory-context-workflow-smoke-f67986a.json" in markdown
+    assert "2026-07-01-211-b1-memory-context-workflow-smoke-427c8d1.json" in markdown
     assert "does_not_claim_production_readiness" in markdown
     assert "runtime_affecting_delta_requires_fresh_211_smoke" not in markdown
-    assert "f67986a6fcf009d5e22c38be4ed71cc979f24f27" in markdown
+    assert "427c8d1712198f0267d2c764f36f22639c44249c" in markdown
     assert "record issue closure evidence after final issue review" in markdown
     assert "verified_211_runtime_acceptance" in markdown
     assert "tools/verify_b1_memory_context_workflow.py" in markdown
@@ -325,12 +326,12 @@ def test_b1_issue_closure_gap_stays_open_without_valid_local_closure_evidence(tm
 def test_b1_runtime_acceptance_evidence_prefers_current_subject_when_history_exists():
     selected = _runtime_acceptance_evidence(Path.cwd())["211_memory_enabled_document_workflow_smoke"]
 
-    assert selected["evidence_id"] == "2026-06-30-211-b1-memory-context-workflow-smoke-f67986a"
-    assert selected["runtime_subject_commit_sha"] == "f67986a6fcf009d5e22c38be4ed71cc979f24f27"
+    assert selected["evidence_id"] == "2026-07-01-211-b1-memory-context-workflow-smoke-427c8d1"
+    assert selected["runtime_subject_commit_sha"] == "427c8d1712198f0267d2c764f36f22639c44249c"
     assert selected["path"].endswith(
         "docs/release-evidence/b1-memory-context/"
-        "f67986a6fcf009d5e22c38be4ed71cc979f24f27/"
-        "2026-06-30-211-b1-memory-context-workflow-smoke-f67986a.json"
+        "427c8d1712198f0267d2c764f36f22639c44249c/"
+        "2026-07-01-211-b1-memory-context-workflow-smoke-427c8d1.json"
     )
 
 
@@ -343,7 +344,7 @@ def test_b1_runtime_review_gap_closes_for_current_source_without_runtime_affecti
     assert runtime_review["status"] == "recorded_local_contract"
     assert runtime_review["closed_gap"] == "b1_runtime_evidence_review_against_merged_source"
     assert runtime_review["runtime_subject_commit_sha"] == (
-        "f67986a6fcf009d5e22c38be4ed71cc979f24f27"
+        "427c8d1712198f0267d2c764f36f22639c44249c"
     )
     runtime_delta = runtime_review["runtime_affecting_changes_since_runtime_subject"]
     assert runtime_delta == []
