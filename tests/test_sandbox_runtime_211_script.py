@@ -1536,6 +1536,8 @@ def test_sandbox_runtime_211_help_names_211_docker_command_and_local_cancel_imag
 
     assert "--docker-cmd" in generator_help
     assert "--platform-resource-timeout-probe" in generator_help
+    assert "--generate-runtime-probe-results-file" in generator_help
+    assert "--denied-egress-target" in generator_help
     assert "sudo -n docker" in generator_help
     assert "on 211" in generator_help
     assert "ai-platform" in generator_help
@@ -1596,6 +1598,98 @@ def test_platform_runtime_mode_defaults_executor_image_to_cancel_image(tmp_path,
     assert output["runtime_mode"] == "platform"
     assert calls[0]["sandbox_executor_image"] == "ai-platform:local"
     assert calls[0]["platform_resource_timeout_probe"] is False
+
+
+def test_main_can_generate_runtime_probe_results_file(tmp_path, monkeypatch, capsys):
+    generator = load_generator()
+    calls = []
+
+    def fake_generate_runtime_probe_results(**kwargs):
+        calls.append(kwargs)
+        output_file = Path(kwargs["output_file"])
+        output_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
+                    "run_id": kwargs["recorder"].run_id,
+                    "source": "platform_runtime_probe",
+                    "resource_limits": {
+                        "over_limit_cleanup_verified": True,
+                        "probe_kind": "platform_resource_timeout",
+                        "timeout_probe_seconds": 0,
+                        "bounded_error_projection": {
+                            "source": "admin_runtime_projection",
+                            "run_id": kwargs["recorder"].run_id,
+                            "status": "failed",
+                            "error_code": "executor_health_timeout",
+                            "host_paths_redacted": True,
+                            "raw_docker_payload_absent": True,
+                            "callback_token_absent": True,
+                        },
+                    },
+                    "egress_policy": {
+                        "default_deny_outbound": True,
+                        "platform_allowlist_enforced": True,
+                        "callback_exception_scoped_to_run_token": True,
+                        "denied_egress_redacted": True,
+                        "denied_target": kwargs["denied_egress_target"],
+                        "denied_probe_error_code": "egress_denied",
+                        "allowed_callback_host": "host.docker.internal",
+                        "callback_probe_status": "delivered",
+                        "policy_source": "platform_policy",
+                        "probe_source": "runtime_probe_results",
+                    },
+                    "security_options": {
+                        "privileged": False,
+                        "no_new_privileges": True,
+                        "capabilities_dropped": True,
+                        "docker_socket_mounted": False,
+                        "workspace_mount_mode": "rw",
+                        "root_filesystem_read_only_or_minimal": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return {
+            "run_id": kwargs["recorder"].run_id,
+            "runtime_probe_results_file": "[redacted-path]",
+            "sections": ["resource_limits", "egress_policy", "security_options"],
+        }
+
+    monkeypatch.setattr(generator, "generate_runtime_probe_results", fake_generate_runtime_probe_results)
+    monkeypatch.setattr(generator, "run_cancel_probe", lambda **kwargs: "should-not-run")
+
+    runtime_probe_results_file = tmp_path / "runtime-probe-results.json"
+    evidence = tmp_path / "evidence.json"
+    exit_code = generator.main(
+        [
+            "--runtime-mode",
+            "platform",
+            "--sandbox-provider",
+            "docker",
+            "--executor-url",
+            "http://executor.test",
+            "--evidence-file",
+            str(evidence),
+            "--run-id",
+            "run-a",
+            "--generate-runtime-probe-results-file",
+            str(runtime_probe_results_file),
+            "--denied-egress-target",
+            "https://egress-denied.invalid/",
+            "--json",
+        ]
+    )
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert output["runtime_probe_results_file"] == "[redacted-path]"
+    assert output["evidence_file"] == "[redacted-path]"
+    assert calls[0]["sandbox_executor_image"] == "ai-platform:local"
+    assert calls[0]["denied_egress_target"] == "https://egress-denied.invalid/"
+    assert str(runtime_probe_results_file) not in json.dumps(output)
+    assert runtime_probe_results_file.exists()
 
 
 def test_platform_runtime_mode_accepts_bound_runtime_probe_results_file(tmp_path, monkeypatch, capsys):
@@ -1733,6 +1827,223 @@ def test_platform_runtime_mode_accepts_bound_runtime_probe_results_file(tmp_path
         },
     }
     assert str(runtime_probe_results_file) not in json.dumps(output)
+
+
+def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monkeypatch):
+    generator = load_generator()
+    runtime_probe_results_file = tmp_path / "runtime-probe-results.json"
+
+    class FakeRuntime:
+        def __init__(
+            self,
+            *,
+            workspace_root,
+            callback_token_resolver,
+            record_lease,
+            release_lease,
+        ):
+            self.record_lease = record_lease
+            self.release_lease = release_lease
+
+        async def submit(self, request):
+            from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
+
+            assert request.resource_limits["max_seconds"] == 0
+            assert request.resource_limits["platform_timeout_probe"] is True
+            lease = ContainerLease(
+                container_id="exec-run-a",
+                container_name="executor-exec-run-a",
+                provider="docker",
+                executor_url="http://127.0.0.1:18000",
+                tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=request.run_id,
+                sandbox_mode=request.sandbox_mode,
+                browser_enabled=request.browser_enabled,
+                workspace_host_path=str(tmp_path),
+                workspace_container_path="/workspace",
+                labels={"ai-platform.run_id": request.run_id},
+                timings={
+                    "sandbox_container_cold_start_latency_ms": 2,
+                    "sandbox_healthcheck_latency_ms": 3,
+                },
+            )
+            workspace = WorkspaceLease(
+                tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=request.run_id,
+                host_root=str(tmp_path),
+                workspace_host_path=str(tmp_path),
+                workspace_container_path="/workspace",
+                inputs_host_path=str(tmp_path / "inputs"),
+                logs_host_path=str(tmp_path / "logs"),
+            )
+            lease_id = await self.record_lease(lease, request, workspace)
+            await self.release_lease(lease, "run_failed", lease_id)
+            return type(
+                "SandboxRuntimeResult",
+                (),
+                {
+                    "status": "failed",
+                    "session_id": request.session_id,
+                    "run_id": request.run_id,
+                    "executor_response": {
+                        "status": "failed",
+                        "run_id": request.run_id,
+                        "error_code": "executor_health_timeout",
+                        "error_message": "Executor health timeout",
+                    },
+                    "timings": {
+                        "schema_version": "ai-platform.sandbox-latency-split.v1",
+                        "sandbox_lease_acquire_latency_ms": 1,
+                        "sandbox_container_cold_start_latency_ms": 2,
+                        "sandbox_healthcheck_latency_ms": 3,
+                        "sandbox_executor_dispatch_latency_ms": 4,
+                        "executor_model_latency_ms": 0,
+                        "document_processing_latency_ms": 0,
+                        "sandbox_cleanup_latency_ms": 5,
+                        "sandbox_total_latency_ms": 15,
+                    },
+                },
+            )()
+
+    docker_calls = []
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        docker_calls.append(tuple(cmd))
+        if tuple(cmd[:3]) == ("docker", "exec", "executor-exec-run-a"):
+            assert "https://egress-denied.invalid/" in cmd[-1]
+            assert "egress_denied" in cmd[-1]
+            return type(
+                "Completed",
+                (),
+                {
+                    "returncode": 42,
+                    "stdout": "",
+                    "stderr": "",
+                },
+            )()
+        assert tuple(cmd) == ("docker", "inspect", "executor-exec-run-a")
+        return type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    [
+                        {
+                            "HostConfig": {
+                                "Memory": 536870912,
+                                "NanoCpus": 500000000,
+                                "PidsLimit": 128,
+                                "Privileged": False,
+                                "SecurityOpt": ["no-new-privileges:true"],
+                                "CapDrop": ["ALL"],
+                                "ReadonlyRootfs": True,
+                                "Binds": ["/tmp/workspace:/workspace:rw"],
+                            },
+                            "Mounts": [{"Destination": "/workspace", "RW": True}],
+                        }
+                    ]
+                ),
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
+    recorder = generator.EvidenceRecorder(
+        run_id="run-a",
+        executor_url="http://executor.test",
+        callback_token="secret-token",
+    )
+    recorder.record_callback({"run_id": "run-a", "status": "running"}, recorder._callback_token)
+    recorder.record_callback({"run_id": "run-a", "status": "completed"}, recorder._callback_token)
+
+    result = generator.generate_runtime_probe_results(
+        recorder=recorder,
+        sandbox_provider="docker",
+        sandbox_executor_image="ai-platform:local",
+        workspace_root=str(tmp_path),
+        callback_url="http://callback.test/callback",
+        docker_cmd=("docker",),
+        output_file=runtime_probe_results_file,
+        run=fake_run,
+    )
+
+    assert result["runtime_probe_results_file"] == "[redacted-path]"
+    assert docker_calls[0] == ("docker", "inspect", "executor-exec-run-a")
+    assert docker_calls[1][:3] == ("docker", "exec", "executor-exec-run-a")
+    payload = json.loads(runtime_probe_results_file.read_text(encoding="utf-8"))
+    assert payload == {
+        "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
+        "run_id": "run-a",
+        "source": "platform_runtime_probe",
+        "resource_limits": {
+            "over_limit_cleanup_verified": True,
+            "probe_kind": "platform_resource_timeout",
+            "timeout_probe_seconds": 0,
+            "bounded_error_projection": {
+                "source": "admin_runtime_projection",
+                "run_id": "run-a",
+                "status": "failed",
+                "error_code": "executor_health_timeout",
+                "host_paths_redacted": True,
+                "raw_docker_payload_absent": True,
+                "callback_token_absent": True,
+            },
+        },
+        "egress_policy": {
+            "default_deny_outbound": True,
+            "platform_allowlist_enforced": True,
+            "callback_exception_scoped_to_run_token": True,
+            "denied_egress_redacted": True,
+            "denied_target": "https://egress-denied.invalid/",
+            "denied_probe_error_code": "egress_denied",
+            "allowed_callback_host": "host.docker.internal",
+            "callback_probe_status": "delivered",
+            "policy_source": "platform_policy",
+            "probe_source": "runtime_probe_results",
+        },
+        "security_options": {
+            "privileged": False,
+            "no_new_privileges": True,
+            "capabilities_dropped": True,
+            "docker_socket_mounted": False,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": True,
+        },
+    }
+    assert generator.load_runtime_probe_results(runtime_probe_results_file, run_id="run-a") == {
+        "resource_limits": payload["resource_limits"],
+        "egress_policy": payload["egress_policy"],
+        "security_options": payload["security_options"],
+    }
+    assert "secret-token" not in runtime_probe_results_file.read_text(encoding="utf-8")
+
+
+def test_runtime_probe_results_do_not_treat_generic_network_failure_as_egress_denied(tmp_path):
+    generator = load_generator()
+    probe = generator._safe_platform_egress_probe_from_result(
+        run_id="run-a",
+        egress_denial_probe={
+            "denied": False,
+            "target": "https://egress-denied.invalid/",
+        },
+        docker_inspect={
+            "Config": {
+                "Labels": {
+                    "ai-platform.egress.callback_host": "host.docker.internal",
+                },
+            },
+        },
+        callbacks=[{"run_id": "run-a", "status": "running"}, {"run_id": "run-a", "status": "completed"}],
+    )
+
+    assert probe == {}
 
 
 def test_runtime_probe_results_file_rejects_wrong_run_and_sensitive_content(tmp_path):

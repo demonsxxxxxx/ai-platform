@@ -854,6 +854,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             "docker_cmd": "sudo -n docker",
             "cancel_probe_image": "ai-platform:local",
             "runtime_probe_results_schema_version": RUNTIME_PROBE_RESULTS_SCHEMA_VERSION,
+            "runtime_probe_results_generate_cli_flag": "--generate-runtime-probe-results-file",
             "runtime_probe_results_cli_flag": "--runtime-probe-results-file",
             "runtime_probe_results_environment_variable": "AI_PLATFORM_SANDBOX_RUNTIME_PROBE_RESULTS",
             "runtime_probe_results_required_fields": list(_RUNTIME_PROBE_RESULTS_REQUIRED_FIELDS),
@@ -1058,6 +1059,7 @@ def render_b2_sandbox_readiness_markdown(readiness: dict[str, Any]) -> str:
         f"- reviewed evidence required before elevated status: `{str(runtime['reviewed_evidence_required_for_211_verified']).lower()}`\n"
         f"- does not close B2 gate by itself: `{str(runtime['does_not_close_b2_gate_by_itself']).lower()}`\n\n"
         f"- runtime probe results schema: `{runtime.get('runtime_probe_results_schema_version')}`\n"
+        f"- runtime probe results generate flag: `{runtime.get('runtime_probe_results_generate_cli_flag')}`\n"
         f"- runtime probe results flag: `{runtime.get('runtime_probe_results_cli_flag')}`\n"
         f"- runtime probe results env: `{runtime.get('runtime_probe_results_environment_variable')}`\n\n"
         "Runtime probe results required fields:\n\n"
