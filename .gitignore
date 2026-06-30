@@ -5,6 +5,9 @@ __pycache__/
 .pytest-tmp/
 .pytest-tmp-*/
 .codex-tmp/
+.codex/tmp/
+.codex/skills/
+.superpowers/sdd/
 .tmp/
 dirty-work/
 ai-platform-*.tar

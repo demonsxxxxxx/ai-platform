@@ -33,6 +33,9 @@ _AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-29-211-foundation-alpha-poc-f679
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
+    ".codex/tmp/",
+    ".codex/skills/",
+    ".superpowers/sdd/",
     "assets/ai-platform-architecture-illustrations/",
     "assets/multi-agent-architecture-illustrations/",
     "docs/",
@@ -227,7 +230,7 @@ def _resolve_source_tree_dirty() -> bool | None:
 def _resolve_source_tree_dirty_paths() -> list[str] | None:
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--untracked-files=all"],
             cwd=_ROOT,
             check=True,
             capture_output=True,
@@ -241,6 +244,8 @@ def _resolve_source_tree_dirty_paths() -> list[str] | None:
         if not line.strip():
             continue
         path = line[3:].strip()
+        if not path:
+            continue
         if " -> " in path:
             path = path.split(" -> ", 1)[1].strip()
         normalized = path.replace("\\", "/")
