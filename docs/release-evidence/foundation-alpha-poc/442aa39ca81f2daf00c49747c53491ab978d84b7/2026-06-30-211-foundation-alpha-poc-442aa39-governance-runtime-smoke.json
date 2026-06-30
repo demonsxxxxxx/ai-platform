@@ -1,0 +1,182 @@
+{
+  "artifact_kind": "governance_runtime_smoke",
+  "captured_at": "2026-06-30T17:04:36+08:00",
+  "commit_sha": "442aa39ca81f2daf00c49747c53491ab978d84b7",
+  "evidence_id": "2026-06-30-211-foundation-alpha-poc-442aa39-governance-runtime-smoke",
+  "evidence_ref": {
+    "command": "python3 tools/verify_governance_runtime_smoke.py --base-url http://127.0.0.1:8020 --commit-sha 442aa39... --runtime-subject-commit-sha 442aa39... --image ai-platform:442aa39-b0-current-main-runtime-only-v1",
+    "result": "ok:true",
+    "runtime_checks": {
+      "admin_runtime_governance": {
+        "expected_status": 200,
+        "forbidden_projection_terms_present": false,
+        "governance_schema_version": "ai-platform.governance-readiness.v1",
+        "governance_status": "partial_blocked",
+        "governance_status_allowed": true,
+        "memory_governance": {
+          "context_provenance_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 3,
+          "long_term_fail_closed_present": true,
+          "office_context_readiness_present": true
+        },
+        "missing_domains": [],
+        "open_gap_count": 14,
+        "required_domains_present": true,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "skill_governance": {
+          "dashboard_contract_exposed": false,
+          "dashboard_present": true,
+          "dependency_review_policy_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 5,
+          "implemented_snapshot_lock": true,
+          "implemented_version_registry": true,
+          "release_readiness_present": true,
+          "review_manifest_flags_projected": true,
+          "runtime_acceptance_contract_present": true,
+          "runtime_gap_open": true,
+          "skill_inventory_summary_projected": true
+        },
+        "status": 200,
+        "tenant_id": "default",
+        "tenant_matches_requested": true,
+        "tool_permission": {
+          "bulk_review_present": true,
+          "domain_status": "partial_blocked",
+          "gap_count": 3,
+          "implemented_bulk_review_dashboard": true,
+          "implemented_policy_taxonomy": true,
+          "taxonomy_present": true
+        }
+      },
+      "ordinary_admin_runtime": {
+        "detail": "not_ai_admin",
+        "expected_status": 403,
+        "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        "status": 403
+      },
+      "skill_dependency_review_policy_runtime_acceptance": {
+        "checks": {
+          "dependency_review_policy_present": true,
+          "executor_private_material_absent": true,
+          "ordinary_user_admin_runtime_denied": true,
+          "raw_skill_package_storage_absent": true,
+          "review_manifest_flags_projected": true,
+          "same_tenant_admin_runtime_projection": true,
+          "sandbox_working_directory_absent": true,
+          "secret_like_values_absent": true,
+          "skill_inventory_summary_projected": true,
+          "skill_release_readiness_present": true
+        },
+        "does_not_close_runtime_acceptance": false,
+        "non_expansion_invariants": {
+          "docker_sandbox_production_hardening_claimed": false,
+          "long_term_cross_session_memory_enabled": false,
+          "ordinary_user_multi_agent_allowed": false,
+          "production_concurrency_defaults_raised": false
+        },
+        "runtime_acceptance_requires_real_admin_runtime_payload": false,
+        "runtime_payload_verified": true,
+        "schema_version": "ai-platform.skill-dependency-review-runtime-acceptance.v1",
+        "status": "verified_runtime_acceptance",
+        "target": "211_api_admin_runtime"
+      },
+      "verifier_checks": [
+        {
+          "name": "check_admin_runtime_governance_projection",
+          "passed": true
+        },
+        {
+          "name": "check_skill_dependency_review_runtime_acceptance",
+          "passed": true
+        },
+        {
+          "name": "check_no_secret_leakage",
+          "passed": true
+        }
+      ]
+    },
+    "runtime_source": {
+      "commit_sha": "442aa39ca81f2daf00c49747c53491ab978d84b7",
+      "image": "ai-platform:442aa39-b0-current-main-runtime-only-v1",
+      "runtime_subject_commit_sha": "442aa39ca81f2daf00c49747c53491ab978d84b7"
+    },
+    "schema_version": "ai-platform.governance-runtime-smoke.v1",
+    "verifier": "tools/verify_governance_runtime_smoke.py"
+  },
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#164"
+  ],
+  "open_followups": [
+    "external_env_file_label_present"
+  ],
+  "pr_refs": [
+    "#283"
+  ],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "442aa39ca81f2daf00c49747c53491ab978d84b7",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "body": {
+        "status": "ok"
+      },
+      "route": "/api/ai/health",
+      "status_code": 200
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:442aa39-b0-current-main-runtime-only-v1",
+    "image_id": "sha256:7480b8726cd2c1c995c42ea686c82dc2d41fcd693de2c835e894e0011c8d7f3e",
+    "image_labels": {
+      "ai-platform.build-mode": "runtime-only-rebase",
+      "ai-platform.runtime-rollout": "b0-current-main-442aa39-runtime-only-v1",
+      "ai-platform.runtime-subject": "442aa39ca81f2daf00c49747c53491ab978d84b7",
+      "ai-platform.source-note": "b0-current-main-runtime-only-rebase",
+      "ai-platform.source-revision": "442aa39ca81f2daf00c49747c53491ab978d84b7",
+      "ai-platform.source.note": "b0-current-main-runtime-only-rebase",
+      "ai-platform.source_note": "b0-current-main-runtime-only-rebase",
+      "ai-platform.source_revision": "442aa39ca81f2daf00c49747c53491ab978d84b7",
+      "ai-platform.source_tree_commit": "442aa39ca81f2daf00c49747c53491ab978d84b7",
+      "com.docker.compose.config-hash": "6f56044a449a632fdb08198f1fda2d03743d57330fcee8022df4097586fba555",
+      "com.docker.compose.container-number": "1",
+      "com.docker.compose.depends_on": "postgres:service_healthy:false,redis:service_healthy:false,minio:service_healthy:false",
+      "com.docker.compose.image": "sha256:7480b8726cd2c1c995c42ea686c82dc2d41fcd693de2c835e894e0011c8d7f3e",
+      "com.docker.compose.oneoff": "False",
+      "com.docker.compose.project": "ai-platform-phaseb",
+      "com.docker.compose.project.config_files": "<redacted-path>",
+      "com.docker.compose.project.environment_file": "<redacted-path>",
+      "com.docker.compose.project.working_dir": "<redacted-path>",
+      "com.docker.compose.replace": "4729287e298d7de9fdeb8aeb6d5fda4f4339bcc4b8fa71e911088ed10219960c",
+      "com.docker.compose.service": "api",
+      "com.docker.compose.version": "2.27.0",
+      "org.opencontainers.image.revision": "442aa39ca81f2daf00c49747c53491ab978d84b7"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "442aa39ca81f2daf00c49747c53491ab978d84b7",
+    "runtime_source_marker": "442aa39ca81f2daf00c49747c53491ab978d84b7",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "captured_at": "2026-06-30T09:02:03.328761Z",
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "442aa39ca81f2daf00c49747c53491ab978d84b7",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "source": "211_synced_archive_marker_and_runtime_labels",
+      "source_tree_commit_sha": "442aa39ca81f2daf00c49747c53491ab978d84b7",
+      "source_tree_dirty": false
+    },
+    "source_tree_dirty": false
+  }
+}
