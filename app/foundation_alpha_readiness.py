@@ -614,6 +614,49 @@ def _discover_latest_release_evidence_pair() -> tuple[Path, Path] | None:
     return smoke_path, auth_path
 
 
+def _discover_runtime_relevant_release_evidence_pair(source_tree_commit: str) -> tuple[Path, Path] | None:
+    candidates: list[tuple[tuple[str, str], Path, Path]] = []
+    if source_tree_commit == "unknown" or not _EVIDENCE_BASE_ROOT.is_dir():
+        return None
+
+    for commit_root in sorted(_EVIDENCE_BASE_ROOT.iterdir()):
+        if not commit_root.is_dir():
+            continue
+        pair = _discover_release_evidence_pair(commit_root.name)
+        if pair is None:
+            continue
+        smoke_path, auth_path = pair
+        try:
+            smoke_payload = _load_json(smoke_path)
+            auth_payload = _load_json(auth_path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        smoke_runtime_subject = smoke_payload.get("runtime_subject_commit_sha")
+        auth_runtime_subject = auth_payload.get("runtime_subject_commit_sha")
+        if smoke_runtime_subject != auth_runtime_subject:
+            continue
+        if not _commit_ref_covers_runtime_relevant_source(
+            smoke_runtime_subject,
+            source_tree_commit,
+        ):
+            continue
+        candidates.append(
+            (
+                max(
+                    _release_evidence_sort_key(smoke_path, smoke_payload),
+                    _release_evidence_sort_key(auth_path, auth_payload),
+                ),
+                smoke_path,
+                auth_path,
+            )
+        )
+
+    if not candidates:
+        return None
+    _, smoke_path, auth_path = max(candidates, key=lambda item: item[0])
+    return smoke_path, auth_path
+
+
 def _discover_governance_runtime_evidence(commit_sha: str) -> Path | None:
     commit_root = _EVIDENCE_BASE_ROOT / commit_sha
     if not commit_root.is_dir():
@@ -827,6 +870,9 @@ def _resolve_release_evidence_paths(source_tree_commit: str) -> tuple[Path, Path
             manifest_pair = _discover_release_evidence_pair(runtime_subject_commit)
             if manifest_pair is not None:
                 return manifest_pair
+        runtime_relevant_pair = _discover_runtime_relevant_release_evidence_pair(source_tree_commit)
+        if runtime_relevant_pair is not None:
+            return runtime_relevant_pair
     configured_runtime_pair = _discover_release_evidence_pair(RUNTIME_SUBJECT_COMMIT_SHA)
     if configured_runtime_pair is not None:
         return configured_runtime_pair
