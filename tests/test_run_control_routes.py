@@ -3157,6 +3157,60 @@ def test_run_checkpoint_audit_redacts_raw_skill_reference_in_checkpoint_id(monke
     assert "reusable output" not in public_dump
 
 
+def test_run_checkpoint_audit_redacts_fingerprint_step_key_for_ordinary_user(monkeypatch):
+    unsafe_hash = "a" * 64
+    unsafe_step_key = f"build-{unsafe_hash}"
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return resume_manifest_run_row(status="failed")
+
+    async def fake_list_run_steps(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "step-build",
+                "run_id": run_id,
+                "step_key": unsafe_step_key,
+                "step_kind": "agent",
+                "status": "succeeded",
+                "title": "Build fingerprinted step",
+                "role": "builder",
+                "sequence": 1,
+                "payload_json": {"output": "reusable output must not leak"},
+                "started_at": None,
+                "finished_at": None,
+                "created_at": None,
+                "updated_at": None,
+            }
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-resume/checkpoints/audit", headers=headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["uncheckpointed_reusable_steps"] == [
+        {
+            "step_id": "step-build",
+            "step_key": "step-build",
+            "status": "succeeded",
+            "reason": "missing_checkpoint_id",
+        }
+    ]
+    public_dump = str(body)
+    assert unsafe_step_key not in public_dump
+    assert unsafe_hash not in public_dump
+    assert "reusable output" not in public_dump
+
+
 def test_run_checkpoint_audit_reports_step_only_incomplete_and_producer_mismatch(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return resume_manifest_run_row(status="failed")
