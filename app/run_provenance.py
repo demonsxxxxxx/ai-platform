@@ -1,3 +1,5 @@
+import re
+
 from app.auth import AuthPrincipal, is_ai_admin
 from app.control_plane_contracts import (
     ARTIFACT_LINEAGE_ID_PREFIXES,
@@ -57,6 +59,22 @@ def _readiness_public_text(value: object, *, fallback: object = "", raw_terms: s
         return text
     fallback_text = public_text_or_fallback(fallback)
     if fallback_text and not _contains_raw_projection_term(fallback_text, raw_terms):
+        return fallback_text
+    return ""
+
+
+def _contains_hash_like_fingerprint(text: str) -> bool:
+    if HASH_LIKE_VALUE_PATTERN.fullmatch(text.strip()):
+        return True
+    return any(HASH_LIKE_VALUE_PATTERN.fullmatch(token) for token in re.split(r"[^A-Fa-f0-9]+", text))
+
+
+def _fingerprint_safe_public_text(value: object, *, fallback: object = "", raw_terms: set[str]) -> str:
+    text = _readiness_public_text(value, raw_terms=raw_terms)
+    if text and not _contains_hash_like_fingerprint(text):
+        return text
+    fallback_text = _readiness_public_text(fallback, raw_terms=raw_terms)
+    if fallback_text and not _contains_hash_like_fingerprint(fallback_text):
         return fallback_text
     return ""
 
@@ -488,7 +506,7 @@ def _checkpoint_audit_step_label(
     step_key = str(public_step["step_key"])
     if is_ai_admin(principal):
         return step_key
-    return _readiness_public_text(step_key, fallback=step_id, raw_terms=raw_terms) or step_id
+    return _fingerprint_safe_public_text(step_key, fallback=step_id, raw_terms=raw_terms) or step_id
 
 
 def _checkpoint_audit_state(
