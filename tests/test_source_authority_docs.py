@@ -31,7 +31,7 @@ SOURCE_RUNTIME_RELATION_MANIFEST = (
 ACTIVE_RUNTIME_SUBJECT_SHA = "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
 ACTIVE_SOURCE_TREE_SHA = "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
 CURRENT_SOURCE_RUNTIME_RELATION_SHA = "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
-LATEST_VERIFIED_FRC_RUNTIME_SUBJECT_SHA = "845faf7ed0eba11fb8d90fd59048d1c752acc61c"
+LATEST_VERIFIED_FRC_RUNTIME_SUBJECT_SHA = "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
 CURRENT_MAIN_SOURCE_SHA = "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
 CURRENT_SOURCE_FRC_EVIDENCE_DIR = (
     ROOT
@@ -40,15 +40,15 @@ CURRENT_SOURCE_FRC_EVIDENCE_DIR = (
 )
 CURRENT_SOURCE_FRC_EVIDENCE = (
     CURRENT_SOURCE_FRC_EVIDENCE_DIR
-    / "2026-06-30-211-foundation-alpha-poc-845faf7-foundation-runtime-concurrency.json"
+    / "2026-06-30-211-foundation-alpha-poc-c3d6525-foundation-runtime-concurrency.json"
 )
 CURRENT_SOURCE_FRC_READINESS = (
     CURRENT_SOURCE_FRC_EVIDENCE_DIR
-    / "2026-06-30-211-foundation-alpha-poc-845faf7-foundation-runtime-concurrency-readiness.json"
+    / "2026-06-30-211-foundation-alpha-poc-c3d6525-foundation-runtime-concurrency-readiness.json"
 )
 CURRENT_SOURCE_FRC_SUMMARY = (
     CURRENT_SOURCE_FRC_EVIDENCE_DIR
-    / "2026-06-30-211-foundation-alpha-poc-845faf7-foundation-runtime-concurrency-summary.md"
+    / "2026-06-30-211-foundation-alpha-poc-c3d6525-foundation-runtime-concurrency-summary.md"
 )
 FOUNDATION_ALPHA_BASELINE_RUNTIME_SUBJECT_SHA = "380de6bf9ffed5167f9bb2eaee8e63612a52c124"
 ACTIVE_CLOSURE_SOURCE_TREE_SHA = "3c06c5351517028111c18a365ff9a24ed22ffa33"
@@ -608,7 +608,7 @@ def test_committed_source_runtime_relation_manifest_keeps_clean_checkout_readine
     assert TARGET_211_HOME_ROOT not in json.dumps(payload)
 
 
-def test_latest_verified_foundation_runtime_concurrency_evidence_bundle_is_bounded_without_current_subject_claim():
+def test_latest_verified_foundation_runtime_concurrency_evidence_bundle_is_current_subject_and_bounded():
     import json
 
     release_evidence_index = read(RELEASE_EVIDENCE_INDEX)
@@ -626,7 +626,7 @@ def test_latest_verified_foundation_runtime_concurrency_evidence_bundle_is_bound
     assert evidence["source_tree_commit_sha"] == LATEST_VERIFIED_FRC_RUNTIME_SUBJECT_SHA
     assert evidence["runtime_subject_commit_sha"] == LATEST_VERIFIED_FRC_RUNTIME_SUBJECT_SHA
     assert evidence["commit_sha"] == LATEST_VERIFIED_FRC_RUNTIME_SUBJECT_SHA
-    assert evidence["runtime_subject_commit_sha"] != CURRENT_SOURCE_RUNTIME_RELATION_SHA
+    assert evidence["runtime_subject_commit_sha"] == CURRENT_SOURCE_RUNTIME_RELATION_SHA
     assert evidence["artifact_kind"] == "foundation_runtime_concurrency"
     assert evidence["summary"]["concurrency_probe_source"] == "client_case_timestamps"
     assert evidence["summary"]["concurrency_window_sample_count"] == 12
@@ -736,9 +736,8 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert f"{ACTIVE_GOVERNANCE_RUNTIME_EVIDENCE_FILE_ID}.json" in release_evidence_index
     assert "Reviewed 211 smoke refresh passed for the `c3d6525` runtime subject" in compact_release_evidence_index
     assert "The wrapped evidence entries have empty `open_followups`" in compact_release_evidence_index
-    assert "no Foundation Runtime concurrency evidence has been recorded for the `c3d6525` subject yet" in compact_release_evidence_index
-    assert "Foundation Runtime concurrency evidence passed with verifier status `verified_foundation_runtime_concurrency` against the `845faf7` runtime subject" in compact_release_evidence_index
-    assert "This remains superseded B0 Foundation Runtime evidence for `c3d6525` readiness" in compact_release_evidence_index
+    assert "Foundation Runtime concurrency evidence passed with verifier status `verified_foundation_runtime_concurrency` against the `c3d6525` runtime subject" in compact_release_evidence_index
+    assert "This removes the current-subject `foundation_runtime_concurrency_evidence` readiness blocker for `c3d6525`" in compact_release_evidence_index
     assert "does not make #164 `gate closable`" in compact_release_evidence_index
     assert "claim production readiness" in compact_release_evidence_index
     assert "external env-file label caveat" in compact_gate_status_text
