@@ -81,6 +81,12 @@ NON_EXPANSION_INVARIANTS = {
     "frontend_state_is_canonical_context": False,
     "gate_closure_claimed": False,
 }
+REMAINING_GATE_BOUNDARIES = [
+    "issue review and closure evidence",
+    "runtime evidence review against merged source",
+    "memory export boundary",
+    "rollback boundary",
+]
 
 
 def sanitize_base_url(value: str) -> str:
@@ -700,10 +706,7 @@ def build_b1_memory_context_workflow_smoke(
         "checks": checks,
         "non_expansion_invariants": dict(NON_EXPANSION_INVARIANTS),
         "does_not_close_b1_gate": True,
-        "remaining_gate_boundaries": [
-            "attach this smoke to a merged-source 211 evidence record before saying 211 verified",
-            "B1 gate closure still requires issue review, runtime evidence review, export boundary, and rollback boundary",
-        ],
+        "remaining_gate_boundaries": list(REMAINING_GATE_BOUNDARIES),
     }
 
 
