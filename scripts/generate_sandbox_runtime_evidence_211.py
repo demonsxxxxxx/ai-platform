@@ -478,11 +478,15 @@ def _docker_security_options(docker_inspect: dict[str, Any] | None) -> dict[str,
     }
 
 
-def _callback_delivered(callbacks: list[dict[str, object]] | None) -> bool:
+def _callback_delivered(callbacks: list[dict[str, object]] | None, *, run_id: str) -> bool:
     if not isinstance(callbacks, list):
         return False
-    statuses = {str(item.get("status") or "") for item in callbacks if isinstance(item, dict)}
-    return bool(statuses & TERMINAL_STATUSES)
+    statuses = {
+        str(item.get("status") or "")
+        for item in callbacks
+        if isinstance(item, dict) and item.get("run_id") == run_id
+    }
+    return "running" in statuses and bool(statuses & TERMINAL_STATUSES)
 
 
 def _docker_config_labels(docker_inspect: dict[str, Any] | None) -> dict[str, str]:
@@ -519,11 +523,12 @@ def _docker_network_masquerade_disabled(
 
 def _platform_no_masq_egress_probe(
     *,
+    run_id: str,
     docker_inspect: dict[str, Any] | None,
     docker_network_inspect: dict[str, Any] | None,
     callbacks: list[dict[str, object]] | None,
 ) -> dict[str, Any]:
-    if not isinstance(docker_inspect, dict) or not _callback_delivered(callbacks):
+    if not isinstance(docker_inspect, dict) or not _callback_delivered(callbacks, run_id=run_id):
         return {}
     labels = _docker_config_labels(docker_inspect)
     if labels.get("ai-platform.egress.policy") != "default-deny-no-masq":
@@ -602,7 +607,7 @@ def _safe_platform_egress_probe_from_result(
 ) -> dict[str, Any]:
     if not isinstance(egress_denial_probe, dict) or egress_denial_probe.get("denied") is not True:
         return {}
-    if not _callback_delivered(callbacks):
+    if not _callback_delivered(callbacks, run_id=run_id):
         return {}
     labels = _docker_config_labels(docker_inspect)
     callback_host = str(labels.get("ai-platform.egress.callback_host") or "host.docker.internal")
@@ -644,6 +649,7 @@ def _platform_hardening_evidence(
         egress_probe = {**egress_probe, "probe_source": str(egress_probe.get("probe_source") or "runtime_probe_results")}
     else:
         egress_probe = _platform_no_masq_egress_probe(
+            run_id=run_id,
             docker_inspect=docker_inspect,
             docker_network_inspect=docker_network_inspect,
             callbacks=callbacks,
@@ -1244,15 +1250,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.generate_runtime_probe_results_file:
         try:
+            server, local_callback_url = start_callback_server(
+                bind_host=args.callback_host,
+                bind_port=args.callback_port,
+                recorder=recorder,
+            )
+            callback_url = resolve_callback_public_url(args.callback_public_url, local_callback_url)
             probe_summary = generate_runtime_probe_results(
                 recorder=recorder,
                 sandbox_provider=args.sandbox_provider,
                 sandbox_executor_image=args.sandbox_executor_image or args.cancel_image,
                 workspace_root=args.workspace_root,
-                callback_url=resolve_callback_public_url(args.callback_public_url, ""),
+                callback_url=callback_url,
                 docker_cmd=docker_cmd,
                 output_file=args.generate_runtime_probe_results_file,
                 denied_egress_target=args.denied_egress_target,
+                run=subprocess.run,
             )
             output = {
                 "run_id": args.run_id,
@@ -1291,6 +1304,10 @@ def main(argv: list[str] | None = None) -> int:
                 for message in messages:
                     print(f"- {message}")
             return 1
+        finally:
+            if server is not None:
+                server.shutdown()
+                server.server_close()
 
     try:
         runtime_probe_results = (
