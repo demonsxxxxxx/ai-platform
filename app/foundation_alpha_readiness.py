@@ -22,14 +22,14 @@ AUTH_RBAC_WRAPPED_GATE_NAME = "Auth/RBAC Smoke"
 GOVERNANCE_RUNTIME_WRAPPED_GATE_NAME = "Governance Runtime Smoke"
 RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_WRAPPED_GATE_NAME = "Release Evidence Runtime Acceptance"
 ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_WRAPPED_GATE_NAME = "Alert Trace Export Runtime Acceptance"
-RUNTIME_SUBJECT_COMMIT_SHA = "f67986a6fcf009d5e22c38be4ed71cc979f24f27"
+RUNTIME_SUBJECT_COMMIT_SHA = "442aa39ca81f2daf00c49747c53491ab978d84b7"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT = _ROOT / "docs/release-evidence/foundation-runtime-concurrency"
 _SOURCE_RUNTIME_RELATION_MANIFEST = _EVIDENCE_BASE_ROOT / "source-runtime-relation-manifest.json"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
-_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-29-211-foundation-alpha-poc-f67986a-runtime-poc-smoke.json"
-_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-29-211-foundation-alpha-poc-f67986a-auth-rbac-smoke.json"
+_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-30-211-foundation-alpha-poc-442aa39-runtime-poc-smoke.json"
+_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-30-211-foundation-alpha-poc-442aa39-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
@@ -332,6 +332,35 @@ def _resolve_runtime_affecting_changes_since(runtime_subject_commit: str) -> lis
         return _string_list(marker.get("runtime_affecting_changes_since_runtime_subject"))
     paths = [line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()]
     return [path for path in paths if _is_runtime_affecting_path(path)]
+
+
+def _resolve_runtime_affecting_changes_for_source(
+    runtime_subject_commit: str,
+    source_tree_commit: str,
+) -> list[str] | None:
+    if source_tree_commit == runtime_subject_commit:
+        return []
+    if not source_tree_commit or source_tree_commit == "unknown":
+        return _resolve_runtime_affecting_changes_since(runtime_subject_commit)
+    marker = _source_snapshot_marker_for_source_tree(source_tree_commit)
+    if marker is not None and marker.get("runtime_subject_commit_sha") == runtime_subject_commit:
+        return _string_list(marker.get("runtime_affecting_changes_since_runtime_subject"))
+    manifest = _source_runtime_relation_manifest_for_source_tree(
+        source_tree_commit,
+        runtime_subject_commit,
+    )
+    if manifest is not None:
+        return _string_list(manifest.get("runtime_affecting_changes_since_runtime_subject"))
+    runtime_affecting_changes = _resolve_runtime_affecting_changes_since(runtime_subject_commit)
+    if runtime_affecting_changes in (None, []):
+        return runtime_affecting_changes
+    runtime_affecting_changes_between_source = _resolve_runtime_affecting_changes_between(
+        runtime_subject_commit,
+        source_tree_commit,
+    )
+    if runtime_affecting_changes_between_source is not None:
+        return runtime_affecting_changes_between_source
+    return runtime_affecting_changes
 
 
 def _resolve_runtime_affecting_dirty_paths() -> list[str] | None:
@@ -2213,10 +2242,9 @@ def build_foundation_alpha_readiness(settings: object | None = None) -> dict[str
         frontend_projection_audit_summary = _frontend_projection_audit_dependency_unavailable_summary(exc)
 
     runtime_source_marker = smoke["source_ref"]["runtime_source_marker"]
-    runtime_affecting_changes = (
-        []
-        if source_tree_commit == runtime_subject_commit
-        else _resolve_runtime_affecting_changes_since(runtime_subject_commit)
+    runtime_affecting_changes = _resolve_runtime_affecting_changes_for_source(
+        runtime_subject_commit,
+        source_tree_commit,
     )
     runtime_relation = _runtime_source_relation(
         source_tree_commit=source_tree_commit,
