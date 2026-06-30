@@ -87,6 +87,10 @@ def test_poc_gate_cli_bootstraps_repo_root_for_direct_script_execution():
     assert required in watcher_text
 
 
+def test_default_frontend_dist_matches_current_211_static_runtime():
+    assert verify_poc_gate.DEFAULT_FRONTEND_DIST == "/home/xinlin.jiang/frontend-pr111-smoke/dist"
+
+
 def test_artifact_download_isolation_gate_accepts_owner_and_denies_cross_user(monkeypatch):
     calls: list[tuple[str, dict[str, str]]] = []
 
