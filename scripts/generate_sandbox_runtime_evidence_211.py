@@ -478,11 +478,15 @@ def _docker_security_options(docker_inspect: dict[str, Any] | None) -> dict[str,
     }
 
 
-def _callback_delivered(callbacks: list[dict[str, object]] | None) -> bool:
+def _callback_delivered(callbacks: list[dict[str, object]] | None, *, run_id: str) -> bool:
     if not isinstance(callbacks, list):
         return False
-    statuses = {str(item.get("status") or "") for item in callbacks if isinstance(item, dict)}
-    return bool(statuses & TERMINAL_STATUSES)
+    statuses = {
+        str(item.get("status") or "")
+        for item in callbacks
+        if isinstance(item, dict) and item.get("run_id") == run_id
+    }
+    return "running" in statuses and bool(statuses & TERMINAL_STATUSES)
 
 
 def _docker_config_labels(docker_inspect: dict[str, Any] | None) -> dict[str, str]:
@@ -519,11 +523,12 @@ def _docker_network_masquerade_disabled(
 
 def _platform_no_masq_egress_probe(
     *,
+    run_id: str,
     docker_inspect: dict[str, Any] | None,
     docker_network_inspect: dict[str, Any] | None,
     callbacks: list[dict[str, object]] | None,
 ) -> dict[str, Any]:
-    if not isinstance(docker_inspect, dict) or not _callback_delivered(callbacks):
+    if not isinstance(docker_inspect, dict) or not _callback_delivered(callbacks, run_id=run_id):
         return {}
     labels = _docker_config_labels(docker_inspect)
     if labels.get("ai-platform.egress.policy") != "default-deny-no-masq":
@@ -560,6 +565,70 @@ def _platform_no_masq_egress_probe(
     }
 
 
+def _docker_exec_egress_denial_probe(
+    container_name: str,
+    *,
+    denied_target: str,
+    docker_cmd: tuple[str, ...],
+    run: Callable[..., Any],
+) -> dict[str, Any]:
+    if not container_name or not denied_target:
+        return {}
+    probe_code = (
+        "import sys, urllib.request\n"
+        f"target = {json.dumps(denied_target)}\n"
+        "try:\n"
+        "    urllib.request.urlopen(target, timeout=3).read(1)\n"
+        "except Exception as exc:\n"
+        "    marker = str(exc).lower()\n"
+        "    if 'egress_denied' in marker or 'egress denied' in marker:\n"
+        "        sys.exit(42)\n"
+        "    sys.exit(43)\n"
+        "sys.exit(0)\n"
+    )
+    completed = _run_docker(
+        [*docker_cmd, "exec", container_name, "python", "-c", probe_code],
+        run=run,
+        timeout=10,
+        check=False,
+    )
+    return {
+        "denied": getattr(completed, "returncode", 1) == 42,
+        "target": denied_target,
+    }
+
+
+def _safe_platform_egress_probe_from_result(
+    *,
+    run_id: str,
+    egress_denial_probe: dict[str, Any] | None,
+    docker_inspect: dict[str, Any] | None,
+    callbacks: list[dict[str, object]] | None,
+) -> dict[str, Any]:
+    if not isinstance(egress_denial_probe, dict) or egress_denial_probe.get("denied") is not True:
+        return {}
+    if not _callback_delivered(callbacks, run_id=run_id):
+        return {}
+    labels = _docker_config_labels(docker_inspect)
+    callback_host = str(labels.get("ai-platform.egress.callback_host") or "host.docker.internal")
+    denied_target = str(egress_denial_probe.get("target") or "")
+    if _redact(denied_target) != denied_target:
+        return {}
+    return {
+        "default_deny_outbound": True,
+        "platform_allowlist_enforced": True,
+        "callback_exception_scoped_to_run_token": True,
+        "denied_egress_redacted": True,
+        "denied_target": denied_target,
+        "denied_probe_error_code": "egress_denied",
+        "allowed_callback_host": callback_host,
+        "callback_probe_status": "delivered",
+        "policy_source": "platform_policy",
+        "probe_source": "runtime_probe_results",
+        "run_id": run_id,
+    }
+
+
 def _platform_hardening_evidence(
     *,
     run_id: str,
@@ -580,6 +649,7 @@ def _platform_hardening_evidence(
         egress_probe = {**egress_probe, "probe_source": str(egress_probe.get("probe_source") or "runtime_probe_results")}
     else:
         egress_probe = _platform_no_masq_egress_probe(
+            run_id=run_id,
             docker_inspect=docker_inspect,
             docker_network_inspect=docker_network_inspect,
             callbacks=callbacks,
@@ -741,6 +811,8 @@ def run_platform_runtime_probe(
     run: Callable[..., Any] = subprocess.run,
     runtime_probe_results: dict[str, Any] | None = None,
     platform_resource_timeout_probe: bool = False,
+    denied_egress_target: str = "https://egress-denied.invalid/",
+    capture_runtime_egress_probe: bool = False,
 ) -> dict[str, object]:
     captured: dict[str, Any] = {
         "recorded_lease_id": "",
@@ -748,6 +820,7 @@ def run_platform_runtime_probe(
         "release_reason": "",
         "container_name": "",
         "docker_inspect": None,
+        "egress_denial_probe": {},
     }
 
     async def probe() -> object:
@@ -782,6 +855,13 @@ def run_platform_runtime_probe(
                     run=run,
                 )
                 captured["docker_inspect"] = docker_inspect
+                if capture_runtime_egress_probe:
+                    captured["egress_denial_probe"] = _docker_exec_egress_denial_probe(
+                        lease.container_name,
+                        denied_target=denied_egress_target,
+                        docker_cmd=docker_cmd,
+                        run=run,
+                    )
                 network_name = _docker_egress_network_name(docker_inspect)
                 captured["docker_network_inspect"] = _inspect_docker_network(
                     network_name,
@@ -847,6 +927,16 @@ def run_platform_runtime_probe(
     )
     if platform_resource_probe:
         derived_runtime_probe_results["resource_limits"] = platform_resource_probe
+    platform_egress_probe = _safe_platform_egress_probe_from_result(
+        run_id=recorder.run_id,
+        egress_denial_probe=captured.get("egress_denial_probe")
+        if isinstance(captured.get("egress_denial_probe"), dict)
+        else None,
+        docker_inspect=captured.get("docker_inspect") if isinstance(captured.get("docker_inspect"), dict) else None,
+        callbacks=recorder.callbacks,
+    )
+    if platform_egress_probe:
+        derived_runtime_probe_results["egress_policy"] = platform_egress_probe
     recorder.hardening = _platform_hardening_evidence(
         run_id=recorder.run_id,
         workspace_root=workspace_root,
@@ -869,6 +959,93 @@ def run_platform_runtime_probe(
     if isinstance(response, dict) and response.get("error_code"):
         output["error_code"] = str(response["error_code"])
     return output
+
+
+def _runtime_probe_results_payload(*, run_id: str, hardening: dict[str, Any]) -> dict[str, Any]:
+    resource_limits = hardening.get("resource_limits")
+    egress_policy = hardening.get("egress_policy")
+    security_options = hardening.get("security_options")
+    resource_limits = resource_limits if isinstance(resource_limits, dict) else {}
+    egress_policy = egress_policy if isinstance(egress_policy, dict) else {}
+    security_options = security_options if isinstance(security_options, dict) else {}
+    return {
+        "schema_version": RUNTIME_PROBE_RESULTS_SCHEMA_VERSION,
+        "run_id": run_id,
+        "source": "platform_runtime_probe",
+        "resource_limits": {
+            "over_limit_cleanup_verified": resource_limits.get("over_limit_cleanup_verified") is True,
+            "probe_kind": str(resource_limits.get("over_limit_probe_kind") or ""),
+            "timeout_probe_seconds": resource_limits.get("over_limit_timeout_probe_seconds"),
+            "bounded_error_projection": resource_limits.get("bounded_error_projection"),
+        },
+        "egress_policy": {
+            "default_deny_outbound": egress_policy.get("default_deny_outbound") is True,
+            "platform_allowlist_enforced": egress_policy.get("platform_allowlist_enforced") is True,
+            "callback_exception_scoped_to_run_token": egress_policy.get("callback_exception_scoped_to_run_token")
+            is True,
+            "denied_egress_redacted": egress_policy.get("denied_egress_redacted") is True,
+            "denied_target": str(egress_policy.get("denied_target") or ""),
+            "denied_probe_error_code": str(egress_policy.get("denied_probe_error_code") or ""),
+            "allowed_callback_host": str(egress_policy.get("allowed_callback_host") or ""),
+            "callback_probe_status": str(egress_policy.get("callback_probe_status") or ""),
+            "policy_source": str(egress_policy.get("policy_source") or ""),
+            "probe_source": str(egress_policy.get("probe_source") or ""),
+        },
+        "security_options": {
+            "privileged": security_options.get("privileged") is True,
+            "no_new_privileges": security_options.get("no_new_privileges") is True,
+            "capabilities_dropped": security_options.get("capabilities_dropped") is True,
+            "docker_socket_mounted": security_options.get("docker_socket_mounted") is True,
+            "workspace_mount_mode": str(security_options.get("workspace_mount_mode") or ""),
+            "root_filesystem_read_only_or_minimal": security_options.get("root_filesystem_read_only_or_minimal")
+            is True,
+        },
+    }
+
+
+def generate_runtime_probe_results(
+    *,
+    recorder: EvidenceRecorder,
+    sandbox_provider: str,
+    sandbox_executor_image: str,
+    workspace_root: str,
+    callback_url: str,
+    docker_cmd: tuple[str, ...],
+    output_file: str | Path,
+    denied_egress_target: str = "https://egress-denied.invalid/",
+    run: Callable[..., Any] = subprocess.run,
+) -> dict[str, object]:
+    run_platform_runtime_probe(
+        recorder=recorder,
+        sandbox_provider=sandbox_provider,
+        sandbox_executor_image=sandbox_executor_image,
+        workspace_root=workspace_root,
+        callback_url=callback_url,
+        docker_cmd=docker_cmd,
+        run=run,
+        platform_resource_timeout_probe=True,
+        denied_egress_target=denied_egress_target,
+        capture_runtime_egress_probe=True,
+    )
+    payload = _runtime_probe_results_payload(run_id=recorder.run_id, hardening=recorder.hardening)
+    for section_name in RUNTIME_PROBE_RESULTS_SECTION_KEYS:
+        section = payload.get(section_name)
+        if not isinstance(section, dict):
+            raise RuntimeError(f"runtime probe results section must be an object: {section_name}")
+        section_error = _runtime_probe_section_error(section_name, section, run_id=recorder.run_id)
+        if section_error:
+            raise RuntimeError(section_error)
+    path = Path(output_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(payload, ensure_ascii=True, indent=2)
+    if _redact(serialized) != serialized:
+        raise RuntimeError("runtime probe results contain sensitive content")
+    path.write_text(serialized, encoding="utf-8")
+    return {
+        "run_id": recorder.run_id,
+        "runtime_probe_results_file": "[redacted-path]",
+        "sections": list(RUNTIME_PROBE_RESULTS_SECTION_KEYS),
+    }
 
 
 def _run_docker(
@@ -1026,6 +1203,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--generate-runtime-probe-results-file",
+        default=os.environ.get("AI_PLATFORM_SANDBOX_GENERATE_RUNTIME_PROBE_RESULTS", ""),
+        help=(
+            "Generate same-run platform runtime probe results JSON for a later --runtime-probe-results-file run. "
+            "This is a probe-input generation step, not formal sandbox runtime acceptance evidence."
+        ),
+    )
+    parser.add_argument(
+        "--denied-egress-target",
+        default=os.environ.get("AI_PLATFORM_SANDBOX_DENIED_EGRESS_TARGET", "https://egress-denied.invalid/"),
+        help="Verifier-owned target used to prove denied outbound egress in runtime probe results.",
+    )
+    parser.add_argument(
         "--runtime-mode",
         choices=["executor", "platform"],
         default=os.environ.get("AI_PLATFORM_SANDBOX_RUNTIME_MODE", "executor"),
@@ -1057,6 +1247,67 @@ def main(argv: list[str] | None = None) -> int:
     )
     messages: list[str] = []
     server: ThreadingHTTPServer | None = None
+
+    if args.generate_runtime_probe_results_file:
+        try:
+            server, local_callback_url = start_callback_server(
+                bind_host=args.callback_host,
+                bind_port=args.callback_port,
+                recorder=recorder,
+            )
+            callback_url = resolve_callback_public_url(args.callback_public_url, local_callback_url)
+            probe_summary = generate_runtime_probe_results(
+                recorder=recorder,
+                sandbox_provider=args.sandbox_provider,
+                sandbox_executor_image=args.sandbox_executor_image or args.cancel_image,
+                workspace_root=args.workspace_root,
+                callback_url=callback_url,
+                docker_cmd=docker_cmd,
+                output_file=args.generate_runtime_probe_results_file,
+                denied_egress_target=args.denied_egress_target,
+                run=subprocess.run,
+            )
+            output = {
+                "run_id": args.run_id,
+                "evidence_file": "[redacted-path]",
+                "runtime_probe_results_file": probe_summary["runtime_probe_results_file"],
+                "sections": probe_summary["sections"],
+                "executed_task": True,
+                "runtime_mode": "platform_probe_results",
+                "sandbox_provider": args.sandbox_provider,
+                "callbacks": len(recorder.callbacks),
+                "cancel_stops_container": False,
+                "messages": messages,
+            }
+            if args.json_output:
+                print(json.dumps(output, ensure_ascii=True, indent=2))
+            else:
+                print("PASSED: runtime probe results generated")
+            return 0
+        except Exception as exc:
+            messages.append(_redact(exc))
+            output = {
+                "run_id": args.run_id,
+                "evidence_file": "[redacted-path]",
+                "runtime_probe_results_file": "[redacted-path]",
+                "executed_task": False,
+                "runtime_mode": "platform_probe_results",
+                "sandbox_provider": args.sandbox_provider,
+                "callbacks": len(recorder.callbacks),
+                "cancel_stops_container": False,
+                "messages": messages,
+            }
+            if args.json_output:
+                print(json.dumps(output, ensure_ascii=True, indent=2))
+            else:
+                print("FAILED: runtime probe results incomplete")
+                for message in messages:
+                    print(f"- {message}")
+            return 1
+        finally:
+            if server is not None:
+                server.shutdown()
+                server.server_close()
 
     try:
         runtime_probe_results = (
