@@ -10,6 +10,9 @@ from typing import Any
 
 ENTRY_SCHEMA_VERSION = "ai-platform.release-evidence-entry.v1"
 GATE = "Foundation Alpha POC"
+B1_MEMORY_CONTEXT_VERIFIER = "tools/verify_b1_memory_context_workflow.py"
+B1_MEMORY_CONTEXT_ACCEPTANCE_GAP = "211_memory_enabled_document_workflow_smoke"
+B1_MEMORY_CONTEXT_SCHEMA = "ai-platform.b1-memory-context-workflow-smoke.v1"
 
 _VERIFIER_SCHEMA_DEFAULTS = {
     "tools/verify_poc_gate.py": "ai-platform.poc-gate.v1",
@@ -117,6 +120,82 @@ def _redact_runtime_checks(checks: dict[str, Any]) -> dict[str, Any]:
     return redacted if isinstance(redacted, dict) else {}
 
 
+def _check_passed(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, dict):
+        return value.get("passed") is True
+    return False
+
+
+def _memory_record_count_from_b1_payload(payload: dict[str, Any]) -> int | None:
+    value = payload.get("memory_record_count")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+
+    checks = payload.get("checks")
+    if not isinstance(checks, dict):
+        return None
+
+    memory_check = checks.get("memory_record_create_and_list")
+    if isinstance(memory_check, dict):
+        listed_count = memory_check.get("listed_record_count")
+        if isinstance(listed_count, int) and not isinstance(listed_count, bool):
+            return listed_count
+
+    for check_name in ("context_snapshot_public_provenance", "playback_public_projection"):
+        check = checks.get(check_name)
+        if not isinstance(check, dict):
+            continue
+        summary = check.get("summary")
+        counts = summary.get("counts") if isinstance(summary, dict) else None
+        count = counts.get("memory_record_count") if isinstance(counts, dict) else None
+        if isinstance(count, int) and not isinstance(count, bool):
+            return count
+    return None
+
+
+def _normalize_b1_memory_context_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {
+        "schema_version": payload.get("schema_version"),
+        "ok": payload.get("ok"),
+        "target": payload.get("target"),
+        "acceptance_gap": payload.get("acceptance_gap"),
+        "redaction_scan_status": payload.get("redaction_scan_status"),
+        "does_not_close_b1_gate": payload.get("does_not_close_b1_gate"),
+        "remaining_gate_boundaries": payload.get("remaining_gate_boundaries"),
+        "non_expansion_invariants": payload.get("non_expansion_invariants"),
+    }
+
+    memory_record_count = _memory_record_count_from_b1_payload(payload)
+    if memory_record_count is not None:
+        normalized["memory_record_count"] = memory_record_count
+
+    checks = payload.get("checks")
+    if isinstance(checks, dict):
+        normalized["checks"] = {
+            str(name): _check_passed(check)
+            for name, check in sorted(checks.items())
+        }
+
+    return {key: value for key, value in normalized.items() if value is not None}
+
+
+def _normalize_runtime_check_payload(
+    *,
+    verifier: str,
+    key: str,
+    payload: Any,
+) -> Any:
+    if (
+        verifier == B1_MEMORY_CONTEXT_VERIFIER
+        and key == B1_MEMORY_CONTEXT_ACCEPTANCE_GAP
+        and isinstance(payload, dict)
+    ):
+        return _normalize_b1_memory_context_payload(payload)
+    return payload
+
+
 def _redact_runtime_source(source: dict[str, Any]) -> dict[str, Any]:
     safe_source = {
         key: value
@@ -171,6 +250,15 @@ def _redact_command(command: str) -> str:
 
 
 def _runtime_checks(verifier: str, verifier_output: dict[str, Any]) -> dict[str, Any]:
+    if verifier == B1_MEMORY_CONTEXT_VERIFIER:
+        return _redact_runtime_checks(
+            {
+                B1_MEMORY_CONTEXT_ACCEPTANCE_GAP: _normalize_b1_memory_context_payload(
+                    verifier_output
+                )
+            }
+        )
+
     if verifier in _WRAPPED_CHECK_KEYS:
         return _redact_runtime_checks({_WRAPPED_CHECK_KEYS[verifier]: verifier_output})
 
@@ -290,6 +378,7 @@ def _source_ref(
             "values were not copied or printed"
         ),
         "gateway_secret_supplied": bool(gateway_secret_supplied),
+        "source_tree_dirty": source_snapshot.get("source_tree_dirty"),
         "source_snapshot": source_snapshot,
     }
 
@@ -323,7 +412,15 @@ def build_release_evidence_entry(
     _require_matching_labels(image_labels, runtime_subject_commit_sha)
     runtime_checks = _runtime_checks(verifier, verifier_output)
     if runtime_check_payloads:
-        runtime_checks.update(_redact_runtime_checks(runtime_check_payloads))
+        normalized_payloads = {
+            key: _normalize_runtime_check_payload(
+                verifier=verifier,
+                key=key,
+                payload=payload,
+            )
+            for key, payload in runtime_check_payloads.items()
+        }
+        runtime_checks.update(_redact_runtime_checks(normalized_payloads))
     if not runtime_checks:
         raise ValueError("missing_runtime_checks")
     runtime_source = verifier_output.get("source") if isinstance(verifier_output.get("source"), dict) else {}

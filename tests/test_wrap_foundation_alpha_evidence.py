@@ -78,6 +78,7 @@ def test_wraps_auth_rbac_verifier_output_as_reviewed_release_evidence_entry():
     assert entry["source_ref"]["image_id"] == IMAGE_ID
     assert entry["source_ref"]["runtime_source_marker"] == COMMIT
     assert entry["source_ref"]["image_labels"]["ai-platform.source-revision"] == COMMIT
+    assert entry["source_ref"]["source_tree_dirty"] is False
     assert entry["source_ref"]["source_snapshot"]["sync_method"] == "git_bundle_fast_forward"
     assert entry["evidence_ref"]["verifier"] == "tools/verify_auth_rbac_smoke.py"
     assert entry["evidence_ref"]["schema_version"] == "ai-platform.auth-rbac-smoke.v1"
@@ -567,6 +568,116 @@ def test_wraps_list_style_verifier_checks_and_attached_runtime_payload():
     assert "sandbox_workdir" not in serialized
     assert "internal prompt material" not in serialized
     assert "tenants/default/private" not in serialized
+
+
+def test_wraps_b1_memory_context_smoke_payload_for_readiness_consumption():
+    verifier_output = {
+        "schema_version": "ai-platform.b1-memory-context-workflow-smoke.v1",
+        "ok": True,
+        "redaction_scan_status": "passed",
+        "target": "211_api_memory_context_workflow",
+        "acceptance_gap": "211_memory_enabled_document_workflow_smoke",
+        "does_not_close_b1_gate": True,
+        "remaining_gate_boundaries": [
+            "issue review and closure evidence",
+            "runtime evidence review against merged source",
+            "memory export boundary",
+            "rollback boundary",
+        ],
+        "non_expansion_invariants": {
+            "long_term_cross_session_memory_enabled": False,
+            "stores_private_executor_material_as_memory": False,
+            "frontend_state_is_canonical_context": False,
+            "gate_closure_claimed": False,
+        },
+        "source": {
+            "commit_sha": COMMIT,
+            "runtime_subject_commit_sha": COMMIT,
+            "image": IMAGE,
+            "gateway_secret_supplied": False,
+            "base_url": "http://127.0.0.1:8020",
+            "tenant_id": "default",
+        },
+        "workflow": {
+            "workspace_id": "default",
+            "agent_id": "general-agent",
+            "run_id_present": True,
+            "session_id_present": True,
+            "memory_record_created": True,
+        },
+        "checks": {
+            "create_governed_run": {
+                "passed": True,
+                "status": 200,
+                "run_id_present": True,
+                "session_id_present": True,
+            },
+            "memory_record_create_and_list": {
+                "passed": True,
+                "create_status": 200,
+                "list_status": 200,
+                "record_created": True,
+                "listed_record_count": 1,
+            },
+            "context_snapshot_public_provenance": {
+                "passed": True,
+                "summary": {
+                    "counts": {"memory_record_count": 1},
+                    "input_keys": ["memory", "task"],
+                },
+            },
+        },
+    }
+
+    entry = build_release_evidence_entry(
+        evidence_id="2026-06-30-211-b1-memory-context-workflow-smoke-f67986a",
+        verifier="tools/verify_b1_memory_context_workflow.py",
+        artifact_kind="211_memory_enabled_document_workflow_smoke",
+        gate="B1 memory/context usable",
+        verifier_output=verifier_output,
+        commit_sha=COMMIT,
+        runtime_subject_commit_sha=COMMIT,
+        captured_at="2026-06-30T10:40:06+08:00",
+        image=IMAGE,
+        image_id=IMAGE_ID,
+        image_labels=image_labels(),
+        source_snapshot=source_snapshot(),
+        command="python3 tools/verify_b1_memory_context_workflow.py --base-url http://127.0.0.1:8020",
+        runtime_check_payloads={
+            "211_memory_enabled_document_workflow_smoke": verifier_output,
+        },
+        review_status="reviewed",
+    )
+
+    runtime_payload = entry["evidence_ref"]["runtime_checks"][
+        "211_memory_enabled_document_workflow_smoke"
+    ]
+    assert runtime_payload["schema_version"] == "ai-platform.b1-memory-context-workflow-smoke.v1"
+    assert runtime_payload["ok"] is True
+    assert runtime_payload["target"] == "211_api_memory_context_workflow"
+    assert runtime_payload["acceptance_gap"] == "211_memory_enabled_document_workflow_smoke"
+    assert runtime_payload["memory_record_count"] == 1
+    assert runtime_payload["checks"] == {
+        "context_snapshot_public_provenance": True,
+        "create_governed_run": True,
+        "memory_record_create_and_list": True,
+    }
+    assert runtime_payload["remaining_gate_boundaries"] == [
+        "issue review and closure evidence",
+        "runtime evidence review against merged source",
+        "memory export boundary",
+        "rollback boundary",
+    ]
+    serialized = json.dumps(
+        {
+            "runtime_payload": runtime_payload,
+            "runtime_source": entry["evidence_ref"]["runtime_source"],
+        },
+        ensure_ascii=False,
+    )
+    assert "base_url" not in serialized
+    assert "tenant_id" not in serialized
+    assert "gateway_secret_supplied" not in serialized
 
 
 def test_requires_real_source_snapshot_for_release_evidence_entry():

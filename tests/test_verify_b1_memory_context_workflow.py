@@ -11,6 +11,12 @@ from urllib.parse import parse_qs, urlparse
 
 SCHEMA_VERSION = "ai-platform.b1-memory-context-workflow-smoke.v1"
 ACCEPTANCE_GAP = "211_memory_enabled_document_workflow_smoke"
+REMAINING_GATE_BOUNDARIES = [
+    "issue review and closure evidence",
+    "runtime evidence review against merged source",
+    "memory export boundary",
+    "rollback boundary",
+]
 
 
 def load_smoke_module():
@@ -334,6 +340,7 @@ def test_b1_memory_context_workflow_smoke_verifies_policy_context_delete_and_pro
         "frontend_state_is_canonical_context": False,
         "gate_closure_claimed": False,
     }
+    assert payload["remaining_gate_boundaries"] == REMAINING_GATE_BOUNDARIES
     serialized = json.dumps(payload, ensure_ascii=False).lower()
     assert "test-secret" not in serialized
     assert "executor_private_payload" not in serialized
