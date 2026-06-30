@@ -65,6 +65,7 @@ export function NonChatAppContent({
           onSelectSession={handleSelectSession}
           onNewSession={handleNewSession}
           mobileOpen={mobileSidebarOpen}
+          onMobileOpen={() => setMobileSidebarOpen(true)}
           onMobileClose={handleMobileClose}
           isCollapsed={sidebarCollapsed}
           onToggleCollapsed={setSidebarCollapsed}
