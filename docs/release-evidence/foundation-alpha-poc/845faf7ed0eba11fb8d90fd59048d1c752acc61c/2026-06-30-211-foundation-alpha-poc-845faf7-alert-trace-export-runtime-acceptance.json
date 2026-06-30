@@ -1,0 +1,132 @@
+{
+  "artifact_kind": "alert_trace_export_runtime_acceptance",
+  "captured_at": "2026-06-30T06:56:46Z",
+  "commit_sha": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
+  "evidence_id": "foundation-alpha-poc-845faf7-alert-trace-export-runtime-acceptance",
+  "evidence_ref": {
+    "command": "python3 tools/verify_alert_trace_export_runtime_acceptance.py --base-url http://127.0.0.1:8020 --gateway-secret-env AI_PLATFORM_GATEWAY_SECRET --commit-sha 845faf7ed0eba11fb8d90fd59048d1c752acc61c --runtime-subject-commit-sha 845faf7ed0eba11fb8d90fd59048d1c752acc61c --image ai-platform:845faf7-b0-current-main-runtime-only-v2",
+    "result": "ok:true",
+    "runtime_checks": {
+      "alert_trace_export_runtime_acceptance": {
+        "checks": {
+          "admin_runtime_alerts_and_exports": {
+            "alert_delivery_not_enabled": true,
+            "alert_delivery_policy_status": "contract_only_not_enabled",
+            "alert_rule_count": 7,
+            "alert_rules_status": "partial_blocked",
+            "alerts_domain_status": "partial_blocked",
+            "expected_status": 200,
+            "forbidden_projection_terms_present": false,
+            "implemented_alert_delivery_policy": true,
+            "implemented_alert_template": true,
+            "implemented_trace_export_contract": true,
+            "observability_schema_version": "ai-platform.observability-readiness.v1",
+            "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+            "slo_threshold_runtime_calibration_gap_present": true,
+            "status": 200,
+            "tenant_id": "default",
+            "tenant_matches_requested": true,
+            "trace_export_contract_schema_version": "ai-platform.trace-audit-export-contract.v1",
+            "trace_export_not_raw_runtime_payloads": true,
+            "trace_export_sources_public_only": true,
+            "trace_export_status": "partial_blocked"
+          },
+          "ordinary_admin_runtime": {
+            "detail": "not_ai_admin",
+            "expected_status": 403,
+            "route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+            "status": 403
+          }
+        },
+        "does_not_close_g9": true,
+        "does_not_enable_alert_delivery": true,
+        "does_not_export_raw_runtime_payloads": true,
+        "ok": true,
+        "open_gaps": [],
+        "redaction_scan_status": "passed",
+        "schema_version": "ai-platform.alert-trace-export-runtime-acceptance.v1",
+        "source": {
+          "commit_sha": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
+          "image": "ai-platform:845faf7-b0-current-main-runtime-only-v2",
+          "runtime_subject_commit_sha": "845faf7ed0eba11fb8d90fd59048d1c752acc61c"
+        },
+        "status": "accepted_for_operator_review"
+      }
+    },
+    "runtime_source": {
+      "commit_sha": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
+      "image": "ai-platform:845faf7-b0-current-main-runtime-only-v2",
+      "runtime_subject_commit_sha": "845faf7ed0eba11fb8d90fd59048d1c752acc61c"
+    },
+    "schema_version": "ai-platform.alert-trace-export-runtime-acceptance.v1",
+    "verifier": "tools/verify_alert_trace_export_runtime_acceptance.py"
+  },
+  "gate": "Foundation Alpha POC",
+  "issue_refs": [
+    "#164"
+  ],
+  "open_followups": [],
+  "pr_refs": [
+    "#280"
+  ],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "runtime_subject_commit_sha": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_health": {
+      "status": "ok"
+    },
+    "branch": "main",
+    "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+    "compose_env_layout_status": "external_env_file_label_present",
+    "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "gateway_secret_supplied": false,
+    "image": "ai-platform:845faf7-b0-current-main-runtime-only-v2",
+    "image_id": "sha256:74bddb9c86b9510fd5165d0cb83067dc5c407286f279e74a34009a4a88524e84",
+    "image_labels": {
+      "ai-platform.runtime-subject": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
+      "ai-platform.source-revision": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
+      "ai-platform.source_revision": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
+      "ai-platform.source_tree_commit": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
+      "com.docker.compose.config-hash": "bd40d2bb3e82d86fd4934b811c6f817a84b730fbeeff7c2fea69a51498e3fc5a",
+      "com.docker.compose.container-number": "1",
+      "com.docker.compose.depends_on": "minio:service_healthy:false,postgres:service_healthy:false,redis:service_healthy:false",
+      "com.docker.compose.image": "sha256:74bddb9c86b9510fd5165d0cb83067dc5c407286f279e74a34009a4a88524e84",
+      "com.docker.compose.oneoff": "False",
+      "com.docker.compose.project": "ai-platform-phaseb",
+      "com.docker.compose.project.config_files": "<redacted-path>",
+      "com.docker.compose.project.environment_file": "<redacted-path>",
+      "com.docker.compose.project.working_dir": "<redacted-path>",
+      "com.docker.compose.replace": "5a62d613cdc0567ea6abc862d1ce8de5263144103f0945152f0ca5dbfe116e20",
+      "com.docker.compose.service": "api",
+      "com.docker.compose.version": "2.27.0",
+      "org.opencontainers.image.revision": "845faf7ed0eba11fb8d90fd59048d1c752acc61c"
+    },
+    "repo_local_env_present": false,
+    "runtime_commit": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
+    "runtime_source_marker": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
+    "runtime_subject_label_status": "runtime_subject_label_current",
+    "source_revision_alias_label_status": "source_revision_alias_label_current",
+    "source_snapshot": {
+      "branch": "main",
+      "commit_sha": "845faf7ed0eba11fb8d90fd59048d1c752acc61c",
+      "compose_config_path": "repo-local deploy/ai-platform/docker-compose.yml",
+      "compose_env_layout_status": "external_env_file_label_present",
+      "compose_env_source": "existing external 211 runtime env file supplied through compose --env-file; values were not copied or printed",
+      "containers": [
+        "ai-platform-api",
+        "ai-platform-worker"
+      ],
+      "gateway_secret_supplied": false,
+      "image": "ai-platform:845faf7-b0-current-main-runtime-only-v2",
+      "image_id": "sha256:74bddb9c86b9510fd5165d0cb83067dc5c407286f279e74a34009a4a88524e84",
+      "runtime_subject_commit_sha": "845faf7ed0eba11fb8d90fd59048d1c752acc61c"
+    },
+    "source_tree_dirty": null
+  }
+}
