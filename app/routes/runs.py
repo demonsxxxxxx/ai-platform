@@ -24,7 +24,6 @@ from app.models import (
 )
 from app.product_events import initial_run_event_specs
 from app.control_plane_contracts import (
-    ARTIFACT_LINEAGE_ID_PREFIXES,
     FORBIDDEN_PUBLIC_KEY_ALIASES,
     HASH_LIKE_VALUE_PATTERN,
     artifact_lineage_contract,
@@ -33,9 +32,6 @@ from app.control_plane_contracts import (
     standard_trace_id,
 )
 from app.projection_redaction import (
-    CAPABILITY_BY_AGENT_ID,
-    CAPABILITY_BY_SKILL_ID,
-    PUBLIC_AGENT_ID_BY_CAPABILITY,
     capability_id_from_skill,
     internal_agent_id_for_request,
     public_agent_id_for_projection,
@@ -57,6 +53,15 @@ from app.run_projection import (
     run_event_response,
     run_step_response,
 )
+from app.run_provenance import (
+    contains_raw_projection_term,
+    readiness_public_text,
+    readiness_raw_projection_terms,
+    run_checkpoint_audit_snapshot,
+    run_playback_summary,
+    run_provenance_snapshot,
+    safe_provenance_graph_id,
+)
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.settings import get_settings
@@ -72,21 +77,14 @@ from app.validation import assert_safe_id
 
 router = APIRouter()
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
-RUN_PROVENANCE_CONTRACT_VERSION = "ai-platform.run-provenance.v1"
 RUN_CONTROL_READINESS_CONTRACT_VERSION = "ai-platform.run-control-readiness.v1"
 RUN_RESUME_MANIFEST_CONTRACT_VERSION = "ai-platform.run-resume-manifest.v1"
-RUN_CHECKPOINT_AUDIT_CONTRACT_VERSION = "ai-platform.run-checkpoint-audit.v1"
 MULTI_AGENT_DISPATCH_CLAIM_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-claim.v1"
 MULTI_AGENT_DISPATCH_HANDOFF_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-handoff.v1"
 MULTI_AGENT_DISPATCH_TICK_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-tick.v1"
 RUN_CONTROL_ACTIVE_STATUSES = {"queued", "running"}
 RUN_CONTROL_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 RUN_CONTROL_RETRY_PREVIEW_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
-RUN_CONTROL_PUBLIC_AGENT_IDS = set(PUBLIC_AGENT_ID_BY_CAPABILITY.values())
-RUN_CONTROL_RAW_PROJECTION_TERMS = {
-    *CAPABILITY_BY_SKILL_ID.keys(),
-    *(set(CAPABILITY_BY_AGENT_ID.keys()) - RUN_CONTROL_PUBLIC_AGENT_IDS),
-}
 
 
 def _lease_ids_by_run_id(leases: list[dict[str, Any]]) -> dict[str, list[str]]:
@@ -211,415 +209,6 @@ def sse(event: str, data: dict[str, object], event_id: str | None = None) -> str
     return f"{prefix}event: {event}\ndata: {payload}\n\n"
 
 
-def _readiness_raw_projection_terms(run: dict[str, object]) -> set[str]:
-    terms = {term.lower() for term in RUN_CONTROL_RAW_PROJECTION_TERMS if term}
-    raw_skill_id = str(run.get("skill_id") or "")
-    if raw_skill_id:
-        terms.add(raw_skill_id.lower())
-    raw_agent_id = str(run.get("agent_id") or "")
-    public_agent_id = public_agent_id_for_projection(raw_agent_id, raw_skill_id)
-    if raw_agent_id and raw_agent_id != public_agent_id:
-        terms.add(raw_agent_id.lower())
-    return terms
-
-
-def _contains_raw_projection_term(text: str, raw_terms: set[str]) -> bool:
-    normalized = text.lower()
-    return any(term and term in normalized for term in raw_terms)
-
-
-def _readiness_public_text(value: object, *, fallback: object = "", raw_terms: set[str]) -> str:
-    text = public_text_or_fallback(value)
-    if text and not _contains_raw_projection_term(text, raw_terms):
-        return text
-    fallback_text = public_text_or_fallback(fallback)
-    if fallback_text and not _contains_raw_projection_term(fallback_text, raw_terms):
-        return fallback_text
-    return ""
-
-
-def _unique_sorted(values: list[object]) -> list[str]:
-    return sorted({str(item) for item in values if item})
-
-
-def _safe_provenance_graph_id(field_name: str, value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    raw = value.strip()
-    sanitized = sanitize_public_text(raw)
-    if not sanitized or sanitized != raw:
-        return None
-    if HASH_LIKE_VALUE_PATTERN.fullmatch(sanitized):
-        return None
-    try:
-        safe_id = assert_safe_id(sanitized, field_name)
-    except ValueError:
-        return None
-    normalized = safe_id.lower()
-    prefixes = ARTIFACT_LINEAGE_ID_PREFIXES.get(field_name, ())
-    if not any(normalized == prefix or normalized.startswith(f"{prefix}-") or normalized.startswith(f"{prefix}_") for prefix in prefixes):
-        return None
-    return safe_id
-
-
-def _checkpoint_audit_safe_checkpoint_id(
-    value: object,
-    principal: AuthPrincipal,
-    *,
-    raw_terms: set[str],
-) -> str | None:
-    checkpoint_id = _safe_provenance_graph_id("checkpoint_id", value)
-    if checkpoint_id is None:
-        return None
-    if not is_ai_admin(principal) and _contains_raw_projection_term(checkpoint_id, raw_terms):
-        return None
-    return checkpoint_id
-
-
-def _provenance_step_card(row: dict[str, object], principal: AuthPrincipal) -> dict[str, object]:
-    card = run_step_response(row, principal=principal)
-    raw_payload = card.get("payload")
-    if not isinstance(raw_payload, dict):
-        return card
-    payload = dict(raw_payload)
-    checkpoint_id = _safe_provenance_graph_id("checkpoint_id", payload.get("checkpoint_id"))
-    subagent_id = _safe_provenance_graph_id("subagent_id", payload.get("subagent_id"))
-    if checkpoint_id:
-        payload["checkpoint_id"] = checkpoint_id
-        payload["checkpoint_reused"] = bool(payload.get("checkpoint_reused"))
-    else:
-        payload.pop("checkpoint_id", None)
-        payload.pop("checkpoint_reused", None)
-    if subagent_id:
-        payload["subagent_id"] = subagent_id
-    else:
-        payload.pop("subagent_id", None)
-    card["payload"] = payload
-    return card
-
-
-def _add_provenance_edge(
-    edges: list[dict[str, str]],
-    seen_edges: set[tuple[str, str, str]],
-    *,
-    source_id: object,
-    target_id: object,
-    edge_kind: str,
-) -> None:
-    source = str(source_id) if source_id else ""
-    target = str(target_id) if target_id else ""
-    if not source or not target:
-        return
-    key = (source, target, edge_kind)
-    if key in seen_edges:
-        return
-    seen_edges.add(key)
-    edges.append({"source_id": source, "target_id": target, "edge_kind": edge_kind})
-
-
-def _artifact_raw_lineage_value(row: dict[str, object], key: str) -> object:
-    if key in row:
-        return row.get(key)
-    manifest = row.get("manifest_json") if isinstance(row.get("manifest_json"), dict) else {}
-    return manifest.get(key)
-
-
-def _artifact_graph_id_from_row_or_lineage(
-    *,
-    field_name: str,
-    row: dict[str, object],
-    lineage: dict[str, object],
-    unsafe_gap: str,
-    missing_gap: str | None = None,
-) -> tuple[str | None, list[str]]:
-    raw_value = _artifact_raw_lineage_value(row, field_name)
-    candidate = raw_value if raw_value is not None else lineage.get(field_name)
-    if candidate is None:
-        return None, [missing_gap] if missing_gap else []
-    graph_id = _safe_provenance_graph_id(field_name, candidate)
-    if graph_id is None:
-        return None, [unsafe_gap]
-    return graph_id, []
-
-
-def _artifact_tree_source_step(
-    *,
-    row: dict[str, object],
-    lineage: dict[str, object],
-    step_by_id: dict[str, dict[str, object]],
-) -> tuple[str | None, list[str]]:
-    source_step_id, gaps = _artifact_graph_id_from_row_or_lineage(
-        field_name="source_step_id",
-        row=row,
-        lineage=lineage,
-        unsafe_gap="artifact_source_step_unsafe",
-        missing_gap="artifact_source_step_missing",
-    )
-    if source_step_id and source_step_id not in step_by_id:
-        gaps.append("producer_step_missing")
-    return source_step_id, sorted(set(gaps))
-
-
-def _artifact_tree_checkpoint(
-    *,
-    row: dict[str, object],
-    lineage: dict[str, object],
-) -> tuple[str | None, list[str]]:
-    return _artifact_graph_id_from_row_or_lineage(
-        field_name="checkpoint_id",
-        row=row,
-        lineage=lineage,
-        unsafe_gap="artifact_checkpoint_unsafe",
-    )
-
-
-def _artifact_tree_subagent(
-    *,
-    row: dict[str, object],
-    lineage: dict[str, object],
-) -> tuple[str | None, list[str]]:
-    return _artifact_graph_id_from_row_or_lineage(
-        field_name="subagent_id",
-        row=row,
-        lineage=lineage,
-        unsafe_gap="artifact_subagent_unsafe",
-    )
-
-
-def _artifact_tree_lineage(
-    lineage: dict[str, object],
-    *,
-    source_step_id: str | None,
-    checkpoint_id: str | None,
-    subagent_id: str | None,
-) -> dict[str, object]:
-    projected = artifact_lineage_contract(lineage)
-    projected.pop("source_run_id", None)
-    projected.pop("source_step_id", None)
-    projected.pop("checkpoint_id", None)
-    projected.pop("subagent_id", None)
-    if source_step_id:
-        projected["source_step_id"] = source_step_id
-    if checkpoint_id:
-        projected["checkpoint_id"] = checkpoint_id
-    if subagent_id:
-        projected["subagent_id"] = subagent_id
-    return projected
-
-
-def _artifact_tree_parent(
-    *,
-    produced_by_step_id: str | None,
-    checkpoint_id: object,
-    subagent_id: object,
-) -> tuple[str | None, str | None]:
-    if produced_by_step_id:
-        return produced_by_step_id, "step"
-    if checkpoint_id:
-        return str(checkpoint_id), "checkpoint"
-    if subagent_id:
-        return str(subagent_id), "subagent"
-    return None, None
-
-
-def run_provenance_snapshot(
-    *,
-    run: dict[str, object],
-    steps: list[dict[str, object]],
-    artifacts: list[dict[str, object]],
-    principal: AuthPrincipal,
-) -> dict[str, object]:
-    """Build the public run provenance graph from existing sanitized projections."""
-    step_cards = [_provenance_step_card(row, principal=principal) for row in steps]
-    artifact_cards = [artifact_card(row, principal=principal) for row in artifacts]
-    step_by_id = {str(item["step_id"]): item for item in step_cards}
-    artifacts_by_checkpoint: dict[str, list[str]] = {}
-    artifacts_by_subagent: dict[str, list[str]] = {}
-    checkpoints: dict[str, dict[str, object]] = {}
-    subagents: dict[str, dict[str, object]] = {}
-    edges: list[dict[str, str]] = []
-    seen_edges: set[tuple[str, str, str]] = set()
-    artifact_tree: list[dict[str, object]] = []
-    graph_gaps: list[dict[str, object]] = []
-    for step in step_cards:
-        raw_payload = step.get("payload")
-        payload = raw_payload if isinstance(raw_payload, dict) else {}
-        step_id = str(step["step_id"])
-        checkpoint_id = payload.get("checkpoint_id")
-        subagent_id = payload.get("subagent_id")
-        if checkpoint_id:
-            checkpoint_key = str(checkpoint_id)
-            checkpoint = checkpoints.setdefault(
-                checkpoint_key,
-                {"checkpoint_id": checkpoint_key, "step_ids": [], "artifact_ids": [], "reused": False},
-            )
-            checkpoint["step_ids"].append(step_id)
-            checkpoint["reused"] = bool(checkpoint["reused"]) or bool(payload.get("checkpoint_reused"))
-        if subagent_id:
-            subagent_key = str(subagent_id)
-            subagent = subagents.setdefault(
-                subagent_key,
-                {
-                    "subagent_id": subagent_key,
-                    "role": step.get("role"),
-                    "step_ids": [],
-                    "statuses": [],
-                    "checkpoint_ids": [],
-                    "artifact_ids": [],
-                },
-            )
-            subagent["step_ids"].append(step_id)
-            subagent["statuses"].append(step.get("status"))
-            if checkpoint_id:
-                subagent["checkpoint_ids"].append(str(checkpoint_id))
-        if checkpoint_id:
-            _add_provenance_edge(
-                edges,
-                seen_edges,
-                source_id=step_id,
-                target_id=checkpoint_id,
-                edge_kind="step_checkpoint",
-            )
-        if subagent_id:
-            _add_provenance_edge(
-                edges,
-                seen_edges,
-                source_id=subagent_id,
-                target_id=step_id,
-                edge_kind="subagent_step",
-            )
-
-    for row, artifact in zip(artifacts, artifact_cards):
-        raw_lineage = artifact.get("lineage")
-        lineage = raw_lineage if isinstance(raw_lineage, dict) else {}
-        source_step_id, source_gaps = _artifact_tree_source_step(row=row, lineage=lineage, step_by_id=step_by_id)
-        checkpoint_id, checkpoint_gaps = _artifact_tree_checkpoint(row=row, lineage=lineage)
-        subagent_id, subagent_gaps = _artifact_tree_subagent(row=row, lineage=lineage)
-        gaps = sorted(set(source_gaps + checkpoint_gaps + subagent_gaps))
-        public_lineage = _artifact_tree_lineage(
-            lineage,
-            source_step_id=source_step_id,
-            checkpoint_id=checkpoint_id,
-            subagent_id=subagent_id,
-        )
-        artifact_id = str(artifact["artifact_id"])
-        if checkpoint_id:
-            artifacts_by_checkpoint.setdefault(checkpoint_id, []).append(artifact_id)
-        if subagent_id:
-            artifacts_by_subagent.setdefault(subagent_id, []).append(artifact_id)
-        produced_by_step_id = source_step_id if source_step_id in step_by_id else None
-        parent_id, parent_kind = _artifact_tree_parent(
-            produced_by_step_id=produced_by_step_id,
-            checkpoint_id=checkpoint_id,
-            subagent_id=subagent_id,
-        )
-        if produced_by_step_id:
-            _add_provenance_edge(
-                edges,
-                seen_edges,
-                source_id=produced_by_step_id,
-                target_id=artifact_id,
-                edge_kind="produced_artifact",
-            )
-        if checkpoint_id:
-            _add_provenance_edge(
-                edges,
-                seen_edges,
-                source_id=checkpoint_id,
-                target_id=artifact_id,
-                edge_kind="checkpoint_artifact",
-            )
-        if subagent_id:
-            _add_provenance_edge(
-                edges,
-                seen_edges,
-                source_id=subagent_id,
-                target_id=artifact_id,
-                edge_kind="subagent_artifact",
-            )
-        if gaps:
-            graph_gaps.append({"node_id": artifact_id, "node_kind": "artifact", "gaps": gaps})
-        artifact_tree.append(
-            {
-                "node_id": artifact_id,
-                "node_kind": "artifact",
-                "artifact_id": artifact_id,
-                "artifact_type": artifact.get("artifact_type"),
-                "label": artifact.get("label"),
-                "produced_by_step_id": produced_by_step_id,
-                "source_step_id": source_step_id,
-                "parent_id": parent_id,
-                "parent_kind": parent_kind,
-                "children_ids": [],
-                "producer_kind": public_lineage.get("producer_kind"),
-                "producer_role": public_lineage.get("producer_role"),
-                "checkpoint_id": checkpoint_id,
-                "subagent_id": subagent_id,
-                "lineage": public_lineage,
-                "gaps": gaps,
-            }
-        )
-
-    for checkpoint_id, artifact_ids in artifacts_by_checkpoint.items():
-        checkpoint = checkpoints.setdefault(
-            checkpoint_id,
-            {"checkpoint_id": checkpoint_id, "step_ids": [], "artifact_ids": [], "reused": False},
-        )
-        checkpoint["artifact_ids"].extend(artifact_ids)
-    for subagent_id, artifact_ids in artifacts_by_subagent.items():
-        subagent = subagents.setdefault(
-            subagent_id,
-            {
-                "subagent_id": subagent_id,
-                "role": None,
-                "step_ids": [],
-                "statuses": [],
-                "checkpoint_ids": [],
-                "artifact_ids": [],
-            },
-        )
-        subagent["artifact_ids"].extend(artifact_ids)
-
-    checkpoint_items = [
-        {
-            "checkpoint_id": str(item["checkpoint_id"]),
-            "step_ids": _unique_sorted(item["step_ids"]),
-            "artifact_ids": _unique_sorted(item["artifact_ids"]),
-            "reused": bool(item["reused"]),
-        }
-        for item in checkpoints.values()
-    ]
-    subagent_items = [
-        {
-            "subagent_id": str(item["subagent_id"]),
-            "role": item.get("role"),
-            "step_ids": _unique_sorted(item["step_ids"]),
-            "statuses": _unique_sorted(item["statuses"]),
-            "checkpoint_ids": _unique_sorted(item["checkpoint_ids"]),
-            "artifact_ids": _unique_sorted(item["artifact_ids"]),
-        }
-        for item in subagents.values()
-    ]
-    return {
-        "contract_version": RUN_PROVENANCE_CONTRACT_VERSION,
-        "run": run_playback_summary(run, principal),
-        "steps": step_cards,
-        "artifact_tree": artifact_tree,
-        "checkpoints": sorted(checkpoint_items, key=lambda item: item["checkpoint_id"]),
-        "subagents": sorted(subagent_items, key=lambda item: item["subagent_id"]),
-        "graph": {
-            "counts": {
-                "steps": len(step_cards),
-                "artifacts": len(artifact_cards),
-                "checkpoints": len(checkpoint_items),
-                "subagents": len(subagent_items),
-            },
-            "edges": edges,
-            "gaps": graph_gaps,
-        },
-    }
-
-
 def _control_action(*, enabled: bool, reason: str, method: str | None, href: str | None) -> dict[str, object]:
     return {"enabled": enabled, "reason": reason, "method": method, "href": href}
 
@@ -640,10 +229,10 @@ def _checkpoint_candidate_from_step(
     title = public_step.get("title")
     role = public_step.get("role")
     if not is_ai_admin(principal):
-        step_key = _readiness_public_text(step_key, fallback=step_id, raw_terms=raw_terms) or step_id
-        title = _readiness_public_text(title, fallback=step_key, raw_terms=raw_terms) or step_key
+        step_key = readiness_public_text(step_key, fallback=step_id, raw_terms=raw_terms) or step_id
+        title = readiness_public_text(title, fallback=step_key, raw_terms=raw_terms) or step_key
         if role is not None:
-            role = _readiness_public_text(role, raw_terms=raw_terms) or None
+            role = readiness_public_text(role, raw_terms=raw_terms) or None
     return {
         "step_id": step_id,
         "step_key": step_key,
@@ -684,7 +273,7 @@ def _raw_depends_on(values: object) -> list[str]:
 def _projected_dependency(value: str, *, raw_terms: set[str], principal: AuthPrincipal) -> dict[str, str | None]:
     if is_ai_admin(principal):
         return {"step_key": public_text_or_fallback(value, value), "reason": None}
-    projected = _readiness_public_text(value, raw_terms=raw_terms)
+    projected = readiness_public_text(value, raw_terms=raw_terms)
     if projected:
         return {"step_key": projected, "reason": None}
     return {"step_key": None, "reason": "unsafe_dependency"}
@@ -699,7 +288,7 @@ def _multi_agent_step_public_text(
 ) -> str:
     if is_ai_admin(principal):
         return public_text_or_fallback(value, fallback)
-    return _readiness_public_text(value, fallback=fallback, raw_terms=raw_terms)
+    return readiness_public_text(value, fallback=fallback, raw_terms=raw_terms)
 
 
 def _dependency_statuses(
@@ -747,7 +336,7 @@ def multi_agent_readiness_snapshot(
         return None
     public_execution_mode = "multi_agent"
     run_status = normalize_run_status(str(run.get("status") or ""))
-    raw_terms = _readiness_raw_projection_terms(run)
+    raw_terms = readiness_raw_projection_terms(run)
     configured_by_key = {
         str(item.get("step_key") or item.get("stepKey")): item
         for item in configured_steps
@@ -918,7 +507,7 @@ def _unsafe_dispatch_reference(value: str, *, raw_terms: set[str]) -> bool:
         assert_safe_id(sanitized, "step_key")
     except ValueError:
         return True
-    return _contains_raw_projection_term(sanitized, raw_terms)
+    return contains_raw_projection_term(sanitized, raw_terms)
 
 
 def _dispatch_claim_sequence(
@@ -951,7 +540,7 @@ def _dispatch_claim_candidate(
     execution_input = _run_execution_input(run)
     if str(execution_input.get("execution_mode") or "") != "multi_agent":
         raise HTTPException(status_code=409, detail="multi_agent_not_enabled")
-    raw_terms = _readiness_raw_projection_terms(run)
+    raw_terms = readiness_raw_projection_terms(run)
     if _unsafe_dispatch_reference(step_key, raw_terms=raw_terms):
         raise HTTPException(status_code=409, detail="unsafe_step_reference")
 
@@ -1061,7 +650,7 @@ def run_control_readiness_snapshot(
     """Return read-only readiness for platform-controlled run actions."""
     run_id = str(run["id"])
     status = normalize_run_status(str(run["status"]))
-    raw_terms = _readiness_raw_projection_terms(run)
+    raw_terms = readiness_raw_projection_terms(run)
     checkpoint_candidates = [
         item
         for item in (_checkpoint_candidate_from_step(row, principal, raw_terms=raw_terms) for row in steps)
@@ -1092,7 +681,7 @@ def run_control_readiness_snapshot(
     if not is_ai_admin(principal):
         raw_error_message = run_summary.get("error_message")
         error_fallback = "run_failed" if raw_error_message and status == "failed" else ""
-        run_summary["error_message"] = _readiness_public_text(
+        run_summary["error_message"] = readiness_public_text(
             raw_error_message,
             fallback=error_fallback,
             raw_terms=raw_terms,
@@ -1144,10 +733,10 @@ def _resume_manifest_has_fingerprint(text: str) -> bool:
 
 
 def _resume_manifest_public_text(value: object, *, fallback: object = "", raw_terms: set[str]) -> str:
-    text = _readiness_public_text(value, raw_terms=raw_terms)
+    text = readiness_public_text(value, raw_terms=raw_terms)
     if text and not _resume_manifest_has_fingerprint(text):
         return text
-    fallback_text = _readiness_public_text(fallback, raw_terms=raw_terms)
+    fallback_text = readiness_public_text(fallback, raw_terms=raw_terms)
     if fallback_text and not _resume_manifest_has_fingerprint(fallback_text):
         return fallback_text
     return ""
@@ -1167,7 +756,7 @@ def _resume_manifest_step(
     title = public_step.get("title")
     role = public_step.get("role")
     source_run_id = (
-        _safe_provenance_graph_id("source_run_id", payload.get("copied_from_run_id"))
+        safe_provenance_graph_id("source_run_id", payload.get("copied_from_run_id"))
         if payload.get("checkpoint_reuse_pending")
         else None
     )
@@ -1201,7 +790,7 @@ def run_resume_manifest_snapshot(
     authorized_source_run_ids: set[str] | None = None,
 ) -> dict[str, object]:
     """Return read-only checkpoint reuse intent for a copied run."""
-    raw_terms = _readiness_raw_projection_terms(run)
+    raw_terms = readiness_raw_projection_terms(run)
     manifest_steps = [
         _resume_manifest_step(
             row,
@@ -1231,7 +820,7 @@ def run_resume_manifest_snapshot(
             if raw_error_message and normalize_run_status(str(run["status"])) == "failed"
             else ""
         )
-        run_summary["error_message"] = _readiness_public_text(
+        run_summary["error_message"] = readiness_public_text(
             raw_error_message,
             fallback=error_fallback,
             raw_terms=raw_terms,
@@ -1248,232 +837,16 @@ def run_resume_manifest_snapshot(
     }
 
 
-def _checkpoint_audit_step_label(
-    row: dict[str, object],
-    principal: AuthPrincipal,
-    *,
-    raw_terms: set[str],
-) -> str:
-    public_step = run_step_response(row, principal=principal)
-    step_id = str(public_step["step_id"])
-    step_key = str(public_step["step_key"])
-    if is_ai_admin(principal):
-        return step_key
-    return _resume_manifest_public_text(step_key, fallback=step_id, raw_terms=raw_terms) or step_id
-
-
-def _checkpoint_audit_state(
-    *,
-    has_steps: bool,
-    resume_reusable: bool,
-    artifact_materialized: bool,
-) -> str:
-    if resume_reusable and artifact_materialized:
-        return "materialized"
-    if has_steps and not artifact_materialized:
-        return "step_only" if resume_reusable else "incomplete"
-    if artifact_materialized and not has_steps:
-        return "artifact_only"
-    return "incomplete"
-
-
-def run_checkpoint_audit_snapshot(
-    *,
-    run: dict[str, object],
-    steps: list[dict[str, object]],
-    artifacts: list[dict[str, object]],
-    principal: AuthPrincipal,
-) -> dict[str, object]:
-    """Return read-only checkpoint reusable-output and artifact materialization state."""
-    raw_terms = _readiness_raw_projection_terms(run)
-    checkpoints: dict[str, dict[str, object]] = {}
-    step_ids = {str(row["id"]) for row in steps}
-    step_checkpoint_ids: dict[str, str] = {}
-    uncheckpointed: list[dict[str, object]] = []
-
-    for row in steps:
-        payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
-        status = normalize_step_status(row.get("status"))
-        output_available = status == "succeeded" and payload.get("output") is not None
-        checkpoint_id = _checkpoint_audit_safe_checkpoint_id(payload.get("checkpoint_id"), principal, raw_terms=raw_terms)
-        if checkpoint_id:
-            step_checkpoint_ids[str(row["id"])] = checkpoint_id
-            item = checkpoints.setdefault(
-                checkpoint_id,
-                {
-                    "checkpoint_id": checkpoint_id,
-                    "step_ids": [],
-                    "artifact_ids": [],
-                    "resume_reusable": False,
-                    "artifact_materialized": False,
-                    "reuse_pending": 0,
-                    "reused": 0,
-                    "gaps": set(),
-                },
-            )
-            item["step_ids"].append(str(row["id"]))
-            item["resume_reusable"] = bool(item["resume_reusable"]) or output_available
-            item["reuse_pending"] = int(item["reuse_pending"]) + (1 if payload.get("checkpoint_reuse_pending") else 0)
-            item["reused"] = int(item["reused"]) + (1 if payload.get("checkpoint_reused") else 0)
-        elif output_available:
-            uncheckpointed.append(
-                {
-                    "step_id": str(row["id"]),
-                    "step_key": _checkpoint_audit_step_label(row, principal, raw_terms=raw_terms),
-                    "status": status,
-                    "reason": "missing_checkpoint_id",
-                }
-            )
-
-    artifact_cards = [artifact_card(row, principal=principal) for row in artifacts]
-    for row, artifact in zip(artifacts, artifact_cards):
-        lineage = artifact.get("lineage") if isinstance(artifact.get("lineage"), dict) else {}
-        checkpoint_id = _checkpoint_audit_safe_checkpoint_id(lineage.get("checkpoint_id"), principal, raw_terms=raw_terms)
-        if not checkpoint_id:
-            continue
-        item = checkpoints.setdefault(
-            checkpoint_id,
-            {
-                "checkpoint_id": checkpoint_id,
-                "step_ids": [],
-                "artifact_ids": [],
-                "resume_reusable": False,
-                "artifact_materialized": False,
-                "reuse_pending": 0,
-                "reused": 0,
-                "gaps": set(),
-            },
-        )
-        item["artifact_ids"].append(str(artifact["artifact_id"]))
-        manifest = row.get("manifest_json") if isinstance(row.get("manifest_json"), dict) else {}
-        raw_source_step_id = manifest.get("source_step_id") if isinstance(manifest, dict) else None
-        source_step_id = _safe_provenance_graph_id("source_step_id", raw_source_step_id)
-        source_step_checkpoint_id = step_checkpoint_ids.get(str(source_step_id)) if source_step_id else None
-        if raw_source_step_id is None:
-            gaps = item["gaps"] if isinstance(item["gaps"], set) else set()
-            gaps.add("artifact_source_step_missing")
-            item["gaps"] = gaps
-        elif source_step_id is None:
-            gaps = item["gaps"] if isinstance(item["gaps"], set) else set()
-            gaps.add("artifact_source_step_unsafe")
-            item["gaps"] = gaps
-        elif str(source_step_id) not in step_ids:
-            gaps = item["gaps"] if isinstance(item["gaps"], set) else set()
-            gaps.add("producer_step_missing")
-            item["gaps"] = gaps
-            if not item["step_ids"]:
-                item["artifact_materialized"] = True
-        elif source_step_checkpoint_id != checkpoint_id:
-            gaps = item["gaps"] if isinstance(item["gaps"], set) else set()
-            gaps.add("producer_checkpoint_mismatch")
-            item["gaps"] = gaps
-        else:
-            item["artifact_materialized"] = True
-
-    checkpoint_items = []
-    for item in checkpoints.values():
-        step_ids_for_checkpoint = _unique_sorted(item["step_ids"] if isinstance(item["step_ids"], list) else [])
-        artifact_ids = _unique_sorted(item["artifact_ids"] if isinstance(item["artifact_ids"], list) else [])
-        resume_reusable = bool(item["resume_reusable"])
-        artifact_materialized = bool(item["artifact_materialized"])
-        state = _checkpoint_audit_state(
-            has_steps=bool(step_ids_for_checkpoint),
-            resume_reusable=resume_reusable,
-            artifact_materialized=artifact_materialized,
-        )
-        gaps = item["gaps"] if isinstance(item["gaps"], set) else set()
-        gaps = set(gaps)
-        if bool(step_ids_for_checkpoint) and not resume_reusable:
-            gaps.add("no_reusable_output")
-        if state == "step_only" and not artifact_ids:
-            gaps.add("no_artifact_lineage")
-        if state == "artifact_only" and not gaps:
-            gaps.add("producer_step_missing")
-        checkpoint_items.append(
-            {
-                "checkpoint_id": str(item["checkpoint_id"]),
-                "audit_state": state,
-                "resume_reusable": resume_reusable,
-                "artifact_materialized": artifact_materialized,
-                "step_ids": step_ids_for_checkpoint,
-                "artifact_ids": artifact_ids,
-                "reuse": {
-                    "pending": int(item["reuse_pending"]),
-                    "reused": int(item["reused"]),
-                },
-                "gaps": sorted(gaps),
-            }
-        )
-
-    checkpoint_items = sorted(checkpoint_items, key=lambda entry: str(entry["checkpoint_id"]))
-    counts = {
-        "checkpoints": len(checkpoint_items),
-        "resume_reusable": sum(1 for item in checkpoint_items if item["resume_reusable"]),
-        "artifact_materialized": sum(1 for item in checkpoint_items if item["artifact_materialized"]),
-        "step_only": sum(1 for item in checkpoint_items if item["audit_state"] == "step_only"),
-        "artifact_only": sum(1 for item in checkpoint_items if item["audit_state"] == "artifact_only"),
-        "incomplete": sum(1 for item in checkpoint_items if item["audit_state"] == "incomplete"),
-        "gaps": sum(len(item["gaps"]) for item in checkpoint_items) + len(uncheckpointed),
-        "uncheckpointed_reusable_steps": len(uncheckpointed),
-    }
-    run_summary = run_playback_summary(run, principal)
-    if not is_ai_admin(principal):
-        raw_error_message = run_summary.get("error_message")
-        error_fallback = (
-            "run_failed"
-            if raw_error_message and normalize_run_status(str(run["status"])) == "failed"
-            else ""
-        )
-        run_summary["error_message"] = _readiness_public_text(
-            raw_error_message,
-            fallback=error_fallback,
-            raw_terms=raw_terms,
-        )
-    return {
-        "contract_version": RUN_CHECKPOINT_AUDIT_CONTRACT_VERSION,
-        "run": run_summary,
-        "counts": counts,
-        "checkpoints": checkpoint_items,
-        "uncheckpointed_reusable_steps": uncheckpointed,
-    }
-
-
 def _resume_manifest_source_run_candidates(steps: list[dict[str, object]]) -> list[str]:
     source_run_ids: set[str] = set()
     for row in steps:
         payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
         if not payload.get("checkpoint_reuse_pending"):
             continue
-        source_run_id = _safe_provenance_graph_id("source_run_id", payload.get("copied_from_run_id"))
+        source_run_id = safe_provenance_graph_id("source_run_id", payload.get("copied_from_run_id"))
         if source_run_id:
             source_run_ids.add(source_run_id)
     return sorted(source_run_ids)
-
-
-def run_playback_summary(run: dict[str, object], principal: AuthPrincipal) -> dict[str, object]:
-    raw_skill_id = str(run["skill_id"])
-    raw_agent_id = str(run["agent_id"])
-    show_raw_skill = is_ai_admin(principal)
-    return {
-        "run_id": str(run["id"]),
-        "session_id": str(run["session_id"]),
-        "agent_id": raw_agent_id if show_raw_skill else public_agent_id_for_projection(raw_agent_id, raw_skill_id),
-        "skill_id": raw_skill_id if show_raw_skill else None,
-        "capability_id": capability_id_from_skill(raw_skill_id, raw_agent_id),
-        "trace_id": str(run.get("trace_id") or standard_trace_id(str(run["id"]))),
-        "contract_version": run_contract_version(run),
-        "executor_schema_version": executor_result_schema_version(run) if show_raw_skill else None,
-        "status": normalize_run_status(str(run["status"])),
-        "progress": progress_for_status(str(run["status"])),
-        "cancel_requested_at": run.get("cancel_requested_at"),
-        "cancel_requested_by": run.get("cancel_requested_by"),
-        "error_code": (
-            sanitize_public_text(run.get("error_code"))
-            if show_raw_skill
-            else ("run_failed" if run.get("error_code") else None)
-        ),
-        "error_message": sanitize_public_text(run.get("error_message")),
-    }
 
 
 def run_playback_timeline(
@@ -1798,7 +1171,7 @@ async def seed_copied_run_steps(conn, *, tenant_id: str, run_id: str, copied_inp
 
 
 def _copied_run_source_run_id(authorized_source_run_id: str | None) -> str | None:
-    return _safe_provenance_graph_id("source_run_id", authorized_source_run_id)
+    return safe_provenance_graph_id("source_run_id", authorized_source_run_id)
 
 
 async def prepare_copied_run_for_queue(

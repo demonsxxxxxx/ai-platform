@@ -570,7 +570,7 @@ def test_run_provenance_snapshot_fail_closes_dirty_artifact_lineage_graph_ids(mo
     monkeypatch.setattr("app.routes.runs.repositories.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_artifacts", fake_list_run_artifacts)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
-    monkeypatch.setattr("app.routes.runs.artifact_card", dirty_artifact_card)
+    monkeypatch.setattr("app.run_provenance.artifact_card", dirty_artifact_card)
     client = TestClient(create_app())
 
     response = client.get("/api/ai/runs/run-a/provenance", headers=headers())
