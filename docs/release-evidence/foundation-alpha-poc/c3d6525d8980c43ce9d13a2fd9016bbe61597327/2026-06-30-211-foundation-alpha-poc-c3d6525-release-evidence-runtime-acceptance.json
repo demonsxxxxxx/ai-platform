@@ -56,7 +56,8 @@
   "issue_refs": [],
   "open_followups": [],
   "pr_refs": [
-    "#285"
+    "#285",
+    "#286"
   ],
   "redaction_scan_status": "passed",
   "review_status": "reviewed",

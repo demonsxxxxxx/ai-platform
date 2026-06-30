@@ -248,7 +248,9 @@
     "ordinary_user_multi_agent_allowed": false,
     "production_concurrency_increase_allowed": false
   },
-  "pr_refs": [],
+  "pr_refs": [
+    "#286"
+  ],
   "review_status": "operator_runtime_verified",
   "role_provenance": {
     "admin_probe_role": "developer",

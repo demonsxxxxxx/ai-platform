@@ -738,6 +738,8 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     assert "The wrapped evidence entries have empty `open_followups`" in compact_release_evidence_index
     assert "Foundation Runtime concurrency evidence passed with verifier status `verified_foundation_runtime_concurrency` against the `c3d6525` runtime subject" in compact_release_evidence_index
     assert "This removes the current-subject `foundation_runtime_concurrency_evidence` readiness blocker for `c3d6525`" in compact_release_evidence_index
+    assert "clean current source can still be ahead of the running image by runtime-neutral docs/evidence/tests commits" in compact_gate_status_text
+    assert "while the local worktree is dirty with documentation/evidence updates" not in compact_gate_status_text
     assert "does not make #164 `gate closable`" in compact_release_evidence_index
     assert "claim production readiness" in compact_release_evidence_index
     assert "external env-file label caveat" in compact_gate_status_text
@@ -799,6 +801,24 @@ def test_foundation_alpha_poc_release_evidence_is_reviewed_redacted_and_bounded(
     lowered = evidence_text.lower()
     for marker in forbidden_markers:
         assert marker.lower() not in lowered
+
+    changed_evidence_paths = [
+        ROOT
+        / "docs/release-evidence/foundation-alpha-poc/c3d6525d8980c43ce9d13a2fd9016bbe61597327/2026-06-30-211-foundation-alpha-poc-c3d6525-runtime-poc-smoke.json",
+        ROOT
+        / "docs/release-evidence/foundation-alpha-poc/c3d6525d8980c43ce9d13a2fd9016bbe61597327/2026-06-30-211-foundation-alpha-poc-c3d6525-auth-rbac-smoke.json",
+        ROOT
+        / "docs/release-evidence/foundation-alpha-poc/c3d6525d8980c43ce9d13a2fd9016bbe61597327/2026-06-30-211-foundation-alpha-poc-c3d6525-governance-runtime-smoke.json",
+        ROOT
+        / "docs/release-evidence/foundation-alpha-poc/c3d6525d8980c43ce9d13a2fd9016bbe61597327/2026-06-30-211-foundation-alpha-poc-c3d6525-release-evidence-runtime-acceptance.json",
+        ROOT
+        / "docs/release-evidence/foundation-alpha-poc/c3d6525d8980c43ce9d13a2fd9016bbe61597327/2026-06-30-211-foundation-alpha-poc-c3d6525-alert-trace-export-runtime-acceptance.json",
+        ROOT
+        / "docs/release-evidence/foundation-runtime-concurrency/c3d6525d8980c43ce9d13a2fd9016bbe61597327-frc-b0-20260630/2026-06-30-211-foundation-alpha-poc-c3d6525-foundation-runtime-concurrency.json",
+    ]
+    for path in changed_evidence_paths:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert "#286" in payload["pr_refs"]
 
     auth_rbac_text = read(FOUNDATION_ALPHA_POC_ACTIVE_AUTH_RBAC_EVIDENCE)
     auth_rbac_payload = json.loads(auth_rbac_text)

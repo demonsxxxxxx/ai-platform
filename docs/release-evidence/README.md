@@ -1,6 +1,6 @@
 # ai-platform Release Evidence Index
 
-Date: 2026-06-23
+Date: 2026-06-30
 
 This directory is the repository-owned location for reviewed, redacted release
 evidence entries. It is an index and contract baseline only. This contract
