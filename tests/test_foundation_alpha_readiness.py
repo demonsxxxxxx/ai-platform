@@ -3274,6 +3274,76 @@ def test_foundation_alpha_readiness_prefers_current_source_foundation_runtime_co
     assert readiness["runtime_relevant_source_verified_by_running_runtime"] is False
 
 
+def test_foundation_alpha_readiness_prefers_latest_runtime_relevant_evidence_over_stale_constant(
+    monkeypatch, tmp_path
+):
+    runtime_commit = "845faf7ed0eba11fb8d90fd59048d1c752acc61c"
+    source_commit = "0f84ec61744d8626804827c5a70c27d970437eaf"
+    evidence_root = tmp_path / "fa"
+    dedicated_root = tmp_path / "frc"
+    stale_smoke_path, stale_auth_path = _write_release_evidence_pair(
+        evidence_root,
+        ACTIVE_RUNTIME_SUBJECT_SHA,
+        image="ai-platform:f67986a-b0-current-main-runtime-only-v2",
+    )
+    _write_release_evidence_pair(
+        evidence_root,
+        runtime_commit,
+        image="ai-platform:845faf7-b0-current-main-runtime-only-v2",
+    )
+    concurrency_dir = dedicated_root / f"{runtime_commit}-frc-b0-20260630"
+    concurrency_dir.mkdir(parents=True)
+    concurrency_path = concurrency_dir / "foundation-runtime-concurrency.json"
+    concurrency_path.write_text(
+        json.dumps(_minimal_foundation_runtime_concurrency_payload(runtime_commit)),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_EVIDENCE_BASE_ROOT", evidence_root, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT",
+        dedicated_root,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_SMOKE_EVIDENCE", stale_smoke_path, raising=False)
+    monkeypatch.setattr(foundation_alpha_readiness, "_AUTH_RBAC_EVIDENCE", stale_auth_path, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_source_tree_revision",
+        lambda: source_commit,
+        raising=False,
+    )
+    monkeypatch.setattr(foundation_alpha_readiness, "_resolve_source_tree_dirty", lambda: False, raising=False)
+    monkeypatch.setattr(
+        foundation_alpha_readiness,
+        "_resolve_runtime_affecting_changes_between",
+        lambda base, target: [] if base == runtime_commit and target == source_commit else ["app/worker.py"],
+        raising=False,
+    )
+
+    readiness = build_foundation_alpha_readiness(SecretBearingSettings())
+
+    assert readiness["runtime_subject_commit_sha"] == runtime_commit
+    assert readiness["runtime_source_relation"] == {
+        "source_tree_commit_sha": source_commit,
+        "source_tree_dirty": False,
+        "runtime_subject_commit_sha": runtime_commit,
+        "runtime_source_marker": runtime_commit,
+        "runtime_matches_source_tree": False,
+        "runtime_relevant_source_matches": True,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_affecting_dirty_paths": [],
+        "status": "runtime_current_for_runtime_relevant_source",
+    }
+    assert readiness["decision"]["runtime_rollout_required_for_current_source"] is False
+    assert readiness["runtime_relevant_source_verified_by_running_runtime"] is True
+    assert runtime_commit in readiness["evidence_entries"]["poc_smoke"]
+    assert ACTIVE_RUNTIME_SUBJECT_SHA not in readiness["evidence_entries"]["poc_smoke"]
+    assert readiness["evidence_entries"]["foundation_runtime_concurrency"] == (
+        foundation_alpha_readiness._path_for_output(concurrency_path)
+    )
+
+
 def test_foundation_runtime_concurrency_subject_accepts_runtime_neutral_source_delta(monkeypatch):
     payload = _minimal_foundation_runtime_concurrency_payload(CURRENT_SOURCE_SHA)
 
