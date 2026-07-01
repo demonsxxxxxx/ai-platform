@@ -132,8 +132,8 @@ def _frontend_packaged_runtime_smoke_contract() -> dict[str, Any]:
         "operator_commands": readiness["operator_commands"],
         "runtime_policy": readiness["runtime_policy"],
         "does_not_close_g6_g9_or_21": readiness["does_not_close_g6_g9_or_21"],
-        "does_not_enable_compose_one_command_startup": readiness[
-            "does_not_enable_compose_one_command_startup"
+        "formal_frontend_compose_runtime_required": readiness[
+            "formal_frontend_compose_runtime_required"
         ],
         "blockers": readiness["blockers"],
         "closed_evidence_items": readiness["closed_evidence_items"],

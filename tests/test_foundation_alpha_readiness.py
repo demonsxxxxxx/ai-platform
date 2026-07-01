@@ -721,6 +721,15 @@ def _minimal_frontend_packaged_runtime_smoke_payload(
         }
         if build_succeeded
         else {"status": "not_available"},
+        "compose_service": {
+            "service": "frontend",
+            "container_name": "ai-platform-frontend",
+            "host_port": 18001,
+            "container_port": 8080,
+            "state": "running",
+        }
+        if build_succeeded
+        else {"status": "not_run"},
         "runtime_smoke": {
             "network": "ai-platform-phaseb_default",
             "healthz": {"status_code": 200, "body": "ok"},

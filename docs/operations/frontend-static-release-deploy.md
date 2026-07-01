@@ -1,19 +1,39 @@
-# Frontend Static Release Deploy
+# Frontend Formal Runtime Deploy
 
-Status: operational contract for the current 211 Python static frontend service.
-This document does not convert the frontend to Docker/nginx and does not mark
-any deployment as `211 verified`.
+Status: operational contract for GitHub issue #156. The normal 211 frontend
+runtime is the Docker Compose `frontend` service and container
+`ai-platform-frontend`, not the historical Python static preview process.
+
+## Runtime Shape
+
+The repo-local runtime target is:
+
+- Compose directory:
+  `/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform`
+- Frontend URL: `http://10.56.0.211:18001/`
+- Compose service: `frontend`
+- Container: `ai-platform-frontend`
+- Image: `${AI_PLATFORM_FRONTEND_IMAGE:-ai-platform-frontend:local}`
+- Host/container port: `${AI_PLATFORM_FRONTEND_PORT:-18001}:8080`
+- Static server: nginx from `frontend/web/Dockerfile`
+- API proxy: `/api/*` to `${AI_PLATFORM_API_UPSTREAM:-http://api:8020}`
+- Health endpoint: `/healthz`
+- Build provenance endpoint: `/ai-platform-build-provenance.json`
+
+The legacy Python static preview root
+`/home/xinlin.jiang/frontend-pr111-smoke` may remain as rollback or comparison
+material, but it is not the normal serving path for #156 closure.
 
 ## Upstream Pattern Check
 
-Comparable open-source Agent/chat frontends mostly converge on the same
-deployment shape:
+Comparable open-source Agent/chat frontends converge on built frontend
+artifacts plus a formal runtime:
 
 | Project | Observed frontend deployment pattern | ai-platform takeaway |
 | --- | --- | --- |
-| LibreChat | The primary Dockerfile builds the client into `client/dist`, exposes the Node API, and documents an optional nginx client stage that copies `client/dist` into `/usr/share/nginx/html`. | Static frontend artifacts are release units; nginx is a valid future packaging target, but not required for the current 211 Python static entry. |
-| Open WebUI | The Dockerfile uses a Node build stage for the WebUI frontend, then a Python backend runtime stage; public docs also recommend pinned Docker image tags for production instead of floating tags. | Build output and runtime image should carry version identity; production should avoid unpinned, mutable frontend state. |
-| Dify | The web README supports `pnpm -C web run build` plus `pnpm -C web run start`, and Docker builds from the repository root with `web/Dockerfile`; compose deployment runs `web`, `api`, `worker`, nginx, and dependencies as separate services. | A mature target is multi-service packaging, but a static release root can still enforce fixed artifact identity before that migration. |
+| LibreChat | The primary Dockerfile builds the client into `client/dist`; its Docker setup can serve static client artifacts behind a formal containerized runtime. | Built static frontend artifacts should be tied to source revision and served by a managed runtime, not an ad-hoc preview process. |
+| Open WebUI | The Docker image builds frontend assets and publishes pinned images for production use. | Runtime identity should be image-based and provenance-bound. |
+| Dify | Docker Compose runs web, api, worker, nginx, and dependencies as services. | The frontend should be a named Compose service with health/proxy semantics and rollbackable image selection. |
 
 Reference links:
 
@@ -26,145 +46,179 @@ Reference links:
   `https://github.com/langgenius/dify/blob/main/web/Dockerfile`,
   `https://docs.dify.ai/en/self-host/deploy/quick-start/docker-compose`
 
-The near-term ai-platform rule is therefore:
+The ai-platform rule is:
 
-> Keep 211 on the existing Python static service, but publish frontend artifacts
-> into immutable release directories and activate them through a stable pointer.
+> `http://10.56.0.211:18001/` must be served by the formal
+> `ai-platform-frontend` Compose service before #156 can be called
+> `211 verified` or `gate closable`.
 
-## Current 211 Runtime Boundary
+## Build
 
-The active 211 frontend entry remains:
-
-- URL: `http://10.56.0.211:18001/`
-- Runtime kind: Python static service
-- Runtime root: `/home/xinlin.jiang/frontend-pr111-smoke`
-- Active dist compatibility path:
-  `/home/xinlin.jiang/frontend-pr111-smoke/dist`
-
-The release layout under the runtime root is:
-
-```text
-/home/xinlin.jiang/frontend-pr111-smoke/
-  dist -> releases/<commit>/dist
-  current -> releases/<commit>/dist
-  releases/
-    <commit>/
-      dist/
-        index.html
-        ai-platform-build-provenance.json
-        assets/
-  backups/
-    dist-backup-before-<commit-short>-<timestamp>/
-  packages/
-    ai-platform-frontend-<commit-short>-dist.tar.gz
-```
-
-Only `dist` and `current` are activation pointers. Do not serve directly from
-`packages/` or from the server home directory.
-
-## Package Creation
-
-Build from a clean source commit:
-
-```bash
-cd frontend/web
-corepack pnpm install --frozen-lockfile
-corepack pnpm run ci:verify
-cd ../..
-tar -czf ai-platform-frontend-<commit-short>-dist.tar.gz -C frontend/web dist
-```
-
-Before upload, confirm the package contains:
-
-- `dist/index.html`
-- `dist/ai-platform-build-provenance.json`
-- `dist/assets/*`
-
-The provenance file must contain the target commit and `"dirty": false`.
-
-## Fixed Upload Directory
-
-Upload packages to the fixed package directory:
-
-```bash
-ssh s211 'mkdir -p /home/xinlin.jiang/frontend-pr111-smoke/packages'
-scp ai-platform-frontend-<commit-short>-dist.tar.gz \
-  s211:/home/xinlin.jiang/frontend-pr111-smoke/packages/
-```
-
-Do not upload new frontend packages to `/home/xinlin.jiang`.
-
-For old ad-hoc packages already in the server home directory, delete only
-inactive package files older than two days after confirming they are not the
-active runtime root:
-
-```bash
-ssh s211 'find /home/xinlin.jiang -maxdepth 1 -type f -name "ai-platform-frontend-*-dist.tar.gz" -mtime +2 -print'
-ssh s211 'find /home/xinlin.jiang -maxdepth 1 -type f -name "ai-platform-frontend-*-dist.tar.gz" -mtime +2 -delete'
-```
-
-Do not delete `frontend-pr111-smoke`, `ai-platform-phaseb`, `new-api`, Docker
-volumes, evidence directories, or any path that a live process references.
-
-## Activation
-
-Run the deploy helper on the host that owns the static runtime root:
+Build the frontend image from the same source commit as the API/worker runtime:
 
 ```bash
 cd /home/xinlin.jiang/ai-platform-phaseb/services/ai-platform
-python3 tools/deploy_frontend_static.py \
-  --package-path /home/xinlin.jiang/frontend-pr111-smoke/packages/ai-platform-frontend-<commit-short>-dist.tar.gz \
-  --frontend-root /home/xinlin.jiang/frontend-pr111-smoke \
-  --expected-commit <commit-sha> \
-  --api-base http://127.0.0.1:8020 \
-  --format json
+COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || cat .ai-platform-source-revision)"
+COMMIT_SHORT="${COMMIT_SHA:0:7}"
+sudo -n docker build \
+  --build-arg AI_PLATFORM_BUILD_COMMIT="$COMMIT_SHA" \
+  --build-arg AI_PLATFORM_BUILD_DIRTY=false \
+  -f frontend/web/Dockerfile \
+  -t "ai-platform-frontend:${COMMIT_SHORT}" \
+  .
 ```
 
-The helper refuses to activate a package when:
-
-- `dist/ai-platform-build-provenance.json` is missing or invalid;
-- the build commit does not match `--expected-commit`;
-- the build provenance says the source tree was dirty;
-- the tarball contains absolute paths, parent-directory traversal, links, or
-  non-file/non-directory entries.
-
-After activation, restart the current Python static service with the existing
-service command only when the active process did not pick up the pointer change.
-Keep restart as an explicit operator action; do not hide it in package upload.
-
-## Smoke Checks
-
-Run these after activation or restart:
+If the 211 host cannot pull `node:22-alpine` or `nginx:1.27-alpine`, build on a
+Docker-capable host with registry access, save the image, upload it to the fixed
+frontend package directory, and load it on 211:
 
 ```bash
-curl -fsS -o /tmp/ai-platform-root.html -w 'root_http=%{http_code}\n' http://127.0.0.1:18001/
-curl -fsS -o /tmp/ai-platform-login.html -w 'login_http=%{http_code}\n' http://127.0.0.1:18001/auth/login
-curl -fsS http://127.0.0.1:18001/api/ai/health
-cat /home/xinlin.jiang/frontend-pr111-smoke/dist/ai-platform-build-provenance.json
+sudo -n docker save "ai-platform-frontend:${COMMIT_SHORT}" \
+  | gzip > "ai-platform-frontend-${COMMIT_SHORT}.tar.gz"
+mkdir -p /home/xinlin.jiang/frontend-pr111-smoke/packages
+# Upload ai-platform-frontend-<commit-short>.tar.gz to the packages directory.
+gunzip -c "/home/xinlin.jiang/frontend-pr111-smoke/packages/ai-platform-frontend-${COMMIT_SHORT}.tar.gz" \
+  | sudo -n docker load
 ```
 
-The active provenance commit must equal the deployed commit. Browser smoke and
-screenshots remain separate evidence before claiming `211 verified`.
+Do not upload packages to `/home/xinlin.jiang`. Use
+`/home/xinlin.jiang/frontend-pr111-smoke/packages/` for frontend images or
+legacy dist packages.
+
+## Deploy
+
+Deploy the formal service through the repo-local Compose file:
+
+```bash
+cd /home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform
+COMMIT_SHA="$(cd ../.. && (git rev-parse HEAD 2>/dev/null || cat .ai-platform-source-revision))"
+COMMIT_SHORT="${COMMIT_SHA:0:7}"
+sudo -n env \
+  AI_PLATFORM_FRONTEND_IMAGE="ai-platform-frontend:${COMMIT_SHORT}" \
+  AI_PLATFORM_FRONTEND_PORT=18001 \
+  AI_PLATFORM_BUILD_COMMIT="$COMMIT_SHA" \
+  AI_PLATFORM_BUILD_DIRTY=false \
+  docker compose up -d --no-build frontend
+```
+
+Do not pass real `.env` contents through committed docs, logs, or PR comments.
+If existing backend services require their runtime `.env`, keep it on 211 and
+reference only that it was read by Compose, with values redacted.
+
+## Required Smoke
+
+After deploy, record fresh evidence:
+
+```bash
+cd /home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform
+sudo -n docker compose ps frontend
+sudo -n docker inspect ai-platform-frontend \
+  --format '{{json .Config.Labels}}'
+sudo -n docker inspect ai-platform-frontend \
+  --format '{{json .Config.Image}} {{json .Config.Env}}'
+
+curl -fsS -o /tmp/ai-platform-frontend-healthz.txt \
+  -w 'healthz_http=%{http_code}\n' http://127.0.0.1:18001/healthz
+curl -fsS -o /tmp/ai-platform-root.html \
+  -w 'root_http=%{http_code}\n' http://127.0.0.1:18001/
+curl -fsS -o /tmp/ai-platform-login.html \
+  -w 'login_http=%{http_code}\n' http://127.0.0.1:18001/auth/login
+curl -fsS http://127.0.0.1:18001/api/ai/health
+curl -fsS http://127.0.0.1:18001/ai-platform-build-provenance.json
+
+(ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null || true) | grep ':18001'
+ps -eo pid,ppid,etime,cmd \
+  | grep -E 'serve_ai_platform_frontend.py|frontend-pr111-smoke|18001' \
+  | grep -v grep || true
+```
+
+Acceptance for #156 requires:
+
+- `docker compose ps frontend` shows `ai-platform-frontend` running.
+- Port `18001` is owned by Docker/container proxy for `ai-platform-frontend`.
+- No standalone Python preview process is required for normal serving.
+- `/auth/login` returns the built frontend.
+- Logged-in `/chat` reaches the composer.
+- `/api/ai/health` returns `{"status":"ok"}` through the frontend runtime.
+- `/ai-platform-build-provenance.json` records the deployed commit and
+  `"dirty": false`.
+
+## Browser Smoke
+
+Use a company account from a gitignored environment file or process
+environment. Evidence must record only variable names and `redacted` values,
+never account passwords.
+
+Minimum browser evidence:
+
+- open `http://10.56.0.211:18001/auth/login`;
+- log in through the normal flow;
+- reach `/chat`;
+- verify the composer is visible and usable;
+- verify the shell does not redirect back to login.
+
+## Legacy Python Preview
+
+The historical Python static runtime can still be used for emergency comparison:
+
+```bash
+python3 /home/xinlin.jiang/frontend-pr111-smoke/tools/serve_ai_platform_frontend.py \
+  --host 0.0.0.0 \
+  --port 18003 \
+  --root /home/xinlin.jiang/frontend-pr111-smoke/dist \
+  --api-base http://127.0.0.1:8020
+```
+
+Do not run the legacy preview on `18001` while claiming #156 closure.
 
 ## Rollback
 
-Rollback is pointer-only when the target release already exists:
+Prefer image rollback:
 
 ```bash
-cd /home/xinlin.jiang/frontend-pr111-smoke
-ln -sfn releases/<previous-commit>/dist current
-ln -sfn releases/<previous-commit>/dist dist
+cd /home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform
+sudo -n env \
+  AI_PLATFORM_FRONTEND_IMAGE="ai-platform-frontend:<previous-commit-short>" \
+  AI_PLATFORM_FRONTEND_PORT=18001 \
+  docker compose up -d --no-build frontend
 ```
 
-Then restart the Python static service only if needed and repeat the smoke
-checks above.
+Then repeat the required smoke commands.
+
+If all frontend images are unusable, stop the formal frontend container and use
+the legacy Python preview only as an explicitly recorded emergency rollback:
+
+```bash
+cd /home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform
+sudo -n docker compose stop frontend
+```
+
+Starting the legacy preview on `18001` reopens #156 because the normal serving
+path is no longer the formal frontend service.
+
+## Fixed Upload Directory And Cleanup
+
+Use the fixed package directory:
+
+```bash
+mkdir -p /home/xinlin.jiang/frontend-pr111-smoke/packages
+find /home/xinlin.jiang -maxdepth 1 -type f \
+  \( -name 'ai-platform-frontend-*.tar.gz' -o -name 'ai-platform-frontend-*-dist.tar.gz' \) \
+  -mtime +2 -print
+find /home/xinlin.jiang -maxdepth 1 -type f \
+  \( -name 'ai-platform-frontend-*.tar.gz' -o -name 'ai-platform-frontend-*-dist.tar.gz' \) \
+  -mtime +2 -delete
+```
+
+Do not delete `frontend-pr111-smoke`, `ai-platform-phaseb`, `new-api`, Docker
+volumes, evidence directories, or any path referenced by a live process.
 
 ## Status Boundaries
 
-- Passing `tools/deploy_frontend_static.py` locally is `local partial`.
-- A PR with passing CI can be `PR ready`.
+- Passing local traceability or compose tests is `local partial`.
+- A PR with passing checks is `PR ready`.
 - A merged PR is not automatically `211 verified`.
-- `211 verified` requires fresh runtime provenance, HTTP smoke, and browser
+- `211 verified` requires fresh 211 container, provenance, HTTP, and browser
   evidence from `http://10.56.0.211:18001/`.
-- `gate closable` requires merged code, deployment evidence, issue evidence,
-  and no open acceptance blocker for the relevant gate.
+- `gate closable` for #156 requires merged code, subagent review evidence,
+  211 formal runtime evidence, rollback evidence, and an issue closure comment.

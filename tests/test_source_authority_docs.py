@@ -1023,7 +1023,10 @@ def test_source_authority_docs_keep_current_repo_and_211_deploy_boundary():
 
 def test_default_compose_uses_current_repo_context_and_no_docker_socket():
     compose_text = read(COMPOSE)
-    assert compose_text.count("context: ../..") == 2
+    assert compose_text.count("context: ../..") == 3
+    assert "container_name: ai-platform-frontend" in compose_text
+    assert "dockerfile: frontend/web/Dockerfile" in compose_text
+    assert "${AI_PLATFORM_FRONTEND_PORT:-18001}:8080" in compose_text
     assert "/var/run/docker.sock:/var/run/docker.sock" not in compose_text
 
 
@@ -1033,6 +1036,9 @@ def test_env_template_satisfies_required_runtime_defaults_without_real_secrets()
     assert "EXISTING_AUTH_BASE_URL=http://10.56.0.25:7263" in env_text
     assert "EXISTING_USER_INFO_BASE_URL=http://10.56.0.25:5166" in env_text
     assert "PUBLIC_SKILL_FILE_OVERLAY_MAX_BYTES=262144" in env_text
+    assert "AI_PLATFORM_FRONTEND_PORT=18001" in env_text
+    assert "AI_PLATFORM_FRONTEND_IMAGE=ai-platform-frontend:local" in env_text
+    assert "AI_PLATFORM_API_UPSTREAM=http://api:8020" in env_text
     assert "CLAUDE_AGENT_SDK_MAX_TURNS=128" in env_text
     assert "CLAUDE_AGENT_SDK_EFFORT=xhigh" in env_text
     assert "CLAUDE_AGENT_SDK_MAX_THINKING_TOKENS=16384" in env_text

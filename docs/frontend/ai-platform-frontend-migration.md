@@ -302,9 +302,10 @@ Current local and CI-contract evidence on 2026-06-08:
   `ai-platform.frontend-packaged-runtime-smoke.v1`. Its evidence contract is
   `ai-platform.frontend-packaged-runtime-smoke-evidence.v1` and writes to
   `frontend_release.packaged_runtime_smoke.<commit_sha>`. The tool is
-  evidence-only: it records required Docker-capable-host commands and classifies
-  missing or incomplete evidence, but it does not run Docker, does not run
-  Docker compose, and does not close G6, G9, or #21.
+  evidence-only: it records required Docker-capable-host commands, including
+  the formal Compose `frontend` service smoke on `18001`, and classifies
+  missing or incomplete evidence, but it does not run Docker and does not close
+  G6, G9, or #21.
 - GitHub Actions run `27104398690` passed on commit
   `11ab56c660385f6790964af3d5bd60e3d4431ff2`, providing remote CI evidence for
   the frontend workflow contract.
@@ -331,16 +332,21 @@ Current local and CI-contract evidence on 2026-06-08:
   and image trace are added and verified on a Docker-capable host.
 - The current source now includes `frontend/web/Dockerfile`,
   `frontend/web/nginx.conf.template`, and
-  `deploy/ai-platform/docker-compose.frontend.yml`. The frontend image builds
-  `frontend/web/dist` through `corepack pnpm run ci:verify`, serves static files
-  through nginx, and proxies `/api/*` to `AI_PLATFORM_API_UPSTREAM`. The compose
-  overlay only defines the frontend image boundary and does not pass database,
-  model-gateway, sandbox, or other secret-bearing backend environment variables
-  into the frontend container. The release traceability CLI verifies this
-  packaged delivery definition fail-closed by checking build commit/dirty args,
-  nginx upload/proxy contracts, compose args, and packaged delivery denylist
-  findings. Release acceptance remains pending until this image is built and
-  smoked on 211 or another Docker-capable host.
+  `deploy/ai-platform/docker-compose.frontend.yml`; the repo-local
+  `deploy/ai-platform/docker-compose.yml` now also defines the formal
+  `frontend` service for `ai-platform-frontend` on `18001`. The frontend image
+  builds `frontend/web/dist` through `corepack pnpm run ci:verify`, serves
+  static files through nginx, and proxies `/api/*` to
+  `AI_PLATFORM_API_UPSTREAM`. The compose overlay only defines the frontend
+  image boundary, while the main Compose file defines the formal runtime
+  service. Neither path passes database, model-gateway, sandbox, or other
+  secret-bearing backend environment variables into the frontend container. The
+  release traceability CLI verifies this packaged delivery definition
+  fail-closed by checking build commit/dirty args, nginx upload/proxy
+  contracts, compose args, formal service presence, and packaged delivery
+  denylist findings. Release acceptance remains pending until this image is
+  built and smoked on 211 with `docker compose ps frontend` showing
+  `ai-platform-frontend` on `18001`.
 - A 211 packaged frontend image build attempt for commit
   `e8dc27f30f5d5302547090a2121923aed88e8201` cloned the current private
   repository source successfully but failed before the frontend application

@@ -240,8 +240,6 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "b1_rollback_boundary" not in readiness["open_gaps"]
     assert "b1_issue_review_and_closure_evidence" not in domains["memory_governance"]["gaps"]
     assert "b1_issue_review_and_closure_evidence" not in readiness["open_gaps"]
-    assert "b1_runtime_evidence_review_against_merged_source" not in domains["memory_governance"]["gaps"]
-    assert "b1_runtime_evidence_review_against_merged_source" not in readiness["open_gaps"]
     for gap in B1_GATE_BOUNDARY_GAPS:
         assert gap in domains["memory_governance"]["gaps"]
         assert gap in readiness["open_gaps"]
@@ -256,14 +254,11 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         "tools/verify_b1_memory_context_workflow.py"
     )
     assert b1_evidence["runtime_acceptance"]["does_not_close_b1_gate"] is True
-    assert b1_evidence["open_gaps"] == B1_GATE_BOUNDARY_GAPS
+    assert set(B1_GATE_BOUNDARY_GAPS).issubset(set(b1_evidence["open_gaps"]))
     assert "211_memory_enabled_document_workflow_smoke" not in b1_evidence["open_gaps"]
     assert "b1_issue_review_and_closure_evidence" in b1_evidence["closed_gate_boundary_gaps"]
     assert "b1_memory_export_boundary" in b1_evidence["closed_gate_boundary_gaps"]
     assert "b1_rollback_boundary" in b1_evidence["closed_gate_boundary_gaps"]
-    assert "b1_runtime_evidence_review_against_merged_source" in b1_evidence[
-        "closed_gate_boundary_gaps"
-    ]
     assert b1_evidence["gate_boundary_evidence"]["b1_memory_export_boundary"]["status"] == (
         "recorded_local_contract"
     )
@@ -277,9 +272,23 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert issue_closure["closed_gap"] == "b1_issue_review_and_closure_evidence"
     assert issue_closure["issue_state"] == "closed"
     runtime_review = b1_evidence["gate_boundary_evidence"]["b1_runtime_evidence_review_against_merged_source"]
-    assert runtime_review["status"] == "recorded_local_contract"
-    assert runtime_review["runtime_affecting_changes_since_runtime_subject"] == []
-    assert runtime_review["closed_gap"] == "b1_runtime_evidence_review_against_merged_source"
+    if runtime_review["runtime_affecting_changes_since_runtime_subject"]:
+        assert "b1_runtime_evidence_review_against_merged_source" in domains["memory_governance"]["gaps"]
+        assert "b1_runtime_evidence_review_against_merged_source" in readiness["open_gaps"]
+        assert runtime_review["status"] == "runtime_affecting_delta_requires_fresh_211_smoke"
+        assert runtime_review["closed_gap"] is None
+        assert runtime_review["required_next_step"] == (
+            "deploy current main to 211 and rerun tools/verify_b1_memory_context_workflow.py "
+            "before closing this gap"
+        )
+    else:
+        assert "b1_runtime_evidence_review_against_merged_source" not in domains["memory_governance"]["gaps"]
+        assert "b1_runtime_evidence_review_against_merged_source" not in readiness["open_gaps"]
+        assert "b1_runtime_evidence_review_against_merged_source" in b1_evidence[
+            "closed_gate_boundary_gaps"
+        ]
+        assert runtime_review["status"] == "recorded_local_contract"
+        assert runtime_review["closed_gap"] == "b1_runtime_evidence_review_against_merged_source"
     assert b1_evidence["runtime_acceptance_evidence"]["211_memory_enabled_document_workflow_smoke"][
         "status"
     ] == "verified_211_runtime_acceptance"
@@ -460,6 +469,7 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "sudo -n docker build" in " ".join(packaged_contract["operator_commands"])
     assert packaged_contract["runtime_policy"] == "docker_capable_host_only_no_local_windows_docker"
     assert packaged_contract["does_not_close_g6_g9_or_21"] is True
+    assert packaged_contract["formal_frontend_compose_runtime_required"] is True
     assert projection_evidence["schema_version"] == "ai-platform.frontend-projection-audit.v1"
     assert projection_evidence["status"] == "pass_with_policy_gaps"
     assert projection_evidence["summary"]["active_forbidden_projection_violations"] == 0

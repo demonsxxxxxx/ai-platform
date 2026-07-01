@@ -593,9 +593,11 @@ Frontend projection readiness now also exposes
 `ai-platform.frontend-packaged-runtime-smoke.v1`. With no accepted runtime
 evidence it remains `blocked_missing_runtime_evidence` with
 `frontend_packaged_runtime_smoke_evidence_missing`, runtime policy
-`docker_capable_host_only_no_local_windows_docker`, and the remaining
+`docker_capable_host_only_no_local_windows_docker`, formal frontend Compose
+runtime required, and the remaining
 `frontend_packaged_image_delivery_and_release_acceptance` gap. This does not
-close G6/G9, #21 capacity, or packaged frontend release acceptance by itself.
+close G6/G9, #21 capacity, #156, or packaged frontend release acceptance by
+itself.
 
 On 2026-06-08, commit `f7c6b0d9114748fa249acb88da6584851c48aa96` was synced to
 the 211 repo-local source target and deployed to API/worker with image

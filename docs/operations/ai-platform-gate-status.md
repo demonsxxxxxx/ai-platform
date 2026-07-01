@@ -1117,9 +1117,10 @@ Frontend packaged delivery now has the same fail-closed visibility through
 `ai-platform.frontend-packaged-runtime-smoke.v1`. Current governance readiness
 keeps it at `blocked_missing_runtime_evidence` with
 `frontend_packaged_runtime_smoke_evidence_missing`, runtime policy
-`docker_capable_host_only_no_local_windows_docker`, and the remaining
+`docker_capable_host_only_no_local_windows_docker`, formal frontend Compose
+runtime required, and the remaining
 `frontend_packaged_image_delivery_and_release_acceptance` blocker. This does
-not close packaged frontend release acceptance, G6/G9, or #21 capacity.
+not close packaged frontend release acceptance, G6/G9, #156, or #21 capacity.
 
 ## Frontend Projection Boundary
 

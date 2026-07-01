@@ -24,6 +24,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "frontend/web/**" in workflow
     assert "docs/frontend/**" in workflow
     assert "docs/operations/frontend-static-release-deploy.md" in workflow
+    assert "deploy/ai-platform/docker-compose.yml" in workflow
     assert "deploy/ai-platform/docker-compose.frontend.yml" in workflow
     assert "tests/test_deploy_frontend_static.py" in workflow
     assert "tests/test_frontend_*.py" in workflow

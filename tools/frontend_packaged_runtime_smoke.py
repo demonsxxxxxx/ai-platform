@@ -17,6 +17,7 @@ REQUIRED_EVIDENCE_FIELDS = [
     "docker_build",
     "image_inspect",
     "build_provenance",
+    "compose_service",
     "runtime_smoke",
     "leak_scan",
     "cleanup",
@@ -33,6 +34,11 @@ OPERATOR_COMMANDS = [
     "grep -E -i -q -f <forbidden_marker_patterns> <runtime_smoke_artifacts>; status=$?; if [ \"$status\" -eq 0 ]; then printf '{\"status\":\"failed\",\"forbidden_markers\":[\"redacted_match\"]}' > <leak_scan_json>; exit 1; elif [ \"$status\" -eq 1 ]; then printf '{\"status\":\"passed\",\"forbidden_markers\":[]}' > <leak_scan_json>; else exit \"$status\"; fi",
     "sudo -n docker rm -f ai-platform-frontend-smoke-<commit_short>",
     "remaining=\"$(sudo -n docker ps -a --filter name=ai-platform-frontend-smoke-<commit_short> --format '{{.Names}}')\" && test -z \"$remaining\"",
+    "sudo -n env AI_PLATFORM_FRONTEND_IMAGE=ai-platform-frontend:<commit_short>-smoke AI_PLATFORM_FRONTEND_PORT=18001 AI_PLATFORM_BUILD_COMMIT=<commit_sha> AI_PLATFORM_BUILD_DIRTY=false docker compose up -d --no-build frontend",
+    "sudo -n docker compose ps frontend",
+    "curl -fsS http://127.0.0.1:18001/healthz",
+    "curl -fsS http://127.0.0.1:18001/auth/login",
+    "curl -fsS http://127.0.0.1:18001/api/ai/health",
 ]
 
 
@@ -147,6 +153,7 @@ def _build_checks(evidence: dict[str, Any]) -> dict[str, bool]:
     provenance = _nested_dict(evidence, "build_provenance")
     provenance_git = _nested_dict(provenance, "git")
     runtime_smoke = _nested_dict(evidence, "runtime_smoke")
+    compose_service = _nested_dict(evidence, "compose_service")
     api_health = _nested_dict(runtime_smoke, "api_health")
     leak_scan = _nested_dict(evidence, "leak_scan")
     cleanup = _nested_dict(evidence, "cleanup")
@@ -162,6 +169,13 @@ def _build_checks(evidence: dict[str, Any]) -> dict[str, bool]:
         and provenance.get("schema_version") == "ai-platform.frontend-build-provenance.v1"
         and provenance_git.get("commit") == commit_sha
         and provenance_git.get("dirty") is False,
+        "compose_service_named_frontend": compose_service.get("service") == "frontend",
+        "compose_container_named_ai_platform_frontend": (
+            compose_service.get("container_name") == "ai-platform-frontend"
+        ),
+        "compose_port_18001_bound": compose_service.get("host_port") == 18001
+        and compose_service.get("container_port") == 8080,
+        "compose_service_running": compose_service.get("state") in {"running", "Up", "healthy"},
         "healthz_ok": _status_code_ok(runtime_smoke.get("healthz")) and _body_status_ok(runtime_smoke.get("healthz")),
         "index_ok": _status_code_ok(runtime_smoke.get("index")),
         "api_proxy_ok": _status_code_ok(api_health) and _body_status_ok(api_health),
@@ -184,6 +198,10 @@ def build_frontend_packaged_runtime_smoke_readiness(
         "image_tag_matches_commit": False,
         "image_revision_matches_commit": False,
         "build_provenance_matches_commit": False,
+        "compose_service_named_frontend": False,
+        "compose_container_named_ai_platform_frontend": False,
+        "compose_port_18001_bound": False,
+        "compose_service_running": False,
         "healthz_ok": False,
         "index_ok": False,
         "api_proxy_ok": False,
@@ -219,7 +237,7 @@ def build_frontend_packaged_runtime_smoke_readiness(
         "operator_commands": list(OPERATOR_COMMANDS),
         "runtime_policy": "docker_capable_host_only_no_local_windows_docker",
         "does_not_close_g6_g9_or_21": True,
-        "does_not_enable_compose_one_command_startup": True,
+        "formal_frontend_compose_runtime_required": True,
         "missing_evidence_fields": missing_fields,
         "checks": checks,
         "blockers": list(dict.fromkeys(blockers)),
