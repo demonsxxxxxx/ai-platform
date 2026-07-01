@@ -71,11 +71,13 @@ vulnerability evidence。
   concurrency evidence。当前 image 的 G7 探针已走到 Docker/resource-limit
   evidence，但 no-masq egress network 阻断 callback exception path，导致
   required callback evidence 缺失，所以只能作为 blocker diagnostic，不是
-  reviewed G7 release-evidence。当前本地后续已把 211 sandbox evidence generator 的
-  Docker platform 默认 callback path 修为 `0.0.0.0` bind +
+  reviewed G7 release-evidence。已推送的 `codex/g8-b3-status-refresh`
+  source/test 分支把 211 sandbox evidence generator 的 Docker platform 默认
+  callback path 修为 `0.0.0.0` bind +
   `http://host.docker.internal:{port}/callback` public URL，避免 no-masq
-  host-gateway exception 只靠人工传参；但这仍只是 source/test 进展，必须合入、
-  部署并在 211 重新跑 formal verifier 后，才可能成为 reviewed G7 evidence。
+  host-gateway exception 只靠人工传参；但这仍只是 `local partial`，必须创建
+  PR、完成 review、合并、部署并在 211 重新跑 formal verifier 后，才可能成为
+  reviewed G7 evidence。
 - 仍未完成：current-main G7 Docker sandbox hardening closure、B3
   operator-reviewed recorded load evidence、G9 Operations Beta acceptance、G10
   workflow-owner rollout，以及任何 ordinary-user 平台级 multi-run orchestration
@@ -85,11 +87,12 @@ vulnerability evidence。
 
 因此当前下一步不是重开 G8，也不是把 B3 当作普通用户平台级 multi-run 产品曝光；
 下一步是先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime
-observation 和可选 capacity profile readiness 汇总成 fail-closed 阻塞清单，合入并部署
-本地 G7 verifier-helper callback 默认修复，并基于已经对齐的 `bd690f7` 211
-current-main source、运行镜像和 label authority，或后续选定的新 runtime subject，
-重跑 reviewed G7 sandbox evidence、smoke / Foundation Runtime concurrency
-evidence，并把 G7/B3 的证据边界继续保持为
+observation 和可选 capacity profile readiness 汇总成 fail-closed 阻塞清单，为
+`codex/g8-b3-status-refresh` 创建 PR，完成 review/merge 后部署 G7
+verifier-helper callback 默认修复，并基于已经对齐的 `bd690f7` 211 current-main
+source、运行镜像和 label authority，或后续选定的新 runtime subject，重跑
+reviewed G7 sandbox evidence、smoke / Foundation Runtime concurrency evidence，
+并把 G7/B3 的证据边界继续保持为
 `runtime pending` / `local partial`，直到真实运行证据闭合。该 audit 只是
 控制/计划工件，不是 G7 runtime evidence 或 B3 load evidence。
 
@@ -1548,7 +1551,8 @@ v2 route: Claude Agent SDK remains the execution layer, SDK subagents are
 governed inside one platform run, and ordinary-user platform-level multi-run
 orchestration stays blocked until a future G8 gate is explicitly reopened with
 capacity, governance, sandbox, model-gateway, artifact/event, cost, and
-rollback evidence.
+rollback evidence. These historical controlled slices do not reopen G8 and do
+not represent ordinary-user platform-level multi-run product exposure.
 
 ### P2 Multi-Agent Dependency Readiness Projection
 

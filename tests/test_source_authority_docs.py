@@ -204,6 +204,10 @@ def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
     assert "历史标题曾写作 G8 Multi-Agent Controlled Beta" in old_prd_text
     assert "容量证据归 B3，不打开或关闭 G8" in old_prd_text
     assert "当前不按普通用户 multi-agent beta 推进" in old_prd_text
+    assert "Long Task / Multi-Agent Runtime 仅作为历史 / deferred context 保留" in old_prd_text
+    assert "SDK subagent use 属于 one governed platform run 内的执行层行为" in old_prd_text
+    assert "平台级 multi-run 产品路线必须由未来重新打开的 G8 gate 定义" in compact_old_prd_text
+    assert "Long Task / Multi-Agent Runtime 必须在 Foundation" not in old_prd_text
     assert "G8 Multi-Agent Controlled Beta |" not in old_prd_text
     assert "G8 Multi-Agent Controlled Beta，仅在前置 gate 通过后扩大" not in old_prd_text
 
@@ -1497,6 +1501,7 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     roadmap_text = read(ROADMAP)
     combined_text = f"{gate_status_text}\n{roadmap_text}"
     compact_text = " ".join(combined_text.split())
+    compact_roadmap_text = " ".join(roadmap_text.split())
 
     assert "Current Reading Guide" in gate_status_text
     assert "当前路线进展读法" in roadmap_text
@@ -1531,16 +1536,19 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "`source_tree_dirty=false`" in combined_text
     assert 'health endpoint returned `{"status":"ok"}` for that `bd690f7` runtime' in compact_text
     assert "no-masq egress network blocked the callback exception path" in compact_text
-    assert "bind the callback receiver on `0.0.0.0`" in gate_status_text
+    assert "bind the callback receiver on `0.0.0.0`" in compact_gate_status_text
     assert "`http://host.docker.internal:{port}/callback`" in combined_text
     assert "verifier-helper callback default fix" in compact_text
-    assert "not reviewed 211 G7 evidence until merged, deployed, and rerun" in compact_text
+    assert "codex/g8-b3-status-refresh" in combined_text
+    assert "source/test branch" in gate_status_text
+    assert "source/test 分支" in roadmap_text
+    assert "still needs PR creation, review, merge, deployment, and a 211 formal verifier rerun" in compact_text
     assert "callback exception path" in roadmap_text
     assert "blocker diagnostic" in roadmap_text
-    assert "必须合入、 部署并在 211 重新跑 formal verifier" in " ".join(roadmap_text.split())
+    assert "必须创建 PR、完成 review、合并、部署并在 211 重新跑 formal verifier" in " ".join(roadmap_text.split())
     assert "`SANDBOX_CONTAINER_PROVIDER=fake`" in gate_status_text
     assert "`SANDBOX_EXECUTOR_IMAGE=ai-platform:local`" in gate_status_text
-    assert "merge/deploy the local G7 verifier-helper callback default fix" in compact_gate_status_text
+    assert "create the PR for `codex/g8-b3-status-refresh`, complete review and merge" in compact_gate_status_text
     assert "tools/g7_b3_completion_audit.py" in gate_status_text
     assert "fail-closed G7/B3 blocker list" in gate_status_text
     assert "not runtime or load evidence by itself" in compact_gate_status_text
@@ -1549,7 +1557,7 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "no reviewed local `bd690f7` G7 release-evidence entry" in current_gate_table
     assert "callback exception evidence under no-masq/default-deny egress" in current_gate_table
     assert "source_synced_runtime_pending_followups_open" in gate_status_text
-    assert "current worktree contains pending verifier-helper and status-doc changes" in compact_gate_status_text
+    assert "the pushed branch is `local partial` only" in compact_gate_status_text
     assert "foundation_alpha_stage_status=runtime_rollout_required" in gate_status_text
     assert 'stage_acceptance_blockers=["foundation_runtime_concurrency_evidence"]' in gate_status_text
 
@@ -1566,6 +1574,8 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "must not be treated as ordinary-user platform-level multi-run orchestration exposure evidence" in compact_text
     assert "旧 G8 普通用户平台级 multi-run follow-up 不再作为 Foundation Alpha 顶层 `open_followups`" in compact_text
     assert "当前权威文档不再 使用旧的泛化 multi-agent exposure 命名" in compact_text
+    assert "These historical controlled slices do not reopen G8" in roadmap_text
+    assert "do not represent ordinary-user platform-level multi-run product exposure" in compact_roadmap_text
     assert "multi-agent fanout exposure" not in roadmap_text
     assert "SDK subagent fanout capacity inside governed platform runs" in roadmap_text
     assert "g8_ordinary_user_multi_agent_exposure" not in gate_status_text

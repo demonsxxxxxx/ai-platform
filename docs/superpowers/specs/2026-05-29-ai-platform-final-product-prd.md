@@ -498,5 +498,7 @@ Review 重点：
 - 普通用户面对 Agent，不面对 raw Skill。
 - Admin / Developer 负责治理与审计。
 - Memory、Tool Permission、Event/Playback、Sandbox Lease 是长任务和多 Agent 的前置基础。
-- Long Task / Multi-Agent Runtime 必须在 Foundation 和 Agent Frontend V1 关键门禁后推进。
+- Long Task / Multi-Agent Runtime 仅作为历史 / deferred context 保留；当前权威读法是
+  SDK subagent use 属于 one governed platform run 内的执行层行为，平台级 multi-run
+  产品路线必须由未来重新打开的 G8 gate 定义。
 - 真实进度以当前代码、DB、容器和当次验证报告为准，不写入 PRD。
