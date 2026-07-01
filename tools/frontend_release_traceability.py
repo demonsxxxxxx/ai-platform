@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 from typing import Any
 
@@ -12,6 +13,7 @@ WORKFLOW_PATH = Path(".github/workflows/ai-platform-frontend.yml")
 FRONTEND_DOCKERFILE_PATH = Path("frontend/web/Dockerfile")
 FRONTEND_NGINX_TEMPLATE_PATH = Path("frontend/web/nginx.conf.template")
 FRONTEND_COMPOSE_OVERLAY_PATH = Path("deploy/ai-platform/docker-compose.frontend.yml")
+FRONTEND_COMPOSE_RUNTIME_PATH = Path("deploy/ai-platform/docker-compose.yml")
 DIST_BUILD_PROVENANCE_FILENAME = "ai-platform-build-provenance.json"
 CI_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
@@ -24,8 +26,11 @@ DIST_REMEDIATION_COMMANDS = [
 ]
 WORKFLOW_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
+    "python -m pip install pytest",
+    "python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py tests/test_governance_readiness.py -q --basetemp .pytest-tmp",
     "corepack pnpm run ci:verify",
     "python tools/frontend_release_traceability.py --format json",
+    "python tools/deploy_frontend_static.py --help",
     "python tools/frontend_packaged_runtime_smoke.py --format json",
     "docker build",
     "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}",
@@ -36,9 +41,23 @@ WORKFLOW_COMMANDS = [
 ]
 WORKFLOW_PATH_FILTERS = [
     "frontend/web/**",
+    "app/governance_readiness.py",
+    "docs/agent-rules/ai-platform-guardrails.md",
     "docs/frontend/**",
+    "docs/operations/ai-platform-gate-status.md",
+    "docs/operations/ai-platform-governance-readiness.md",
+    "docs/operations/frontend-static-release-deploy.md",
+    "docs/superpowers/plans/**",
+    "deploy/ai-platform/.env.example",
+    "deploy/ai-platform/docker-compose.yml",
     "deploy/ai-platform/docker-compose.frontend.yml",
+    "tests/test_foundation_alpha_readiness.py",
+    "tests/test_deploy_frontend_static.py",
     "tests/test_frontend_*.py",
+    "tests/test_runtime_launch_script.py",
+    "tests/test_source_authority_docs.py",
+    "tests/test_governance_readiness.py",
+    "tools/deploy_frontend_static.py",
     "tools/frontend_projection_audit.py",
     "tools/frontend_release_traceability.py",
     "tools/frontend_packaged_runtime_smoke.py",
@@ -97,6 +116,17 @@ PACKAGED_DELIVERY_REQUIRED_TERMS = {
         "compose_frontend_proxy_read_timeout_required": "AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT",
         "compose_frontend_proxy_send_timeout_required": "AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT",
     },
+}
+FORMAL_FRONTEND_RUNTIME_REQUIRED_TERMS = {
+    "runtime_frontend_service_required": "  frontend:",
+    "runtime_frontend_image_required": "image: ${AI_PLATFORM_FRONTEND_IMAGE:-ai-platform-frontend:local}",
+    "runtime_frontend_dockerfile_required": "dockerfile: frontend/web/Dockerfile",
+    "runtime_frontend_commit_arg_required": "AI_PLATFORM_BUILD_COMMIT",
+    "runtime_frontend_dirty_arg_required": "AI_PLATFORM_BUILD_DIRTY",
+    "runtime_frontend_container_required": "container_name: ai-platform-frontend",
+    "runtime_frontend_api_upstream_required": "AI_PLATFORM_API_UPSTREAM",
+    "runtime_frontend_port_required": "${AI_PLATFORM_FRONTEND_PORT:-18001}:8080",
+    "runtime_frontend_depends_on_api_required": "api:",
 }
 
 
@@ -423,6 +453,71 @@ def _packaged_frontend_image_manifest(root: Path, *, git_commit: str) -> dict[st
     }
 
 
+def _extract_compose_service_block(content: str, service_name: str) -> str:
+    service_header = f"  {service_name}:"
+    lines = content.splitlines()
+    start_index = next((index for index, line in enumerate(lines) if line == service_header), None)
+    if start_index is None:
+        return ""
+    block_lines = [lines[start_index]]
+    for line in lines[start_index + 1 :]:
+        if re.fullmatch(r"  [A-Za-z0-9_-]+:\s*", line):
+            break
+        block_lines.append(line)
+    return "\n".join(block_lines)
+
+
+def _formal_frontend_runtime_manifest(root: Path) -> dict[str, object]:
+    compose_path = root / FRONTEND_COMPOSE_RUNTIME_PATH
+    blockers: list[str] = []
+    contract_findings: list[dict[str, str]] = []
+    forbidden_findings: list[dict[str, str]] = []
+    service_block = ""
+    if not compose_path.exists():
+        blockers.append("formal_frontend_runtime_compose_missing")
+        status = "missing"
+    else:
+        content = compose_path.read_text(encoding="utf-8")
+        service_block = _extract_compose_service_block(content, "frontend")
+        for rule_id, required_term in FORMAL_FRONTEND_RUNTIME_REQUIRED_TERMS.items():
+            haystack = content if rule_id == "runtime_frontend_service_required" else service_block
+            if required_term not in haystack:
+                contract_findings.append(
+                    {"path": FRONTEND_COMPOSE_RUNTIME_PATH.as_posix(), "rule_id": rule_id}
+                )
+        normalized_service = service_block.lower()
+        for term in PACKAGED_DELIVERY_FORBIDDEN_TERMS:
+            if term.lower() in normalized_service:
+                forbidden_findings.append({"path": FRONTEND_COMPOSE_RUNTIME_PATH.as_posix(), "term": term})
+        if contract_findings or forbidden_findings:
+            blockers.append("formal_frontend_runtime_contract_scan_failed")
+        status = "configured_with_policy_gaps" if blockers else "configured"
+
+    return {
+        "artifact_kind": "frontend_compose_service",
+        "status": status,
+        "compose": {
+            "path": FRONTEND_COMPOSE_RUNTIME_PATH.as_posix(),
+            "status": "present" if compose_path.exists() else "missing",
+            "sha256": _sha256(compose_path) if compose_path.exists() else None,
+        },
+        "service": {
+            "name": "frontend",
+            "container_name": "ai-platform-frontend",
+            "host_port": 18001,
+            "container_port": 8080,
+            "api_upstream_default": "http://api:8020",
+        },
+        "contract_scan": {
+            "status": "fail" if contract_findings or forbidden_findings else "pass",
+            "scanned_files": [FRONTEND_COMPOSE_RUNTIME_PATH.as_posix()] if compose_path.exists() else [],
+            "contract_findings": contract_findings,
+            "forbidden_findings": forbidden_findings,
+        },
+        "blockers": blockers,
+    }
+
+
 def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[str, Any]:
     """Build a secret-safe same-commit frontend release traceability snapshot."""
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
@@ -469,6 +564,7 @@ def build_frontend_release_traceability(repo_root: Path | None = None) -> dict[s
             pnpm_lock_sha256=pnpm_lock_sha256,
         ),
         "packaged_frontend_image": _packaged_frontend_image_manifest(root, git_commit=git_commit),
+        "formal_frontend_runtime": _formal_frontend_runtime_manifest(root),
         "release_policy": "tie_frontend_api_worker_artifacts_to_same_git_commit",
     }
 
@@ -482,6 +578,8 @@ def render_frontend_release_traceability_markdown(trace: dict[str, Any]) -> str:
     script_rows = "\n".join(f"| `{name}` | `{value}` |" for name, value in scripts.items())
     packaged_image = trace["packaged_frontend_image"]
     blockers = "\n".join(f"- `{blocker}`" for blocker in packaged_image["blockers"]) or "- none"
+    formal_runtime = trace["formal_frontend_runtime"]
+    formal_blockers = "\n".join(f"- `{blocker}`" for blocker in formal_runtime["blockers"]) or "- none"
     return (
         "# ai-platform Frontend Release Traceability\n\n"
         f"Schema: `{trace['schema_version']}`\n\n"
@@ -534,7 +632,17 @@ def render_frontend_release_traceability_markdown(trace: dict[str, Any]) -> str:
         f"(`{packaged_image['compose_overlay']['status']}`)\n"
         f"- backend_worker_commit: `{packaged_image['release_trace']['backend_worker_commit']}`\n\n"
         "Blockers:\n\n"
-        f"{blockers}\n"
+        f"{blockers}\n\n"
+        "## Formal Frontend Runtime\n\n"
+        f"- status: `{formal_runtime['status']}`\n"
+        f"- artifact_kind: `{formal_runtime['artifact_kind']}`\n"
+        f"- compose: `{formal_runtime['compose']['path']}` "
+        f"(`{formal_runtime['compose']['status']}`)\n"
+        f"- service: `{formal_runtime['service']['name']}`\n"
+        f"- container_name: `{formal_runtime['service']['container_name']}`\n"
+        f"- port: `{formal_runtime['service']['host_port']}:{formal_runtime['service']['container_port']}`\n\n"
+        "Blockers:\n\n"
+        f"{formal_blockers}\n"
     )
 
 

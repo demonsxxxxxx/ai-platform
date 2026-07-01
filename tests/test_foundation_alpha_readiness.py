@@ -721,10 +721,29 @@ def _minimal_frontend_packaged_runtime_smoke_payload(
         }
         if build_succeeded
         else {"status": "not_available"},
+        "compose_service": {
+            "service": "frontend",
+            "container_name": "ai-platform-frontend",
+            "host_port": 18001,
+            "container_port": 8080,
+            "state": "running",
+        }
+        if build_succeeded
+        else {"status": "not_run"},
         "runtime_smoke": {
             "network": "ai-platform-phaseb_default",
             "healthz": {"status_code": 200, "body": "ok"},
             "index": {"status_code": 200},
+            "auth_login": {"status_code": 200},
+            "logged_in_chat": {
+                "status_code": 200,
+                "authenticated": True,
+                "redirected_to_login": False,
+            },
+            "composer": {
+                "visible": True,
+                "usable": True,
+            },
             "api_health": {"status_code": 200, "body": {"status": "ok"}},
             "build_provenance_endpoint": {"status_code": 200},
         }

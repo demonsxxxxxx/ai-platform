@@ -37,7 +37,7 @@ matrix necessarily changes the head SHA after the file is written. While PR
 | PR state | open, ready for review, mergeable, GitHub `reviewDecision` empty at the latest check |
 | GitHub checks | `projection audit, lint, build, trace` success; `packaged image build` success |
 | 211 frontend entry | `http://10.56.0.211:18001/` |
-| 211 frontend service | Python static service rooted at `/home/xinlin.jiang/frontend-pr111-smoke/dist`, API base `http://127.0.0.1:8020` |
+| 211 frontend service | Formal target is Docker Compose service `frontend` / container `ai-platform-frontend` on `18001`; issue #156 remains open until live 211 evidence proves this runtime replaced the Python static preview. |
 | 211 frontend provenance | Must be checked live against the current PR head before claiming `211 verified` |
 | HTTP smoke | `/` returned 200; `/auth/login` returned 200; backend `/api/ai/health` returned ok |
 | Browser smoke | company-account browser login reached `/chat`; governed routes hydrated without login redirects; evidence credentials are redacted |

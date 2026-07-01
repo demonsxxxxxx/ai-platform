@@ -237,6 +237,27 @@ services:
       minio:
         condition: service_healthy
 
+  frontend:
+    image: ${AI_PLATFORM_FRONTEND_IMAGE:-ai-platform-frontend:local}
+    build:
+      context: ../..
+      dockerfile: frontend/web/Dockerfile
+      args:
+        AI_PLATFORM_BUILD_COMMIT: ${AI_PLATFORM_BUILD_COMMIT:-unknown}
+        AI_PLATFORM_BUILD_DIRTY: ${AI_PLATFORM_BUILD_DIRTY:-unknown}
+    container_name: ai-platform-frontend
+    restart: unless-stopped
+    environment:
+      AI_PLATFORM_API_UPSTREAM: ${AI_PLATFORM_API_UPSTREAM:-http://api:8020}
+      AI_PLATFORM_FRONTEND_MAX_BODY_SIZE: ${AI_PLATFORM_FRONTEND_MAX_BODY_SIZE:-50m}
+      AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT: ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT:-300s}
+      AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT: ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT:-300s}
+    ports:
+      - "${AI_PLATFORM_FRONTEND_PORT:-18001}:8080"
+    depends_on:
+      api:
+        condition: service_started
+
 volumes:
   ai_platform_postgres:
   ai_platform_redis:

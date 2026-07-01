@@ -12,7 +12,18 @@ from tools.frontend_release_traceability import (
 
 EXPECTED_CI_VERIFY = (
     "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json "
-    "&& eslint . && tsc -b && vite build && node scripts/write-build-provenance.mjs"
+    "&& corepack pnpm run test:prd-closure-smoke-source && eslint . && tsc -b && vite build "
+    "&& node scripts/write-build-provenance.mjs"
+)
+EXPECTED_WORKFLOW_PYTEST = (
+    "python -m pytest tests/test_deploy_frontend_static.py "
+    "tests/test_frontend_release_traceability.py "
+    "tests/test_frontend_packaged_runtime_smoke.py "
+    "tests/test_frontend_ci_workflow.py "
+    "tests/test_runtime_launch_script.py "
+    "tests/test_source_authority_docs.py "
+    "tests/test_governance_readiness.py "
+    "-q --basetemp .pytest-tmp"
 )
 
 
@@ -34,9 +45,21 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert trace["workflow"]["status"] == "present"
     assert len(trace["workflow"]["sha256"]) == 64
     assert "corepack pnpm run ci:verify" in trace["workflow"]["enforced_commands"]
+    assert "python -m pip install pytest" in trace["workflow"]["enforced_commands"]
+    assert EXPECTED_WORKFLOW_PYTEST in trace["workflow"]["enforced_commands"]
+    assert "python tools/deploy_frontend_static.py --help" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in trace["workflow"]["enforced_commands"]
+    assert "docs/operations/frontend-static-release-deploy.md" in trace["workflow"]["required_path_filters"]
+    assert "docs/operations/ai-platform-gate-status.md" in trace["workflow"]["required_path_filters"]
+    assert "docs/operations/ai-platform-governance-readiness.md" in trace["workflow"]["required_path_filters"]
+    assert "docs/superpowers/plans/**" in trace["workflow"]["required_path_filters"]
+    assert "deploy/ai-platform/.env.example" in trace["workflow"]["required_path_filters"]
+    assert "deploy/ai-platform/docker-compose.yml" in trace["workflow"]["required_path_filters"]
     assert "deploy/ai-platform/docker-compose.frontend.yml" in trace["workflow"]["required_path_filters"]
+    assert "tests/test_foundation_alpha_readiness.py" in trace["workflow"]["required_path_filters"]
+    assert "tests/test_deploy_frontend_static.py" in trace["workflow"]["required_path_filters"]
+    assert "tools/deploy_frontend_static.py" in trace["workflow"]["required_path_filters"]
     assert "tools/frontend_packaged_runtime_smoke.py" in trace["workflow"]["required_path_filters"]
     assert trace["workflow"]["missing_path_filters"] == []
     assert len(trace["source_hashes"]["package_json_sha256"]) == 64
@@ -57,13 +80,29 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert trace["packaged_frontend_image"]["blockers"] == []
     assert trace["packaged_frontend_image"]["contract_scan"]["status"] == "pass"
     assert trace["packaged_frontend_image"]["contract_scan"]["forbidden_findings"] == []
+    assert trace["formal_frontend_runtime"]["artifact_kind"] == "frontend_compose_service"
+    assert trace["formal_frontend_runtime"]["status"] == "configured"
+    assert trace["formal_frontend_runtime"]["compose"]["path"] == "deploy/ai-platform/docker-compose.yml"
+    assert trace["formal_frontend_runtime"]["compose"]["status"] == "present"
+    assert trace["formal_frontend_runtime"]["service"] == {
+        "name": "frontend",
+        "container_name": "ai-platform-frontend",
+        "host_port": 18001,
+        "container_port": 8080,
+        "api_upstream_default": "http://api:8020",
+    }
+    assert trace["formal_frontend_runtime"]["contract_scan"]["status"] == "pass"
+    assert trace["formal_frontend_runtime"]["contract_scan"]["forbidden_findings"] == []
+    assert trace["formal_frontend_runtime"]["blockers"] == []
 
     serialized = json.dumps(trace, ensure_ascii=False).lower()
     assert "c:\\users" not in serialized
     assert "database_url" not in serialized
     assert "api_key" not in serialized
     assert "secret" not in serialized
-    assert ".env" not in serialized
+    assert "deploy/ai-platform/.env.example" in serialized
+    assert "deploy/ai-platform/.env\"" not in serialized
+    assert "deploy/ai-platform/.env'" not in serialized
 
 
 def test_frontend_release_traceability_records_static_dist_manifest(tmp_path):
@@ -377,8 +416,11 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
     ]
     assert trace["workflow"]["missing_commands"] == [
         "corepack pnpm install --frozen-lockfile",
+        "python -m pip install pytest",
+        EXPECTED_WORKFLOW_PYTEST,
         "corepack pnpm run ci:verify",
         "python tools/frontend_release_traceability.py --format json",
+        "python tools/deploy_frontend_static.py --help",
         "python tools/frontend_packaged_runtime_smoke.py --format json",
         "docker build",
         "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}",
@@ -387,7 +429,11 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
         "docker run --rm --entrypoint cat",
         "ai-platform-build-provenance.json",
     ]
+    assert "docs/operations/frontend-static-release-deploy.md" in trace["workflow"]["missing_path_filters"]
+    assert "deploy/ai-platform/docker-compose.yml" in trace["workflow"]["missing_path_filters"]
     assert "deploy/ai-platform/docker-compose.frontend.yml" in trace["workflow"]["missing_path_filters"]
+    assert "tests/test_deploy_frontend_static.py" in trace["workflow"]["missing_path_filters"]
+    assert "tools/deploy_frontend_static.py" in trace["workflow"]["missing_path_filters"]
     assert "tools/frontend_packaged_runtime_smoke.py" in trace["workflow"]["missing_path_filters"]
 
 
@@ -395,6 +441,7 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     dockerfile = Path("frontend/web/Dockerfile").read_text(encoding="utf-8")
     nginx_template = Path("frontend/web/nginx.conf.template").read_text(encoding="utf-8")
     compose_overlay = Path("deploy/ai-platform/docker-compose.frontend.yml").read_text(encoding="utf-8")
+    runtime_compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     provenance_script = Path("frontend/web/scripts/write-build-provenance.mjs").read_text(encoding="utf-8")
 
     assert "ARG AI_PLATFORM_BUILD_COMMIT=unknown" in dockerfile
@@ -418,6 +465,13 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "AI_PLATFORM_BUILD_COMMIT" in compose_overlay
     assert "AI_PLATFORM_API_UPSTREAM" in compose_overlay
     assert "AI_PLATFORM_FRONTEND_MAX_BODY_SIZE" in compose_overlay
+    assert "  frontend:" in runtime_compose
+    assert "container_name: ai-platform-frontend" in runtime_compose
+    assert "dockerfile: frontend/web/Dockerfile" in runtime_compose
+    assert "${AI_PLATFORM_FRONTEND_PORT:-18001}:8080" in runtime_compose
+    assert "AI_PLATFORM_API_UPSTREAM: ${AI_PLATFORM_API_UPSTREAM:-http://api:8020}" in runtime_compose
+    assert "AI_PLATFORM_BUILD_COMMIT" in runtime_compose
+    assert "AI_PLATFORM_BUILD_DIRTY" in runtime_compose
     assert "POSTGRES_PASSWORD" not in compose_overlay
     assert "OPENAI_API_KEY" not in compose_overlay
     assert "SANDBOX_CALLBACK_TOKEN" not in compose_overlay
