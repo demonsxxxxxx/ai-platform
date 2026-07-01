@@ -36,9 +36,9 @@ Gate summary:
   isolation, redaction, and frontend projection audit/remap evidence.
 - G2-G7 backend/control-plane foundations have substantial current coverage,
   with sandbox production Docker hardening still blocking high-risk expansion.
-- G8/G10 Long Task and Multi-Agent work are not implemented by this migration
-  and must not expand ordinary-user exposure until #16/#21 and
-  frontend/user-loop gates pass.
+- G8 platform-level multi-run orchestration and G10 workflow-owner rollout work
+  are not implemented by this migration and must not expand ordinary-user
+  exposure until #16/#21 and frontend/user-loop gates pass.
 - G9 Agent Frontend V1 is the active frontend gate. Source migration and
   active-entry projection audit move the gate forward, but quarantined legacy
   surfaces still need ai-platform projection remap, policy enforcement, and

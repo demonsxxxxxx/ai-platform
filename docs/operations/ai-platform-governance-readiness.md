@@ -340,8 +340,8 @@ accepts only reviewed entries with artifact kind
 `skill_dependency_review_policy_runtime_acceptance`, verifier
 `tools/verify_governance_runtime_smoke.py`, passed redaction scan, required
 verifier checks, required Admin Runtime projection checks, and non-expansion
-invariants that keep ordinary-user multi-agent, long-term cross-session memory,
-production concurrency defaults, and Docker sandbox hardening closed. Closing
+invariants that keep ordinary-user platform-level multi-run orchestration,
+long-term cross-session memory, production concurrency defaults, and Docker sandbox hardening closed. Closing
 this runtime gap does not close G6, signed package/SBOM review, dependency
 vulnerability/license review, or Admin Skill release dashboard acceptance.
 
@@ -425,8 +425,9 @@ governed document workflow slice only. The #128 smoke reused the running
 that the 211 service checkout remains dirty/behind and the compose env label
 still points at the legacy external runtime env path; therefore the B1 evidence
 does not close G0 source authority, production readiness, Docker sandbox
-hardening, ordinary-user multi-agent exposure, long-term cross-session memory by
-default, department rollout, or production concurrency default increases.
+hardening, ordinary-user platform-level multi-run orchestration exposure,
+long-term cross-session memory by default, department rollout, or production
+concurrency default increases.
 `tools/verify_b1_memory_context_workflow.py` is the reusable verifier entrypoint
 for that smoke and emits schema
 `ai-platform.b1-memory-context-workflow-smoke.v1`; passing it records workflow
@@ -474,7 +475,7 @@ for #22. The executor context-pack evidence proves positive source-run artifact
 scope and public input keys free of `copied_from_run_id`, `source_run_id`,
 `parent_run_id`, and `run_id`. This still does not enable long-term
 cross-session memory or start Docker for lightweight office tasks. It does not
-expand ordinary-user G8/G10 exposure.
+expand ordinary-user platform-level multi-run orchestration exposure.
 The source-level sandbox latency split observability contract separates lease
 acquisition, container cold start, healthcheck, executor dispatch/model work,
 document processing, cleanup, and total runtime timings. Reviewed PR #44
@@ -532,8 +533,8 @@ runtime evidence closes `resource_limits_runtime_hardening_evidence`,
 resource_limits_runtime_hardening_evidence, egress_runtime_hardening_evidence,
 and security_options_runtime_hardening_evidence). This does not claim Docker
 sandbox production hardening, does not expose high-risk sandbox behavior to
-ordinary users, does not enable ordinary-user multi-agent exposure, and does not
-raise production concurrency defaults.
+ordinary users, does not enable ordinary-user platform-level multi-run
+orchestration exposure, and does not raise production concurrency defaults.
 
 The
 hardening section must label lease/workspace/cleanup checks as
@@ -624,4 +625,4 @@ before #22 closure.
 Do not close G6 until the remaining gaps above have code, focused tests,
 documentation, review, and 211 smoke evidence where runtime behavior is
 involved. Do not use this baseline to expand sandbox privilege, expose ordinary
-users to raw Skill selection, or broaden multi-agent beta.
+users to raw Skill selection, or broaden platform-level multi-run orchestration.

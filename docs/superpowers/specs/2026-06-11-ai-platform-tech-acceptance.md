@@ -128,8 +128,10 @@ B3 operator-reviewed recorded snapshot source contract:
 the `b3_10x4_sdk_subagents` profile, the required seven load-test gates, the
 required profile evidence, and the operator review evidence keys before runtime
 load testing. It is source contract only; it does not raise production defaults
-or claim safe concurrency, does not enable ordinary-user multi-agent exposure,
-and does not close B3, G8, or G9.
+or claim safe concurrency, does not enable ordinary-user platform-level
+multi-run orchestration exposure, and does not close B3 or G9. It also does not
+reopen G8; G8 stays deferred unless a later focused gate explicitly reopens
+platform-level orchestration.
 
 ## 3. Module Acceptance Matrix
 

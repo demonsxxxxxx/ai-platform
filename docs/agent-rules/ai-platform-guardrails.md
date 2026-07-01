@@ -67,8 +67,11 @@ P0-only list:
    retention, redaction, delete, dependency, and release-policy flows.
 5. G7 Sandbox / Resource Hardening, including Docker provider validation,
    egress policy, runtime quota, orphan cleanup, and container security options.
-6. G8 Multi-Agent Controlled Beta, only after tenant-aware scheduling, quota,
-   and backpressure are proven.
+6. G8 Multi-Agent Controlled Beta remains a deferred parking-lot for
+   platform-owned multi-run orchestration. SDK agent/subagent behavior stays
+   inside one governed platform run; the current evidence work is B3 SDK
+   subagent fanout capacity, not ordinary-user platform-level multi-run
+   exposure.
 7. G9 Observability / Quality / Ops, including Admin Runtime, cost/token/latency
    metrics, error taxonomy, trace/audit export, and alerts.
 8. G10 Internal Beta / Department Rollout with explicit internal workflow owner.

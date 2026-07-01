@@ -10,7 +10,9 @@
 
 后续 ai-platform 计划只允许引用当前 PRD、当前路线图、仓库 guardrails（`docs/agent-rules/ai-platform-guardrails.md`）、真实代码和当次 211 运行证据。任何非当前主链路重新进入范围，必须先更新 PRD、本路线图和 guardrails。
 
-本路线图不保存非当前主链路、短期执行证据或临时服务说明。
+本路线图不再追加非当前主链路、短期执行证据或临时服务说明。下方
+legacy accumulated evidence 段落仅保留历史上下文；当前状态以 PRD v2、
+technical acceptance、gate status、GitHub issue/PR 和最新 211 evidence 为准。
 
 本路线图不维护已退出范围对象的名称清单。后续执行只按本文“当前主链路”和 P0 交付门槛推进；未列入当前主链路的入口、服务、端口、页面或候选方案，不作为计划依据。
 
@@ -31,9 +33,11 @@ readiness，直到当前 source 不再被 runtime/concurrency evidence 阻塞。
 
 S2+ 后续 gate 包括：治理/运维、真实 SDK skill 路径下的 sandbox hardening、
 Skill 依赖和发布证据、Admin Runtime acceptance、capacity-upgrade recorded
-evidence，以及受控的 G8/G10 multi-agent/long-task 工作流。
+evidence，以及受控的 SDK subagent fanout / G10 long-task 工作流证据。G8
+平台级 multi-run orchestration 仍是 deferred parking-lot，不是当前
+ordinary-user 产品路线。
 
-S1 的边界仍然不变：不提高生产并发默认值，不开放 ordinary-user multi-agent，
+S1 的边界仍然不变：不提高生产并发默认值，不开放 ordinary-user platform-level multi-run orchestration，
 不宣称 Docker sandbox hardening，不开放部门 rollout，不默认启用长期跨会话
 memory，不关闭 packaged frontend release，也不关闭 signed Skill/SBOM/license/
 vulnerability evidence。
@@ -49,7 +53,7 @@ vulnerability evidence。
 3. G5 Run Lifecycle / Worker Runtime V1：queue、lease、heartbeat、retry、dead-letter、cancel、resume、checkpoint、idempotency 可审计、可运营。
 4. G6 Tool / Skill / Memory Governance：skill versioning、release policy、dependency policy、tool allow/deny/ask、memory retention、redaction、delete flow 可运营。
 5. G7 Sandbox / Resource Hardening：Docker provider 生产验证、network/egress policy、runtime quota、orphan cleanup job、container security options 与 211 smoke 通过后，才允许扩大高风险 sandbox/tool。
-6. G8 Multi-Agent Controlled Beta：平台 parent/child ledger、dispatcher、handoff、child reconciliation、parent rollup、parent cancel 与 worker dispatcher 继续 feature-flagged；执行层 agent/subagent 能力走 Claude Agent SDK，普通用户曝光前必须先通过 tenant-aware scheduler/quota gate。
+6. G8 Multi-Agent Controlled Beta：平台 parent/child ledger、dispatcher、handoff、child reconciliation、parent rollup、parent cancel 与 worker dispatcher 只作为历史受控切片和 deferred parking-lot 保留；执行层 agent/subagent 能力走 Claude Agent SDK，并作为一个 governed platform run 管理。当前开放问题是 SDK subagent fanout 的 capacity/governance/sandbox/model-gateway evidence，不是普通用户平台级 multi-run 产品曝光。
 7. G9 Observability / Quality / Ops：Admin runtime、cost/token/latency metrics、error taxonomy、golden-set eval、trace/audit export 与 alert 进入 beta 前 gate。
 8. G10 Internal Beta / Department Rollout：选择 1-2 个真实内网流程（如文档审查、翻译、SOP/RAG、长任务报告）明确运营 owner 后再放量。
 
@@ -68,7 +72,8 @@ second runtime to clone; it is absorbed only as a platform-level long-horizon
 product contract and orchestration-pattern reference.
 
 The later `Long Task Product Contract / Office Artifact Flow` gate must be
-defined and reviewed before ordinary-user G8/G10 expansion. That gate covers:
+defined and reviewed before ordinary-user long-task rollout or any future G8
+platform-level multi-run orchestration reopening. That gate covers:
 
 - parent / child run decomposition and state ledger
 - Claude Agent SDK agent/subagent tool enablement, progress stream, permission
@@ -87,7 +92,7 @@ observability remain the source-of-truth contracts.
 
 DB connection pool 是 issue #16 的第一个可独立闭环前置项：平台已在 `main` 建立 bounded async Postgres pool 替代每 transaction 直连，并把 allowlisted pool status 暴露到 admin-only runtime overview。2026-06-06 211 smoke 已验证 API/worker runtime label 与 source marker 匹配、API 与前端代理 health 正常、admin-only overview 返回 `database_pool.open=true` 且未暴露 DSN/password/secret/api key；后续 tenant-aware queue/quota 与 worker maintenance 可以在这个承载基础上推进。
 
-当前未关闭的 G5 后续项仍包括：large queue bounded lookup 压力验证，以及多 tenant 并发压力测试。Tenant-aware queue lease、tenant-aware worker maintenance、active-run admission、bounded queue metadata、multi-agent child-run admission 与 P1 Admin Runtime admission/backpressure 已作为子切片通过 review、full pytest、main merge 和 211 smoke；G8 Multi-Agent Controlled Beta 仍不得绕过剩余 quota/backpressure/observability 阻塞项。
+当前未关闭的 G5 后续项仍包括：large queue bounded lookup 压力验证，以及多 tenant 并发压力测试。Tenant-aware queue lease、tenant-aware worker maintenance、active-run admission、bounded queue metadata、multi-agent child-run admission 与 P1 Admin Runtime admission/backpressure 已作为历史受控子切片通过 review、full pytest、main merge 和 211 smoke；它们不改变当前 PRD v2 路线：G8 平台级 multi-run orchestration 仍是 deferred parking-lot，当前容量问题是 SDK subagent fanout 的 B3 证据。
 
 Foundation Runtime 10+ concurrent correctness now has a fail-closed evidence
 gate named `foundation_runtime_concurrency_evidence` with schema
@@ -126,9 +131,10 @@ context projections, pinned skill snapshot bindings, and negative
 tool-permission reuse denial probes. This closes the Foundation Runtime
 concurrency evidence gap for the `380de6b` runtime-relevant source and refreshes
 the broader Foundation Alpha POC smoke/auth/governance evidence on the same
-runtime subject. It does not open ordinary-user multi-agent, does not claim
-Docker sandbox hardening, does not raise production concurrency defaults, does
-not permit department rollout, and does not close production readiness.
+runtime subject. It does not broaden ordinary-user platform-level multi-run
+orchestration exposure, does not claim Docker sandbox hardening, does not raise
+production concurrency defaults, does not permit department rollout, and does
+not close production readiness.
 
 GitHub issue #20 已作为 G5 多租户高并发 gate 的收敛切片在 `main` commit `f5da825` 完成：在 configured fairness horizon 内关闭 tail-window quota leasing 造成的可运行租户饥饿、multi-agent child-run fanout 绕过 active-run admission、queue position / queued-run removal / admin enrichment 无界 Redis queued-list 扫描，以及高风险 review/model-reasoning 规则歧义。详细设计与执行计划分别在 `docs/superpowers/specs/2026-06-06-g5-tenant-aware-scheduling-admission-metadata-design.md` 与 `docs/superpowers/plans/2026-06-06-g5-tenant-aware-scheduling-admission-metadata.md`，211 smoke 与 issue closure 证据保留在对应执行计划和 GitHub issue，不继续追加为产品路线图流水账。
 
@@ -496,7 +502,7 @@ remaining legacy enforcement/remap gaps. The active browser entry graph is
 currently clear of forbidden private/secret-like projection terms, but active
 legacy routes still require policy enforcement or ai-platform projection remap;
 `projection:audit` exits 0 with status `pass_with_policy_gaps`. G6/G9 still
-block ordinary-user expansion until active legacy routes are policy-gated or
+block ordinary-user frontend/governance rollout until active legacy routes are policy-gated or
 remapped and quarantined legacy model/channel/envvar sources are remapped or
 policy-gated.
 This provides the traceability and audit base for backend/worker/frontend
@@ -526,7 +532,7 @@ ordinary-user acceptance remain open.
 
 ### G6 Governance Readiness Status
 
-G6 is partial and remains blocked for ordinary-user expansion. The current
+G6 is partial and remains blocked for ordinary-user governance/frontend rollout. The current
 baseline is recorded in
 `docs/operations/ai-platform-governance-readiness.md`, exposed through
 `tools/governance_readiness.py`, and included in the admin-only runtime
@@ -633,8 +639,8 @@ files, runtime acceptance for the source-level skill dependency review policy,
 runtime office context-pack persistence/versioning,
 quarantined legacy frontend source remap, packaged frontend image smoke/release
 acceptance on 211 or another Docker-capable host, and ordinary-user G9
-acceptance. Do not use this baseline
-to expand sandbox privilege, raw Skill selection, or ordinary-user G8/G10 exposure.
+acceptance. Do not use this baseline to expand sandbox privilege, raw Skill
+selection, or ordinary-user platform-level multi-run orchestration exposure.
 
 The Skill dependency-review runtime acceptance path is explicit but still open
 until reviewed 211 evidence exists. `tools/skill_release_readiness.py` publishes
@@ -651,8 +657,8 @@ accepts only reviewed entries with artifact kind
 `skill_dependency_review_policy_runtime_acceptance`, verifier
 `tools/verify_governance_runtime_smoke.py`, passed redaction scan, required
 verifier checks, required Admin Runtime projection checks, and non-expansion
-invariants that keep ordinary-user multi-agent, long-term cross-session memory,
-production concurrency defaults, and Docker sandbox hardening closed. Closing
+invariants that keep ordinary-user platform-level multi-run orchestration,
+long-term cross-session memory, production concurrency defaults, and Docker sandbox hardening closed. Closing
 this runtime gap does not close G6, signed package/SBOM review, dependency
 vulnerability/license review, or Admin Skill release dashboard acceptance.
 
@@ -679,11 +685,12 @@ release evidence now records 211 sandbox latency split acceptance for #22.
 Executor context-pack 211 acceptance remains open until fresh live evidence
 proves positive source-run artifact scope and public input-key redaction. This
 still does not add a new database schema, enable long-term cross-session memory,
-start Docker for lightweight tasks, or expand ordinary-user G8/G10 exposure. The
-211 sandbox runtime verifier now requires hardening evidence for lease/workspace
-isolation, cleanup, resource timeout fallback, failure fallback, and cached lease
-scope revalidation, so future runtime smoke cannot omit the cached-lease
-scope-drift regression. This replaces the older single "bounded office
+start Docker for lightweight tasks, or expand ordinary-user platform-level
+multi-run orchestration exposure. The 211 sandbox runtime verifier now requires
+hardening evidence for lease/workspace isolation, cleanup, resource timeout
+fallback, failure fallback, and cached lease scope revalidation, so future
+runtime smoke cannot omit the cached-lease scope-drift regression. This replaces
+the older single "bounded office
 context-pack product contract" blocker with explicit sandbox latency evidence
 and a still-open executor context-pack 211 acceptance requirement.
 
@@ -704,7 +711,7 @@ public provenance/counts rather than trusting queue copies or stored payload
 provenance. This narrows the G6/#22 context output gap; PR #44 later records
 superseded 211 executor context-pack evidence that no longer closes acceptance,
 while long-term cross-session memory, production sandbox hardening, and
-ordinary-user G8/G10 gates remain open.
+ordinary-user platform-level multi-run orchestration exposure remains blocked.
 
 The document-centric follow-up state source slice now records source-run artifact
 linkage for copy/retry/resume context snapshots. The platform stores source
@@ -714,7 +721,7 @@ the source artifact manifest supplies a safe public version. It does not invent
 a version from artifact count. This source-tested control is covered by later
 PR #44 source tests and sandbox latency split evidence, but executor
 context-pack 211 acceptance remains open and it does not close any broader
-G6/G9 gate or ordinary-user G8/G10 exposure.
+G6/G9 gate or ordinary-user platform-level multi-run orchestration exposure.
 
 The S2 sandbox runtime smoke path is now recorded as
 `sandbox_runtime_smoke_contract` for `211_sandbox_latency_split_smoke`. The
@@ -768,7 +775,7 @@ runtime gap. Its
 `non_expansion_invariants` keep `ordinary_user_multi_agent_allowed=false`,
 `ordinary_user_high_risk_sandbox_allowed=false`, and
 `long_term_cross_session_memory_enabled=false`. `executor_context_pack_211_acceptance`
-remains open for #22 and does not close G6/G9 or ordinary-user G8/G10 exposure.
+remains open for #22 and does not close G6/G9 or ordinary-user platform-level multi-run orchestration exposure.
 
 Frontend packaged image release acceptance is also exposed through
 governance readiness as `packaged_runtime_smoke_contract`, backed by
@@ -1131,7 +1138,8 @@ ai-platform public/admin projection audit or product gating before ordinary-user
 rollout. Detailed contract, multi-image direction, and remaining risks are
 recorded in `frontend/web/README.md` and
 `docs/frontend/ai-platform-frontend-migration.md`.
-G8/G10 Long Task and Multi-Agent work are not implemented by this migration.
+G8 platform-level multi-run orchestration and G10 workflow-owner rollout work
+are not implemented by this migration.
 
 ## 后续顺序
 
@@ -1481,6 +1489,16 @@ clean API/worker logs, and DB/Redis smoke data cleanup. This remains read-only
 and does not start autonomous subagent dispatch, high-risk tool execution,
 retry scheduling, or new sandbox behavior.
 
+### P2 Multi-Agent Historical Controlled Slices
+
+The following P2 multi-agent sections are retained as legacy accumulated
+evidence for controlled internal slices. They do not override the current PRD
+v2 route: Claude Agent SDK remains the execution layer, SDK subagents are
+governed inside one platform run, and ordinary-user platform-level multi-run
+orchestration stays blocked until a future G8 gate is explicitly reopened with
+capacity, governance, sandbox, model-gateway, artifact/event, cost, and
+rollback evidence.
+
 ### P2 Multi-Agent Dependency Readiness Projection
 
 Status: merged on `main` at
@@ -1513,7 +1531,7 @@ for both `ai-platform-api` and `ai-platform-worker`, with
 `ai-platform.source_note=p2-multi-agent-readiness-projection`. The 211 smoke
 verified API health, OpenAPI route exposure for
 `/api/ai/runs/{run_id}/control/readiness`, API/worker label parity, clean
-recent API/worker logs, ordinary-user multi-agent readiness counts for a
+recent API/worker logs, ordinary-user platform-level multi-run readiness counts for a
 `plan -> code -> verify` dependency chain, fail-closed dispatch reason
 `runtime_dispatch_not_enabled`, hidden dependency blocking/redaction for an
 unsafe `qa-file-reviewer` dependency, redaction of raw skill/resource/sandbox

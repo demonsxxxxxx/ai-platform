@@ -90,15 +90,18 @@ is not production readiness.
 S1 completion does not:
 
 - raise production concurrency defaults
-- open platform-level multi-run orchestration exposure
+- broaden ordinary-user platform-level multi-run orchestration exposure
 - claim Docker sandbox hardening
 - permit department rollout
 - enable long-term cross-session memory by default
 - close packaged frontend image release acceptance
 - close signed Skill package, SBOM, license, or vulnerability evidence
 
-The next work remains S2/G7/G8/G9/G10 follow-up work unless a future issue and
-gate-specific evidence explicitly changes that boundary.
+The next work remains S2 governance/operations evidence, G7 sandbox hardening,
+B3 SDK subagent fanout capacity evidence, G9 observability acceptance, and G10
+workflow-owner rollout preparation. G8 platform-level multi-run orchestration
+stays a deferred blocked expansion unless a future issue explicitly reopens it
+with gate-specific evidence.
 
 ## Closure Checklist
 
@@ -112,5 +115,5 @@ gate-specific evidence explicitly changes that boundary.
 | Queue, worker, and Foundation Runtime concurrency | Covered for controlled POC correctness; production capacity increases remain blocked. |
 | Tool, skill, and memory governance | Fail-closed S1 baseline covered; production Skill release and longer memory policy remain follow-ups. |
 | Sandbox | Fake provider remains local/test-only; Docker hardening remains G7. |
-| Multi-agent | Feature-flagged/internal only; ordinary-user exposure remains blocked. |
+| Multi-agent | SDK agent/subagent behavior stays inside one governed platform run; platform-level multi-run orchestration is deferred and ordinary-user exposure remains blocked. |
 | Frontend | Active public/admin projection safety is within S1; packaged frontend image release acceptance remains S2 delivery work. |

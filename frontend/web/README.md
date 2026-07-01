@@ -103,7 +103,8 @@ This import is intentionally source-first:
   blockers.
 - Issue #22 office-user context continuity and sandbox cold-start UX is not
   implemented here; it should shape later workbench design.
-- G8/G10 Long Task and Multi-Agent work are not implemented by this migration.
+- G8 platform-level multi-run orchestration and G10 workflow-owner rollout work
+  are not implemented by this migration.
 
 ## Future Multi-Image Direction
 

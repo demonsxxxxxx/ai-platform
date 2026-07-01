@@ -202,8 +202,8 @@ Contract flags stay fail-closed: `does_not_raise_defaults = true`,
 `does_not_claim_safe_concurrency = true`,
 `does_not_enable_ordinary_user_multi_agent = true`, and
 `does_not_close_b3_gate = true`. This is source contract only; it does not raise production defaults,
-does not close B3, and must not be used as
-ordinary-user multi-agent exposure evidence.
+does not close B3, and must not be used as ordinary-user platform-level multi-run
+orchestration exposure evidence.
 
 This is a fail-closed operator catalog. When load-test evidence is missing or
 incomplete, every profile keeps
@@ -213,7 +213,8 @@ complete, the status advances only to `operator_review_required` and the
 decision advances only to
 `operator_review_required_before_default_change`; it still does not claim a safe
 concurrency number and does not automatically raise API, worker, DB pool, Redis
-queue, sandbox, model-gateway, or multi-agent defaults.
+queue, sandbox, model-gateway, SDK subagent fanout, or platform-level
+multi-run orchestration exposure defaults.
 Recorded gate names alone are not sufficient evidence. For each recorded gate,
 the snapshot must include a per-gate evidence contract with all required
 evidence keys, cleanup proof status, and stop-condition status. If any recorded
@@ -258,7 +259,10 @@ The workflow is intentionally conservative:
 5. Record cleanup proof for test tenants, queues, sandbox leases, and generated
    artifacts.
 6. Assemble an operator-reviewed recorded-gate snapshot with
-   `tools/capacity_recorded_gate_snapshot.py`.
+   `tools/capacity_recorded_gate_snapshot.py`. When the same operator packet
+   includes the B3 SDK subagent fanout measurement, pass it through
+   `--profile-evidence-json` so the tool writes only
+   `load_test_evidence.profile_evidence.b3_10x4_sdk_subagents`.
 7. Generate the final fail-closed verdict with
    `tools/capacity_gate_readiness.py`.
 
@@ -581,7 +585,7 @@ After an operator has reviewed the measured artifacts and created a compact
 per-gate evidence packet, use:
 
 ```powershell
-python tools/capacity_recorded_gate_snapshot.py --runtime-evidence-json capacity-runtime-evidence-end.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-api-read-write-burst.json --gate api_read_write_burst --format json
+python tools/capacity_recorded_gate_snapshot.py --runtime-evidence-json capacity-runtime-evidence-end.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-api-read-write-burst.json --profile-evidence-json capacity-profile-evidence-b3-10x4-sdk-subagents.json --gate api_read_write_burst --format json
 ```
 
 The input packet schema is `ai-platform.capacity-recorded-gate-evidence.v1`.
@@ -589,13 +593,17 @@ The output schema is `ai-platform.capacity-recorded-gate-snapshot.v1`. This
 step is recorded in the generated operator workflow as
 `assemble_recorded_gate_snapshot`.
 
-The tool only accepts explicit operator-reviewed values for all required
-evidence fields. Each field must be a safe relative artifact reference or a
-scalar measured value, and the packet must carry `does_not_raise_defaults =
-true`, accepted cleanup proof status, accepted stop-condition status, and no
-triggered stop conditions. URLs, absolute paths, path traversal, raw/private
-path segments, secret-like markers, raw storage keys, sandbox workdirs, and
-executor private payloads are rejected without echoing the unsafe value.
+The recorded-gate tool only accepts explicit operator-reviewed values for all
+required gate evidence fields. Each field must be a safe relative artifact
+reference or a scalar measured value, and the packet must carry
+`does_not_raise_defaults = true`, accepted cleanup proof status, accepted
+stop-condition status, and no triggered stop conditions. When
+`--profile-evidence-json` is supplied, that separate packet is sanitized through
+the B3 profile contract and can only populate
+`load_test_evidence.profile_evidence.b3_10x4_sdk_subagents`; it does not mark
+any gate recorded. URLs, absolute paths, path traversal, raw/private path
+segments, secret-like markers, raw storage keys, sandbox workdirs, and executor
+private payloads are rejected without echoing the unsafe value.
 
 This tool does not turn `probe_only_not_recorded` bounded probe output into
 recorded gate evidence by itself. It only merges a reviewed evidence packet
@@ -603,7 +611,10 @@ into a sanitized capacity evidence snapshot and immediately returns a
 fail-closed readiness preview. If only one gate is recorded, the preview still
 keeps the remaining gates missing and preserves
 `production_default_decision =
-do_not_raise_without_recorded_load_test_evidence`.
+do_not_raise_without_recorded_load_test_evidence`. If all seven gates are
+recorded and B3 profile evidence is accepted, `tools/capacity_profile_readiness.py`
+can advance only to `operator_review_required`; it still does not close B3 or
+raise production defaults.
 
 ## Required Load-Test Gates
 
@@ -659,8 +670,9 @@ Each run should capture:
 - Do not raise `MAX_ACTIVE_WORKER_RUNS`, `MAX_ACTIVE_RUNS_PER_USER`, DB pool
   size, queue tenant/user quotas, sandbox container limits, or model gateway
   concurrency without recorded load-test evidence.
-- Do not enable multi-agent fanout for ordinary users as a capacity test
-  shortcut.
+- Do not enable ordinary-user platform-level multi-run orchestration as a
+  capacity test shortcut. SDK subagent fanout capacity must be measured inside
+  governed platform runs.
 - Do not use Docker compose one-command startup as the current #21 gate.
 - Run Docker and 211 runtime smoke only on Docker-capable hosts; this Windows
   workstation should use repository-native checks.

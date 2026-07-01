@@ -4,7 +4,7 @@
 
 Close the remaining multi-tenant high-concurrency risks tracked by GitHub issue
 #20 without moving the product toward Docker compose packaged delivery or
-ordinary-user multi-agent runtime exposure.
+ordinary-user platform-level multi-run orchestration exposure.
 
 This design uses the current PRD, foundation roadmap, guardrails, `AGENTS.md`,
 current `main`, and issues #15/#16/#17/#20 as the source of truth. It keeps the

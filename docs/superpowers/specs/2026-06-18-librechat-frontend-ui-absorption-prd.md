@@ -70,7 +70,7 @@ backend-plus-frontend work.
 | Importing LibreChat data-provider contracts as-is | Those contracts assume LibreChat's backend. ai-platform frontend must use ai-platform service adapters and public/admin projections. |
 | Implementing missing backend product contracts in Phase 1 | Phase 1 is a frontend absorption and RBAC replacement slice over existing contracts. Missing department marketplace, MCP management, user/role CRUD, model administration, notification, or settings contracts require Phase 2 backend issues. |
 | Closing packaged frontend release acceptance from this PRD alone | Closure requires implementation, build evidence, projection audit, review, and 211 smoke where applicable. |
-| Broadening ordinary-user write tools or SDK subagent exposure | UI adoption cannot bypass G5/G6/G7/G8/G9 gates, capacity evidence, or tool permission controls. |
+| Broadening ordinary-user write tools or platform-level multi-run orchestration exposure | UI adoption cannot bypass G5/G6/G7/G9 gates, B3 SDK subagent fanout capacity evidence, or tool permission controls; G8 remains deferred unless explicitly reopened. |
 
 ## 4. Reference Source Boundary
 

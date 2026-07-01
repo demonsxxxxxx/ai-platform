@@ -102,7 +102,7 @@ tenant throttle, user throttle, or ordinary backlog.
 
 This slice does not migrate Redis topology, add per-tenant queues, open new
 sandbox/tool privileges, create a frontend entry, change executor private
-payloads, or advance P2 multi-agent exposure. Local Docker remains unsupported;
+payloads, or advance P2 platform-level multi-run orchestration exposure. Local Docker remains unsupported;
 Docker/compose/runtime smoke stays on 211.
 
 ## Verification

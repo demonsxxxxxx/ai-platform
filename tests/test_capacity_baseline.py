@@ -1504,6 +1504,17 @@ def test_capacity_profile_readiness_redacts_unsafe_sdk_subagent_profile_evidence
     assert "sdk_subagent_fanout_measurement_ref" in markdown
 
 
+def test_capacity_profile_readiness_markdown_names_g8_boundary_precisely():
+    snapshot = _snapshot_with_complete_recorded_gates()
+    readiness = build_capacity_gate_readiness(snapshot)
+    profile_readiness = build_capacity_profile_readiness(readiness)
+
+    markdown = render_capacity_profile_readiness_markdown(profile_readiness)
+
+    assert "does not enable ordinary-user platform-level multi-run orchestration" in markdown
+    assert "does not enable ordinary-user multi-agent" not in markdown
+
+
 def test_capacity_profile_readiness_recomputes_inconsistent_gate_readiness_fail_closed():
     inconsistent_gate_readiness = {
         "schema_version": "ai-platform.capacity-gate-readiness.v1",
@@ -2396,6 +2407,7 @@ def test_capacity_recorded_gate_snapshot_records_only_explicit_complete_gate():
     assert result["input_status"] == {
         "runtime_evidence": "accepted",
         "recorded_gate_evidence": "accepted",
+        "profile_evidence": "not_provided",
     }
     assert result["recorded_gate"] == "api_read_write_burst"
     assert result["does_not_raise_defaults"] is True
@@ -2556,6 +2568,109 @@ def test_capacity_recorded_gate_snapshot_preserves_existing_recorded_gates():
     assert result["production_default_decision"] == "operator_review_required_before_default_change"
 
 
+def test_capacity_recorded_gate_snapshot_preserves_b3_profile_evidence_when_adding_gate():
+    snapshot = _snapshot_with_complete_recorded_gates()
+    existing_recorded_gates = [gate for gate in LOAD_TEST_GATES if gate != "api_read_write_burst"]
+    snapshot["load_test_evidence"]["recorded_gates"] = existing_recorded_gates
+    snapshot["load_test_evidence"]["gate_evidence"].pop("api_read_write_burst")
+    snapshot["load_test_evidence"]["profile_evidence"] = {
+        "b3_10x4_sdk_subagents": {
+            "target_profile_id": "b3_10x4_sdk_subagents",
+            "evidence_source": "operator_reviewed_recorded_snapshot",
+            "observed_concurrent_sessions": 10,
+            "observed_peak_sdk_subagents_per_session": 4,
+            "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
+            "production_concurrency_defaults_raised": False,
+            "safe_concurrency_claimed": False,
+            "ordinary_user_multi_agent_enabled": False,
+        }
+    }
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+    evidence_packet = {
+        "schema_version": "ai-platform.capacity-recorded-gate-evidence.v1",
+        "gate": "api_read_write_burst",
+        "does_not_raise_defaults": True,
+        "evidence": {
+            item: f"capacity-evidence/api-read-write-burst/{item}.json"
+            for item in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+        },
+        "cleanup_proof_status": "verified",
+        "stop_condition_status": "passed",
+        "triggered_stop_conditions": [],
+    }
+
+    result = build_capacity_recorded_gate_snapshot(runtime_evidence, evidence_packet)
+    profile_readiness = build_capacity_profile_readiness(result["readiness"])
+
+    assert result["status"] == "recorded_gate_input_accepted"
+    assert result["readiness"]["status"] == "ready_for_operator_review"
+    assert result["snapshot"]["load_test_evidence"]["profile_evidence"] == {
+        "b3_10x4_sdk_subagents": {
+            "target_profile_id": "b3_10x4_sdk_subagents",
+            "evidence_source": "operator_reviewed_recorded_snapshot",
+            "observed_concurrent_sessions": 10,
+            "observed_peak_sdk_subagents_per_session": 4,
+            "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
+            "production_concurrency_defaults_raised": False,
+            "safe_concurrency_claimed": False,
+            "ordinary_user_multi_agent_enabled": False,
+        }
+    }
+    assert profile_readiness["status"] == "operator_review_required"
+    assert profile_readiness["profiles"][0]["profile_evidence_status"] == "accepted"
+
+
+def test_capacity_recorded_gate_snapshot_rejects_incomplete_profile_evidence_without_echoing_values():
+    snapshot = _snapshot_with_complete_recorded_gates()
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+    evidence_packet = {
+        "schema_version": "ai-platform.capacity-recorded-gate-evidence.v1",
+        "gate": "api_read_write_burst",
+        "does_not_raise_defaults": True,
+        "evidence": {
+            item: f"capacity-evidence/api-read-write-burst/{item}.json"
+            for item in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+        },
+        "cleanup_proof_status": "verified",
+        "stop_condition_status": "passed",
+        "triggered_stop_conditions": [],
+    }
+    profile_evidence = {
+        "target_profile_id": "b3_10x4_sdk_subagents",
+        "evidence_source": "platform_runtime_profile",
+        "observed_concurrent_sessions": 10,
+        "observed_peak_sdk_subagents_per_session": 4,
+        "sdk_subagent_fanout_measurement_ref": "C:\\Unsafe\\private\\fanout.json",
+        "production_concurrency_defaults_raised": False,
+        "safe_concurrency_claimed": False,
+        "ordinary_user_multi_agent_enabled": False,
+        "api_key": "sk-secret",
+    }
+
+    result = build_capacity_recorded_gate_snapshot(
+        runtime_evidence,
+        evidence_packet,
+        profile_evidence=profile_evidence,
+    )
+    serialized = json.dumps(result, ensure_ascii=False).lower()
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert result["input_status"]["profile_evidence"] == "not_accepted"
+    assert "profile_evidence_sdk_subagent_fanout_measurement_ref_missing_or_invalid" in result["input_errors"]
+    assert result["snapshot"]["load_test_evidence"].get("profile_evidence", {}) == {}
+    assert "c:\\users" not in serialized
+    assert "sk-secret" not in serialized
+    assert "api_key" not in serialized
+
+
 def test_capacity_recorded_gate_snapshot_rejects_unsafe_evidence_without_echoing_values():
     snapshot = build_capacity_evidence_snapshot(
         _admin_runtime_overview(),
@@ -2659,3 +2774,172 @@ def test_capacity_recorded_gate_snapshot_cli_outputs_snapshot_and_verdict(tmp_pa
         "api_read_write_burst"
     ]
     assert "C:\\Users" not in result.stdout
+
+
+def test_capacity_recorded_gate_snapshot_cli_merges_b3_profile_evidence(tmp_path):
+    snapshot = _snapshot_with_complete_recorded_gates()
+    existing_recorded_gates = [gate for gate in LOAD_TEST_GATES if gate != "api_read_write_burst"]
+    snapshot["load_test_evidence"]["recorded_gates"] = existing_recorded_gates
+    snapshot["load_test_evidence"]["gate_evidence"].pop("api_read_write_burst")
+    runtime_path = tmp_path / "runtime-evidence-end.json"
+    gate_evidence_path = tmp_path / "recorded-gate-evidence.json"
+    profile_evidence_path = tmp_path / "b3-profile-evidence.json"
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                "snapshot": snapshot,
+                "readiness": build_capacity_gate_readiness(snapshot),
+            }
+        ),
+        encoding="utf-8",
+    )
+    gate_evidence_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-recorded-gate-evidence.v1",
+                "gate": "api_read_write_burst",
+                "does_not_raise_defaults": True,
+                "evidence": {
+                    item: f"capacity-evidence/api-read-write-burst/{item}.json"
+                    for item in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+                },
+                "cleanup_proof_status": "verified",
+                "stop_condition_status": "passed",
+                "triggered_stop_conditions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    profile_evidence_path.write_text(
+        json.dumps(
+            {
+                "target_profile_id": "b3_10x4_sdk_subagents",
+                "evidence_source": "platform_runtime_profile",
+                "observed_concurrent_sessions": 10,
+                "observed_peak_sdk_subagents_per_session": 4,
+                "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
+                "production_concurrency_defaults_raised": False,
+                "safe_concurrency_claimed": False,
+                "ordinary_user_multi_agent_enabled": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_recorded_gate_snapshot.py",
+            "--runtime-evidence-json",
+            str(runtime_path),
+            "--recorded-gate-evidence-json",
+            str(gate_evidence_path),
+            "--profile-evidence-json",
+            str(profile_evidence_path),
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    profile_readiness = build_capacity_profile_readiness(payload["readiness"])
+
+    assert payload["status"] == "recorded_gate_input_accepted"
+    assert payload["readiness"]["status"] == "ready_for_operator_review"
+    assert payload["snapshot"]["load_test_evidence"]["profile_evidence"] == {
+        "b3_10x4_sdk_subagents": {
+            "target_profile_id": "b3_10x4_sdk_subagents",
+            "evidence_source": "platform_runtime_profile",
+            "observed_concurrent_sessions": 10,
+            "observed_peak_sdk_subagents_per_session": 4,
+            "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
+            "production_concurrency_defaults_raised": False,
+            "safe_concurrency_claimed": False,
+            "ordinary_user_multi_agent_enabled": False,
+        }
+    }
+    assert profile_readiness["profiles"][0]["profile_evidence_status"] == "accepted"
+    assert profile_readiness["status"] == "operator_review_required"
+
+
+def test_capacity_recorded_gate_snapshot_cli_rejects_unsafe_profile_evidence_without_echoing_values(tmp_path):
+    snapshot = _snapshot_with_complete_recorded_gates()
+    runtime_path = tmp_path / "runtime-evidence-end.json"
+    gate_evidence_path = tmp_path / "recorded-gate-evidence.json"
+    profile_evidence_path = tmp_path / "b3-profile-evidence.json"
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                "snapshot": snapshot,
+                "readiness": build_capacity_gate_readiness(snapshot),
+            }
+        ),
+        encoding="utf-8",
+    )
+    gate_evidence_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-recorded-gate-evidence.v1",
+                "gate": "api_read_write_burst",
+                "does_not_raise_defaults": True,
+                "evidence": {
+                    item: f"capacity-evidence/api-read-write-burst/{item}.json"
+                    for item in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+                },
+                "cleanup_proof_status": "verified",
+                "stop_condition_status": "passed",
+                "triggered_stop_conditions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    profile_evidence_path.write_text(
+        json.dumps(
+            {
+                "target_profile_id": "b3_10x4_sdk_subagents",
+                "evidence_source": "platform_runtime_profile",
+                "observed_concurrent_sessions": 10,
+                "observed_peak_sdk_subagents_per_session": 4,
+                "sdk_subagent_fanout_measurement_ref": "C:\\Unsafe\\private\\fanout.json",
+                "production_concurrency_defaults_raised": False,
+                "safe_concurrency_claimed": False,
+                "ordinary_user_multi_agent_enabled": False,
+                "api_key": "sk-secret",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_recorded_gate_snapshot.py",
+            "--runtime-evidence-json",
+            str(runtime_path),
+            "--recorded-gate-evidence-json",
+            str(gate_evidence_path),
+            "--profile-evidence-json",
+            str(profile_evidence_path),
+            "--format",
+            "json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    combined_output = f"{result.stdout}\n{result.stderr}".lower()
+
+    assert result.returncode == 2
+    assert payload["status"] == "blocked_incomplete_inputs"
+    assert payload["input_status"]["profile_evidence"] == "not_accepted"
+    assert "profile_evidence_sdk_subagent_fanout_measurement_ref_missing_or_invalid" in payload["input_errors"]
+    assert "c:\\unsafe" not in combined_output
+    assert "sk-secret" not in combined_output
+    assert "api_key" not in combined_output

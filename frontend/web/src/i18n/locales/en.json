@@ -1991,7 +1991,7 @@
   },
   "seo": {
     "agents": {
-      "description": "Configure and manage AI agents. Set up system prompts, select models, define tools, and orchestrate multi-agent workflows for complex tasks.",
+      "description": "Configure and manage AI agents. Set up system prompts, select models, define governed tools, and tune runtime settings for controlled tasks.",
       "title": "AI Agents"
     },
     "apps": {
@@ -2003,7 +2003,7 @@
       "title": "Communication Channels"
     },
     "chat": {
-      "description": "Have intelligent conversations with AI agents. Multi-model switching, real-time streaming responses, session management, file uploads, and multi-agent collaboration.",
+      "description": "Have intelligent conversations with AI agents. Multi-model switching, real-time streaming responses, session management, file uploads, and governed context provenance.",
       "title": "AI Chat"
     },
     "feedback": {

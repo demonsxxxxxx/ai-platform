@@ -358,7 +358,7 @@ not as current-source S1 complete.
 The accepted baseline is bounded. It does not:
 
 1. Raise production concurrency defaults.
-2. Open ordinary-user platform-level multi-run orchestration exposure.
+2. Broaden ordinary-user platform-level multi-run orchestration exposure.
 3. Claim Docker sandbox hardening.
 4. Permit department rollout.
 5. Enable long-term cross-session memory by default.
@@ -382,7 +382,8 @@ The first stage was accepted after:
 6. G9 provides enough Admin Runtime visibility for controlled operation, but does
    not claim full beta readiness until alerting, golden-set, trace/export, model
    gateway, and release evidence are runtime-accepted.
-7. G8/G10 remain feature-flagged or planning-only for ordinary users.
+7. G8 is deferred/blocked for ordinary users; G10 remains planning-only until
+   workflow-owner rollout evidence exists.
 
 In one sentence:
 
@@ -451,9 +452,9 @@ Recommended order after S1 acceptance:
 6. **G9 Admin Runtime acceptance**: dashboard/operator acceptance, alert
    delivery calibration, model-gateway backpressure evidence, trace/export, and
    release-evidence runtime export.
-7. **G8/G10 advanced Claude Agent SDK task-pattern planning**: only after prior
-   gates, choose 1-2 internal workflows with owners. Use Claude Agent SDK for
+7. **Advanced Claude Agent SDK task-pattern planning**: only after prior gates,
+   choose 1-2 internal workflows with owners. Use Claude Agent SDK for
    execution-layer agent/subagent capability inside governed runs. Do not
    introduce platform-owned parent/child orchestration unless a focused future
-   gate reopens it. The first G8/G10 proof should be capacity and governance
+   G8 gate reopens it. The first proof should be capacity and governance
    evidence for SDK subagent fanout, not a new agent harness.

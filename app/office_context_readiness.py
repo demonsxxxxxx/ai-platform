@@ -668,7 +668,7 @@ def build_office_context_readiness(repo_root: Path | None = None) -> dict[str, A
             "contract, resource/timeout/cleanup/fallback source verifier contract, and cached lease scope "
             f"revalidation source regression; {executor_evidence_policy}; {sandbox_evidence_policy}; "
             "these runtime evidence items do not close G6/G9, production Docker sandbox hardening, "
-            "ordinary-user multi-agent, or packaged frontend acceptance."
+            "ordinary-user platform-level multi-run orchestration, or packaged frontend acceptance."
         ),
     }
 

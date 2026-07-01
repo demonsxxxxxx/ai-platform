@@ -25,7 +25,7 @@ import {
 } from "../../sidebar/unreadCounts";
 import { groupSessionsByTime } from "../sessionHelpers";
 import { SessionItem } from "../../sidebar/SessionItem";
-import { APP_NAME } from "../../../constants";
+import { APP_HOME_URL, APP_NAME } from "../../../constants";
 import { isSessionFavorite } from "../../sidebar/sessionFavorites";
 import type { Project } from "../../../types";
 import {
@@ -186,13 +186,12 @@ export function SessionListContent({
           <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm ring-1 ring-[var(--theme-border)]">
             <Bot size={15} strokeWidth={2.2} aria-hidden="true" />
           </span>
-          <button
-            type="button"
-            onClick={onNewSession}
+          <a
+            href={APP_HOME_URL}
             className="min-w-0 truncate text-[15px] font-semibold leading-none text-[var(--theme-text)] transition-colors hover:text-[var(--theme-primary)]"
           >
             {APP_NAME}
-          </button>
+          </a>
         </div>
         <button
           onClick={onCollapse}
