@@ -15,6 +15,16 @@ EXPECTED_CI_VERIFY = (
     "&& corepack pnpm run test:prd-closure-smoke-source && eslint . && tsc -b && vite build "
     "&& node scripts/write-build-provenance.mjs"
 )
+EXPECTED_WORKFLOW_PYTEST = (
+    "python -m pytest tests/test_deploy_frontend_static.py "
+    "tests/test_frontend_release_traceability.py "
+    "tests/test_frontend_packaged_runtime_smoke.py "
+    "tests/test_frontend_ci_workflow.py "
+    "tests/test_runtime_launch_script.py "
+    "tests/test_source_authority_docs.py "
+    "tests/test_governance_readiness.py "
+    "-q --basetemp .pytest-tmp"
+)
 
 
 def test_frontend_release_traceability_records_ci_contract_without_local_paths():
@@ -36,9 +46,7 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert len(trace["workflow"]["sha256"]) == 64
     assert "corepack pnpm run ci:verify" in trace["workflow"]["enforced_commands"]
     assert "python -m pip install pytest" in trace["workflow"]["enforced_commands"]
-    assert "python -m pytest tests/test_deploy_frontend_static.py -q --basetemp .pytest-tmp" in trace[
-        "workflow"
-    ]["enforced_commands"]
+    assert EXPECTED_WORKFLOW_PYTEST in trace["workflow"]["enforced_commands"]
     assert "python tools/deploy_frontend_static.py --help" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in trace["workflow"]["enforced_commands"]
@@ -402,7 +410,7 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
     assert trace["workflow"]["missing_commands"] == [
         "corepack pnpm install --frozen-lockfile",
         "python -m pip install pytest",
-        "python -m pytest tests/test_deploy_frontend_static.py -q --basetemp .pytest-tmp",
+        EXPECTED_WORKFLOW_PYTEST,
         "corepack pnpm run ci:verify",
         "python tools/frontend_release_traceability.py --format json",
         "python tools/deploy_frontend_static.py --help",

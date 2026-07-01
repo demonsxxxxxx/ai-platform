@@ -38,6 +38,8 @@ OPERATOR_COMMANDS = [
     "sudo -n docker compose ps frontend",
     "curl -fsS http://127.0.0.1:18001/healthz",
     "curl -fsS http://127.0.0.1:18001/auth/login",
+    "curl -fsS http://127.0.0.1:18001/chat",
+    "grep -E -q '<composer_ready_selector>' <logged_in_chat_html_or_browser_probe_json>",
     "curl -fsS http://127.0.0.1:18001/api/ai/health",
 ]
 
@@ -155,6 +157,8 @@ def _build_checks(evidence: dict[str, Any]) -> dict[str, bool]:
     runtime_smoke = _nested_dict(evidence, "runtime_smoke")
     compose_service = _nested_dict(evidence, "compose_service")
     api_health = _nested_dict(runtime_smoke, "api_health")
+    logged_in_chat = _nested_dict(runtime_smoke, "logged_in_chat")
+    composer = _nested_dict(runtime_smoke, "composer")
     leak_scan = _nested_dict(evidence, "leak_scan")
     cleanup = _nested_dict(evidence, "cleanup")
     docker_build_exit_code = _int_or_none(_nested_dict(evidence, "docker_build").get("exit_code", 1))
@@ -178,6 +182,12 @@ def _build_checks(evidence: dict[str, Any]) -> dict[str, bool]:
         "compose_service_running": compose_service.get("state") in {"running", "Up", "healthy"},
         "healthz_ok": _status_code_ok(runtime_smoke.get("healthz")) and _body_status_ok(runtime_smoke.get("healthz")),
         "index_ok": _status_code_ok(runtime_smoke.get("index")),
+        "auth_login_ok": _status_code_ok(runtime_smoke.get("auth_login")),
+        "logged_in_chat_ok": _status_code_ok(logged_in_chat)
+        and logged_in_chat.get("authenticated") is True
+        and logged_in_chat.get("redirected_to_login") is False,
+        "composer_visible": composer.get("visible") is True,
+        "composer_usable": composer.get("usable") is True,
         "api_proxy_ok": _status_code_ok(api_health) and _body_status_ok(api_health),
         "build_provenance_endpoint_ok": _status_code_ok(runtime_smoke.get("build_provenance_endpoint")),
         "leak_scan_passed": leak_scan.get("status") == "passed" and leak_scan.get("forbidden_markers") == [],
@@ -204,6 +214,10 @@ def build_frontend_packaged_runtime_smoke_readiness(
         "compose_service_running": False,
         "healthz_ok": False,
         "index_ok": False,
+        "auth_login_ok": False,
+        "logged_in_chat_ok": False,
+        "composer_visible": False,
+        "composer_usable": False,
         "api_proxy_ok": False,
         "build_provenance_endpoint_ok": False,
         "leak_scan_passed": False,

@@ -27,7 +27,7 @@ DIST_REMEDIATION_COMMANDS = [
 WORKFLOW_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "python -m pip install pytest",
-    "python -m pytest tests/test_deploy_frontend_static.py -q --basetemp .pytest-tmp",
+    "python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py tests/test_governance_readiness.py -q --basetemp .pytest-tmp",
     "corepack pnpm run ci:verify",
     "python tools/frontend_release_traceability.py --format json",
     "python tools/deploy_frontend_static.py --help",
@@ -41,12 +41,17 @@ WORKFLOW_COMMANDS = [
 ]
 WORKFLOW_PATH_FILTERS = [
     "frontend/web/**",
+    "app/governance_readiness.py",
+    "docs/agent-rules/ai-platform-guardrails.md",
     "docs/frontend/**",
     "docs/operations/frontend-static-release-deploy.md",
     "deploy/ai-platform/docker-compose.yml",
     "deploy/ai-platform/docker-compose.frontend.yml",
     "tests/test_deploy_frontend_static.py",
     "tests/test_frontend_*.py",
+    "tests/test_runtime_launch_script.py",
+    "tests/test_source_authority_docs.py",
+    "tests/test_governance_readiness.py",
     "tools/deploy_frontend_static.py",
     "tools/frontend_projection_audit.py",
     "tools/frontend_release_traceability.py",

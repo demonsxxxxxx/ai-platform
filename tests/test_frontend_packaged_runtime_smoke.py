@@ -48,6 +48,16 @@ def complete_evidence():
             "network": "ai-platform-phaseb_default",
             "healthz": {"status_code": 200, "body": "ok"},
             "index": {"status_code": 200},
+            "auth_login": {"status_code": 200},
+            "logged_in_chat": {
+                "status_code": 200,
+                "authenticated": True,
+                "redirected_to_login": False,
+            },
+            "composer": {
+                "visible": True,
+                "usable": True,
+            },
             "api_health": {"status_code": 200, "body": {"status": "ok"}},
             "build_provenance_endpoint": {"status_code": 200},
         },
@@ -90,6 +100,10 @@ def test_frontend_packaged_runtime_smoke_accepts_complete_211_evidence_without_c
     assert readiness["checks"]["compose_port_18001_bound"] is True
     assert readiness["checks"]["compose_service_running"] is True
     assert readiness["checks"]["healthz_ok"] is True
+    assert readiness["checks"]["auth_login_ok"] is True
+    assert readiness["checks"]["logged_in_chat_ok"] is True
+    assert readiness["checks"]["composer_visible"] is True
+    assert readiness["checks"]["composer_usable"] is True
     assert readiness["checks"]["api_proxy_ok"] is True
     assert readiness["checks"]["leak_scan_passed"] is True
     assert readiness["checks"]["cleanup_complete"] is True
@@ -231,7 +245,25 @@ def test_frontend_packaged_runtime_smoke_operator_commands_cover_required_eviden
     assert "docker compose ps frontend" in commands
     assert "http://127.0.0.1:18001/healthz" in commands
     assert "http://127.0.0.1:18001/auth/login" in commands
+    assert "http://127.0.0.1:18001/chat" in commands
+    assert "<composer_ready_selector>" in commands
     assert "http://127.0.0.1:18001/api/ai/health" in commands
+
+
+def test_frontend_packaged_runtime_smoke_requires_post_login_chat_and_composer():
+    evidence = complete_evidence()
+    evidence["runtime_smoke"].pop("logged_in_chat")
+    evidence["runtime_smoke"]["composer"] = {"visible": True, "usable": False}
+
+    readiness = build_frontend_packaged_runtime_smoke_readiness(evidence)
+
+    assert readiness["status"] == "blocked_incomplete_runtime_evidence"
+    assert readiness["checks"]["logged_in_chat_ok"] is False
+    assert readiness["checks"]["composer_visible"] is True
+    assert readiness["checks"]["composer_usable"] is False
+    assert "failed_logged_in_chat_ok" in readiness["blockers"]
+    assert "failed_composer_usable" in readiness["blockers"]
+    assert readiness["closed_evidence_items"] == []
 
 
 def test_frontend_packaged_runtime_smoke_does_not_misclassify_plain_connection_refused():
