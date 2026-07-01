@@ -55,20 +55,22 @@ vulnerability evidence。
 - 已部分推进但未完成：PR #296 已合入 GitHub `main`
   `ae6b7e52c656fd8296cf039834ce8d8559b01228`，它包含 PR #294 的 G7
   verifier-helper callback 默认修复，以及 PR #296 的文档状态清理；但 211
-  仍未部署到该 current-main runtime subject。最新只读 poll 显示 211 source
-  marker 仍是
-  `bd690f72723080beeb820d07679da59d84c7913e`，source snapshot 记录
-  `runtime_affecting_changes_since_runtime_subject=[]`、
-  `runtime_affecting_dirty_paths=[]`、`source_tree_dirty=false`；211 API 直连
-  `http://127.0.0.1:18000/api/ai/health` refused，前端代理
+  API/worker 仍未部署到该 current-main runtime subject。最新只读 poll 显示
+  211 source marker 已是
+  `ae6b7e52c656fd8296cf039834ce8d8559b01228`，source snapshot 记录
+  `source_tree_commit_sha=ae6b7e52c656fd8296cf039834ce8d8559b01228`、
+  `runtime_subject_commit_sha=ae6b7e52c656fd8296cf039834ce8d8559b01228`、
+  `source_tree_dirty=false`、`snapshot_source=codex_origin_main_archive_sync`；
+  211 API 直连 `http://127.0.0.1:18000/api/ai/health` refused，前端代理
   `http://127.0.0.1:18001/api/ai/health` 返回 ok，但 API/worker runtime
   identity 已出现漂移：`ai-platform-api` 运行
   `ai-platform:df85a9f-issue183-contracts-runtime-only-v1`，source/runtime/OCI
   labels 指向 `df85a9fb3266aab92a2ca4122db06d4ec7a00175`；`ai-platform-worker`
   运行 `ai-platform:bd690f7-g7-b3-audit-runtime-only-v1`，source/runtime/OCI
-  labels 指向 `bd690f72723080beeb820d07679da59d84c7913e`。所以这不是
-  current-main source/runtime parity，不是 G7 reviewed release-evidence，也不是
-  B3 load evidence。此前 `g7-runtime-probe-20260701203418`
+  labels 指向 `bd690f72723080beeb820d07679da59d84c7913e`。所以这是
+  current-main source sync，但不是 current-main API/worker runtime parity，不是
+  G7 reviewed release-evidence，也不是 B3 load evidence。此前
+  `g7-runtime-probe-20260701203418`
   命名 runtime-only formal verifier 在 211 通过，覆盖 platform/docker、
   callback stream、cancel stops container、resource-limit timeout cleanup、
   egress default-deny、non-privileged security options 和 8 个 verifier checks；
@@ -95,9 +97,11 @@ vulnerability evidence。
 因此当前下一步不是重开 G8，也不是把 B3 当作普通用户平台级 multi-run 产品曝光；
 下一步是先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime
 observation 和可选 capacity profile readiness 汇总成 fail-closed 阻塞清单，先
-reconcile 211 source/API/worker runtime identity，再部署包含 PR #294
-G7 verifier-helper callback 默认修复的 current-main runtime subject，并基于后续选定的新 runtime subject 重跑 reviewed G7 sandbox evidence、smoke /
-Foundation Runtime concurrency evidence，并把 G7/B3 的证据边界继续保持为
+reconcile 211 source/API/worker runtime identity，把 API 和 worker runtime
+images 对齐到包含 PR #294 G7 verifier-helper callback 默认修复的 selected
+current-main runtime subject，并基于后续选定的新 runtime subject 重跑 reviewed
+G7 sandbox evidence、smoke / Foundation Runtime concurrency evidence，并把
+G7/B3 的证据边界继续保持为
 `runtime pending` / `local partial`，直到真实运行证据闭合。该 audit 只是
 控制/计划工件，不是 G7 runtime evidence 或 B3 load evidence。
 

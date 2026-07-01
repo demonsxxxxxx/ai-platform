@@ -20,18 +20,19 @@ closure evidence by themselves.
 ## Current Reading Guide
 
 Current status must be read as
-`post-PR #296 source progress with 211 runtime drift observed`, not as gate
-closure. Current GitHub `main` is PR #296 merge commit
+`post-PR #296 source sync with 211 runtime drift observed`, not as gate closure.
+Current GitHub `main` is PR #296 merge commit
 `ae6b7e52c656fd8296cf039834ce8d8559b01228`; it includes the PR #294 G7
 verifier-helper callback default fix and the PR #296 document-state cleanup,
-but no 211 rollout evidence has been recorded for that current-main runtime
-subject. A fresh 211 read-only poll still shows the target backend source
+but no API/worker 211 runtime rollout evidence has been recorded for that
+current-main runtime subject. A fresh 211 read-only poll shows the target backend source
 `.ai-platform-source-revision` at
-`bd690f72723080beeb820d07679da59d84c7913e`, and the adjacent source snapshot
-for that synced tree records
-`runtime_affecting_changes_since_runtime_subject=[]`,
-`runtime_affecting_dirty_paths=[]`, and `source_tree_dirty=false` for that
-synced source tree. The same poll shows API/worker runtime drift: the
+`ae6b7e52c656fd8296cf039834ce8d8559b01228`, and the adjacent source snapshot
+records `source_tree_commit_sha=ae6b7e52c656fd8296cf039834ce8d8559b01228`,
+`runtime_subject_commit_sha=ae6b7e52c656fd8296cf039834ce8d8559b01228`,
+`source_tree_dirty=false`, and
+`snapshot_source=codex_origin_main_archive_sync` for that synced current-main
+source tree. The same poll still shows API/worker runtime drift: the
 `ai-platform-api` container is running
 `ai-platform:df85a9f-issue183-contracts-runtime-only-v1` with source/runtime/OCI
 labels at `df85a9fb3266aab92a2ca4122db06d4ec7a00175`, while the
@@ -70,9 +71,9 @@ only; it still needs deployment and a 211 formal verifier rerun before it can
 become reviewed G7 release evidence.
 The previous clean-source readiness command reported
 `source_synced_runtime_pending_followups_open` for the then-selected `bd690f7`
-source/runtime subject; after the PR #296 merge and fresh 211 runtime drift
-poll, the merged source changes are source progress only, not clean-source gate
-closure.
+source/runtime subject; after the PR #296 merge, current-main source sync, and
+fresh 211 runtime drift poll, the merged source changes are source-synced
+progress only, not runtime parity or clean-source gate closure.
 `foundation_alpha_stage_status=runtime_rollout_required`, and
 `stage_acceptance_blockers=["foundation_runtime_concurrency_evidence"]`.
 
@@ -92,10 +93,11 @@ The G8/B3 status boundary should be read as follows:
   recorded load-test gates still missing.
 
 Next closure work is operational, not semantic: reconcile the observed 211
-source/API/worker runtime drift, deploy a selected current-main runtime subject
-that includes the PR #294 G7 verifier-helper callback default fix, then rerun
-the relevant smoke, reviewed G7 sandbox evidence, and Foundation Runtime
-concurrency checks for that selected runtime subject.
+source/API/worker runtime drift by aligning the API and worker runtime images to
+a selected current-main runtime subject that includes the PR #294 G7
+verifier-helper callback default fix, then rerun the relevant smoke, reviewed
+G7 sandbox evidence, and Foundation Runtime concurrency checks for that selected
+runtime subject.
 Before any status upgrade, `tools/g7_b3_completion_audit.py` can summarize the current
 sanitized runtime observation plus optional capacity profile readiness into a
 fail-closed G7/B3 blocker list; that audit is a planning/control artifact, not
@@ -1142,16 +1144,16 @@ follow-up for S2 instead of a standalone S1 stage blocker.
 The table below is a gate/evidence matrix, not a replacement for the Current
 Reading Guide above. Rows that mention `96f27bb` describe reviewed 2026-06-30
 runtime-subject evidence retained in the repository. For this 2026-07-02
-snapshot, current GitHub `main` is `ae6b7e5`, 211 source is still marked at
-`bd690f7`, API/worker runtime images are currently split between `df85a9f` and
-`bd690f7`, the named `g7-runtime-probe-20260701203418` formal verifier evidence
-is historical `d318f9f`, and current-main G7/FRC/B3 follow-ups remain open.
+snapshot, current GitHub `main` and 211 source are `ae6b7e5`, API/worker runtime
+images are currently split between `df85a9f` and `bd690f7`, the named
+`g7-runtime-probe-20260701203418` formal verifier evidence is historical
+`d318f9f`, and current-main G7/FRC/B3 follow-ups remain open.
 The `96f27bb` source-runtime relation is historical evidence only for that
 runtime subject.
 
 | Gate | Current status | Evidence now in repository | Remaining blocker before closure |
 | --- | --- | --- | --- |
-| G0-G1 Source Authority / Security Baseline | Reviewed B0 runtime-relevant smoke and Foundation Runtime concurrency evidence are retained for `96f27bb`, but the 2026-07-02 current observation is not source/runtime parity: GitHub `main` is `ae6b7e5`, 211 source is still `bd690f7`, API labels point to `df85a9f`, and worker labels point to `bd690f7`. This blocks current-source authority claims until reconciled. G0 source-authority closure remains blocked by the external env-file label caveat and production auth rollout evidence. | PRD v2, backend phased PRD, technical acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, 2026-06-30 `96f27bb` POC release evidence, 2026-06-30 `96f27bb` Foundation Runtime concurrency evidence, 2026-06-30 `c3d6525` POC release evidence retained as superseded B0 history, 2026-06-30 `c3d6525` Foundation Runtime concurrency evidence retained as superseded B0 history, 2026-06-30 `442aa39` POC release evidence retained as superseded B0 history, 2026-06-30 `845faf7` Foundation Runtime concurrency evidence retained as superseded non-current-subject FRC, 2026-06-29 `f67986a` POC release evidence, 2026-06-29 `f67986a` Foundation Runtime concurrency evidence, superseded 2026-06-24 `e4c0e9d` POC release evidence, superseded 2026-06-24 `e4c0e9d` Foundation Runtime concurrency evidence, superseded 2026-06-24 `e7558cc` POC release evidence, superseded 2026-06-24 `e7558cc` Foundation Runtime concurrency evidence, superseded 2026-06-24 `17dc3ae` POC release evidence, superseded 2026-06-23 `0a9e70a` POC release evidence, superseded 2026-06-23 `df85a9f` POC release evidence, superseded 2026-06-23 `a4bded0` POC release evidence, superseded 2026-06-22 `2bc3a35` POC release evidence, superseded 2026-06-22 `d94d274` POC release evidence, superseded 2026-06-22 `dab7dbc` POC release evidence, superseded 2026-06-20 `4039e4b` evidence, superseded 2026-06-19 `87528bf` evidence, superseded 2026-06-19 `75ab69b` evidence, superseded 2026-06-19 `dde1749` evidence, superseded 2026-06-19 `14808bc` evidence, superseded 2026-06-18 `5698873` evidence, superseded 2026-06-18 `de12191` evidence, superseded 2026-06-17 `a15c74f` evidence, superseded 2026-06-16 `8e0389e` evidence, 2026-06-15 `380de6b` historical baseline evidence, and issue #164 evidence. | Reconcile 211 source/API/worker runtime identity, record reviewed current-source B0/FRC evidence where required, reconcile the external env-file label caveat, and record production auth rollout evidence before any G0 closure claim. |
+| G0-G1 Source Authority / Security Baseline | Reviewed B0 runtime-relevant smoke and Foundation Runtime concurrency evidence are retained for `96f27bb`, but the 2026-07-02 current observation is not source/runtime parity: GitHub `main` and 211 source are `ae6b7e5`, while API labels point to `df85a9f` and worker labels point to `bd690f7`. This blocks current-source authority claims until the runtime images are reconciled. G0 source-authority closure remains blocked by the external env-file label caveat and production auth rollout evidence. | PRD v2, backend phased PRD, technical acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, 2026-06-30 `96f27bb` POC release evidence, 2026-06-30 `96f27bb` Foundation Runtime concurrency evidence, 2026-06-30 `c3d6525` POC release evidence retained as superseded B0 history, 2026-06-30 `c3d6525` Foundation Runtime concurrency evidence retained as superseded B0 history, 2026-06-30 `442aa39` POC release evidence retained as superseded B0 history, 2026-06-30 `845faf7` Foundation Runtime concurrency evidence retained as superseded non-current-subject FRC, 2026-06-29 `f67986a` POC release evidence, 2026-06-29 `f67986a` Foundation Runtime concurrency evidence, superseded 2026-06-24 `e4c0e9d` POC release evidence, superseded 2026-06-24 `e4c0e9d` Foundation Runtime concurrency evidence, superseded 2026-06-24 `e7558cc` POC release evidence, superseded 2026-06-24 `e7558cc` Foundation Runtime concurrency evidence, superseded 2026-06-24 `17dc3ae` POC release evidence, superseded 2026-06-23 `0a9e70a` POC release evidence, superseded 2026-06-23 `df85a9f` POC release evidence, superseded 2026-06-23 `a4bded0` POC release evidence, superseded 2026-06-22 `2bc3a35` POC release evidence, superseded 2026-06-22 `d94d274` POC release evidence, superseded 2026-06-22 `dab7dbc` POC release evidence, superseded 2026-06-20 `4039e4b` evidence, superseded 2026-06-19 `87528bf` evidence, superseded 2026-06-19 `75ab69b` evidence, superseded 2026-06-19 `dde1749` evidence, superseded 2026-06-19 `14808bc` evidence, superseded 2026-06-18 `5698873` evidence, superseded 2026-06-18 `de12191` evidence, superseded 2026-06-17 `a15c74f` evidence, superseded 2026-06-16 `8e0389e` evidence, 2026-06-15 `380de6b` historical baseline evidence, and issue #164 evidence. | Reconcile 211 source/API/worker runtime identity, record reviewed current-source B0/FRC evidence where required, reconcile the external env-file label caveat, and record production auth rollout evidence before any G0 closure claim. |
 | G2-G4 Control Plane MVP | Substantial coverage; keep under regression. | Session/run/file/artifact/skill/tool/memory/event/audit contracts, repositories, routes, schema indexes, and focused tests. | Full regression before PR/deploy, plus no executor-owned platform schema drift. |
 | G5 Run Lifecycle / Worker Runtime V1 | Foundation Alpha POC queue/run/worker execution, Admin capacity/backpressure projection, and Foundation Runtime concurrency evidence are retained for `96f27bb`. They do not prove the current GitHub `main` runtime state, do not reconcile the observed 211 API/worker image split, do not close B3 capacity, and do not raise defaults. | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, Admin Runtime capacity/backpressure projection, #20 roadmap closure notes, 2026-06-30 `96f27bb` POC verifier evidence, 2026-06-30 `96f27bb` verified Foundation Runtime concurrency evidence, 2026-06-30 `c3d6525` POC verifier evidence retained as superseded B0 history, 2026-06-30 `c3d6525` verified Foundation Runtime concurrency evidence retained as superseded B0 history, 2026-06-30 `442aa39` POC verifier evidence retained as superseded B0 history, 2026-06-30 `845faf7` verified Foundation Runtime concurrency evidence retained as superseded non-current-subject FRC, 2026-06-29 `f67986a` POC verifier evidence, 2026-06-29 `f67986a` verified Foundation Runtime concurrency evidence, superseded 2026-06-24 `e4c0e9d` POC verifier evidence, superseded 2026-06-24 `e4c0e9d` verified Foundation Runtime concurrency evidence, superseded 2026-06-24 `e7558cc` POC verifier evidence, superseded 2026-06-24 `17dc3ae` POC verifier evidence, superseded 2026-06-23 `0a9e70a` POC verifier evidence, superseded 2026-06-23 `df85a9f` POC verifier evidence, superseded 2026-06-23 `a4bded0` POC verifier evidence, superseded 2026-06-22 `2bc3a35` POC verifier evidence, superseded 2026-06-22 `d94d274` POC verifier evidence, superseded 2026-06-22 `dab7dbc` POC verifier evidence, superseded 2026-06-20 `4039e4b` POC verifier evidence, superseded 2026-06-19 `87528bf` POC verifier evidence, superseded 2026-06-19 `75ab69b` POC verifier evidence, superseded 2026-06-19 `dde1749` POC verifier evidence, superseded 2026-06-19 `14808bc` POC verifier evidence, superseded 2026-06-19 `14808bc` 240s blocked FRC diagnostic, superseded 2026-06-18 `5698873` evidence, superseded 2026-06-18 `de12191` evidence, superseded 2026-06-17 `a15c74f` evidence, superseded 2026-06-16 `8e0389e` failed-closed FRC diagnostics, superseded 2026-06-17 `8e0389e` verified Foundation Runtime concurrency evidence, and 2026-06-15 `380de6b` historical accepted concurrency evidence. | Keep #21/B3 capacity evidence, large queue bounded lookup pressure, worker parallelism/capacity profiling, and multi-tenant load evidence separate from #164. #21 is currently closed in GitHub but the B3 capacity evidence remains incomplete. Production defaults stay unchanged. |
 | G6 Tool / Skill / Memory Governance | Admin Runtime governance projection now has focused 211 smoke evidence for the POC runtime, and Foundation readiness records `memory_context_controls` with `session_scoped_memory=true`, `ordinary_user_opt_out=true`, `retention_cleanup=true`, `delete_redaction=true`, `public_admin_projection_safe=true`, `long_term_cross_session_memory_fail_closed=true`, exact tool-permission decision lookup source tests, admin bulk-review source-route runtime-control tests, Admin Skill release dashboard source-route runtime-control tests, source-level context-pack persistence/versioning, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, document-centric follow-up state source tests, reviewed `8e0389e` 211 executor context-pack evidence, and reviewed PR #44 211 sandbox latency split evidence. G6 remains partial and ordinary-user governance/frontend rollout remains blocked. | Tool policy taxonomy/history, exact tool-permission decision lookup source tests, admin bulk-review source-route runtime-control tests, Admin Skill release dashboard source-route runtime-control tests, public permission-card projection, skill release/dependency policy contracts, memory delete/retention/redaction/export readiness, office context-pack architecture readiness, `source_level_context_pack_persistence_and_versioning`, `context_pack_version`, `context_pack_generated_at`, context snapshot public provenance projection contract, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, document-centric follow-up state source tests, `8e0389e` executor context-pack runtime evidence, PR #44 `office-context-runtime` sandbox latency evidence, governance readiness CLI, POC runs using governed skills, and 2026-06-15 380de6b governance runtime smoke evidence. | Legacy frontend route remap/policy enforcement, signed package or SBOM review evidence, dependency vulnerability/license evidence, admin bulk-review visual acceptance, admin bulk-review 211 acceptance, Admin Skill release visual acceptance, Admin Skill release 211 acceptance, long-term cross-session memory policy closure, ordinary-user platform-level multi-run orchestration exposure controls, production Docker sandbox hardening, packaged frontend acceptance, and broader 211 acceptance. |
