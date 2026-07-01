@@ -56,6 +56,15 @@ def test_backend_prd_records_authority_status_and_stage_boundaries():
         "| B3 | `local partial`; source contract only for `b3_10x4_sdk_subagents`"
         in text
     )
+    assert (
+        "| B0 | Reviewed runtime-relevant smoke and Foundation Runtime concurrency evidence exist for `96f27bb`"
+        in text
+    )
+    assert "Reviewed runtime-subject evidence exists for `e4c0e9d`" not in text
+    assert (
+        "records B0 runtime-relevant evidence for `96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c`"
+        in compact_text
+    )
 
     for stage_heading in (
         "### 5.2 B0 Latest-Main Backend Readiness Refresh",

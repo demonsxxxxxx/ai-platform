@@ -263,10 +263,10 @@ def test_backend_prd_records_b3_operator_snapshot_and_reference_boundaries():
     for expected in (
         "Current Backend Productization State",
         "#164",
-        "e4c0e9d0298c684df369afecd29ec902fcc2221d",
-        "Reviewed runtime-subject evidence exists for `e4c0e9d`",
+        ACTIVE_RUNTIME_SUBJECT_SHA,
+        f"Reviewed runtime-relevant smoke and Foundation Runtime concurrency evidence exist for `{ACTIVE_RUNTIME_SUBJECT_SHORT_SHA}`",
         "not `gate closable`",
-        "not current-source verified after later runtime-affecting `main` changes",
+        "not exact current-source runtime verification",
         "Reopen when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge.",
         "Near-term backend execution order is therefore B1/B2/B3/B4",
         "B0 freshness watch",
@@ -318,7 +318,7 @@ def test_backend_prd_records_b3_operator_snapshot_and_reference_boundaries():
         "External projects are references only. ai-platform owns identity, tenancy, RBAC, audit, source authority, release evidence, and gate closure.",
         "Reading a project does not authorize copying code, adding dependencies, or changing runtime architecture.",
         "Repositories with GitHub license posture `Other`, AGPL/LGPL/copyleft terms, or unknown license posture are concept-only references by default.",
-        "This is not `gate closable`, does not prove current-source runtime verification for later `main` commits, and does not close full G0 source authority because the rollout used a runtime-only marker rebase workaround, the compose env-file label still points to an external env-file path, production auth rollout remains separate, and future runtime-affecting source changes reopen B0",
+        "This is not `gate closable`, does not prove exact current-source runtime verification for later runtime-neutral docs/evidence/test commits, and does not close full G0 source authority because production auth rollout remains separate and future runtime-affecting source changes reopen B0",
         "Code adaptation still requires a focused issue with repository, commit/tag, license, tests, and runtime evidence where applicable.",
     ):
         assert boundary in compact_backend_prd_text

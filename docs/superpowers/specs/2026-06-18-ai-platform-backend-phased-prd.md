@@ -96,23 +96,30 @@ This section is a planning pointer for the 2026-06-20 backend route. The live
 status source remains `docs/operations/ai-platform-gate-status.md`, release
 evidence, and the current readiness CLI output.
 
-Issue #164 records B0 runtime-subject evidence for
-`e4c0e9d0298c684df369afecd29ec902fcc2221d` after PR #206. Source/runtime/image
-labels, API/worker health, Foundation Runtime concurrency, redaction, runtime
-POC smoke, and runtime export/trace acceptance are recorded for that named
-runtime subject. This is not `gate closable`, does not prove current-source
-runtime verification for later `main` commits, and does not close full G0 source
-authority because the rollout used a runtime-only marker rebase workaround, the
-compose env-file label still points to an external env-file path, production auth
-rollout remains separate, and future runtime-affecting source changes reopen B0
-until fresh source, runtime, image, health, concurrency, redaction, and review
-evidence is recorded. This does not close B1/B2/B3 product gates, raise
-production concurrency defaults, claim Docker sandbox hardening, or enable
-ordinary-user multi-agent exposure.
+Issue #164 records B0 runtime-relevant evidence for
+`96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c` after the 2026-06-30 refresh. The
+gate-status snapshot and release evidence record source/runtime/image labels,
+API/worker health, runtime POC smoke, Auth/RBAC, governance runtime smoke,
+release-evidence runtime acceptance, alert/trace runtime acceptance, and
+Foundation Runtime concurrency for the `96f27bb` runtime subject. The
+source-runtime relation manifest records `96f27bb` as both source tree and
+runtime subject with no runtime-affecting delta, so readiness may report
+`runtime_current_for_runtime_relevant_source` even when later docs, evidence,
+or tests make the clean source tree newer than the running image.
+
+This is not `gate closable`, does not prove exact current-source runtime
+verification for later runtime-neutral docs/evidence/test commits, and does not
+close full G0 source authority because production auth rollout remains
+separate and future runtime-affecting source changes reopen B0 until fresh
+source, runtime, image, health, concurrency, redaction, and review evidence is
+recorded. This does not close B1/B2/B3/B4 product gates, raise production
+concurrency defaults, claim Docker sandbox hardening, or enable ordinary-user
+multi-agent exposure. Earlier #164 runtime subjects such as `e4c0e9d` and the
+immediately superseded `c3d6525` remain reviewed historical evidence only.
 
 | Stage | Current planning status | Active next boundary |
 | --- | --- | --- |
-| B0 | Reviewed runtime-subject evidence exists for `e4c0e9d`; not `gate closable`, and not current-source verified after later runtime-affecting `main` changes. | Reopen when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge. Reconcile the env-file label caveat before any full G0 closure claim. |
+| B0 | Reviewed runtime-relevant smoke and Foundation Runtime concurrency evidence exist for `96f27bb`; not `gate closable`, and not exact current-source runtime verification for later runtime-neutral docs/evidence/test commits. | Reopen when readiness reports runtime rollout, source/runtime drift, or a runtime-affecting merge. Reconcile the remaining G0 source-authority and production auth rollout caveats before any full G0 closure claim. |
 | B1 | `local partial`; source contracts and named runtime evidence exist, but the stage is not `gate closable`. | Choose one governed document workflow and prove memory/context through `live_worker_run_payload` plus rollback and deny paths. |
 | B2 | `local partial`; fake provider remains local/test-only and controlled probes do not prove governed SDK Skill execution. | Prove Docker/equivalent sandbox through a governed Skill run with lease, callback, resource, egress, artifact, cancel, cleanup, and redaction evidence. |
 | B3 | `local partial`; source contract only for `b3_10x4_sdk_subagents`; production defaults stay unchanged. | Record an operator-reviewed capacity snapshot for 10 sessions x peak 4 SDK subagents/session, including model-gateway, sandbox, token/cost, event/artifact, and cleanup pressure. |
