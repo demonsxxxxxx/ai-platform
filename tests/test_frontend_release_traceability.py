@@ -12,7 +12,8 @@ from tools.frontend_release_traceability import (
 
 EXPECTED_CI_VERIFY = (
     "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json "
-    "&& eslint . && tsc -b && vite build && node scripts/write-build-provenance.mjs"
+    "&& corepack pnpm run test:prd-closure-smoke-source && eslint . && tsc -b && vite build "
+    "&& node scripts/write-build-provenance.mjs"
 )
 
 
@@ -34,9 +35,17 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert trace["workflow"]["status"] == "present"
     assert len(trace["workflow"]["sha256"]) == 64
     assert "corepack pnpm run ci:verify" in trace["workflow"]["enforced_commands"]
+    assert "python -m pip install pytest" in trace["workflow"]["enforced_commands"]
+    assert "python -m pytest tests/test_deploy_frontend_static.py -q --basetemp .pytest-tmp" in trace[
+        "workflow"
+    ]["enforced_commands"]
+    assert "python tools/deploy_frontend_static.py --help" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in trace["workflow"]["enforced_commands"]
+    assert "docs/operations/frontend-static-release-deploy.md" in trace["workflow"]["required_path_filters"]
     assert "deploy/ai-platform/docker-compose.frontend.yml" in trace["workflow"]["required_path_filters"]
+    assert "tests/test_deploy_frontend_static.py" in trace["workflow"]["required_path_filters"]
+    assert "tools/deploy_frontend_static.py" in trace["workflow"]["required_path_filters"]
     assert "tools/frontend_packaged_runtime_smoke.py" in trace["workflow"]["required_path_filters"]
     assert trace["workflow"]["missing_path_filters"] == []
     assert len(trace["source_hashes"]["package_json_sha256"]) == 64
@@ -377,8 +386,11 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
     ]
     assert trace["workflow"]["missing_commands"] == [
         "corepack pnpm install --frozen-lockfile",
+        "python -m pip install pytest",
+        "python -m pytest tests/test_deploy_frontend_static.py -q --basetemp .pytest-tmp",
         "corepack pnpm run ci:verify",
         "python tools/frontend_release_traceability.py --format json",
+        "python tools/deploy_frontend_static.py --help",
         "python tools/frontend_packaged_runtime_smoke.py --format json",
         "docker build",
         "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}",
@@ -387,7 +399,10 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
         "docker run --rm --entrypoint cat",
         "ai-platform-build-provenance.json",
     ]
+    assert "docs/operations/frontend-static-release-deploy.md" in trace["workflow"]["missing_path_filters"]
     assert "deploy/ai-platform/docker-compose.frontend.yml" in trace["workflow"]["missing_path_filters"]
+    assert "tests/test_deploy_frontend_static.py" in trace["workflow"]["missing_path_filters"]
+    assert "tools/deploy_frontend_static.py" in trace["workflow"]["missing_path_filters"]
     assert "tools/frontend_packaged_runtime_smoke.py" in trace["workflow"]["missing_path_filters"]
 
 

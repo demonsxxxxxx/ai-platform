@@ -24,8 +24,11 @@ DIST_REMEDIATION_COMMANDS = [
 ]
 WORKFLOW_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
+    "python -m pip install pytest",
+    "python -m pytest tests/test_deploy_frontend_static.py -q --basetemp .pytest-tmp",
     "corepack pnpm run ci:verify",
     "python tools/frontend_release_traceability.py --format json",
+    "python tools/deploy_frontend_static.py --help",
     "python tools/frontend_packaged_runtime_smoke.py --format json",
     "docker build",
     "--build-arg AI_PLATFORM_BUILD_COMMIT=${{ github.sha }}",
@@ -37,8 +40,11 @@ WORKFLOW_COMMANDS = [
 WORKFLOW_PATH_FILTERS = [
     "frontend/web/**",
     "docs/frontend/**",
+    "docs/operations/frontend-static-release-deploy.md",
     "deploy/ai-platform/docker-compose.frontend.yml",
+    "tests/test_deploy_frontend_static.py",
     "tests/test_frontend_*.py",
+    "tools/deploy_frontend_static.py",
     "tools/frontend_projection_audit.py",
     "tools/frontend_release_traceability.py",
     "tools/frontend_packaged_runtime_smoke.py",

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build && node scripts/write-build-provenance.mjs",
-    "ci:verify": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json && pnpm run test:prd-closure-smoke-source && eslint . && tsc -b && vite build && node scripts/write-build-provenance.mjs",
+    "ci:verify": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json && corepack pnpm run test:prd-closure-smoke-source && eslint . && tsc -b && vite build && node scripts/write-build-provenance.mjs",
     "lint": "eslint .",
     "projection:audit": "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json",
     "preview": "vite preview",

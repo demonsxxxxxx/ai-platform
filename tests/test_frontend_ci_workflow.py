@@ -9,6 +9,9 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "corepack pnpm install --frozen-lockfile" in workflow
+    assert "python -m pip install pytest" in workflow
+    assert "python -m pytest tests/test_deploy_frontend_static.py -q --basetemp .pytest-tmp" in workflow
+    assert "python tools/deploy_frontend_static.py --help" in workflow
     assert "corepack pnpm run ci:verify" in workflow
     assert "python tools/frontend_release_traceability.py --format json" in workflow
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in workflow
@@ -20,14 +23,21 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "ai-platform-build-provenance.json" in workflow
     assert "frontend/web/**" in workflow
     assert "docs/frontend/**" in workflow
+    assert "docs/operations/frontend-static-release-deploy.md" in workflow
     assert "deploy/ai-platform/docker-compose.frontend.yml" in workflow
+    assert "tests/test_deploy_frontend_static.py" in workflow
     assert "tests/test_frontend_*.py" in workflow
+    assert "tools/deploy_frontend_static.py" in workflow
     assert "tools/frontend_projection_audit.py" in workflow
     assert "tools/frontend_release_traceability.py" in workflow
     assert "tools/frontend_packaged_runtime_smoke.py" in workflow
 
+    pytest_install_index = workflow.index("python -m pip install pytest")
+    deploy_test_index = workflow.index("python -m pytest tests/test_deploy_frontend_static.py")
     ci_verify_index = workflow.index("corepack pnpm run ci:verify")
     traceability_index = workflow.index("python tools/frontend_release_traceability.py --format json")
+    assert pytest_install_index < deploy_test_index
+    assert deploy_test_index < ci_verify_index
     assert ci_verify_index < traceability_index
 
     lower = workflow.lower()

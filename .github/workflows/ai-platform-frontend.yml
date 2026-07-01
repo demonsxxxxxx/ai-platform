@@ -5,8 +5,11 @@ on:
     paths:
       - "frontend/web/**"
       - "docs/frontend/**"
+      - "docs/operations/frontend-static-release-deploy.md"
       - "deploy/ai-platform/docker-compose.frontend.yml"
+      - "tests/test_deploy_frontend_static.py"
       - "tests/test_frontend_*.py"
+      - "tools/deploy_frontend_static.py"
       - "tools/frontend_projection_audit.py"
       - "tools/frontend_release_traceability.py"
       - "tools/frontend_packaged_runtime_smoke.py"
@@ -17,8 +20,11 @@ on:
     paths:
       - "frontend/web/**"
       - "docs/frontend/**"
+      - "docs/operations/frontend-static-release-deploy.md"
       - "deploy/ai-platform/docker-compose.frontend.yml"
+      - "tests/test_deploy_frontend_static.py"
       - "tests/test_frontend_*.py"
+      - "tools/deploy_frontend_static.py"
       - "tools/frontend_projection_audit.py"
       - "tools/frontend_release_traceability.py"
       - "tools/frontend_packaged_runtime_smoke.py"
@@ -52,6 +58,14 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend/web
         run: corepack pnpm install --frozen-lockfile
+
+      - name: Install Python test dependencies
+        run: python -m pip install pytest
+
+      - name: Verify static frontend deploy helper
+        run: |
+          python -m pytest tests/test_deploy_frontend_static.py -q --basetemp .pytest-tmp
+          python tools/deploy_frontend_static.py --help
 
       - name: Verify frontend projection and build
         working-directory: frontend/web
