@@ -289,6 +289,8 @@ export function ChatView({
   const [messageListSessionKey, setMessageListSessionKey] = useState(
     sessionId ?? "__new_session__",
   );
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [pendingInput, setPendingInput] = useState<string | null>(null);
 
   const {
     messagesContainerRef,
@@ -585,6 +587,13 @@ export function ChatView({
         : range,
     );
   }, []);
+  const handleMentionQueryChange = useCallback(
+    (query: string | null) => setMentionQuery(query),
+    [],
+  );
+  const handleStarterPromptSelect = useCallback((text: string) => {
+    setPendingInput(text);
+  }, []);
 
   const virtuosoComponents = useMemo(
     () => ({
@@ -722,39 +731,16 @@ export function ChatView({
     />
   );
 
-  const composer =
-    messages.length > 0 ? (
-      <div className="relative">
-        {showScrollTop && (
-          <div
-            className={`absolute right-3 sm:right-4 z-50 flex flex-col gap-1.5 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS}`}
-          >
-            <button
-              onClick={scrollToTop}
-              className="flex items-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-[var(--theme-text-secondary)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-colors duration-200 hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:scale-95 dark:bg-stone-900 dark:hover:bg-stone-800"
-              aria-label={t("chat.scrollToTop", "Scroll to top")}
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                className="w-4 h-4 text-stone-500 dark:text-stone-300"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M10 17a.75.75 0 01-.75-.75V5.612l-3.96 4.158a.75.75 0 11-1.08-1.04l5.25-5.5a.75.75 0 011.08 0l5.25 5.5a.75.75 0 11-1.08 1.04l-3.96-4.158V16.25A.75.75 0 0110 17z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            </button>
-          </div>
-        )}
-
-        {!isNearBottom && (
+  const composer = (
+    <div className="relative" data-chat-shell-composer>
+      {messages.length > 0 && showScrollTop && (
+        <div
+          className={`absolute right-3 sm:right-4 z-50 flex flex-col gap-1.5 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS}`}
+        >
           <button
-            onClick={scrollToBottom}
-            className={`absolute left-1/2 z-50 flex items-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-[var(--theme-text-secondary)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-colors duration-200 hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:scale-95 dark:bg-stone-900 dark:hover:bg-stone-800 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS} -translate-x-1/2`}
-            aria-label={t("chat.scrollToBottom", "Scroll to bottom")}
+            onClick={scrollToTop}
+            className="flex items-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-[var(--theme-text-secondary)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-colors duration-200 hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:scale-95 dark:bg-stone-900 dark:hover:bg-stone-800"
+            aria-label={t("chat.scrollToTop", "Scroll to top")}
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -764,16 +750,46 @@ export function ChatView({
             >
               <path
                 fillRule="evenodd"
-                d="M10 3a.75.75 0 01.75.75v10.638l3.96-4.158a.75.75 0 111.08 1.04l-5.25 5.5a.75.75 0 01-1.08 0l-5.25-5.5a.75.75 0 111.08-1.04l3.96 4.158V3.75A.75.75 0 0110 3z"
+                d="M10 17a.75.75 0 01-.75-.75V5.612l-3.96 4.158a.75.75 0 11-1.08-1.04l5.25-5.5a.75.75 0 011.08 0l5.25 5.5a.75.75 0 11-1.08 1.04l-3.96-4.158V16.25A.75.75 0 0110 17z"
                 clipRule="evenodd"
               />
             </svg>
           </button>
-        )}
+        </div>
+      )}
 
-        <ChatInput {...chatInputProps} />
-      </div>
-    ) : null;
+      {messages.length > 0 && !isNearBottom && (
+        <button
+          onClick={scrollToBottom}
+          className={`absolute left-1/2 z-50 flex items-center rounded-full border border-[var(--theme-border)] bg-[var(--theme-bg-card)] p-2 text-[var(--theme-text-secondary)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] transition-colors duration-200 hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] active:scale-95 dark:bg-stone-900 dark:hover:bg-stone-800 ${FLOATING_SCROLL_BUTTON_OFFSET_CLASS} -translate-x-1/2`}
+          aria-label={t("chat.scrollToBottom", "Scroll to bottom")}
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            className="w-4 h-4 text-stone-500 dark:text-stone-300"
+          >
+            <path
+              fillRule="evenodd"
+              d="M10 3a.75.75 0 01.75.75v10.638l3.96-4.158a.75.75 0 111.08 1.04l-5.25 5.5a.75.75 0 01-1.08 0l-5.25-5.5a.75.75 0 111.08-1.04l3.96 4.158V3.75A.75.75 0 0110 3z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </button>
+      )}
+
+      <ChatInput
+        {...chatInputProps}
+        onMentionQueryChange={
+          messages.length === 0 ? handleMentionQueryChange : undefined
+        }
+        pendingInput={pendingInput}
+        onPendingInputConsumed={() => setPendingInput(null)}
+        className="mx-auto max-w-4xl px-2"
+      />
+    </div>
+  );
 
   return (
     <SessionImageGalleryProvider messages={messages}>
@@ -806,7 +822,8 @@ export function ChatView({
               personaPresetsLoading={personaPresetsLoading}
               personaPresetsMutating={personaPresetsMutating}
               canSendMessage={canSendMessage}
-              chatInputProps={chatInputProps}
+              mentionQuery={mentionQuery}
+              onStarterPromptSelect={handleStarterPromptSelect}
               onUsePersonaPreset={onUsePersonaPreset}
               onClearPersonaPreset={onClearPersonaPreset}
             />
