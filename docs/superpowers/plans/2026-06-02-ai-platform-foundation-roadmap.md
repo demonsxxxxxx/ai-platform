@@ -42,6 +42,40 @@ S1 的边界仍然不变：不提高生产并发默认值，不开放 ordinary-u
 memory，不关闭 packaged frontend release，也不关闭 signed Skill/SBOM/license/
 vulnerability evidence。
 
+### 当前路线进展读法
+
+- 状态边界：G8/B3 文档和 readiness 语义应固定为下列读法。旧 G8 普通用户平台级
+  multi-run follow-up 不再作为 Foundation Alpha 顶层 `open_followups`；
+  ordinary-user 平台级 multi-run orchestration 只保留在 blocked expansion /
+  non-expansion invariant 中。机器可读 blocked expansion 名称是
+  `ordinary_user_platform_multi_run_orchestration_exposure`；当前权威文档不再
+  使用旧的泛化 multi-agent exposure 命名。
+- B3 边界：`b3_10x4_sdk_subagents` source contract 是 SDK subagent
+  fanout 容量证据，不是 G8 普通用户平台级 multi-run 产品曝光证据。
+- 已部分推进但未完成：`ai-platform:d318f9f-g7-b3-runtime-only-v1` 已在 211
+  API/worker 运行且 health 返回 ok；`g7-runtime-probe-20260701203418` 这次
+  命名 runtime-only formal verifier 也已在 211 通过，覆盖 platform/docker、
+  callback stream、cancel stops container、resource-limit timeout cleanup、
+  egress default-deny、non-privileged security options 和 8 个 verifier
+  checks。但 current main / 211 source marker 已到
+  `3071a02945c84370f62a9b36884a0a2df8ea9c45`，API/worker 镜像仍是
+  `d318f9f6a68b4c17e221eb32705b3f31d349227a`，且旧 underscore runtime/source
+  labels 仍指向 `96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c`。因此这是 named
+  runtime-subject evidence，不是 reviewed local release-evidence entry，也不是
+  current-main smoke / Foundation Runtime concurrency evidence。
+- 仍未完成：current-main G7 Docker sandbox hardening closure、B3
+  operator-reviewed recorded load evidence、G9 Operations Beta acceptance、G10
+  workflow-owner rollout，以及任何 ordinary-user 平台级 multi-run orchestration
+  暴露。
+
+因此当前下一步不是重开 G8，也不是把 B3 作为普通用户 multi-agent 能力；下一步是
+先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime observation 和可选
+capacity profile readiness 汇总成 fail-closed 阻塞清单，再对齐 211
+current-main source、运行镜像和 label authority，重跑 smoke / Foundation
+Runtime concurrency evidence，并把 G7/B3 的证据边界继续保持为
+`runtime pending` / `local partial`，直到真实运行证据闭合。该 audit 只是
+控制/计划工件，不是 G7 runtime evidence 或 B3 load evidence。
+
 ## 2026-06-06 Gate-Based Roadmap Sync
 
 本节按 GitHub issues #15/#16/#17 同步路线图职责：路线图只作为 product gates、当前状态、阻塞项与下一决策的工具；211 image hash、smoke 输出、逐 PR 执行证据后续应进入独立 release evidence 或 slice execution plan。本文后面的历史段落先保留为 legacy accumulated evidence，不再把新的短期执行流水继续追加成产品需求。
@@ -288,7 +322,7 @@ references.
 This baseline does not claim a safe maximum concurrency number. Before raising
 `MAX_ACTIVE_WORKER_RUNS`, `MAX_ACTIVE_RUNS_PER_USER`, DB pool size,
 tenant/user queue quotas, sandbox container limits, model-gateway concurrency,
-or multi-agent fanout exposure, the target deployment profile still needs
+or SDK subagent fanout capacity inside governed platform runs, the target deployment profile still needs
 recorded load-test evidence for API burst, run creation burst, worker
 throughput, queue depth/lease latency, cancel/retry/resume, sandbox lease/cold
 start, model-gateway timeout/backpressure, and cleanup. Until then, G5 stays

@@ -2,9 +2,22 @@
 
 ## 0. 文档权威
 
-本文件是 `ai-platform` 当前产品方向的唯一总纲 PRD。
+> Status: archived migration appendix.
+>
+> This 2026-05-29 PRD is no longer the active product authority. Use
+> `docs/superpowers/specs/2026-06-10-ai-platform-product-prd-v2.md`,
+> `docs/superpowers/specs/2026-06-11-ai-platform-tech-acceptance.md`,
+> `docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`,
+> `docs/agent-rules/ai-platform-guardrails.md`, current code, and fresh 211
+> runtime evidence for current decisions. Remaining details in this file are
+> legacy contract checks only when they do not contradict those current sources.
+> In particular, its old G8 wording must be read through PRD v2: G8 is a
+> deferred platform-level multi-run orchestration parking-lot, while B3 SDK
+> subagent fanout capacity evidence does not reopen or close G8.
 
-后续实现、评审和汇报只能同时参考：
+本文件曾是 `ai-platform` 产品方向总纲 PRD；现在仅作为历史迁移附录保留。
+
+历史实现、评审和迁移核对曾参考：
 
 - 本 PRD。
 - 当前路线图：`docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md`。
@@ -12,9 +25,9 @@
 - 当前真实代码。
 - 当次 211 运行证据。
 
-本 PRD 不保存非当前主链路、会话过程记录、短期执行证据或临时进程说明。上述内容只能进入当次执行报告，不得反向成为产品需求。
+当前新实现、评审和状态判断不得把本文件作为 active authority；如果本文件与 PRD v2、技术验收、路线图、guardrails、当前代码或新鲜 211 运行证据冲突，以当前来源为准。
 
-本 PRD 只描述当前产品目标、当前主链路和当前交付门禁。已经退出范围的服务、入口、端口、页面或会话候选方案，不以名称保留，也不作为负面清单反复出现。后续 Agent 判断范围时，只检查本 PRD 第 2 节、当前路线图、真实代码和当次 211 证据。
+本附录只保留当时的产品目标、主链路和交付门禁迁移线索。已经退出范围的服务、入口、端口、页面或会话候选方案，不得因本文件存在而反向成为当前产品需求。后续 Agent 判断当前范围时，应检查 PRD v2、当前路线图、真实代码和当次 211 证据。
 
 ## 1. 产品目标
 

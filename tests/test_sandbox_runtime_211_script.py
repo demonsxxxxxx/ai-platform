@@ -1797,6 +1797,24 @@ def test_main_generate_runtime_probe_results_uses_callback_server(tmp_path, monk
     def fake_run(cmd, capture_output, text, timeout, check):
         if tuple(cmd[:3]) == ("docker", "exec", "executor-exec-run-a"):
             return type("Completed", (), {"returncode": 42, "stdout": "", "stderr": ""})()
+        if tuple(cmd) == ("docker", "network", "inspect", "ai-platform-sandbox-egress"):
+            return type(
+                "Completed",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": json.dumps(
+                        [
+                            {
+                                "Name": "ai-platform-sandbox-egress",
+                                "Driver": "bridge",
+                                "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
+                            }
+                        ]
+                    ),
+                    "stderr": "",
+                },
+            )()
         assert tuple(cmd) == ("docker", "inspect", "executor-exec-run-a")
         return type(
             "Completed",
@@ -1815,10 +1833,15 @@ def test_main_generate_runtime_probe_results_uses_callback_server(tmp_path, monk
                                 "CapDrop": ["ALL"],
                                 "ReadonlyRootfs": True,
                                 "Binds": ["/tmp/workspace:/workspace:rw"],
+                                "NetworkMode": "ai-platform-sandbox-egress",
+                                "ExtraHosts": ["host.docker.internal:host-gateway"],
                             },
                             "Mounts": [{"Destination": "/workspace", "RW": True}],
+                            "NetworkSettings": {"Networks": {"ai-platform-sandbox-egress": {}}},
                             "Config": {
                                 "Labels": {
+                                    "ai-platform.egress.policy": "default-deny-no-masq",
+                                    "ai-platform.egress.network": "ai-platform-sandbox-egress",
                                     "ai-platform.egress.callback_host": "host.docker.internal",
                                 },
                             },
@@ -2084,6 +2107,42 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
 
     def fake_run(cmd, capture_output, text, timeout, check):
         docker_calls.append(tuple(cmd))
+        if tuple(cmd) == ("docker", "inspect", "executor-exec-run-a"):
+            return type(
+                "Completed",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": json.dumps(
+                        [
+                            {
+                                "HostConfig": {
+                                    "Memory": 536870912,
+                                    "NanoCpus": 500000000,
+                                    "PidsLimit": 128,
+                                    "Privileged": False,
+                                    "SecurityOpt": ["no-new-privileges:true"],
+                                    "CapDrop": ["ALL"],
+                                    "ReadonlyRootfs": True,
+                                    "Binds": ["/tmp/workspace:/workspace:rw"],
+                                    "NetworkMode": "ai-platform-sandbox-egress",
+                                    "ExtraHosts": ["host.docker.internal:host-gateway"],
+                                },
+                                "Mounts": [{"Destination": "/workspace", "RW": True}],
+                                "NetworkSettings": {"Networks": {"ai-platform-sandbox-egress": {}}},
+                                "Config": {
+                                    "Labels": {
+                                        "ai-platform.egress.policy": "default-deny-no-masq",
+                                        "ai-platform.egress.network": "ai-platform-sandbox-egress",
+                                        "ai-platform.egress.callback_host": "host.docker.internal",
+                                    },
+                                },
+                            }
+                        ]
+                    ),
+                    "stderr": "",
+                },
+            )()
         if tuple(cmd[:3]) == ("docker", "exec", "executor-exec-run-a"):
             assert "https://egress-denied.invalid/" in cmd[-1]
             assert "egress_denied" in cmd[-1]
@@ -2096,32 +2155,25 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
                     "stderr": "",
                 },
             )()
-        assert tuple(cmd) == ("docker", "inspect", "executor-exec-run-a")
-        return type(
-            "Completed",
-            (),
-            {
-                "returncode": 0,
-                "stdout": json.dumps(
-                    [
-                        {
-                            "HostConfig": {
-                                "Memory": 536870912,
-                                "NanoCpus": 500000000,
-                                "PidsLimit": 128,
-                                "Privileged": False,
-                                "SecurityOpt": ["no-new-privileges:true"],
-                                "CapDrop": ["ALL"],
-                                "ReadonlyRootfs": True,
-                                "Binds": ["/tmp/workspace:/workspace:rw"],
-                            },
-                            "Mounts": [{"Destination": "/workspace", "RW": True}],
-                        }
-                    ]
-                ),
-                "stderr": "",
-            },
-        )()
+        if tuple(cmd) == ("docker", "network", "inspect", "ai-platform-sandbox-egress"):
+            return type(
+                "Completed",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": json.dumps(
+                        [
+                            {
+                                "Name": "ai-platform-sandbox-egress",
+                                "Driver": "bridge",
+                                "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
+                            }
+                        ]
+                    ),
+                    "stderr": "",
+                },
+            )()
+        raise AssertionError(f"unexpected docker command: {cmd}")
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
     recorder = generator.EvidenceRecorder(
@@ -2215,6 +2267,52 @@ def test_runtime_probe_results_do_not_treat_generic_network_failure_as_egress_de
     assert probe == {}
 
 
+def test_runtime_probe_results_accept_no_masq_live_dns_failure_as_egress_denied():
+    generator = load_generator()
+    probe = generator._safe_platform_egress_probe_from_result(
+        run_id="run-a",
+        egress_denial_probe={
+            "denied": True,
+            "denial_reason": "dns_resolution_failed",
+            "target": "https://egress-denied.invalid/",
+        },
+        docker_inspect={
+            "HostConfig": {
+                "NetworkMode": "ai-platform-sandbox-egress",
+                "ExtraHosts": ["host.docker.internal:host-gateway"],
+            },
+            "NetworkSettings": {"Networks": {"ai-platform-sandbox-egress": {}}},
+            "Config": {
+                "Labels": {
+                    "ai-platform.egress.policy": "default-deny-no-masq",
+                    "ai-platform.egress.network": "ai-platform-sandbox-egress",
+                    "ai-platform.egress.callback_host": "host.docker.internal",
+                },
+            },
+        },
+        docker_network_inspect={
+            "Name": "ai-platform-sandbox-egress",
+            "Driver": "bridge",
+            "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
+        },
+        callbacks=[{"run_id": "run-a", "status": "running"}, {"run_id": "run-a", "status": "failed"}],
+    )
+
+    assert probe == {
+        "default_deny_outbound": True,
+        "platform_allowlist_enforced": True,
+        "callback_exception_scoped_to_run_token": True,
+        "denied_egress_redacted": True,
+        "denied_target": "https://egress-denied.invalid/",
+        "denied_probe_error_code": "egress_denied",
+        "allowed_callback_host": "host.docker.internal",
+        "callback_probe_status": "delivered",
+        "policy_source": "platform_policy",
+        "probe_source": "runtime_probe_results",
+        "run_id": "run-a",
+    }
+
+
 def test_docker_exec_egress_denial_probe_accepts_only_explicit_denial_marker():
     generator = load_generator()
 
@@ -2244,11 +2342,23 @@ def test_docker_exec_egress_denial_probe_accepts_only_explicit_denial_marker():
 def test_egress_probe_requires_same_run_running_and_terminal_callbacks():
     generator = load_generator()
     docker_inspect = {
+        "HostConfig": {
+            "NetworkMode": "ai-platform-sandbox-egress",
+            "ExtraHosts": ["host.docker.internal:host-gateway"],
+        },
+        "NetworkSettings": {"Networks": {"ai-platform-sandbox-egress": {}}},
         "Config": {
             "Labels": {
+                "ai-platform.egress.policy": "default-deny-no-masq",
+                "ai-platform.egress.network": "ai-platform-sandbox-egress",
                 "ai-platform.egress.callback_host": "host.docker.internal",
             },
         },
+    }
+    docker_network_inspect = {
+        "Name": "ai-platform-sandbox-egress",
+        "Driver": "bridge",
+        "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
     }
     egress_denial_probe = {
         "denied": True,
@@ -2259,12 +2369,14 @@ def test_egress_probe_requires_same_run_running_and_terminal_callbacks():
         run_id="run-a",
         egress_denial_probe=egress_denial_probe,
         docker_inspect=docker_inspect,
+        docker_network_inspect=docker_network_inspect,
         callbacks=[{"run_id": "run-a", "status": "completed"}],
     )
     wrong_run = generator._safe_platform_egress_probe_from_result(
         run_id="run-a",
         egress_denial_probe=egress_denial_probe,
         docker_inspect=docker_inspect,
+        docker_network_inspect=docker_network_inspect,
         callbacks=[
             {"run_id": "run-b", "status": "running"},
             {"run_id": "run-b", "status": "completed"},
@@ -2274,6 +2386,7 @@ def test_egress_probe_requires_same_run_running_and_terminal_callbacks():
         run_id="run-a",
         egress_denial_probe=egress_denial_probe,
         docker_inspect=docker_inspect,
+        docker_network_inspect=docker_network_inspect,
         callbacks=[
             {"run_id": "run-a", "status": "running"},
             {"run_id": "run-a", "status": "completed"},
@@ -2821,6 +2934,7 @@ def test_run_platform_runtime_probe_captures_executor_container_inspect(monkeypa
 def test_run_platform_runtime_probe_captures_egress_network_inspect(monkeypatch, tmp_path):
     generator = load_generator()
     calls = []
+    observed_policy_flags = []
 
     class FakeRuntime:
         def __init__(
@@ -2836,6 +2950,9 @@ def test_run_platform_runtime_probe_captures_egress_network_inspect(monkeypatch,
 
         async def submit(self, request):
             from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
+            from app.settings import get_settings
+
+            observed_policy_flags.append(get_settings().sandbox_egress_policy_enabled)
 
             lease = ContainerLease(
                 container_id="exec-run-a",
@@ -2965,6 +3082,7 @@ def test_run_platform_runtime_probe_captures_egress_network_inspect(monkeypatch,
     assert recorder.hardening["egress_policy"]["probe_source"] == "docker_network_inspect"
     assert recorder.hardening["egress_policy"]["network_inspection_verified"] is True
     assert recorder.hardening["egress_policy"]["docker_network_masquerade_disabled"] is True
+    assert observed_policy_flags == [True]
 
 
 def test_run_platform_runtime_probe_does_not_derive_resource_over_limit_from_generic_failure(monkeypatch, tmp_path):

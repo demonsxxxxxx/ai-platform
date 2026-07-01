@@ -187,7 +187,10 @@ the non-expansion flags
 `safe_concurrency_claimed = false`, and
 `ordinary_user_multi_agent_enabled = false`; otherwise
 `tools/capacity_profile_readiness.py` keeps the B3 profile at
-`blocked_missing_profile_evidence`. Required review evidence:
+`blocked_missing_profile_evidence`. The legacy schema flag
+`ordinary_user_multi_agent_enabled = false` means no ordinary-user
+platform-level multi-run orchestration exposure; it is not evidence that B3 is
+a G8 product route. Required review evidence:
 
 - `runtime_source_identity_and_image_labels`
 - `tenant_user_skill_mix`
