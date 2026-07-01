@@ -25,9 +25,14 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "app/governance_readiness.py" in workflow
     assert "docs/agent-rules/ai-platform-guardrails.md" in workflow
     assert "docs/frontend/**" in workflow
+    assert "docs/operations/ai-platform-gate-status.md" in workflow
+    assert "docs/operations/ai-platform-governance-readiness.md" in workflow
     assert "docs/operations/frontend-static-release-deploy.md" in workflow
+    assert "docs/superpowers/plans/**" in workflow
+    assert "deploy/ai-platform/.env.example" in workflow
     assert "deploy/ai-platform/docker-compose.yml" in workflow
     assert "deploy/ai-platform/docker-compose.frontend.yml" in workflow
+    assert "tests/test_foundation_alpha_readiness.py" in workflow
     assert "tests/test_deploy_frontend_static.py" in workflow
     assert "tests/test_frontend_*.py" in workflow
     assert "tests/test_runtime_launch_script.py" in workflow
@@ -49,5 +54,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     lower = workflow.lower()
     assert "docker compose" not in lower
     assert "secret" not in lower
-    assert ".env" not in lower
+    assert "deploy/ai-platform/.env.example" in lower
+    assert "deploy/ai-platform/.env\"" not in lower
+    assert "deploy/ai-platform/.env'" not in lower
     assert "c:\\users" not in lower

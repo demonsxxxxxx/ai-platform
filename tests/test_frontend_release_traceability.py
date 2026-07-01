@@ -51,8 +51,13 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in trace["workflow"]["enforced_commands"]
     assert "docs/operations/frontend-static-release-deploy.md" in trace["workflow"]["required_path_filters"]
+    assert "docs/operations/ai-platform-gate-status.md" in trace["workflow"]["required_path_filters"]
+    assert "docs/operations/ai-platform-governance-readiness.md" in trace["workflow"]["required_path_filters"]
+    assert "docs/superpowers/plans/**" in trace["workflow"]["required_path_filters"]
+    assert "deploy/ai-platform/.env.example" in trace["workflow"]["required_path_filters"]
     assert "deploy/ai-platform/docker-compose.yml" in trace["workflow"]["required_path_filters"]
     assert "deploy/ai-platform/docker-compose.frontend.yml" in trace["workflow"]["required_path_filters"]
+    assert "tests/test_foundation_alpha_readiness.py" in trace["workflow"]["required_path_filters"]
     assert "tests/test_deploy_frontend_static.py" in trace["workflow"]["required_path_filters"]
     assert "tools/deploy_frontend_static.py" in trace["workflow"]["required_path_filters"]
     assert "tools/frontend_packaged_runtime_smoke.py" in trace["workflow"]["required_path_filters"]
@@ -95,7 +100,9 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert "database_url" not in serialized
     assert "api_key" not in serialized
     assert "secret" not in serialized
-    assert ".env" not in serialized
+    assert "deploy/ai-platform/.env.example" in serialized
+    assert "deploy/ai-platform/.env\"" not in serialized
+    assert "deploy/ai-platform/.env'" not in serialized
 
 
 def test_frontend_release_traceability_records_static_dist_manifest(tmp_path):
