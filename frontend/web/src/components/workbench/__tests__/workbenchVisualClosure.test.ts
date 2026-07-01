@@ -855,12 +855,24 @@ test("composer and command surfaces use stable dimensions", () => {
 
 test("empty chat keeps the command dock compact and composer-first", () => {
   const welcome = read("src/components/chat/WelcomePage.tsx");
+  const chatView = read("src/components/layout/AppContent/ChatView.tsx");
   const welcomeLayout = read("src/components/chat/welcomeLayout.ts");
 
   assert.match(welcome, /welcome-chat-start/);
   assert.match(welcome, /data-chat-start-surface/);
   assert.match(welcome, /data-chat-start-header/);
-  assert.match(welcome, /data-chat-composer-first/);
+  assert.match(chatView, /data-chat-shell-composer/);
+  assert.match(chatView, /<ChatInput[\s\S]*\{\.\.\.chatInputProps\}/);
+  assert.match(
+    chatView,
+    /onMentionQueryChange=\{[\s\S]*messages\.length === 0 \? handleMentionQueryChange : undefined[\s\S]*\}/,
+  );
+  assert.match(chatView, /pendingInput=\{pendingInput\}/);
+  assert.match(chatView, /onPendingInputConsumed=\{\(\) => setPendingInput\(null\)\}/);
+  assert.match(welcome, /onStarterPromptSelect/);
+  assert.doesNotMatch(welcome, /import \{ ChatInput \}/);
+  assert.doesNotMatch(welcome, /<ChatInput/);
+  assert.doesNotMatch(welcome, /data-chat-composer-first/);
   assert.doesNotMatch(welcome, /data-chat-quick-actions/);
   assert.doesNotMatch(welcome, /QuickActionItem/);
   assert.doesNotMatch(welcome, /quickActions/);

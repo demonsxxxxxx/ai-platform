@@ -10,6 +10,9 @@
   padding-top: max(1rem, env(safe-area-inset-top));
   padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
   background: var(--theme-workbench-canvas);
+  align-items: center;
+  justify-content: center;
+  gap: clamp(1rem, 3vh, 1.75rem);
 }
 .welcome-root::-webkit-scrollbar {
   display: none;
@@ -18,7 +21,6 @@
 /* ── Content layers ── */
 .welcome-greeting,
 .welcome-subtitle,
-.welcome-input,
 .welcome-suggestions {
   position: relative;
   z-index: 1;
@@ -26,7 +28,7 @@
 
 .chat-start-surface {
   min-height: 0;
-  margin: clamp(1.5rem, 8vh, 5rem) auto 0;
+  margin: 0 auto;
 }
 
 /* ── Icon subtle pulse ── */
@@ -359,15 +361,6 @@
     padding: 0.5rem 0.75rem max(0.5rem, env(safe-area-inset-bottom));
   }
 
-  html[data-mobile-keyboard="true"] .welcome-input {
-    width: 100%;
-    flex: 0 0 auto;
-  }
-
-  html[data-mobile-keyboard="true"] .welcome-input .chat-input-shell {
-    padding-bottom: 0;
-  }
-
   /* Keep suggestions compact when the keyboard is open */
   html[data-mobile-keyboard="true"] .welcome-suggestions {
     width: 100%;
@@ -423,10 +416,4 @@
     animation: none;
   }
 
-  /* Hide suggestions when mention popup is active to free space */
-  html[data-mobile-keyboard="true"]
-    .welcome-input:has([data-mention-active])
-    ~ .welcome-suggestions {
-    display: none;
-  }
 }

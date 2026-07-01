@@ -6,8 +6,6 @@ import {
   UserRound,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { ChatInput } from "./ChatInput";
-import type { ChatInputProps } from "./ChatInput";
 import { ContactAdminDialog } from "../common/ContactAdminDialog";
 import {
   getSelectedPersonaStarterPrompts,
@@ -34,7 +32,8 @@ interface WelcomePageProps {
   personaPresetsLoading?: boolean;
   personaPresetsMutating?: boolean;
   canSendMessage: boolean;
-  chatInputProps: ChatInputProps;
+  mentionQuery?: string | null;
+  onStarterPromptSelect?: (text: string) => void;
   onUsePersonaPreset?: (
     preset: PersonaPreset,
   ) => Promise<PersonaPresetSnapshot | null>;
@@ -54,7 +53,8 @@ export const WelcomePage = memo(function WelcomePage({
   personaPresetsLoading = false,
   personaPresetsMutating = false,
   canSendMessage,
-  chatInputProps,
+  mentionQuery = null,
+  onStarterPromptSelect,
   onUsePersonaPreset,
   onClearPersonaPreset,
 }: WelcomePageProps) {
@@ -62,8 +62,6 @@ export const WelcomePage = memo(function WelcomePage({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [animKey, setAnimKey] = useState(0);
   const [contactAdminOpen, setContactAdminOpen] = useState(false);
-  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
-  const [pendingInput, setPendingInput] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
   const promptSources = useMemo(() => {
@@ -101,11 +99,6 @@ export const WelcomePage = memo(function WelcomePage({
     );
   }, [roleCards, mentionQuery]);
 
-  const handleMentionQueryChange = useCallback(
-    (query: string | null) => setMentionQuery(query),
-    [],
-  );
-
   const { settings } = useSettingsContext();
 
   const defaultSuggestions = useMemo(() => {
@@ -140,7 +133,7 @@ export const WelcomePage = memo(function WelcomePage({
       setContactAdminOpen(true);
       return;
     }
-    setPendingInput(text);
+    onStarterPromptSelect?.(text);
   };
 
   const handleRefresh = useCallback(() => {
@@ -178,7 +171,6 @@ export const WelcomePage = memo(function WelcomePage({
     >
       <section
         data-chat-start-surface
-        data-chat-composer-first
         className="chat-start-surface flex w-full max-w-4xl flex-col gap-3"
       >
         <div
@@ -196,15 +188,6 @@ export const WelcomePage = memo(function WelcomePage({
           </p>
         </div>
 
-        <div className="welcome-input">
-          <ChatInput
-            {...chatInputProps}
-            onMentionQueryChange={handleMentionQueryChange}
-            pendingInput={pendingInput}
-            onPendingInputConsumed={() => setPendingInput(null)}
-            className="w-full max-w-4xl px-0"
-          />
-        </div>
       </section>
 
       {(showPersonaCards || showStarterPrompts) && (
