@@ -343,7 +343,7 @@ production or beta evidence.
 | Frontend | Active browser graph uses public/admin projections; install/lint/type/build are reproducible or exact blockers are recorded. |
 | Sandbox | Fake provider remains local/test; Docker provider hardening and 211 smoke remain G7 blockers. |
 | Observability | Admin Runtime gives controlled-operation visibility; G9 remains partial until dashboard/runtime/alert/export evidence is accepted. |
-| Multi-agent | Feature-flagged/internal only; no ordinary-user exposure before prior gates pass. |
+| Platform multi-run / SDK subagent | SDK-internal agent/subagent behavior stays inside one governed platform run; platform-level multi-run orchestration remains deferred with no ordinary-user exposure before prior gates pass. |
 
 ## 5. Review And Update Rules
 

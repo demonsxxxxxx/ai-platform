@@ -115,5 +115,5 @@ with gate-specific evidence.
 | Queue, worker, and Foundation Runtime concurrency | Covered for controlled POC correctness; production capacity increases remain blocked. |
 | Tool, skill, and memory governance | Fail-closed S1 baseline covered; production Skill release and longer memory policy remain follow-ups. |
 | Sandbox | Fake provider remains local/test-only; Docker hardening remains G7. |
-| Multi-agent | SDK agent/subagent behavior stays inside one governed platform run; platform-level multi-run orchestration is deferred and ordinary-user exposure remains blocked. |
+| Platform multi-run / SDK subagent | SDK agent/subagent behavior stays inside one governed platform run; platform-level multi-run orchestration is deferred and ordinary-user exposure remains blocked. |
 | Frontend | Active public/admin projection safety is within S1; packaged frontend image release acceptance remains S2 delivery work. |

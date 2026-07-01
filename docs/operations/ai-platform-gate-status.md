@@ -139,8 +139,9 @@ must not be read as the complete list of blocked expansions. Ordinary-user
 platform-level multi-run orchestration remains blocked under
 `operator_context.blocked_expansions` as
 `ordinary_user_platform_multi_run_orchestration_exposure`; the decision flag
-also stays `ordinary_user_multi_agent_allowed=false`. This is intentionally not
-a current Foundation Alpha follow-up item.
+also stays `ordinary_user_multi_agent_allowed=false` as a legacy negative
+invariant only. This is intentionally not a current Foundation Alpha follow-up
+item.
 
 The 211 source directory is often a synced archive rather than a Git worktree.
 For source-only docs/tests/evidence syncs, write a local-only
