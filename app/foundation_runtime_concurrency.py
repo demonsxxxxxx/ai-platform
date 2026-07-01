@@ -392,9 +392,10 @@ def build_foundation_runtime_concurrency_readiness(
         "failures": failures,
         "evidence_policy": (
             "This is Foundation Runtime POC correctness evidence only; it does "
-            "not raise production concurrency defaults or open ordinary-user "
-            "multi-agent, Docker sandbox hardening, long-term memory, or "
-            "department rollout gates."
+            "not raise production concurrency defaults, broaden ordinary-user "
+            "platform-level multi-run orchestration exposure, claim Docker "
+            "sandbox hardening, enable long-term memory, or open department "
+            "rollout gates."
         ),
     }
 
@@ -423,6 +424,7 @@ def render_foundation_runtime_concurrency_markdown(readiness: dict[str, Any]) ->
     )
     summary = readiness.get("summary") or {}
     memory_context = (readiness.get("checks") or {}).get("memory_context") or {}
+    evidence_policy = readiness.get("evidence_policy") or "missing"
     return "\n".join(
         [
             "# Foundation Runtime Concurrency Readiness",
@@ -433,6 +435,10 @@ def render_foundation_runtime_concurrency_markdown(readiness: dict[str, Any]) ->
             f"- Runs: `{summary.get('run_count', 0)}`",
             f"- Concurrent requests: `{summary.get('concurrent_request_count', 0)}`",
             f"- Context pack version samples: `{memory_context.get('context_pack_version_sample_count', 0)}`",
+            "",
+            "## Evidence Policy",
+            "",
+            str(evidence_policy),
             "",
             "## Non-Expansion Invariants",
             "",

@@ -40,7 +40,7 @@
 > source refresh, keep the examples below as historical test-first context
 > rather than current status wording. Current B0 text should follow the latest
 > readiness result and still avoid `gate closable`, production, Docker sandbox
-> hardening, ordinary-user multi-agent, and department-rollout claims.
+> hardening, ordinary-user platform-level multi-run orchestration exposure, and department-rollout claims.
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-06-18-ai-platform-backend-phased-prd.md`
@@ -92,7 +92,8 @@ Also keep the non-expansion boundary:
 ```markdown
 This is not `211 verified` for `4039e4b`, does not close B1/B2/B3 product gates,
 does not raise production concurrency defaults, does not claim Docker sandbox
-hardening, and does not enable ordinary-user multi-agent exposure.
+hardening, and does not enable ordinary-user platform-level multi-run
+orchestration exposure.
 ```
 
 - [ ] **Step 4: Run the focused source-authority test**

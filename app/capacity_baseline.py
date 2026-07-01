@@ -352,9 +352,12 @@ _LOAD_TEST_OPERATOR_WORKFLOW = [
             "python tools/capacity_recorded_gate_snapshot.py"
             " --runtime-evidence-json capacity-runtime-evidence-end.json"
             " --recorded-gate-evidence-json capacity-recorded-gate-evidence-api-read-write-burst.json"
+            " --profile-evidence-json capacity-profile-evidence-b3-10x4-sdk-subagents.json"
             " --gate api_read_write_burst"
             " --format json > capacity-evidence-snapshot-recorded-api-read-write-burst.json;"
             " only use operator-reviewed artifact refs or measured scalar values;"
+            " pass --profile-evidence-json only after the SDK subagent fanout"
+            " profile evidence is operator-reviewed;"
             " bounded probe output alone must not be submitted as recorded evidence"
         ),
         "expected_evidence": "capacity-evidence-snapshot-recorded-api-read-write-burst.json",
@@ -1715,6 +1718,34 @@ def _capacity_recorded_gate_evidence_packet(
     return ("accepted" if not errors else "not_accepted"), gate_packet, errors
 
 
+def _capacity_recorded_profile_evidence_packet(
+    packet: dict[str, Any],
+) -> tuple[str, dict[str, Any], list[str]]:
+    source = _dict(packet)
+    safe_profile_evidence = _safe_profile_evidence(source)
+    if not safe_profile_evidence:
+        safe_b3_evidence = _safe_b3_profile_evidence(source)
+        safe_profile_evidence = (
+            {_B3_TARGET_PROFILE_ID: safe_b3_evidence} if safe_b3_evidence else {}
+        )
+
+    b3_status = _b3_profile_evidence_status(safe_profile_evidence)
+    missing = b3_status.get("missing_profile_evidence", [])
+    errors = [
+        f"profile_evidence_{field}_missing_or_invalid"
+        for field in missing
+        if isinstance(field, str)
+    ]
+    if not safe_profile_evidence:
+        errors.append("profile_evidence_b3_10x4_sdk_subagents_missing")
+
+    return (
+        "accepted" if not errors else "not_accepted",
+        safe_profile_evidence if not errors else {},
+        errors,
+    )
+
+
 def _safe_recorded_load_test_gate_packet(value: object) -> dict[str, Any] | None:
     source = _dict(value)
     source_evidence = _dict(source.get("evidence"))
@@ -1846,6 +1877,7 @@ def build_capacity_recorded_gate_snapshot(
     recorded_gate_evidence: dict[str, Any],
     *,
     gate: str = "api_read_write_burst",
+    profile_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge one reviewed recorded-evidence packet into a fail-closed capacity snapshot."""
     normalized_gate = str(gate or "").strip()
@@ -1863,10 +1895,21 @@ def build_capacity_recorded_gate_snapshot(
     )
     input_errors.extend(packet_errors)
 
+    profile_status = "not_provided"
+    profile_packet: dict[str, Any] = {}
+    if profile_evidence is not None:
+        profile_status, profile_packet, profile_errors = (
+            _capacity_recorded_profile_evidence_packet(_dict(profile_evidence))
+        )
+        input_errors.extend(profile_errors)
+
     snapshot_output = json.loads(json.dumps(snapshot if snapshot else build_capacity_evidence_snapshot({})))
     if not input_errors:
         existing_load_test_evidence = _safe_load_test_evidence(snapshot_output.get("load_test_evidence"))
         existing_gate_evidence = _dict(existing_load_test_evidence.get("gate_evidence"))
+        existing_profile_evidence = _safe_profile_evidence(
+            existing_load_test_evidence.get("profile_evidence")
+        )
         existing_recorded_gates = {
             gate
             for gate in existing_load_test_evidence.get("recorded_gates", [])
@@ -1886,6 +1929,11 @@ def build_capacity_recorded_gate_snapshot(
                 if gate in existing_gate_evidence
             },
         }
+        merged_profile_evidence = dict(existing_profile_evidence)
+        if profile_packet:
+            merged_profile_evidence.update(profile_packet)
+        if merged_profile_evidence:
+            snapshot_output["load_test_evidence"]["profile_evidence"] = merged_profile_evidence
 
     readiness = build_capacity_gate_readiness(snapshot_output)
     return {
@@ -1900,6 +1948,7 @@ def build_capacity_recorded_gate_snapshot(
         "input_status": {
             "runtime_evidence": "accepted" if snapshot else "missing_capacity_evidence_snapshot",
             "recorded_gate_evidence": packet_status,
+            "profile_evidence": profile_status,
         },
         "input_errors": input_errors,
         "snapshot": snapshot_output,
@@ -2550,7 +2599,9 @@ def render_capacity_profile_readiness_markdown(readiness: dict[str, Any]) -> str
         f"Acceptance rule: {b3_contract.get('acceptance_rule', 'missing')}\n\n"
         f"- does not raise defaults: `{str(b3_contract.get('does_not_raise_defaults')).lower()}`\n"
         f"- does not claim safe concurrency: `{str(b3_contract.get('does_not_claim_safe_concurrency')).lower()}`\n"
-        f"- does not enable ordinary-user multi-agent: `{str(b3_contract.get('does_not_enable_ordinary_user_multi_agent')).lower()}`\n"
+        "- does not enable ordinary-user platform-level multi-run "
+        "orchestration: "
+        f"`{str(b3_contract.get('does_not_enable_ordinary_user_multi_agent')).lower()}`\n"
         f"- does not close B3 gate: `{str(b3_contract.get('does_not_close_b3_gate')).lower()}`\n\n"
         "## Profiles\n\n"
         "| Profile | Status | Production default decision | Missing gates |\n"

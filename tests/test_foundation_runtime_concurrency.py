@@ -405,4 +405,6 @@ def test_foundation_runtime_concurrency_markdown_names_blocked_expansions():
     assert "# Foundation Runtime Concurrency Readiness" in markdown
     assert "`ordinary_user_multi_agent_allowed`: `False`" in markdown
     assert "`production_concurrency_increase_allowed`: `False`" in markdown
+    assert "broaden ordinary-user platform-level multi-run orchestration exposure" in markdown
+    assert "open ordinary-user multi-agent" not in markdown
     assert "verified_foundation_runtime_concurrency" in markdown

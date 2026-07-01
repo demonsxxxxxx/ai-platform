@@ -114,8 +114,9 @@ separate and future runtime-affecting source changes reopen B0 until fresh
 source, runtime, image, health, concurrency, redaction, and review evidence is
 recorded. This does not close B1/B2/B3/B4 product gates, raise production
 concurrency defaults, claim Docker sandbox hardening, or enable ordinary-user
-multi-agent exposure. Earlier #164 runtime subjects such as `e4c0e9d` and the
-immediately superseded `c3d6525` remain reviewed historical evidence only.
+platform-level multi-run orchestration exposure. Earlier #164 runtime subjects
+such as `e4c0e9d` and the immediately superseded `c3d6525` remain reviewed
+historical evidence only.
 
 | Stage | Current planning status | Active next boundary |
 | --- | --- | --- |
@@ -473,8 +474,8 @@ not Foundation Runtime concurrency correctness evidence.
   subagents/session, equivalent to 10 concurrent user sessions with
   peak 4 Claude Agent SDK subagents per session. This local contract records
   expected fields and fail-closed flags only; it does not raise production defaults or claim safe concurrency,
-  does not enable ordinary-user multi-agent exposure,
-  and does not close B3 or G8/G9.
+  does not enable ordinary-user platform-level multi-run orchestration exposure,
+  and does not close B3 or G9. It does not reopen G8.
 
 **Runtime acceptance**
 

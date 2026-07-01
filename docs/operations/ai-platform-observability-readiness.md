@@ -422,4 +422,4 @@ golden-set evaluation, alert validation, error taxonomy dashboard
 runtime/visual/211 acceptance, or 211 deployment smoke.
 
 Do not use this baseline to expand sandbox privilege, expose ordinary users to
-multi-agent beta, or bypass G6/G7 governance gates.
+platform-level multi-run orchestration, or bypass G6/G7 governance gates.

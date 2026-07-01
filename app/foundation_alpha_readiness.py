@@ -73,7 +73,6 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
 
 _OPEN_FOLLOWUPS = [
     "g7_docker_sandbox_hardening",
-    "g8_ordinary_user_multi_agent_exposure",
     "broader_auth_session_rbac_tenant_redaction_regression",
 ]
 _FOUNDATION_ALPHA_STAGE_BLOCKER_ORDER = [

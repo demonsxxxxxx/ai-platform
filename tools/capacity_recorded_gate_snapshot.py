@@ -32,6 +32,13 @@ def main() -> int:
     )
     parser.add_argument("--runtime-evidence-json", required=True)
     parser.add_argument("--recorded-gate-evidence-json", required=True)
+    parser.add_argument(
+        "--profile-evidence-json",
+        help=(
+            "Optional operator-reviewed B3 profile evidence JSON. When provided, "
+            "it is sanitized and written only to load_test_evidence.profile_evidence."
+        ),
+    )
     parser.add_argument("--gate", default="api_read_write_burst")
     parser.add_argument("--format", choices=("json", "markdown"), default="json")
     args = parser.parse_args()
@@ -40,6 +47,11 @@ def main() -> int:
         _read_json(args.runtime_evidence_json),
         _read_json(args.recorded_gate_evidence_json),
         gate=args.gate,
+        profile_evidence=(
+            _read_json(args.profile_evidence_json)
+            if args.profile_evidence_json
+            else None
+        ),
     )
     if args.format == "json":
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))

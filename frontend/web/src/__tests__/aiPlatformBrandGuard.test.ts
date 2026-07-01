@@ -83,3 +83,35 @@ test("brand entry surfaces consume the ai-platform home authority", () => {
 
   assert.deepEqual(offenders, []);
 });
+
+test("public SEO copy does not advertise ordinary-user multi-agent orchestration", () => {
+  const localeFiles = activeFiles.filter((file) => file.startsWith("src/i18n/locales/"));
+  const bannedSeoPatterns = [
+    /orchestrate multi-agent workflows/i,
+    /multi-agent collaboration/i,
+    /编排多智能体工作流/,
+    /多智能体协作/,
+    /マルチエージェントワークフロー/,
+    /マルチエージェント連携/,
+    /멀티 에이전트 워크플로우/,
+    /멀티 에이전트 협업/,
+    /мультиагентные рабочие процессы/i,
+    /мультиагентное сотрудничество/i,
+  ];
+  const offenders: string[] = [];
+
+  for (const file of localeFiles) {
+    const locale = JSON.parse(readFileSync(join(root, file), "utf8"));
+    const descriptions = [
+      locale.seo?.agents?.description ?? "",
+      locale.seo?.chat?.description ?? "",
+    ];
+    for (const description of descriptions) {
+      for (const pattern of bannedSeoPatterns) {
+        if (pattern.test(description)) offenders.push(`${file} -> ${pattern}`);
+      }
+    }
+  }
+
+  assert.deepEqual(offenders, []);
+});

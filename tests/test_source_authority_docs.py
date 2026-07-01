@@ -284,8 +284,9 @@ def test_backend_prd_records_b3_operator_snapshot_and_reference_boundaries():
         "error_budget_and_dead_letters",
         "rollback_plan_and_stop_conditions",
         "does not raise production defaults or claim safe concurrency",
-        "does not enable ordinary-user multi-agent exposure",
-        "does not close B3 or G8/G9",
+        "does not enable ordinary-user platform-level multi-run orchestration exposure",
+        "does not close B3 or G9",
+        "does not reopen G8",
         "Reference Code Projects",
         "Code adaptation candidate",
         "Runtime dependency proposal",
@@ -553,7 +554,7 @@ def test_foundation_alpha_closure_records_stage_complete_baseline_and_boundaries
 
     for boundary in (
         "raise production concurrency defaults",
-        "open platform-level multi-run orchestration exposure",
+        "broaden ordinary-user platform-level multi-run orchestration exposure",
         "claim Docker sandbox hardening",
         "permit department rollout",
         "enable long-term cross-session memory by default",
@@ -564,10 +565,7 @@ def test_foundation_alpha_closure_records_stage_complete_baseline_and_boundaries
 
     for authority_text in (prd_text, tech_text, roadmap_text, gate_status_text):
         assert "Foundation Alpha" in authority_text
-        assert (
-            "platform-level multi-run orchestration" in authority_text
-            or "ordinary-user multi-agent" in authority_text
-        )
+        assert "platform-level multi-run orchestration" in authority_text
         assert "Docker sandbox" in authority_text
 
     assert "production readiness" in closure_text
@@ -1163,7 +1161,7 @@ def test_frontend_source_import_is_documented_without_replacing_current_runtime(
     assert "deploy/ai-platform/docker-compose.yml` is not changed" in combined_text
     assert "ai-platform-frontend" in combined_text
     assert "current 211 static frontend deployment remains the active runtime entry" in combined_text
-    assert "G8/G10 Long Task and Multi-Agent work are not implemented" in combined_text
+    assert "G8 platform-level multi-run orchestration and G10 workflow-owner rollout work" in combined_text
     assert "Docker compose one-command startup is not a current" in combined_text
     assert "tools/office_context_readiness.py" in combined_text
     assert "frontend run-playback context provenance" in combined_text
@@ -1190,7 +1188,7 @@ def test_gate_status_snapshot_records_memory_context_readiness_fields():
     assert "delete_redaction=true" in gate_status_text
     assert "public_admin_projection_safe=true" in gate_status_text
     assert "long_term_cross_session_memory_fail_closed=true" in gate_status_text
-    assert "ordinary-user expansion remains blocked" in gate_status_text
+    assert "ordinary-user governance/frontend rollout remains blocked" in gate_status_text
 
 
 def test_governance_readiness_doc_records_b1_smoke_without_gate_closure():
@@ -1301,7 +1299,7 @@ def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker
         assert "Foundation Runtime concurrency evidence" in compact_text
         assert "Foundation Runtime" in text
         assert "concurrency" in text
-        assert "multi-agent" in text
+        assert "platform-level multi-run orchestration" in text
         assert "production concurrency" in text
         assert "C:\\Users" not in text
 
@@ -1396,7 +1394,7 @@ def test_gate_status_records_issue164_b0_runtime_refresh_with_source_caveats():
         "does not close B1/B2/B3 product gates",
         "does not raise production concurrency defaults",
         "does not claim Docker sandbox hardening",
-        "does not enable ordinary-user multi-agent exposure",
+        "does not enable ordinary-user platform-level multi-run orchestration exposure",
     ):
         assert boundary in compact_text
 
@@ -1450,7 +1448,7 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
         assert "source contract only" in text
         assert "does not raise production defaults" in text
         assert "does not close B3" in text
-        assert "ordinary-user multi-agent exposure" in text
+        assert "ordinary-user platform-level multi-run orchestration exposure" in " ".join(text.split())
         assert "C:\\Users" not in text
 
 
@@ -1585,7 +1583,7 @@ def test_office_context_docs_track_source_level_context_pack_versioning_without_
         assert "211 executor context-pack" in text
         assert "frontend run-playback context provenance" in text
         assert "long-term cross-session memory" in text
-        assert "ordinary-user G8/G10 exposure" in text
+        assert "ordinary-user platform-level multi-run orchestration exposure" in text
         assert "C:\\Users" not in text
 
     for text in (governance_text, gate_status_text):

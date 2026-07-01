@@ -232,7 +232,7 @@ def _write_office_runtime_entry(
         "review_status": "reviewed",
         "review_notes": [
             "Reviewed 211 MCP runtime smoke evidence for PR #44 office context runtime acceptance.",
-            "This closes only the named #22 runtime evidence gap and does not close G6, G9, production Docker sandbox hardening, ordinary-user multi-agent, or packaged frontend acceptance.",
+            "This closes only the named #22 runtime evidence gap and does not close G6, G9, production Docker sandbox hardening, ordinary-user platform-level multi-run orchestration, or packaged frontend acceptance.",
         ],
         "open_followups": [
             "G6/G9 gate closure still requires broader governance, observability, frontend, and production-hardening gates.",
