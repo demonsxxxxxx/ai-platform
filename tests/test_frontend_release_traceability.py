@@ -439,6 +439,7 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
 
 def test_frontend_packaged_image_files_define_static_proxy_contract():
     dockerfile = Path("frontend/web/Dockerfile").read_text(encoding="utf-8")
+    npmrc = Path("frontend/web/.npmrc").read_text(encoding="utf-8")
     nginx_template = Path("frontend/web/nginx.conf.template").read_text(encoding="utf-8")
     compose_overlay = Path("deploy/ai-platform/docker-compose.frontend.yml").read_text(encoding="utf-8")
     runtime_compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
@@ -452,6 +453,7 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "COPY tools ./tools" in dockerfile
     assert "COPY --from=build /workspace/frontend/web/dist" in dockerfile
     assert "nginx.conf.template" in dockerfile
+    assert "package-import-method=copy" in npmrc
     assert "AI_PLATFORM_BUILD_COMMIT" in provenance_script
     assert "AI_PLATFORM_BUILD_DIRTY" in provenance_script
     assert "AI_PLATFORM_API_UPSTREAM" in nginx_template
