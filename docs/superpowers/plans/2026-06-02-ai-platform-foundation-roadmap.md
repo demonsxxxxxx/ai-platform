@@ -52,27 +52,46 @@ vulnerability evidence。
   使用旧的泛化 multi-agent exposure 命名。
 - B3 边界：`b3_10x4_sdk_subagents` source contract 是 SDK subagent
   fanout 容量证据，不是 G8 普通用户平台级 multi-run 产品曝光证据。
-- 已部分推进但未完成：`ai-platform:d318f9f-g7-b3-runtime-only-v1` 已在 211
-  API/worker 运行且 health 返回 ok；`g7-runtime-probe-20260701203418` 这次
-  命名 runtime-only formal verifier 也已在 211 通过，覆盖 platform/docker、
+- 已部分推进但未完成：PR #293 已合入 current main
+  `bd690f72723080beeb820d07679da59d84c7913e`，211 source marker 已同步到
+  该 commit，source snapshot 记录
+  `runtime_affecting_changes_since_runtime_subject=[]`、
+  `runtime_affecting_dirty_paths=[]`、`source_tree_dirty=false`；API/worker 当前已运行
+  `ai-platform:bd690f7-g7-b3-audit-runtime-only-v1`，运行容器的
+  `ai-platform.source-revision`、`ai-platform.runtime-subject` 与
+  `org.opencontainers.image.revision` 均指向
+  `bd690f72723080beeb820d07679da59d84c7913e`，211 health 返回 ok。但这仍然只是
+  `bd690f7` source/runtime parity 与健康观察，不是 G7 reviewed
+  release-evidence，也不是 B3 load evidence。此前 `g7-runtime-probe-20260701203418`
+  命名 runtime-only formal verifier 在 211 通过，覆盖 platform/docker、
   callback stream、cancel stops container、resource-limit timeout cleanup、
-  egress default-deny、non-privileged security options 和 8 个 verifier
-  checks。但 current main / 211 source marker 已到
-  `3071a02945c84370f62a9b36884a0a2df8ea9c45`，API/worker 镜像仍是
-  `d318f9f6a68b4c17e221eb32705b3f31d349227a`，且旧 underscore runtime/source
-  labels 仍指向 `96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c`。因此这是 named
-  runtime-subject evidence，不是 reviewed local release-evidence entry，也不是
-  current-main smoke / Foundation Runtime concurrency evidence。
+  egress default-deny、non-privileged security options 和 8 个 verifier checks；
+  但它仍只是 `d318f9f` named runtime-subject evidence，不是 reviewed local
+  release-evidence entry，也不是 `bd690f7` current-main G7 / Foundation Runtime
+  concurrency evidence。当前 image 的 G7 探针已走到 Docker/resource-limit
+  evidence，但 no-masq egress network 阻断 callback exception path，导致
+  required callback evidence 缺失，所以只能作为 blocker diagnostic，不是
+  reviewed G7 release-evidence。已推送的 `codex/g8-b3-status-refresh`
+  source/test 分支把 211 sandbox evidence generator 的 Docker platform 默认
+  callback path 修为 `0.0.0.0` bind +
+  `http://host.docker.internal:{port}/callback` public URL，避免 no-masq
+  host-gateway exception 只靠人工传参；但这仍只是 `local partial`，PR #294
+  已打开，必须完成 review、合并、部署并在 211 重新跑 formal verifier 后，才可能成为
+  reviewed G7 evidence。
 - 仍未完成：current-main G7 Docker sandbox hardening closure、B3
   operator-reviewed recorded load evidence、G9 Operations Beta acceptance、G10
   workflow-owner rollout，以及任何 ordinary-user 平台级 multi-run orchestration
-  暴露。
+  暴露。B3 最新 bounded `api_read_write_burst` probe 只是
+  `probe_completed_not_gate_evidence`，evidence bundle 仍是
+  `blocked_incomplete_load_test_evidence`，七个 recorded load-test gates 仍缺失。
 
-因此当前下一步不是重开 G8，也不是把 B3 作为普通用户 multi-agent 能力；下一步是
-先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime observation 和可选
-capacity profile readiness 汇总成 fail-closed 阻塞清单，再对齐 211
-current-main source、运行镜像和 label authority，重跑 smoke / Foundation
-Runtime concurrency evidence，并把 G7/B3 的证据边界继续保持为
+因此当前下一步不是重开 G8，也不是把 B3 当作普通用户平台级 multi-run 产品曝光；
+下一步是先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime
+observation 和可选 capacity profile readiness 汇总成 fail-closed 阻塞清单，完成
+PR #294 review/merge 后部署 G7 verifier-helper callback 默认修复，并基于已经
+对齐的 `bd690f7` 211 current-main source、运行镜像和 label authority，或后续
+选定的新 runtime subject，重跑 reviewed G7 sandbox evidence、smoke /
+Foundation Runtime concurrency evidence，并把 G7/B3 的证据边界继续保持为
 `runtime pending` / `local partial`，直到真实运行证据闭合。该 audit 只是
 控制/计划工件，不是 G7 runtime evidence 或 B3 load evidence。
 
@@ -87,7 +106,7 @@ Runtime concurrency evidence，并把 G7/B3 的证据边界继续保持为
 3. G5 Run Lifecycle / Worker Runtime V1：queue、lease、heartbeat、retry、dead-letter、cancel、resume、checkpoint、idempotency 可审计、可运营。
 4. G6 Tool / Skill / Memory Governance：skill versioning、release policy、dependency policy、tool allow/deny/ask、memory retention、redaction、delete flow 可运营。
 5. G7 Sandbox / Resource Hardening：Docker provider 生产验证、network/egress policy、runtime quota、orphan cleanup job、container security options 与 211 smoke 通过后，才允许扩大高风险 sandbox/tool。
-6. G8 Multi-Agent Controlled Beta：平台 parent/child ledger、dispatcher、handoff、child reconciliation、parent rollup、parent cancel 与 worker dispatcher 只作为历史受控切片和 deferred parking-lot 保留；执行层 agent/subagent 能力走 Claude Agent SDK，并作为一个 governed platform run 管理。当前开放问题是 SDK subagent fanout 的 capacity/governance/sandbox/model-gateway evidence，不是普通用户平台级 multi-run 产品曝光。
+6. G8 Platform Multi-Run Controlled Beta：旧标题曾写作 G8 Multi-Agent Controlled Beta，但当前权威读法是平台 parent/child ledger、dispatcher、handoff、child reconciliation、parent rollup、parent cancel 与 worker dispatcher 只作为历史受控切片和 deferred parking-lot 保留；执行层 agent/subagent 能力走 Claude Agent SDK，并作为一个 governed platform run 管理。当前开放问题是 SDK subagent fanout 的 capacity/governance/sandbox/model-gateway evidence，不是普通用户平台级 multi-run 产品曝光。
 7. G9 Observability / Quality / Ops：Admin runtime、cost/token/latency metrics、error taxonomy、golden-set eval、trace/audit export 与 alert 进入 beta 前 gate。
 8. G10 Internal Beta / Department Rollout：选择 1-2 个真实内网流程（如文档审查、翻译、SOP/RAG、长任务报告）明确运营 owner 后再放量。
 
@@ -1531,7 +1550,8 @@ v2 route: Claude Agent SDK remains the execution layer, SDK subagents are
 governed inside one platform run, and ordinary-user platform-level multi-run
 orchestration stays blocked until a future G8 gate is explicitly reopened with
 capacity, governance, sandbox, model-gateway, artifact/event, cost, and
-rollback evidence.
+rollback evidence. These historical controlled slices do not reopen G8 and do
+not represent ordinary-user platform-level multi-run product exposure.
 
 ### P2 Multi-Agent Dependency Readiness Projection
 

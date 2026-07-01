@@ -49,8 +49,9 @@ Current P0 work must move these gates toward closure:
 4. Sandbox Lease / Workspace.
 5. Agent Frontend V1 verification for the above public projections.
 
-Long Task / Multi-Agent Runtime work must wait until these gates have current
-code, focused tests, review, and 211 smoke evidence.
+Long Task / Platform Multi-Run Orchestration / SDK Subagent expansion must wait
+until these gates have current code, focused tests, review, and 211 smoke
+evidence.
 
 Current P1/P2 gate sequencing from issues #15/#16/#17 is stricter than the old
 P0-only list:
@@ -67,8 +68,9 @@ P0-only list:
    retention, redaction, delete, dependency, and release-policy flows.
 5. G7 Sandbox / Resource Hardening, including Docker provider validation,
    egress policy, runtime quota, orphan cleanup, and container security options.
-6. G8 Multi-Agent Controlled Beta remains a deferred parking-lot for
-   platform-owned multi-run orchestration. SDK agent/subagent behavior stays
+6. G8 Platform Multi-Run Controlled Beta remains a deferred parking-lot for
+   platform-owned multi-run orchestration. Its legacy title was
+   "G8 Multi-Agent Controlled Beta", but SDK agent/subagent behavior stays
    inside one governed platform run; the current evidence work is B3 SDK
    subagent fanout capacity, not ordinary-user platform-level multi-run
    exposure.
