@@ -1542,13 +1542,13 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "codex/g8-b3-status-refresh" in combined_text
     assert "source/test branch" in gate_status_text
     assert "source/test 分支" in roadmap_text
-    assert "still needs PR creation, review, merge, deployment, and a 211 formal verifier rerun" in compact_text
+    assert "PR #294 is open and it still needs review, merge, deployment, and a 211 formal verifier rerun" in compact_text
     assert "callback exception path" in roadmap_text
     assert "blocker diagnostic" in roadmap_text
-    assert "必须创建 PR、完成 review、合并、部署并在 211 重新跑 formal verifier" in " ".join(roadmap_text.split())
+    assert "PR #294 已打开，必须完成 review、合并、部署并在 211 重新跑 formal verifier" in " ".join(roadmap_text.split())
     assert "`SANDBOX_CONTAINER_PROVIDER=fake`" in gate_status_text
     assert "`SANDBOX_EXECUTOR_IMAGE=ai-platform:local`" in gate_status_text
-    assert "create the PR for `codex/g8-b3-status-refresh`, complete review and merge" in compact_gate_status_text
+    assert "complete PR #294 review and merge" in compact_gate_status_text
     assert "tools/g7_b3_completion_audit.py" in gate_status_text
     assert "fail-closed G7/B3 blocker list" in gate_status_text
     assert "not runtime or load evidence by itself" in compact_gate_status_text

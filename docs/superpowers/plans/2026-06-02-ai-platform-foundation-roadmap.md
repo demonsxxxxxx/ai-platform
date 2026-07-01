@@ -75,8 +75,8 @@ vulnerability evidence。
   source/test 分支把 211 sandbox evidence generator 的 Docker platform 默认
   callback path 修为 `0.0.0.0` bind +
   `http://host.docker.internal:{port}/callback` public URL，避免 no-masq
-  host-gateway exception 只靠人工传参；但这仍只是 `local partial`，必须创建
-  PR、完成 review、合并、部署并在 211 重新跑 formal verifier 后，才可能成为
+  host-gateway exception 只靠人工传参；但这仍只是 `local partial`，PR #294
+  已打开，必须完成 review、合并、部署并在 211 重新跑 formal verifier 后，才可能成为
   reviewed G7 evidence。
 - 仍未完成：current-main G7 Docker sandbox hardening closure、B3
   operator-reviewed recorded load evidence、G9 Operations Beta acceptance、G10
@@ -87,12 +87,11 @@ vulnerability evidence。
 
 因此当前下一步不是重开 G8，也不是把 B3 当作普通用户平台级 multi-run 产品曝光；
 下一步是先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime
-observation 和可选 capacity profile readiness 汇总成 fail-closed 阻塞清单，为
-`codex/g8-b3-status-refresh` 创建 PR，完成 review/merge 后部署 G7
-verifier-helper callback 默认修复，并基于已经对齐的 `bd690f7` 211 current-main
-source、运行镜像和 label authority，或后续选定的新 runtime subject，重跑
-reviewed G7 sandbox evidence、smoke / Foundation Runtime concurrency evidence，
-并把 G7/B3 的证据边界继续保持为
+observation 和可选 capacity profile readiness 汇总成 fail-closed 阻塞清单，完成
+PR #294 review/merge 后部署 G7 verifier-helper callback 默认修复，并基于已经
+对齐的 `bd690f7` 211 current-main source、运行镜像和 label authority，或后续
+选定的新 runtime subject，重跑 reviewed G7 sandbox evidence、smoke /
+Foundation Runtime concurrency evidence，并把 G7/B3 的证据边界继续保持为
 `runtime pending` / `local partial`，直到真实运行证据闭合。该 audit 只是
 控制/计划工件，不是 G7 runtime evidence 或 B3 load evidence。
 

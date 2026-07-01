@@ -54,9 +54,9 @@ source/test branch `codex/g8-b3-status-refresh` now fixes the 211 sandbox
 evidence generator defaults so Docker platform probes bind the callback receiver
 on `0.0.0.0` and publish `http://host.docker.internal:{port}/callback` unless
 the operator explicitly overrides callback settings. That is source/test
-progress only; it still needs PR creation, review, merge, deployment, and a 211
-formal verifier rerun before it can become reviewed G7 release evidence. The
-last clean-source readiness command reported
+progress only; PR #294 is open and it still needs review, merge, deployment,
+and a 211 formal verifier rerun before it can become reviewed G7 release
+evidence. The last clean-source readiness command reported
 `source_synced_runtime_pending_followups_open`; the pushed branch is
 `local partial` only, not clean-source gate closure.
 `foundation_alpha_stage_status=runtime_rollout_required`, and
@@ -77,8 +77,8 @@ The G8/B3 status boundary should be read as follows:
   bundle stayed `blocked_incomplete_load_test_evidence`, with the seven
   recorded load-test gates still missing.
 
-Next closure work is operational, not semantic: create the PR for
-`codex/g8-b3-status-refresh`, complete review and merge, deploy the G7
+Next closure work is operational, not semantic: complete PR #294 review and
+merge, deploy the G7
 verifier-helper callback default fix, keep the observed `bd690f7`
 source/runtime parity as the runtime baseline until a newer runtime subject is
 selected, then rerun the relevant smoke, reviewed G7 sandbox evidence, and
