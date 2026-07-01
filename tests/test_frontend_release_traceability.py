@@ -445,6 +445,8 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     runtime_compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     provenance_script = Path("frontend/web/scripts/write-build-provenance.mjs").read_text(encoding="utf-8")
 
+    assert "FROM node:22-bookworm AS build" in dockerfile
+    assert "apk add" not in dockerfile
     assert "ARG AI_PLATFORM_BUILD_COMMIT=unknown" in dockerfile
     assert "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}" in dockerfile
     assert "org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
@@ -505,6 +507,7 @@ def test_frontend_release_traceability_flags_packaged_delivery_missing_required_
     assert "packaged_frontend_contract_scan_failed" in trace["packaged_frontend_image"]["blockers"]
     contract_findings = trace["packaged_frontend_image"]["contract_scan"]["contract_findings"]
     assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_build_commit_arg_required"} in contract_findings
+    assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_debian_build_stage_required"} in contract_findings
     assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_build_dirty_arg_required"} in contract_findings
     assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_source_revision_label_required"} in contract_findings
     assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_build_dirty_env_required"} in contract_findings

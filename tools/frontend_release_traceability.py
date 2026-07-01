@@ -89,6 +89,7 @@ PACKAGED_DELIVERY_FORBIDDEN_TERMS = [
 ]
 PACKAGED_DELIVERY_REQUIRED_TERMS = {
     FRONTEND_DOCKERFILE_PATH: {
+        "dockerfile_debian_build_stage_required": "FROM node:22-bookworm AS build",
         "dockerfile_build_commit_arg_required": "ARG AI_PLATFORM_BUILD_COMMIT=unknown",
         "dockerfile_build_dirty_arg_required": "ARG AI_PLATFORM_BUILD_DIRTY=unknown",
         "dockerfile_build_commit_env_required": "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}",
