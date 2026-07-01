@@ -1516,12 +1516,15 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "do not reconcile the observed 211 API/worker image split" in current_gate_table
     assert "completed G8/B3 cleanup" not in gate_status_text
     assert "已完成：G8/B3" not in roadmap_text
-    assert "post-PR #294 source progress with 211 runtime drift observed" in gate_status_text
+    assert "post-PR #296 source progress with 211 runtime drift observed" in gate_status_text
+    assert "Current GitHub `main` is PR #296 merge commit" in gate_status_text
+    assert "ae6b7e52c656fd8296cf039834ce8d8559b01228" in combined_text
+    assert "PR #296 document-state cleanup" in gate_status_text
     assert "bd690f72723080beeb820d07679da59d84c7913e" in combined_text
     assert "ai-platform:bd690f7-g7-b3-audit-runtime-only-v1" in combined_text
     assert "ai-platform:df85a9f-issue183-contracts-runtime-only-v1" in combined_text
     assert "df85a9fb3266aab92a2ca4122db06d4ec7a00175" in combined_text
-    assert "API/worker runtime identity 已出现漂移" in roadmap_text
+    assert "API/worker runtime identity 已出现漂移" in compact_roadmap_text
     assert "source/runtime parity with followups open" not in gate_status_text
     assert "running for API/worker with matching source/runtime/OCI labels" not in current_gate_table
     assert "d318f9f6a68b4c17e221eb32705b3f31d349227a" in combined_text
@@ -1532,11 +1535,12 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "8 个 verifier checks" in " ".join(roadmap_text.split())
     assert "not a reviewed local `docs/release-evidence/b2-sandbox/...` entry" in compact_gate_status_text
     assert "不是 reviewed local release-evidence entry" in " ".join(roadmap_text.split())
-    assert "not reviewed `bd690f7` or `513cc5e` G7 release evidence" in compact_gate_status_text
+    assert "not reviewed `bd690f7` or current-main `ae6b7e5` G7 release evidence" in compact_gate_status_text
     assert "`runtime_affecting_changes_since_runtime_subject=[]`" in combined_text
     assert "`runtime_affecting_dirty_paths=[]`" in combined_text
     assert "`source_tree_dirty=false`" in combined_text
-    assert 'health endpoint returned `{"status":"ok"}`' in compact_text
+    assert "`http://127.0.0.1:18000/api/ai/health` refused connection" in compact_text
+    assert 'proxy `http://127.0.0.1:18001/api/ai/health` returned `{"status":"ok"}`' in compact_text
     assert "not source/runtime parity for current GitHub `main`" in compact_gate_status_text
     assert "no-masq egress network blocked the callback exception path" in compact_text
     assert "bind the callback receiver on `0.0.0.0`" in compact_gate_status_text
@@ -1545,8 +1549,10 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "codex/g8-b3-status-refresh" in combined_text
     assert "PR #294 merged `codex/g8-b3-status-refresh` into `main`" in compact_gate_status_text
     assert "513cc5e2280c35218e7edf297b7f02494e82a164" in combined_text
-    assert "even after the PR #294 merge, it still needs deployment and a 211 formal verifier rerun" in compact_text
+    assert "current GitHub `main` through PR #296" in compact_gate_status_text
+    assert "it still needs deployment and a 211 formal verifier rerun" in compact_text
     assert "PR #294 is open" not in combined_text
+    assert "PR #296 is open" not in combined_text
     assert "complete PR #294 review and merge" not in compact_text
     assert "callback exception path" in roadmap_text
     assert "blocker diagnostic" in roadmap_text
@@ -1555,16 +1561,16 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "`SANDBOX_CONTAINER_PROVIDER=fake`" in gate_status_text
     assert "`SANDBOX_EXECUTOR_IMAGE=ai-platform:local`" in gate_status_text
     assert "reconcile the observed 211 source/API/worker runtime drift" in compact_gate_status_text
-    assert "deploy the merged PR #294 G7 verifier-helper callback default fix" in compact_gate_status_text
+    assert "deploy a selected current-main runtime subject that includes the PR #294 G7 verifier-helper callback default fix" in compact_gate_status_text
     assert "tools/g7_b3_completion_audit.py" in gate_status_text
     assert "fail-closed G7/B3 blocker list" in gate_status_text
     assert "not runtime or load evidence by itself" in compact_gate_status_text
     assert "不是 G7 runtime evidence 或 B3 load evidence" in roadmap_text
     assert "Named 211 runtime-only formal verifier evidence exists for `d318f9f`" in current_gate_table
-    assert "no reviewed local `bd690f7` or `513cc5e` G7 release-evidence entry" in current_gate_table
+    assert "no reviewed local `bd690f7` or current-main `ae6b7e5` G7 release-evidence entry" in current_gate_table
     assert "callback exception evidence under no-masq/default-deny egress" in current_gate_table
     assert "source_synced_runtime_pending_followups_open" in gate_status_text
-    assert "the merged source change is source progress only" in compact_gate_status_text
+    assert "the merged source changes are source progress only" in compact_gate_status_text
     assert "foundation_alpha_stage_status=runtime_rollout_required" in gate_status_text
     assert 'stage_acceptance_blockers=["foundation_runtime_concurrency_evidence"]' in gate_status_text
 

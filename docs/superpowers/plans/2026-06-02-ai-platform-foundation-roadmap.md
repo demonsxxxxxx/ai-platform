@@ -52,13 +52,17 @@ vulnerability evidence。
   使用旧的泛化 multi-agent exposure 命名。
 - B3 边界：`b3_10x4_sdk_subagents` source contract 是 SDK subagent
   fanout 容量证据，不是 G8 普通用户平台级 multi-run 产品曝光证据。
-- 已部分推进但未完成：PR #294 已合入 GitHub `main`
-  `513cc5e2280c35218e7edf297b7f02494e82a164`，但 211 仍未部署到该
-  commit。最新只读 poll 显示 211 source marker 仍是
+- 已部分推进但未完成：PR #296 已合入 GitHub `main`
+  `ae6b7e52c656fd8296cf039834ce8d8559b01228`，它包含 PR #294 的 G7
+  verifier-helper callback 默认修复，以及 PR #296 的文档状态清理；但 211
+  仍未部署到该 current-main runtime subject。最新只读 poll 显示 211 source
+  marker 仍是
   `bd690f72723080beeb820d07679da59d84c7913e`，source snapshot 记录
   `runtime_affecting_changes_since_runtime_subject=[]`、
-  `runtime_affecting_dirty_paths=[]`、`source_tree_dirty=false`；211 health 返回
-  ok，但 API/worker runtime identity 已出现漂移：`ai-platform-api` 运行
+  `runtime_affecting_dirty_paths=[]`、`source_tree_dirty=false`；211 API 直连
+  `http://127.0.0.1:18000/api/ai/health` refused，前端代理
+  `http://127.0.0.1:18001/api/ai/health` 返回 ok，但 API/worker runtime
+  identity 已出现漂移：`ai-platform-api` 运行
   `ai-platform:df85a9f-issue183-contracts-runtime-only-v1`，source/runtime/OCI
   labels 指向 `df85a9fb3266aab92a2ca4122db06d4ec7a00175`；`ai-platform-worker`
   运行 `ai-platform:bd690f7-g7-b3-audit-runtime-only-v1`，source/runtime/OCI
@@ -69,7 +73,7 @@ vulnerability evidence。
   callback stream、cancel stops container、resource-limit timeout cleanup、
   egress default-deny、non-privileged security options 和 8 个 verifier checks；
   但它仍只是 `d318f9f` named runtime-subject evidence，不是 reviewed local
-  release-evidence entry，也不是 `513cc5e` current-main G7 / Foundation Runtime
+  release-evidence entry，也不是 `ae6b7e5` current-main G7 / Foundation Runtime
   concurrency evidence。此前 `bd690f7` image 的 G7 探针已走到 Docker/resource-limit
   evidence，但 no-masq egress network 阻断 callback exception path，导致
   required callback evidence 缺失，所以只能作为 blocker diagnostic，不是
@@ -78,8 +82,9 @@ vulnerability evidence。
   `513cc5e2280c35218e7edf297b7f02494e82a164`；该变更把 211 sandbox evidence generator 的 Docker platform 默认
   callback path 修为 `0.0.0.0` bind +
   `http://host.docker.internal:{port}/callback` public URL，避免 no-masq
-  host-gateway exception 只靠人工传参；但这仍只是 `merged` source progress，
-  必须部署并在 211 重新跑 formal verifier 后，才可能成为 reviewed G7 evidence。
+  host-gateway exception 只靠人工传参；该修复已随 PR #296 留在当前 GitHub
+  `main`，但这仍只是 `merged` source progress，必须部署并在 211 重新跑
+  formal verifier 后，才可能成为 reviewed G7 evidence。
 - 仍未完成：reconcile 211 source/API/worker runtime identity、current-main G7 Docker sandbox hardening closure、B3
   operator-reviewed recorded load evidence、G9 Operations Beta acceptance、G10
   workflow-owner rollout，以及任何 ordinary-user 平台级 multi-run orchestration
@@ -90,8 +95,8 @@ vulnerability evidence。
 因此当前下一步不是重开 G8，也不是把 B3 当作普通用户平台级 multi-run 产品曝光；
 下一步是先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime
 observation 和可选 capacity profile readiness 汇总成 fail-closed 阻塞清单，先
-reconcile 211 source/API/worker runtime identity，再部署 PR #294 已合并的
-G7 verifier-helper callback 默认修复，并基于后续选定的新 runtime subject 重跑 reviewed G7 sandbox evidence、smoke /
+reconcile 211 source/API/worker runtime identity，再部署包含 PR #294
+G7 verifier-helper callback 默认修复的 current-main runtime subject，并基于后续选定的新 runtime subject 重跑 reviewed G7 sandbox evidence、smoke /
 Foundation Runtime concurrency evidence，并把 G7/B3 的证据边界继续保持为
 `runtime pending` / `local partial`，直到真实运行证据闭合。该 audit 只是
 控制/计划工件，不是 G7 runtime evidence 或 B3 load evidence。
