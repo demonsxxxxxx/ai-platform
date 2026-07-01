@@ -89,7 +89,6 @@ PACKAGED_DELIVERY_FORBIDDEN_TERMS = [
 ]
 PACKAGED_DELIVERY_REQUIRED_TERMS = {
     FRONTEND_DOCKERFILE_PATH: {
-        "dockerfile_debian_build_stage_required": "FROM node:22-bookworm AS build",
         "dockerfile_build_commit_arg_required": "ARG AI_PLATFORM_BUILD_COMMIT=unknown",
         "dockerfile_build_dirty_arg_required": "ARG AI_PLATFORM_BUILD_DIRTY=unknown",
         "dockerfile_build_commit_env_required": "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}",
@@ -129,6 +128,10 @@ FORMAL_FRONTEND_RUNTIME_REQUIRED_TERMS = {
     "runtime_frontend_port_required": "${AI_PLATFORM_FRONTEND_PORT:-18001}:8080",
     "runtime_frontend_depends_on_api_required": "api:",
 }
+
+
+def _dockerfile_has_debian_build_stage(content: str) -> bool:
+    return re.search(r"(?im)^\s*FROM\s+node:22-bookworm\s+AS\s+build\s*$", content) is not None
 
 
 def _sha256(path: Path) -> str:
@@ -397,6 +400,10 @@ def _packaged_delivery_contract_scan(root: Path) -> dict[str, object]:
         for rule_id, required_term in PACKAGED_DELIVERY_REQUIRED_TERMS.get(relative_path, {}).items():
             if required_term not in content:
                 contract_findings.append({"path": relative_path.as_posix(), "rule_id": rule_id})
+        if relative_path == FRONTEND_DOCKERFILE_PATH and not _dockerfile_has_debian_build_stage(content):
+            contract_findings.append(
+                {"path": relative_path.as_posix(), "rule_id": "dockerfile_debian_build_stage_required"}
+            )
         if relative_path == FRONTEND_NGINX_TEMPLATE_PATH and (
             "proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT}" not in content
             or "proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT}" not in content
