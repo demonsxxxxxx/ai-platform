@@ -583,6 +583,8 @@ def _docker_exec_egress_denial_probe(
         "    marker = str(exc).lower()\n"
         "    if 'egress_denied' in marker or 'egress denied' in marker:\n"
         "        sys.exit(42)\n"
+        "    if 'temporary failure in name resolution' in marker or 'timed out' in marker:\n"
+        "        sys.exit(44)\n"
         "    sys.exit(43)\n"
         "sys.exit(0)\n"
     )
@@ -592,8 +594,17 @@ def _docker_exec_egress_denial_probe(
         timeout=10,
         check=False,
     )
+    returncode = getattr(completed, "returncode", 1)
+    denial_reason = (
+        "explicit_egress_denied"
+        if returncode == 42
+        else "dns_or_network_blocked"
+        if returncode == 44
+        else ""
+    )
     return {
-        "denied": getattr(completed, "returncode", 1) == 42,
+        "denied": returncode in {42, 44},
+        "denial_reason": denial_reason,
         "target": denied_target,
     }
 
@@ -603,6 +614,7 @@ def _safe_platform_egress_probe_from_result(
     run_id: str,
     egress_denial_probe: dict[str, Any] | None,
     docker_inspect: dict[str, Any] | None,
+    docker_network_inspect: dict[str, Any] | None = None,
     callbacks: list[dict[str, object]] | None,
 ) -> dict[str, Any]:
     if not isinstance(egress_denial_probe, dict) or egress_denial_probe.get("denied") is not True:
@@ -610,7 +622,24 @@ def _safe_platform_egress_probe_from_result(
     if not _callback_delivered(callbacks, run_id=run_id):
         return {}
     labels = _docker_config_labels(docker_inspect)
+    if labels.get("ai-platform.egress.policy") != "default-deny-no-masq":
+        return {}
+    network_name = str(labels.get("ai-platform.egress.network") or "")
     callback_host = str(labels.get("ai-platform.egress.callback_host") or "host.docker.internal")
+    if not network_name or not callback_host:
+        return {}
+    host_config = _docker_host_config(docker_inspect)
+    if host_config.get("NetworkMode") != network_name:
+        return {}
+    network_settings = docker_inspect.get("NetworkSettings") if isinstance(docker_inspect, dict) else None
+    networks = network_settings.get("Networks") if isinstance(network_settings, dict) else None
+    if not isinstance(networks, dict) or network_name not in networks:
+        return {}
+    extra_hosts = [str(item) for item in host_config.get("ExtraHosts") or []]
+    if f"{callback_host}:host-gateway" not in extra_hosts:
+        return {}
+    if not _docker_network_masquerade_disabled(docker_network_inspect, expected_network_name=network_name):
+        return {}
     denied_target = str(egress_denial_probe.get("target") or "")
     if _redact(denied_target) != denied_target:
         return {}
@@ -833,10 +862,13 @@ def run_platform_runtime_probe(
         original_provider = settings.sandbox_container_provider
         original_executor_image = settings.sandbox_executor_image
         original_workspace_root = settings.sandbox_workspace_root
+        original_egress_policy_enabled = settings.sandbox_egress_policy_enabled
         settings.sandbox_container_provider = sandbox_provider
         if sandbox_executor_image:
             settings.sandbox_executor_image = sandbox_executor_image
         settings.sandbox_workspace_root = workspace_root
+        if sandbox_provider == "docker":
+            settings.sandbox_egress_policy_enabled = True
         container_provider.reset_container_provider_cache()
         try:
             async def record_lease(lease, request, workspace):
@@ -909,6 +941,7 @@ def run_platform_runtime_probe(
             settings.sandbox_container_provider = original_provider
             settings.sandbox_executor_image = original_executor_image
             settings.sandbox_workspace_root = original_workspace_root
+            settings.sandbox_egress_policy_enabled = original_egress_policy_enabled
             container_provider.reset_container_provider_cache()
 
     result = asyncio.run(probe())
@@ -933,6 +966,9 @@ def run_platform_runtime_probe(
         if isinstance(captured.get("egress_denial_probe"), dict)
         else None,
         docker_inspect=captured.get("docker_inspect") if isinstance(captured.get("docker_inspect"), dict) else None,
+        docker_network_inspect=captured.get("docker_network_inspect")
+        if isinstance(captured.get("docker_network_inspect"), dict)
+        else None,
         callbacks=recorder.callbacks,
     )
     if platform_egress_probe:

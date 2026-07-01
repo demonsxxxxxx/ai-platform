@@ -2940,7 +2940,7 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
         "blocked_expansions": [
             "production_concurrency_increase",
             "docker_sandbox_hardening_claim",
-            "ordinary_user_multi_agent_exposure",
+            "ordinary_user_platform_multi_run_orchestration_exposure",
             "department_rollout",
         ],
         "next_recommended_slices": [
@@ -3086,7 +3086,11 @@ def test_foundation_alpha_readiness_aggregates_current_poc_evidence_without_over
     assert "#21_recorded_capacity_evidence" not in readiness["open_followups"]
     assert "g7_docker_sandbox_hardening" in readiness["open_followups"]
     assert "g8_ordinary_user_multi_agent_exposure" not in readiness["open_followups"]
-    assert "ordinary_user_multi_agent_exposure" in readiness["operator_context"]["blocked_expansions"]
+    assert (
+        "ordinary_user_platform_multi_run_orchestration_exposure"
+        in readiness["operator_context"]["blocked_expansions"]
+    )
+    assert "ordinary_user_multi_agent_exposure" not in readiness["operator_context"]["blocked_expansions"]
     assert "g9_runtime_export_and_retention_acceptance" not in readiness["open_followups"]
     assert "packaged_frontend_image_release_acceptance" not in readiness["open_followups"]
     assert (
@@ -3311,7 +3315,11 @@ def test_foundation_alpha_readiness_prefers_current_source_foundation_runtime_co
     assert "runtime_rollout_required_for_current_source" in readiness["operator_context"]["next_recommended_slices"]
     assert "g7_docker_sandbox_hardening" in readiness["open_followups"]
     assert "g8_ordinary_user_multi_agent_exposure" not in readiness["open_followups"]
-    assert "ordinary_user_multi_agent_exposure" in readiness["operator_context"]["blocked_expansions"]
+    assert (
+        "ordinary_user_platform_multi_run_orchestration_exposure"
+        in readiness["operator_context"]["blocked_expansions"]
+    )
+    assert "ordinary_user_multi_agent_exposure" not in readiness["operator_context"]["blocked_expansions"]
     assert readiness["evidence_entries"]["foundation_runtime_concurrency"] == (
         foundation_alpha_readiness._path_for_output(concurrency_path)
     )

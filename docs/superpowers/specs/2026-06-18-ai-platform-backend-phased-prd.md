@@ -172,7 +172,7 @@ Sequencing rule:
 | B0 | Latest-main backend readiness refresh | Current source, 211 source, deploy composition, runtime labels, backend/worker containers, and readiness tools agree. | G0-G1, S2-0 | `local partial` |
 | B1 | Memory/context usable | Selected workflows can use governed memory/context with provenance, policy, retention, delete/redaction, export, and deny paths. | G6, G9 | `local partial` |
 | B2 | Real sandbox usable | Docker/equivalent sandbox runs governed SDK Skill tasks with leases, quotas, egress policy, callback validation, cleanup, and artifact return. | G7, G6, G9 | `local partial` |
-| B3 | Worker/model-gateway capacity | Target profile is measured before defaults increase: initial profile is 10 sessions x peak 4 SDK subagents/session. | G5, G8, G9 | `local partial` |
+| B3 | Worker/model-gateway capacity | Target profile is measured before defaults increase: initial profile is 10 sessions x peak 4 SDK subagents/session. | G5, G9; may inform a later G8 decision but does not reopen or close G8 | `local partial` |
 | B4 | Skills management and release governance | Skills can be uploaded/imported, versioned, reviewed, released, rolled back, pinned, dependency-reviewed, and audited. | G6, G9 | `local partial` |
 | B5 | Files/artifacts/tool permission governance | File upload, artifact ACL, preview/download, exact tool approvals, MCP/shell/filesystem policy, and replay denial are proven. | G6, G7, G9 | `local partial` |
 | B6 | Operations beta and workflow readiness | Admin Runtime, trace/export, alerting, golden-set eval, workflow owner signoff, rollback, and support model exist. | G9, G10 | `local partial` |
@@ -473,7 +473,10 @@ not Foundation Runtime concurrency correctness evidence.
   The target profile is `b3_10x4_sdk_subagents`: 10 sessions x peak 4 SDK
   subagents/session, equivalent to 10 concurrent user sessions with
   peak 4 Claude Agent SDK subagents per session. This local contract records
-  expected fields and fail-closed flags only; it does not raise production defaults or claim safe concurrency,
+  expected fields and fail-closed flags only. The legacy schema flag
+  `ordinary_user_multi_agent_enabled=false` means no ordinary-user
+  platform-level multi-run orchestration exposure; it is not evidence that B3
+  is a G8 product route. The contract does not raise production defaults or claim safe concurrency,
   does not enable ordinary-user platform-level multi-run orchestration exposure,
   and does not close B3 or G9. It does not reopen G8.
 

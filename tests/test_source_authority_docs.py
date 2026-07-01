@@ -169,9 +169,12 @@ def test_guardrails_document_exists_and_is_named_by_authority_docs():
 
 def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
     prd_text = read(PRD)
+    old_prd_text = read(OLD_PRD)
     tech_text = read(TECH_ACCEPTANCE)
     workflow_text = read(GITHUB_WORKFLOW)
     compact_prd_text = " ".join(prd_text.split())
+    compact_old_prd_text = " ".join(old_prd_text.split())
+    compact_old_prd_without_quote_markers = compact_old_prd_text.replace("> ", "")
 
     assert "Status: active product PRD" in prd_text
     assert "S1 / Foundation Alpha historical baseline is" in prd_text
@@ -189,6 +192,14 @@ def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
     assert "issue -> PR -> review -> merge -> deploy/smoke when required -> close issue with evidence" in prd_text
     assert "Use `Closes #N` or `Fixes #N` only when" in workflow_text
     assert OLD_PRD.exists()
+    assert "Status: archived migration appendix" in old_prd_text
+    assert "This 2026-05-29 PRD is no longer the active product authority" in old_prd_text
+    assert "本文件曾是 `ai-platform` 产品方向总纲 PRD" in old_prd_text
+    assert "当前产品方向的唯一总纲 PRD" not in old_prd_text
+    assert (
+        "G8 is a deferred platform-level multi-run orchestration parking-lot, "
+        "while B3 SDK subagent fanout capacity evidence does not reopen or close G8"
+    ) in compact_old_prd_without_quote_markers
 
 
 def test_github_workflow_records_sdk_worker_diagnostic_layers():
@@ -360,6 +371,13 @@ def test_prd_roadmap_guardrails_share_current_gate_sequence():
     for stale_gate_name in stale_gate_names:
         assert stale_gate_name not in prd_text
 
+    compact_prd_text = " ".join(prd_text.split())
+    assert "Reopen only for controlled SDK subagent load evidence" not in prd_text
+    assert (
+        "B3 SDK subagent load evidence may inform a later G8 decision, but it "
+        "does not itself reopen or close G8"
+    ) in compact_prd_text
+
 
 def test_gate_status_snapshot_records_blockers_without_closure_claim():
     gate_status_text = read(GATE_STATUS_DOC)
@@ -376,7 +394,8 @@ def test_gate_status_snapshot_records_blockers_without_closure_claim():
     assert "do_not_raise_without_recorded_load_test_evidence" in gate_status_text
     assert "packaged frontend image smoke/release acceptance" in gate_status_text
     assert "Foundation Alpha POC Smoke" in gate_status_text
-    assert "211 POC smoke refreshed for the current B0 runtime-relevant subject" in gate_status_text
+    assert "latest reviewed 211 POC smoke remains useful historical" in gate_status_text
+    assert "not current-main runtime verification" in gate_status_text
     assert "not production gate closure" in gate_status_text
     assert "current context public-summary" not in gate_status_text[:1000]
     assert "source_synced_runtime_pending" in gate_status_text
@@ -1384,7 +1403,10 @@ def test_gate_status_records_issue164_b0_runtime_refresh_with_source_caveats():
         assert expected in combined_text
     assert "Foundation Runtime concurrency refresh for the same `e4c0e9d` runtime subject verified 12 concurrent" in compact_text
     assert "This removes the `foundation_runtime_concurrency_evidence` blocker for the named `e4c0e9d` runtime subject only" in compact_text
-    assert "G0 source-authority closure remains blocked by the external env-file label caveat" in compact_text
+    assert (
+        "G0 source-authority closure remains blocked by current source/runtime reconciliation, "
+        "the external env-file label caveat, and production auth rollout evidence"
+    ) in compact_text
     assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in compact_text
     assert (
         "The #164 runtime-subject evidence scope now sits behind the newer "
@@ -1427,6 +1449,7 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     assert "C:\\Users" not in capacity_text
 
     for text in (capacity_text, gate_status_text):
+        compact_capacity_or_status_text = " ".join(text.split())
         assert "B3 operator-reviewed recorded snapshot source contract" in text
         assert "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1" in text
         assert "b3_10x4_sdk_subagents" in text
@@ -1439,6 +1462,11 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
         assert "production_concurrency_defaults_raised = false" in text
         assert "safe_concurrency_claimed = false" in text
         assert "ordinary_user_multi_agent_enabled = false" in text
+        assert "legacy schema flag" in text
+        assert (
+            "means no ordinary-user platform-level multi-run orchestration exposure"
+            in compact_capacity_or_status_text
+        )
         assert "runtime_source_identity_and_image_labels" in text
         assert "tenant_user_skill_mix" in text
         assert "token_cost_ledger" in text
@@ -1456,6 +1484,72 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
         assert "does not close B3" in text
         assert "ordinary-user platform-level multi-run orchestration exposure" in " ".join(text.split())
         assert "C:\\Users" not in text
+
+
+def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
+    gate_status_text = read(GATE_STATUS_DOC)
+    roadmap_text = read(ROADMAP)
+    combined_text = f"{gate_status_text}\n{roadmap_text}"
+    compact_text = " ".join(combined_text.split())
+
+    assert "Current Reading Guide" in gate_status_text
+    assert "当前路线进展读法" in roadmap_text
+    current_gate_table = gate_status_text.split("## Current Gate Status", 1)[1].split(
+        "## Issue-Driven Thin Spots",
+        1,
+    )[0]
+    assert "The table below is a gate/evidence matrix" in current_gate_table
+    assert "Rows that mention `96f27bb` describe reviewed 2026-06-30" in current_gate_table
+    assert "current-main runtime/FRC follow-ups still open" in " ".join(current_gate_table.split())
+    assert "The `96f27bb` source-runtime relation is historical evidence only" in current_gate_table
+    assert "do not prove the 2026-07-01 current-main runtime state" in current_gate_table
+    assert "completed G8/B3 cleanup" not in gate_status_text
+    assert "已完成：G8/B3" not in roadmap_text
+    assert "3071a02945c84370f62a9b36884a0a2df8ea9c45" in combined_text
+    assert "d318f9f6a68b4c17e221eb32705b3f31d349227a" in combined_text
+    assert "ai-platform:d318f9f-g7-b3-runtime-only-v1" in combined_text
+    assert "g7-runtime-probe-20260701203418" in combined_text
+    compact_gate_status_text = " ".join(gate_status_text.split())
+    assert "all eight verifier checks passing" in compact_gate_status_text
+    assert "8 个 verifier checks" in " ".join(roadmap_text.split())
+    assert "not a reviewed local `docs/release-evidence/b2-sandbox/...` entry" in compact_gate_status_text
+    assert "不是 reviewed local release-evidence entry" in roadmap_text
+    assert "not current-main exact source/runtime evidence" in compact_gate_status_text
+    assert "source/runtime drift with followups open" in gate_status_text
+    assert (
+        "legacy underscore labels still point to `96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c`"
+        in compact_text
+    )
+    assert "`SANDBOX_CONTAINER_PROVIDER=fake`" in gate_status_text
+    assert "`SANDBOX_EXECUTOR_IMAGE=ai-platform:local`" in gate_status_text
+    assert "reviewed release-evidence records" in gate_status_text
+    assert "tools/g7_b3_completion_audit.py" in gate_status_text
+    assert "fail-closed G7/B3 blocker list" in gate_status_text
+    assert "not runtime or load evidence by itself" in compact_gate_status_text
+    assert "不是 G7 runtime evidence 或 B3 load evidence" in roadmap_text
+    assert "Named 211 runtime-only formal verifier evidence exists for `d318f9f`" in current_gate_table
+    assert "not exact `3071a029` source/runtime proof" in current_gate_table
+    assert "source_tree_runtime_affecting_uncommitted_changes_pending_followups_open" in gate_status_text
+    assert "runtime-affecting uncommitted changes" in gate_status_text
+    assert "foundation_alpha_stage_status=runtime_rollout_required" in gate_status_text
+    assert 'stage_acceptance_blockers=["foundation_runtime_concurrency_evidence"]' in gate_status_text
+
+    assert "G8 is a deferred parking-lot for platform-owned parent/child multi-run orchestration" in compact_text
+    assert "not a current ordinary-user product route" in compact_text
+    assert "B3 is the capacity evidence track for selected Claude Agent SDK subagent fanout profiles" in compact_text
+    assert "b3_10x4_sdk_subagents" in combined_text
+    assert "must not be treated as ordinary-user platform-level multi-run orchestration exposure evidence" in compact_text
+    assert "旧 G8 普通用户平台级 multi-run follow-up 不再作为 Foundation Alpha 顶层 `open_followups`" in compact_text
+    assert "当前权威文档不再 使用旧的泛化 multi-agent exposure 命名" in compact_text
+    assert "multi-agent fanout exposure" not in roadmap_text
+    assert "SDK subagent fanout capacity inside governed platform runs" in roadmap_text
+    assert "g8_ordinary_user_multi_agent_exposure" not in gate_status_text
+    assert "g8_ordinary_user_multi_agent_exposure" not in roadmap_text
+    assert "ordinary_user_multi_agent_exposure" not in gate_status_text
+    assert "ordinary_user_multi_agent_exposure" not in roadmap_text
+
+    assert "do not call the current source `211 verified`" in compact_text
+    assert "`gate closable`, B3 complete, G7 complete, Foundation Alpha complete, or production-ready" in compact_text
 
 
 def test_observability_docs_record_quality_golden_set_contract_without_closing_g9():

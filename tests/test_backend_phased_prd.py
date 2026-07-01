@@ -56,6 +56,11 @@ def test_backend_prd_records_authority_status_and_stage_boundaries():
         "| B3 | `local partial`; source contract only for `b3_10x4_sdk_subagents`"
         in text
     )
+    assert "G5, G8, G9" not in text
+    assert (
+        "G5, G9; may inform a later G8 decision but does not reopen or close G8"
+        in text
+    )
     assert (
         "| B0 | Reviewed runtime-relevant smoke and Foundation Runtime concurrency evidence exist for `96f27bb`"
         in text

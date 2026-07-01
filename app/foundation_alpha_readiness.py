@@ -1846,7 +1846,7 @@ def _operator_context(
         "blocked_expansions": [
             "production_concurrency_increase",
             "docker_sandbox_hardening_claim",
-            "ordinary_user_multi_agent_exposure",
+            "ordinary_user_platform_multi_run_orchestration_exposure",
             "department_rollout",
         ],
         "next_recommended_slices": next_recommended_slices,
