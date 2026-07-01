@@ -22,14 +22,14 @@ AUTH_RBAC_WRAPPED_GATE_NAME = "Auth/RBAC Smoke"
 GOVERNANCE_RUNTIME_WRAPPED_GATE_NAME = "Governance Runtime Smoke"
 RELEASE_EVIDENCE_RUNTIME_ACCEPTANCE_WRAPPED_GATE_NAME = "Release Evidence Runtime Acceptance"
 ALERT_TRACE_EXPORT_RUNTIME_ACCEPTANCE_WRAPPED_GATE_NAME = "Alert Trace Export Runtime Acceptance"
-RUNTIME_SUBJECT_COMMIT_SHA = "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
+RUNTIME_SUBJECT_COMMIT_SHA = "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c"
 _ROOT = Path(__file__).resolve().parents[1]
 _EVIDENCE_BASE_ROOT = _ROOT / "docs/release-evidence/foundation-alpha-poc"
 _FOUNDATION_RUNTIME_CONCURRENCY_EVIDENCE_ROOT = _ROOT / "docs/release-evidence/foundation-runtime-concurrency"
 _SOURCE_RUNTIME_RELATION_MANIFEST = _EVIDENCE_BASE_ROOT / "source-runtime-relation-manifest.json"
 _EVIDENCE_ROOT = _EVIDENCE_BASE_ROOT / RUNTIME_SUBJECT_COMMIT_SHA
-_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-30-211-foundation-alpha-poc-c3d6525-runtime-poc-smoke.json"
-_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-30-211-foundation-alpha-poc-c3d6525-auth-rbac-smoke.json"
+_SMOKE_EVIDENCE = _EVIDENCE_ROOT / "2026-06-30-211-foundation-alpha-poc-96f27bb-runtime-poc-smoke.json"
+_AUTH_RBAC_EVIDENCE = _EVIDENCE_ROOT / "2026-06-30-211-foundation-alpha-poc-96f27bb-auth-rbac-smoke.json"
 _SOURCE_REVISION_MARKER = _ROOT / ".ai-platform-source-revision"
 _SOURCE_SNAPSHOT_MARKER = _ROOT / ".ai-platform-source-snapshot.json"
 _RUNTIME_NEUTRAL_PATH_PREFIXES = (
@@ -48,6 +48,7 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     ".gitignore",
     "AGENTS.md",
     "app/b1_memory_context_readiness.py",
+    "app/b2_sandbox_readiness.py",
     "app/capacity_bounded_load_harness.py",
     "app/foundation_alpha_readiness.py",
     "app/governance_readiness.py",
@@ -61,6 +62,7 @@ _RUNTIME_NEUTRAL_EXACT_PATHS = {
     "tools/release_evidence_export_acceptance.py",
     "tools/release_evidence_readiness.py",
     "tools/verify_auth_rbac_smoke.py",
+    "tools/verify_poc_gate.py",
     "tools/verify_b1_memory_context_workflow.py",
     "tools/verify_governance_runtime_smoke.py",
     "tools/verify_release_evidence_runtime_acceptance.py",

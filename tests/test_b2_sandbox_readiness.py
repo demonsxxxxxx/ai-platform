@@ -450,6 +450,43 @@ def test_b2_runtime_delta_filter_treats_frontend_only_changes_as_b2_runtime_neut
     assert changes == ["app/routes/runs.py"]
 
 
+def test_b2_runtime_delta_filter_treats_non_b2_readiness_and_evidence_as_neutral(monkeypatch):
+    monkeypatch.setattr(
+        b2_sandbox_readiness,
+        "_resolve_source_runtime_affecting_changes_between",
+        lambda _base, _source: [
+            "app/foundation_alpha_readiness.py",
+            "docs/release-evidence/README.md",
+            (
+                "docs/release-evidence/b1-memory-context/"
+                "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c/"
+                "2026-07-01-211-b1-memory-context-workflow-smoke-96f27bb.json"
+            ),
+            (
+                "docs/release-evidence/foundation-alpha-poc/"
+                "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c/"
+                "2026-06-30-211-foundation-alpha-poc-96f27bb-runtime-poc-smoke.json"
+            ),
+            (
+                "docs/release-evidence/foundation-runtime-concurrency/"
+                "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c-frc-b0-20260630/"
+                "2026-06-30-211-foundation-alpha-poc-96f27bb-foundation-runtime-concurrency.json"
+            ),
+            "tests/test_b1_memory_context_readiness.py",
+            "tests/test_foundation_alpha_readiness.py",
+            "tests/test_source_authority_docs.py",
+            "app/runtime/sandbox/runtime.py",
+        ],
+    )
+
+    changes = b2_sandbox_readiness._resolve_b2_runtime_affecting_changes_between(
+        "runtime-subject",
+        "current-source",
+    )
+
+    assert changes == ["app/runtime/sandbox/runtime.py"]
+
+
 def test_b2_sandbox_readiness_rejects_egress_hardening_without_probe_details(tmp_path):
     write_future_reviewed_b2_smoke(tmp_path)
     evidence_path = (

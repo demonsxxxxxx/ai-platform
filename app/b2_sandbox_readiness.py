@@ -26,9 +26,20 @@ RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-result
 _RUNTIME_EVIDENCE_ROOT = "docs/release-evidence/b2-sandbox"
 _B2_RUNTIME_NEUTRAL_EXACT_PATHS = {
     "app/b2_sandbox_readiness.py",
+    "app/foundation_alpha_readiness.py",
+    "docs/operations/ai-platform-gate-status.md",
+    "docs/release-evidence/README.md",
+    "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json",
     "tools/b2_sandbox_readiness.py",
+    "tests/test_b1_memory_context_readiness.py",
+    "tests/test_b2_sandbox_readiness.py",
+    "tests/test_foundation_alpha_readiness.py",
+    "tests/test_source_authority_docs.py",
 }
 _B2_RUNTIME_NEUTRAL_PREFIXES = (
+    "docs/release-evidence/b1-memory-context/",
+    "docs/release-evidence/foundation-alpha-poc/",
+    "docs/release-evidence/foundation-runtime-concurrency/",
     "frontend/",
 )
 

@@ -27,7 +27,7 @@ from app.validation import assert_safe_id
 
 DEFAULT_FRONTEND_URL = "http://127.0.0.1:18001"
 DEFAULT_API_URL = "http://127.0.0.1:8020"
-DEFAULT_FRONTEND_DIST = "/home/xinlin.jiang/lambchat-poc/frontend-dist-ai-platform"
+DEFAULT_FRONTEND_DIST = "/home/xinlin.jiang/frontend-pr111-smoke/dist"
 DEFAULT_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env"
 DEFAULT_API_CONTAINER = "ai-platform-api"
 DEFAULT_POSTGRES_CONTAINER = "ai-platform-postgres"

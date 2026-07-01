@@ -10,7 +10,8 @@ from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.db import transaction
 from app.queue import enqueue_run
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
-from app.routes.runs import _dispatch_tick_candidate, prepare_copied_run_for_queue
+from app.run_control_readiness import dispatch_tick_candidate
+from app.routes.runs import prepare_copied_run_for_queue
 from app.settings import get_settings
 from app.skills.pinning import SkillVersionMaterializationError
 
@@ -80,7 +81,7 @@ async def _dispatch_one_ready_parent(
     if run is None:
         raise RepositoryNotFoundError("run_not_found")
     steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
-    candidate = _dispatch_tick_candidate(run=run, steps=steps, principal=principal)
+    candidate = dispatch_tick_candidate(run=run, steps=steps, principal=principal)
     claimed_step_key = str(candidate["step_key"])
     claim = await repositories.claim_multi_agent_dispatch_step(
         conn,

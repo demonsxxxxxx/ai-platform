@@ -1,9 +1,9 @@
 {
-  "captured_at": "2026-06-30T13:11:00Z",
-  "note": "B0 211 runtime-only rollout evidence for merged main c3d6525. Live API/worker containers use ai-platform:c3d6525-b0-current-main-runtime-only-v1 with matching runtime subject, runtime source marker, OCI revision, and source-revision labels. This manifest records source/runtime parity only; B1-B4 product gates, production concurrency increases, Docker sandbox hardening, packaged frontend release acceptance, and issue closure remain separate followups.",
+  "captured_at": "2026-07-01T03:01:14Z",
+  "note": "B0 211 runtime-only rollout evidence for current branch subject 96f27bb. Live API/worker containers use ai-platform:96f27bb-b0-current-source-runtime-only-v2 with matching runtime subject, runtime source marker, OCI revision, and source-revision labels. This manifest records source/runtime parity only; B1-B4 product gates, production concurrency increases, Docker sandbox hardening, packaged frontend release acceptance, and issue closure remain separate followups.",
   "runtime_affecting_changes_since_runtime_subject": [],
   "runtime_affecting_dirty_paths": [],
-  "runtime_subject_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327",
+  "runtime_subject_commit_sha": "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c",
   "schema_version": "ai-platform.source-runtime-relation-manifest.v1",
-  "source_tree_commit_sha": "c3d6525d8980c43ce9d13a2fd9016bbe61597327"
+  "source_tree_commit_sha": "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c"
 }
