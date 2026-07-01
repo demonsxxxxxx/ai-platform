@@ -445,6 +445,8 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     runtime_compose = Path("deploy/ai-platform/docker-compose.yml").read_text(encoding="utf-8")
     provenance_script = Path("frontend/web/scripts/write-build-provenance.mjs").read_text(encoding="utf-8")
 
+    assert "FROM node:22-bookworm AS build" in dockerfile
+    assert "apk add" not in dockerfile
     assert "ARG AI_PLATFORM_BUILD_COMMIT=unknown" in dockerfile
     assert "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}" in dockerfile
     assert "org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
@@ -505,6 +507,7 @@ def test_frontend_release_traceability_flags_packaged_delivery_missing_required_
     assert "packaged_frontend_contract_scan_failed" in trace["packaged_frontend_image"]["blockers"]
     contract_findings = trace["packaged_frontend_image"]["contract_scan"]["contract_findings"]
     assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_build_commit_arg_required"} in contract_findings
+    assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_debian_build_stage_required"} in contract_findings
     assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_build_dirty_arg_required"} in contract_findings
     assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_source_revision_label_required"} in contract_findings
     assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_build_dirty_env_required"} in contract_findings
@@ -513,6 +516,72 @@ def test_frontend_release_traceability_flags_packaged_delivery_missing_required_
     assert {"path": "frontend/web/nginx.conf.template", "rule_id": "nginx_proxy_request_buffering_off_required"} in contract_findings
     assert {"path": "deploy/ai-platform/docker-compose.frontend.yml", "rule_id": "compose_build_commit_args_required"} in contract_findings
     assert {"path": "deploy/ai-platform/docker-compose.frontend.yml", "rule_id": "compose_frontend_proxy_limits_required"} in contract_findings
+
+
+def test_frontend_release_traceability_rejects_commented_debian_build_stage(tmp_path):
+    frontend_root = tmp_path / "frontend" / "web"
+    deploy_root = tmp_path / "deploy" / "ai-platform"
+    frontend_root.mkdir(parents=True)
+    deploy_root.mkdir(parents=True)
+    write_frontend_package(frontend_root)
+    (frontend_root / "Dockerfile").write_text(
+        "\n".join(
+            [
+                "# FROM node:22-bookworm AS build",
+                "FROM node:22-alpine AS build",
+                "ARG AI_PLATFORM_BUILD_COMMIT=unknown",
+                "ARG AI_PLATFORM_BUILD_DIRTY=unknown",
+                "ENV AI_PLATFORM_BUILD_COMMIT=${AI_PLATFORM_BUILD_COMMIT}",
+                "ENV AI_PLATFORM_BUILD_DIRTY=${AI_PLATFORM_BUILD_DIRTY}",
+                "COPY tools ./tools",
+                "RUN corepack pnpm run ci:verify",
+                "FROM nginx:1.27-alpine",
+                "LABEL org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT",
+                "LABEL ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT",
+                "COPY --from=build /workspace/frontend/web/dist /usr/share/nginx/html",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (frontend_root / "nginx.conf.template").write_text(
+        "\n".join(
+            [
+                "client_max_body_size ${AI_PLATFORM_FRONTEND_MAX_BODY_SIZE};",
+                "location /api/ {",
+                "  proxy_pass ${AI_PLATFORM_API_UPSTREAM};",
+                "  proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT};",
+                "  proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT};",
+                "  proxy_request_buffering off;",
+                "}",
+                "try_files $uri $uri/ /index.html;",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (deploy_root / "docker-compose.frontend.yml").write_text(
+        "\n".join(
+            [
+                "services:",
+                "  frontend:",
+                "    build:",
+                "      dockerfile: frontend/web/Dockerfile",
+                "      args:",
+                "        AI_PLATFORM_BUILD_COMMIT: ${AI_PLATFORM_BUILD_COMMIT:-unknown}",
+                "        AI_PLATFORM_BUILD_DIRTY: ${AI_PLATFORM_BUILD_DIRTY:-unknown}",
+                "    environment:",
+                "      AI_PLATFORM_API_UPSTREAM: ${AI_PLATFORM_API_UPSTREAM:-http://api:8020}",
+                "      AI_PLATFORM_FRONTEND_MAX_BODY_SIZE: ${AI_PLATFORM_FRONTEND_MAX_BODY_SIZE:-50m}",
+                "      AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT: ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT:-300s}",
+                "      AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT: ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT:-300s}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    trace = build_frontend_release_traceability(repo_root=tmp_path)
+
+    contract_findings = trace["packaged_frontend_image"]["contract_scan"]["contract_findings"]
+    assert {"path": "frontend/web/Dockerfile", "rule_id": "dockerfile_debian_build_stage_required"} in contract_findings
 
 
 def test_frontend_release_traceability_scans_packaged_delivery_files_for_forbidden_terms(tmp_path):

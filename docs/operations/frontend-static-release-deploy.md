@@ -68,7 +68,7 @@ sudo -n docker build \
   .
 ```
 
-If the 211 host cannot pull `node:22-alpine` or `nginx:1.27-alpine`, build on a
+If the 211 host cannot pull `node:22-bookworm` or `nginx:1.27-alpine`, build on a
 Docker-capable host with registry access, save the image, upload it to the fixed
 frontend package directory, and load it on 211:
 

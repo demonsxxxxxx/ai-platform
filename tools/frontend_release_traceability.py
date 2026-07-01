@@ -130,6 +130,10 @@ FORMAL_FRONTEND_RUNTIME_REQUIRED_TERMS = {
 }
 
 
+def _dockerfile_has_debian_build_stage(content: str) -> bool:
+    return re.search(r"(?im)^\s*FROM\s+node:22-bookworm\s+AS\s+build\s*$", content) is not None
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -396,6 +400,10 @@ def _packaged_delivery_contract_scan(root: Path) -> dict[str, object]:
         for rule_id, required_term in PACKAGED_DELIVERY_REQUIRED_TERMS.get(relative_path, {}).items():
             if required_term not in content:
                 contract_findings.append({"path": relative_path.as_posix(), "rule_id": rule_id})
+        if relative_path == FRONTEND_DOCKERFILE_PATH and not _dockerfile_has_debian_build_stage(content):
+            contract_findings.append(
+                {"path": relative_path.as_posix(), "rule_id": "dockerfile_debian_build_stage_required"}
+            )
         if relative_path == FRONTEND_NGINX_TEMPLATE_PATH and (
             "proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT}" not in content
             or "proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT}" not in content
