@@ -46,13 +46,13 @@ test("skills hub exposes all frontend governance states explicitly", () => {
   assert.equal(resolveSkillsHubGovernance(base).pageState, "ready");
 });
 
-test("skills hub trusts public catalog effective permissions over stale auth projection", () => {
+test("skills hub trusts admin catalog effective permissions over stale auth projection", () => {
   const state = resolveSkillsHubGovernance({
     requestedTab: "skills",
     isAuthenticated: true,
     canReadSkills: false,
     canReadMarketplace: false,
-    effectivePermissions: ["skill:read", "marketplace:read"],
+    effectivePermissions: ["skill:admin"],
   });
 
   assert.equal(state.pageState, "ready");
@@ -62,11 +62,11 @@ test("skills hub trusts public catalog effective permissions over stale auth pro
   assert.equal(state.effectivePermissionsSource, "catalog");
 });
 
-test("ordinary PR177 public projections keep skills and marketplace ready", () => {
+test("ordinary public read projections keep admin skill management fail-closed", () => {
   const common = {
     isAuthenticated: true,
-    canReadSkills: true,
-    canReadMarketplace: true,
+    canReadSkills: false,
+    canReadMarketplace: false,
     effectivePermissions: ["skill:read", "marketplace:read"],
     effectivePermissionsKnown: true,
     catalogReadResolved: true,
@@ -81,13 +81,13 @@ test("ordinary PR177 public projections keep skills and marketplace ready", () =
     requestedTab: "marketplace",
   });
 
-  assert.equal(skills.pageState, "ready");
-  assert.equal(skills.hasPermission, true);
-  assert.equal(skills.requiredPermission, "skill:read");
+  assert.equal(skills.pageState, "forbidden");
+  assert.equal(skills.hasPermission, false);
+  assert.equal(skills.requiredPermission, "skill:admin");
   assert.equal(skills.effectivePermissionsSource, "catalog");
-  assert.equal(marketplace.pageState, "ready");
-  assert.equal(marketplace.hasPermission, true);
-  assert.equal(marketplace.requiredPermission, "marketplace:read");
+  assert.equal(marketplace.pageState, "forbidden");
+  assert.equal(marketplace.hasPermission, false);
+  assert.equal(marketplace.requiredPermission, "marketplace:admin");
   assert.equal(marketplace.effectivePermissionsSource, "catalog");
 });
 
@@ -97,14 +97,14 @@ test("skills hub treats permission-denied catalog probes as fail-closed", () => 
     isAuthenticated: true,
     canReadSkills: true,
     canReadMarketplace: true,
-    effectivePermissions: ["skill:read", "marketplace:read"],
+    effectivePermissions: ["marketplace:admin"],
     catalogPermissionDenied: true,
   });
 
   assert.equal(state.pageState, "forbidden");
   assert.equal(state.hasPermission, false);
   assert.equal(state.governedUnavailable, true);
-  assert.equal(state.requiredPermission, "marketplace:read");
+  assert.equal(state.requiredPermission, "marketplace:admin");
 });
 
 test("skills hub recognizes admin permissions as read permission", () => {

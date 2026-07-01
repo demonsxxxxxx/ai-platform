@@ -25,24 +25,23 @@ export interface SkillsHubGovernanceState {
   effectivePermissionsSource: "catalog" | "auth" | "probe";
   catalogReadResolved: boolean;
   governedUnavailable: boolean;
-  requiredPermission: "skill:read" | "marketplace:read";
+  requiredPermission: "skill:admin" | "marketplace:admin";
   degraded: boolean;
 }
 
-function hasEffectiveReadPermission(
+function hasEffectiveAdminPermission(
   permissions: string[] | undefined,
-  requiredPermission: "skill:read" | "marketplace:read",
+  requiredPermission: "skill:admin" | "marketplace:admin",
 ): boolean {
   const permissionSet = new Set(permissions ?? []);
   if (permissionSet.has(requiredPermission)) {
     return true;
   }
 
-  if (requiredPermission === "skill:read") {
-    return permissionSet.has("skill:admin");
-  }
-
-  return permissionSet.has("marketplace:admin");
+  return (
+    permissionSet.has("skill:admin") ||
+    permissionSet.has("marketplace:admin")
+  );
 }
 
 export function resolveSkillsHubTab(
@@ -84,13 +83,17 @@ export function resolveSkillsHubGovernance({
   projectionError,
 }: SkillsHubGovernanceInput): SkillsHubGovernanceState {
   const requiredPermission =
-    requestedTab === "marketplace" ? "marketplace:read" : "skill:read";
+    requestedTab === "marketplace" ? "marketplace:admin" : "skill:admin";
   const authProjectionHasPermission =
-    requestedTab === "marketplace" ? canReadMarketplace : canReadSkills;
-  const effectiveProjectionHasPermission = hasEffectiveReadPermission(
+    requestedTab === "marketplace"
+      ? canReadMarketplace
+      : canReadSkills || canReadMarketplace;
+  const effectiveProjectionHasPermission = hasEffectiveAdminPermission(
     effectivePermissions,
     requiredPermission,
   );
+  const hasAdminPermission =
+    authProjectionHasPermission || effectiveProjectionHasPermission;
   const resolvedByCatalog = Boolean(
     catalogReadResolved || effectiveProjectionHasPermission,
   );
@@ -98,12 +101,15 @@ export function resolveSkillsHubGovernance({
     ? "catalog"
     : authProjectionHasPermission && !effectivePermissionsKnown
       ? "auth"
-      : catalogReadResolved
+      : catalogReadResolved || effectivePermissionsKnown
         ? "catalog"
         : authProjectionHasPermission
           ? "auth"
           : "probe";
-  const governedUnavailable = Boolean(catalogPermissionDenied);
+  const governedUnavailable = Boolean(
+    catalogPermissionDenied ||
+      (!hasAdminPermission && (effectivePermissionsKnown || catalogReadResolved)),
+  );
   const probingPermission =
     effectivePermissionsSource === "probe" &&
     !governedUnavailable &&
@@ -125,7 +131,7 @@ export function resolveSkillsHubGovernance({
   if (requestedTab === "marketplace") {
     return {
       pageState,
-      hasPermission: !governedUnavailable,
+      hasPermission: hasAdminPermission && !governedUnavailable,
       authProjectionHasPermission,
       effectiveProjectionHasPermission,
       effectivePermissionsSource,
@@ -138,7 +144,7 @@ export function resolveSkillsHubGovernance({
 
   return {
     pageState,
-    hasPermission: !governedUnavailable,
+    hasPermission: hasAdminPermission && !governedUnavailable,
     authProjectionHasPermission,
     effectiveProjectionHasPermission,
     effectivePermissionsSource,

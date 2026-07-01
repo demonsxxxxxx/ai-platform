@@ -1,39 +1,33 @@
 export type WorkbenchNavItem =
   | "apps"
   | "skills"
-  | "marketplace"
   | "persona"
   | "files"
   | "mcp"
   | "channels"
   | "agents"
-  | "models"
-  | "roles";
+  | "models";
 
 const routeToNavItem: Array<[RegExp, WorkbenchNavItem]> = [
   [/^\/apps(?:\/|$)/, "apps"],
   [/^\/skills(?:\/|$)/, "skills"],
-  [/^\/marketplace(?:\/|$)/, "marketplace"],
   [/^\/persona(?:\/|$)/, "persona"],
   [/^\/files(?:\/|$)/, "files"],
   [/^\/mcp(?:\/|$)/, "mcp"],
   [/^\/channels(?:\/|$)/, "channels"],
   [/^\/agents(?:\/|$)/, "agents"],
   [/^\/models(?:\/|$)/, "models"],
-  [/^\/roles(?:\/|$)/, "roles"],
 ];
 
 const navItemToPath: Record<WorkbenchNavItem, string> = {
   apps: "/apps",
   skills: "/skills",
-  marketplace: "/marketplace",
   persona: "/persona",
   files: "/files",
   mcp: "/mcp",
   channels: "/channels",
   agents: "/agents",
   models: "/models",
-  roles: "/roles",
 };
 
 /** Maps authenticated workbench pathnames to their first-level sidebar item. */

@@ -82,6 +82,10 @@ function getLegacyNonGmpBaseUrl(): string {
   );
 }
 
+export function getLegacyWebUiFrameUrl(): string {
+  return getLegacyNonGmpBaseUrl();
+}
+
 export function buildLegacySystemUrl(
   systemKey: string,
   baseUrl = getLegacyNonGmpBaseUrl(),

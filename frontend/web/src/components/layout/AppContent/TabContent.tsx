@@ -76,7 +76,6 @@ const panelMap: Record<
 > = {
   apps: LaunchpadPanel,
   skills: SkillsHubPanel,
-  marketplace: SkillsHubPanel,
   users: WorkbenchUsersProjectionPanel,
   roles: RolesPanel,
   settings: WorkbenchSettingsProjectionPanel,

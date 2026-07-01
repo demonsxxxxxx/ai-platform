@@ -33,7 +33,6 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
     "/chat",
     "/apps",
     "/skills",
-    "/marketplace",
     "/mcp",
     "/persona",
     "/files",
@@ -45,7 +44,7 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
   assert.match(tabs, /apps:\s*LaunchpadPanel/);
   assert.match(tabs, /skills:\s*SkillsHubPanel/);
   assert.doesNotMatch(tabs, /const MarketplacePanel = lazy/);
-  assert.match(tabs, /marketplace:\s*SkillsHubPanel/);
+  assert.doesNotMatch(tabs, /marketplace:\s*SkillsHubPanel/);
   assert.match(tabs, /mcp:\s*MCPPanel/);
   assert.match(tabs, /channels:\s*ChannelImportPanel/);
   assert.match(tabs, /models:\s*ModelCatalogPanel/);
@@ -62,16 +61,14 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
   }
 });
 
-test("phase 1C discovery routes are login reachable and fail closed inside pages", () => {
+test("phase 1C primary workbench routes are login reachable and fail closed inside pages", () => {
   const app = readFileSync(join(root, "src/App.tsx"), "utf8");
 
   for (const route of [
     "/skills",
-    "/marketplace",
     "/mcp",
     "/persona",
     "/files",
-    "/roles",
     "/channels/:channelType?/:instanceId?",
   ]) {
     const routePattern = new RegExp(
@@ -114,7 +111,17 @@ test("phase 1C discovery routes are login reachable and fail closed inside pages
   assert.match(app, /routeUnavailable=\{\{/);
 });
 
-test("roles route is login reachable and does not load legacy role management APIs", () => {
+test("marketplace route remains a protected compatibility redirect to admin skill management", () => {
+  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+
+  assert.match(
+    app,
+    /path="\/marketplace"[\s\S]{0,260}<ProtectedRoute>[\s\S]{0,120}<Navigate to="\/skills" replace \/>[\s\S]{0,120}<\/ProtectedRoute>/,
+  );
+  assert.doesNotMatch(app, /function MarketplacePage/);
+});
+
+test("roles route remains direct-addressable without loading legacy role management APIs", () => {
   const app = readFileSync(join(root, "src/App.tsx"), "utf8");
   const authTypes = readFileSync(join(root, "src/types/auth.ts"), "utf8");
   const rolesPanel = readFileSync(
@@ -179,25 +186,26 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
   ].join("\n");
 
   assert.match(sidebar, /navigate\("\/skills"\)/);
-  assert.match(sidebar, /navigate\("\/marketplace"\)/);
+  assert.doesNotMatch(sidebar, /navigate\("\/marketplace"\)/);
   assert.match(sidebar, /navigate\("\/mcp"\)/);
   assert.match(sidebar, /navigate\("\/apps"\)/);
-  for (const route of ["/agents", "/models", "/roles", "/channels"]) {
+  for (const route of ["/agents", "/models", "/channels"]) {
     assert.match(sidebar, new RegExp(`navigate\\("${route}"\\)`), route);
   }
+  assert.doesNotMatch(sidebar, /navigate\("\/roles"\)/);
   for (const route of ["/persona", "/files"]) {
     assert.match(sidebar, new RegExp(`navigate\\("${route}"\\)`), route);
   }
   for (const handler of [
     "onOpenAgents",
     "onOpenModels",
-    "onOpenRoles",
     "onOpenChannels",
     "onOpenPersona",
     "onOpenFiles",
   ]) {
     assert.match(sidebar, new RegExp(handler), handler);
   }
+  assert.doesNotMatch(sidebar, /onOpenRoles|onOpenMarketplace/);
   assert.doesNotMatch(sidebar, /Permission\.ROLE_READ|Permission\.AGENT_ADMIN|Permission\.MODEL_READ|Permission\.CHANNEL_READ/);
   assert.doesNotMatch(sidebar, /onOpenPersonaPlaza|onOpenFileLibrary/);
   assert.doesNotMatch(sidebar, /hasMoreMenuItems|MobileMoreMenuSheet|DesktopMoreMenu/);
@@ -226,7 +234,6 @@ test("post-login navigation keeps governed MCP entry discoverable without stale 
     "/channels",
     "/agents",
     "/models",
-    "/roles",
     "/users",
     "/settings",
     "/feedback",
@@ -238,6 +245,7 @@ test("post-login navigation keeps governed MCP entry discoverable without stale 
       route,
     );
   }
+  assert.doesNotMatch(userMenu, /path:\s*"\/roles"/);
   assert.doesNotMatch(userMenu, /Permission\.MCP_READ|Permission\.CHANNEL_READ|Permission\.SETTINGS_MANAGE/);
   assert.doesNotMatch(userMenu, /canReadChannels|canManageSettings/);
   assert.match(userMenu, /max-h-\[min\(calc\(100vh-5rem\),34rem\)\]/);
@@ -678,7 +686,8 @@ test("persona and files are governed authenticated workbench pages", () => {
     assert.match(source, /var\(--theme-border\)/, name);
   }
   assert.match(fileCardPreview, /var\(--theme-bg-sidebar\)/);
-  assert.match(zhLocale, /"roles":\s*"角色广场"/);
+  assert.match(zhLocale, /"skillManagement":\s*"技能管理"/);
+  assert.doesNotMatch(zhLocale, /"roles":\s*"角色广场"/);
 });
 
 test("persona degraded state does not render a false empty catalog", () => {
@@ -1316,7 +1325,7 @@ test("channels client uses only PR177 governed channel contracts", () => {
   }
 });
 
-test("skills hub lets PR177 public catalogs prove permissions before fail-closed", () => {
+test("skills hub treats skills as admin-only skill management before fail-closed", () => {
   const skillsHub = readFileSync(
     join(root, "src/components/panels/SkillsHubPanel.tsx"),
     "utf8",
@@ -1331,8 +1340,8 @@ test("skills hub lets PR177 public catalogs prove permissions before fail-closed
   assert.doesNotMatch(skillsHub, /useSettingsContext/);
   assert.doesNotMatch(skillsHub, /settingsError/);
   assert.doesNotMatch(skillsHub, /settingsStateDegraded/);
-  assert.match(skillsHub, /canReadSkills = hasAnyPermission\(\[Permission\.SKILL_READ\]\)/);
-  assert.match(skillsHub, /canReadMarketplace = hasAnyPermission\(\[Permission\.MARKETPLACE_READ\]\)/);
+  assert.match(skillsHub, /canReadSkills = hasAnyPermission\(\[Permission\.SKILL_ADMIN\]\)/);
+  assert.match(skillsHub, /canReadMarketplace = hasAnyPermission\(\[Permission\.MARKETPLACE_ADMIN\]\)/);
   assert.match(skillsHub, /const governanceState = hubGovernance\.pageState/);
   assert.match(skillsHub, /data-required-permission=\{hubGovernance\.requiredPermission\}/);
   assert.match(skillsHub, /catalogPermissionDeniedByTab/);
@@ -1346,7 +1355,8 @@ test("skills hub lets PR177 public catalogs prove permissions before fail-closed
   assert.match(resolver, /hasWorkspace\?: boolean/);
   assert.match(resolver, /pageState: FrontendGovernanceState/);
   assert.match(resolver, /authProjectionHasPermission/);
-  assert.match(resolver, /const governedUnavailable = Boolean\(catalogPermissionDenied\)/);
+  assert.match(resolver, /const governedUnavailable = Boolean\(/);
+  assert.match(resolver, /!hasAdminPermission && \(effectivePermissionsKnown \|\| catalogReadResolved\)/);
   assert.match(resolver, /!hasWorkspace\s*\?\s*"no-workspace"/);
   assert.match(resolver, /governedUnavailable\s*\?\s*"forbidden"/);
   assert.match(resolver, /catalogReadPending\?: boolean/);
@@ -1354,10 +1364,10 @@ test("skills hub lets PR177 public catalogs prove permissions before fail-closed
   assert.match(resolver, /const probingPermission =/);
   assert.match(resolver, /!catalogReadPending/);
   assert.match(resolver, /projectionError \|\| probingPermission\s*\?\s*"degraded"/);
-  assert.match(resolver, /requiredPermission: "skill:read" \| "marketplace:read"/);
+  assert.match(resolver, /requiredPermission: "skill:admin" \| "marketplace:admin"/);
   assert.match(resolver, /requestedTab === "marketplace"/);
-  assert.match(resolver, /requestedTab === "marketplace" \? canReadMarketplace : canReadSkills/);
-  assert.match(resolver, /hasPermission: !governedUnavailable/);
+  assert.match(resolver, /requestedTab === "marketplace"[\s\S]*\? canReadMarketplace[\s\S]*: canReadSkills \|\| canReadMarketplace/);
+  assert.match(resolver, /hasPermission: hasAdminPermission && !governedUnavailable/);
   assert.doesNotMatch(resolver, /hasPermission: canReadMarketplace/);
   assert.doesNotMatch(resolver, /hasPermission: canReadSkills/);
   assert.doesNotMatch(skillsHub, /resolveFrontendGovernanceState/);

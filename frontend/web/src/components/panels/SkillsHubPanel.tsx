@@ -37,8 +37,7 @@ export function SkillsHubPanel() {
     isLoading: authLoading,
   } = useAuth();
 
-  const requestedTab: SkillsHubTab =
-    location.pathname === "/marketplace" ? "marketplace" : "skills";
+  const requestedTab: SkillsHubTab = "skills";
   const [catalogStateByTab, setCatalogStateByTab] = useState<
     Record<SkillsHubTab, CatalogState>
   >({
@@ -88,9 +87,8 @@ export function SkillsHubPanel() {
       !catalogStateByTab.marketplace.projectionError,
   };
   const visibleTab = requestedTab;
-  const isMarketplaceView = visibleTab === "marketplace";
-  const canReadSkills = hasAnyPermission([Permission.SKILL_READ]);
-  const canReadMarketplace = hasAnyPermission([Permission.MARKETPLACE_READ]);
+  const canReadSkills = hasAnyPermission([Permission.SKILL_ADMIN]);
+  const canReadMarketplace = hasAnyPermission([Permission.MARKETPLACE_ADMIN]);
   const hubGovernance = resolveSkillsHubGovernance({
     requestedTab,
     isAuthenticated,
@@ -113,9 +111,7 @@ export function SkillsHubPanel() {
       : governanceState === "degraded"
         ? "degraded"
         : "permissionLimited";
-  const statusCopyNamespace = isMarketplaceView
-    ? "skillsHub.marketplace"
-    : "skillsHub.skills";
+  const statusCopyNamespace = "skillsHub.skillManagement";
   const statusIndicatorClass =
     governanceState === "ready"
       ? "bg-[var(--theme-primary)]"

@@ -11,8 +11,6 @@ const DEFAULT_ROUTES = [
   "/chat",
   "/apps",
   "/skills",
-  "/marketplace",
-  "/roles",
   "/mcp",
   "/persona",
   "/files",
@@ -43,11 +41,6 @@ const ROUTE_CONTENT_SELECTORS = new Map([
   ["/chat", "[data-librechat-shell]"],
   ["/apps", "[data-launchpad-directory-shell], [data-frontend-governance-state]"],
   ["/skills", "[data-skill-workbench-shell], [data-frontend-governance-state]"],
-  [
-    "/marketplace",
-    "[data-marketplace-catalog-shell], [data-marketplace-forbidden-shell], [data-frontend-governance-state]",
-  ],
-  ["/roles", "[data-role-plaza-shell]"],
   ["/mcp", "[data-mcp-directory-shell]"],
   ["/persona", "[data-persona-workbench-shell]"],
   ["/files", "[data-files-workbench-shell]"],
@@ -821,7 +814,7 @@ function summarizeOrdinaryWorkflow(composerEvidence, routeEvidence) {
 
 function summarizeAdminWorkflow(routeEvidence) {
   const adminRoutes = routeEvidence.filter((item) =>
-    ["/roles", "/mcp", "/channels", "/settings"].includes(item.route),
+    ["/skills", "/mcp", "/channels", "/settings"].includes(item.route),
   );
   return {
     routesChecked: adminRoutes.map((item) => item.route),

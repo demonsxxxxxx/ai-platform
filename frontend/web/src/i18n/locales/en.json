@@ -1268,8 +1268,8 @@
     "confirmUpdate": "Update Skill",
     "confirmUpdateMessage": "This will re-download the skill from the marketplace and overwrite your local changes. Continue?",
     "catalogUnavailable": {
-      "title": "This account cannot read the marketplace",
-      "description": "The marketplace catalog is connected to the authenticated workbench. If this state appears, confirm this account has marketplace:read."
+      "title": "This account cannot manage the marketplace",
+      "description": "Marketplace management is folded into admin Skill Management. If this state appears, confirm this account has marketplace:admin."
     },
     "createAndPublish": "Publish Skill",
     "createHint": "To publish a skill to the marketplace, create it in your Skills panel first, then click the publish button.",
@@ -1579,6 +1579,18 @@
     "title": "Company Apps",
     "unavailable": "Pending integration"
   },
+  "companyNavigation": {
+    "directory": {
+      "description": "Pick a company system or common site on the left; preview it in the workbench on the right. Open in a new tab when framing is blocked.",
+      "title": "Company navigation"
+    },
+    "frame": {
+      "defaultTitle": "Lingxi platform navigation",
+      "fallbackHint": "If the target system blocks iframe embedding, does not share login state, or renders blank, use Open in new tab.",
+      "openExternal": "Open in new tab"
+    },
+    "previewEntry": "Preview {{name}} in the workbench"
+  },
   "nav": {
     "adminMarketplace": "Admin Marketplace",
     "agents": "Agents",
@@ -1596,6 +1608,7 @@
     "persona": "Persona",
     "roles": "Roles",
     "settings": "Settings",
+    "skillManagement": "Skill Management",
     "skills": "Skills",
     "systemSettings": "System Settings",
     "userSettings": "User Management",
@@ -1614,6 +1627,7 @@
     "notifications": "Manage system announcements",
     "roles": "Configure roles and permissions",
     "settings": "Application and system settings",
+    "skillManagement": "Admin-only skill management, publishing, activation, and install policy",
     "skills": "Manage and configure skills",
     "users": "Manage user accounts and access"
   },
@@ -2610,6 +2624,24 @@
       "ready": {
         "description": "This account can browse the Marketplace. Install, publish, and update actions remain administrator-governed.",
         "title": "Marketplace is available"
+      }
+    },
+    "skillManagement": {
+      "degraded": {
+        "description": "Skill management can still read part of the catalog. Create, import, publish, activation, and department scope controls stay locked until access is confirmed.",
+        "title": "Skill Management is readable with degraded controls"
+      },
+      "loading": {
+        "description": "Checking whether this account has skill:admin or marketplace:admin.",
+        "title": "Checking Skill Management access"
+      },
+      "permissionLimited": {
+        "description": "Skill Management is available only to administrators. This account lacks management permission, so write and policy controls stay closed.",
+        "title": "Skill Management is governed"
+      },
+      "ready": {
+        "description": "This account can manage skills, publishing, activation, and install policy. Operations remain covered by governance audit.",
+        "title": "Skill Management is available"
       }
     },
     "permissionSource": {

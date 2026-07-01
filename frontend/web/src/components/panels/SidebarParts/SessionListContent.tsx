@@ -5,12 +5,10 @@ import {
   MessageSquarePlus,
   LayoutGrid,
   Package,
-  ShoppingBag,
   Server,
   Bot,
   Cpu,
   MessageCircle,
-  ShieldCheck,
   UserRound,
   FileStack,
 } from "lucide-react";
@@ -25,7 +23,7 @@ import {
 } from "../../sidebar/unreadCounts";
 import { groupSessionsByTime } from "../sessionHelpers";
 import { SessionItem } from "../../sidebar/SessionItem";
-import { APP_HOME_URL, APP_NAME } from "../../../constants";
+import { APP_NAME } from "../../../constants";
 import { isSessionFavorite } from "../../sidebar/sessionFavorites";
 import type { Project } from "../../../types";
 import {
@@ -114,14 +112,8 @@ export function SessionListContent({
     {
       key: "skills",
       icon: Package,
-      label: t("nav.skills"),
+      label: t("nav.skillManagement"),
       onClick: () => navigate("/skills"),
-    },
-    {
-      key: "marketplace",
-      icon: ShoppingBag,
-      label: t("nav.marketplace"),
-      onClick: () => navigate("/marketplace"),
     },
     {
       key: "persona",
@@ -166,12 +158,6 @@ export function SessionListContent({
       label: t("nav.models"),
       onClick: () => navigate("/models"),
     },
-    {
-      key: "roles",
-      icon: ShieldCheck,
-      label: t("nav.roles"),
-      onClick: () => navigate("/roles"),
-    },
   ];
 
   return (
@@ -186,12 +172,9 @@ export function SessionListContent({
           <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-[var(--theme-workbench-panel)] text-[var(--theme-text)] shadow-sm ring-1 ring-[var(--theme-border)]">
             <Bot size={15} strokeWidth={2.2} aria-hidden="true" />
           </span>
-          <a
-            href={APP_HOME_URL}
-            className="min-w-0 truncate text-[15px] font-semibold leading-none text-[var(--theme-text)] transition-colors hover:text-[var(--theme-primary)]"
-          >
+          <span className="min-w-0 truncate text-[15px] font-semibold leading-none text-[var(--theme-text)]">
             {APP_NAME}
-          </a>
+          </span>
         </div>
         <button
           onClick={onCollapse}

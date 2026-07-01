@@ -1269,8 +1269,8 @@
     "confirmUpdate": "更新技能",
     "confirmUpdateMessage": "将从技能商店重新下载此技能，你的本地修改将被覆盖。确定要继续吗？",
     "catalogUnavailable": {
-      "title": "当前账号不能读取技能市场",
-      "description": "技能市场目录已接入登录后工作台。若这里显示受限，请确认当前账号拥有 marketplace:read 权限。"
+      "title": "当前账号不能管理技能市场",
+      "description": "技能市场管理已并入管理员技能管理。若这里显示受限，请确认当前账号拥有 marketplace:admin 权限。"
     },
     "createAndPublish": "发布技能",
     "createHint": "要发布技能到技能商店，请先在「我的技能」面板中创建，然后点击发布按钮。",
@@ -1580,6 +1580,18 @@
     "title": "公司导航",
     "unavailable": "待接入"
   },
+  "companyNavigation": {
+    "directory": {
+      "description": "左侧选择公司系统或常用网站，右侧在工作台中预览；不能嵌入时用新窗口打开。",
+      "title": "公司应用导航"
+    },
+    "frame": {
+      "defaultTitle": "灵犀平台导航",
+      "fallbackHint": "如果目标系统拒绝 iframe 嵌入、登录态不共享或显示空白，请使用「新窗口打开」。",
+      "openExternal": "新窗口打开"
+    },
+    "previewEntry": "在工作台中预览 {{name}}"
+  },
   "nav": {
     "adminMarketplace": "管理员技能商店",
     "agents": "助手",
@@ -1595,8 +1607,9 @@
     "more": "更多",
     "notifications": "通知公告",
     "persona": "人设",
-    "roles": "角色广场",
+    "roles": "角色治理",
     "settings": "设置",
+    "skillManagement": "技能管理",
     "skills": "技能",
     "systemSettings": "系统设置",
     "userSettings": "用户管理",
@@ -1613,8 +1626,9 @@
     "memory": "查看和管理 AI 记忆内容",
     "models": "配置和管理 AI 模型",
     "notifications": "管理系统公告通知",
-    "roles": "配置角色和权限",
+    "roles": "角色治理与审批",
     "settings": "应用和系统设置",
+    "skillManagement": "仅管理员管理技能、发布、启停和安装策略",
     "skills": "管理和配置技能",
     "users": "管理用户账户和访问权限"
   },
@@ -2611,6 +2625,24 @@
       "ready": {
         "description": "当前账号可以浏览技能商店；安装、发布和更新继续按管理员授权开放。",
         "title": "技能商店可用"
+      }
+    },
+    "skillManagement": {
+      "degraded": {
+        "description": "技能管理仍可读取部分目录；创建、导入、发布、启停和部门范围在权限确认前保持锁定。",
+        "title": "技能管理降级可读"
+      },
+      "loading": {
+        "description": "正在确认当前账号是否具备 skill:admin 或 marketplace:admin 权限。",
+        "title": "正在检查技能管理权限"
+      },
+      "permissionLimited": {
+        "description": "技能管理只向管理员开放。当前账号缺少管理权限，写入和策略控制保持关闭。",
+        "title": "技能管理受权限治理"
+      },
+      "ready": {
+        "description": "当前账号可以管理技能、发布、启停和安装策略；操作继续记录治理审计。",
+        "title": "技能管理可用"
       }
     },
     "permissionSource": {
