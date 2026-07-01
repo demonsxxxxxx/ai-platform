@@ -9,14 +9,12 @@ import {
   MessageSquare,
   MessageCircle,
   Package,
-  ShoppingBag,
   LogOut,
   Settings,
   Server,
   Brain,
   User,
   Users,
-  ShieldCheck,
 } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
 import { useSettingsContext } from "../../contexts/SettingsContext";
@@ -117,14 +115,8 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
     { path: "/chat", label: t("nav.chat"), icon: MessageSquare, show: true },
     {
       path: "/skills",
-      label: t("nav.skills"),
+      label: t("nav.skillManagement"),
       icon: Package,
-      show: true,
-    },
-    {
-      path: "/marketplace",
-      label: t("nav.marketplace"),
-      icon: ShoppingBag,
       show: true,
     },
     { path: "/mcp", label: t("nav.mcp"), icon: Server, show: true },
@@ -144,12 +136,6 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
       path: "/models",
       label: t("nav.models"),
       icon: Cpu,
-      show: true,
-    },
-    {
-      path: "/roles",
-      label: t("nav.roles"),
-      icon: ShieldCheck,
       show: true,
     },
     {

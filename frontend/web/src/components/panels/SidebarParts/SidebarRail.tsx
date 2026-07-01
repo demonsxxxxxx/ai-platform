@@ -4,12 +4,10 @@ import {
   Clock,
   LayoutGrid,
   Package,
-  ShoppingBag,
   Server,
   Bot,
   Cpu,
   MessageCircle,
-  ShieldCheck,
   UserRound,
   FileStack,
 } from "lucide-react";
@@ -35,14 +33,12 @@ interface SidebarRailProps {
   onOpenRecentChats: () => void;
   onOpenLaunchpad: () => void;
   onOpenSkills: () => void;
-  onOpenMarketplace: () => void;
   onOpenMcp: () => void;
   onOpenChannels: () => void;
   onOpenAgents: () => void;
   onOpenModels: () => void;
   onOpenPersona: () => void;
   onOpenFiles: () => void;
-  onOpenRoles: () => void;
   recentChatsBtnRef: React.RefObject<HTMLButtonElement | null>;
   onShowProfile: () => void;
 }
@@ -59,14 +55,12 @@ export function SidebarRail({
   onOpenRecentChats,
   onOpenLaunchpad,
   onOpenSkills,
-  onOpenMarketplace,
   onOpenMcp,
   onOpenChannels,
   onOpenAgents,
   onOpenModels,
   onOpenPersona,
   onOpenFiles,
-  onOpenRoles,
   recentChatsBtnRef,
   onShowProfile,
 }: SidebarRailProps) {
@@ -169,24 +163,12 @@ export function SidebarRail({
           onClick={onOpenSkills}
           className={railBtn}
           aria-current={isRailItemActive("skills") ? "page" : undefined}
-          title={t("nav.skills")}
-          aria-label={t("nav.skills")}
+          title={t("nav.skillManagement")}
+          aria-label={t("nav.skillManagement")}
           itemKey="skills"
           active={isRailItemActive("skills")}
         >
           <Package size={20} />
-        </LibreChatRailButton>
-        <LibreChatRailButton
-          type="button"
-          onClick={onOpenMarketplace}
-          className={railBtn}
-          aria-current={isRailItemActive("marketplace") ? "page" : undefined}
-          title={t("nav.marketplace")}
-          aria-label={t("nav.marketplace")}
-          itemKey="marketplace"
-          active={isRailItemActive("marketplace")}
-        >
-          <ShoppingBag size={20} />
         </LibreChatRailButton>
         <LibreChatRailButton
           type="button"
@@ -259,18 +241,6 @@ export function SidebarRail({
           active={isRailItemActive("files")}
         >
           <FileStack size={20} />
-        </LibreChatRailButton>
-        <LibreChatRailButton
-          type="button"
-          onClick={onOpenRoles}
-          className={railBtn}
-          aria-current={isRailItemActive("roles") ? "page" : undefined}
-          title={t("nav.roles")}
-          aria-label={t("nav.roles")}
-          itemKey="roles"
-          active={isRailItemActive("roles")}
-        >
-          <ShieldCheck size={20} />
         </LibreChatRailButton>
         <LibreChatRailButton
           type="button"

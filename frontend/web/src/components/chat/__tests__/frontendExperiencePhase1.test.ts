@@ -84,17 +84,17 @@ test("composer renders durable selected context chips", () => {
   assert.match(chatInputSource, /referenceId:\s*attachment\.id/);
 });
 
-test("rail exposes company launchpad Skills and MCP as first-level workbench entries", () => {
+test("rail exposes company navigation admin Skills and MCP as first-level workbench entries", () => {
   assert.match(sidebarRailSource, /onOpenLaunchpad/);
   assert.match(sidebarRailSource, /onOpenSkills/);
-  assert.match(sidebarRailSource, /onOpenMarketplace/);
+  assert.doesNotMatch(sidebarRailSource, /onOpenMarketplace/);
   assert.match(sidebarRailSource, /onOpenMcp/);
   assert.match(sessionSidebarSource, /navigate\("\/apps"\)/);
   assert.match(sessionSidebarSource, /navigate\("\/skills"\)/);
-  assert.match(sessionSidebarSource, /navigate\("\/marketplace"\)/);
+  assert.doesNotMatch(sessionSidebarSource, /navigate\("\/marketplace"\)/);
   assert.match(sessionSidebarSource, /navigate\("\/mcp"\)/);
-  assert.doesNotMatch(sessionSidebarSource, /navigate\("\/persona"\)/);
-  assert.doesNotMatch(sessionSidebarSource, /navigate\("\/files"\)/);
+  assert.match(sessionSidebarSource, /navigateWorkbenchItem\("persona"\)/);
+  assert.match(sessionSidebarSource, /navigateWorkbenchItem\("files"\)/);
 });
 
 test("Chinese shell copy names the PRD surfaces directly", () => {

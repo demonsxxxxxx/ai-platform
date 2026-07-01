@@ -8,9 +8,12 @@ const panelSource = readFileSync(
   "utf8",
 );
 
-test("launchpad panel opens destinations in a new tab", () => {
-  assert.match(panelSource, /window\.open\(destination\.href,\s*"_blank"/);
-  assert.match(panelSource, /rel="noreferrer"/);
+test("launchpad panel previews destinations in an iframe and opens fallback tabs", () => {
+  assert.match(panelSource, /data-company-navigation-shell/);
+  assert.match(panelSource, /data-legacy-webui-frame/);
+  assert.match(panelSource, /<iframe/);
+  assert.match(panelSource, /window\.open\(href,\s*"_blank"/);
+  assert.match(panelSource, /"noopener,noreferrer"/);
 });
 
 test("launchpad panel has tabs, search, and unavailable rendering", () => {

@@ -565,7 +565,7 @@ test("role plaza state is resolver-driven instead of hard-coded ready", () => {
   assert.match(resolver, /adminOnly: !canManageRoles/);
 });
 
-test("skills hub routes use the public contract resolver", () => {
+test("skills hub route uses the admin skill management resolver", () => {
   const hub = read("src/components/panels/SkillsHubPanel.tsx");
   const resolver = read("src/components/panels/SkillsHubPanel/state.ts");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
@@ -576,8 +576,9 @@ test("skills hub routes use the public contract resolver", () => {
   assert.match(hub, /data-effective-projection-has-permission=\{hubGovernance\.effectiveProjectionHasPermission\}/);
   assert.match(hub, /data-effective-permissions-source=\{hubGovernance\.effectivePermissionsSource\}/);
   assert.match(hub, /statusCopyNamespace/);
-  assert.match(hub, /"skillsHub\.skills"/);
-  assert.match(hub, /"skillsHub\.marketplace"/);
+  assert.match(hub, /"skillsHub\.skillManagement"/);
+  assert.doesNotMatch(hub, /"skillsHub\.skills"/);
+  assert.doesNotMatch(hub, /"skillsHub\.marketplace"/);
   assert.match(hub, /governanceState === "loading"\s*\?\s*"loading"/);
   assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.title/);
   assert.match(hub, /\$\{statusCopyNamespace\}\.\$\{statusCopyKey\}\.description/);
@@ -592,30 +593,24 @@ test("skills hub routes use the public contract resolver", () => {
   assert.doesNotMatch(hub, /PanelHeader/);
   assert.match(hub, /data-skills-catalog-status/);
   assert.doesNotMatch(hub, /data-skills-catalog-nav/);
-  assert.equal(zh.skillsHub.skills.ready.title, "Skills 目录可用");
-  assert.equal(zh.skillsHub.skills.loading.title, "正在检查 Skills 目录");
-  assert.equal(zh.skillsHub.marketplace.ready.title, "技能商店可用");
-  assert.equal(zh.skillsHub.marketplace.loading.title, "正在检查技能商店");
-  assert.notEqual(
-    zh.skillsHub.skills.ready.description,
-    zh.skillsHub.marketplace.ready.description,
+  assert.equal(zh.skillsHub.skillManagement.ready.title, "技能管理可用");
+  assert.equal(
+    zh.skillsHub.skillManagement.loading.title,
+    "正在检查技能管理权限",
   );
-  assert.equal(en.skillsHub.skills.ready.title, "Skills catalog is available");
-  assert.equal(en.skillsHub.skills.loading.title, "Checking Skills catalog");
-  assert.equal(en.skillsHub.marketplace.ready.title, "Marketplace is available");
-  assert.equal(en.skillsHub.marketplace.loading.title, "Checking marketplace");
-  assert.notEqual(
-    en.skillsHub.skills.ready.description,
-    en.skillsHub.marketplace.ready.description,
+  assert.equal(en.skillsHub.skillManagement.ready.title, "Skill Management is available");
+  assert.equal(
+    en.skillsHub.skillManagement.loading.title,
+    "Checking Skill Management access",
   );
-  assert.match(resolver, /requiredPermission: "skill:read" \| "marketplace:read"/);
+  assert.match(resolver, /requiredPermission: "skill:admin" \| "marketplace:admin"/);
   assert.match(resolver, /effectivePermissions\?: string\[\]/);
   assert.match(resolver, /effectiveProjectionHasPermission/);
   assert.match(resolver, /effectivePermissionsSource/);
-  assert.match(resolver, /authProjectionHasPermission && !effectivePermissions/);
+  assert.match(resolver, /hasAdminPermission/);
   assert.match(resolver, /effectivePermissionsKnown\?: boolean/);
-  assert.match(resolver, /marketplace:read/);
-  assert.match(resolver, /skill:read/);
+  assert.match(resolver, /marketplace:admin/);
+  assert.match(resolver, /skill:admin/);
 });
 
 test("skills marketplace hub uses one workbench canvas instead of split page backgrounds", () => {
@@ -788,7 +783,6 @@ test("launchpad and public directory pages use one workbench catalog layout", ()
   assert.match(surface, /iconBox:/);
 
   for (const [name, source] of new Map([
-    ["LaunchpadPanel", launchpad],
     ["MCPPanel", mcp],
     ["AgentDirectoryPanel", agents],
     ["ModelCatalogPanel", models],
@@ -803,6 +797,16 @@ test("launchpad and public directory pages use one workbench catalog layout", ()
     assert.doesNotMatch(source, /bg-slate-(?:100|200|900)/, name);
     assert.doesNotMatch(source, /dark:bg-stone-(?:800|900|950)/, name);
   }
+
+  assert.match(launchpad, /className=\{workbenchSurface\.page\}/);
+  assert.match(launchpad, /workbenchSurface\.catalog\.summaryGrid/);
+  assert.match(launchpad, /workbenchSurface\.catalog\.summaryCard/);
+  assert.match(launchpad, /data-company-navigation-shell/);
+  assert.match(launchpad, /data-legacy-webui-frame/);
+  assert.doesNotMatch(launchpad, /text-stone-(?:400|500|600|700|800|900)/);
+  assert.doesNotMatch(launchpad, /text-slate-(?:400|500|600|700|800|900)/);
+  assert.doesNotMatch(launchpad, /bg-slate-(?:100|200|900)/);
+  assert.doesNotMatch(launchpad, /dark:bg-stone-(?:800|900|950)/);
 
   for (const [name, source] of new Map([
     ["MCPPanel", mcp],
@@ -895,7 +899,7 @@ test("empty chat keeps the command dock compact and composer-first", () => {
   assert.match(welcomeLayout, /rounded-lg/);
 });
 
-test("expanded app sidebar keeps governed catalogs as first-level smoke targets", () => {
+test("expanded app sidebar keeps company navigation and admin skills as first-level smoke targets", () => {
   const sidebar = read(
     "src/components/panels/SidebarParts/SessionListContent.tsx",
   );
@@ -906,36 +910,41 @@ test("expanded app sidebar keeps governed catalogs as first-level smoke targets"
   );
 
   assert.match(sidebar, /data-workbench-nav-item=\{key\}/);
+  assert.match(sidebar, /key: "apps"[\s\S]*navigate\("\/apps"\)/);
   assert.match(sidebar, /key: "skills"[\s\S]*navigate\("\/skills"\)/);
-  assert.match(sidebar, /key: "marketplace"[\s\S]*navigate\("\/marketplace"\)/);
-  assert.match(sidebar, /key: "roles"[\s\S]*navigate\("\/roles"\)/);
+  assert.doesNotMatch(sidebar, /key: "marketplace"[\s\S]*navigate\("\/marketplace"\)/);
+  assert.doesNotMatch(sidebar, /key: "roles"[\s\S]*navigate\("\/roles"\)/);
   assert.doesNotMatch(sidebar, /data-workbench-nav-item="admin-skills"/);
   assert.doesNotMatch(sidebar, /data-workbench-nav-item="admin-roles"/);
+  assert.match(rail, /itemKey="apps"/);
   assert.match(rail, /itemKey="skills"/);
-  assert.match(rail, /itemKey="marketplace"/);
-  assert.match(rail, /itemKey="roles"/);
+  assert.doesNotMatch(rail, /itemKey="marketplace"/);
+  assert.doesNotMatch(rail, /itemKey="roles"/);
   assert.match(railPrimitive, /data-workbench-rail-item=\{itemKey\}/);
   assert.match(navigation, /getWorkbenchNavPath/);
   for (const route of [
+    "/apps",
+    "/skills",
     "/persona",
     "/files",
     "/channels",
     "/agents",
     "/models",
-    "/roles",
   ]) {
     assert.match(navigation, new RegExp(`"${route}"`), route);
   }
+  assert.doesNotMatch(navigation, /"\/marketplace"/);
+  assert.doesNotMatch(navigation, /"\/roles"/);
 });
 
-test("post-login Chinese sidebar labels distinguish persona presets from role governance", () => {
+test("post-login Chinese sidebar labels distinguish persona presets from admin skill management", () => {
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
   const en = JSON.parse(read("src/i18n/locales/en.json"));
 
-  assert.notEqual(zh.nav.persona, zh.nav.roles);
   assert.equal(zh.nav.persona, "人设");
-  assert.equal(zh.nav.roles, "角色广场");
-  assert.notEqual(en.nav.persona, en.nav.roles);
+  assert.equal(zh.nav.skillManagement, "技能管理");
+  assert.notEqual(zh.nav.persona, zh.nav.skillManagement);
+  assert.notEqual(en.nav.persona, en.nav.skillManagement);
 });
 
 test("post-login sidebar marks the current governed route in expanded and rail modes", () => {

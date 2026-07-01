@@ -186,15 +186,6 @@ function SkillsPage() {
   return <AppContent key="skills" activeTab="skills" />;
 }
 
-function MarketplacePage() {
-  useSEO({
-    title: "seo.marketplace.title",
-    description: "seo.marketplace.description",
-    path: "/marketplace",
-  });
-  return <AppContent key="marketplace" activeTab="marketplace" />;
-}
-
 function UsersPage() {
   useSEO({
     title: "seo.users.title",
@@ -424,7 +415,7 @@ function App() {
               path="/marketplace"
               element={
                 <ProtectedRoute>
-                  <MarketplacePage />
+                  <Navigate to="/skills" replace />
                 </ProtectedRoute>
               }
             />
