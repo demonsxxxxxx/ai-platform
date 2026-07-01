@@ -56,6 +56,46 @@ RUNTIME_PROBE_RESULTS_ALLOWED_KEYS = {
 RUNTIME_PROBE_RESULTS_SECTION_KEYS = ("resource_limits", "egress_policy", "security_options")
 
 
+class SandboxEvidenceArgumentParser(argparse.ArgumentParser):
+    """Normalize callback defaults after runtime/provider flags are parsed."""
+
+    def parse_args(self, args: list[str] | None = None, namespace: argparse.Namespace | None = None) -> argparse.Namespace:
+        raw_args = list(args) if args is not None else sys.argv[1:]
+        callback_host_explicit = any(
+            item == "--callback-host" or item.startswith("--callback-host=") for item in raw_args
+        )
+        callback_public_url_explicit = any(
+            item == "--callback-public-url" or item.startswith("--callback-public-url=") for item in raw_args
+        )
+        parsed = super().parse_args(args, namespace)
+        _normalize_callback_defaults(
+            parsed,
+            callback_host_explicit=callback_host_explicit,
+            callback_public_url_explicit=callback_public_url_explicit,
+        )
+        return parsed
+
+
+def _normalize_callback_defaults(
+    args: argparse.Namespace,
+    *,
+    callback_host_explicit: bool = False,
+    callback_public_url_explicit: bool = False,
+) -> None:
+    docker_platform_callback = args.sandbox_provider == "docker" and (
+        args.runtime_mode == "platform" or bool(args.generate_runtime_probe_results_file)
+    )
+    callback_host_configured = callback_host_explicit or os.environ.get("AI_PLATFORM_CALLBACK_HOST") is not None
+    callback_public_url_configured = (
+        callback_public_url_explicit or os.environ.get("AI_PLATFORM_CALLBACK_PUBLIC_URL") is not None
+    )
+    auto_docker_callback = docker_platform_callback and not callback_host_configured and not callback_public_url_configured
+    if args.callback_host is None:
+        args.callback_host = "0.0.0.0" if docker_platform_callback else "127.0.0.1"
+    if args.callback_public_url is None:
+        args.callback_public_url = "http://host.docker.internal:{port}/callback" if auto_docker_callback else ""
+
+
 def _runtime_probe_section_error(section_name: str, section: dict[str, Any], *, run_id: str) -> str | None:
     if section_name == "resource_limits":
         if section.get("over_limit_cleanup_verified") is not True:
@@ -1195,7 +1235,7 @@ def _wait_for_callbacks(recorder: EvidenceRecorder, timeout_seconds: float) -> b
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = SandboxEvidenceArgumentParser(
         description=(
             'Generate ai-platform sandbox runtime evidence on 211; use --docker-cmd "sudo -n docker" '
             "on 211 and keep this as controlled admin/allowlist evidence."
@@ -1226,8 +1266,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--sandbox-executor-image",
         default=os.environ.get("AI_PLATFORM_SANDBOX_EXECUTOR_IMAGE", os.environ.get("SANDBOX_EXECUTOR_IMAGE", "")),
     )
-    parser.add_argument("--callback-host", default=os.environ.get("AI_PLATFORM_CALLBACK_HOST", "127.0.0.1"))
-    parser.add_argument("--callback-public-url", default=os.environ.get("AI_PLATFORM_CALLBACK_PUBLIC_URL", ""))
+    parser.add_argument("--callback-host", default=os.environ.get("AI_PLATFORM_CALLBACK_HOST"))
+    parser.add_argument("--callback-public-url", default=os.environ.get("AI_PLATFORM_CALLBACK_PUBLIC_URL"))
     parser.add_argument("--callback-port", type=int, default=int(os.environ.get("AI_PLATFORM_CALLBACK_PORT", "0")))
     parser.add_argument("--callback-timeout", type=float, default=float(os.environ.get("AI_PLATFORM_CALLBACK_TIMEOUT", "10")))
     parser.add_argument(

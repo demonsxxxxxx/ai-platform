@@ -200,6 +200,12 @@ def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
         "G8 is a deferred platform-level multi-run orchestration parking-lot, "
         "while B3 SDK subagent fanout capacity evidence does not reopen or close G8"
     ) in compact_old_prd_without_quote_markers
+    assert "G8 Platform Multi-Run Controlled Beta" in old_prd_text
+    assert "历史标题曾写作 G8 Multi-Agent Controlled Beta" in old_prd_text
+    assert "容量证据归 B3，不打开或关闭 G8" in old_prd_text
+    assert "当前不按普通用户 multi-agent beta 推进" in old_prd_text
+    assert "G8 Multi-Agent Controlled Beta |" not in old_prd_text
+    assert "G8 Multi-Agent Controlled Beta，仅在前置 gate 通过后扩大" not in old_prd_text
 
 
 def test_github_workflow_records_sdk_worker_diagnostic_layers():
@@ -350,7 +356,7 @@ def test_prd_roadmap_guardrails_share_current_gate_sequence():
         "G5 Run Lifecycle / Worker Runtime V1",
         "G6 Tool / Skill / Memory Governance",
         "G7 Sandbox / Resource Hardening",
-        "G8 Multi-Agent Controlled Beta",
+        "G8 Platform Multi-Run Controlled Beta",
         "G9 Observability / Quality / Ops",
         "G10 Internal Beta / Department Rollout",
     )
@@ -1404,8 +1410,8 @@ def test_gate_status_records_issue164_b0_runtime_refresh_with_source_caveats():
     assert "Foundation Runtime concurrency refresh for the same `e4c0e9d` runtime subject verified 12 concurrent" in compact_text
     assert "This removes the `foundation_runtime_concurrency_evidence` blocker for the named `e4c0e9d` runtime subject only" in compact_text
     assert (
-        "G0 source-authority closure remains blocked by current source/runtime reconciliation, "
-        "the external env-file label caveat, and production auth rollout evidence"
+        "G0 source-authority closure remains blocked by the external env-file label caveat "
+        "and production auth rollout evidence"
     ) in compact_text
     assert "ordinary_user_acceptance_for_quarantined_legacy_routes" in compact_text
     assert (
@@ -1500,12 +1506,16 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     )[0]
     assert "The table below is a gate/evidence matrix" in current_gate_table
     assert "Rows that mention `96f27bb` describe reviewed 2026-06-30" in current_gate_table
-    assert "current-main runtime/FRC follow-ups still open" in " ".join(current_gate_table.split())
+    assert "current-main G7/FRC/B3 follow-ups still open" in " ".join(current_gate_table.split())
     assert "The `96f27bb` source-runtime relation is historical evidence only" in current_gate_table
-    assert "do not prove the 2026-07-01 current-main runtime state" in current_gate_table
+    assert "They do not prove the `bd690f7` current-main runtime state" in current_gate_table
     assert "completed G8/B3 cleanup" not in gate_status_text
     assert "已完成：G8/B3" not in roadmap_text
-    assert "3071a02945c84370f62a9b36884a0a2df8ea9c45" in combined_text
+    assert "bd690f72723080beeb820d07679da59d84c7913e" in combined_text
+    assert "ai-platform:bd690f7-g7-b3-audit-runtime-only-v1" in combined_text
+    assert "running for API/worker with matching source/runtime/OCI labels" in " ".join(
+        current_gate_table.split()
+    )
     assert "d318f9f6a68b4c17e221eb32705b3f31d349227a" in combined_text
     assert "ai-platform:d318f9f-g7-b3-runtime-only-v1" in combined_text
     assert "g7-runtime-probe-20260701203418" in combined_text
@@ -1513,31 +1523,46 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "all eight verifier checks passing" in compact_gate_status_text
     assert "8 个 verifier checks" in " ".join(roadmap_text.split())
     assert "not a reviewed local `docs/release-evidence/b2-sandbox/...` entry" in compact_gate_status_text
-    assert "不是 reviewed local release-evidence entry" in roadmap_text
-    assert "not current-main exact source/runtime evidence" in compact_gate_status_text
-    assert "source/runtime drift with followups open" in gate_status_text
-    assert (
-        "legacy underscore labels still point to `96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c`"
-        in compact_text
-    )
+    assert "不是 reviewed local release-evidence entry" in " ".join(roadmap_text.split())
+    assert "not reviewed `bd690f7` G7 release evidence" in compact_gate_status_text
+    assert "source/runtime parity with followups open" in gate_status_text
+    assert "`runtime_affecting_changes_since_runtime_subject=[]`" in combined_text
+    assert "`runtime_affecting_dirty_paths=[]`" in combined_text
+    assert "`source_tree_dirty=false`" in combined_text
+    assert 'health endpoint returned `{"status":"ok"}` for that `bd690f7` runtime' in compact_text
+    assert "no-masq egress network blocked the callback exception path" in compact_text
+    assert "bind the callback receiver on `0.0.0.0`" in gate_status_text
+    assert "`http://host.docker.internal:{port}/callback`" in combined_text
+    assert "verifier-helper callback default fix" in compact_text
+    assert "not reviewed 211 G7 evidence until merged, deployed, and rerun" in compact_text
+    assert "callback exception path" in roadmap_text
+    assert "blocker diagnostic" in roadmap_text
+    assert "必须合入、 部署并在 211 重新跑 formal verifier" in " ".join(roadmap_text.split())
     assert "`SANDBOX_CONTAINER_PROVIDER=fake`" in gate_status_text
     assert "`SANDBOX_EXECUTOR_IMAGE=ai-platform:local`" in gate_status_text
-    assert "reviewed release-evidence records" in gate_status_text
+    assert "merge/deploy the local G7 verifier-helper callback default fix" in compact_gate_status_text
     assert "tools/g7_b3_completion_audit.py" in gate_status_text
     assert "fail-closed G7/B3 blocker list" in gate_status_text
     assert "not runtime or load evidence by itself" in compact_gate_status_text
     assert "不是 G7 runtime evidence 或 B3 load evidence" in roadmap_text
     assert "Named 211 runtime-only formal verifier evidence exists for `d318f9f`" in current_gate_table
-    assert "not exact `3071a029` source/runtime proof" in current_gate_table
-    assert "source_tree_runtime_affecting_uncommitted_changes_pending_followups_open" in gate_status_text
-    assert "runtime-affecting uncommitted changes" in gate_status_text
+    assert "no reviewed local `bd690f7` G7 release-evidence entry" in current_gate_table
+    assert "callback exception evidence under no-masq/default-deny egress" in current_gate_table
+    assert "source_synced_runtime_pending_followups_open" in gate_status_text
+    assert "current worktree contains pending verifier-helper and status-doc changes" in compact_gate_status_text
     assert "foundation_alpha_stage_status=runtime_rollout_required" in gate_status_text
     assert 'stage_acceptance_blockers=["foundation_runtime_concurrency_evidence"]' in gate_status_text
 
     assert "G8 is a deferred parking-lot for platform-owned parent/child multi-run orchestration" in compact_text
+    assert "G8 Platform Multi-Run Controlled Beta" in combined_text
+    assert 'legacy title was "G8 Multi-Agent Controlled Beta"' in combined_text
+    assert "must not be read as ordinary-user platform-level multi-run product exposure" in compact_text
     assert "not a current ordinary-user product route" in compact_text
     assert "B3 is the capacity evidence track for selected Claude Agent SDK subagent fanout profiles" in compact_text
     assert "b3_10x4_sdk_subagents" in combined_text
+    assert "probe_completed_not_gate_evidence" in combined_text
+    assert "blocked_incomplete_load_test_evidence" in combined_text
+    assert "seven recorded load-test gates still missing" in compact_text
     assert "must not be treated as ordinary-user platform-level multi-run orchestration exposure evidence" in compact_text
     assert "旧 G8 普通用户平台级 multi-run follow-up 不再作为 Foundation Alpha 顶层 `open_followups`" in compact_text
     assert "当前权威文档不再 使用旧的泛化 multi-agent exposure 命名" in compact_text
@@ -1803,7 +1828,8 @@ def test_prd_records_claude_sdk_execution_boundary_without_second_runtime():
     assert "new-api" not in prd_text
     assert "AgentScope" not in prd_text
     assert "DeerFlow" not in prd_text
-    assert "G8 Multi-Agent Controlled Beta" in prd_text
+    assert "G8 Platform Multi-Run Controlled Beta" in prd_text
+    assert 'legacy title "G8 Multi-Agent Controlled Beta"' in prd_text
     assert "G10 Internal Beta / Department Rollout" in prd_text
     assert "Advanced Claude Agent SDK Task Patterns" in tech_text
     assert "Historical references not listed above are intentionally omitted" in tech_text
