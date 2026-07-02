@@ -8,26 +8,29 @@
 
 .librechat-composer-shell {
   background: var(--theme-workbench-canvas);
+  padding-bottom: 1.25rem;
 }
 
 .librechat-composer-shell .chat-input-container {
-  background: var(--theme-bg-card);
+  background: var(--theme-workbench-panel);
 }
 
 .chat-input-container {
-  border-radius: 8px;
-  min-height: 44px;
+  border-radius: 1.5rem;
+  min-height: 72px;
   max-height: min(52dvh, 420px);
   overflow: hidden;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.08),
+    0 2px 4px rgba(0, 0, 0, 0.04);
 }
 
 /* Chat input focus glow effect */
 .chat-input-container:focus-within {
-  border-color: var(--theme-ring);
+  border-color: color-mix(in srgb, var(--theme-text) 18%, var(--theme-border));
   box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--theme-ring) 12%, transparent),
-    0 3px 10px rgba(15, 23, 42, 0.06);
+    0 8px 28px rgba(0, 0, 0, 0.1),
+    0 2px 6px rgba(0, 0, 0, 0.05);
 }
 
 .composer-command-surface {
@@ -43,7 +46,7 @@
 
 /* Chat input textarea placeholder */
 .chat-input-container textarea::placeholder {
-  color: var(--theme-text-secondary);
+  color: var(--theme-text-tertiary);
 }
 
 @media (max-width: 639px) {

@@ -38,7 +38,7 @@ test("authenticated workbench source avoids marketing and nested-card patterns",
 
   assert.doesNotMatch(text, /hero-card|gradient-orb|nested-card/);
   assert.doesNotMatch(text, /rounded-3xl/);
-  assert.match(text, /rounded-lg/);
+  assert.match(text, /rounded-\[1\.5rem\]|border-radius:\s*1\.5rem/);
   assert.doesNotMatch(tabContent, /max-w-4xl|sm:max-w-5xl|lg:max-w-6xl/);
   assert.match(tabContent, /data-authenticated-workbench-page/);
 });
@@ -89,8 +89,8 @@ test("expanded sidebar uses the LibreChat light navigation system", () => {
   assert.match(sessionList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sessionSidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(rail, /bg-\[var\(--theme-sidebar-rail\)\]/);
-  assert.match(baseCss, /--theme-sidebar-panel:\s*#eeeeec/);
-  assert.match(baseCss, /--theme-sidebar-rail:\s*#eeeeec/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#f7f7f8/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#f7f7f8/);
   assert.doesNotMatch(sessionList, /text-slate-100|text-white|border-slate-800/);
   assert.doesNotMatch(rail, /text-slate-200|text-white|rgba\(255,255,255,0\.1\)/);
 });
@@ -163,22 +163,24 @@ test("light workbench tokens keep the LibreChat shell on one warm-neutral canvas
   const baseCss = read("src/styles/base.css");
   const surface = read("src/librechat-ui/surface.ts");
   const welcome = read("src/components/chat/WelcomePage.tsx");
+  const chatInput = read("src/components/chat/ChatInput.tsx");
 
-  assert.match(baseCss, /--theme-bg:\s*#f5f5f3;/);
-  assert.match(baseCss, /--theme-workbench-canvas:\s*#f5f5f3;/);
+  assert.match(baseCss, /--theme-bg:\s*#ffffff;/);
+  assert.match(baseCss, /--theme-workbench-canvas:\s*#ffffff;/);
   assert.match(baseCss, /--theme-workbench-panel:\s*#ffffff;/);
   assert.match(baseCss, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(baseCss, /--theme-bg-sidebar:\s*#eeeeec;/);
-  assert.match(baseCss, /--theme-sidebar-panel:\s*#eeeeec;/);
-  assert.match(baseCss, /--theme-sidebar-rail:\s*#eeeeec;/);
-  assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#ffffff;/);
-  assert.doesNotMatch(baseCss, /--theme-sidebar-panel:\s*#f4f4f5;/);
+  assert.match(baseCss, /--theme-bg-sidebar:\s*#f7f7f8;/);
+  assert.match(baseCss, /--theme-sidebar-panel:\s*#f7f7f8;/);
+  assert.match(baseCss, /--theme-sidebar-rail:\s*#f7f7f8;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-canvas:\s*#e5e8ed;/);
+  assert.doesNotMatch(baseCss, /--theme-sidebar-panel:\s*#f4f4f5;/);
   assert.doesNotMatch(baseCss, /--theme-workbench-panel:\s*#f3f4f6;/);
   assert.match(surface, /root:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(surface, /thread:[\s\S]*bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(welcome, /data-chat-start-surface/);
   assert.doesNotMatch(welcome, /max-w-4xl flex-col gap-3 py-4/);
+  assert.doesNotMatch(chatInput, /id:\s*`model:\$\{currentModelId\}`/);
+  assert.doesNotMatch(chatInput, /id:\s*`agent:\$\{agent\.id\}`/);
 });
 
 test("workbench right context uses the same canvas as the main workspace", () => {
@@ -852,7 +854,7 @@ test("public catalog pages use semantic workbench status tokens", () => {
 test("composer and command surfaces use stable dimensions", () => {
   const css = read("src/styles/chat.css");
   assert.match(css, /\.chat-input-container/);
-  assert.match(css, /min-height:\s*44px/);
+  assert.match(css, /min-height:\s*72px/);
   assert.match(css, /max-height:\s*min\(52dvh,\s*420px\)/);
   assert.match(css, /\.composer-command-surface/);
   assert.match(css, /overflow:\s*hidden/);
@@ -866,18 +868,20 @@ test("empty chat keeps the command dock compact and composer-first", () => {
   assert.match(welcome, /welcome-chat-start/);
   assert.match(welcome, /data-chat-start-surface/);
   assert.match(welcome, /data-chat-start-header/);
+  assert.match(welcome, /data-chat-composer-first/);
+  assert.match(welcome, /data-chat-empty-composer/);
+  assert.match(welcome, /composer: ReactNode/);
   assert.match(chatView, /data-chat-shell-composer/);
   assert.match(chatView, /<ChatInput[\s\S]*\{\.\.\.chatInputProps\}/);
-  assert.match(
+  assert.doesNotMatch(
     chatView,
     /onMentionQueryChange=\{[\s\S]*messages\.length === 0 \? handleMentionQueryChange : undefined[\s\S]*\}/,
   );
-  assert.match(chatView, /pendingInput=\{pendingInput\}/);
-  assert.match(chatView, /onPendingInputConsumed=\{\(\) => setPendingInput\(null\)\}/);
-  assert.match(welcome, /onStarterPromptSelect/);
+  assert.doesNotMatch(chatView, /pendingInput=\{pendingInput\}/);
+  assert.doesNotMatch(chatView, /onPendingInputConsumed=\{\(\) => setPendingInput\(null\)\}/);
+  assert.doesNotMatch(welcome, /onStarterPromptSelect/);
   assert.doesNotMatch(welcome, /import \{ ChatInput \}/);
   assert.doesNotMatch(welcome, /<ChatInput/);
-  assert.doesNotMatch(welcome, /data-chat-composer-first/);
   assert.doesNotMatch(welcome, /data-chat-quick-actions/);
   assert.doesNotMatch(welcome, /QuickActionItem/);
   assert.doesNotMatch(welcome, /quickActions/);
@@ -1023,9 +1027,9 @@ test("post-login shell uses a single compact LibreChat-style sidebar", () => {
     sessionSidebar,
     /width:\s*isCollapsed\s*\?\s*"var\(--sidebar-rail-width\)"\s*:\s*"var\(--sidebar-width\)"/,
   );
-  assert.match(baseCss, /--theme-bg:\s*#f5f5f3;/);
-  assert.match(baseCss, /--theme-workbench-canvas:\s*#f5f5f3;/);
-  assert.match(themeDom, /light:\s*"#f5f5f3"/);
+  assert.match(baseCss, /--theme-bg:\s*#ffffff;/);
+  assert.match(baseCss, /--theme-workbench-canvas:\s*#ffffff;/);
+  assert.match(themeDom, /light:\s*"#ffffff"/);
   assert.doesNotMatch(themeDom, /#eef2f6/);
 });
 

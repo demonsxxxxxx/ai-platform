@@ -4,7 +4,7 @@ export const THEME_STORAGE_KEY = "ai-platform-theme";
 export const LEGACY_THEME_STORAGE_KEY = "lamb-agent-theme";
 
 const THEME_COLORS: Record<Theme, string> = {
-  light: "#f5f5f3",
+  light: "#ffffff",
   dark: "#151210",
 };
 
