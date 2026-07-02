@@ -188,7 +188,12 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
     worker_id = default_worker_id()
     try:
         while True:
-            outcome = await run_once(registry=registry, timeout_seconds=poll_timeout_seconds, worker_id=worker_id)
+            try:
+                outcome = await run_once(registry=registry, timeout_seconds=poll_timeout_seconds, worker_id=worker_id)
+            except Exception:
+                logger.exception("Worker iteration failed")
+                await asyncio.sleep(idle_sleep_seconds)
+                continue
             if outcome.status == "idle":
                 await asyncio.sleep(idle_sleep_seconds)
     finally:
@@ -203,13 +208,18 @@ async def _run_worker_slot(
 ) -> None:
     registry = AdapterRegistry()
     while True:
-        outcome = await run_once(
-            registry=registry,
-            timeout_seconds=poll_timeout_seconds,
-            worker_id=worker_id,
-            run_initial_maintenance=False,
-            run_background_maintenance=False,
-        )
+        try:
+            outcome = await run_once(
+                registry=registry,
+                timeout_seconds=poll_timeout_seconds,
+                worker_id=worker_id,
+                run_initial_maintenance=False,
+                run_background_maintenance=False,
+            )
+        except Exception:
+            logger.exception("Worker slot iteration failed")
+            await asyncio.sleep(idle_sleep_seconds)
+            continue
         if outcome.status == "idle":
             await asyncio.sleep(idle_sleep_seconds)
 

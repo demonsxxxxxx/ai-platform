@@ -882,6 +882,7 @@ def run_platform_runtime_probe(
     platform_resource_timeout_probe: bool = False,
     denied_egress_target: str = "https://egress-denied.invalid/",
     capture_runtime_egress_probe: bool = False,
+    callback_timeout_seconds: float = 10.0,
 ) -> dict[str, object]:
     captured: dict[str, Any] = {
         "recorded_lease_id": "",
@@ -1000,6 +1001,8 @@ def run_platform_runtime_probe(
     )
     if platform_resource_probe:
         derived_runtime_probe_results["resource_limits"] = platform_resource_probe
+    if capture_runtime_egress_probe:
+        _wait_for_callbacks(recorder, callback_timeout_seconds)
     platform_egress_probe = _safe_platform_egress_probe_from_result(
         run_id=recorder.run_id,
         egress_denial_probe=captured.get("egress_denial_probe")
@@ -1089,6 +1092,7 @@ def generate_runtime_probe_results(
     docker_cmd: tuple[str, ...],
     output_file: str | Path,
     denied_egress_target: str = "https://egress-denied.invalid/",
+    callback_timeout_seconds: float = 10.0,
     run: Callable[..., Any] = subprocess.run,
 ) -> dict[str, object]:
     run_platform_runtime_probe(
@@ -1099,10 +1103,43 @@ def generate_runtime_probe_results(
         callback_url=callback_url,
         docker_cmd=docker_cmd,
         run=run,
-        platform_resource_timeout_probe=True,
+        platform_resource_timeout_probe=False,
         denied_egress_target=denied_egress_target,
         capture_runtime_egress_probe=True,
+        callback_timeout_seconds=callback_timeout_seconds,
     )
+    normal_hardening = dict(recorder.hardening)
+    normal_timings = dict(recorder.timings)
+    normal_executed_task = recorder.executed_task
+    normal_runtime_mode = recorder.runtime_mode
+    normal_sandbox_provider = recorder.sandbox_provider
+    timeout_recorder = EvidenceRecorder(
+        run_id=recorder.run_id,
+        executor_url=recorder.executor_url,
+        callback_token=recorder._callback_token,
+    )
+    run_platform_runtime_probe(
+        recorder=timeout_recorder,
+        sandbox_provider=sandbox_provider,
+        sandbox_executor_image=sandbox_executor_image,
+        workspace_root=workspace_root,
+        callback_url=callback_url,
+        docker_cmd=docker_cmd,
+        run=run,
+        platform_resource_timeout_probe=True,
+        denied_egress_target=denied_egress_target,
+        capture_runtime_egress_probe=False,
+    )
+    recorder.executed_task = normal_executed_task and timeout_recorder.executed_task
+    recorder.runtime_mode = normal_runtime_mode or timeout_recorder.runtime_mode
+    recorder.sandbox_provider = normal_sandbox_provider or timeout_recorder.sandbox_provider
+    recorder.timings = normal_timings
+    recorder.hardening = {
+        **normal_hardening,
+        "resource_limits": dict(timeout_recorder.hardening.get("resource_limits", {})),
+        "egress_policy": dict(normal_hardening.get("egress_policy", {})),
+        "security_options": dict(normal_hardening.get("security_options", {})),
+    }
     payload = _runtime_probe_results_payload(run_id=recorder.run_id, hardening=recorder.hardening)
     for section_name in RUNTIME_PROBE_RESULTS_SECTION_KEYS:
         section = payload.get(section_name)
@@ -1341,6 +1378,7 @@ def main(argv: list[str] | None = None) -> int:
                 docker_cmd=docker_cmd,
                 output_file=args.generate_runtime_probe_results_file,
                 denied_egress_target=args.denied_egress_target,
+                callback_timeout_seconds=args.callback_timeout,
                 run=subprocess.run,
             )
             output = {
@@ -1410,6 +1448,7 @@ def main(argv: list[str] | None = None) -> int:
                     docker_cmd=docker_cmd,
                     runtime_probe_results=runtime_probe_results,
                     platform_resource_timeout_probe=args.platform_resource_timeout_probe,
+                    callback_timeout_seconds=args.callback_timeout,
                 )
             else:
                 recorder.runtime_mode = "executor"
