@@ -37,7 +37,9 @@ export const launchpadTabs: LaunchpadTab[] = [
   { key: "ai", label: "AI应用" },
 ];
 
-const DEFAULT_NON_GMP_BASE_URL = "http://10.56.0.211:8080";
+const DEFAULT_NON_GMP_BASE_URL = "http://10.56.0.25:8189";
+const DEFAULT_LEGACY_WEBUI_FRAME_URL =
+  "http://10.56.0.25:8189/#/TaskManagement/indexSpace/";
 const LEGACY_SYSTEM_ENTRY_PATHS: Record<string, string> = {
   ADEquipment: "/ADEquipment/Management/Management",
   Admin: "/Admin/userManage",
@@ -83,7 +85,12 @@ function getLegacyNonGmpBaseUrl(): string {
 }
 
 export function getLegacyWebUiFrameUrl(): string {
-  return getLegacyNonGmpBaseUrl();
+  const viteEnv = (
+    import.meta as unknown as { env?: Record<string, string | undefined> }
+  ).env;
+  return (
+    viteEnv?.VITE_LEGACY_WEBUI_FRAME_URL || DEFAULT_LEGACY_WEBUI_FRAME_URL
+  );
 }
 
 export function buildLegacySystemUrl(

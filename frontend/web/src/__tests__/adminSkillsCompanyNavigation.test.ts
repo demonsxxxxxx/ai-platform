@@ -57,6 +57,7 @@ test("company navigation owns the legacy webUI iframe seam with fallback open be
   const en = readSource("src/i18n/locales/en.json");
 
   assert.match(catalog, /VITE_LEGACY_NONGMP_URL/);
+  assert.match(catalog, /VITE_LEGACY_WEBUI_FRAME_URL/);
   assert.match(catalog, /buildLegacySystemUrl/);
   assert.match(panel, /data-company-navigation-shell/);
   assert.match(panel, /data-legacy-webui-frame/);
