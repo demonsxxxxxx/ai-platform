@@ -8,18 +8,26 @@ const panelSource = readFileSync(
   "utf8",
 );
 
-test("launchpad panel previews destinations in an iframe and opens fallback tabs", () => {
+test("launchpad panel opens company destinations externally without iframe embedding", () => {
   assert.match(panelSource, /data-company-navigation-shell/);
-  assert.match(panelSource, /data-legacy-webui-frame/);
-  assert.match(panelSource, /<iframe/);
   assert.match(panelSource, /window\.open\(href,\s*"_blank"/);
+  assert.match(panelSource, /tab\.url/);
+  assert.match(panelSource, /openUrl\(tab\.url\)/);
   assert.match(panelSource, /"noopener,noreferrer"/);
+  assert.doesNotMatch(panelSource, /data-legacy-webui-frame/);
+  assert.doesNotMatch(panelSource, /<iframe/);
+  assert.doesNotMatch(panelSource, /sandbox=/);
+  assert.doesNotMatch(panelSource, /allow="clipboard-read; clipboard-write"/);
+  assert.doesNotMatch(panelSource, /handlePreview/);
+  assert.doesNotMatch(panelSource, /getLegacyWebUiFrameUrl/);
 });
 
 test("launchpad panel has tabs, search, and unavailable rendering", () => {
   assert.match(panelSource, /launchpadTabs/);
   assert.match(panelSource, /filterLaunchpadGroups/);
   assert.match(panelSource, /launchpad\.unavailable/);
+  assert.match(panelSource, /useState<LaunchpadTabKey>\("common"\)/);
+  assert.doesNotMatch(panelSource, /useState<LaunchpadTabKey>\("lingxi"\)/);
 });
 
 test("launchpad panel localizes page chrome and has mobile group navigation", () => {

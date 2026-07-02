@@ -5,22 +5,19 @@ import {
   Boxes,
   Building2,
   Cpu,
-  Database,
   ExternalLink,
   Globe2,
-  Monitor,
-  Settings,
 } from "lucide-react";
 import { PanelHeader } from "../common/PanelHeader";
 import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGovernanceState";
 import {
   filterLaunchpadGroups,
-  getLegacyWebUiFrameUrl,
   launchpadGroups,
   launchpadTabs,
   resolveLaunchpadDestination,
   type LaunchpadEntry,
   type LaunchpadGroup,
+  type LaunchpadTab,
   type LaunchpadTabKey,
 } from "./catalog";
 import { workbenchSurface } from "../workbench/workbenchSurface";
@@ -28,9 +25,6 @@ import { workbenchSurface } from "../workbench/workbenchSurface";
 function getEntryIcon(entry: LaunchpadEntry) {
   if (entry.tab === "common") return Globe2;
   if (entry.tab === "ai") return Bot;
-  if (entry.systemKey?.includes("Data")) return Database;
-  if (entry.systemKey?.includes("Device")) return Monitor;
-  if (entry.systemKey?.includes("Admin")) return Settings;
   return Cpu;
 }
 
@@ -40,12 +34,8 @@ function countEntries(groups: LaunchpadGroup[]) {
 
 export function LaunchpadPanel() {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<LaunchpadTabKey>("lingxi");
+  const [activeTab, setActiveTab] = useState<LaunchpadTabKey>("common");
   const [query, setQuery] = useState("");
-  const [frameUrl, setFrameUrl] = useState(() => getLegacyWebUiFrameUrl());
-  const [frameTitle, setFrameTitle] = useState(() =>
-    t("companyNavigation.frame.defaultTitle"),
-  );
 
   const activeGroups = useMemo(
     () => launchpadGroups.filter((group) => group.tab === activeTab),
@@ -58,16 +48,18 @@ export function LaunchpadPanel() {
   );
   const navigationGroups = query.trim() ? visibleGroups : activeGroups;
 
-  const handlePreview = (entry: LaunchpadEntry) => {
-    const destination = resolveLaunchpadDestination(entry);
-    if (destination.kind === "url") {
-      setFrameUrl(destination.href);
-      setFrameTitle(entry.name);
-    }
-  };
-
   const openUrl = (href: string) => {
     window.open(href, "_blank", "noopener,noreferrer");
+  };
+
+  const handleTabSelect = (tab: LaunchpadTab) => {
+    if (tab.url) {
+      openUrl(tab.url);
+      return;
+    }
+
+    setActiveTab(tab.key);
+    setQuery("");
   };
 
   const tabs = (
@@ -80,10 +72,7 @@ export function LaunchpadPanel() {
           <button
             key={tab.key}
             type="button"
-            onClick={() => {
-              setActiveTab(tab.key);
-              setQuery("");
-            }}
+            onClick={() => handleTabSelect(tab)}
             className={`h-10 min-w-[6.75rem] shrink-0 rounded-md px-4 text-sm font-medium transition-colors ${
               activeTab === tab.key
                 ? "bg-[var(--theme-primary)] text-[var(--theme-primary-foreground)]"
@@ -122,10 +111,7 @@ export function LaunchpadPanel() {
             <button
               key={tab.key}
               type="button"
-              onClick={() => {
-                setActiveTab(tab.key);
-                setQuery("");
-              }}
+              onClick={() => handleTabSelect(tab)}
               className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3 text-left transition-[border-color,box-shadow] hover:border-[var(--theme-border-strong)] hover:shadow-[0_8px_18px_rgba(18,38,63,0.08)]`}
             >
               <div className="min-w-0">
@@ -139,14 +125,20 @@ export function LaunchpadPanel() {
                 </p>
               </div>
               <div className={workbenchSurface.catalog.compactIconBox}>
-                {tab.key === "ai" ? <Bot size={17} /> : <Boxes size={17} />}
+                {tab.key === "ai" ? (
+                  <Bot size={17} />
+                ) : tab.url ? (
+                  <ExternalLink size={17} />
+                ) : (
+                  <Boxes size={17} />
+                )}
               </div>
             </button>
           );
         })}
       </div>
 
-      <div className="grid min-h-0 flex-1 gap-4 px-4 pb-4 pt-2 xl:grid-cols-[minmax(24rem,0.42fr)_minmax(0,1fr)]">
+      <div className="min-h-0 flex-1 px-4 pb-4 pt-2">
         <div className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_4px_12px_rgba(18,38,63,0.03)]">
           <div className="border-b border-[var(--theme-border)] px-4 py-3">
             <div className="flex items-center gap-2">
@@ -243,12 +235,12 @@ export function LaunchpadPanel() {
                             <button
                               type="button"
                               disabled={disabled}
-                              onClick={() => handlePreview(entry)}
+                              onClick={() => openUrl(href)}
                               className="flex min-w-0 flex-1 items-start gap-3 text-left disabled:cursor-not-allowed"
                               aria-label={
                                 disabled
                                   ? undefined
-                                  : t("companyNavigation.previewEntry", {
+                                  : t("companyNavigation.openEntry", {
                                       name: entry.name,
                                     })
                               }
@@ -301,41 +293,6 @@ export function LaunchpadPanel() {
                 ))}
               </div>
             )}
-          </div>
-        </div>
-
-        <div className="hidden min-h-0 rounded-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_4px_12px_rgba(18,38,63,0.03)] xl:flex xl:flex-col">
-          <div className="flex items-center justify-between gap-3 border-b border-[var(--theme-border)] px-4 py-3">
-            <div className="min-w-0">
-              <h2 className="truncate text-sm font-semibold text-[var(--theme-text)]">
-                {frameTitle}
-              </h2>
-              <p className="mt-1 truncate text-xs text-[var(--theme-text-secondary)]">
-                {frameUrl}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => openUrl(frameUrl)}
-              className="btn-secondary h-9 shrink-0"
-            >
-              <ExternalLink size={15} />
-              <span>{t("companyNavigation.frame.openExternal")}</span>
-            </button>
-          </div>
-          <div className="min-h-0 flex-1 bg-white">
-            <iframe
-              data-legacy-webui-frame
-              title={frameTitle}
-              src={frameUrl}
-              className="h-full w-full border-0 bg-white"
-              sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts allow-downloads"
-              allow="clipboard-read; clipboard-write"
-              referrerPolicy="no-referrer-when-downgrade"
-            />
-          </div>
-          <div className="border-t border-[var(--theme-border)] px-4 py-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
-            {t("companyNavigation.frame.fallbackHint")}
           </div>
         </div>
       </div>
