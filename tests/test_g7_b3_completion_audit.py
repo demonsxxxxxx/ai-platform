@@ -25,6 +25,7 @@ LEGACY_LABEL_SUBJECT = "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c"
 CURRENT_MAIN_G7_SOURCE = "ae6b7e52c656fd8296cf039834ce8d8559b01228"
 PR297_G7_B3_SOURCE = "4805031fc3333ccbf38224172e4e85e21c0630bb"
 PR300_G7_B3_SOURCE = "93155b4a5bdb4e6b7ac29bfc802a7a70c891c34e"
+PR304_G7_B3_SOURCE = "decf33a017e0b97e2a2992f80e3ccdc19152c1f4"
 CURRENT_MAIN_G7_EVIDENCE_PATH = (
     Path(__file__).resolve().parents[1]
     / "docs/release-evidence/g7-sandbox"
@@ -61,11 +62,23 @@ PR300_G7_LIVE_ENV_EVIDENCE_PATH = (
     / PR300_G7_B3_SOURCE
     / "2026-07-02-211-g7-sandbox-live-env-hardening-93155b4.json"
 )
+PR304_G7_LIVE_ENV_EVIDENCE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "docs/release-evidence/g7-sandbox"
+    / PR304_G7_B3_SOURCE
+    / "2026-07-02-211-g7-sandbox-live-env-hardening-decf33a.json"
+)
 PR297_FRC_EVIDENCE_PATH = (
     Path(__file__).resolve().parents[1]
     / "docs/release-evidence/foundation-runtime-concurrency"
     / f"{PR297_G7_B3_SOURCE}-frc-g7-b3-20260702"
     / "2026-07-02-211-foundation-alpha-poc-4805031-foundation-runtime-concurrency.json"
+)
+PR304_FRC_EVIDENCE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "docs/release-evidence/foundation-runtime-concurrency"
+    / f"{PR304_G7_B3_SOURCE}-frc-g7-b3-20260702"
+    / "2026-07-02-211-foundation-alpha-poc-decf33a-foundation-runtime-concurrency.json"
 )
 CURRENT_MAIN_FRC_EVIDENCE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -606,6 +619,108 @@ def test_pr300_g7_live_env_hardening_evidence_remains_frc_and_b3_blocked():
         "/home/xinlin",
         "/var/run/docker.sock",
         "c:\\users",
+    ):
+        assert forbidden not in serialized
+    assert_no_sensitive_callback_token_leak(serialized)
+
+
+def test_pr304_branch_g7_and_frc_evidence_reach_candidate_review_without_overclosing():
+    evidence = json.loads(PR304_G7_LIVE_ENV_EVIDENCE_PATH.read_text(encoding="utf-8"))
+    frc_evidence = json.loads(PR304_FRC_EVIDENCE_PATH.read_text(encoding="utf-8"))
+
+    assert evidence["schema_version"] == "ai-platform.release-evidence-entry.v1"
+    assert evidence["evidence_id"] == "2026-07-02-211-g7-sandbox-live-env-hardening-decf33a"
+    assert evidence["artifact_kind"] == "211_sandbox_runtime_smoke"
+    assert evidence["commit_sha"] == PR304_G7_B3_SOURCE
+    assert evidence["runtime_subject_commit_sha"] == PR304_G7_B3_SOURCE
+    assert evidence["issue_refs"] == []
+    assert evidence["pr_refs"] == ["#304"]
+    assert evidence["review_status"] == "reviewed"
+    assert evidence["redaction_scan_status"] == "passed"
+    assert evidence["source_ref"]["branch"] == "codex/g7-b3-post-300-followup"
+    assert evidence["source_ref"]["image"] == "ai-platform:decf33a-g7-b3-post-300-followup-v1"
+    assert evidence["source_ref"]["image_id"] == (
+        "sha256:36745d97ddb62d86dc0dd3f1af3e2ae67aa8fc7648a766fe77245801d3d1268e"
+    )
+    assert evidence["source_ref"]["runtime_source_marker"] == PR304_G7_B3_SOURCE
+    assert evidence["source_ref"]["repo_backend_source_marker"] == PR304_G7_B3_SOURCE
+    assert evidence["source_ref"]["safe_live_runtime_env"] == {
+        "SANDBOX_CONTAINER_PROVIDER": "docker",
+        "SANDBOX_EXECUTOR_IMAGE": "ai-platform:decf33a-g7-b3-post-300-followup-v1",
+        "SANDBOX_EGRESS_POLICY_ENABLED": "true",
+    }
+    runtime_check = evidence["evidence_ref"]["runtime_checks"]["g7_211_sandbox_runtime_hardening"]
+    assert runtime_check["run_id"] == "g7-decf33a-post-300-followup-20260702095227"
+    assert runtime_check["runtime_mode"] == "platform"
+    assert runtime_check["sandbox_provider"] == "docker"
+    assert runtime_check["callbacks"] == ["running", "completed"]
+    assert runtime_check["cancel_stops_container"] is True
+    assert runtime_check["live_runtime_env"] == evidence["source_ref"]["safe_live_runtime_env"]
+    assert runtime_check["hardening"]["resource_limits"]["over_limit_cleanup_verified"] is True
+    assert bounded_error_projection_is_safe(
+        runtime_check["hardening"]["resource_limits"]["bounded_error_projection"],
+        run_id=runtime_check["run_id"],
+    )
+    assert runtime_check["hardening"]["egress_policy"]["default_deny_outbound"] is True
+    assert runtime_check["hardening"]["egress_policy"]["callback_probe_status"] == "delivered"
+    assert runtime_check["hardening"]["security_options"]["docker_socket_mounted"] is False
+    assert all(item["passed"] is True for item in evidence["evidence_ref"]["runtime_checks"]["verifier_checks"])
+    assert runtime_check["does_not_close_g7_gate"] is True
+    assert runtime_check["does_not_close_b3_gate"] is True
+
+    assert frc_evidence["schema_version"] == "ai-platform.foundation-runtime-concurrency.v1"
+    assert frc_evidence["commit_sha"] == PR304_G7_B3_SOURCE
+    assert frc_evidence["runtime_subject_commit_sha"] == PR304_G7_B3_SOURCE
+    assert frc_evidence["source_tree_commit_sha"] == PR304_G7_B3_SOURCE
+    assert frc_evidence["summary"]["concurrent_request_count"] == 12
+    assert frc_evidence["summary"]["tenant_count"] == 2
+    assert frc_evidence["summary"]["user_count"] == 4
+    assert frc_evidence["summary"]["concurrency_probe_source"] == "client_case_timestamps"
+
+    audit = build_g7_b3_completion_audit(
+        runtime_observation={
+            "source_marker_commit": PR304_G7_B3_SOURCE,
+            "runtime_image": evidence["source_ref"]["image"],
+            "runtime_image_labels": evidence["source_ref"]["image_labels"],
+            "api_env": evidence["source_ref"]["safe_live_runtime_env"],
+            "reviewed_release_evidence": evidence,
+            "foundation_runtime_concurrency_evidence": frc_evidence,
+        },
+        capacity_profile_readiness=None,
+        current_source_commit=PR304_G7_B3_SOURCE,
+    )
+    assert audit["g7"]["reviewed_release_evidence_id"] == runtime_check["run_id"]
+    assert audit["g7"]["foundation_runtime_concurrency_status"] == (
+        "verified_foundation_runtime_concurrency"
+    )
+    assert audit["g7"]["foundation_runtime_concurrency_current_subject"] is True
+    assert audit["g7"]["blocking_reasons"] == []
+    assert audit["g7"]["required_next_steps"] == [
+        "complete operator status-upgrade review before claiming G7 closure or 211 verified status"
+    ]
+    assert audit["g7"]["status"] == "candidate_evidence_requires_review"
+    assert audit["b3"]["status"] == "blocked"
+    assert audit["b3"]["blocking_reasons"] == [
+        "b3_recorded_load_test_gates_missing",
+        "b3_10x4_sdk_subagents_profile_evidence_missing",
+    ]
+    assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
+    assert audit["status_label"] == "local partial"
+    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_gate_closable"] is True
+    assert audit["does_not_close_g7"] is True
+    assert audit["does_not_close_b3"] is True
+
+    serialized = json.dumps(evidence, ensure_ascii=False).lower()
+    for forbidden in (
+        "openai_api_key",
+        "anthropic_auth_token",
+        "database_url",
+        "redis_url",
+        "/home/xinlin",
+        "/var/run/docker.sock",
+        "c:\\users",
+        "39ddbf68a250",
     ):
         assert forbidden not in serialized
     assert_no_sensitive_callback_token_leak(serialized)
