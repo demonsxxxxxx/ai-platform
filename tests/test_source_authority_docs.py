@@ -2020,6 +2020,8 @@ def test_prd_records_claude_sdk_execution_boundary_without_second_runtime():
     assert "DeerFlow" not in prd_text
     assert "G8 Deferred Platform Multi-Run Gate" in prd_text
     assert 'old title "G8 Multi-Agent Controlled Beta"' in prd_text
+    assert "Current Claude Agent SDK Agent/subagent fanout capability" in prd_text
+    assert "Current execution-layer multi-agent/subagent capability" not in prd_text
     assert "G10 Internal Beta / Department Rollout" in prd_text
     assert "Advanced Claude Agent SDK Task Patterns" in tech_text
     assert "Historical references not listed above are intentionally omitted" in tech_text
@@ -2037,7 +2039,7 @@ def test_prd_records_claude_sdk_execution_boundary_without_second_runtime():
     assert "B3 SDK subagent fanout capacity evidence" in compact_multi_agent_workflow_text
     assert (
         "Assistant sub-agents in this workflow do not prove, open, or close "
-        "ordinary-user platform multi-run product exposure"
+        "ordinary-user platform-level multi-run product exposure"
     ) in compact_multi_agent_workflow_text
     assert "product-level multi-agent runtime" not in multi_agent_workflow_text
 

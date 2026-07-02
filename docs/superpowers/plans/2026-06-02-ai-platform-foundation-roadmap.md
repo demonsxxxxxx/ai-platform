@@ -204,7 +204,7 @@ production-hardening 非闭合边界。G7/B3 的证据边界继续保持为
 3. G5 Run Lifecycle / Worker Runtime V1：queue、lease、heartbeat、retry、dead-letter、cancel、resume、checkpoint、idempotency 可审计、可运营。
 4. G6 Tool / Skill / Memory Governance：skill versioning、release policy、dependency policy、tool allow/deny/ask、memory retention、redaction、delete flow 可运营。
 5. G7 Sandbox / Resource Hardening：Docker provider 生产验证、network/egress policy、runtime quota、orphan cleanup job、container security options 与 211 smoke 通过后，才允许扩大高风险 sandbox/tool。
-6. G8 Deferred Platform Multi-Run Gate：旧历史证据可能写作 G8 Multi-Agent Controlled Beta；当前权威状态不再使用这个 beta 标题。平台 parent/child ledger、dispatcher、handoff、child reconciliation、parent rollup、parent cancel 与 worker dispatcher 只作为历史受控切片和 deferred parking-lot 保留；执行层 agent/subagent 能力走 Claude Agent SDK，并作为一个 governed platform run 管理。当前开放问题是 SDK subagent fanout 的 capacity/governance/sandbox/model-gateway evidence，不是普通用户平台级 multi-run 产品曝光，也不是 G8 beta 路线。
+6. G8 Deferred Platform Multi-Run Gate：旧历史证据可能写作 G8 Multi-Agent Controlled Beta；当前权威状态不再使用这个 beta 标题。平台 parent/child ledger、dispatcher、handoff、child reconciliation、parent rollup、parent cancel 与 worker dispatcher 只作为历史受控切片和 deferred parking-lot 保留；执行层 SDK Agent/subagent fanout 能力走 Claude Agent SDK，并作为一个 governed platform run 管理。当前开放问题是 SDK subagent fanout 的 capacity/governance/sandbox/model-gateway evidence，不是普通用户平台级 multi-run 产品曝光，也不是 G8 beta 路线。
 7. G9 Observability / Quality / Ops：Admin runtime、cost/token/latency metrics、error taxonomy、golden-set eval、trace/audit export 与 alert 进入 beta 前 gate。
 8. G10 Internal Beta / Department Rollout：选择 1-2 个真实内网流程（如文档审查、翻译、SOP/RAG、长任务报告）明确运营 owner 后再放量。
 
