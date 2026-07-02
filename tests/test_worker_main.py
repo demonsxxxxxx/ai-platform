@@ -378,6 +378,40 @@ async def test_run_forever_closes_database_pool_when_cancelled(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_forever_continues_after_transient_run_once_error(monkeypatch):
+    calls = []
+    continued = asyncio.Event()
+
+    async def fake_run_once(registry=None, timeout_seconds=5, worker_id=None):
+        calls.append(("run_once", timeout_seconds, worker_id is not None))
+        if len(calls) == 1:
+            raise TimeoutError("Timeout reading from redis:6379")
+        continued.set()
+        raise asyncio.CancelledError()
+
+    async def fake_sleep(seconds):
+        calls.append(("sleep", seconds))
+
+    async def fake_close_pool():
+        calls.append(("close_pool",))
+
+    monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
+    monkeypatch.setattr("app.worker_main.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("app.worker_main.close_pool", fake_close_pool, raising=False)
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker_main.run_forever(poll_timeout_seconds=2, idle_sleep_seconds=0.25)
+
+    assert continued.is_set()
+    assert calls == [
+        ("run_once", 2, True),
+        ("sleep", 0.25),
+        ("run_once", 2, True),
+        ("close_pool",),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
     started = asyncio.Event()
     calls = []
@@ -411,6 +445,53 @@ async def test_run_worker_pool_starts_configured_parallel_workers(monkeypatch):
         ("slot", True, 2, 0.25),
         ("slot", True, 2, 0.25),
         ("slot", True, 2, 0.25),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_worker_slot_continues_after_transient_run_once_error(monkeypatch):
+    calls = []
+    continued = asyncio.Event()
+
+    async def fake_run_once(
+        registry=None,
+        timeout_seconds=5,
+        worker_id=None,
+        run_initial_maintenance=True,
+        run_background_maintenance=True,
+    ):
+        calls.append(
+            (
+                "run_once",
+                timeout_seconds,
+                worker_id,
+                run_initial_maintenance,
+                run_background_maintenance,
+            )
+        )
+        if len(calls) == 1:
+            raise TimeoutError("Timeout reading from redis:6379")
+        continued.set()
+        raise asyncio.CancelledError()
+
+    async def fake_sleep(seconds):
+        calls.append(("sleep", seconds))
+
+    monkeypatch.setattr("app.worker_main.run_once", fake_run_once)
+    monkeypatch.setattr("app.worker_main.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker_main._run_worker_slot(
+            worker_id="worker-a",
+            poll_timeout_seconds=2,
+            idle_sleep_seconds=0.25,
+        )
+
+    assert continued.is_set()
+    assert calls == [
+        ("run_once", 2, "worker-a", False, False),
+        ("sleep", 0.25),
+        ("run_once", 2, "worker-a", False, False),
     ]
 
 

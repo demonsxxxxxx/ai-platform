@@ -635,23 +635,61 @@ marker still read `ae6b7e5` and the frontend image was
 capacity conclusion: all seven operator-reviewed recorded load-test gates and
 the `b3_10x4_sdk_subagents` profile evidence are still missing.
 
-Fresh read-only 211 capacity sampling for the `4805031` runtime is currently
-blocked until the local no-cleanup/default-stack fix is merged and deployed. On
-2026-07-02, the default Admin Runtime capacity route
-`GET /api/ai/admin/runtime/overview` returned HTTP `500` with
-`sandbox_provider_cleanup_failed`. The no-cleanup route
-`GET /api/ai/admin/runtime/overview?include_maintenance_cleanup=false` still
-returned HTTP `500` in the running `4805031` image because container enumeration
-called Docker SDK from inside the API container, where the default stack
-intentionally has no Docker socket. The local route fix degrades that container
-observation to `list_runtime_containers_status=unavailable` instead of failing
-the whole overview, and `tools/capacity_runtime_evidence.py` now has
-`--skip-maintenance-cleanup` for this capture mode. A degraded container
-observation is still fail-closed for B3 readiness: the snapshot can record the
-safe overview, but `sandbox` remains a missing Admin Runtime section until
-container visibility is available. Until that fix is rolled out and a fresh
-capacity evidence snapshot is captured, the latest accepted B3 visibility
-evidence remains the reviewed `ae6b7e5` read-only evidence above.
+### 211 Runtime Evidence - 2026-07-02, PR #304 branch commit `decf33a`
+
+After the PR #304 follow-up rollout, a read-only 211 identity check observed
+API and worker running `ai-platform:decf33a-g7-b3-post-300-followup-v1`, with
+source/runtime/OCI labels and the 211 source marker bound to
+`decf33a017e0b97e2a2992f80e3ccdc19152c1f4`. The frontend image observed at the
+same time was `ai-platform-frontend:e2189d1`, and `/api/ai/health` returned
+`{"status":"ok"}`.
+
+The read-only capacity runtime evidence command was run inside the 211 API
+container against the local API route:
+
+```powershell
+python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha decf33a017e0b97e2a2992f80e3ccdc19152c1f4 --runtime-profile g7-b3-post-300-runtime-only-v1 --skip-maintenance-cleanup --format json
+```
+
+The output schema was `ai-platform.capacity-runtime-evidence.v1`. The nested
+snapshot schema was `ai-platform.capacity-evidence-snapshot.v1`, and
+`snapshot.runtime_identity.commit_sha` matched
+`decf33a017e0b97e2a2992f80e3ccdc19152c1f4`. The source capture used
+`/api/ai/admin/runtime/overview?include_maintenance_cleanup=false`, returned
+HTTP `200`, and contained all required Admin Runtime capacity sections:
+`capacity`, `database_pool`, `queue`, `admission`, `backpressure`, `sandbox`,
+and `observability`.
+
+The reviewed, redacted repository evidence entry is
+`docs/release-evidence/capacity-gate-readiness/decf33a017e0b97e2a2992f80e3ccdc19152c1f4/2026-07-02-211-capacity-runtime-readiness-decf33a.json`.
+It summarizes capacity visibility and fail-closed readiness only; it is not a
+raw runtime payload export and is not recorded B3 load evidence.
+
+The gate readiness schema was `ai-platform.capacity-gate-readiness.v1` with
+status `blocked_missing_load_test_evidence`. The production default decision
+remained `do_not_raise_without_recorded_load_test_evidence`, and all seven
+load-test gates were still missing recorded evidence:
+
+- `api_read_write_burst`
+- `run_creation_burst_by_tenant_and_user`
+- `worker_processing_throughput`
+- `queue_depth_and_lease_latency`
+- `cancel_retry_resume_under_load`
+- `sandbox_lease_creation_under_load`
+- `model_gateway_timeout_and_backpressure`
+
+The nested capacity snapshot still reported profile `unproven_default`.
+`profile_evidence` was empty, so the `b3_10x4_sdk_subagents` profile remains
+blocked until operator-reviewed profile evidence records the required 10
+sessions x peak 4 SDK subagents/session measurement and the required
+non-expansion flags.
+
+This `decf33a` capture supersedes the earlier `4805031`
+capacity-pending/HTTP-500 observation for the currently running PR #304 branch
+runtime only. It does not make PR #304 reviewed or merged, does not prove
+current-main `211 verified`, does not provide recorded B3 load-test evidence,
+does not claim a safe maximum concurrency number, does not raise production
+defaults, and does not close B3.
 
 ### Evidence Bundle Draft Tool
 

@@ -120,8 +120,8 @@ evidence when applicable.
 | B5 files/artifacts/tool permission governance | File namespaces, artifact ACL, preview/download authorization, exact tool decisions, and replay denial. | Runtime smoke proving upload -> run -> artifact access and unauthorized denial. |
 | B6 Operations beta readiness | Admin Runtime, trace/export, alerts, golden-set eval, release evidence export, workflow owners, and rollback drills. | Named workflow owners, capacity profile, quality/cost/audit evidence, and 211 acceptance. |
 
-Status labels must stay separate: `local partial`, `PR ready`, `merged`,
-`211 verified`, and `gate closable` are not interchangeable.
+Status labels must stay separate: `local partial`, `PR ready`, `reviewed`,
+`merged`, `211 verified`, and `gate closable` are not interchangeable.
 
 B3 operator-reviewed recorded snapshot source contract:
 `ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1` records
@@ -223,12 +223,12 @@ image matches the exact current source tree.
 
 | Field | Standard |
 | --- | --- |
-| Current state | Sandbox lease, provider abstraction, callback normalization, fake provider, and some Docker-provider paths exist; default local provider remains fake; Docker hardening and 211 evidence remain open. |
+| Current state | Sandbox lease, provider abstraction, callback normalization, fake provider, and Docker-provider hardening evidence exist for reviewed runtime subjects; default local provider remains fake; G7 is `candidate_evidence_requires_review` until operator status-upgrade review and source/runtime boundaries are reconciled. |
 | S1 target | Fake provider remains local/test-only; high-risk sandbox is not broadly exposed; lease lifecycle is platform-owned. |
 | S2 target | Docker provider hardening covers egress/network policy, quota, cleanup, container security options, callback token, and Docker-capable smoke. |
 | S3/S4 target | Sandbox profiles map to workflow risk classes and have operational rollback and cleanup evidence. |
 | Reference sources | Codex sandbox vocabulary and approval/network model; Poco runtime lifecycle ideas. |
-| S1 acceptance | Public/admin projections do not expose workdirs, raw runtime paths, command fingerprints, or private payloads; G7 remains blocked until Docker-provider smoke and hardening evidence exist. |
+| S1 acceptance | Public/admin projections do not expose workdirs, raw runtime paths, command fingerprints, or private payloads; Docker-provider smoke and hardening evidence can move G7 to `candidate_evidence_requires_review`, but G7 is not closed until operator status-upgrade review confirms the source/runtime boundary and non-expansion invariants. |
 
 ### 3.8 Tool Permission, MCP, And Approval Policy
 
@@ -341,7 +341,7 @@ production or beta evidence.
 | Skills | Runs stage pinned skill snapshots and reject content hash mismatches; production release remains blocked without reviewed evidence. |
 | Memory/context | Long-term cross-session memory remains fail-closed; retention/delete/redaction/opt-out are tested in current scope. |
 | Frontend | Active browser graph uses public/admin projections; install/lint/type/build are reproducible or exact blockers are recorded. |
-| Sandbox | Fake provider remains local/test; Docker provider hardening and 211 smoke remain G7 blockers. |
+| Sandbox | Fake provider remains local/test; reviewed Docker provider hardening and 211 smoke can support `candidate_evidence_requires_review`, but G7 remains unclosed until operator status-upgrade review and current source/runtime boundaries are reconciled. |
 | Observability | Admin Runtime gives controlled-operation visibility; G9 remains partial until dashboard/runtime/alert/export evidence is accepted. |
 | Platform multi-run / SDK subagent | SDK-internal agent/subagent behavior stays inside one governed platform run; platform-level multi-run orchestration remains deferred with no ordinary-user exposure before prior gates pass. |
 

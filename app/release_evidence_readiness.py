@@ -41,6 +41,10 @@ _FIELD_SEMANTICS = {
         "not embedded because a git commit cannot contain its own final hash; "
         "use VCS history to identify the commit that introduced or updated an evidence record"
     ),
+    "capacity_gate_readiness": (
+        "B3 capacity visibility and fail-closed readiness evidence; it is not "
+        "operator-reviewed recorded load evidence and cannot close B3 by itself"
+    ),
 }
 _CONDITIONAL_FIELDS = {
     "211_runtime_smoke": [

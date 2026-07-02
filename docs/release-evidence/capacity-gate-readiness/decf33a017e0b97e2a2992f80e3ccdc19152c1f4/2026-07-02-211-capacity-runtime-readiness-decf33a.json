@@ -1,0 +1,88 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-02-211-capacity-runtime-readiness-decf33a",
+  "commit_sha": "decf33a017e0b97e2a2992f80e3ccdc19152c1f4",
+  "runtime_subject_commit_sha": "decf33a017e0b97e2a2992f80e3ccdc19152c1f4",
+  "gate": "B3 Capacity Baseline",
+  "issue_refs": [
+    "#21",
+    "#122",
+    "#144"
+  ],
+  "pr_refs": [
+    "#304"
+  ],
+  "artifact_kind": "capacity_gate_readiness",
+  "captured_at": "2026-07-02T11:03:24Z",
+  "source_ref": {
+    "subject": "PR #304 branch runtime subject decf33a",
+    "runtime_subject_commit_sha": "decf33a017e0b97e2a2992f80e3ccdc19152c1f4",
+    "api_worker_image": "ai-platform:decf33a-g7-b3-post-300-followup-v1",
+    "frontend_image": "ai-platform-frontend:e2189d1",
+    "source_marker_status": "matched_runtime_subject",
+    "health_status": "ok",
+    "capture_route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+    "capture_mode": "operator_captured_admin_projection_no_maintenance_cleanup",
+    "source_authority_caveat": "This is PR #304 branch runtime visibility only; PR #304 is still draft, unreviewed, and unmerged, so this is not current-main 211 verified evidence."
+  },
+  "evidence_ref": {
+    "verifier": "tools/capacity_runtime_evidence.py",
+    "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+    "snapshot_schema_version": "ai-platform.capacity-evidence-snapshot.v1",
+    "readiness_schema_version": "ai-platform.capacity-gate-readiness.v1",
+    "runtime_profile": "g7-b3-post-300-runtime-only-v1",
+    "source_http_status": 200,
+    "admin_runtime_required_sections": [
+      "capacity",
+      "database_pool",
+      "queue",
+      "admission",
+      "backpressure",
+      "sandbox",
+      "observability"
+    ],
+    "admin_runtime_missing_sections": [],
+    "readiness_status": "blocked_missing_load_test_evidence",
+    "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
+    "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+    "load_test_evidence_status": "missing",
+    "missing_load_test_gates": [
+      "api_read_write_burst",
+      "run_creation_burst_by_tenant_and_user",
+      "worker_processing_throughput",
+      "queue_depth_and_lease_latency",
+      "cancel_retry_resume_under_load",
+      "sandbox_lease_creation_under_load",
+      "model_gateway_timeout_and_backpressure"
+    ],
+    "profile_evidence_status": "missing",
+    "profile_evidence": {},
+    "target_profile_id": "b3_10x4_sdk_subagents",
+    "non_expansion_invariants": {
+      "production_concurrency_defaults_raised": false,
+      "safe_concurrency_claimed": false,
+      "ordinary_user_platform_multi_run_orchestration_enabled": false
+    },
+    "does_not_raise_defaults": true,
+    "does_not_claim_safe_concurrency": true,
+    "does_not_mark_recorded_load_test_gate": true,
+    "does_not_close_b3": true,
+    "does_not_close_g7": true,
+    "does_not_make_pr_304_reviewed_or_merged": true,
+    "does_not_make_current_main_211_verified": true,
+    "does_not_make_issue_164_gate_closable": true
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "notes": [
+    "This reviewed, redacted summary records the PR #304 branch decf33a Admin Runtime capacity visibility path returning HTTP 200 with all required sections present.",
+    "The same evidence remains fail-closed for B3 because all seven recorded load-test gates and the b3_10x4_sdk_subagents operator-reviewed profile evidence are missing.",
+    "This entry is capacity visibility and readiness evidence only; it is not recorded load evidence, not a production default increase, not current-main 211 verified evidence, and not a gate-closure claim."
+  ],
+  "open_followups": [
+    "Complete PR #304 review and merge if this branch is selected.",
+    "Refresh current-main 211 capacity/runtime evidence after merge or rollout.",
+    "Record operator-reviewed load-test evidence for all seven B3 gates.",
+    "Record b3_10x4_sdk_subagents profile evidence for 10 sessions x peak 4 SDK subagents per session before any production default increase."
+  ]
+}

@@ -1,40 +1,34 @@
 {
   "schema_version": "ai-platform.release-evidence-entry.v1",
-  "evidence_id": "2026-07-01-211-g7-sandbox-runtime-smoke-ae6b7e5",
+  "evidence_id": "2026-07-02-211-g7-sandbox-live-env-hardening-93155b4",
   "artifact_kind": "211_sandbox_runtime_smoke",
   "gate": "G7 Sandbox / Resource Hardening",
-  "commit_sha": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
-  "runtime_subject_commit_sha": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
-  "captured_at": "2026-07-01T17:29:42.582680+00:00",
-  "issue_refs": [
-    "#164"
-  ],
+  "commit_sha": "93155b4a5bdb4e6b7ac29bfc802a7a70c891c34e",
+  "runtime_subject_commit_sha": "93155b4a5bdb4e6b7ac29bfc802a7a70c891c34e",
+  "captured_at": "2026-07-02T07:55:03.358283+00:00",
+  "issue_refs": [],
   "pr_refs": [
-    "#294",
-    "#296"
+    "#300"
   ],
   "source_ref": {
     "branch": "main",
-    "image": "ai-platform:ae6b7e5-g7-current-main-runtime-only-v1",
-    "image_id": "sha256:a91d17dbd5e4d3b3f02800781a1039c92fc67902d582c88bd1d09105c2cf4a41",
+    "image": "ai-platform:93155b4-g7-b3-post-300-runtime-only-v1",
+    "image_id": "sha256:12ed308e6bad69fa413604146f0ed5eb214d4b988c6f00f5b43a13dfec24d232",
     "image_labels": {
-      "ai-platform.source-revision": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
-      "ai-platform.runtime-subject": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
-      "org.opencontainers.image.revision": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
-      "ai-platform.build-mode": "runtime-only-source-rebase",
-      "ai-platform.source-note": "g7-b3-completion-audit-runtime-only"
+      "ai-platform.source-revision": "93155b4a5bdb4e6b7ac29bfc802a7a70c891c34e",
+      "ai-platform.runtime-subject": "93155b4a5bdb4e6b7ac29bfc802a7a70c891c34e",
+      "org.opencontainers.image.revision": "93155b4a5bdb4e6b7ac29bfc802a7a70c891c34e",
+      "ai-platform.source_revision": "93155b4a5bdb4e6b7ac29bfc802a7a70c891c34e",
+      "ai-platform.runtime_subject": "93155b4a5bdb4e6b7ac29bfc802a7a70c891c34e",
+      "ai-platform.source_tree_commit": "93155b4a5bdb4e6b7ac29bfc802a7a70c891c34e",
+      "ai-platform.build-mode": "runtime-only-rebase",
+      "ai-platform.runtime-rollout": "g7-b3-post-300-runtime-only-v1",
+      "ai-platform.source-note": "g7-b3-post-300-runtime-only-v1",
+      "ai-platform.source_note": "g7-b3-post-300-runtime-only-v1"
     },
-    "runtime_source_marker": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
-    "source_tree_dirty": false,
-    "source_snapshot": {
-      "schema_version": "ai-platform.source-snapshot.v1",
-      "runtime_subject_commit_sha": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
-      "source_tree_commit_sha": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
-      "source_tree_dirty": false,
-      "runtime_affecting_changes_since_runtime_subject": [],
-      "runtime_affecting_dirty_paths": [],
-      "snapshot_source": "codex_origin_main_archive_sync"
-    },
+    "runtime_source_marker": "93155b4a5bdb4e6b7ac29bfc802a7a70c891c34e",
+    "container_source_marker": "93155b4a5bdb4e6b7ac29bfc802a7a70c891c34e",
+    "repo_backend_source_marker": "93155b4a5bdb4e6b7ac29bfc802a7a70c891c34e",
     "containers": [
       "ai-platform-api",
       "ai-platform-worker"
@@ -46,25 +40,28 @@
     "repo_local_env_present": false,
     "compose_config_source": "repo_local_deploy_ai_platform_compose_after_source_sync",
     "compose_env_source": "external_runtime_env_label_still_present_not_recorded",
-    "source_authority_caveat": "current-main runtime-only image deployed from synced source; this record is G7 sandbox runtime smoke evidence, not G0 source-authority closure",
-    "stale_label_followups": [
-      "legacy underscore alias labels ai-platform.source_revision, ai-platform.runtime_subject, and ai-platform.source_tree_commit still point at bd690f72723080beeb820d07679da59d84c7913e",
-      "compose project environment_file label still points outside repo-local deploy composition"
-    ]
+    "safe_live_runtime_env": {
+      "SANDBOX_CONTAINER_PROVIDER": "docker",
+      "SANDBOX_EXECUTOR_IMAGE": "ai-platform:93155b4-g7-b3-post-300-runtime-only-v1",
+      "SANDBOX_EGRESS_POLICY_ENABLED": "true"
+    },
+    "source_authority_caveat": "The 211 backend source marker, API/worker image labels, in-container markers, and safe sandbox env all bind to 93155b4; this G7 record still does not close G7/B3 because same-subject FRC, B3 recorded load evidence, and operator status-upgrade review remain separate."
   },
   "evidence_ref": {
     "verifier": "scripts/verify_sandbox_runtime_211.py",
     "result": "ok:true",
-    "command": "one-off verifier container: generate_sandbox_runtime_evidence_211.py --runtime-mode platform --sandbox-provider docker; verify_sandbox_runtime_211.py --json --docker-cmd sudo -n docker",
+    "command": "two-stage 211 live-env hardening verifier in an isolated verifier container against the running 93155b4 API/worker sandbox posture, then verify the captured run with verify_sandbox_runtime_211.py --json",
     "artifact_hashes": {
-      "runtime_probe_results_sha256": "e01ccb6148c9e54faffaf8287ec003901b65592999d404aa7a0f853ddce2c148",
-      "sandbox_evidence_sha256": "d7c92d12c2630423d48404a8cd66ea9e2dbe03842b29bca5b7abe8b52cac5037",
-      "verifier_summary_sha256": "ce458763a8ef33382a454e435b3ab856bbb521d53e6f47d00a39abd5db58c01a"
+      "runtime_probe_results_sha256": "f50708b2378eb546ed6deed61fcb18da47b79ef51683339f9e73ca706f5ca854",
+      "sandbox_evidence_sha256": "55fbf337d0a07aadbb6b694862d2d4692b5453190e08ab17b543b3080abedfd7",
+      "verifier_summary_sha256": "ce458763a8ef33382a454e435b3ab856bbb521d53e6f47d00a39abd5db58c01a",
+      "runtime_probe_generate_summary_sha256": "771ddfa8b200f1c43ec944b65018f92b15a595955f5aaaf7a8336ba4e5a69596",
+      "evidence_generate_summary_sha256": "c5d3cd824697fb6364636ca13457c01e18656f81df11ded597020680f055b496"
     },
     "runtime_checks": {
       "g7_211_sandbox_runtime_hardening": {
         "schema_version": "ai-platform.sandbox-runtime-211.v1",
-        "run_id": "g7-current-main-ae6b7e5-20260701172910",
+        "run_id": "g7-live-env-hardening-93155b4-20260702075354",
         "runtime_mode": "platform",
         "sandbox_provider": "docker",
         "executed_task": true,
@@ -74,16 +71,21 @@
           "completed"
         ],
         "cancel_stops_container": true,
+        "live_runtime_env": {
+          "SANDBOX_CONTAINER_PROVIDER": "docker",
+          "SANDBOX_EXECUTOR_IMAGE": "ai-platform:93155b4-g7-b3-post-300-runtime-only-v1",
+          "SANDBOX_EGRESS_POLICY_ENABLED": "true"
+        },
         "timings": {
           "schema_version": "ai-platform.sandbox-latency-split.v1",
-          "sandbox_lease_acquire_latency_ms": 2275,
-          "sandbox_container_cold_start_latency_ms": 1448,
-          "sandbox_healthcheck_latency_ms": 818,
-          "sandbox_executor_dispatch_latency_ms": 55,
-          "executor_model_latency_ms": 40,
-          "document_processing_latency_ms": 0,
-          "sandbox_cleanup_latency_ms": 1161,
-          "sandbox_total_latency_ms": 3520
+          "sandbox_lease_acquire_latency_ms": 3098,
+          "sandbox_container_cold_start_latency_ms": 2269,
+          "sandbox_healthcheck_latency_ms": 820,
+          "sandbox_executor_dispatch_latency_ms": 56,
+          "executor_model_latency_ms": 41,
+          "document_processing_latency_ms": 1,
+          "sandbox_cleanup_latency_ms": 5359,
+          "sandbox_total_latency_ms": 8544
         },
         "hardening": {
           "lease_isolation": {
@@ -139,13 +141,13 @@
             "bounded_error_projection_verified": true,
             "bounded_error_projection": {
               "source": "admin_runtime_projection",
-              "run_id": "g7-current-main-ae6b7e5-20260701172910",
-              "status": "failed",
-              "error_code": "executor_health_timeout",
-              "host_paths_redacted": true,
-              "raw_docker_payload_absent": true,
-              "callback_token_absent": true
-            },
+              "run_id": "g7-live-env-hardening-93155b4-20260702075354",
+            "status": "failed",
+            "error_code": "executor_health_timeout",
+            "host_paths_redacted": true,
+            "raw_docker_payload_absent": true,
+            "callback_token_absent": true
+          },
             "over_limit_probe_kind": "platform_resource_timeout",
             "over_limit_timeout_probe_seconds": 0
           },
@@ -185,12 +187,12 @@
         "redaction_scan_status": "passed",
         "does_not_close_g7_gate": true,
         "does_not_close_b3_gate": true,
-          "remaining_gate_boundaries": [
-            "live API and worker default sandbox posture still uses fake provider",
-            "stale runtime alias labels remain on current containers",
-            "current-main Foundation Runtime concurrency evidence is recorded separately as POC correctness evidence only",
-            "B3 seven-gate recorded load evidence remains missing"
-          ]
+        "remaining_gate_boundaries": [
+          "same-subject Foundation Runtime concurrency evidence for 93155b4 has not been recorded yet",
+          "B3 seven-gate recorded load evidence remains missing",
+          "b3_10x4_sdk_subagents operator-reviewed profile evidence remains missing",
+          "operator status-upgrade review is still required before any G7 closure claim"
+        ]
       },
       "verifier_checks": [
         {
@@ -231,16 +233,14 @@
   "redaction_scan_status": "passed",
   "review_status": "reviewed",
   "review_notes": [
-    "211 verifier summary recorded all eight sandbox runtime checks passing for current-main runtime subject ae6b7e5.",
-    "The reviewed record intentionally omits raw environment values, callback token values, Docker socket paths, host workdirs, raw Docker inspect payloads, and real deploy env-file contents.",
-    "The record binds the current-main source marker, source snapshot, canonical runtime labels, image, and image ID observed on 211, while preserving stale alias labels as follow-up evidence.",
-    "This wraps current-main G7 Docker sandbox hardening verifier artifacts as repo-local reviewed release evidence; it does not close G7, B3, G0, Foundation Alpha, production Docker sandbox hardening, production readiness, or 211 verification by itself."
+    "The 211 live-env hardening verifier recorded the running 93155b4 API/worker sandbox posture as Docker provider, 93155b4 executor image, and egress policy enabled.",
+    "The verifier summary recorded all eight sandbox runtime checks passing for runtime subject 93155b4.",
+    "This record intentionally omits raw environment values beyond allowlisted non-secret posture keys, callback secret values, host workdirs, raw Docker inspect payloads, cancelled container IDs, and real deploy env-file contents.",
+    "This provides reviewed local G7 release evidence for 93155b4 only; same-subject Foundation Runtime concurrency evidence, B3 recorded load evidence, and operator status-upgrade review remain open."
   ],
   "open_followups": [
-    "Clean stale runtime alias labels that still point at bd690f72723080beeb820d07679da59d84c7913e.",
-    "Reconcile the external compose environment-file label caveat before any G0 source-authority closure claim.",
-    "Keep the paired current-main Foundation Runtime concurrency evidence as POC correctness evidence only until current-main POC smoke/readiness and broader gate closure evidence are recorded.",
+    "Rerun and review same-subject Foundation Runtime concurrency evidence for 93155b4 before clearing the G7 FRC audit blocker.",
     "Record B3 operator-reviewed seven-gate load evidence and b3_10x4_sdk_subagents profile evidence before any B3 closure or production default increase.",
-    "This evidence does not claim production Docker sandbox hardening, ordinary-user high-risk sandbox exposure, ordinary-user platform-level multi-run orchestration exposure, or production concurrency default increases."
+    "Complete operator status-upgrade review before any G7 or production Docker sandbox hardening closure claim."
   ]
 }

@@ -4,7 +4,7 @@
 
 **Goal:** Move G7 and B3 toward documented closure without overclaiming status labels.
 
-**Architecture:** G7 progress evidence is repository-owned reviewed release evidence wrapping already captured 211 current-main verifier artifacts. B3 closure remains evidence-driven: only operator-reviewed recorded load-test gate snapshots and the B3 SDK subagent fanout profile can move B3 beyond `local partial`.
+**Architecture:** G7 progress evidence is repository-owned reviewed release evidence wrapping already captured 211 named runtime-subject verifier artifacts. B3 closure remains evidence-driven: only operator-reviewed recorded load-test gate snapshots and the B3 SDK subagent fanout profile can move B3 beyond `local partial`.
 
 **Tech Stack:** Python evidence tooling, Markdown gate docs, repository JSON release-evidence entries, targeted pytest.
 
@@ -162,6 +162,17 @@ probe is still `probe_completed_not_gate_evidence` /
 current verifier interpretation keeps `missing_sections=[]` but still reports
 `blocked_missing_load_test_evidence`; these probes do not become B3 recorded
 gate evidence.
+
+A later read-only 211 capacity runtime capture for PR #304 branch subject
+`decf33a017e0b97e2a2992f80e3ccdc19152c1f4` returned Admin Runtime HTTP `200`
+on `/api/ai/admin/runtime/overview?include_maintenance_cleanup=false` with all
+required sections present, but its readiness still reports
+`blocked_missing_load_test_evidence`, all seven recorded gates missing,
+`profile_evidence={}`, and
+`production_default_decision=do_not_raise_without_recorded_load_test_evidence`.
+This updates B3 visibility for the PR #304 branch runtime only; it does not
+make PR #304 reviewed/merged, does not prove current-main `211 verified`, and
+does not close B3.
 
 Audit cleanup note: old sanitized runtime observations must be merged with the
 later reviewed label-repair, live-env hardening, and Foundation Runtime

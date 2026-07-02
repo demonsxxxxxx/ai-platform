@@ -143,7 +143,8 @@
               "status": "failed",
               "error_code": "executor_health_timeout",
               "host_paths_redacted": true,
-              "raw_docker_payload_absent": true
+              "raw_docker_payload_absent": true,
+              "callback_token_absent": true
             },
             "over_limit_probe_kind": "platform_resource_timeout",
             "over_limit_timeout_probe_seconds": 0
