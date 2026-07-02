@@ -45,6 +45,8 @@ const LEGACY_SYSTEM_ENTRY_PATHS: Record<string, string> = {
   Admin: "/Admin/userManage",
   AdministrativeAssetManagement: "/AdministrativeAssetManagement/admin/assetManage",
   ADQC: "/ADQC/Material/Warehouse",
+  ADDeviceManage: "/ADDevice/overview",
+  ADLiquidPrep: "/ADLiquidPrep/print",
   ADSampleSender: "/ADSampleSender/overview",
   Contract: "/Contract/contractList",
   DataAcquisition: "/BioReactor/Management/Management",
@@ -286,6 +288,26 @@ export const launchpadGroups: LaunchpadGroup[] = [
         "icon": "el-icon-position",
         "color": "#67C23A",
         "systemKey": "ADSampleSender"
+      },
+      {
+        "id": "lingxi-AD-3-AD设备管理",
+        "tab": "lingxi",
+        "groupId": "lingxi-AD",
+        "groupName": "分析检测",
+        "name": "AD设备管理",
+        "icon": "el-icon-setting",
+        "color": "#F56C6C",
+        "systemKey": "ADDeviceManage"
+      },
+      {
+        "id": "lingxi-AD-4-AD配液系统",
+        "tab": "lingxi",
+        "groupId": "lingxi-AD",
+        "groupName": "分析检测",
+        "name": "AD配液系统",
+        "icon": "el-icon-s-operation",
+        "color": "#909399",
+        "systemKey": "ADLiquidPrep"
       }
     ]
   },
@@ -420,11 +442,11 @@ export const launchpadGroups: LaunchpadGroup[] = [
         "systemKey": "Quotation"
       },
       {
-        "id": "lingxi-BD-1-合同管理系统",
+        "id": "lingxi-BD-1-商务运营管理系统",
         "tab": "lingxi",
         "groupId": "lingxi-BD",
         "groupName": "商务",
-        "name": "合同管理系统",
+        "name": "商务运营管理系统",
         "icon": "el-icon-s-order",
         "color": "#409EFF",
         "systemKey": "Contract"
