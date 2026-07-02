@@ -21,17 +21,20 @@ closure evidence by themselves.
 
 Current status must be read as PR #304 draft-branch evidence progress layered
 on top of earlier reviewed `4805031` and `ae6b7e5` evidence, not as gate
-closure. PR #304 is open draft, head
-`decf33a017e0b97e2a2992f80e3ccdc19152c1f4`, base `main` at
-`9b6ccbda99babf3f9781f2f9a99cdbc39cd61513`, `merged=false`, with no submitted
-reviews at the latest REST check. The `decf33a` branch has reviewed repo-local
-G7 live-env hardening evidence plus same-subject Foundation Runtime concurrency
-evidence. That evidence-only audit reads
+closure. PR #304 is open draft, `merged=false`, with no submitted reviews at
+the latest REST check. Its PR head has moved past
+`decf33a017e0b97e2a2992f80e3ccdc19152c1f4` through docs/evidence-index/test
+follow-up commits, while the reviewed runtime evidence subject remains
+`decf33a`: that subject has reviewed repo-local G7 live-env hardening evidence
+plus same-subject Foundation Runtime concurrency evidence. That evidence-only
+audit reads
 `status=candidate_evidence_requires_review`, `blocking_reasons=[]`, and
 `required_next_steps=["complete operator status-upgrade review before claiming G7 closure or 211 verified status"]`.
 It is not current-main `211 verified` because PR #304 is draft/unreviewed/
-unmerged, current `origin/main` is newer than `decf33a`, B3 load evidence
-remains missing, and operator status-upgrade review is still open.
+unmerged, current `origin/main` is newer than the branch evidence subject, the
+post-`decf33a` PR commits are docs/evidence-index/test follow-up rather than
+new runtime rollout evidence, B3 load evidence remains missing, and operator
+status-upgrade review is still open.
 
 Earlier current-live `4805031` observation remains historical operational
 context: API/worker images, labels, and `SANDBOX_EXECUTOR_IMAGE` were observed
@@ -71,15 +74,15 @@ with `blocking_reasons=[]` and
 The newer current-live observation confirms the same operational reading for
 the `4805031` runtime subject because the live sandbox executor image now
 matches the reviewed `4805031` runtime image.
-For PR #304 branch subject `decf33a`, the reviewed evidence pair is
+For PR #304 runtime evidence subject `decf33a`, the reviewed evidence pair is
 `docs/release-evidence/g7-sandbox/decf33a017e0b97e2a2992f80e3ccdc19152c1f4/2026-07-02-211-g7-sandbox-live-env-hardening-decf33a.json`
 and
 `docs/release-evidence/foundation-runtime-concurrency/decf33a017e0b97e2a2992f80e3ccdc19152c1f4-frc-g7-b3-20260702/2026-07-02-211-foundation-alpha-poc-decf33a-foundation-runtime-concurrency.json`.
 Passing those into the audit also reaches
 `status=candidate_evidence_requires_review` with `blocking_reasons=[]`, but only
-for the PR #304 branch runtime subject. It does not make PR #304 reviewed or
-merged, does not make `origin/main` current-source runtime verified, and does
-not close #164.
+for the PR #304 runtime evidence subject. It does not make PR #304 reviewed or
+merged, does not make `origin/main` current-source runtime verified, does not
+make post-`decf33a` PR commits 211 runtime evidence, and does not close #164.
 The compose external env-file label and local runtime-affecting source delta are
 G0/source-authority and production-hardening boundaries; B3 seven-gate load
 evidence remains the B3 blocker. The reviewed `ae6b7e5` POC/FRC evidence is POC

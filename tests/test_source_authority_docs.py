@@ -38,7 +38,6 @@ AE6B7E5_CURRENT_MAIN_SHA = "ae6b7e52c656fd8296cf039834ce8d8559b01228"
 PR297_G7_B3_SHA = "4805031fc3333ccbf38224172e4e85e21c0630bb"
 PR304_G7_B3_SHA = "decf33a017e0b97e2a2992f80e3ccdc19152c1f4"
 POST_PR299_MAIN_SHA = "ba81a0b18da4d4d30c1a8ce44d4bf03bb051fca8"
-POST_PR304_BASE_MAIN_SHA = "9b6ccbda99babf3f9781f2f9a99cdbc39cd61513"
 ACTIVE_RUNTIME_SUBJECT_SHORT_SHA = ACTIVE_RUNTIME_SUBJECT_SHA[:7]
 CURRENT_SOURCE_FRC_EVIDENCE_DIR = (
     ROOT
@@ -1585,11 +1584,12 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "不能作为当前状态名" in compact_roadmap_text
     assert "PR #304 draft-branch evidence progress layered on top of earlier reviewed `4805031` and `ae6b7e5` evidence" in compact_gate_status_text
     assert "PR #304 draft-branch evidence progress" in compact_gate_status_text
-    assert "PR #304 is open draft" in compact_gate_status_text
+    assert "PR #304 is open draft, `merged=false`, with no submitted reviews" in compact_gate_status_text
     assert PR304_G7_B3_SHA in combined_text
-    assert POST_PR304_BASE_MAIN_SHA in combined_text
     assert "merged=false" in compact_gate_status_text
     assert "with no submitted reviews" in compact_gate_status_text
+    assert "PR head has moved past `decf33a017e0b97e2a2992f80e3ccdc19152c1f4` through docs/evidence-index/test follow-up commits" in compact_gate_status_text
+    assert "reviewed runtime evidence subject remains `decf33a`" in compact_gate_status_text
     assert "PR #304 branch evidence progress" in compact_roadmap_text
     assert "PR 仍 open draft、未 merge" in compact_roadmap_text
     assert "Earlier current-live `4805031` observation remains historical operational context" in compact_gate_status_text
@@ -1638,7 +1638,8 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "包装为 repo-local reviewed G7 sandbox runtime smoke evidence" in compact_roadmap_text
     assert "`source_tree_dirty=false`" in combined_text
     assert "It is not current-main `211 verified` because PR #304 is draft/unreviewed/" in gate_status_text
-    assert "unmerged, current `origin/main` is newer than `decf33a`" in compact_gate_status_text
+    assert "unmerged, current `origin/main` is newer than the branch evidence subject" in compact_gate_status_text
+    assert "post-`decf33a` PR commits are docs/evidence-index/test follow-up rather than new runtime rollout evidence" in compact_gate_status_text
     assert "These entries are not full issue/gate closure or current-source `211 verified`" in gate_status_text
     assert "`status=candidate_evidence_requires_review`" in gate_status_text
     assert "`blocking_reasons=[]`" in gate_status_text

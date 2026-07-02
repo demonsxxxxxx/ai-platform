@@ -80,17 +80,19 @@ vulnerability evidence。
   且下一步是 operator status-upgrade review。当前 live `4805031` audit 也已不再
   因 executor-image drift blocked，因为 live env 读到 executor image 已是
   `ai-platform:4805031-g7-b3-post-297-label-repair-v2`。
-  PR #304 draft 分支 `codex/g7-b3-post-300-followup` 的 head 是
-  `decf33a017e0b97e2a2992f80e3ccdc19152c1f4`，base `main` 为
-  `9b6ccbda99babf3f9781f2f9a99cdbc39cd61513`；PR 仍 open draft、未 merge，
-  reviews 为空。`decf33a` 已新增 reviewed G7 live-env hardening evidence
+  PR #304 draft 分支 `codex/g7-b3-post-300-followup` 的 PR head 已经在
+  `decf33a017e0b97e2a2992f80e3ccdc19152c1f4` 之后继续前进到
+  docs/evidence-index/test follow-up commits；PR 仍 open draft、未 merge，
+  reviews 为空。runtime evidence subject 仍是 `decf33a`：`decf33a` 已新增
+  reviewed G7 live-env hardening evidence
   `docs/release-evidence/g7-sandbox/decf33a017e0b97e2a2992f80e3ccdc19152c1f4/2026-07-02-211-g7-sandbox-live-env-hardening-decf33a.json`
   和 same-subject FRC evidence
   `docs/release-evidence/foundation-runtime-concurrency/decf33a017e0b97e2a2992f80e3ccdc19152c1f4-frc-g7-b3-20260702/2026-07-02-211-foundation-alpha-poc-decf33a-foundation-runtime-concurrency.json`。
-  对 PR #304 branch runtime subject，G7 evidence-only audit 也是
+  对 PR #304 runtime evidence subject，G7 evidence-only audit 也是
   `candidate_evidence_requires_review`、`blocking_reasons=[]`；但这不是 PR
   reviewed/merged，不是 current-main `211 verified`，也不让 #164 `gate
-  closable`。B3 load evidence 仍缺失，是 B3 blocker。compose label 仍指向外部 runtime env file，当前 source/runtime/
+  closable`；post-`decf33a` PR commits 只是 docs/evidence-index/test follow-up，
+  不是新 runtime rollout evidence。B3 load evidence 仍缺失，是 B3 blocker。compose label 仍指向外部 runtime env file，当前 source/runtime/
   reviewed-evidence 拆层仍属于 G0/source-authority 与 production-hardening
   非闭合边界；任何 G7 status upgrade 仍需要 operator review。
   所以这是 PR #304 branch evidence progress + post-PR #297 runtime observation
