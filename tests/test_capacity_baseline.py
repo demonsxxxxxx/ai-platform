@@ -13,6 +13,8 @@ from app.capacity_baseline import (
     build_capacity_load_test_plan,
     build_capacity_evidence_bundle,
     build_capacity_profile_readiness,
+    build_capacity_recorded_gate_evidence_packet_result,
+    build_capacity_recorded_gate_batch_snapshot,
     build_capacity_recorded_gate_snapshot,
     build_capacity_recorded_gate_evidence_contract,
     render_capacity_baseline_markdown,
@@ -104,6 +106,43 @@ def _snapshot_with_complete_recorded_gates() -> dict[str, object]:
         },
     }
     return snapshot
+
+
+def _recorded_gate_packet(gate: str) -> dict[str, object]:
+    slug = gate.replace("_", "-")
+    return {
+        "schema_version": "ai-platform.capacity-recorded-gate-evidence.v1",
+        "gate": gate,
+        "does_not_raise_defaults": True,
+        "evidence": {
+            item: f"capacity-evidence/{slug}/{item}.json"
+            for item in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+        },
+        "cleanup_proof_status": "verified",
+        "stop_condition_status": "passed",
+        "triggered_stop_conditions": [],
+    }
+
+
+def _b3_profile_evidence_packet() -> dict[str, object]:
+    return {
+        "target_profile_id": "b3_10x4_sdk_subagents",
+        "evidence_source": "operator_reviewed_recorded_snapshot",
+        "observed_concurrent_sessions": 10,
+        "observed_peak_sdk_subagents_per_session": 4,
+        "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
+        "production_concurrency_defaults_raised": False,
+        "safe_concurrency_claimed": False,
+        "ordinary_user_platform_multi_run_orchestration_enabled": False,
+    }
+
+
+def _recorded_gate_evidence_values(gate: str) -> dict[str, object]:
+    slug = gate.replace("_", "-")
+    return {
+        item: f"capacity-evidence/{slug}/{item}.json"
+        for item in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST
+    }
 
 
 def test_capacity_baseline_records_defaults_without_secret_like_settings():
@@ -295,6 +334,7 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
         "capture_end_runtime_evidence",
         "record_cleanup_proof",
         "assemble_evidence_bundle_draft",
+        "build_recorded_gate_evidence_packet",
         "assemble_recorded_gate_snapshot",
         "generate_gate_readiness_verdict",
     ]
@@ -323,11 +363,17 @@ def test_capacity_load_test_plan_covers_each_gate_with_dry_run_commands_and_no_d
     assert "capacity-bounded-load-harness-api-read-write-burst.json" in plan["operator_workflow"][5]["command"]
     assert "--cleanup-proof-json capacity-cleanup-proof-api-read-write-burst.json" in plan["operator_workflow"][5]["command"]
     assert "capacity-evidence-bundle-api-read-write-burst.md" in plan["operator_workflow"][5]["command"]
-    assert plan["operator_workflow"][6]["requires_explicit_operator_execution"] is False
+    assert plan["operator_workflow"][6]["requires_explicit_operator_execution"] is True
     assert plan["operator_workflow"][6]["does_not_raise_defaults"] is True
-    assert "capacity_recorded_gate_snapshot.py" in plan["operator_workflow"][6]["command"]
+    assert "capacity_recorded_gate_evidence_packet.py" in plan["operator_workflow"][6]["command"]
+    assert "capacity-operator-reviewed-evidence-values-api-read-write-burst.json" in plan["operator_workflow"][6]["command"]
     assert "capacity-recorded-gate-evidence-api-read-write-burst.json" in plan["operator_workflow"][6]["command"]
-    assert "capacity-evidence-snapshot-recorded-api-read-write-burst.json" in plan["operator_workflow"][6]["command"]
+    assert "bounded probe output must not be used as packet input" in plan["operator_workflow"][6]["command"]
+    assert plan["operator_workflow"][7]["requires_explicit_operator_execution"] is False
+    assert plan["operator_workflow"][7]["does_not_raise_defaults"] is True
+    assert "capacity_recorded_gate_snapshot.py" in plan["operator_workflow"][7]["command"]
+    assert "capacity-recorded-gate-evidence-api-read-write-burst.json" in plan["operator_workflow"][7]["command"]
+    assert "capacity-evidence-snapshot-recorded-api-read-write-burst.json" in plan["operator_workflow"][7]["command"]
     assert "capacity_gate_readiness.py" in plan["operator_workflow"][-1]["command"]
 
     serialized = json.dumps(plan, ensure_ascii=False).lower()
@@ -452,6 +498,11 @@ def test_capacity_load_test_plan_uses_selected_gate_in_operator_workflow():
         in workflow["assemble_evidence_bundle_draft"]["command"]
     )
     assert (
+        "capacity-operator-reviewed-evidence-values-queue-depth-and-lease-latency.json"
+        in workflow["build_recorded_gate_evidence_packet"]["command"]
+    )
+    assert "--gate queue_depth_and_lease_latency" in workflow["build_recorded_gate_evidence_packet"]["command"]
+    assert (
         "capacity-recorded-gate-evidence-queue-depth-and-lease-latency.json"
         in workflow["assemble_recorded_gate_snapshot"]["command"]
     )
@@ -497,6 +548,11 @@ def test_capacity_load_test_plan_uses_model_gateway_selected_gate_in_operator_wo
         in workflow["assemble_evidence_bundle_draft"]["command"]
     )
     assert (
+        "capacity-operator-reviewed-evidence-values-model-gateway-timeout-and-backpressure.json"
+        in workflow["build_recorded_gate_evidence_packet"]["command"]
+    )
+    assert "--gate model_gateway_timeout_and_backpressure" in workflow["build_recorded_gate_evidence_packet"]["command"]
+    assert (
         "capacity-recorded-gate-evidence-model-gateway-timeout-and-backpressure.json"
         in workflow["assemble_recorded_gate_snapshot"]["command"]
     )
@@ -519,6 +575,7 @@ def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
     assert "assemble_evidence_bundle_draft" in markdown
     assert "assemble_recorded_gate_snapshot" in markdown
     assert "record_cleanup_proof" in markdown
+    assert "build_recorded_gate_evidence_packet" in markdown
     assert "## Target Profile" in markdown
     assert "`b3_10x4_sdk_subagents`" in markdown
     assert "Stage: `B3`" in markdown
@@ -527,6 +584,7 @@ def test_render_capacity_load_test_plan_markdown_is_repeatable_and_safe():
     assert "Measurement first: `true`" in markdown
     assert "capacity_bounded_load_harness.py" in markdown
     assert "capacity_evidence_bundle.py" in markdown
+    assert "capacity_recorded_gate_evidence_packet.py" in markdown
     assert "capacity_recorded_gate_snapshot.py" in markdown
     assert "--start-runtime-evidence-json capacity-runtime-evidence-start.json" in markdown
     assert "--cleanup-proof-json capacity-cleanup-proof-api-read-write-burst.json" in markdown
@@ -1304,7 +1362,7 @@ def test_capacity_profile_readiness_blocks_b3_target_without_sdk_subagent_profil
         "sdk_subagent_fanout_measurement_ref",
         "production_concurrency_defaults_raised",
         "safe_concurrency_claimed",
-        "ordinary_user_multi_agent_enabled",
+        "ordinary_user_platform_multi_run_orchestration_enabled",
     ]
     assert target_profile["production_default_decision"] == (
         "do_not_raise_without_recorded_load_test_evidence"
@@ -1329,7 +1387,7 @@ def test_capacity_profile_readiness_blocks_b3_target_without_sdk_subagent_profil
         "sdk_subagent_fanout_measurement_ref",
         "production_concurrency_defaults_raised",
         "safe_concurrency_claimed",
-        "ordinary_user_multi_agent_enabled",
+        "ordinary_user_platform_multi_run_orchestration_enabled",
     ]
     assert contract["allowed_profile_evidence_sources"] == [
         "live_worker_run_payload",
@@ -1339,7 +1397,7 @@ def test_capacity_profile_readiness_blocks_b3_target_without_sdk_subagent_profil
     assert contract["required_non_expansion_flags"] == {
         "production_concurrency_defaults_raised": False,
         "safe_concurrency_claimed": False,
-        "ordinary_user_multi_agent_enabled": False,
+        "ordinary_user_platform_multi_run_orchestration_enabled": False,
     }
     assert contract["required_load_test_gates"] == LOAD_TEST_GATES
     assert contract["required_admin_runtime_sections"] == [
@@ -1367,7 +1425,7 @@ def test_capacity_profile_readiness_blocks_b3_target_without_sdk_subagent_profil
     )
     assert contract["does_not_raise_defaults"] is True
     assert contract["does_not_claim_safe_concurrency"] is True
-    assert contract["does_not_enable_ordinary_user_multi_agent"] is True
+    assert contract["does_not_enable_ordinary_user_platform_multi_run_orchestration"] is True
     assert contract["does_not_close_b3_gate"] is True
 
 
@@ -1382,7 +1440,7 @@ def test_capacity_profile_readiness_allows_b3_operator_review_with_sdk_subagent_
             "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
             "production_concurrency_defaults_raised": False,
             "safe_concurrency_claimed": False,
-            "ordinary_user_multi_agent_enabled": False,
+            "ordinary_user_platform_multi_run_orchestration_enabled": False,
         }
     }
     readiness = build_capacity_gate_readiness(snapshot)
@@ -1402,7 +1460,7 @@ def test_capacity_profile_readiness_allows_b3_operator_review_with_sdk_subagent_
         "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
         "production_concurrency_defaults_raised": False,
         "safe_concurrency_claimed": False,
-        "ordinary_user_multi_agent_enabled": False,
+        "ordinary_user_platform_multi_run_orchestration_enabled": False,
     }
     assert target_profile["safe_concurrency_claim"] == "not_claimed"
     assert target_profile["operator_reviewed_recorded_snapshot_contract"]["evidence_level"] == (
@@ -1411,6 +1469,33 @@ def test_capacity_profile_readiness_allows_b3_operator_review_with_sdk_subagent_
     assert target_profile["operator_reviewed_recorded_snapshot_contract"][
         "does_not_claim_safe_concurrency"
     ] is True
+
+
+def test_capacity_profile_readiness_normalizes_legacy_ordinary_user_multi_agent_flag():
+    snapshot = _snapshot_with_complete_recorded_gates()
+    snapshot["load_test_evidence"]["profile_evidence"] = {
+        "b3_10x4_sdk_subagents": {
+            "target_profile_id": "b3_10x4_sdk_subagents",
+            "evidence_source": "platform_runtime_profile",
+            "observed_concurrent_sessions": 10,
+            "observed_peak_sdk_subagents_per_session": 4,
+            "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
+            "production_concurrency_defaults_raised": False,
+            "safe_concurrency_claimed": False,
+            "ordinary_user_multi_agent_enabled": False,
+        }
+    }
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    profile_readiness = build_capacity_profile_readiness(readiness)
+    target_profile = profile_readiness["profiles"][0]
+
+    assert target_profile["profile_evidence_status"] == "accepted"
+    assert target_profile["missing_profile_evidence"] == []
+    assert target_profile["observed_profile_evidence"][
+        "ordinary_user_platform_multi_run_orchestration_enabled"
+    ] is False
+    assert "ordinary_user_multi_agent_enabled" not in target_profile["observed_profile_evidence"]
 
 
 def test_capacity_profile_readiness_rejects_under_target_sdk_subagent_profile_evidence():
@@ -1424,7 +1509,7 @@ def test_capacity_profile_readiness_rejects_under_target_sdk_subagent_profile_ev
             "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
             "production_concurrency_defaults_raised": False,
             "safe_concurrency_claimed": False,
-            "ordinary_user_multi_agent_enabled": False,
+            "ordinary_user_platform_multi_run_orchestration_enabled": False,
         }
     }
     readiness = build_capacity_gate_readiness(snapshot)
@@ -1452,7 +1537,7 @@ def test_capacity_profile_readiness_rejects_weak_or_expanding_sdk_subagent_profi
             "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
             "production_concurrency_defaults_raised": True,
             "safe_concurrency_claimed": True,
-            "ordinary_user_multi_agent_enabled": True,
+            "ordinary_user_platform_multi_run_orchestration_enabled": True,
         }
     }
     readiness = build_capacity_gate_readiness(snapshot)
@@ -1467,7 +1552,7 @@ def test_capacity_profile_readiness_rejects_weak_or_expanding_sdk_subagent_profi
         "evidence_source",
         "production_concurrency_defaults_raised",
         "safe_concurrency_claimed",
-        "ordinary_user_multi_agent_enabled",
+        "ordinary_user_platform_multi_run_orchestration_enabled",
     ]
     assert target_profile["observed_profile_evidence"] == {}
 
@@ -1483,7 +1568,7 @@ def test_capacity_profile_readiness_redacts_unsafe_sdk_subagent_profile_evidence
             "sdk_subagent_fanout_measurement_ref": "Z:/unsafe/secret-sk-profile.json",
             "production_concurrency_defaults_raised": False,
             "safe_concurrency_claimed": False,
-            "ordinary_user_multi_agent_enabled": False,
+            "ordinary_user_platform_multi_run_orchestration_enabled": False,
         }
     }
     readiness = build_capacity_gate_readiness(snapshot)
@@ -1657,6 +1742,57 @@ def test_capacity_profile_readiness_cli_outputs_json_from_snapshot_file(tmp_path
     assert "storage_key" not in result.stdout
 
 
+def test_capacity_profile_readiness_cli_accepts_runtime_evidence_wrapper(tmp_path):
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="ae6b7e52c656fd8296cf039834ce8d8559b01228",
+        runtime_profile="211-current-ae6b7e5",
+    )
+    runtime_evidence_path = tmp_path / "capacity-runtime-evidence.json"
+    runtime_evidence_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                "source": {
+                    "overview_route": "/api/ai/admin/runtime/overview",
+                    "http_status": 200,
+                    "mode": "admin_runtime_overview_capture",
+                },
+                "snapshot": snapshot,
+                "readiness": build_capacity_gate_readiness(snapshot),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_profile_readiness.py",
+            "--readiness-json",
+            str(runtime_evidence_path),
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.capacity-profile-readiness.v1"
+    assert payload["status"] == "blocked_missing_load_test_evidence"
+    assert payload["source_gate_readiness"]["status"] == "blocked_missing_load_test_evidence"
+    assert payload["source_gate_readiness"]["runtime_identity"] == {
+        "commit_sha": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+        "profile": "211-current-ae6b7e5",
+    }
+    assert payload["source_gate_readiness"]["missing_admin_runtime_sections"] == []
+    assert payload["source_gate_readiness"]["missing_load_test_gates"] == LOAD_TEST_GATES
+    assert payload["profiles"][0]["profile_evidence_status"] == "missing"
+    assert "executor_private_payload" not in result.stdout
+
+
 def test_render_capacity_gate_readiness_markdown_is_gap_first_and_safe():
     readiness = build_capacity_gate_readiness(
         build_capacity_evidence_snapshot(
@@ -1751,6 +1887,55 @@ def test_capacity_gate_readiness_cli_outputs_json_from_snapshot_file(tmp_path):
     assert payload["status"] == "blocked_missing_load_test_evidence"
     assert payload["missing_load_test_gates"] == LOAD_TEST_GATES
     assert "sk-secret" not in result.stdout
+    assert "executor_private_payload" not in result.stdout
+
+
+def test_capacity_gate_readiness_cli_accepts_runtime_evidence_wrapper(tmp_path):
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="ae6b7e52c656fd8296cf039834ce8d8559b01228",
+        runtime_profile="211-current-ae6b7e5",
+    )
+    runtime_evidence_path = tmp_path / "capacity-runtime-evidence.json"
+    runtime_evidence_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                "source": {
+                    "overview_route": "/api/ai/admin/runtime/overview",
+                    "http_status": 200,
+                    "mode": "admin_runtime_overview_capture",
+                },
+                "snapshot": snapshot,
+                "readiness": build_capacity_gate_readiness(snapshot),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_gate_readiness.py",
+            "--snapshot-json",
+            str(runtime_evidence_path),
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.capacity-gate-readiness.v1"
+    assert payload["status"] == "blocked_missing_load_test_evidence"
+    assert payload["admin_runtime_evidence"]["missing_sections"] == []
+    assert payload["missing_load_test_gates"] == LOAD_TEST_GATES
+    assert payload["runtime_identity"] == {
+        "commit_sha": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+        "profile": "211-current-ae6b7e5",
+    }
     assert "executor_private_payload" not in result.stdout
 
 
@@ -2422,6 +2607,71 @@ def test_capacity_recorded_gate_snapshot_records_only_explicit_complete_gate():
     )
 
 
+def test_capacity_recorded_gate_evidence_packet_result_builds_operator_reviewed_packet():
+    result = build_capacity_recorded_gate_evidence_packet_result(
+        "api_read_write_burst",
+        _recorded_gate_evidence_values("api_read_write_burst"),
+        cleanup_proof_status="verified",
+        stop_condition_status="passed",
+        triggered_stop_conditions=[],
+    )
+
+    assert result["schema_version"] == "ai-platform.capacity-recorded-gate-evidence-packet-result.v1"
+    assert result["status"] == "recorded_gate_evidence_packet_ready"
+    assert result["input_status"] == "accepted"
+    assert result["does_not_raise_defaults"] is True
+    assert result["does_not_close_b3_gate"] is True
+    assert result["packet"] == _recorded_gate_packet("api_read_write_burst")
+    assert result["next_step"] == "submit_packet_to_capacity_recorded_gate_snapshot"
+
+
+def test_capacity_recorded_gate_evidence_packet_result_rejects_probe_only_input():
+    result = build_capacity_recorded_gate_evidence_packet_result(
+        "api_read_write_burst",
+        {
+            "schema_version": "ai-platform.capacity-bounded-load-harness.v1",
+            "status": "probe_completed_not_gate_evidence",
+            "load_test_evidence_status": "probe_only_not_recorded",
+            "does_not_mark_gate_recorded": True,
+            **_recorded_gate_evidence_values("api_read_write_burst"),
+        },
+        cleanup_proof_status="verified",
+        stop_condition_status="passed",
+        triggered_stop_conditions=[],
+    )
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert result["input_status"] == "not_accepted"
+    assert "bounded_probe_input_cannot_be_recorded_gate_evidence" in result["input_errors"]
+    assert result["packet"] == {}
+    assert result["does_not_raise_defaults"] is True
+
+
+def test_capacity_recorded_gate_evidence_packet_result_rejects_unsafe_values_without_echoing_them():
+    evidence_values = _recorded_gate_evidence_values("api_read_write_burst")
+    evidence_values["commit_sha"] = "C:\\Users\\Xinlin.jiang\\private\\commit.json"
+    evidence_values["api_worker_image_labels"] = {
+        "raw_storage_key": "tenants/default/private/labels.json"
+    }
+
+    result = build_capacity_recorded_gate_evidence_packet_result(
+        "api_read_write_burst",
+        evidence_values,
+        cleanup_proof_status="verified",
+        stop_condition_status="passed",
+        triggered_stop_conditions=[],
+    )
+    serialized = json.dumps(result, ensure_ascii=False).lower()
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert "recorded_evidence_commit_sha_unsafe" in result["input_errors"]
+    assert "recorded_evidence_api_worker_image_labels_unsafe" in result["input_errors"]
+    assert result["packet"] == {}
+    assert "c:\\users" not in serialized
+    assert "raw_storage_key" not in serialized
+    assert "tenants/default/private" not in serialized
+
+
 def test_capacity_recorded_gate_snapshot_does_not_echo_unsafe_runtime_snapshot_fields():
     snapshot = build_capacity_evidence_snapshot(
         _admin_runtime_overview(),
@@ -2582,7 +2832,7 @@ def test_capacity_recorded_gate_snapshot_preserves_b3_profile_evidence_when_addi
             "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
             "production_concurrency_defaults_raised": False,
             "safe_concurrency_claimed": False,
-            "ordinary_user_multi_agent_enabled": False,
+            "ordinary_user_platform_multi_run_orchestration_enabled": False,
         }
     }
     runtime_evidence = {
@@ -2617,11 +2867,77 @@ def test_capacity_recorded_gate_snapshot_preserves_b3_profile_evidence_when_addi
             "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
             "production_concurrency_defaults_raised": False,
             "safe_concurrency_claimed": False,
-            "ordinary_user_multi_agent_enabled": False,
+            "ordinary_user_platform_multi_run_orchestration_enabled": False,
         }
     }
     assert profile_readiness["status"] == "operator_review_required"
     assert profile_readiness["profiles"][0]["profile_evidence_status"] == "accepted"
+
+
+def test_capacity_recorded_gate_batch_snapshot_accepts_all_seven_gates_and_b3_profile():
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+
+    result = build_capacity_recorded_gate_batch_snapshot(
+        runtime_evidence,
+        [_recorded_gate_packet(gate) for gate in LOAD_TEST_GATES],
+        profile_evidence=_b3_profile_evidence_packet(),
+    )
+    profile_readiness = build_capacity_profile_readiness(result["readiness"])
+
+    assert result["schema_version"] == "ai-platform.capacity-recorded-gate-snapshot.v1"
+    assert result["status"] == "recorded_gate_batch_input_accepted"
+    assert result["gate"] == "batch"
+    assert result["recorded_gate"] is None
+    assert result["recorded_gates"] == list(LOAD_TEST_GATES)
+    assert result["input_status"] == {
+        "runtime_evidence": "accepted",
+        "recorded_gate_evidence": "accepted",
+        "profile_evidence": "accepted",
+    }
+    assert result["snapshot"]["load_test_evidence"]["recorded_gates"] == list(LOAD_TEST_GATES)
+    assert set(result["snapshot"]["load_test_evidence"]["gate_evidence"]) == set(LOAD_TEST_GATES)
+    assert result["readiness"]["status"] == "ready_for_operator_review"
+    assert result["production_default_decision"] == "operator_review_required_before_default_change"
+    assert profile_readiness["status"] == "operator_review_required"
+    assert profile_readiness["profiles"][0]["profile_evidence_status"] == "accepted"
+    assert result["does_not_raise_defaults"] is True
+
+
+def test_capacity_recorded_gate_batch_snapshot_rejects_missing_gate_without_partial_recording():
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+    packets = [
+        _recorded_gate_packet(gate)
+        for gate in LOAD_TEST_GATES
+        if gate != "model_gateway_timeout_and_backpressure"
+    ]
+
+    result = build_capacity_recorded_gate_batch_snapshot(runtime_evidence, packets)
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert result["input_status"]["recorded_gate_evidence"] == "not_accepted"
+    assert "recorded_gate_evidence_model_gateway_timeout_and_backpressure_missing" in result["input_errors"]
+    assert result["recorded_gates"] == []
+    assert result["snapshot"]["load_test_evidence"]["status"] == "missing"
+    assert result["readiness"]["status"] == "blocked_missing_load_test_evidence"
+    assert result["does_not_raise_defaults"] is True
 
 
 def test_capacity_recorded_gate_snapshot_rejects_incomplete_profile_evidence_without_echoing_values():
@@ -2651,7 +2967,7 @@ def test_capacity_recorded_gate_snapshot_rejects_incomplete_profile_evidence_wit
         "sdk_subagent_fanout_measurement_ref": "C:\\Unsafe\\private\\fanout.json",
         "production_concurrency_defaults_raised": False,
         "safe_concurrency_claimed": False,
-        "ordinary_user_multi_agent_enabled": False,
+        "ordinary_user_platform_multi_run_orchestration_enabled": False,
         "api_key": "sk-secret",
     }
 
@@ -2776,6 +3092,84 @@ def test_capacity_recorded_gate_snapshot_cli_outputs_snapshot_and_verdict(tmp_pa
     assert "C:\\Users" not in result.stdout
 
 
+def test_capacity_recorded_gate_evidence_packet_cli_outputs_packet(tmp_path):
+    evidence_path = tmp_path / "operator-reviewed-evidence-values.json"
+    evidence_path.write_text(
+        json.dumps(_recorded_gate_evidence_values("api_read_write_burst")),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_recorded_gate_evidence_packet.py",
+            "--gate",
+            "api_read_write_burst",
+            "--evidence-json",
+            str(evidence_path),
+            "--cleanup-proof-status",
+            "verified",
+            "--stop-condition-status",
+            "passed",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+
+    assert payload["schema_version"] == "ai-platform.capacity-recorded-gate-evidence-packet-result.v1"
+    assert payload["status"] == "recorded_gate_evidence_packet_ready"
+    assert payload["packet"] == _recorded_gate_packet("api_read_write_burst")
+    assert "C:\\Users" not in result.stdout
+
+
+def test_capacity_recorded_gate_evidence_packet_cli_rejects_probe_input(tmp_path):
+    evidence_path = tmp_path / "bounded-probe.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-bounded-load-harness.v1",
+                "status": "probe_completed_not_gate_evidence",
+                "load_test_evidence_status": "probe_only_not_recorded",
+                "does_not_mark_gate_recorded": True,
+                **_recorded_gate_evidence_values("api_read_write_burst"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_recorded_gate_evidence_packet.py",
+            "--gate",
+            "api_read_write_burst",
+            "--evidence-json",
+            str(evidence_path),
+            "--cleanup-proof-status",
+            "verified",
+            "--stop-condition-status",
+            "passed",
+            "--format",
+            "json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 2
+    assert payload["status"] == "blocked_incomplete_inputs"
+    assert "bounded_probe_input_cannot_be_recorded_gate_evidence" in payload["input_errors"]
+    assert payload["packet"] == {}
+
+
 def test_capacity_recorded_gate_snapshot_cli_merges_b3_profile_evidence(tmp_path):
     snapshot = _snapshot_with_complete_recorded_gates()
     existing_recorded_gates = [gate for gate in LOAD_TEST_GATES if gate != "api_read_write_burst"]
@@ -2821,7 +3215,7 @@ def test_capacity_recorded_gate_snapshot_cli_merges_b3_profile_evidence(tmp_path
                 "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
                 "production_concurrency_defaults_raised": False,
                 "safe_concurrency_claimed": False,
-                "ordinary_user_multi_agent_enabled": False,
+                "ordinary_user_platform_multi_run_orchestration_enabled": False,
             }
         ),
         encoding="utf-8",
@@ -2859,7 +3253,7 @@ def test_capacity_recorded_gate_snapshot_cli_merges_b3_profile_evidence(tmp_path
             "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/sdk-subagent-fanout.json",
             "production_concurrency_defaults_raised": False,
             "safe_concurrency_claimed": False,
-            "ordinary_user_multi_agent_enabled": False,
+            "ordinary_user_platform_multi_run_orchestration_enabled": False,
         }
     }
     assert profile_readiness["profiles"][0]["profile_evidence_status"] == "accepted"
@@ -2908,7 +3302,7 @@ def test_capacity_recorded_gate_snapshot_cli_rejects_unsafe_profile_evidence_wit
                 "sdk_subagent_fanout_measurement_ref": "C:\\Unsafe\\private\\fanout.json",
                 "production_concurrency_defaults_raised": False,
                 "safe_concurrency_claimed": False,
-                "ordinary_user_multi_agent_enabled": False,
+                "ordinary_user_platform_multi_run_orchestration_enabled": False,
                 "api_key": "sk-secret",
             }
         ),
@@ -2943,3 +3337,103 @@ def test_capacity_recorded_gate_snapshot_cli_rejects_unsafe_profile_evidence_wit
     assert "c:\\unsafe" not in combined_output
     assert "sk-secret" not in combined_output
     assert "api_key" not in combined_output
+
+
+def test_capacity_recorded_gate_snapshot_cli_accepts_batch_gate_packets(tmp_path):
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_path = tmp_path / "runtime-evidence-end.json"
+    profile_evidence_path = tmp_path / "b3-profile-evidence.json"
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                "snapshot": snapshot,
+                "readiness": build_capacity_gate_readiness(snapshot),
+            }
+        ),
+        encoding="utf-8",
+    )
+    profile_evidence_path.write_text(
+        json.dumps(_b3_profile_evidence_packet()),
+        encoding="utf-8",
+    )
+    command = [
+        sys.executable,
+        "tools/capacity_recorded_gate_snapshot.py",
+        "--runtime-evidence-json",
+        str(runtime_path),
+        "--profile-evidence-json",
+        str(profile_evidence_path),
+        "--format",
+        "json",
+    ]
+    for gate in LOAD_TEST_GATES:
+        packet_path = tmp_path / f"capacity-recorded-gate-evidence-{gate}.json"
+        packet_path.write_text(json.dumps(_recorded_gate_packet(gate)), encoding="utf-8")
+        command.extend(["--recorded-gate-evidence-json", str(packet_path)])
+
+    result = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    profile_readiness = build_capacity_profile_readiness(payload["readiness"])
+
+    assert payload["status"] == "recorded_gate_batch_input_accepted"
+    assert payload["recorded_gates"] == list(LOAD_TEST_GATES)
+    assert payload["readiness"]["status"] == "ready_for_operator_review"
+    assert profile_readiness["status"] == "operator_review_required"
+    assert "C:\\Users" not in result.stdout
+
+
+def test_capacity_recorded_gate_snapshot_cli_rejects_batch_missing_gate(tmp_path):
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_path = tmp_path / "runtime-evidence-end.json"
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                "snapshot": snapshot,
+                "readiness": build_capacity_gate_readiness(snapshot),
+            }
+        ),
+        encoding="utf-8",
+    )
+    command = [
+        sys.executable,
+        "tools/capacity_recorded_gate_snapshot.py",
+        "--runtime-evidence-json",
+        str(runtime_path),
+        "--format",
+        "json",
+    ]
+    for gate in LOAD_TEST_GATES[:-1]:
+        packet_path = tmp_path / f"capacity-recorded-gate-evidence-{gate}.json"
+        packet_path.write_text(json.dumps(_recorded_gate_packet(gate)), encoding="utf-8")
+        command.extend(["--recorded-gate-evidence-json", str(packet_path)])
+
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 2
+    assert payload["status"] == "blocked_incomplete_inputs"
+    assert payload["recorded_gates"] == []
+    assert "recorded_gate_evidence_model_gateway_timeout_and_backpressure_missing" in payload["input_errors"]
+    assert payload["snapshot"]["load_test_evidence"]["status"] == "missing"

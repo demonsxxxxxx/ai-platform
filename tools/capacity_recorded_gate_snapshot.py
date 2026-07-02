@@ -8,6 +8,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.capacity_baseline import (
+    build_capacity_recorded_gate_batch_snapshot,
     build_capacity_recorded_gate_snapshot,
     render_capacity_recorded_gate_snapshot_markdown,
 )
@@ -31,7 +32,7 @@ def main() -> int:
         ),
     )
     parser.add_argument("--runtime-evidence-json", required=True)
-    parser.add_argument("--recorded-gate-evidence-json", required=True)
+    parser.add_argument("--recorded-gate-evidence-json", action="append", required=True)
     parser.add_argument(
         "--profile-evidence-json",
         help=(
@@ -43,21 +44,37 @@ def main() -> int:
     parser.add_argument("--format", choices=("json", "markdown"), default="json")
     args = parser.parse_args()
 
-    result = build_capacity_recorded_gate_snapshot(
-        _read_json(args.runtime_evidence_json),
-        _read_json(args.recorded_gate_evidence_json),
-        gate=args.gate,
-        profile_evidence=(
-            _read_json(args.profile_evidence_json)
-            if args.profile_evidence_json
-            else None
-        ),
+    runtime_evidence = _read_json(args.runtime_evidence_json)
+    profile_evidence = (
+        _read_json(args.profile_evidence_json)
+        if args.profile_evidence_json
+        else None
     )
+    gate_evidence_packets = [
+        _read_json(path)
+        for path in args.recorded_gate_evidence_json
+    ]
+    if len(gate_evidence_packets) == 1:
+        result = build_capacity_recorded_gate_snapshot(
+            runtime_evidence,
+            gate_evidence_packets[0],
+            gate=args.gate,
+            profile_evidence=profile_evidence,
+        )
+    else:
+        result = build_capacity_recorded_gate_batch_snapshot(
+            runtime_evidence,
+            gate_evidence_packets,
+            profile_evidence=profile_evidence,
+        )
     if args.format == "json":
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
     else:
         print(render_capacity_recorded_gate_snapshot_markdown(result))
-    return 0 if result["status"] == "recorded_gate_input_accepted" else 2
+    return 0 if result["status"] in {
+        "recorded_gate_input_accepted",
+        "recorded_gate_batch_input_accepted",
+    } else 2
 
 
 if __name__ == "__main__":

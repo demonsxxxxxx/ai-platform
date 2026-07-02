@@ -2,7 +2,9 @@
 
 This file governs how agents should use sub-agents while working in this
 repository. It is about the assistant's working process, not the platform's
-product-level multi-agent runtime.
+deferred G8 platform-level multi-run orchestration route or B3 SDK subagent
+fanout capacity evidence. Assistant sub-agents in this workflow do not prove,
+open, or close ordinary-user platform-level multi-run product exposure.
 
 ## Goals
 

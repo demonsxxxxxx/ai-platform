@@ -1,0 +1,245 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-01-211-g7-sandbox-runtime-smoke-ae6b7e5",
+  "artifact_kind": "211_sandbox_runtime_smoke",
+  "gate": "G7 Sandbox / Resource Hardening",
+  "commit_sha": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+  "runtime_subject_commit_sha": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+  "captured_at": "2026-07-01T17:29:42.582680+00:00",
+  "issue_refs": [
+    "#164"
+  ],
+  "pr_refs": [
+    "#294",
+    "#296"
+  ],
+  "source_ref": {
+    "branch": "main",
+    "image": "ai-platform:ae6b7e5-g7-current-main-runtime-only-v1",
+    "image_id": "sha256:a91d17dbd5e4d3b3f02800781a1039c92fc67902d582c88bd1d09105c2cf4a41",
+    "image_labels": {
+      "ai-platform.source-revision": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+      "ai-platform.runtime-subject": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+      "org.opencontainers.image.revision": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+      "ai-platform.build-mode": "runtime-only-source-rebase",
+      "ai-platform.source-note": "g7-b3-completion-audit-runtime-only"
+    },
+    "runtime_source_marker": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+    "source_tree_dirty": false,
+    "source_snapshot": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "runtime_subject_commit_sha": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+      "source_tree_commit_sha": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+      "source_tree_dirty": false,
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "snapshot_source": "codex_origin_main_archive_sync"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "repo_local_env_present": false,
+    "compose_config_source": "repo_local_deploy_ai_platform_compose_after_source_sync",
+    "compose_env_source": "external_runtime_env_label_still_present_not_recorded",
+    "source_authority_caveat": "current-main runtime-only image deployed from synced source; this record is G7 sandbox runtime smoke evidence, not G0 source-authority closure",
+    "stale_label_followups": [
+      "legacy underscore alias labels ai-platform.source_revision, ai-platform.runtime_subject, and ai-platform.source_tree_commit still point at bd690f72723080beeb820d07679da59d84c7913e",
+      "compose project environment_file label still points outside repo-local deploy composition"
+    ]
+  },
+  "evidence_ref": {
+    "verifier": "scripts/verify_sandbox_runtime_211.py",
+    "result": "ok:true",
+    "command": "one-off verifier container: generate_sandbox_runtime_evidence_211.py --runtime-mode platform --sandbox-provider docker; verify_sandbox_runtime_211.py --json --docker-cmd sudo -n docker",
+    "artifact_hashes": {
+      "runtime_probe_results_sha256": "e01ccb6148c9e54faffaf8287ec003901b65592999d404aa7a0f853ddce2c148",
+      "sandbox_evidence_sha256": "d7c92d12c2630423d48404a8cd66ea9e2dbe03842b29bca5b7abe8b52cac5037",
+      "verifier_summary_sha256": "ce458763a8ef33382a454e435b3ab856bbb521d53e6f47d00a39abd5db58c01a"
+    },
+    "runtime_checks": {
+      "g7_211_sandbox_runtime_hardening": {
+        "schema_version": "ai-platform.sandbox-runtime-211.v1",
+        "run_id": "g7-current-main-ae6b7e5-20260701172910",
+        "runtime_mode": "platform",
+        "sandbox_provider": "docker",
+        "executed_task": true,
+        "callback_auth": "token",
+        "callbacks": [
+          "running",
+          "completed"
+        ],
+        "cancel_stops_container": true,
+        "timings": {
+          "schema_version": "ai-platform.sandbox-latency-split.v1",
+          "sandbox_lease_acquire_latency_ms": 2275,
+          "sandbox_container_cold_start_latency_ms": 1448,
+          "sandbox_healthcheck_latency_ms": 818,
+          "sandbox_executor_dispatch_latency_ms": 55,
+          "executor_model_latency_ms": 40,
+          "document_processing_latency_ms": 0,
+          "sandbox_cleanup_latency_ms": 1161,
+          "sandbox_total_latency_ms": 3520
+        },
+        "hardening": {
+          "lease_isolation": {
+            "evidence_class": "live_platform_probe",
+            "status": "passed",
+            "host_paths_redacted": true
+          },
+          "workspace_isolation": {
+            "evidence_class": "live_platform_probe",
+            "status": "passed",
+            "workspace_container_path": "/workspace",
+            "inputs_container_path": "/workspace/inputs",
+            "host_paths_redacted": true
+          },
+          "cleanup": {
+            "evidence_class": "live_platform_probe",
+            "status": "passed",
+            "ephemeral_container_removed": true,
+            "cancel_probe_container_removed": true,
+            "active_lease_released": true
+          },
+          "resource_timeout": {
+            "evidence_class": "source_regression_guard",
+            "status": "passed",
+            "max_seconds_enforced": true,
+            "timeout_error_code": "executor_health_timeout",
+            "failed_container_removed": true
+          },
+          "failure_fallback": {
+            "evidence_class": "source_regression_guard",
+            "status": "passed",
+            "dispatch_failure_stops_container": true,
+            "lease_record_failure_stops_container": true,
+            "db_lease_not_released_when_stop_fails": true
+          },
+          "cached_lease_revalidation": {
+            "evidence_class": "source_regression_guard",
+            "status": "passed",
+            "cached_lease_revalidates_scope_labels": true,
+            "scope_mismatch_fails_closed": true,
+            "tenant_workspace_user_session_checked": true
+          },
+          "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "status": "passed",
+            "memory_limit_mb": 512,
+            "cpu_limit_count": 0.5,
+            "pids_limit": 128,
+            "process_timeout_seconds": 60,
+            "limit_source": "platform_request",
+            "docker_inspection_verified": true,
+            "over_limit_cleanup_verified": true,
+            "bounded_error_projection_verified": true,
+            "bounded_error_projection": {
+              "source": "admin_runtime_projection",
+              "run_id": "g7-current-main-ae6b7e5-20260701172910",
+              "status": "failed",
+              "error_code": "executor_health_timeout",
+              "host_paths_redacted": true,
+              "raw_docker_payload_absent": true
+            },
+            "over_limit_probe_kind": "platform_resource_timeout",
+            "over_limit_timeout_probe_seconds": 0
+          },
+          "egress_policy": {
+            "evidence_class": "live_platform_probe",
+            "status": "passed",
+            "default_deny_outbound": true,
+            "platform_allowlist_enforced": true,
+            "callback_exception_scoped_to_run_token": true,
+            "denied_egress_redacted": true,
+            "denied_probe_error_code": "egress_denied",
+            "allowed_callback_host": "host.docker.internal",
+            "callback_probe_status": "delivered",
+            "policy_source": "platform_policy",
+            "probe_source": "runtime_probe_results",
+            "network_inspection_verified": false,
+            "docker_network_masquerade_disabled": false
+          },
+          "security_options": {
+            "evidence_class": "live_platform_probe",
+            "status": "passed",
+            "privileged": false,
+            "no_new_privileges": true,
+            "capabilities_dropped": true,
+            "docker_socket_mounted": false,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": true
+          }
+        },
+        "non_expansion_invariants": {
+          "ordinary_user_high_risk_sandbox_allowed": false,
+          "admin_or_allowlist_only": true,
+          "production_concurrency_defaults_raised": false,
+          "docker_sandbox_production_hardening_claimed": false,
+          "ordinary_user_multi_agent_allowed": false
+        },
+        "redaction_scan_status": "passed",
+        "does_not_close_g7_gate": true,
+        "does_not_close_b3_gate": true,
+          "remaining_gate_boundaries": [
+            "live API and worker default sandbox posture still uses fake provider",
+            "stale runtime alias labels remain on current containers",
+            "current-main Foundation Runtime concurrency evidence is recorded separately as POC correctness evidence only",
+            "B3 seven-gate recorded load evidence remains missing"
+          ]
+      },
+      "verifier_checks": [
+        {
+          "name": "check_docker_socket",
+          "passed": true
+        },
+        {
+          "name": "check_workspace_write",
+          "passed": true
+        },
+        {
+          "name": "check_executor_health",
+          "passed": true
+        },
+        {
+          "name": "check_callback_stream",
+          "passed": true
+        },
+        {
+          "name": "check_cancel_stops_container",
+          "passed": true
+        },
+        {
+          "name": "check_platform_runtime_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_platform_hardening_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_no_secret_leakage",
+          "passed": true
+        }
+      ]
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "211 verifier summary recorded all eight sandbox runtime checks passing for current-main runtime subject ae6b7e5.",
+    "The reviewed record intentionally omits raw environment values, callback token values, Docker socket paths, host workdirs, raw Docker inspect payloads, and real deploy env-file contents.",
+    "The record binds the current-main source marker, source snapshot, canonical runtime labels, image, and image ID observed on 211, while preserving stale alias labels as follow-up evidence.",
+    "This wraps current-main G7 Docker sandbox hardening verifier artifacts as repo-local reviewed release evidence; it does not close G7, B3, G0, Foundation Alpha, production Docker sandbox hardening, production readiness, or 211 verification by itself."
+  ],
+  "open_followups": [
+    "Clean stale runtime alias labels that still point at bd690f72723080beeb820d07679da59d84c7913e.",
+    "Reconcile the external compose environment-file label caveat before any G0 source-authority closure claim.",
+    "Keep the paired current-main Foundation Runtime concurrency evidence as POC correctness evidence only until current-main POC smoke/readiness and broader gate closure evidence are recorded.",
+    "Record B3 operator-reviewed seven-gate load evidence and b3_10x4_sdk_subagents profile evidence before any B3 closure or production default increase.",
+    "This evidence does not claim production Docker sandbox hardening, ordinary-user high-risk sandbox exposure, ordinary-user platform-level multi-run orchestration exposure, or production concurrency default increases."
+  ]
+}

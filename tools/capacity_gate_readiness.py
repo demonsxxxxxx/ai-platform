@@ -24,6 +24,14 @@ def _read_snapshot_json(path_value: str) -> dict[str, object]:
     return payload
 
 
+def _snapshot_input(payload: dict[str, object]) -> dict[str, object]:
+    if payload.get("schema_version") == "ai-platform.capacity-runtime-evidence.v1":
+        snapshot = payload.get("snapshot")
+        if isinstance(snapshot, dict):
+            return snapshot
+    return payload
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Build a secret-safe #21 capacity gate readiness verdict from a capacity evidence snapshot.",
@@ -41,7 +49,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    snapshot = _read_snapshot_json(args.snapshot_json)
+    snapshot = _snapshot_input(_read_snapshot_json(args.snapshot_json))
     readiness = build_capacity_gate_readiness(snapshot)
     if args.format == "json":
         print(json.dumps(readiness, ensure_ascii=False, indent=2, sort_keys=True))

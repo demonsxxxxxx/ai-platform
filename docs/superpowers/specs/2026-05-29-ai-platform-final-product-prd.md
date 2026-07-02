@@ -425,7 +425,7 @@ Enterprise User
 | G5 Run Lifecycle / Worker Runtime V1 | queue、lease、heartbeat、retry、dead-letter、cancel、resume、checkpoint、idempotency、tenant-aware admission/backpressure 可审计、可运营 | 不提高生产并发默认值，不扩大多 tenant 高并发 |
 | G6 Tool / Skill / Memory Governance | tool allow/deny/ask、skill version/release/dependency policy、memory retention/redaction/delete/export 可运营且 fail-closed | 禁止写工具扩权、长期跨 session 记忆和普通用户 raw Skill 管理 |
 | G7 Sandbox / Resource Hardening | Docker provider、network/egress policy、runtime quota、orphan cleanup、container security options 与 211 smoke 可证 | 禁止高风险 sandbox/tool 扩大曝光 |
-| G8 Platform Multi-Run Controlled Beta | 历史标题曾写作 G8 Multi-Agent Controlled Beta；当前按 PRD v2 只作为平台级 parent/child multi-run orchestration deferred parking-lot 读取。SDK agent/subagent fanout 是一个 governed platform run 内的执行层能力，其容量证据归 B3，不打开或关闭 G8。 | 禁止普通用户平台级 multi-run 产品曝光，除非未来重新打开 G8 且前置 gate 与 B3 容量证据闭合 |
+| G8 Deferred Platform Multi-Run Gate | 历史标题曾写作 G8 Multi-Agent Controlled Beta；当前按 PRD v2 只作为平台级 parent/child multi-run orchestration deferred parking-lot 读取，不再作为当前 beta 状态名。SDK agent/subagent fanout 是一个 governed platform run 内的执行层能力，其容量证据归 B3，不打开或关闭 G8。 | 禁止普通用户平台级 multi-run 产品曝光，除非未来重新打开 G8 且前置 gate 与 B3 容量证据闭合 |
 | G9 Observability / Quality / Ops | Admin Runtime、cost/token/latency/error taxonomy、golden-set eval、trace/audit export、alerts 与 release evidence 可运营 | 不进入 beta 放量或 gate closure |
 | G10 Internal Beta / Department Rollout | 1-2 个真实内网流程有明确 owner、成本/质量/审计/回滚证据 | 回退内部试用，不做部门放量 |
 
@@ -437,7 +437,7 @@ Enterprise User
 4. G5 Run Lifecycle / Worker Runtime V1。
 5. G6 Tool / Skill / Memory Governance。
 6. G7 Sandbox / Resource Hardening。
-7. G8 Platform Multi-Run Controlled Beta，仅作为历史迁移线索保留；当前不按普通用户 multi-agent beta 推进。
+7. G8 Deferred Platform Multi-Run Gate，仅作为历史迁移线索和 deferred parking-lot 保留；当前不按普通用户 multi-agent beta 推进。
 8. G9 Observability / Quality / Ops。
 9. G10 Internal Beta / Department Rollout。
 
