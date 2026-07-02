@@ -80,24 +80,28 @@ vulnerability evidence。
   且下一步是 operator status-upgrade review。当前 live `4805031` audit 也已不再
   因 executor-image drift blocked，因为 live env 读到 executor image 已是
   `ai-platform:4805031-g7-b3-post-297-label-repair-v2`。
-  PR #304 draft 分支 `codex/g7-b3-post-300-followup` 的 PR head 已经在
-  `decf33a017e0b97e2a2992f80e3ccdc19152c1f4` 之后继续前进到
-  docs/evidence-index/test follow-up commits；PR 仍 open draft、未 merge，
-  reviews 为空。runtime evidence subject 仍是 `decf33a`：`decf33a` 已新增
+  PR #304 `codex/g7-b3-post-300-followup` 已 merge 到 GitHub `main`
+  `a9c78efa812efe96b0366011a0c731cb11eb0099`，merge message 明确保留
+  G7、B3、Foundation Alpha、#164 和 current-main `211 verified` 未闭合。
+  PR head 在 merge 前是 `4afa0dd2366a932855902363f09c42da54257a88`，
+  GitHub checks 成功，但 `reviewDecision` 仍为空；已 posted 的 sub-agent
+  review substitute 是 review evidence，不是 formal GitHub approval。runtime
+  evidence subject 仍是 `decf33a`：`decf33a` 已新增
   reviewed G7 live-env hardening evidence
   `docs/release-evidence/g7-sandbox/decf33a017e0b97e2a2992f80e3ccdc19152c1f4/2026-07-02-211-g7-sandbox-live-env-hardening-decf33a.json`
   和 same-subject FRC evidence
   `docs/release-evidence/foundation-runtime-concurrency/decf33a017e0b97e2a2992f80e3ccdc19152c1f4-frc-g7-b3-20260702/2026-07-02-211-foundation-alpha-poc-decf33a-foundation-runtime-concurrency.json`。
   对 PR #304 runtime evidence subject，G7 evidence-only audit 也是
-  `candidate_evidence_requires_review`、`blocking_reasons=[]`；但这不是 PR
-  reviewed/merged，不是 current-main `211 verified`，也不让 #164 `gate
-  closable`；post-`decf33a` PR commits 只是 docs/evidence-index/test follow-up，
-  不是新 runtime rollout evidence。B3 load evidence 仍缺失，是 B3 blocker。compose label 仍指向外部 runtime env file，当前 source/runtime/
+  `candidate_evidence_requires_review`、`blocking_reasons=[]`；但这不让
+  `a9c78ef` merge commit 变成 current-main `211 verified`，也不让 #164
+  `gate closable`；post-`decf33a` commits 只是 docs/evidence-index/test
+  follow-up，不是新 runtime rollout evidence。B3 load evidence 仍缺失，是
+  B3 blocker。compose label 仍指向外部 runtime env file，当前 source/runtime/
   reviewed-evidence 拆层仍属于 G0/source-authority 与 production-hardening
   非闭合边界；任何 G7 status upgrade 仍需要 operator review。
-  所以这是 PR #304 branch evidence progress + post-PR #297 runtime observation
-  + historical reviewed `ae6b7e5` evidence progress；它仍不是 G0/G7 closure、
-  不是 B3 load evidence，也不是 `211 verified`。
+  所以这是 PR #304 merged evidence/docs progress + post-PR #297 runtime
+  observation + historical reviewed `ae6b7e5` evidence progress；它仍不是
+  G0/G7 closure、不是 B3 load evidence，也不是 current-main `211 verified`。
   Audit cleanup note：读取 G7/B3 blockers 时，旧 sanitized runtime observations
   必须叠加同一 runtime subject 的 later reviewed label-repair、live-env
   hardening、Foundation Runtime concurrency evidence 后再判断；否则旧的 stale
@@ -164,12 +168,13 @@ vulnerability evidence。
     `ai-platform:4805031-g7-b3-post-297-label-repair-v2`，所以 current live `4805031`
     audit 的 G7 读法是 `candidate_evidence_requires_review`，不是
     `live_api_sandbox_executor_image_not_current_main_bound`。operator status-upgrade review 也仍未完成，
-    所以不能声明 G7 closure 或 `211 verified`。PR #304 branch subject
+    所以不能声明 G7 closure 或 `211 verified`。PR #304 runtime subject
     `decf33a` 另有 reviewed live-env hardening evidence
     `g7-decf33a-post-300-followup-20260702095227` 和 same-subject FRC evidence，
-    audit 读法同样是 `candidate_evidence_requires_review`；但 PR #304 仍
-    draft/unreviewed/unmerged，`origin/main` 已比 `decf33a` 更新，所以它也不是
-    current-main `211 verified` 或 #164 closure。external env-file label、当前 runtime-affecting source
+    audit 读法同样是 `candidate_evidence_requires_review`；PR #304 已 merge
+    到 `a9c78ef`，但 `origin/main` merge commit 已比 `decf33a` 更新，当前
+    211 仍读到 `decf33a` runtime subject，所以它也不是 current-main
+    `211 verified` 或 #164 closure。external env-file label、当前 runtime-affecting source
     rollout gap 和 B3 load evidence 分别保留在 G0/source-authority、
     production-hardening 与 B3 非闭合边界中。
 - reviewed `ae6b7e5` Foundation Alpha POC evidence set 已补充在
@@ -211,15 +216,15 @@ vulnerability evidence。
   `do_not_raise_without_recorded_load_test_evidence`，但这只是 B3 visibility /
   fail-closed evidence；`b3_10x4_sdk_subagents` operator-reviewed profile
   evidence 仍全部缺失，不关闭 B3。
-  2026-07-02 PR #304 branch runtime subject `decf33a` 又补了一次 read-only
+  2026-07-02 PR #304 runtime subject `decf33a` 又补了一次 read-only
   capacity runtime evidence：211 API/worker 和 source marker 均读到
   `decf33a017e0b97e2a2992f80e3ccdc19152c1f4`，Admin Runtime no-cleanup overview
   返回 HTTP `200`，required sections present，nested gate readiness 仍是
   `blocked_missing_load_test_evidence`，七个 `missing_load_test_gates` 全部
   仍缺失，`profile_evidence` 为空，production decision 仍是
-  `do_not_raise_without_recorded_load_test_evidence`。这只证明 PR #304 branch
-  runtime 的 B3 visibility / fail-closed 路径，不证明 PR reviewed/merged、
-  current-main `211 verified`，也不关闭 B3。
+  `do_not_raise_without_recorded_load_test_evidence`。这只证明 `decf33a`
+  runtime 的 B3 visibility / fail-closed 路径；PR #304 已 merge，但这仍不
+  证明 `a9c78ef` current-main `211 verified`，也不关闭 B3。
 
 因此当前下一步不是重开 G8，也不是把 B3 当作普通用户平台级 multi-run 产品曝光；
 下一步是先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime observation
@@ -234,12 +239,12 @@ vulnerability evidence。
   `candidate_evidence_requires_review`；当前 211 live env 读到 executor image 已是
   `ai-platform:4805031-g7-b3-post-297-label-repair-v2`，因此 current live `4805031`
   audit 的 G7 读法也是 `candidate_evidence_requires_review`，不是
-  `live_api_sandbox_executor_image_not_current_main_bound`；G7 对 PR #304 branch
+  `live_api_sandbox_executor_image_not_current_main_bound`；G7 对 PR #304 runtime
   subject `decf33a` reviewed evidence + same-subject FRC 的读法也可以到
-  `candidate_evidence_requires_review`，但 PR review/merge、current-main rollout
-  和 211 live refresh 仍必须单独证明。B3 仍 blocked，因为七个 recorded load-test
+  `candidate_evidence_requires_review`；PR #304 已 merge，但 current-main
+  rollout 和 211 live refresh 仍必须单独证明。B3 仍 blocked，因为七个 recorded load-test
   gates 和 `b3_10x4_sdk_subagents` profile evidence 缺失；`decf33a` capacity
-  runtime visibility 只是 PR #304 branch evidence，仍需 PR review/merge 与
+  runtime visibility 只是 `decf33a` runtime-subject evidence，仍需
   current-main evidence 单独证明；external
   env-file 与当前 source/runtime split 是 G0/source-authority / production-hardening 非闭合边界。
 G7/B3 的证据边界继续保持为 `runtime pending` / `local partial`，直到真实运行

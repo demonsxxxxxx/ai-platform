@@ -635,7 +635,7 @@ marker still read `ae6b7e5` and the frontend image was
 capacity conclusion: all seven operator-reviewed recorded load-test gates and
 the `b3_10x4_sdk_subagents` profile evidence are still missing.
 
-### 211 Runtime Evidence - 2026-07-02, PR #304 branch commit `decf33a`
+### 211 Runtime Evidence - 2026-07-02, PR #304 runtime subject `decf33a`
 
 After the PR #304 follow-up rollout, a read-only 211 identity check observed
 API and worker running `ai-platform:decf33a-g7-b3-post-300-followup-v1`, with
@@ -685,11 +685,12 @@ sessions x peak 4 SDK subagents/session measurement and the required
 non-expansion flags.
 
 This `decf33a` capture supersedes the earlier `4805031`
-capacity-pending/HTTP-500 observation for the currently running PR #304 branch
-runtime only. It does not make PR #304 reviewed or merged, does not prove
-current-main `211 verified`, does not provide recorded B3 load-test evidence,
-does not claim a safe maximum concurrency number, does not raise production
-defaults, and does not close B3.
+capacity-pending/HTTP-500 observation for the currently running `decf33a`
+runtime subject only. PR #304 is now merged at
+`a9c78efa812efe96b0366011a0c731cb11eb0099`, but this evidence still does not
+prove current-main `211 verified` for that merge commit, does not provide
+recorded B3 load-test evidence, does not claim a safe maximum concurrency
+number, does not raise production defaults, and does not close B3.
 
 ### Evidence Bundle Draft Tool
 
