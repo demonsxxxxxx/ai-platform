@@ -49,10 +49,10 @@ vulnerability evidence。
   ordinary-user 平台级 multi-run orchestration 只保留在 blocked expansion /
   non-expansion invariant 中。机器可读 blocked expansion 名称是
   `ordinary_user_platform_multi_run_orchestration_exposure`；当前权威文档不再
-  使用旧的泛化 multi-agent exposure 命名。旧普通用户 multi-agent exposure
-  说法会把普通用户平台级 parent/child multi-run 产品曝光和 SDK subagent
-  fanout 容量证据混在一起，只能作为历史 evidence/follow-up 含义读取；
-  不能作为当前状态名。
+  使用旧的 `g8_ordinary_user_multi_agent_exposure` / 泛化 multi-agent
+  exposure 命名。旧普通用户 multi-agent exposure 说法会把普通用户平台级
+  parent/child multi-run 产品曝光和 SDK subagent fanout 容量证据混在一起，
+  只能作为历史 evidence/follow-up 含义读取；不能作为当前状态名。
 - B3 边界：`b3_10x4_sdk_subagents` source contract 是 SDK subagent
   fanout 容量证据，不是 G8 普通用户平台级 multi-run 产品曝光证据。
 - 已部分推进但未完成：PR #297 已合入 GitHub `main`
@@ -82,14 +82,10 @@ vulnerability evidence。
   `ai-platform:4805031-g7-b3-post-297-label-repair-v2`。
   PR #305 `codex/g7-b3-post304-doc-state` 已 merge 到 GitHub `main`
   `28676df4abcbb7063211fceb4cc1701648c43d49`，GitHub checks 成功但
-  `reviewDecision` 仍为空。当前 211 API/worker 已读到
-  `ai-platform:28676df-g7-b3-current-main-runtime-only-v1`，OCI/source labels
-  指向 `28676df`，API 和 frontend proxy health 均返回 HTTP `200`；但 211
-  repo-local source marker 仍是
-  `decf33a017e0b97e2a2992f80e3ccdc19152c1f4`，所以 G0/source-authority
-  仍未闭合。28676df capacity visibility entry 是 reviewed redacted，但
-  readiness 是 `blocked_missing_admin_runtime_sections`，因为 `sandbox`
-  在 readiness 解读里仍被判为 missing；七个 B3 recorded gates 和
+  `reviewDecision` 仍为空。该 subject 的 reviewed capacity visibility entry
+  是 redacted B3 visibility / fail-closed evidence，readiness 是
+  `blocked_missing_admin_runtime_sections`，因为 `sandbox` 在 readiness 解读里
+  仍被判为 missing；七个 B3 recorded gates 和
   `b3_10x4_sdk_subagents` profile evidence 仍缺失。28676df G7 verifier
   `g7-current-main-28676df-20260702130121` 因 211 host Python 缺
   `pydantic` 没有产出 passing G7 evidence；补齐 verifier-only 依赖后又暴露
@@ -99,6 +95,18 @@ vulnerability evidence。
   `g7-current-main-28676df-workspace-user-fix-20260702135351` 通过八项
   verifier checks，证明修复方向是按 workspace owner 启动 executor；但这
   不是 deployed/reviewed 28676df runtime-image G7 evidence。
+  PR #306 `codex/g7-b3-current-main-runtime` 随后已 squash-merge 到 GitHub
+  `main` `9c669761bbb4bd719af64a341d361b7c3b3e380e`，GitHub checks 成功但
+  `reviewDecision` 仍为空。211 repo-local source marker、API/worker image labels
+  和 runtime labels 均已读到 `9c669761`，API/worker 运行
+  `ai-platform:9c66976-g7-b3-workspace-owner-v1`，API health 返回
+  `{"status":"ok"}`，frontend root 返回 HTTP `200`。这说明 PR #306 的
+  workspace-owner executor fix 已合并并部署，但仍不是 G7 closure：最新
+  deployed-runtime verifier `g7-current-main-9c66976-20260702145801`
+  仍是 diagnostic-only，记录 `executed_task=false`、`sandbox_provider=unknown`
+  和 `[Errno 13] Permission denied: '[redacted-path]'`。当前没有 reviewed
+  passing `9c669761` G7 hardening entry，也没有新的 reviewed `9c669761` B3
+  capacity entry。
   PR #304 `codex/g7-b3-post-300-followup` 已 merge 到 GitHub `main`
   `a9c78efa812efe96b0366011a0c731cb11eb0099`，merge message 明确保留
   G7、B3、Foundation Alpha、#164 和 current-main `211 verified` 未闭合。
@@ -118,10 +126,11 @@ vulnerability evidence。
   B3 blocker。compose label 仍指向外部 runtime env file，当前 source/runtime/
   reviewed-evidence 拆层仍属于 G0/source-authority 与 production-hardening
   非闭合边界；任何 G7 status upgrade 仍需要 operator review。
-  所以当前是 PR #305 merged document/evidence-state progress + 28676df
-  runtime-image rollout + PR #304/PR #297 historical same-subject evidence +
-  reviewed `ae6b7e5` evidence progress；它仍不是
-  G0/G7 closure、不是 B3 load evidence，也不是 current-main `211 verified`。
+  所以当前是 PR #306 merged + 9c669761 source/runtime rollout + G7
+  permission-denied diagnostic + PR #305 reviewed capacity visibility +
+  PR #304/PR #297 historical same-subject evidence + reviewed `ae6b7e5`
+  evidence progress；它仍不是 G0/G7 closure、不是 B3 load evidence，也不是
+  current-main `211 verified`。
   Audit cleanup note：读取 G7/B3 blockers 时，旧 sanitized runtime observations
   必须叠加同一 runtime subject 的 later reviewed label-repair、live-env
   hardening、Foundation Runtime concurrency evidence 后再判断；否则旧的 stale
@@ -247,15 +256,19 @@ vulnerability evidence。
   证明 `a9c78ef` current-main `211 verified`，也不关闭 B3。
   2026-07-02 PR #305 merge commit `28676df` 又补了一次 read-only capacity
   runtime evidence：211 API/worker labels 读到
-  `28676df4abcbb7063211fceb4cc1701648c43d49`，但 repo-local source marker
+  `28676df4abcbb7063211fceb4cc1701648c43d49`，但当时 repo-local source marker
   仍是 `decf33a017e0b97e2a2992f80e3ccdc19152c1f4`。Admin Runtime no-cleanup
   overview 返回 HTTP `200`，nested gate readiness 是
   `blocked_missing_admin_runtime_sections`，`sandbox` 在 readiness 解读里被判
   missing；七个 `missing_load_test_gates` 全部仍缺失，`profile_evidence`
   为空，production decision 仍是
-  `do_not_raise_without_recorded_load_test_evidence`。这只证明当前 28676df
+  `do_not_raise_without_recorded_load_test_evidence`。这只证明 28676df
   runtime 的 B3 visibility / fail-closed 路径；它不关闭 B3，也不关闭
-  G0/source-authority。
+  G0/source-authority。PR #306 merge commit `9c669761` 已把 211 repo-local
+  source marker 和 API/worker labels 推到当前 source/runtime subject，但还没
+  产生 reviewed B3 capacity entry；所以 B3 最新 reviewed capacity 读法仍以
+  28676df 为 historical visibility evidence，9c669761 只是 live source/runtime
+  rollout + G7 diagnostic state。
 
 因此当前下一步不是重开 G8，也不是把 B3 当作普通用户平台级 multi-run 产品曝光；
 下一步是先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime observation
@@ -272,16 +285,17 @@ vulnerability evidence。
   audit 的 G7 读法也是 `candidate_evidence_requires_review`，不是
   `live_api_sandbox_executor_image_not_current_main_bound`；G7 对 PR #304 runtime
   subject `decf33a` reviewed evidence + same-subject FRC 的读法也可以到
-  `candidate_evidence_requires_review`；PR #305 已 merge 且 211 API/worker
-  已跑到 28676df，但 current 28676df G7 verifier 仍缺修复入镜像后的
-  dependency-safe passing evidence。B3 仍 blocked，因为七个 recorded load-test gates 和
-  `b3_10x4_sdk_subagents` profile evidence 缺失；`decf33a` 和 `28676df`
-  capacity runtime visibility 都只是 fail-closed visibility evidence，不是
-  recorded load evidence；external env-file 与当前 source/runtime marker split
-  是 G0/source-authority / production-hardening 非闭合边界。
-G7/B3 的证据边界继续保持为 `runtime pending` / `local partial`，直到真实运行
-证据闭合。该 audit 只是控制/计划工件，不是 G7 runtime evidence 或 B3 load
-evidence。
+  `candidate_evidence_requires_review`；PR #306 已 merge 且 211 API/worker
+  已跑到 9c669761，但 current 9c669761 G7 verifier 仍停在 permission-denied
+  diagnostic，没有 dependency-safe passing deployed-runtime evidence。B3 仍
+  blocked，因为七个 recorded load-test gates 和 `b3_10x4_sdk_subagents`
+  profile evidence 缺失；`decf33a` 和 `28676df` capacity runtime visibility 都
+  只是 fail-closed visibility evidence，不是 recorded load evidence；9c669761
+  目前没有新的 reviewed B3 capacity entry。external env-file label 仍是
+  G0/source-authority / production-hardening 非闭合边界。
+G7/B3 的证据边界继续保持为 `deployed verifier failed` / `local partial`，直到
+真实运行证据闭合。该 audit 只是控制/计划工件，不是 G7 runtime evidence 或
+B3 load evidence。
 
 ## 2026-06-06 Gate-Based Roadmap Sync
 

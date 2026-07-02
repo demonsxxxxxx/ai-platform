@@ -132,6 +132,9 @@ or claim safe concurrency, does not enable ordinary-user platform-level
 multi-run orchestration exposure, and does not close B3 or G9. It also does not
 reopen G8; G8 stays deferred unless a later focused gate explicitly reopens
 platform-level orchestration.
+B3 evidence must use `b3_10x4_sdk_subagents` and
+`ordinary_user_platform_multi_run_orchestration_enabled=false`; do not report
+`g8_ordinary_user_multi_agent_exposure` as a B3 blocker or closure field.
 
 ## 3. Module Acceptance Matrix
 
@@ -223,7 +226,7 @@ image matches the exact current source tree.
 
 | Field | Standard |
 | --- | --- |
-| Current state | Sandbox lease, provider abstraction, callback normalization, fake provider, and Docker-provider hardening evidence exist for reviewed runtime subjects; default local provider remains fake; G7 is `candidate_evidence_requires_review` until operator status-upgrade review and source/runtime boundaries are reconciled. |
+| Current state | Sandbox lease, provider abstraction, callback normalization, fake provider, and Docker-provider hardening evidence exist for reviewed prior runtime subjects; default local provider remains fake. Those reviewed prior subjects can support `candidate_evidence_requires_review`, but the latest `9c669761` subject remains verifier-failed until a deployed-runtime passing verifier and operator status-upgrade review exist. |
 | S1 target | Fake provider remains local/test-only; high-risk sandbox is not broadly exposed; lease lifecycle is platform-owned. |
 | S2 target | Docker provider hardening covers egress/network policy, quota, cleanup, container security options, callback token, and Docker-capable smoke. |
 | S3/S4 target | Sandbox profiles map to workflow risk classes and have operational rollback and cleanup evidence. |

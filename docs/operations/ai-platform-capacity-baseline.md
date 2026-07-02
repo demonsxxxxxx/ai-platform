@@ -769,6 +769,24 @@ not provide recorded B3 load-test evidence, does not claim a safe maximum
 concurrency number, does not raise production defaults, does not close B3, and
 does not close G0 because the 211 repo-local source marker remains stale.
 
+### Post-PR #306 Runtime Note - 2026-07-02, merge commit `9c669761`
+
+After PR #306 merged at `9c669761bbb4bd719af64a341d361b7c3b3e380e`, a read-only
+211 identity check observed the repo-local source marker and API/worker
+source/runtime/OCI labels at `9c669761`, with API and worker running
+`ai-platform:9c66976-g7-b3-workspace-owner-v1`. Direct API health on
+`http://127.0.0.1:8020/api/ai/health` returned `{"status":"ok"}`, and the
+frontend root on `http://127.0.0.1:18001/` returned HTTP `200`.
+
+No reviewed B3 capacity runtime evidence entry has been recorded for
+`9c669761`. The latest reviewed B3 capacity entry remains the `28676df`
+visibility record above, with all seven recorded load-test gates and
+`b3_10x4_sdk_subagents` profile evidence still missing. The latest deployed G7
+verifier diagnostic for `9c669761`, `g7-current-main-9c66976-20260702145801`,
+recorded `executed_task=false`, `sandbox_provider=unknown`, and
+`[Errno 13] Permission denied: '[redacted-path]'`; this is not B3 load evidence
+and does not make G7 or B3 gate-closable.
+
 ### Evidence Bundle Draft Tool
 
 After operators capture start/end runtime evidence, the bounded probe JSON, and

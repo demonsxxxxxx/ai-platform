@@ -6,6 +6,13 @@ This directory is the repository-owned location for reviewed, redacted release
 evidence entries. It is an index and contract baseline only. This contract
 does not close G9.
 
+Legacy evidence keys such as `g8_ordinary_user_multi_agent_exposure` are
+retained only as historical negative follow-up names. Interpret them as
+`ordinary_user_platform_multi_run_orchestration_exposure=false`: no
+ordinary-user platform-level parent/child multi-run exposure. They are not SDK
+subagent availability evidence, not B3 profile evidence, and not a G8 reopen or
+closure signal.
+
 Generate the current readiness contract from the repository root:
 
 ```powershell
@@ -139,6 +146,7 @@ not reviewed release-evidence entries and must not be used to close gates.
 
 | Date | Gate | Commit | Evidence | Status |
 | --- | --- | --- | --- | --- |
+| 2026-07-02 | G7 Sandbox / Resource Hardening | `9c669761bbb4bd719af64a341d361b7c3b3e380e` | diagnostic only, not a reviewed release-evidence entry | PR #306 merged and 211 API/worker now run `ai-platform:9c66976-g7-b3-workspace-owner-v1` with source/runtime/OCI labels and repo-local source marker bound to `9c669761`; direct API health returned `{"status":"ok"}` and the frontend root returned HTTP `200`. Latest deployed-runtime verifier run `g7-current-main-9c66976-20260702145801` did not execute a task: the diagnostic artifact records `runtime_mode=executor`, `sandbox_provider=unknown`, `executed_task=false`, and `[Errno 13] Permission denied: '[redacted-path]'`. This is diagnostic evidence only; it is not a reviewed passing G7 hardening entry, does not close G7, does not close B3, does not make `9c669761` `211 verified`, and does not make #164 `gate closable`. |
 | 2026-07-02 | G7 Sandbox / Resource Hardening | `28676df4abcbb7063211fceb4cc1701648c43d49` | diagnostic only, not a reviewed release-evidence entry | The `28676df` G7 verifier path is now root-caused but not closed: after the host Python `pydantic` blocker was bypassed with a verifier-only venv, `/v1/tasks/execute` returned HTTP `500` because the executor ran with `cap_drop=["ALL"]` and could not write `/workspace/runtime` in a host-user-owned workspace. Patched-source diagnostic run `g7-current-main-28676df-workspace-user-fix-20260702135351` passed all eight verifier checks by launching the executor as the workspace owner. This is diagnostic evidence for the fix direction only; it is not deployed/reviewed runtime-image G7 evidence, does not close G7, does not close B3, does not make `28676df` `211 verified`, and does not make #164 `gate closable`. |
 
 ## Reviewed Entries
