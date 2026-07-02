@@ -9,7 +9,11 @@ from app import repositories
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 from app.db import get_pool_status, transaction
 from app.queue import get_queue_insight, get_queue_status
-from app.runtime.sandbox.container_provider import create_container_provider
+from app.runtime.sandbox.container_provider import (
+    DockerPermissionDeniedError,
+    DockerUnavailableError,
+    create_container_provider,
+)
 from app.routes.sandbox_leases import lease_response
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, cleanup_expired_sandbox_runtime_leases
 from app.settings import get_settings
@@ -493,6 +497,14 @@ def _sandbox_overview(containers: list[object], leases: list[dict[str, object]],
     }
 
 
+async def _list_runtime_containers_for_overview(provider: object, tenant_id: str) -> tuple[list[object], bool]:
+    try:
+        containers = await provider.list_runtime_containers({"tenant_id": tenant_id})
+    except (DockerPermissionDeniedError, DockerUnavailableError):
+        return [], True
+    return containers, False
+
+
 @router.get("/admin/runtime/queue")
 async def admin_runtime_queue(
     principal: AuthPrincipal = Depends(require_principal),
@@ -619,7 +631,10 @@ async def admin_runtime_overview(
 
     visible_leases = [lease for lease in leases if lease.get("tenant_id") == principal.tenant_id]
     visible_lease_history = [lease for lease in lease_history if lease.get("tenant_id") == principal.tenant_id]
-    containers = await provider.list_runtime_containers({"tenant_id": principal.tenant_id})
+    containers, container_observation_degraded = await _list_runtime_containers_for_overview(
+        provider,
+        principal.tenant_id,
+    )
 
     async with transaction() as conn:
         run_summary = await repositories.get_admin_runtime_run_summary(conn, tenant_id=principal.tenant_id, limit=10)
@@ -636,6 +651,11 @@ async def admin_runtime_overview(
     admission = _sanitize_admission_summary(admission_summary)
     capacity = build_capacity_baseline(get_settings())
 
+    sandbox = _sandbox_overview(containers, visible_leases, visible_lease_history)
+    if container_observation_degraded:
+        sandbox["list_runtime_containers_status"] = "unavailable"
+        sandbox["container_observation_degraded"] = True
+
     return {
         "tenant_id": principal.tenant_id,
         "queue": {
@@ -643,7 +663,7 @@ async def admin_runtime_overview(
             "tenant_insight": _sanitize_queue_insight(tenant_queue_insight),
         },
         "runs": _sanitize_dict(run_summary),
-        "sandbox": _sandbox_overview(containers, visible_leases, visible_lease_history),
+        "sandbox": sandbox,
         "observability": _sanitize_observability_summary(observability_summary),
         "capacity": capacity,
         "governance": _governance_overview_projection(get_settings()),

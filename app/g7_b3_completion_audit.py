@@ -203,12 +203,33 @@ def _safe_runtime_env_from_release_evidence(evidence: dict[str, Any]) -> dict[st
     return _safe_runtime_env(readback.get("safe_runtime_env"))
 
 
+def _runtime_observation_identity_matches_current_subject(
+    runtime_observation: dict[str, Any],
+    *,
+    current_source_commit: str,
+) -> bool:
+    labels = _dict(runtime_observation.get("runtime_image_labels"))
+    return bool(
+        current_source_commit
+        and _safe_text(runtime_observation.get("source_marker_commit")) == current_source_commit
+        and _canonical_runtime_label_commit(labels) == current_source_commit
+    )
+
+
 def _runtime_observation_with_reviewed_overrides(
     runtime_observation: dict[str, Any],
     *,
     current_source_commit: str,
 ) -> dict[str, Any]:
     merged = dict(runtime_observation)
+    live_env = _safe_runtime_env(runtime_observation.get("api_env"))
+    preserve_live_env = bool(
+        live_env.get("SANDBOX_CONTAINER_PROVIDER") == "docker"
+        and _runtime_observation_identity_matches_current_subject(
+            runtime_observation,
+            current_source_commit=current_source_commit,
+        )
+    )
     for evidence in _reviewed_release_evidence_entries(runtime_observation):
         if not _reviewed_g7_source_override_allowed(
             evidence,
@@ -226,7 +247,7 @@ def _runtime_observation_with_reviewed_overrides(
         if image_labels:
             merged["runtime_image_labels"] = image_labels
         safe_env = _safe_runtime_env_from_release_evidence(evidence)
-        if safe_env:
+        if safe_env and not preserve_live_env:
             merged["api_env"] = safe_env
     return merged
 
@@ -325,6 +346,8 @@ def _build_g7_audit(
         blocking_reasons.append("live_api_sandbox_egress_policy_disabled")
     if not reviewed_evidence_id:
         blocking_reasons.append("reviewed_local_release_evidence_entry_missing")
+    if not foundation_runtime_concurrency["current_subject"]:
+        blocking_reasons.append("foundation_runtime_concurrency_evidence_missing_or_not_current_subject")
 
     next_steps = []
     if canonical_mismatch:

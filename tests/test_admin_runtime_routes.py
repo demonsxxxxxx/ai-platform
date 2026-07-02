@@ -1631,3 +1631,170 @@ def test_admin_runtime_overview_fails_closed_when_sandbox_cleanup_fails(monkeypa
     assert response.status_code == 500
     assert response.json()["detail"] == "sandbox_runtime_cleanup_failed"
     assert calls == [("cleanup", "default", "expired")]
+
+
+def test_admin_runtime_overview_reports_container_list_unavailable_without_docker_socket(monkeypatch):
+    calls = []
+
+    from app.runtime.sandbox.container_provider import DockerUnavailableError
+
+    class FakeProvider:
+        async def list_runtime_containers(self, filters):
+            calls.append(("containers", filters))
+            raise DockerUnavailableError("docker socket unavailable")
+
+    @asynccontextmanager
+    async def overview_transaction():
+        yield object()
+
+    async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
+        calls.append(("leases", tenant_id, status, limit))
+        return []
+
+    async def fake_run_summary(conn, *, tenant_id, limit=10):
+        return {"total": 0, "by_status": {}, "active": 0, "terminal": 0, "recent_failures": []}
+
+    async def fake_observability_summary(conn, *, tenant_id):
+        return {
+            "event_count": 0,
+            "artifact_count": 0,
+            "error_count": 0,
+            "error_types": {},
+            "latency_ms": {"avg": None, "max": None},
+            "token_counts": {"input": 0, "output": 0, "total": 0},
+            "estimated_cost_minor": 0,
+        }
+
+    async def fake_admission_summary(conn, *, tenant_id, limit, top_user_limit=10):
+        return {
+            "policy_active": True,
+            "max_active_runs_per_user": limit,
+            "active_runs": 0,
+            "active_users": 0,
+            "saturated_users": 0,
+            "top_users": [],
+        }
+
+    async def fake_queue_status():
+        return {"mode": "memory"}
+
+    async def fake_queue_insight(tenant_id, **_kwargs):
+        return {"tenant_id": tenant_id}
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", overview_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_queue_status)
+    monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_queue_insight)
+    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.routes.admin_runtime.repositories.get_admin_runtime_run_summary", fake_run_summary, raising=False)
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.get_admin_runtime_observability_summary",
+        fake_observability_summary,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.get_admin_runtime_admission_summary",
+        fake_admission_summary,
+        raising=False,
+    )
+    client = TestClient(create_app(), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sandbox"]["list_runtime_containers_status"] == "unavailable"
+    assert body["sandbox"]["container_observation_degraded"] is True
+    assert body["sandbox"]["containers"] == {
+        "total": 0,
+        "running": 0,
+        "by_status": {},
+        "ephemeral_running": 0,
+        "persistent_running": 0,
+    }
+    assert body["sandbox"]["leases"]["active"] == 0
+    assert body["capacity"]["schema_version"] == "ai-platform.capacity-baseline.v1"
+    assert "docker socket unavailable" not in response.text.lower()
+    assert calls == [
+        ("leases", "default", "active", 100),
+        ("leases", "default", None, 100),
+        ("containers", {"tenant_id": "default"}),
+    ]
+
+
+def test_admin_runtime_overview_fails_closed_when_container_list_has_unexpected_provider_error(monkeypatch):
+    calls = []
+
+    class FakeProvider:
+        async def list_runtime_containers(self, filters):
+            calls.append(("containers", filters))
+            raise RuntimeError("provider invariant broken")
+
+    @asynccontextmanager
+    async def overview_transaction():
+        yield object()
+
+    async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
+        return []
+
+    async def fake_run_summary(conn, *, tenant_id, limit=10):
+        return {"total": 0, "by_status": {}, "active": 0, "terminal": 0, "recent_failures": []}
+
+    async def fake_observability_summary(conn, *, tenant_id):
+        return {
+            "event_count": 0,
+            "artifact_count": 0,
+            "error_count": 0,
+            "error_types": {},
+            "latency_ms": {"avg": None, "max": None},
+            "token_counts": {"input": 0, "output": 0, "total": 0},
+            "estimated_cost_minor": 0,
+        }
+
+    async def fake_admission_summary(conn, *, tenant_id, limit, top_user_limit=10):
+        return {
+            "policy_active": True,
+            "max_active_runs_per_user": limit,
+            "active_runs": 0,
+            "active_users": 0,
+            "saturated_users": 0,
+            "top_users": [],
+        }
+
+    async def fake_queue_status():
+        return {"mode": "memory"}
+
+    async def fake_queue_insight(tenant_id, **_kwargs):
+        return {"tenant_id": tenant_id}
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", overview_transaction)
+    monkeypatch.setattr("app.routes.admin_runtime.get_queue_status", fake_queue_status)
+    monkeypatch.setattr("app.routes.admin_runtime.get_queue_insight", fake_queue_insight)
+    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    monkeypatch.setattr("app.routes.admin_runtime.repositories.get_admin_runtime_run_summary", fake_run_summary, raising=False)
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.get_admin_runtime_observability_summary",
+        fake_observability_summary,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.repositories.get_admin_runtime_admission_summary",
+        fake_admission_summary,
+        raising=False,
+    )
+    client = TestClient(create_app(), raise_server_exceptions=False)
+
+    response = client.get(
+        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 500
+    assert "provider invariant broken" not in response.text.lower()
+    assert calls == [("containers", {"tenant_id": "default"})]

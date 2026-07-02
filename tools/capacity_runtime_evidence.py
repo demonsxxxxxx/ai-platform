@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import sys
 from urllib.error import HTTPError
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,8 +32,14 @@ def _safe_base_url(value: str) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path.rstrip("/"), "", ""))
 
 
-def _overview_url(base_url: str) -> str:
-    return f"{base_url.rstrip('/')}{OVERVIEW_ROUTE}"
+def _overview_route(*, include_maintenance_cleanup: bool = True) -> str:
+    if include_maintenance_cleanup:
+        return OVERVIEW_ROUTE
+    return f"{OVERVIEW_ROUTE}?{urlencode({'include_maintenance_cleanup': 'false'})}"
+
+
+def _overview_url(base_url: str, *, include_maintenance_cleanup: bool = True) -> str:
+    return f"{base_url.rstrip('/')}{_overview_route(include_maintenance_cleanup=include_maintenance_cleanup)}"
 
 
 def _read_overview(
@@ -44,6 +50,7 @@ def _read_overview(
     roles: str,
     gateway_secret_env: str,
     timeout_seconds: float,
+    include_maintenance_cleanup: bool,
 ) -> tuple[dict[str, object], int]:
     headers = {
         "X-AI-User-ID": user_id,
@@ -55,7 +62,11 @@ def _read_overview(
         gateway_secret = os.environ.get(gateway_secret_env, "")
         if gateway_secret:
             headers["X-AI-Gateway-Secret"] = gateway_secret
-    request = Request(_overview_url(base_url), headers=headers, method="GET")
+    request = Request(
+        _overview_url(base_url, include_maintenance_cleanup=include_maintenance_cleanup),
+        headers=headers,
+        method="GET",
+    )
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
             status = int(response.status)
@@ -77,6 +88,7 @@ def build_capacity_runtime_evidence(
     commit_sha: str = "unknown",
     runtime_profile: str = "unproven_default",
     timeout_seconds: float = 10.0,
+    include_maintenance_cleanup: bool = True,
 ) -> dict[str, object]:
     safe_base_url = _safe_base_url(base_url)
     overview, http_status = _read_overview(
@@ -86,6 +98,7 @@ def build_capacity_runtime_evidence(
         roles=roles,
         gateway_secret_env=gateway_secret_env,
         timeout_seconds=timeout_seconds,
+        include_maintenance_cleanup=include_maintenance_cleanup,
     )
     snapshot = build_capacity_evidence_snapshot(
         overview,
@@ -97,7 +110,9 @@ def build_capacity_runtime_evidence(
         "schema_version": SCHEMA_VERSION,
         "source": {
             "base_url": safe_base_url,
-            "overview_route": OVERVIEW_ROUTE,
+            "overview_route": _overview_route(
+                include_maintenance_cleanup=include_maintenance_cleanup,
+            ),
             "http_status": http_status,
             "mode": "admin_runtime_overview_capture",
         },
@@ -144,6 +159,15 @@ def main() -> None:
     parser.add_argument("--commit-sha", default="unknown")
     parser.add_argument("--runtime-profile", default="unproven_default")
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
+    parser.add_argument(
+        "--skip-maintenance-cleanup",
+        action="store_true",
+        help=(
+            "Capture /admin/runtime/overview with include_maintenance_cleanup=false. "
+            "Use for read-only capacity snapshots in the default stack where the API "
+            "must not require a mounted Docker socket."
+        ),
+    )
     parser.add_argument("--format", choices=("json", "markdown"), default="markdown")
     args = parser.parse_args()
 
@@ -156,6 +180,7 @@ def main() -> None:
         commit_sha=args.commit_sha,
         runtime_profile=args.runtime_profile,
         timeout_seconds=args.timeout_seconds,
+        include_maintenance_cleanup=not args.skip_maintenance_cleanup,
     )
     if args.format == "json":
         print(json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=True))

@@ -309,6 +309,27 @@ def _is_permission_denied(message: str) -> bool:
     return "permission denied" in message.lower()
 
 
+def _is_docker_daemon_unavailable(message: str) -> bool:
+    normalized = message.lower()
+    return (
+        "cannot connect" in normalized
+        or "connection refused" in normalized
+        or "connection aborted" in normalized
+        or "no such file" in normalized
+        or "docker daemon" in normalized
+        or "docker.sock" in normalized
+    )
+
+
+def _normalize_docker_availability_error(exc: BaseException) -> SandboxRuntimeError | None:
+    message = str(exc)
+    if _is_permission_denied(message):
+        return DockerPermissionDeniedError()
+    if _is_docker_daemon_unavailable(message):
+        return DockerUnavailableError("Docker daemon is unavailable")
+    return None
+
+
 def _is_not_found_error(exc: BaseException) -> bool:
     if isinstance(exc, KeyError):
         return True
@@ -466,9 +487,9 @@ class DockerContainerProvider:
         try:
             client.ping()
         except Exception as exc:  # pragma: no cover - branch shape varies by docker SDK/runtime
-            message = str(exc)
-            if _is_permission_denied(message):
-                raise DockerPermissionDeniedError() from exc
+            normalized_exc = _normalize_docker_availability_error(exc)
+            if normalized_exc is not None:
+                raise normalized_exc from exc
             raise DockerUnavailableError("Docker daemon is unavailable") from exc
         expected_egress_labels = _egress_policy_labels(settings)
         existing = self._leases.get(container_id)
@@ -521,9 +542,9 @@ class DockerContainerProvider:
             if hasattr(container, "start"):
                 container.start()
         except Exception as exc:
-            message = str(exc)
-            if _is_permission_denied(message):
-                raise DockerPermissionDeniedError() from exc
+            normalized_exc = _normalize_docker_availability_error(exc)
+            if isinstance(normalized_exc, DockerPermissionDeniedError):
+                raise normalized_exc from exc
             if "container" in locals():
                 _stop_and_remove_container(container)
             raise ContainerStartFailedError() from exc
@@ -581,7 +602,13 @@ class DockerContainerProvider:
         return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
     async def list_runtime_containers(self, filters: dict[str, str]) -> list[ContainerStatus]:
-        containers = self._get_client().containers.list(all=True, filters={"label": ["ai-platform.owner=sandbox-runtime"]})
+        try:
+            containers = self._get_client().containers.list(all=True, filters={"label": ["ai-platform.owner=sandbox-runtime"]})
+        except Exception as exc:
+            normalized_exc = _normalize_docker_availability_error(exc)
+            if normalized_exc is not None:
+                raise normalized_exc from exc
+            raise
         statuses = []
         for container in containers:
             status = _container_status_from_labels(container)
@@ -590,7 +617,13 @@ class DockerContainerProvider:
         return [status for status in statuses if _matches_filters(status, filters)]
 
     async def cleanup_orphan_containers(self, filters: dict[str, str], *, reason: str) -> list[StopResult]:
-        containers = self._get_client().containers.list(all=True, filters={"label": ["ai-platform.owner=sandbox-runtime"]})
+        try:
+            containers = self._get_client().containers.list(all=True, filters={"label": ["ai-platform.owner=sandbox-runtime"]})
+        except Exception as exc:
+            normalized_exc = _normalize_docker_availability_error(exc)
+            if normalized_exc is not None:
+                raise normalized_exc from exc
+            raise
         results: list[StopResult] = []
         for container in containers:
             status = _container_status_from_labels(container)

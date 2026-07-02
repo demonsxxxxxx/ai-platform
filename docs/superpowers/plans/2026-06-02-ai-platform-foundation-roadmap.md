@@ -55,30 +55,36 @@ vulnerability evidence。
   不能作为当前状态名。
 - B3 边界：`b3_10x4_sdk_subagents` source contract 是 SDK subagent
   fanout 容量证据，不是 G8 普通用户平台级 multi-run 产品曝光证据。
-- 已部分推进但未完成：PR #296 已合入 GitHub `main`
-  `ae6b7e52c656fd8296cf039834ce8d8559b01228`，它包含 PR #294 的 G7
-  verifier-helper callback 默认修复，以及 PR #296 的文档状态清理。最新只读 poll 显示
-  211 source marker 已是
-  `ae6b7e52c656fd8296cf039834ce8d8559b01228`，source snapshot 记录
-  `source_tree_commit_sha=ae6b7e52c656fd8296cf039834ce8d8559b01228`、
-  `runtime_subject_commit_sha=ae6b7e52c656fd8296cf039834ce8d8559b01228`、
-  `source_tree_dirty=false`、`snapshot_source=codex_origin_main_archive_sync`。
-  211 API/worker 现在都运行
-  `ai-platform:ae6b7e5-g7-b3-label-repair-v1`，canonical labels、legacy alias
-  labels 和 in-container source markers 都已指向
-  `ae6b7e52c656fd8296cf039834ce8d8559b01228`，前端代理
-  `http://127.0.0.1:18001/api/ai/health` 返回 ok。旧
-  `stale_runtime_alias_label_mismatch` 已由 reviewed label-repair evidence
-  清掉。最新 G7/B3 audit 对 G7 的读法是
+- 已部分推进但未完成：PR #297 已合入 GitHub `main`
+  `4805031fc3333ccbf38224172e4e85e21c0630bb`，随后 `main` 又前进到
+  `ba81a0b18da4d4d30c1a8ce44d4bf03bb051fca8`。最新只读 poll 必须拆层读取：211 backend
+  source marker 仍是 `ae6b7e52c656fd8296cf039834ce8d8559b01228`；211
+  API/worker 现在都运行
+  `ai-platform:4805031-g7-b3-post-297-label-repair-v2`，canonical labels、legacy
+  alias labels 和 in-container source markers 指向
+  `4805031fc3333ccbf38224172e4e85e21c0630bb`；frontend image 是
+  `ai-platform-frontend:ba81a0b`；前端代理
+  `http://127.0.0.1:18001/api/ai/health` 返回 ok。这个状态只能说明
+  `4805031` runtime observation 存在；现在已有 reviewed G7 live-env hardening
+  evidence 和 same-subject Foundation Runtime concurrency evidence，但不能直接
+  升级为 G0 source-authority closure、B3 load evidence 或 `211 verified`。
+  已 reviewed 的 G7/POC/FRC evidence 仍是 `ae6b7e5` evidence set。对
+  `ae6b7e5` evidence set，G7 读法是
   `status=candidate_evidence_requires_review`、`blocking_reasons=[]`、
   `required_next_steps=["complete operator status-upgrade review before claiming G7 closure or 211 verified status"]`。
-  compose label 仍指向外部 runtime env file、本地 runtime-affecting source
-  changes 仍晚于已运行的 `ae6b7e5` runtime subject，属于 G0/source-authority
-  与 production-hardening 非闭合边界；B3 load evidence 仍缺失，是 B3
-  blocker；任何 G7 status upgrade 仍需要 operator review。
-  所以这是 current-main runtime rollout + label-repair progress；current-main
-  G7 sandbox verifier artifacts 已经被包装成 repo-local reviewed
-  release-evidence entry，但它仍不是 G0/G7 closure、不是 B3 load evidence，也不是
+  旧 `stale_runtime_alias_label_mismatch` 已由 reviewed `ae6b7e5`
+  label-repair evidence 清掉；这只适用于 `ae6b7e5` reviewed evidence
+  subject。对捕获时的 `4805031` runtime subject，reviewed G7 release evidence
+  和 same-subject FRC evidence 均已记录；evidence-only `4805031` audit 的 G7
+  读法是 `status=candidate_evidence_requires_review`、`blocking_reasons=[]`、
+  且下一步是 operator status-upgrade review。当前 live `4805031` audit 也已不再
+  因 executor-image drift blocked，因为 live env 读到 executor image 已是
+  `ai-platform:4805031-g7-b3-post-297-label-repair-v2`。
+  B3 load evidence 仍缺失，是 B3 blocker。compose label 仍指向外部 runtime env file，当前 source/runtime/
+  reviewed-evidence 拆层仍属于 G0/source-authority 与 production-hardening
+  非闭合边界；任何 G7 status upgrade 仍需要 operator review。
+  所以这是 post-PR #297 runtime observation + historical reviewed `ae6b7e5`
+  evidence progress；它仍不是 G0/G7 closure、不是 B3 load evidence，也不是
   `211 verified`。
   Audit cleanup note：读取 G7/B3 blockers 时，旧 sanitized runtime observations
   必须叠加同一 runtime subject 的 later reviewed label-repair、live-env
@@ -92,7 +98,7 @@ vulnerability evidence。
   callback stream、cancel stops container、resource-limit timeout cleanup、
   egress default-deny、non-privileged security options 和 8 个 verifier checks；
   但它仍只是 `d318f9f` named runtime-subject evidence，不是 reviewed local
-  release-evidence entry，也不是 `ae6b7e5` current-main G7 / Foundation Runtime
+  release-evidence entry，也不是 `ae6b7e5` reviewed G7 / Foundation Runtime
   concurrency evidence。此前 `bd690f7` image 的 G7 探针已走到 Docker/resource-limit
   evidence，但 no-masq egress network 阻断 callback exception path，导致
   required callback evidence 缺失，所以只能作为 blocker diagnostic，不是
@@ -101,8 +107,8 @@ vulnerability evidence。
   `513cc5e2280c35218e7edf297b7f02494e82a164`；该变更把 211 sandbox evidence generator 的 Docker platform 默认
   callback path 修为 `0.0.0.0` bind +
   `http://host.docker.internal:{port}/callback` public URL，避免 no-masq
-  host-gateway exception 只靠人工传参；该修复已随 PR #296 留在当前 GitHub
-  `main`，并已由 current-main one-shot formal verifier
+  host-gateway exception 只靠人工传参；该修复已随 PR #296 留在 GitHub
+  `main`，并已由 then-current-main one-shot formal verifier
   `g7-current-main-ae6b7e5-20260701172910` against
   `ai-platform:ae6b7e5-g7-current-main-runtime-only-v1` 在 211 产出 `/tmp`
   artifacts：runtime probe results、sandbox evidence 和 verifier summary。该 evidence
@@ -120,7 +126,7 @@ vulnerability evidence。
   POC/readiness 或 B3 load evidence blockers。
   被修复的旧 alias 值曾指向
   `bd690f72723080beeb820d07679da59d84c7913e`，现在只作为历史根因保留。
-- current-main G7 formal hardening evidence 已补充为
+- `ae6b7e5` G7 formal hardening evidence 已补充为
   `docs/release-evidence/g7-sandbox/ae6b7e52c656fd8296cf039834ce8d8559b01228/2026-07-01-211-g7-sandbox-runtime-hardening-ae6b7e5.json`。
   它记录 `g7-current-main-label-repair-probe-20260701201919` against
   `ai-platform:ae6b7e5-g7-b3-label-repair-v1` 的 8 个 verifier checks 通过，
@@ -129,17 +135,27 @@ vulnerability evidence。
   G7。随后 live-env hardening evidence 已补充为
   `docs/release-evidence/g7-sandbox/ae6b7e52c656fd8296cf039834ce8d8559b01228/2026-07-02-211-g7-sandbox-live-env-hardening-ae6b7e5.json`。
   它记录 `g7-live-env-hardening-ae6b7e5-20260702045743` 的 8 个 verifier
-   checks 通过，并记录 live API/worker 已是
+   checks 通过，并记录当时 live API/worker 已是
    `SANDBOX_CONTAINER_PROVIDER=docker`、
    `SANDBOX_EXECUTOR_IMAGE=ai-platform:ae6b7e5-g7-b3-label-repair-v1`、
    `SANDBOX_EGRESS_POLICY_ENABLED=true`。这清除了旧 executor-image /
-   egress-policy blockers。G7 当前不是 blocked，而是
-   `candidate_evidence_requires_review`：G7 runtime `blocking_reasons=[]`，
-   但 operator status-upgrade review 仍未完成，所以不能声明 G7 closure 或
-   `211 verified`。external env-file label、当前本地 runtime-affecting source
+   egress-policy blockers。G7 对 `ae6b7e5` 证据集不是 blocked，而是
+   `candidate_evidence_requires_review`：G7 runtime `blocking_reasons=[]`。
+   另有 reviewed `4805031` live-env hardening evidence 记录
+   `g7-live-env-hardening-4805031-20260702023507` 的 8 个 verifier checks
+   通过，live API/worker 为
+   `SANDBOX_EXECUTOR_IMAGE=ai-platform:4805031-g7-b3-post-297-label-repair-v2`，
+   并清除了 `4805031` 的 `reviewed_local_release_evidence_entry_missing`
+   blocker。同 subject FRC evidence 也已记录，所以 G7 对捕获时的 `4805031`
+   runtime subject 的 evidence-only 读法是 `candidate_evidence_requires_review`；
+   当前 211 live env 读到 executor image 已是
+   `ai-platform:4805031-g7-b3-post-297-label-repair-v2`，所以 current live `4805031`
+   audit 的 G7 读法是 `candidate_evidence_requires_review`，不是
+   `live_api_sandbox_executor_image_not_current_main_bound`。operator status-upgrade review 也仍未完成，
+   所以不能声明 G7 closure 或 `211 verified`。external env-file label、当前 runtime-affecting source
    rollout gap 和 B3 load evidence 分别保留在 G0/source-authority、
    production-hardening 与 B3 非闭合边界中。
-- current-main Foundation Alpha POC evidence set 已补充在
+- reviewed `ae6b7e5` Foundation Alpha POC evidence set 已补充在
   `docs/release-evidence/foundation-alpha-poc/ae6b7e52c656fd8296cf039834ce8d8559b01228/`。
   它包含 runtime POC smoke、Auth/RBAC smoke、governance runtime smoke、
   release-evidence runtime acceptance、alert/trace export runtime acceptance。
@@ -153,9 +169,9 @@ vulnerability evidence。
   `ae6b7e5` FRC evidence，且 `stage_acceptance_blockers=[]`；但它仍报告
   `foundation_alpha_stage_status=runtime_rollout_required`，因为当前本地
   runtime-affecting source changes 尚未 rollout 到运行中的 `ae6b7e5`
-  runtime subject。因此这只是 current-main POC correctness / release-evidence
+  runtime subject。因此这只是 `ae6b7e5` POC correctness / release-evidence
   progress，不关闭 #164、G0、G7、B3、G9 或 production readiness。
-- current-main Foundation Runtime concurrency evidence 已补充为
+- reviewed `ae6b7e5` Foundation Runtime concurrency evidence 已补充为
   `docs/release-evidence/foundation-runtime-concurrency/ae6b7e52c656fd8296cf039834ce8d8559b01228-frc-g7-b3-20260702/2026-07-02-211-foundation-alpha-poc-ae6b7e5-foundation-runtime-concurrency.json`
   及对应 readiness/summary。它记录 `verified_foundation_runtime_concurrency`、
   12 concurrent requests/sessions/runs、2 tenants、4 users、
@@ -172,26 +188,42 @@ vulnerability evidence。
   `probe_only_not_recorded`，`does_not_mark_gate_recorded = true`，
   `sent_requests = 10`，`stop_condition_status = passed`；七个 recorded
   load-test gates 仍缺失。
-  2026-07-02 current-main `ae6b7e5` read-only capacity runtime evidence 已确认
+  2026-07-02 `ae6b7e5` read-only capacity runtime evidence 已确认
   Admin Runtime HTTP `200`、required capacity sections present、nested gate
   readiness `blocked_missing_load_test_evidence` 和
   `do_not_raise_without_recorded_load_test_evidence`，但这只是 B3 visibility /
   fail-closed evidence；`b3_10x4_sdk_subagents` operator-reviewed profile
   evidence 仍全部缺失，不关闭 B3。
+  当前 `4805031` 的 fresh capacity visibility 仍待部署后重采：211 上默认
+  `/api/ai/admin/runtime/overview` 返回 `sandbox_provider_cleanup_failed`，
+  `include_maintenance_cleanup=false` 路径也会因为当前 deployed image 在 API
+  容器内调用 Docker SDK 枚举 containers、而默认 stack 不挂 Docker socket
+  导致 HTTP `500`。本地 source 已改为 default-stack 降级：
+  container observation 失败时返回 `list_runtime_containers_status=unavailable`
+  而不是让整个 overview 失败，`tools/capacity_runtime_evidence.py` 也新增
+  `--skip-maintenance-cleanup`。这只是 local progress，合并部署并重新采集
+  211 capacity runtime evidence 前，不能说 `4805031` B3 visibility 已验证。
 
 因此当前下一步不是重开 G8，也不是把 B3 当作普通用户平台级 multi-run 产品曝光；
 下一步是先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime observation
-和可选 capacity profile readiness 汇总成 fail-closed 阻塞清单，把已 reviewed 的
+和可选 capacity profile readiness 汇总成 fail-closed 阻塞清单。读取
+`ae6b7e5` 历史 reviewed 状态时，可以把已 reviewed 的
 `g7-current-main-ae6b7e5-20260701172910` G7 sandbox evidence、formal hardening
-evidence、live-env hardening evidence、label-repair evidence、current-main
-runtime POC smoke 和 current-main FRC evidence 作为输入。当前审计结果应读作：
-G7 无 runtime `blocking_reasons`，但需要 operator status-upgrade review；
-B3 仍 blocked，因为七个 recorded load-test gates 和
-`b3_10x4_sdk_subagents` profile evidence 缺失；external env-file 与当前本地
-runtime-affecting source rollout gap 是 G0/source-authority /
-production-hardening 非闭合边界。G7/B3 的证据边界继续保持为
-`runtime pending` / `local partial`，直到真实运行证据闭合。该 audit 只是
-控制/计划工件，不是 G7 runtime evidence 或 B3 load evidence。
+  evidence、live-env hardening evidence、label-repair evidence、runtime POC smoke
+  和 FRC evidence 作为输入；读取当前 `4805031` 状态时，不能沿用这些
+  evidence 作为 same-subject closure。当前审计结果应读作：G7 对 `ae6b7e5`
+  无 runtime `blocking_reasons`，但需要 operator status-upgrade review；G7 对
+  `4805031` reviewed evidence + same-subject FRC 的历史证据读法可以到
+  `candidate_evidence_requires_review`；当前 211 live env 读到 executor image 已是
+  `ai-platform:4805031-g7-b3-post-297-label-repair-v2`，因此 current live `4805031`
+  audit 的 G7 读法也是 `candidate_evidence_requires_review`，不是
+  `live_api_sandbox_executor_image_not_current_main_bound`；B3 仍 blocked，因为七个 recorded load-test gates 和
+  `b3_10x4_sdk_subagents` profile evidence 缺失，且 `4805031` capacity runtime
+  visibility 还需要 no-cleanup/default-stack fix 部署后重采；external env-file 与当前
+  source/runtime split 是 G0/source-authority / production-hardening 非闭合边界。
+G7/B3 的证据边界继续保持为 `runtime pending` / `local partial`，直到真实运行
+证据闭合。该 audit 只是控制/计划工件，不是 G7 runtime evidence 或 B3 load
+evidence。
 
 ## 2026-06-06 Gate-Based Roadmap Sync
 
