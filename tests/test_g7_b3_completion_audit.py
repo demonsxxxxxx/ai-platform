@@ -16,6 +16,7 @@ CURRENT_SOURCE = "3071a02945c84370f62a9b36884a0a2df8ea9c45"
 RUNTIME_SUBJECT = "d318f9f6a68b4c17e221eb32705b3f31d349227a"
 LEGACY_LABEL_SUBJECT = "96f27bb9bc8e415faddada2cec0fbfb6ecdcf92c"
 CURRENT_MAIN_G7_SOURCE = "ae6b7e52c656fd8296cf039834ce8d8559b01228"
+PR297_G7_B3_SOURCE = "4805031fc3333ccbf38224172e4e85e21c0630bb"
 CURRENT_MAIN_G7_EVIDENCE_PATH = (
     Path(__file__).resolve().parents[1]
     / "docs/release-evidence/g7-sandbox"
@@ -39,6 +40,18 @@ CURRENT_MAIN_G7_LABEL_REPAIR_EVIDENCE_PATH = (
     / "docs/release-evidence/g7-sandbox"
     / CURRENT_MAIN_G7_SOURCE
     / "2026-07-01-211-g7-runtime-identity-label-repair-ae6b7e5.json"
+)
+PR297_G7_LIVE_ENV_EVIDENCE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "docs/release-evidence/g7-sandbox"
+    / PR297_G7_B3_SOURCE
+    / "2026-07-02-211-g7-sandbox-live-env-hardening-4805031.json"
+)
+PR297_FRC_EVIDENCE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "docs/release-evidence/foundation-runtime-concurrency"
+    / f"{PR297_G7_B3_SOURCE}-frc-g7-b3-20260702"
+    / "2026-07-02-211-foundation-alpha-poc-4805031-foundation-runtime-concurrency.json"
 )
 CURRENT_MAIN_FRC_EVIDENCE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -392,6 +405,131 @@ def test_current_main_g7_live_env_hardening_evidence_clears_old_live_posture_blo
         assert forbidden not in serialized
 
 
+def test_pr297_g7_live_env_hardening_and_frc_evidence_require_operator_review():
+    evidence = json.loads(PR297_G7_LIVE_ENV_EVIDENCE_PATH.read_text(encoding="utf-8"))
+    frc_evidence = json.loads(PR297_FRC_EVIDENCE_PATH.read_text(encoding="utf-8"))
+
+    assert evidence["schema_version"] == "ai-platform.release-evidence-entry.v1"
+    assert evidence["evidence_id"] == "2026-07-02-211-g7-sandbox-live-env-hardening-4805031"
+    assert evidence["artifact_kind"] == "211_sandbox_runtime_smoke"
+    assert evidence["commit_sha"] == PR297_G7_B3_SOURCE
+    assert evidence["runtime_subject_commit_sha"] == PR297_G7_B3_SOURCE
+    assert evidence["issue_refs"] == []
+    assert evidence["pr_refs"] == ["#297"]
+    assert evidence["review_status"] == "reviewed"
+    assert evidence["redaction_scan_status"] == "passed"
+    assert evidence["source_ref"]["image"] == "ai-platform:4805031-g7-b3-post-297-label-repair-v2"
+    assert evidence["source_ref"]["image_id"] == (
+        "sha256:a8c2448f2083eb0e7537a2f07b4245cec9b4f467c1c81207c3cd6396316b08a5"
+    )
+    assert evidence["source_ref"]["runtime_source_marker"] == PR297_G7_B3_SOURCE
+    assert evidence["source_ref"]["repo_backend_source_marker"] == CURRENT_MAIN_G7_SOURCE
+    assert evidence["source_ref"]["safe_live_runtime_env"] == {
+        "SANDBOX_CONTAINER_PROVIDER": "docker",
+        "SANDBOX_EXECUTOR_IMAGE": "ai-platform:4805031-g7-b3-post-297-label-repair-v2",
+        "SANDBOX_EGRESS_POLICY_ENABLED": "true",
+    }
+    runtime_check = evidence["evidence_ref"]["runtime_checks"]["g7_211_sandbox_runtime_hardening"]
+    assert runtime_check["run_id"] == "g7-live-env-hardening-4805031-20260702023507"
+    assert runtime_check["runtime_mode"] == "platform"
+    assert runtime_check["sandbox_provider"] == "docker"
+    assert runtime_check["callbacks"] == ["running", "failed"]
+    assert runtime_check["cancel_stops_container"] is True
+    assert runtime_check["live_runtime_env"] == evidence["source_ref"]["safe_live_runtime_env"]
+    assert runtime_check["hardening"]["resource_limits"]["over_limit_cleanup_verified"] is True
+    assert runtime_check["hardening"]["egress_policy"]["default_deny_outbound"] is True
+    assert runtime_check["hardening"]["security_options"]["docker_socket_mounted"] is False
+    assert all(item["passed"] is True for item in evidence["evidence_ref"]["runtime_checks"]["verifier_checks"])
+    assert runtime_check["does_not_close_g7_gate"] is True
+    assert runtime_check["does_not_close_b3_gate"] is True
+    assert frc_evidence["schema_version"] == "ai-platform.foundation-runtime-concurrency.v1"
+    assert frc_evidence["commit_sha"] == PR297_G7_B3_SOURCE
+    assert frc_evidence["source_tree_commit_sha"] == PR297_G7_B3_SOURCE
+    assert frc_evidence["runtime_subject_commit_sha"] == PR297_G7_B3_SOURCE
+
+    audit = build_g7_b3_completion_audit(
+        runtime_observation={
+            "source_marker_commit": PR297_G7_B3_SOURCE,
+            "runtime_image": evidence["source_ref"]["image"],
+            "runtime_image_labels": evidence["source_ref"]["image_labels"],
+            "api_env": evidence["source_ref"]["safe_live_runtime_env"],
+            "reviewed_release_evidence": evidence,
+            "foundation_runtime_concurrency_evidence": frc_evidence,
+        },
+        capacity_profile_readiness=None,
+        current_source_commit=PR297_G7_B3_SOURCE,
+    )
+    assert audit["g7"]["reviewed_release_evidence_id"] == runtime_check["run_id"]
+    assert audit["g7"]["foundation_runtime_concurrency_status"] == (
+        "verified_foundation_runtime_concurrency"
+    )
+    assert audit["g7"]["foundation_runtime_concurrency_current_subject"] is True
+    assert audit["g7"]["blocking_reasons"] == []
+    assert audit["g7"]["required_next_steps"] == [
+        "complete operator status-upgrade review before claiming G7 closure or 211 verified status"
+    ]
+    assert audit["g7"]["status"] == "candidate_evidence_requires_review"
+    assert audit["b3"]["status"] == "blocked"
+    assert audit["b3"]["blocking_reasons"] == [
+        "b3_recorded_load_test_gates_missing",
+        "b3_10x4_sdk_subagents_profile_evidence_missing",
+    ]
+    assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
+    assert audit["status_label"] == "local partial"
+    assert audit["does_not_claim_211_verified"] is True
+    assert audit["does_not_claim_gate_closable"] is True
+
+    serialized = json.dumps(evidence, ensure_ascii=False).lower()
+    for forbidden in (
+        "callback_token",
+        "openai_api_key",
+        "anthropic_auth_token",
+        "database_url",
+        "redis_url",
+        "/home/xinlin",
+        "/var/run/docker.sock",
+        "c:\\users",
+        "6ea6c27b1c17",
+    ):
+        assert forbidden not in serialized
+
+
+def test_audit_preserves_current_live_env_over_reviewed_evidence_when_executor_image_regresses():
+    evidence = json.loads(PR297_G7_LIVE_ENV_EVIDENCE_PATH.read_text(encoding="utf-8"))
+    frc_evidence = json.loads(PR297_FRC_EVIDENCE_PATH.read_text(encoding="utf-8"))
+
+    audit = build_g7_b3_completion_audit(
+        runtime_observation={
+            "source_marker_commit": PR297_G7_B3_SOURCE,
+            "runtime_image": evidence["source_ref"]["image"],
+            "runtime_image_labels": evidence["source_ref"]["image_labels"],
+            "api_env": {
+                "SANDBOX_CONTAINER_PROVIDER": "docker",
+                "SANDBOX_EXECUTOR_IMAGE": "ai-platform:ae6b7e5-g7-b3-label-repair-v1",
+                "SANDBOX_EGRESS_POLICY_ENABLED": "true",
+            },
+            "reviewed_release_evidence": evidence,
+            "foundation_runtime_concurrency_evidence": frc_evidence,
+        },
+        capacity_profile_readiness=None,
+        current_source_commit=PR297_G7_B3_SOURCE,
+    )
+
+    assert audit["g7"]["live_api_sandbox_executor_image"] == (
+        "ai-platform:ae6b7e5-g7-b3-label-repair-v1"
+    )
+    assert audit["g7"]["safe_runtime_env"]["SANDBOX_EXECUTOR_IMAGE"] == (
+        "ai-platform:ae6b7e5-g7-b3-label-repair-v1"
+    )
+    assert "live_api_sandbox_executor_image_not_current_main_bound" in audit["g7"]["blocking_reasons"]
+    assert audit["g7"]["reviewed_release_evidence_id"] == (
+        "g7-live-env-hardening-4805031-20260702023507"
+    )
+    assert audit["g7"]["foundation_runtime_concurrency_current_subject"] is True
+    assert audit["g7"]["status"] == "blocked"
+    assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
+
+
 def test_audit_merges_latest_reviewed_g7_evidence_over_stale_runtime_observation():
     runtime_observation = json.loads(STALE_CURRENT_MAIN_RUNTIME_OBSERVATION_PATH.read_text(encoding="utf-8"))
     label_repair = json.loads(CURRENT_MAIN_G7_LABEL_REPAIR_EVIDENCE_PATH.read_text(encoding="utf-8"))
@@ -581,6 +719,35 @@ def test_audit_keeps_g7_blocked_after_label_repair_when_live_api_still_uses_fake
     assert audit["g7"]["status"] == "blocked"
     assert audit["status_label"] == "local partial"
     assert audit["does_not_close_g7"] is True
+
+
+def test_audit_keeps_g7_blocked_when_same_subject_foundation_runtime_concurrency_missing():
+    evidence = json.loads(CURRENT_MAIN_G7_LIVE_ENV_EVIDENCE_PATH.read_text(encoding="utf-8"))
+    runtime_check = evidence["evidence_ref"]["runtime_checks"]["g7_211_sandbox_runtime_hardening"]
+
+    audit = build_g7_b3_completion_audit(
+        runtime_observation={
+            "source_marker_commit": CURRENT_MAIN_G7_SOURCE,
+            "runtime_image": evidence["source_ref"]["image"],
+            "runtime_image_labels": evidence["source_ref"]["image_labels"],
+            "api_env": evidence["source_ref"]["safe_live_runtime_env"],
+            "reviewed_release_evidence": evidence,
+        },
+        capacity_profile_readiness=None,
+        current_source_commit=CURRENT_MAIN_G7_SOURCE,
+    )
+
+    assert audit["g7"]["reviewed_release_evidence_id"] == runtime_check["run_id"]
+    assert audit["g7"]["foundation_runtime_concurrency_current_subject"] is False
+    assert audit["g7"]["blocking_reasons"] == [
+        "foundation_runtime_concurrency_evidence_missing_or_not_current_subject"
+    ]
+    assert audit["g7"]["required_next_steps"] == [
+        "rerun Foundation Runtime concurrency evidence for the same current runtime subject"
+    ]
+    assert audit["g7"]["status"] == "blocked"
+    assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
+    assert audit["does_not_claim_211_verified"] is True
 
 
 def test_audit_does_not_treat_legacy_alias_labels_as_canonical_runtime_labels():

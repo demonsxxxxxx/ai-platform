@@ -859,6 +859,34 @@ def test_capacity_gate_readiness_blocks_default_raise_until_load_gates_are_recor
     assert "executor_private_payload" not in serialized
 
 
+def test_capacity_gate_readiness_treats_degraded_container_observation_as_missing_sandbox_section():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 1, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 1, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {
+                "list_runtime_containers_status": "unavailable",
+                "container_observation_degraded": True,
+                "containers": {"running": 0},
+                "leases": {"active": 0},
+            },
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="default-stack",
+    )
+
+    assert snapshot["admin_runtime_evidence"]["missing_sections"] == ["sandbox"]
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "blocked_missing_admin_runtime_sections"
+    assert readiness["admin_runtime_evidence"]["missing_sections"] == ["sandbox"]
+    assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+
+
 def test_capacity_gate_readiness_rejects_recorded_gates_without_evidence_contract():
     snapshot = build_capacity_evidence_snapshot(
         {
@@ -2022,6 +2050,70 @@ def test_capacity_runtime_evidence_cli_captures_overview_without_printing_raw_pr
     assert "work-secret" not in result.stdout
     assert "sk-secret" not in result.stdout
     assert "executor_private_payload" not in result.stdout
+
+
+def test_capacity_runtime_evidence_cli_can_skip_maintenance_cleanup_for_default_stack():
+    requests: list[str] = []
+
+    class OverviewHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            requests.append(self.path)
+            if self.path != "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false":
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(b'{"detail":"sandbox_provider_cleanup_failed"}')
+                return
+            payload = _admin_runtime_overview()
+            raw = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OverviewHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/capacity_runtime_evidence.py",
+                "--base-url",
+                base_url,
+                "--user-id",
+                "capacity-admin",
+                "--tenant-id",
+                "tenant-a",
+                "--roles",
+                "admin",
+                "--commit-sha",
+                "abc123",
+                "--runtime-profile",
+                "default-stack",
+                "--skip-maintenance-cleanup",
+                "--format",
+                "json",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(result.stdout)
+    assert payload["source"]["overview_route"] == (
+        "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"
+    )
+    assert payload["source"]["http_status"] == 200
+    assert payload["readiness"]["status"] == "blocked_missing_load_test_evidence"
+    assert requests == ["/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"]
 
 
 def test_capacity_evidence_bundle_drafts_probe_evidence_without_marking_gate_recorded():

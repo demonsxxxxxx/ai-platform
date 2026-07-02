@@ -24,7 +24,7 @@ python tools/capacity_gate_readiness.py --snapshot-json <capacity-evidence-snaps
 python tools/capacity_gate_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format json
 python tools/capacity_profile_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format markdown
 python tools/capacity_profile_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format json
-python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile <profile> --format json
+python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile <profile> --skip-maintenance-cleanup --format json
 python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate api_read_write_burst --requests 10 --concurrency 2 --format json
 python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate run_creation_burst_by_tenant_and_user --requests 10 --concurrency 2 --format json
 python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate worker_processing_throughput --requests 10 --concurrency 2 --format json
@@ -233,15 +233,20 @@ from the approved load run.
 For a single read-only capture command, use:
 
 ```powershell
-python tools/capacity_runtime_evidence.py --base-url http://10.56.0.211:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile 211-current --format json
+python tools/capacity_runtime_evidence.py --base-url http://10.56.0.211:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile 211-current --skip-maintenance-cleanup --format json
 ```
 
-This command fetches only `GET /api/ai/admin/runtime/overview`, then emits the
-sanitized evidence snapshot and fail-closed gate readiness verdict. It does not
-print the raw overview, send load, create runs, mutate runtime state, or raise
-any default. If a deployment requires `X-AI-Gateway-Secret`, pass only the
-environment variable name with `--gateway-secret-env`; the secret value is read
-from the environment and never printed.
+This command fetches only
+`GET /api/ai/admin/runtime/overview?include_maintenance_cleanup=false`, then
+emits the sanitized evidence snapshot and fail-closed gate readiness verdict. It
+does not print the raw overview, send load, create runs, mutate runtime state,
+run sandbox/container maintenance cleanup, or raise any default. If a deployment
+requires `X-AI-Gateway-Secret`, pass only the environment variable name with
+`--gateway-secret-env`; the secret value is read from the environment and never
+printed. The no-cleanup flag is the default-stack capture mode: the production
+compose path intentionally does not mount the Docker socket into the API
+container, so read-only capacity snapshots must not depend on Docker SDK access
+from inside the API process.
 
 ## Operator Load-Test Workflow
 
@@ -551,7 +556,7 @@ number, and must not be used to raise production defaults.
 
 ### 211 Runtime Evidence - 2026-07-02, commit `ae6b7e5`
 
-After the current-main G7/B3 label-repair rollout, API and worker both ran image
+After the PR #296 G7/B3 label-repair rollout, API and worker both ran image
 `ai-platform:ae6b7e5-g7-b3-label-repair-v1`, with source/runtime/OCI labels
 and in-container source markers bound to
 `ae6b7e52c656fd8296cf039834ce8d8559b01228`.
@@ -594,7 +599,7 @@ was attached for `target_profile_id`, `evidence_source`,
 `production_concurrency_defaults_raised`, `safe_concurrency_claimed`, or
 `ordinary_user_platform_multi_run_orchestration_enabled`.
 
-The same current-main runtime also ran a bounded read-only probe sweep across
+The same `ae6b7e5` runtime also ran a bounded read-only probe sweep across
 all seven harness gates:
 
 - `api_read_write_burst`
@@ -616,12 +621,37 @@ the runtime-evidence wrapper fail-closed with `missing_sections=[]` and
 `b3_10x4_sdk_subagents` profile evidence remain missing.
 
 The production default decision remained
-`do_not_raise_without_recorded_load_test_evidence`. This current-main read-only
+`do_not_raise_without_recorded_load_test_evidence`. This `ae6b7e5` read-only
 runtime evidence proves 211 Admin Runtime capacity visibility and fail-closed
 policy for `ae6b7e5`; it still does not provide recorded B3 load-test evidence,
 does not prove the 10 sessions x peak 4 SDK subagents/session profile, does not
 claim a safe maximum concurrency number, does not raise production defaults,
 and does not close B3.
+
+After PR #297, 211 API/worker were later observed running
+`ai-platform:4805031-g7-b3-post-297-label-repair-v2`, while the backend source
+marker still read `ae6b7e5` and the frontend image was
+`ai-platform-frontend:ba81a0b`. That observation does not change the B3
+capacity conclusion: all seven operator-reviewed recorded load-test gates and
+the `b3_10x4_sdk_subagents` profile evidence are still missing.
+
+Fresh read-only 211 capacity sampling for the `4805031` runtime is currently
+blocked until the local no-cleanup/default-stack fix is merged and deployed. On
+2026-07-02, the default Admin Runtime capacity route
+`GET /api/ai/admin/runtime/overview` returned HTTP `500` with
+`sandbox_provider_cleanup_failed`. The no-cleanup route
+`GET /api/ai/admin/runtime/overview?include_maintenance_cleanup=false` still
+returned HTTP `500` in the running `4805031` image because container enumeration
+called Docker SDK from inside the API container, where the default stack
+intentionally has no Docker socket. The local route fix degrades that container
+observation to `list_runtime_containers_status=unavailable` instead of failing
+the whole overview, and `tools/capacity_runtime_evidence.py` now has
+`--skip-maintenance-cleanup` for this capture mode. A degraded container
+observation is still fail-closed for B3 readiness: the snapshot can record the
+safe overview, but `sandbox` remains a missing Admin Runtime section until
+container visibility is available. Until that fix is rolled out and a fresh
+capacity evidence snapshot is captured, the latest accepted B3 visibility
+evidence remains the reviewed `ae6b7e5` read-only evidence above.
 
 ### Evidence Bundle Draft Tool
 

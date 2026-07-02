@@ -645,7 +645,7 @@ def _discover_latest_release_evidence_pair() -> tuple[Path, Path] | None:
 
 
 def _discover_runtime_relevant_release_evidence_pair(source_tree_commit: str) -> tuple[Path, Path] | None:
-    candidates: list[tuple[tuple[str, str], Path, Path]] = []
+    candidates: list[tuple[tuple[int, str, str], Path, Path]] = []
     if source_tree_commit == "unknown" or not _EVIDENCE_BASE_ROOT.is_dir():
         return None
 
@@ -663,18 +663,33 @@ def _discover_runtime_relevant_release_evidence_pair(source_tree_commit: str) ->
             continue
         smoke_runtime_subject = smoke_payload.get("runtime_subject_commit_sha")
         auth_runtime_subject = auth_payload.get("runtime_subject_commit_sha")
-        if smoke_runtime_subject != auth_runtime_subject:
-            continue
-        if not _commit_ref_covers_runtime_relevant_source(
-            smoke_runtime_subject,
-            source_tree_commit,
+        if (
+            not isinstance(smoke_runtime_subject, str)
+            or not smoke_runtime_subject
+            or smoke_runtime_subject != auth_runtime_subject
         ):
             continue
+        runtime_affecting_delta = _resolve_runtime_affecting_changes_between(
+            smoke_runtime_subject,
+            source_tree_commit,
+        )
+        if runtime_affecting_delta is None:
+            if not _commit_ref_covers_runtime_relevant_source(
+                smoke_runtime_subject,
+                source_tree_commit,
+            ):
+                continue
+            runtime_affecting_delta_count = 0
+        else:
+            runtime_affecting_delta_count = len(runtime_affecting_delta)
         candidates.append(
             (
-                max(
-                    _release_evidence_sort_key(smoke_path, smoke_payload),
-                    _release_evidence_sort_key(auth_path, auth_payload),
+                (
+                    -runtime_affecting_delta_count,
+                    *max(
+                        _release_evidence_sort_key(smoke_path, smoke_payload),
+                        _release_evidence_sort_key(auth_path, auth_payload),
+                    ),
                 ),
                 smoke_path,
                 auth_path,

@@ -126,6 +126,8 @@ class FakeDockerContainers:
         return container
 
     def list(self, all: bool = False, filters: dict[str, Any] | None = None) -> list[FakeDockerContainer]:
+        if self._client.list_error is not None:
+            raise self._client.list_error
         containers = list(self._client.containers_by_name.values())
         if not all:
             containers = [container for container in containers if container.status == "running"]
@@ -159,12 +161,14 @@ class FakeDockerClient:
         create_error: Exception | None = None,
         start_error: Exception | None = None,
         stop_error: Exception | None = None,
+        list_error: Exception | None = None,
         host_port: str | None = "18000",
     ) -> None:
         self.ping_error = ping_error
         self.create_error = create_error
         self.start_error = start_error
         self.stop_error = stop_error
+        self.list_error = list_error
         self.host_port = host_port
         self.created: list[dict[str, Any]] = []
         self.containers_by_name: dict[str, FakeDockerContainer] = {}
@@ -359,6 +363,36 @@ async def test_docker_provider_daemon_error_is_sanitized():
 
     with pytest.raises(DockerUnavailableError) as exc_info:
         await provider.create_or_reuse(request(), workspace())
+
+    assert exc_info.value.error_code == "docker_unavailable"
+    assert "/var/run/docker.sock" not in str(exc_info.value)
+    assert str(exc_info.value) == "Docker daemon is unavailable"
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_list_permission_denied_error_is_sanitized():
+    from app.runtime.sandbox.container_provider import DockerContainerProvider, DockerPermissionDeniedError
+
+    fake = FakeDockerClient(list_error=RuntimeError(f"permission denied: {workspace().workspace_host_path}"))
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake)
+
+    with pytest.raises(DockerPermissionDeniedError) as exc_info:
+        await provider.list_runtime_containers({"tenant_id": "tenant-a"})
+
+    assert exc_info.value.error_code == "docker_permission_denied"
+    assert workspace().workspace_host_path not in str(exc_info.value)
+    assert str(exc_info.value) == "Docker permission denied"
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_list_daemon_error_is_sanitized():
+    from app.runtime.sandbox.container_provider import DockerContainerProvider, DockerUnavailableError
+
+    fake = FakeDockerClient(list_error=RuntimeError("cannot connect to /var/run/docker.sock"))
+    provider = DockerContainerProvider(docker_client_factory=lambda: fake)
+
+    with pytest.raises(DockerUnavailableError) as exc_info:
+        await provider.list_runtime_containers({"tenant_id": "tenant-a"})
 
     assert exc_info.value.error_code == "docker_unavailable"
     assert "/var/run/docker.sock" not in str(exc_info.value)
