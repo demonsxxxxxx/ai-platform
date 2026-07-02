@@ -24,6 +24,14 @@ def _read_json(path_value: str) -> dict[str, object]:
     return payload
 
 
+def _profile_readiness_input(payload: dict[str, object]) -> dict[str, object]:
+    if payload.get("schema_version") == "ai-platform.capacity-runtime-evidence.v1":
+        readiness = payload.get("readiness")
+        if isinstance(readiness, dict):
+            return readiness
+    return payload
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -49,7 +57,7 @@ def main() -> None:
     args = parser.parse_args()
 
     input_path = args.snapshot_json or args.readiness_json
-    readiness = build_capacity_profile_readiness(_read_json(input_path))
+    readiness = build_capacity_profile_readiness(_profile_readiness_input(_read_json(input_path)))
     if args.format == "json":
         print(json.dumps(readiness, ensure_ascii=False, indent=2, sort_keys=True))
         return

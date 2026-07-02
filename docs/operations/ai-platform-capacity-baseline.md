@@ -1,6 +1,6 @@
 # ai-platform Capacity Baseline
 
-Date: 2026-06-07
+Date: 2026-07-02
 
 This document closes the first #21 baseline step without raising production
 concurrency defaults. It records the current configured ceiling, the live Admin
@@ -185,12 +185,13 @@ runtime source such as `evidence_source = platform_runtime_profile`, record
 the non-expansion flags
 `production_concurrency_defaults_raised = false`,
 `safe_concurrency_claimed = false`, and
-`ordinary_user_multi_agent_enabled = false`; otherwise
+`ordinary_user_platform_multi_run_orchestration_enabled = false`; otherwise
 `tools/capacity_profile_readiness.py` keeps the B3 profile at
-`blocked_missing_profile_evidence`. The legacy schema flag
-`ordinary_user_multi_agent_enabled = false` means no ordinary-user
-platform-level multi-run orchestration exposure; it is not evidence that B3 is
-a G8 product route. Required review evidence:
+`blocked_missing_profile_evidence`. Historical snapshots may still import the
+legacy alias `ordinary_user_multi_agent_enabled = false`; the readiness path
+normalizes it to the canonical platform-level multi-run flag. This flag means
+no ordinary-user platform-level multi-run orchestration exposure; it is not
+evidence that B3 is a G8 product route. Required review evidence:
 
 - `runtime_source_identity_and_image_labels`
 - `tenant_user_skill_mix`
@@ -203,7 +204,7 @@ a G8 product route. Required review evidence:
 
 Contract flags stay fail-closed: `does_not_raise_defaults = true`,
 `does_not_claim_safe_concurrency = true`,
-`does_not_enable_ordinary_user_multi_agent = true`, and
+`does_not_enable_ordinary_user_platform_multi_run_orchestration = true`, and
 `does_not_close_b3_gate = true`. This is source contract only; it does not raise production defaults,
 does not close B3, and must not be used as ordinary-user platform-level multi-run
 orchestration exposure evidence.
@@ -261,12 +262,15 @@ The workflow is intentionally conservative:
 4. Capture end runtime evidence with `tools/capacity_runtime_evidence.py`.
 5. Record cleanup proof for test tenants, queues, sandbox leases, and generated
    artifacts.
-6. Assemble an operator-reviewed recorded-gate snapshot with
+6. Build a sanitized recorded-gate evidence packet with
+   `tools/capacity_recorded_gate_evidence_packet.py` from operator-reviewed
+   measured values. Do not use bounded probe output as packet input.
+7. Assemble an operator-reviewed recorded-gate snapshot with
    `tools/capacity_recorded_gate_snapshot.py`. When the same operator packet
    includes the B3 SDK subagent fanout measurement, pass it through
    `--profile-evidence-json` so the tool writes only
    `load_test_evidence.profile_evidence.b3_10x4_sdk_subagents`.
-7. Generate the final fail-closed verdict with
+8. Generate the final fail-closed verdict with
    `tools/capacity_gate_readiness.py`.
 
 Every workflow step carries `does_not_raise_defaults = true`. The only step
@@ -545,6 +549,80 @@ the bounded read-only probe path is operational. It still does not satisfy the
 recorded capacity-evidence gate, does not claim a safe maximum concurrency
 number, and must not be used to raise production defaults.
 
+### 211 Runtime Evidence - 2026-07-02, commit `ae6b7e5`
+
+After the current-main G7/B3 label-repair rollout, API and worker both ran image
+`ai-platform:ae6b7e5-g7-b3-label-repair-v1`, with source/runtime/OCI labels
+and in-container source markers bound to
+`ae6b7e52c656fd8296cf039834ce8d8559b01228`.
+
+The read-only capacity runtime evidence command was run inside the 211 API
+container against the local API route because the 211 host Python environment
+does not currently provide the app dependencies needed by the repository tool:
+
+```powershell
+python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha ae6b7e52c656fd8296cf039834ce8d8559b01228 --runtime-profile 211-current-ae6b7e5 --format json
+```
+
+The output schema was `ai-platform.capacity-runtime-evidence.v1`. The nested
+snapshot schema was `ai-platform.capacity-evidence-snapshot.v1`, and
+`snapshot.runtime_identity.commit_sha` matched
+`ae6b7e52c656fd8296cf039834ce8d8559b01228`. The Admin Runtime overview returned
+HTTP `200`, and the gate readiness schema was
+`ai-platform.capacity-gate-readiness.v1` with status
+`blocked_missing_load_test_evidence`.
+
+The Admin Runtime overview contained all required capacity sections:
+`capacity`, `database_pool`, `queue`, `admission`, `backpressure`, `sandbox`,
+and `observability`. The missing recorded load-test gates remained all seven
+required gates:
+
+- `api_read_write_burst`
+- `run_creation_burst_by_tenant_and_user`
+- `worker_processing_throughput`
+- `queue_depth_and_lease_latency`
+- `cancel_retry_resume_under_load`
+- `sandbox_lease_creation_under_load`
+- `model_gateway_timeout_and_backpressure`
+
+The derived `ai-platform.capacity-profile-readiness.v1` result kept
+`b3_10x4_sdk_subagents` blocked because no operator-reviewed profile evidence
+was attached for `target_profile_id`, `evidence_source`,
+`observed_concurrent_sessions`,
+`observed_peak_sdk_subagents_per_session`,
+`sdk_subagent_fanout_measurement_ref`,
+`production_concurrency_defaults_raised`, `safe_concurrency_claimed`, or
+`ordinary_user_platform_multi_run_orchestration_enabled`.
+
+The same current-main runtime also ran a bounded read-only probe sweep across
+all seven harness gates:
+
+- `api_read_write_burst`
+- `run_creation_burst_by_tenant_and_user`
+- `worker_processing_throughput`
+- `queue_depth_and_lease_latency`
+- `cancel_retry_resume_under_load`
+- `sandbox_lease_creation_under_load`
+- `model_gateway_timeout_and_backpressure`
+
+Each bounded probe emitted schema
+`ai-platform.capacity-bounded-load-harness.v1`, status
+`probe_completed_not_gate_evidence`,
+`load_test_evidence_status = probe_only_not_recorded`,
+`does_not_mark_gate_recorded = true`, `sent_requests = 10`, and
+`stop_condition_status = passed`. The current verifier interpretation keeps
+the runtime-evidence wrapper fail-closed with `missing_sections=[]` and
+`status=blocked_missing_load_test_evidence`; all seven recorded gates and the
+`b3_10x4_sdk_subagents` profile evidence remain missing.
+
+The production default decision remained
+`do_not_raise_without_recorded_load_test_evidence`. This current-main read-only
+runtime evidence proves 211 Admin Runtime capacity visibility and fail-closed
+policy for `ae6b7e5`; it still does not provide recorded B3 load-test evidence,
+does not prove the 10 sessions x peak 4 SDK subagents/session profile, does not
+claim a safe maximum concurrency number, does not raise production defaults,
+and does not close B3.
+
 ### Evidence Bundle Draft Tool
 
 After operators capture start/end runtime evidence, the bounded probe JSON, and
@@ -582,18 +660,41 @@ recorded. The step is a planning/readiness aid only: it points at
 artifacts, final gate readiness, and operator review remain separate required
 work.
 
-### Recorded Gate Snapshot Assembly Tool
+### Recorded Gate Packet And Snapshot Assembly Tools
 
-After an operator has reviewed the measured artifacts and created a compact
-per-gate evidence packet, use:
+After an operator has reviewed measured artifacts into compact per-gate values,
+build a sanitized packet first:
+
+```powershell
+python tools/capacity_recorded_gate_evidence_packet.py --gate api_read_write_burst --evidence-json capacity-operator-reviewed-evidence-values-api-read-write-burst.json --cleanup-proof-status verified --stop-condition-status passed --format json > capacity-recorded-gate-evidence-api-read-write-burst.json
+```
+
+The packet builder output schema is
+`ai-platform.capacity-recorded-gate-evidence-packet-result.v1`. The nested
+`packet` value uses schema `ai-platform.capacity-recorded-gate-evidence.v1`
+and is the input for `tools/capacity_recorded_gate_snapshot.py`. The builder
+rejects `ai-platform.capacity-bounded-load-harness.v1`,
+`probe_only_not_recorded`, or `does_not_mark_gate_recorded = true` inputs, so
+bounded probe output cannot be promoted into recorded gate evidence by renaming
+the file.
+
+After the packet is ready, assemble the recorded-gate snapshot with:
 
 ```powershell
 python tools/capacity_recorded_gate_snapshot.py --runtime-evidence-json capacity-runtime-evidence-end.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-api-read-write-burst.json --profile-evidence-json capacity-profile-evidence-b3-10x4-sdk-subagents.json --gate api_read_write_burst --format json
 ```
 
-The input packet schema is `ai-platform.capacity-recorded-gate-evidence.v1`.
-The output schema is `ai-platform.capacity-recorded-gate-snapshot.v1`. This
-step is recorded in the generated operator workflow as
+When all seven operator-reviewed gate packets are available, submit them in one
+fail-closed batch command instead of assembling seven intermediate snapshots:
+
+```powershell
+python tools/capacity_recorded_gate_snapshot.py --runtime-evidence-json capacity-runtime-evidence-end.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-api-read-write-burst.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-run-creation-burst-by-tenant-and-user.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-worker-processing-throughput.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-queue-depth-and-lease-latency.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-cancel-retry-resume-under-load.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-sandbox-lease-creation-under-load.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-model-gateway-timeout-and-backpressure.json --profile-evidence-json capacity-profile-evidence-b3-10x4-sdk-subagents.json --format json
+```
+
+The snapshot input packet schema is
+`ai-platform.capacity-recorded-gate-evidence.v1`. The output schema is
+`ai-platform.capacity-recorded-gate-snapshot.v1`. These steps are recorded in
+the generated operator workflow as `build_recorded_gate_evidence_packet` and
 `assemble_recorded_gate_snapshot`.
 
 The recorded-gate tool only accepts explicit operator-reviewed values for all
@@ -615,9 +716,12 @@ fail-closed readiness preview. If only one gate is recorded, the preview still
 keeps the remaining gates missing and preserves
 `production_default_decision =
 do_not_raise_without_recorded_load_test_evidence`. If all seven gates are
-recorded and B3 profile evidence is accepted, `tools/capacity_profile_readiness.py`
-can advance only to `operator_review_required`; it still does not close B3 or
-raise production defaults.
+recorded and B3 profile evidence is accepted, the batch output records
+`status=recorded_gate_batch_input_accepted` and
+`readiness.status=ready_for_operator_review`.
+`tools/capacity_profile_readiness.py` can then advance only to
+`operator_review_required`; it still does not close B3 or raise production
+defaults.
 
 ## Required Load-Test Gates
 

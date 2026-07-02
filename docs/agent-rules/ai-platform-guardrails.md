@@ -68,12 +68,13 @@ P0-only list:
    retention, redaction, delete, dependency, and release-policy flows.
 5. G7 Sandbox / Resource Hardening, including Docker provider validation,
    egress policy, runtime quota, orphan cleanup, and container security options.
-6. G8 Platform Multi-Run Controlled Beta remains a deferred parking-lot for
-   platform-owned multi-run orchestration. Its legacy title was
-   "G8 Multi-Agent Controlled Beta", but SDK agent/subagent behavior stays
+6. G8 Deferred Platform Multi-Run Gate remains a deferred parking-lot for
+   platform-owned parent/child multi-run orchestration. Historical evidence and
+   appendices may mention the old title "G8 Multi-Agent Controlled Beta"; do
+   not use that title for current status. SDK agent/subagent behavior stays
    inside one governed platform run; the current evidence work is B3 SDK
    subagent fanout capacity, not ordinary-user platform-level multi-run
-   exposure.
+   exposure and not a beta route.
 7. G9 Observability / Quality / Ops, including Admin Runtime, cost/token/latency
    metrics, error taxonomy, trace/audit export, and alerts.
 8. G10 Internal Beta / Department Rollout with explicit internal workflow owner.
@@ -88,8 +89,9 @@ source/version ownership as the current platform gates.
 - Read the relevant current code and tests before changing a slice.
 - Add or update focused tests for every changed contract.
 - Treat auth/session, tenant isolation, queue, worker maintenance, run lifecycle,
-  sandbox, schema, shared contracts, multi-agent runtime, and
-  frontend-backend auth/session contracts as high-verification areas.
+  sandbox, schema, shared contracts, platform multi-run / SDK subagent
+  expansion, and frontend-backend auth/session contracts as high-verification
+  areas.
 - Keep tenant/workspace/user boundaries explicit in queue, quota, worker
   maintenance, memory cleanup, dispatcher, and Admin operational projections.
 - Do not let AD/company auth stand in for per-tenant quota, fair scheduling, or

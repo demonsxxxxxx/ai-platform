@@ -1,0 +1,92 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-01-211-g7-runtime-identity-label-repair-ae6b7e5",
+  "artifact_kind": "211_runtime_identity_label_repair",
+  "gate": "G7 Sandbox / Resource Hardening",
+  "commit_sha": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+  "runtime_subject_commit_sha": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+  "captured_at": "2026-07-01T19:23:32Z",
+  "issue_refs": [
+    "#164"
+  ],
+  "pr_refs": [
+    "#294",
+    "#296"
+  ],
+  "source_ref": {
+    "branch": "main",
+    "image": "ai-platform:ae6b7e5-g7-b3-label-repair-v1",
+    "image_id": "sha256:59d9c73fe449fd3285aa88bc38dcc1aa6b96a4569ed4b9d447773c9fea0f5140",
+    "image_labels": {
+      "ai-platform.source-revision": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+      "ai-platform.runtime-subject": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+      "org.opencontainers.image.revision": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+      "ai-platform.source_revision": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+      "ai-platform.runtime_subject": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+      "ai-platform.source_tree_commit": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+      "ai-platform.build-mode": "runtime-only-label-repair",
+      "ai-platform.runtime-rollout": "g7-b3-current-main-label-repair",
+      "ai-platform.source-note": "g7-b3-current-main-label-repair"
+    },
+    "runtime_source_marker": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+    "source_tree_dirty": false,
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "compose_config_source": "repo_local_deploy_ai_platform_compose_after_source_sync",
+    "compose_env_source": "external_runtime_env_label_still_present_not_recorded",
+    "source_authority_caveat": "current-main runtime identity labels are repaired; external compose env-file label remains a G0 caveat"
+  },
+  "evidence_ref": {
+    "operation": "runtime_only_label_repair",
+    "root_cause": "runtime-only rebase inherited legacy underscore alias labels from the previous image; the label-repair image overwrote canonical and legacy identity labels to the current runtime subject",
+    "readback": {
+      "api_container_image": "ai-platform:ae6b7e5-g7-b3-label-repair-v1",
+      "worker_container_image": "ai-platform:ae6b7e5-g7-b3-label-repair-v1",
+      "api_container_source_marker": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+      "worker_container_source_marker": "ae6b7e52c656fd8296cf039834ce8d8559b01228",
+      "api_and_worker_identity_labels_current": true,
+      "stale_runtime_alias_label_mismatch_present": false,
+      "frontend_proxy_health": "ok",
+      "direct_api_port_health": "connection_refused",
+      "recent_api_worker_error_markers": "none",
+      "safe_runtime_env": {
+        "SANDBOX_CONTAINER_PROVIDER": "fake",
+        "SANDBOX_EXECUTOR_IMAGE": "ai-platform:local",
+        "SANDBOX_EGRESS_POLICY_ENABLED": "false",
+        "MAX_ACTIVE_WORKER_RUNS": "3",
+        "MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT": "0"
+      }
+    },
+    "non_expansion_invariants": {
+      "production_concurrency_defaults_raised": false,
+      "ordinary_user_platform_multi_run_orchestration_opened": false,
+      "docker_sandbox_production_hardening_claimed": false,
+      "ordinary_user_high_risk_sandbox_allowed": false
+    },
+    "remaining_gate_boundaries": [
+      "live API and worker default sandbox posture still uses fake provider",
+      "external compose environment-file label remains outside repo-local deploy authority",
+      "current-main POC smoke/readiness subject still needs refresh or advancement",
+      "B3 seven-gate recorded load evidence remains missing"
+    ],
+    "does_not_close_g7_gate": true,
+    "does_not_close_b3_gate": true,
+    "does_not_claim_211_verified": true,
+    "does_not_claim_gate_closable": true
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "The 211 label-repair rollout rebuilt API and worker from a runtime-only label repair image without changing source or dependencies.",
+    "Readback verified canonical labels, legacy underscore alias labels, and in-container source markers all point to ae6b7e5.",
+    "This removes the stale runtime alias label mismatch blocker only; it does not close G7, B3, G0, Foundation Alpha, production readiness, or #164."
+  ],
+  "open_followups": [
+    "Move live API and worker default sandbox posture from fake provider to the reviewed Docker-provider path before any G7 production hardening claim.",
+    "Reconcile the external compose environment-file label caveat before any G0 source-authority closure claim.",
+    "Record or refresh current-main POC smoke/readiness evidence for the same runtime subject.",
+    "Record B3 operator-reviewed seven-gate load evidence and b3_10x4_sdk_subagents profile evidence before any B3 closure or production default increase."
+  ]
+}

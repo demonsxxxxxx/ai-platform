@@ -412,6 +412,9 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
         "211_sandbox_runtime_smoke": [
             "runtime_subject_commit_sha",
         ],
+        "211_runtime_identity_label_repair": [
+            "runtime_subject_commit_sha",
+        ],
     }
     assert readiness["evidence_contract"]["accepted_artifact_kinds"] == [
         "211_runtime_smoke",
@@ -423,6 +426,7 @@ def test_release_evidence_readiness_contract_defines_safe_export_location_withou
         "alert_trace_export_runtime_acceptance",
         "211_memory_enabled_document_workflow_smoke",
         "211_sandbox_runtime_smoke",
+        "211_runtime_identity_label_repair",
     ]
     assert readiness["evidence_contract"]["forbidden_marker_classes"] == [
         "executor private payload",

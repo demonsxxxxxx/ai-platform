@@ -49,27 +49,44 @@ vulnerability evidence。
   ordinary-user 平台级 multi-run orchestration 只保留在 blocked expansion /
   non-expansion invariant 中。机器可读 blocked expansion 名称是
   `ordinary_user_platform_multi_run_orchestration_exposure`；当前权威文档不再
-  使用旧的泛化 multi-agent exposure 命名。
+  使用旧的泛化 multi-agent exposure 命名。旧普通用户 multi-agent exposure
+  说法会把普通用户平台级 parent/child multi-run 产品曝光和 SDK subagent
+  fanout 容量证据混在一起，只能作为历史 evidence/follow-up 含义读取；
+  不能作为当前状态名。
 - B3 边界：`b3_10x4_sdk_subagents` source contract 是 SDK subagent
   fanout 容量证据，不是 G8 普通用户平台级 multi-run 产品曝光证据。
 - 已部分推进但未完成：PR #296 已合入 GitHub `main`
   `ae6b7e52c656fd8296cf039834ce8d8559b01228`，它包含 PR #294 的 G7
-  verifier-helper callback 默认修复，以及 PR #296 的文档状态清理；但 211
-  API/worker 仍未部署到该 current-main runtime subject。最新只读 poll 显示
+  verifier-helper callback 默认修复，以及 PR #296 的文档状态清理。最新只读 poll 显示
   211 source marker 已是
   `ae6b7e52c656fd8296cf039834ce8d8559b01228`，source snapshot 记录
   `source_tree_commit_sha=ae6b7e52c656fd8296cf039834ce8d8559b01228`、
   `runtime_subject_commit_sha=ae6b7e52c656fd8296cf039834ce8d8559b01228`、
-  `source_tree_dirty=false`、`snapshot_source=codex_origin_main_archive_sync`；
-  211 API 直连 `http://127.0.0.1:18000/api/ai/health` refused，前端代理
-  `http://127.0.0.1:18001/api/ai/health` 返回 ok，但 API/worker runtime
-  identity 已出现漂移：`ai-platform-api` 运行
-  `ai-platform:df85a9f-issue183-contracts-runtime-only-v1`，source/runtime/OCI
-  labels 指向 `df85a9fb3266aab92a2ca4122db06d4ec7a00175`；`ai-platform-worker`
-  运行 `ai-platform:bd690f7-g7-b3-audit-runtime-only-v1`，source/runtime/OCI
-  labels 指向 `bd690f72723080beeb820d07679da59d84c7913e`。所以这是
-  current-main source sync，但不是 current-main API/worker runtime parity，不是
-  G7 reviewed release-evidence，也不是 B3 load evidence。此前
+  `source_tree_dirty=false`、`snapshot_source=codex_origin_main_archive_sync`。
+  211 API/worker 现在都运行
+  `ai-platform:ae6b7e5-g7-b3-label-repair-v1`，canonical labels、legacy alias
+  labels 和 in-container source markers 都已指向
+  `ae6b7e52c656fd8296cf039834ce8d8559b01228`，前端代理
+  `http://127.0.0.1:18001/api/ai/health` 返回 ok。旧
+  `stale_runtime_alias_label_mismatch` 已由 reviewed label-repair evidence
+  清掉。最新 G7/B3 audit 对 G7 的读法是
+  `status=candidate_evidence_requires_review`、`blocking_reasons=[]`、
+  `required_next_steps=["complete operator status-upgrade review before claiming G7 closure or 211 verified status"]`。
+  compose label 仍指向外部 runtime env file、本地 runtime-affecting source
+  changes 仍晚于已运行的 `ae6b7e5` runtime subject，属于 G0/source-authority
+  与 production-hardening 非闭合边界；B3 load evidence 仍缺失，是 B3
+  blocker；任何 G7 status upgrade 仍需要 operator review。
+  所以这是 current-main runtime rollout + label-repair progress；current-main
+  G7 sandbox verifier artifacts 已经被包装成 repo-local reviewed
+  release-evidence entry，但它仍不是 G0/G7 closure、不是 B3 load evidence，也不是
+  `211 verified`。
+  Audit cleanup note：读取 G7/B3 blockers 时，旧 sanitized runtime observations
+  必须叠加同一 runtime subject 的 later reviewed label-repair、live-env
+  hardening、Foundation Runtime concurrency evidence 后再判断；否则旧的 stale
+  alias、fake-provider 或 missing-FRC observations 会被误读成当前 G7 blockers。
+  `tools/g7_b3_completion_audit.py` 已支持显式传入这些 reviewed evidence
+  overrides。
+  此前
   `g7-runtime-probe-20260701203418`
   命名 runtime-only formal verifier 在 211 通过，覆盖 platform/docker、
   callback stream、cancel stops container、resource-limit timeout cleanup、
@@ -85,23 +102,94 @@ vulnerability evidence。
   callback path 修为 `0.0.0.0` bind +
   `http://host.docker.internal:{port}/callback` public URL，避免 no-masq
   host-gateway exception 只靠人工传参；该修复已随 PR #296 留在当前 GitHub
-  `main`，但这仍只是 `merged` source progress，必须部署并在 211 重新跑
-  formal verifier 后，才可能成为 reviewed G7 evidence。
-- 仍未完成：reconcile 211 source/API/worker runtime identity、current-main G7 Docker sandbox hardening closure、B3
-  operator-reviewed recorded load evidence、G9 Operations Beta acceptance、G10
-  workflow-owner rollout，以及任何 ordinary-user 平台级 multi-run orchestration
-  暴露。B3 最新 bounded `api_read_write_burst` probe 只是
-  `probe_completed_not_gate_evidence`，evidence bundle 仍是
-  `blocked_incomplete_load_test_evidence`，七个 recorded load-test gates 仍缺失。
+  `main`，并已由 current-main one-shot formal verifier
+  `g7-current-main-ae6b7e5-20260701172910` against
+  `ai-platform:ae6b7e5-g7-current-main-runtime-only-v1` 在 211 产出 `/tmp`
+  artifacts：runtime probe results、sandbox evidence 和 verifier summary。该 evidence
+  记录 `runtime_mode=platform`、`sandbox_provider=docker`、`executed_task=true`、
+  `callback_auth=token`、`cancel_stops_container=true`，8 个 verifier checks
+  全部通过；这些 `/tmp` artifacts 现在已经被
+  `docs/release-evidence/g7-sandbox/ae6b7e52c656fd8296cf039834ce8d8559b01228/2026-07-01-211-g7-sandbox-runtime-smoke-ae6b7e5.json`
+  包装为 repo-local reviewed G7 sandbox runtime smoke evidence。该 reviewed entry
+  只升级 evidence 管理状态，不关闭 G7、B3、G0、Foundation Alpha、production Docker
+  sandbox hardening、production readiness 或 `211 verified`。随后
+  `docs/release-evidence/g7-sandbox/ae6b7e52c656fd8296cf039834ce8d8559b01228/2026-07-01-211-g7-runtime-identity-label-repair-ae6b7e5.json`
+  记录 label-repair image
+  `ai-platform:ae6b7e5-g7-b3-label-repair-v1`，只清除 stale alias blocker，不关闭
+  live executor-image binding、live egress policy、external env-file、
+  POC/readiness 或 B3 load evidence blockers。
+  被修复的旧 alias 值曾指向
+  `bd690f72723080beeb820d07679da59d84c7913e`，现在只作为历史根因保留。
+- current-main G7 formal hardening evidence 已补充为
+  `docs/release-evidence/g7-sandbox/ae6b7e52c656fd8296cf039834ce8d8559b01228/2026-07-01-211-g7-sandbox-runtime-hardening-ae6b7e5.json`。
+  它记录 `g7-current-main-label-repair-probe-20260701201919` against
+  `ai-platform:ae6b7e5-g7-b3-label-repair-v1` 的 8 个 verifier checks 通过，
+  并覆盖 resource-limit cleanup、egress default-deny with scoped callback
+  exception、non-privileged security options。它证明的是显式 verifier path，不关闭
+  G7。随后 live-env hardening evidence 已补充为
+  `docs/release-evidence/g7-sandbox/ae6b7e52c656fd8296cf039834ce8d8559b01228/2026-07-02-211-g7-sandbox-live-env-hardening-ae6b7e5.json`。
+  它记录 `g7-live-env-hardening-ae6b7e5-20260702045743` 的 8 个 verifier
+   checks 通过，并记录 live API/worker 已是
+   `SANDBOX_CONTAINER_PROVIDER=docker`、
+   `SANDBOX_EXECUTOR_IMAGE=ai-platform:ae6b7e5-g7-b3-label-repair-v1`、
+   `SANDBOX_EGRESS_POLICY_ENABLED=true`。这清除了旧 executor-image /
+   egress-policy blockers。G7 当前不是 blocked，而是
+   `candidate_evidence_requires_review`：G7 runtime `blocking_reasons=[]`，
+   但 operator status-upgrade review 仍未完成，所以不能声明 G7 closure 或
+   `211 verified`。external env-file label、当前本地 runtime-affecting source
+   rollout gap 和 B3 load evidence 分别保留在 G0/source-authority、
+   production-hardening 与 B3 非闭合边界中。
+- current-main Foundation Alpha POC evidence set 已补充在
+  `docs/release-evidence/foundation-alpha-poc/ae6b7e52c656fd8296cf039834ce8d8559b01228/`。
+  它包含 runtime POC smoke、Auth/RBAC smoke、governance runtime smoke、
+  release-evidence runtime acceptance、alert/trace export runtime acceptance。
+  runtime POC entry 记录 `ok=true`，覆盖 frontend/proxy health、API
+  compatibility、runtime config、company auth bridge、DB-backed login audit、
+  governed Skill runs、artifact download/preview isolation、upload attachment
+  chat、Word review attachment chat、context public projection，以及 source /
+  runtime labels 绑定 `ae6b7e5`；同 subject 的 Auth/RBAC/governance/release/
+  alert evidence 也已 reviewed 且 redaction passed。fresh local readiness
+  已选择这组 `ae6b7e5` POC/Auth/Governance/Release/Alert evidence 和
+  `ae6b7e5` FRC evidence，且 `stage_acceptance_blockers=[]`；但它仍报告
+  `foundation_alpha_stage_status=runtime_rollout_required`，因为当前本地
+  runtime-affecting source changes 尚未 rollout 到运行中的 `ae6b7e5`
+  runtime subject。因此这只是 current-main POC correctness / release-evidence
+  progress，不关闭 #164、G0、G7、B3、G9 或 production readiness。
+- current-main Foundation Runtime concurrency evidence 已补充为
+  `docs/release-evidence/foundation-runtime-concurrency/ae6b7e52c656fd8296cf039834ce8d8559b01228-frc-g7-b3-20260702/2026-07-02-211-foundation-alpha-poc-ae6b7e5-foundation-runtime-concurrency.json`
+  及对应 readiness/summary。它记录 `verified_foundation_runtime_concurrency`、
+  12 concurrent requests/sessions/runs、2 tenants、4 users、
+  `client_case_timestamps` 并发窗口、7 类 Foundation Runtime checks 全部
+  passed、cleanup verified。它只是 Foundation Runtime POC correctness evidence；
+  不关闭 B3，不提高生产并发默认值，不声明 Docker sandbox hardening，不打开
+  ordinary-user 平台级 multi-run orchestration，不让 #164 `gate closable`。
+- 仍未完成：external runtime env-file label caveat、当前本地 runtime-affecting
+  source rollout gap、B3 operator-reviewed recorded load evidence、G7 operator
+  status-upgrade review、G9 Operations Beta acceptance、G10 workflow-owner
+  rollout，以及任何 ordinary-user 平台级 multi-run
+  orchestration 暴露。B3 最新 bounded sweep 覆盖七个 harness gates，但每个
+  probe 都只是 `probe_completed_not_gate_evidence` /
+  `probe_only_not_recorded`，`does_not_mark_gate_recorded = true`，
+  `sent_requests = 10`，`stop_condition_status = passed`；七个 recorded
+  load-test gates 仍缺失。
+  2026-07-02 current-main `ae6b7e5` read-only capacity runtime evidence 已确认
+  Admin Runtime HTTP `200`、required capacity sections present、nested gate
+  readiness `blocked_missing_load_test_evidence` 和
+  `do_not_raise_without_recorded_load_test_evidence`，但这只是 B3 visibility /
+  fail-closed evidence；`b3_10x4_sdk_subagents` operator-reviewed profile
+  evidence 仍全部缺失，不关闭 B3。
 
 因此当前下一步不是重开 G8，也不是把 B3 当作普通用户平台级 multi-run 产品曝光；
-下一步是先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime
-observation 和可选 capacity profile readiness 汇总成 fail-closed 阻塞清单，先
-reconcile 211 source/API/worker runtime identity，把 API 和 worker runtime
-images 对齐到包含 PR #294 G7 verifier-helper callback 默认修复的 selected
-current-main runtime subject，并基于后续选定的新 runtime subject 重跑 reviewed
-G7 sandbox evidence、smoke / Foundation Runtime concurrency evidence，并把
-G7/B3 的证据边界继续保持为
+下一步是先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime observation
+和可选 capacity profile readiness 汇总成 fail-closed 阻塞清单，把已 reviewed 的
+`g7-current-main-ae6b7e5-20260701172910` G7 sandbox evidence、formal hardening
+evidence、live-env hardening evidence、label-repair evidence、current-main
+runtime POC smoke 和 current-main FRC evidence 作为输入。当前审计结果应读作：
+G7 无 runtime `blocking_reasons`，但需要 operator status-upgrade review；
+B3 仍 blocked，因为七个 recorded load-test gates 和
+`b3_10x4_sdk_subagents` profile evidence 缺失；external env-file 与当前本地
+runtime-affecting source rollout gap 是 G0/source-authority /
+production-hardening 非闭合边界。G7/B3 的证据边界继续保持为
 `runtime pending` / `local partial`，直到真实运行证据闭合。该 audit 只是
 控制/计划工件，不是 G7 runtime evidence 或 B3 load evidence。
 
@@ -116,13 +204,13 @@ G7/B3 的证据边界继续保持为
 3. G5 Run Lifecycle / Worker Runtime V1：queue、lease、heartbeat、retry、dead-letter、cancel、resume、checkpoint、idempotency 可审计、可运营。
 4. G6 Tool / Skill / Memory Governance：skill versioning、release policy、dependency policy、tool allow/deny/ask、memory retention、redaction、delete flow 可运营。
 5. G7 Sandbox / Resource Hardening：Docker provider 生产验证、network/egress policy、runtime quota、orphan cleanup job、container security options 与 211 smoke 通过后，才允许扩大高风险 sandbox/tool。
-6. G8 Platform Multi-Run Controlled Beta：旧标题曾写作 G8 Multi-Agent Controlled Beta，但当前权威读法是平台 parent/child ledger、dispatcher、handoff、child reconciliation、parent rollup、parent cancel 与 worker dispatcher 只作为历史受控切片和 deferred parking-lot 保留；执行层 agent/subagent 能力走 Claude Agent SDK，并作为一个 governed platform run 管理。当前开放问题是 SDK subagent fanout 的 capacity/governance/sandbox/model-gateway evidence，不是普通用户平台级 multi-run 产品曝光。
+6. G8 Deferred Platform Multi-Run Gate：旧历史证据可能写作 G8 Multi-Agent Controlled Beta；当前权威状态不再使用这个 beta 标题。平台 parent/child ledger、dispatcher、handoff、child reconciliation、parent rollup、parent cancel 与 worker dispatcher 只作为历史受控切片和 deferred parking-lot 保留；执行层 agent/subagent 能力走 Claude Agent SDK，并作为一个 governed platform run 管理。当前开放问题是 SDK subagent fanout 的 capacity/governance/sandbox/model-gateway evidence，不是普通用户平台级 multi-run 产品曝光，也不是 G8 beta 路线。
 7. G9 Observability / Quality / Ops：Admin runtime、cost/token/latency metrics、error taxonomy、golden-set eval、trace/audit export 与 alert 进入 beta 前 gate。
 8. G10 Internal Beta / Department Rollout：选择 1-2 个真实内网流程（如文档审查、翻译、SOP/RAG、长任务报告）明确运营 owner 后再放量。
 
 当前优先级不是 Docker compose 一键启动或 package delivery，而是公司内网定制化后端 Agent 平台的可运营基础：AD/company auth 与 session、tenant/workspace/user 隔离、多租户高并发、DB connection pool、tenant-aware queue/quota、bounded queue metadata、tenant-aware worker maintenance、Admin Runtime/Observability、Memory/Context、Tool Permission、Agent Frontend 用户闭环。前端源码进入本仓库、backend/worker/frontend 同 commit versioning、monorepo 与多镜像交付进入路线图；compose 一键启动与 packaged delivery 只作为后续 milestone。
 
-P2 Long Task / Multi-Agent Runtime 不再继续默认前冲。checkpoint、subagent、artifact tree、provenance、resume/cancel/retry 与多 agent 调度只能在前置 auth/session、tenant isolation、fair scheduling、quota/backpressure、observability 和 sandbox/tool risk gates 验收后继续扩大。执行层路线是 Claude Agent SDK；DeerFlow 只能吸收编排、拆解、上下文和报告模式，不能作为运行时、scheduler 或 control plane。
+P2 Long Task / Platform Multi-Run Orchestration / SDK Subagent Patterns 不再继续默认前冲。checkpoint、SDK subagent fanout、artifact tree、provenance、resume/cancel/retry 与未来平台 parent/child orchestration 只能在前置 auth/session、tenant isolation、fair scheduling、quota/backpressure、observability 和 sandbox/tool risk gates 验收后继续扩大。执行层路线是 Claude Agent SDK；DeerFlow 只能吸收编排、拆解、上下文和报告模式，不能作为运行时、scheduler 或 control plane。
 
 ### Claude Agent SDK / DeerFlow Boundary And Long Task Product Contract
 
@@ -1012,7 +1100,7 @@ same admission gate and fails closed with HTTP 409 before creating or enqueuing
 a copied run when `max_active_runs_per_user` is reached.
 
 The server-owned multi-agent child handoff remains out of scope for this slice
-and stays behind the later multi-agent runtime gate. 211 smoke proved the real
+and stays behind the later platform multi-run orchestration gate. 211 smoke proved the real
 Postgres concurrency behavior with two transactions for the same tenant/user:
 the second transaction waited on the advisory lock and then rejected with
 `user_active_run_limit_exceeded` after the first transaction committed its
@@ -1033,7 +1121,7 @@ recent API/worker logs were clean. Detailed execution evidence remains in
 
 ## 当前决策
 
-真实 Long Task / Multi-Agent Runtime 是最终目标，但不作为当前基础切片的第一落点，也不越过 2026-06-06 gate-based sync 中的 tenant-aware scheduler/quota、observability、sandbox/tool risk gates。
+真实 Long Task / Platform Multi-Run Orchestration / SDK Subagent Patterns 是最终方向，但不作为当前基础切片的第一落点，也不越过 2026-06-06 gate-based sync 中的 tenant-aware scheduler/quota、observability、sandbox/tool risk gates。
 
 当前优先四个基础 P0：
 
@@ -1210,7 +1298,7 @@ are not implemented by this migration.
 2. Tenant-aware concurrency / fair scheduling / DB pool / bounded queue metadata。
 3. Admin Runtime / Observability / Quality / Ops。
 4. Memory / Context Management 与 Tool Permission / Agent Frontend V1 用户闭环。
-5. Long Task / Multi-Agent Runtime controlled beta。
+5. Long Task / Platform Multi-Run Orchestration / SDK Subagent Patterns controlled beta。
 
 ### P1 Admin Runtime Overview Snapshot
 
@@ -1219,7 +1307,7 @@ Status: merged on `main` via PR #1 and deployed/smoked on 211.
 The first P1 operational slice adds an admin-only overview contract for queue,
 run status, sandbox lease/container state, and basic observability aggregates.
 It is intentionally smaller than the full Observability / Quality dashboard and
-does not start Long Task / Multi-Agent Runtime.
+does not start Long Task / Platform Multi-Run Orchestration / SDK Subagent Patterns.
 
 ### P1 Memory / Context Management
 
@@ -1316,7 +1404,7 @@ user admin denial, missing-policy fail-closed projection, live request/decision
 with event card `expires_at`, redaction of private request/decision payloads,
 existing thin-shell frontend root/API health, dist API boundary, and LambChat
 compatibility API gates. This does not open high-risk write tools or start P2
-Long Task / Multi-Agent Runtime.
+Long Task / Platform Multi-Run Orchestration / SDK Subagent Patterns.
 
 Artifact preview allowlist was later closed as a P1 Tool Permission / Agent
 Frontend V1 hardening follow-up on `main` at
@@ -2132,7 +2220,7 @@ multi-agent worker dispatcher via main commit
 
 This slice closes the non-blocking event taxonomy follow-up left after parent
 terminal rollup and worker dispatcher. It preserves persisted event names while
-adding the deployed multi-agent runtime events to `STANDARD_EVENT_TYPES`:
+adding the deployed historical platform multi-run dispatcher events to `STANDARD_EVENT_TYPES`:
 `multi_agent_dispatch_handoff`, `run_multi_agent_child_created`,
 `multi_agent_dispatch_enqueue_failed`, `multi_agent_dispatch_reconciled`, and
 `multi_agent_dispatch_parent_parked`. Ordinary-user projection maps the visible

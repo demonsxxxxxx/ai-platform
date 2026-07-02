@@ -38,7 +38,7 @@ The target platform must support:
 | Single-user desktop assistant clone | The platform must solve tenant isolation, RBAC, quota, audit, and operations first. |
 | Docker compose one-command delivery as the current acceptance gate | Current priority is the internal company deployment baseline; compose packaging is a later delivery milestone. |
 | A second independent runtime/control plane | External projects can inform implementation, but ai-platform remains the source of truth for identity, tenancy, audit, quota, release, and governance. |
-| Platform-owned multi-run multi-agent runtime as a current requirement | Claude Agent SDK is the execution layer. SDK-internal agent/subagent behavior is governed as one platform run unless a later gate explicitly reopens platform-level orchestration. |
+| Platform-owned parent/child multi-run orchestration as a current requirement | Claude Agent SDK is the execution layer. SDK-internal agent/subagent behavior is governed as one platform run unless a later gate explicitly reopens platform-level orchestration. |
 | Long-term cross-session memory by default | Long-term memory must remain fail-closed until opt-out, retention, deletion, redaction, and tenant policy are proven. |
 
 ## 3. Document Authority
@@ -152,10 +152,11 @@ Non-negotiable boundary:
 - Executor-private logs, Claude/Codex internal logs, raw command output, private
   subagent state, and private artifact metadata are never the platform source of
   truth.
-- SDK-internal agents or subagents are not platform multi-agent runs. Current
-  PRD scope treats them as execution-kernel behavior inside one governed
-  platform run. Platform-visible multi-run orchestration requires a future gate
-  and must not leak into the current core field set.
+- SDK-internal agents or subagents are not platform-visible multi-run
+  orchestration. Current PRD scope treats them as execution-kernel behavior
+  inside one governed platform run. Platform-visible parent/child run
+  orchestration requires a future gate and must not leak into the current core
+  field set.
 - The product risk for SDK subagents is now capacity and governance, not basic
   availability. If each ordinary session can invoke SDK Agent/subagent fanout,
   the platform must prove worker, model-gateway, sandbox, artifact/event, and
@@ -233,8 +234,8 @@ For any task that uses multiple agents or subagents, the execution-layer route
 is Claude Agent SDK. ai-platform governs that execution through platform-issued
 payloads, pinned skill snapshots, permission policy, sandbox leases, event
 sinks, artifact collection, and token/cost accounting. The platform should not
-create a separate multi-agent scheduler, parent/child run tree, or external
-execution harness as part of the current roadmap.
+create a separate platform multi-run scheduler, parent/child run tree, or
+external execution harness as part of the current roadmap.
 
 The remaining product question is whether the target deployment can sustain SDK
 Agent/subagent fanout when many sessions use it at the same time. That must be
@@ -324,7 +325,7 @@ can remain only as historical aliases in release notes or archived plans.
 | G5 Run Lifecycle / Worker Runtime V1 | Queue, lease, heartbeat, retry, dead-letter, cancel, resume, checkpoint, idempotency, admission, and backpressure are operational. | Tenant-aware tests, bounded metadata proof, recorded capacity-upgrade evidence, Foundation Runtime concurrency evidence, and 211 worker smoke. |
 | G6 Tool / Skill / Memory Governance | Tool, skill, and memory policies are enforceable, auditable, and fail-closed. | Policy tests, frontend projection audit, skill review evidence, memory retention/delete/redaction evidence, admin acceptance. |
 | G7 Sandbox / Resource Hardening | Docker provider, network/egress, quota, cleanup, and container security are proven. | Docker-capable host smoke, security-option evidence, orphan cleanup proof, no default overexposure. |
-| G8 Platform Multi-Run Controlled Beta | Deferred parking-lot for platform-level multi-run orchestration. The legacy title "G8 Multi-Agent Controlled Beta" must not be read as ordinary-user platform-level multi-run product exposure. Current execution-layer multi-agent/subagent capability stays inside Claude Agent SDK and is governed as a platform run. | Do not reopen to build a separate harness. B3 SDK subagent load evidence may inform a later G8 decision, but it does not itself reopen or close G8. Reopen G8 only through a focused platform-orchestration issue with tenant quota/backpressure design, event/artifact/cancel semantics, and no ordinary-user exposure before prior gates. |
+| G8 Deferred Platform Multi-Run Gate | Deferred parking-lot for platform-level parent/child multi-run orchestration. Historical evidence and appendices may mention the old title "G8 Multi-Agent Controlled Beta"; do not use that title for current status, and do not read it as ordinary-user platform-level multi-run product exposure. Current execution-layer multi-agent/subagent capability stays inside Claude Agent SDK and is governed as one platform run. | Do not reopen to build a separate harness. B3 SDK subagent load evidence may inform a later G8 decision, but it does not itself reopen or close G8. Reopen G8 only through a focused platform-orchestration issue with tenant quota/backpressure design, event/artifact/cancel semantics, and no ordinary-user exposure before prior gates. |
 | G9 Observability / Quality / Ops | Admin Runtime, cost/token/latency/error taxonomy, golden-set eval, trace/export, alerts, and release evidence are operational. | Dashboard acceptance, recorded load evidence, model-gateway evidence, alert calibration, trace/export smoke, release evidence export. |
 | G10 Internal Beta / Department Rollout | 1-2 real internal workflows run with owners, cost/quality/audit/rollback evidence, and support model. | Workflow owner signoff, 211 smoke, rollback proof, issue/PR/release evidence, documented limits. |
 

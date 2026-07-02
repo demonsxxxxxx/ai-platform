@@ -19,6 +19,9 @@ LOAD_TEST_GATES = [
 CAPACITY_EVIDENCE_BUNDLE_SCHEMA = "ai-platform.capacity-evidence-bundle.v1"
 CAPACITY_RECORDED_GATE_SNAPSHOT_SCHEMA = "ai-platform.capacity-recorded-gate-snapshot.v1"
 CAPACITY_RECORDED_GATE_EVIDENCE_SCHEMA = "ai-platform.capacity-recorded-gate-evidence.v1"
+CAPACITY_RECORDED_GATE_EVIDENCE_PACKET_RESULT_SCHEMA = (
+    "ai-platform.capacity-recorded-gate-evidence-packet-result.v1"
+)
 CAPACITY_PROFILE_IDS = [
     "b3_10x4_sdk_subagents",
     "conservative_internal",
@@ -144,7 +147,11 @@ _PROFILE_EVIDENCE_REQUIRED_FIELDS = (
     "sdk_subagent_fanout_measurement_ref",
     "production_concurrency_defaults_raised",
     "safe_concurrency_claimed",
-    "ordinary_user_multi_agent_enabled",
+    "ordinary_user_platform_multi_run_orchestration_enabled",
+)
+_LEGACY_ORDINARY_USER_MULTI_AGENT_FLAG = "ordinary_user_multi_agent_enabled"
+_ORDINARY_USER_PLATFORM_MULTI_RUN_FLAG = (
+    "ordinary_user_platform_multi_run_orchestration_enabled"
 )
 _PROFILE_EVIDENCE_ALLOWED_SOURCES = {
     "platform_runtime_profile",
@@ -339,6 +346,27 @@ _LOAD_TEST_OPERATOR_WORKFLOW = [
         ),
         "expected_evidence": "capacity-evidence-bundle-api-read-write-burst.md",
         "requires_explicit_operator_execution": False,
+        "does_not_raise_defaults": True,
+    },
+    {
+        "id": "build_recorded_gate_evidence_packet",
+        "purpose": (
+            "Convert operator-reviewed measured values into a sanitized recorded "
+            "gate evidence packet without marking the gate recorded."
+        ),
+        "command_template": (
+            "python tools/capacity_recorded_gate_evidence_packet.py"
+            " --gate {workflow_gate}"
+            " --evidence-json capacity-operator-reviewed-evidence-values-{workflow_slug}.json"
+            " --cleanup-proof-status verified"
+            " --stop-condition-status passed"
+            " --format json > capacity-recorded-gate-evidence-{workflow_slug}.json;"
+            " bounded probe output must not be used as packet input;"
+            " output status recorded_gate_evidence_packet_ready only prepares"
+            " input for capacity_recorded_gate_snapshot.py and does not close B3"
+        ),
+        "expected_evidence": "capacity-recorded-gate-evidence-api-read-write-burst.json",
+        "requires_explicit_operator_execution": True,
         "does_not_raise_defaults": True,
     },
     {
@@ -893,6 +921,7 @@ def build_capacity_load_test_plan(
         if workflow_gate != "api_read_write_burst" and step["id"] in {
             "record_cleanup_proof",
             "assemble_evidence_bundle_draft",
+            "build_recorded_gate_evidence_packet",
             "assemble_recorded_gate_snapshot",
             "generate_gate_readiness_verdict",
         }:
@@ -1182,8 +1211,11 @@ def _safe_b3_profile_evidence(value: object) -> dict[str, Any]:
         result["production_concurrency_defaults_raised"] = False
     if source.get("safe_concurrency_claimed") is False:
         result["safe_concurrency_claimed"] = False
-    if source.get("ordinary_user_multi_agent_enabled") is False:
-        result["ordinary_user_multi_agent_enabled"] = False
+    ordinary_user_platform_multi_run_enabled = source.get(_ORDINARY_USER_PLATFORM_MULTI_RUN_FLAG)
+    if ordinary_user_platform_multi_run_enabled is None:
+        ordinary_user_platform_multi_run_enabled = source.get(_LEGACY_ORDINARY_USER_MULTI_AGENT_FLAG)
+    if ordinary_user_platform_multi_run_enabled is False:
+        result[_ORDINARY_USER_PLATFORM_MULTI_RUN_FLAG] = False
     return result
 
 
@@ -1253,7 +1285,7 @@ def _operator_reviewed_recorded_snapshot_contract(profile: dict[str, Any]) -> di
         "required_non_expansion_flags": {
             "production_concurrency_defaults_raised": False,
             "safe_concurrency_claimed": False,
-            "ordinary_user_multi_agent_enabled": False,
+            _ORDINARY_USER_PLATFORM_MULTI_RUN_FLAG: False,
         }
         if is_b3_target
         else {},
@@ -1271,7 +1303,7 @@ def _operator_reviewed_recorded_snapshot_contract(profile: dict[str, Any]) -> di
         ),
         "does_not_raise_defaults": True,
         "does_not_claim_safe_concurrency": True,
-        "does_not_enable_ordinary_user_multi_agent": True,
+        "does_not_enable_ordinary_user_platform_multi_run_orchestration": True,
         "does_not_close_b3_gate": True,
     }
 
@@ -1959,6 +1991,173 @@ def build_capacity_recorded_gate_snapshot(
     }
 
 
+def build_capacity_recorded_gate_evidence_packet_result(
+    gate: str,
+    evidence: dict[str, Any],
+    *,
+    cleanup_proof_status: str,
+    stop_condition_status: str,
+    triggered_stop_conditions: list[object] | None = None,
+) -> dict[str, Any]:
+    """Build a sanitized operator-reviewed recorded-gate packet without recording it."""
+    normalized_gate = str(gate or "").strip()
+    safe_gate = normalized_gate if normalized_gate in LOAD_TEST_GATES else "unknown"
+    input_errors: list[str] = []
+    source_evidence = _dict(evidence)
+    if safe_gate == "unknown":
+        input_errors.append("unsupported_gate")
+    if (
+        source_evidence.get("schema_version") == "ai-platform.capacity-bounded-load-harness.v1"
+        or source_evidence.get("load_test_evidence_status") == "probe_only_not_recorded"
+        or source_evidence.get("does_not_mark_gate_recorded") is True
+    ):
+        input_errors.append("bounded_probe_input_cannot_be_recorded_gate_evidence")
+
+    candidate_packet = {
+        "schema_version": CAPACITY_RECORDED_GATE_EVIDENCE_SCHEMA,
+        "gate": safe_gate,
+        "does_not_raise_defaults": True,
+        "evidence": source_evidence,
+        "cleanup_proof_status": cleanup_proof_status,
+        "stop_condition_status": stop_condition_status,
+        "triggered_stop_conditions": triggered_stop_conditions or [],
+    }
+    packet_status, gate_packet, packet_errors = _capacity_recorded_gate_evidence_packet(
+        candidate_packet,
+        safe_gate,
+    )
+    input_errors.extend(packet_errors)
+
+    packet = {}
+    if not input_errors:
+        packet = {
+            "schema_version": CAPACITY_RECORDED_GATE_EVIDENCE_SCHEMA,
+            "gate": safe_gate,
+            "does_not_raise_defaults": True,
+            **gate_packet,
+        }
+
+    return {
+        "schema_version": CAPACITY_RECORDED_GATE_EVIDENCE_PACKET_RESULT_SCHEMA,
+        "status": (
+            "recorded_gate_evidence_packet_ready"
+            if not input_errors
+            else "blocked_incomplete_inputs"
+        ),
+        "gate": safe_gate,
+        "input_status": "accepted" if not input_errors else "not_accepted",
+        "input_errors": input_errors,
+        "packet": packet,
+        "next_step": "submit_packet_to_capacity_recorded_gate_snapshot",
+        "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
+        "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+        "does_not_raise_defaults": True,
+        "does_not_close_b3_gate": True,
+    }
+
+
+def build_capacity_recorded_gate_batch_snapshot(
+    runtime_evidence: dict[str, Any],
+    recorded_gate_evidence_packets: list[dict[str, Any]],
+    *,
+    profile_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Merge all reviewed recorded-evidence packets into one fail-closed capacity snapshot."""
+    snapshot = _extract_capacity_evidence_snapshot(runtime_evidence)
+    runtime_errors: list[str] = []
+    gate_errors: list[str] = []
+    profile_errors: list[str] = []
+    if not snapshot:
+        runtime_errors.append("missing_capacity_evidence_snapshot")
+
+    packets = [
+        _dict(packet)
+        for packet in recorded_gate_evidence_packets
+        if _dict(packet)
+    ]
+    if not packets:
+        gate_errors.append("recorded_gate_evidence_packets_missing")
+
+    gate_packets: dict[str, dict[str, Any]] = {}
+    seen_gates: set[str] = set()
+    for packet in packets:
+        gate = str(packet.get("gate") or "").strip()
+        if gate not in LOAD_TEST_GATES:
+            gate_errors.append("recorded_gate_evidence_gate_unsupported")
+            continue
+        if gate in seen_gates:
+            gate_errors.append(f"recorded_gate_evidence_{gate}_duplicate")
+            continue
+        seen_gates.add(gate)
+        packet_status, gate_packet, packet_errors = _capacity_recorded_gate_evidence_packet(
+            packet,
+            gate,
+        )
+        if packet_status == "accepted":
+            gate_packets[gate] = gate_packet
+        else:
+            gate_errors.extend(packet_errors)
+
+    for gate in LOAD_TEST_GATES:
+        if gate not in gate_packets:
+            gate_errors.append(f"recorded_gate_evidence_{gate}_missing")
+
+    profile_status = "not_provided"
+    profile_packet: dict[str, Any] = {}
+    if profile_evidence is not None:
+        profile_status, profile_packet, profile_errors = (
+            _capacity_recorded_profile_evidence_packet(_dict(profile_evidence))
+        )
+
+    input_errors = runtime_errors + gate_errors + profile_errors
+    snapshot_output = json.loads(json.dumps(snapshot if snapshot else build_capacity_evidence_snapshot({})))
+    if not input_errors:
+        existing_load_test_evidence = _safe_load_test_evidence(snapshot_output.get("load_test_evidence"))
+        existing_profile_evidence = _safe_profile_evidence(
+            existing_load_test_evidence.get("profile_evidence")
+        )
+        recorded_gates = list(LOAD_TEST_GATES)
+        snapshot_output["load_test_evidence"] = {
+            "status": "recorded",
+            "required_evidence": list(_LOAD_TEST_REQUIRED_EVIDENCE),
+            "required_gates": list(LOAD_TEST_GATES),
+            "recorded_gates": recorded_gates,
+            "gate_evidence": {
+                gate: gate_packets[gate]
+                for gate in recorded_gates
+            },
+        }
+        merged_profile_evidence = dict(existing_profile_evidence)
+        if profile_packet:
+            merged_profile_evidence.update(profile_packet)
+        if merged_profile_evidence:
+            snapshot_output["load_test_evidence"]["profile_evidence"] = merged_profile_evidence
+
+    readiness = build_capacity_gate_readiness(snapshot_output)
+    return {
+        "schema_version": CAPACITY_RECORDED_GATE_SNAPSHOT_SCHEMA,
+        "status": (
+            "recorded_gate_batch_input_accepted"
+            if not input_errors
+            else "blocked_incomplete_inputs"
+        ),
+        "gate": "batch",
+        "recorded_gate": None,
+        "recorded_gates": list(LOAD_TEST_GATES) if not input_errors else [],
+        "input_status": {
+            "runtime_evidence": "accepted" if snapshot else "missing_capacity_evidence_snapshot",
+            "recorded_gate_evidence": "accepted" if not gate_errors else "not_accepted",
+            "profile_evidence": profile_status,
+        },
+        "input_errors": input_errors,
+        "snapshot": snapshot_output,
+        "readiness": readiness,
+        "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
+        "production_default_decision": readiness["production_default_decision"],
+        "does_not_raise_defaults": True,
+    }
+
+
 def render_capacity_recorded_gate_snapshot_markdown(result: dict[str, Any]) -> str:
     """Render the recorded-gate snapshot assembly result without raw evidence payloads."""
     readiness = _dict(result.get("readiness"))
@@ -2601,7 +2800,7 @@ def render_capacity_profile_readiness_markdown(readiness: dict[str, Any]) -> str
         f"- does not claim safe concurrency: `{str(b3_contract.get('does_not_claim_safe_concurrency')).lower()}`\n"
         "- does not enable ordinary-user platform-level multi-run "
         "orchestration: "
-        f"`{str(b3_contract.get('does_not_enable_ordinary_user_multi_agent')).lower()}`\n"
+        f"`{str(b3_contract.get('does_not_enable_ordinary_user_platform_multi_run_orchestration')).lower()}`\n"
         f"- does not close B3 gate: `{str(b3_contract.get('does_not_close_b3_gate')).lower()}`\n\n"
         "## Profiles\n\n"
         "| Profile | Status | Production default decision | Missing gates |\n"

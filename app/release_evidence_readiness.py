@@ -52,6 +52,9 @@ _CONDITIONAL_FIELDS = {
     "211_sandbox_runtime_smoke": [
         "runtime_subject_commit_sha",
     ],
+    "211_runtime_identity_label_repair": [
+        "runtime_subject_commit_sha",
+    ],
 }
 _FORBIDDEN_MARKER_CLASSES = [
     "executor private payload",
@@ -73,6 +76,7 @@ _ACCEPTED_ARTIFACT_KINDS = [
     "alert_trace_export_runtime_acceptance",
     "211_memory_enabled_document_workflow_smoke",
     "211_sandbox_runtime_smoke",
+    "211_runtime_identity_label_repair",
 ]
 _RETENTION_POLICY = {
     "schema_version": RETENTION_POLICY_SCHEMA_VERSION,

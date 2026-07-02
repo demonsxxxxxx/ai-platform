@@ -73,6 +73,7 @@ _RUNTIME_SUBJECT_ARTIFACT_KINDS = {
     "211_runtime_smoke",
     "211_memory_enabled_document_workflow_smoke",
     "211_sandbox_runtime_smoke",
+    "211_runtime_identity_label_repair",
 }
 
 

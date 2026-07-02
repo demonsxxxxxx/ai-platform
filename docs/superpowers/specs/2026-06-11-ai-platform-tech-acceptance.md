@@ -317,7 +317,7 @@ image matches the exact current source tree.
 | S3 target | One or two owner-approved long-task workflows can use controlled SDK task patterns without introducing platform-owned parent/child orchestration unless a later gate reopens it; each workflow declares expected subagent fanout, timeout, model-gateway pressure, cost budget, and rollback path. |
 | S4 target | Department rollout uses capacity profiles, quality gates, audit, cost, and rollback evidence. |
 | Reference sources | Claude Agent SDK Agent/subagent capability for execution; Codex CLI internal subagents as concept only; Poco collaboration UX. |
-| S1 acceptance | SDK-private subagents are not automatically platform multi-agent runs; platform-visible parent/child orchestration is deferred and must not appear in ordinary-user contracts. This acceptance does not prove that every user session can safely invoke SDK subagents at production concurrency. |
+| S1 acceptance | SDK-private subagents are not automatically platform-visible multi-run or parent/child orchestration; platform-visible parent/child orchestration is deferred and must not appear in ordinary-user contracts. This acceptance does not prove that every user session can safely invoke SDK subagents at production concurrency. |
 
 ## 4. First-Stage Acceptance Checklist
 
