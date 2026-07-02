@@ -511,6 +511,9 @@ export function processMessageEvent(
           break;
         }
       }
+      if (!shouldProjectRunStatus(data)) {
+        break;
+      }
       const eventId = String(data.event_id || data.id || "");
       if (!eventId) break;
       const severity =
@@ -686,6 +689,23 @@ function upsertRunStatusPart(
           : p,
       )
     : [...parts, runStatusPart];
+}
+
+function shouldProjectRunStatus(data: EventData): boolean {
+  const payload = asRecord(data.payload);
+  if (payload.visible_to_user === false || payload.visibleToUser === false) {
+    return false;
+  }
+  if (data.severity === "error" || data.severity === "warning") {
+    return true;
+  }
+  const eventType = String(data.event_type || data.type || "").toLowerCase();
+  return (
+    eventType.includes("error") ||
+    eventType.includes("failed") ||
+    eventType.includes("denied") ||
+    eventType.includes("blocked")
+  );
 }
 
 /** Replace an existing platform artifact card by artifact id. */

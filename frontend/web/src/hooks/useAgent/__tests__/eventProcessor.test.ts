@@ -50,7 +50,35 @@ test("merges streamed summary chunks inside a subagent by summary id", () => {
   assert.equal(summaries?.[0]?.content, "first second");
 });
 
-test("projects ai-platform run events into a visible run status part", () => {
+test("hides routine ai-platform run events from the chat transcript", () => {
+  const result = processMessageEvent(
+    "run_event",
+    {
+      event_id: "evt-context",
+      sequence: 4,
+      event_type: "context_snapshot_created",
+      stage: "context",
+      message: "已记录运行上下文快照",
+      severity: "info",
+      payload: {
+        snapshot_id: "snapshot-a",
+        storage_key: "tenants/default/private/tool.json",
+      },
+    } as never,
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  assert.equal(result.parts.length, 0);
+  assert.doesNotMatch(JSON.stringify(result), /storage_key|tenants\/default/);
+});
+
+test("keeps user-actionable ai-platform run warnings visible", () => {
   const result = processMessageEvent(
     "run_event",
     {

@@ -28,6 +28,7 @@ import {
   shouldAllowAutoPreviewForPart,
   type AutoPreviewTarget,
 } from "./autoPreviewEligibility";
+import { getVisibleMessageParts } from "./messagePartVisibility";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { createMessageAnchorId } from "../../layout/AppContent/messageOutline";
@@ -261,8 +262,11 @@ export const ChatMessage = memo(function ChatMessage({
     availableModels,
   });
 
-  // If there are parts, render in order; otherwise fall back to old rendering method
-  const hasParts = message.parts && message.parts.length > 0;
+  // If there are visible parts, render in order; otherwise fall back to content.
+  const visibleParts = message.parts
+    ? getVisibleMessageParts(message.parts)
+    : [];
+  const hasParts = visibleParts.length > 0;
   // User message: bubble style, right aligned
   if (isUser) {
     return (
@@ -283,9 +287,9 @@ export const ChatMessage = memo(function ChatMessage({
 
   // Get assistant message's plain text content for copying
   const getAssistantTextContent = (): string => {
-    if (hasParts && message.parts) {
+    if (hasParts) {
       // Extract all text content from parts
-      return message.parts
+      return visibleParts
         .filter(
           (part): part is Extract<MessagePart, { type: "text" }> =>
             part.type === "text",
@@ -336,14 +340,14 @@ export const ChatMessage = memo(function ChatMessage({
 
           {hasParts ? (
             <div className="space-y-3 px-2 my-2">
-              {message.parts!.map((part: MessagePart, index: number) => (
+              {visibleParts.map((part: MessagePart, index: number) => (
                 <MessagePartRenderer
                   key={index}
                   part={part}
                   messageId={message.id}
                   partIndex={index}
                   isStreaming={message.isStreaming}
-                  isLast={index === message.parts!.length - 1}
+                  isLast={index === visibleParts.length - 1}
                   activePreview={activePreview}
                   onOpenPreview={onOpenPreview}
                   allowAutoPreview={shouldAllowAutoPreviewForPart({
@@ -354,7 +358,7 @@ export const ChatMessage = memo(function ChatMessage({
                 />
               ))}
               <RevealArtifactsSummary
-                parts={message.parts}
+                parts={visibleParts}
                 isStreaming={message.isStreaming}
                 onOpenPreview={onOpenPreview}
               />
