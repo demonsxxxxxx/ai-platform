@@ -7,6 +7,7 @@ OLD_PRD = ROOT / "docs/superpowers/specs/2026-05-29-ai-platform-final-product-pr
 TECH_ACCEPTANCE = ROOT / "docs/superpowers/specs/2026-06-11-ai-platform-tech-acceptance.md"
 BACKEND_PRD = ROOT / "docs/superpowers/specs/2026-06-18-ai-platform-backend-phased-prd.md"
 ROADMAP = ROOT / "docs/superpowers/plans/2026-06-02-ai-platform-foundation-roadmap.md"
+G7_B3_EVIDENCE_CLOSURE_PLAN = ROOT / "docs/superpowers/plans/2026-07-02-g7-b3-evidence-closure.md"
 GUARDRAILS = ROOT / "docs/agent-rules/ai-platform-guardrails.md"
 MULTI_AGENT_CONTEXT_WORKFLOW = ROOT / "docs/agent-rules/multi-agent-context-workflow.md"
 GITHUB_WORKFLOW = ROOT / "docs/agent-rules/github-issue-pr-workflow.md"
@@ -186,6 +187,9 @@ def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
     assert "Current-source S1 status is not" in compact_prd_text
     assert "assumed from that closure" in compact_prd_text
     assert "Status: active companion acceptance document" in tech_text
+    assert "G7 is `candidate_evidence_requires_review` until operator status-upgrade review" in tech_text
+    assert "G7 remains blocked until Docker-provider smoke and hardening evidence exist" not in tech_text
+    assert "Docker provider hardening and 211 smoke remain G7 blockers" not in tech_text
     assert "docs/operations/ai-platform-foundation-alpha-closure.md" in prd_text
     assert "docs/operations/ai-platform-foundation-alpha-closure.md" in tech_text
     assert "S2-0 latest-main runtime/concurrency/readiness refresh" in tech_text
@@ -272,10 +276,14 @@ def test_technical_acceptance_summarizes_backend_p0_productization_bundles():
     ):
         assert evidence_level in tech_text
 
+    assert (
+        "Status labels must stay separate: `local partial`, `PR ready`, `reviewed`, `merged`, "
+        "`211 verified`, and `gate closable` are not interchangeable."
+        in compact_tech_text
+    )
     for boundary in (
         "P0 capability summaries are planning labels, not gate-closure evidence.",
         "Code absorption from backend reference projects still requires source pinning, license/provenance review, targeted tests, explicit gate wording, and runtime evidence when applicable.",
-        "Status labels must stay separate: `local partial`, `PR ready`, `merged`, `211 verified`, and `gate closable` are not interchangeable.",
         "B3 operator-reviewed recorded snapshot source contract",
         "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1",
         "does not raise production defaults or claim safe concurrency",
@@ -1474,12 +1482,17 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     assert "--skip-maintenance-cleanup" in capacity_text
     assert "include_maintenance_cleanup=false" in capacity_text
     compact_capacity_text = " ".join(capacity_text.split())
-    assert "Fresh read-only 211 capacity sampling for the `4805031` runtime is currently blocked" in compact_capacity_text
-    assert "default Admin Runtime capacity route" in capacity_text
-    assert "returned HTTP `500` with" in capacity_text
-    assert "`sandbox_provider_cleanup_failed`" in capacity_text
-    assert "where the default stack intentionally has no Docker socket" in compact_capacity_text
-    assert "local route fix degrades that container observation to `list_runtime_containers_status=unavailable`" in compact_capacity_text
+    assert "211 Runtime Evidence - 2026-07-02, PR #304 branch commit `decf33a`" in capacity_text
+    assert "ai-platform:decf33a-g7-b3-post-300-followup-v1" in capacity_text
+    assert "ai-platform-frontend:e2189d1" in capacity_text
+    assert "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false" in capacity_text
+    assert "returned HTTP `200`" in compact_capacity_text
+    assert "2026-07-02-211-capacity-runtime-readiness-decf33a.json" in capacity_text
+    assert "not a raw runtime payload export and is not recorded B3 load evidence" in compact_capacity_text
+    assert "profile `unproven_default`" in capacity_text
+    assert "`profile_evidence` was empty" in capacity_text
+    assert "This `decf33a` capture supersedes the earlier `4805031`" in compact_capacity_text
+    assert "capacity-pending/HTTP-500 observation for the currently running PR #304 branch runtime only" in compact_capacity_text
     assert "C:\\Users" not in capacity_text
 
     for text in (capacity_text, gate_status_text):
@@ -1520,7 +1533,7 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
         assert "ordinary-user platform-level multi-run orchestration exposure" in " ".join(text.split())
         assert "C:\\Users" not in text
 
-    assert "`ae6b7e5` read-only capacity runtime evidence" in gate_status_text
+    assert "`ae6b7e5` and PR #304 branch `decf33a` read-only capacity runtime evidence" in gate_status_text
     assert "ai-platform:4805031-g7-b3-post-297-label-repair-v2" in capacity_text
     assert "ai-platform-frontend:ba81a0b" in capacity_text
     assert (
@@ -1533,9 +1546,9 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     assert "schema `ai-platform.capacity-runtime-evidence.v1`" in gate_status_text
     assert "nested gate readiness `blocked_missing_load_test_evidence`" in gate_status_text
     assert "missing profile evidence for every required `b3_10x4_sdk_subagents` field" in gate_status_text
-    assert "Fresh `4805031` capacity visibility is not yet recorded" in gate_status_text
-    assert "current 211 no-cleanup Admin Runtime overview fails before local default-stack Docker-socket fallback is deployed" in gate_status_text
-    assert "tools/capacity_runtime_evidence.py --skip-maintenance-cleanup" in gate_status_text
+    assert "The `decf33a` capture is PR #304 branch runtime visibility only" in gate_status_text
+    assert "does not make PR #304 reviewed/merged" in gate_status_text
+    assert "does not prove current-main `211 verified`" in gate_status_text
     assert "This is source/runtime visibility plus source contract only, not B3 closure" in gate_status_text
 
 
@@ -1787,9 +1800,11 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "2026-07-02 `ae6b7e5` read-only capacity runtime evidence" in roadmap_text
     assert "Admin Runtime HTTP `200`" in roadmap_text
     assert "required capacity sections present" in roadmap_text
-    assert "当前 `4805031` 的 fresh capacity visibility 仍待部署后重采" in roadmap_text
-    assert "`--skip-maintenance-cleanup`" in roadmap_text
-    assert "不能说 `4805031` B3 visibility 已验证" in roadmap_text
+    assert "2026-07-02 PR #304 branch runtime subject `decf33a` 又补了一次 read-only" in roadmap_text
+    assert "Admin Runtime no-cleanup overview 返回 HTTP `200`" in compact_roadmap_text
+    assert "七个 `missing_load_test_gates` 全部" in roadmap_text
+    assert "不证明 PR reviewed/merged" in roadmap_text
+    assert "current-main `211 verified`" in roadmap_text
     assert "nested gate readiness `blocked_missing_load_test_evidence`" in compact_roadmap_text
     assert "`b3_10x4_sdk_subagents` operator-reviewed profile evidence 仍全部缺失" in compact_roadmap_text
     assert "must not be treated as ordinary-user platform-level multi-run orchestration exposure evidence" in compact_text
@@ -1825,6 +1840,10 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "2026-07-02-211-g7-sandbox-live-env-hardening-ae6b7e5.json" in release_evidence_text
     assert PR297_G7_B3_SHA in release_evidence_text
     assert PR304_G7_B3_SHA in release_evidence_text
+    assert "2026-07-02-211-capacity-runtime-readiness-decf33a.json" in release_evidence_text
+    assert "Reviewed redacted PR #304 branch capacity runtime visibility for `decf33a`" in release_evidence_text
+    assert "The readiness status remains `blocked_missing_load_test_evidence`" in release_evidence_text
+    assert "This is B3 visibility and fail-closed readiness evidence only" in release_evidence_text
     assert "2026-07-02-211-g7-sandbox-live-env-hardening-decf33a.json" in release_evidence_text
     assert "2026-07-02-211-foundation-alpha-poc-decf33a-foundation-runtime-concurrency.json" in release_evidence_text
     assert "Together with the same-subject `decf33a` Foundation Runtime concurrency entry below" in release_evidence_text
@@ -1840,6 +1859,9 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
 
     assert "do not call the current source `211 verified`" in compact_text
     assert "`gate closable`, B3 complete, G7 complete, Foundation Alpha complete, or production-ready" in compact_text
+    assert "already captured 211 current-main verifier artifacts" not in read(G7_B3_EVIDENCE_CLOSURE_PLAN)
+    compact_tech_text = " ".join(read(TECH_ACCEPTANCE).split())
+    assert "`local partial`, `PR ready`, `reviewed`, `merged`, `211 verified`, and `gate closable`" in compact_tech_text
 
 
 def test_observability_docs_record_quality_golden_set_contract_without_closing_g9():

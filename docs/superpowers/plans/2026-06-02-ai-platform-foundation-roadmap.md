@@ -211,15 +211,15 @@ vulnerability evidence。
   `do_not_raise_without_recorded_load_test_evidence`，但这只是 B3 visibility /
   fail-closed evidence；`b3_10x4_sdk_subagents` operator-reviewed profile
   evidence 仍全部缺失，不关闭 B3。
-  当前 `4805031` 的 fresh capacity visibility 仍待部署后重采：211 上默认
-  `/api/ai/admin/runtime/overview` 返回 `sandbox_provider_cleanup_failed`，
-  `include_maintenance_cleanup=false` 路径也会因为当前 deployed image 在 API
-  容器内调用 Docker SDK 枚举 containers、而默认 stack 不挂 Docker socket
-  导致 HTTP `500`。本地 source 已改为 default-stack 降级：
-  container observation 失败时返回 `list_runtime_containers_status=unavailable`
-  而不是让整个 overview 失败，`tools/capacity_runtime_evidence.py` 也新增
-  `--skip-maintenance-cleanup`。这只是 local progress，合并部署并重新采集
-  211 capacity runtime evidence 前，不能说 `4805031` B3 visibility 已验证。
+  2026-07-02 PR #304 branch runtime subject `decf33a` 又补了一次 read-only
+  capacity runtime evidence：211 API/worker 和 source marker 均读到
+  `decf33a017e0b97e2a2992f80e3ccdc19152c1f4`，Admin Runtime no-cleanup overview
+  返回 HTTP `200`，required sections present，nested gate readiness 仍是
+  `blocked_missing_load_test_evidence`，七个 `missing_load_test_gates` 全部
+  仍缺失，`profile_evidence` 为空，production decision 仍是
+  `do_not_raise_without_recorded_load_test_evidence`。这只证明 PR #304 branch
+  runtime 的 B3 visibility / fail-closed 路径，不证明 PR reviewed/merged、
+  current-main `211 verified`，也不关闭 B3。
 
 因此当前下一步不是重开 G8，也不是把 B3 当作普通用户平台级 multi-run 产品曝光；
 下一步是先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime observation
@@ -238,8 +238,9 @@ vulnerability evidence。
   subject `decf33a` reviewed evidence + same-subject FRC 的读法也可以到
   `candidate_evidence_requires_review`，但 PR review/merge、current-main rollout
   和 211 live refresh 仍必须单独证明。B3 仍 blocked，因为七个 recorded load-test
-  gates 和 `b3_10x4_sdk_subagents` profile evidence 缺失，且 `4805031` capacity
-  runtime visibility 还需要 no-cleanup/default-stack fix 部署后重采；external
+  gates 和 `b3_10x4_sdk_subagents` profile evidence 缺失；`decf33a` capacity
+  runtime visibility 只是 PR #304 branch evidence，仍需 PR review/merge 与
+  current-main evidence 单独证明；external
   env-file 与当前 source/runtime split 是 G0/source-authority / production-hardening 非闭合边界。
 G7/B3 的证据边界继续保持为 `runtime pending` / `local partial`，直到真实运行
 证据闭合。该 audit 只是控制/计划工件，不是 G7 runtime evidence 或 B3 load
