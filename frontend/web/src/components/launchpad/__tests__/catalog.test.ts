@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   filterLaunchpadGroups,
+  getLegacyWebUiFrameUrl,
   launchpadGroups,
   resolveLaunchpadDestination,
 } from "../catalog.ts";
@@ -33,6 +34,11 @@ test("search filters by app name, description, and group name", () => {
 });
 
 test("destination resolver opens urls and maps known nonGMPlims systems", () => {
+  assert.equal(
+    getLegacyWebUiFrameUrl(),
+    "http://10.56.0.25:8189/#/TaskManagement/indexSpace/",
+  );
+
   const wordTranslate = launchpadGroups
     .flatMap((group) => group.entries)
     .find((entry) => entry.name === "Word文档翻译");
@@ -43,7 +49,7 @@ test("destination resolver opens urls and maps known nonGMPlims systems", () => 
     .find((entry) => entry.systemKey === "SampleSender");
   assert.deepEqual(resolveLaunchpadDestination(sampleSender!), {
     kind: "url",
-    href: "http://10.56.0.211:8080/#/RDSampleSender/dashboard/overview",
+    href: "http://10.56.0.25:8189/#/RDSampleSender/dashboard/overview",
   });
 });
 
