@@ -50,21 +50,26 @@ test("marketplace route is folded into admin skill management", () => {
   assert.match(state, /marketplace:admin/);
 });
 
-test("company navigation owns the legacy webUI iframe seam with fallback open behavior", () => {
+test("company navigation owns legacy webUI links without iframe embedding", () => {
   const catalog = readSource("src/components/launchpad/catalog.ts");
   const panel = readSource("src/components/launchpad/LaunchpadPanel.tsx");
   const zh = readSource("src/i18n/locales/zh.json");
   const en = readSource("src/i18n/locales/en.json");
 
-  assert.match(catalog, /VITE_LEGACY_NONGMP_URL/);
-  assert.match(catalog, /VITE_LEGACY_WEBUI_FRAME_URL/);
-  assert.match(catalog, /buildLegacySystemUrl/);
+  assert.match(catalog, /url:\s*"http:\/\/10\.56\.0\.25:8189\/#\/TaskManagement\/indexSpace\/"/);
   assert.match(panel, /data-company-navigation-shell/);
-  assert.match(panel, /data-legacy-webui-frame/);
-  assert.match(panel, /<iframe/);
-  assert.match(panel, /sandbox=/);
-  assert.match(panel, /allow="clipboard-read; clipboard-write"/);
+  assert.match(panel, /openUrl\(tab\.url\)/);
   assert.match(panel, /window\.open/);
+  assert.doesNotMatch(catalog, /"icon":/);
+  assert.doesNotMatch(catalog, /icon\?:/);
+  assert.doesNotMatch(catalog, /systemKey/);
+  assert.doesNotMatch(catalog, /VITE_LEGACY_WEBUI_FRAME_URL/);
+  assert.doesNotMatch(catalog, /VITE_LEGACY_NONGMP_URL/);
+  assert.doesNotMatch(catalog, /buildLegacySystemUrl/);
+  assert.doesNotMatch(panel, /data-legacy-webui-frame/);
+  assert.doesNotMatch(panel, /<iframe/);
+  assert.doesNotMatch(panel, /sandbox=/);
+  assert.doesNotMatch(panel, /allow="clipboard-read; clipboard-write"/);
   assert.match(zh, /"companyNavigation"/);
   assert.match(en, /"companyNavigation"/);
 });

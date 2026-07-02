@@ -1581,15 +1581,10 @@
   },
   "companyNavigation": {
     "directory": {
-      "description": "Pick a company system or common site on the left; preview it in the workbench on the right. Open in a new tab when framing is blocked.",
+      "description": "Open company systems and common sites in a new tab so each system keeps its own runtime and login boundary.",
       "title": "Company navigation"
     },
-    "frame": {
-      "defaultTitle": "Lingxi platform navigation",
-      "fallbackHint": "If the target system blocks iframe embedding, does not share login state, or renders blank, use Open in new tab.",
-      "openExternal": "Open in new tab"
-    },
-    "previewEntry": "Preview {{name}} in the workbench"
+    "openEntry": "Open {{name}}"
   },
   "nav": {
     "adminMarketplace": "Admin Marketplace",

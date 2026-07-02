@@ -1582,15 +1582,10 @@
   },
   "companyNavigation": {
     "directory": {
-      "description": "左侧选择公司系统或常用网站，右侧在工作台中预览；不能嵌入时用新窗口打开。",
+      "description": "选择公司系统或常用网站后在新窗口打开，保留两套系统边界，避免跨系统登录态在嵌入页面中卡住。",
       "title": "公司应用导航"
     },
-    "frame": {
-      "defaultTitle": "灵犀平台导航",
-      "fallbackHint": "如果目标系统拒绝 iframe 嵌入、登录态不共享或显示空白，请使用「新窗口打开」。",
-      "openExternal": "新窗口打开"
-    },
-    "previewEntry": "在工作台中预览 {{name}}"
+    "openEntry": "打开 {{name}}"
   },
   "nav": {
     "adminMarketplace": "管理员技能商店",

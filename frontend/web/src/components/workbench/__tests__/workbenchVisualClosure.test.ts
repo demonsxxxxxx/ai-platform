@@ -802,7 +802,8 @@ test("launchpad and public directory pages use one workbench catalog layout", ()
   assert.match(launchpad, /workbenchSurface\.catalog\.summaryGrid/);
   assert.match(launchpad, /workbenchSurface\.catalog\.summaryCard/);
   assert.match(launchpad, /data-company-navigation-shell/);
-  assert.match(launchpad, /data-legacy-webui-frame/);
+  assert.doesNotMatch(launchpad, /data-legacy-webui-frame/);
+  assert.doesNotMatch(launchpad, /<iframe/);
   assert.doesNotMatch(launchpad, /text-stone-(?:400|500|600|700|800|900)/);
   assert.doesNotMatch(launchpad, /text-slate-(?:400|500|600|700|800|900)/);
   assert.doesNotMatch(launchpad, /bg-slate-(?:100|200|900)/);
