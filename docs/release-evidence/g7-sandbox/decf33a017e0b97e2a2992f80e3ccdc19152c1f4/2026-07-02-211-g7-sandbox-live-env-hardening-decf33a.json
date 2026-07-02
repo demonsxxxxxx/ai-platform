@@ -45,7 +45,7 @@
       "SANDBOX_EXECUTOR_IMAGE": "ai-platform:decf33a-g7-b3-post-300-followup-v1",
       "SANDBOX_EGRESS_POLICY_ENABLED": "true"
     },
-    "source_authority_caveat": "The captured 211 source marker, API/worker image labels, in-container markers, and safe sandbox env all bind to decf33a; PR #304 is still draft, unreviewed, and unmerged, and origin/main has newer frontend source, so this is not a current-main 211 verified or gate-closure claim."
+    "source_authority_caveat": "The captured 211 source marker, API/worker image labels, in-container markers, and safe sandbox env all bind to decf33a. PR #304 later merged at a9c78efa812efe96b0366011a0c731cb11eb0099, but this capture is not current-main 211 verified evidence for that merge commit or a gate-closure claim."
   },
   "evidence_ref": {
     "verifier": "scripts/verify_sandbox_runtime_211.py",
@@ -189,8 +189,8 @@
         "does_not_close_g7_gate": true,
         "does_not_close_b3_gate": true,
         "remaining_gate_boundaries": [
-          "PR #304 is draft, unreviewed, and unmerged, so this branch runtime evidence is not current-main closure evidence",
-          "origin/main has newer frontend source after decf33a and still requires its own runtime/source status reading before any current-main 211 verified claim",
+          "PR #304 later merged at a9c78efa812efe96b0366011a0c731cb11eb0099, but this decf33a runtime evidence is not current-main closure evidence for that merge commit",
+          "origin/main has newer source after decf33a and still requires its own runtime/source status reading before any current-main 211 verified claim",
           "B3 seven-gate recorded load evidence remains missing",
           "b3_10x4_sdk_subagents operator-reviewed profile evidence remains missing",
           "operator status-upgrade review is still required before any G7 closure claim"
@@ -246,10 +246,10 @@
     "The 211 live-env hardening verifier recorded the captured decf33a API/worker sandbox posture as Docker provider, decf33a executor image, and egress policy enabled.",
     "The verifier summary recorded all eight sandbox runtime checks passing for runtime subject decf33a.",
     "This record intentionally omits raw environment values beyond allowlisted non-secret posture keys, callback secret values, host workdirs, raw Docker inspect payloads, cancelled container IDs, and real deploy env-file contents.",
-    "This provides reviewed local G7 release evidence for PR #304 branch subject decf33a only; same-subject Foundation Runtime concurrency evidence is recorded separately, while B3 recorded load evidence, PR review/merge, current-main source reading, and operator status-upgrade review remain open."
+    "This provides reviewed local G7 release evidence for runtime subject decf33a only; same-subject Foundation Runtime concurrency evidence is recorded separately, while B3 recorded load evidence, current-main source reading for merge commit a9c78ef, and operator status-upgrade review remain open."
   ],
   "open_followups": [
-    "Keep PR #304 draft/unreviewed/unmerged status separate from reviewed evidence status; do not call this merged, current-main verified, or gate closable.",
+    "Keep PR #304 merged status separate from reviewed runtime-subject evidence status; do not call this current-main verified or gate closable.",
     "Use the separate same-subject Foundation Runtime concurrency evidence for decf33a during G7 status-upgrade review; do not treat this G7 record alone as FRC evidence.",
     "Record B3 operator-reviewed seven-gate load evidence and b3_10x4_sdk_subagents profile evidence before any B3 closure or production default increase.",
     "Complete operator status-upgrade review before any G7 or production Docker sandbox hardening closure claim."

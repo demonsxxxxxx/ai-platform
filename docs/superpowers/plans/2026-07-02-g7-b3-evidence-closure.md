@@ -163,16 +163,17 @@ current verifier interpretation keeps `missing_sections=[]` but still reports
 `blocked_missing_load_test_evidence`; these probes do not become B3 recorded
 gate evidence.
 
-A later read-only 211 capacity runtime capture for PR #304 branch subject
+A later read-only 211 capacity runtime capture for PR #304 runtime subject
 `decf33a017e0b97e2a2992f80e3ccdc19152c1f4` returned Admin Runtime HTTP `200`
 on `/api/ai/admin/runtime/overview?include_maintenance_cleanup=false` with all
 required sections present, but its readiness still reports
 `blocked_missing_load_test_evidence`, all seven recorded gates missing,
 `profile_evidence={}`, and
 `production_default_decision=do_not_raise_without_recorded_load_test_evidence`.
-This updates B3 visibility for the PR #304 branch runtime only; it does not
-make PR #304 reviewed/merged, does not prove current-main `211 verified`, and
-does not close B3.
+This updates B3 visibility for the `decf33a` runtime subject only. PR #304 is
+now merged at `a9c78efa812efe96b0366011a0c731cb11eb0099`, but this evidence
+does not prove current-main `211 verified` for that merge commit and does not
+close B3.
 
 Audit cleanup note: old sanitized runtime observations must be merged with the
 later reviewed label-repair, live-env hardening, and Foundation Runtime
