@@ -768,6 +768,36 @@ async def test_docker_provider_sets_default_security_options_without_docker_sock
 
 
 @pytest.mark.asyncio
+async def test_docker_provider_runs_executor_as_workspace_owner_when_host_path_is_local(monkeypatch):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    class FakePath:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def stat(self):
+            class StatResult:
+                st_uid = 1003
+                st_gid = 1003
+
+            return StatResult()
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    monkeypatch.setattr(container_provider, "Path", FakePath)
+    monkeypatch.setattr(container_provider.os, "name", "posix")
+
+    await provider.create_or_reuse(request(), workspace())
+
+    created = fake.created[0]
+    assert created["user"] == "1003:1003"
+
+
+@pytest.mark.asyncio
 async def test_docker_provider_stop_calls_container_stop_and_removes_lease():
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 

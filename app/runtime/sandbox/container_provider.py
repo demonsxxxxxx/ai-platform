@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+from pathlib import Path
 from typing import Any, Callable, Protocol
 
 import httpx
@@ -229,6 +231,24 @@ def _docker_security_kwargs() -> dict[str, Any]:
         "read_only": True,
         "tmpfs": {"/tmp": "rw,noexec,nosuid,size=64m"},
     }
+
+
+def _docker_workspace_user_kwargs(workspace_host_path: str) -> dict[str, str]:
+    try:
+        stat_result = Path(workspace_host_path).stat()
+    except OSError:
+        return {}
+    uid = getattr(stat_result, "st_uid", None)
+    gid = getattr(stat_result, "st_gid", None)
+    if (
+        isinstance(uid, int)
+        and isinstance(gid, int)
+        and uid > 0
+        and gid >= 0
+        and os.name != "nt"
+    ):
+        return {"user": f"{uid}:{gid}"}
+    return {}
 
 
 def _docker_network_options(network: Any) -> dict[str, str]:
@@ -537,6 +557,7 @@ class DockerContainerProvider:
                 ports={"18000/tcp": None},
                 **_docker_egress_network_kwargs(client, settings),
                 **_docker_security_kwargs(),
+                **_docker_workspace_user_kwargs(workspace.workspace_host_path),
                 **_docker_resource_kwargs(request.resource_limits),
             )
             if hasattr(container, "start"):

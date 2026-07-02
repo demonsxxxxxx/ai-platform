@@ -1,0 +1,99 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-02-211-capacity-runtime-readiness-28676df",
+  "commit_sha": "28676df4abcbb7063211fceb4cc1701648c43d49",
+  "runtime_subject_commit_sha": "28676df4abcbb7063211fceb4cc1701648c43d49",
+  "gate": "B3 Capacity Baseline",
+  "issue_refs": [
+    "#21",
+    "#122",
+    "#144"
+  ],
+  "pr_refs": [
+    "#305"
+  ],
+  "artifact_kind": "capacity_gate_readiness",
+  "captured_at": "2026-07-02T13:01:00Z",
+  "source_ref": {
+    "subject": "PR #305 merge commit 28676df runtime subject",
+    "runtime_subject_commit_sha": "28676df4abcbb7063211fceb4cc1701648c43d49",
+    "api_worker_image": "ai-platform:28676df-g7-b3-current-main-runtime-only-v1",
+    "frontend_image": "ai-platform-frontend:e2189d1",
+    "source_marker_status": "stale_repo_local_source_marker_decf33a",
+    "source_marker_commit": "decf33a017e0b97e2a2992f80e3ccdc19152c1f4",
+    "health_status": "ok",
+    "capture_route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+    "capture_mode": "operator_captured_admin_projection_no_maintenance_cleanup",
+    "source_authority_caveat": "API and worker images and OCI labels were read back at 28676df, but the 211 repo-local source marker still read decf33a. This capture is not G0 source-authority closure or gate-closable evidence."
+  },
+  "evidence_ref": {
+    "verifier": "tools/capacity_runtime_evidence.py",
+    "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+    "snapshot_schema_version": "ai-platform.capacity-evidence-snapshot.v1",
+    "readiness_schema_version": "ai-platform.capacity-gate-readiness.v1",
+    "runtime_profile": "g7-b3-current-main-runtime-only-v1",
+    "source_http_status": 200,
+    "admin_runtime_required_sections": [
+      "capacity",
+      "database_pool",
+      "queue",
+      "admission",
+      "backpressure",
+      "sandbox",
+      "observability"
+    ],
+    "admin_runtime_observed_sections": [
+      "capacity",
+      "database_pool",
+      "queue",
+      "admission",
+      "backpressure",
+      "observability"
+    ],
+    "admin_runtime_missing_sections": [
+      "sandbox"
+    ],
+    "readiness_status": "blocked_missing_admin_runtime_sections",
+    "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
+    "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+    "load_test_evidence_status": "missing",
+    "missing_load_test_gates": [
+      "api_read_write_burst",
+      "run_creation_burst_by_tenant_and_user",
+      "worker_processing_throughput",
+      "queue_depth_and_lease_latency",
+      "cancel_retry_resume_under_load",
+      "sandbox_lease_creation_under_load",
+      "model_gateway_timeout_and_backpressure"
+    ],
+    "profile_evidence_status": "missing",
+    "profile_evidence": {},
+    "target_profile_id": "b3_10x4_sdk_subagents",
+    "non_expansion_invariants": {
+      "production_concurrency_defaults_raised": false,
+      "safe_concurrency_claimed": false,
+      "ordinary_user_platform_multi_run_orchestration_enabled": false
+    },
+    "does_not_raise_defaults": true,
+    "does_not_claim_safe_concurrency": true,
+    "does_not_mark_recorded_load_test_gate": true,
+    "does_not_close_b3": true,
+    "does_not_close_g7": true,
+    "does_not_make_source_authority_gate_closable": true,
+    "does_not_make_current_main_211_verified": true,
+    "does_not_make_issue_164_gate_closable": true
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "notes": [
+    "This reviewed, redacted summary records 28676df Admin Runtime capacity visibility after API/worker rollout and sandbox executor image override.",
+    "The evidence remains fail-closed because sandbox is treated as a missing Admin Runtime section, all seven recorded load-test gates are missing, and no b3_10x4_sdk_subagents profile evidence is attached.",
+    "A same-run G7 hardening verifier attempt did not produce passing G7 evidence because host Python lacked pydantic; later dependency-safe diagnosis exposed an executor workspace ownership blocker under cap_drop ALL. These diagnostics are tracked in status docs only and are not wrapped as reviewed G7 pass evidence."
+  ],
+  "open_followups": [
+    "Reconcile the 211 repo-local source marker and source snapshot from decf33a to the runtime subject before any source-authority closure claim.",
+    "Merge and deploy the workspace-owner executor fix, then run a dependency-safe G7 hardening verifier path for the deployed runtime image before claiming current-main G7 211 verification.",
+    "Record operator-reviewed load-test evidence for all seven B3 gates.",
+    "Record b3_10x4_sdk_subagents profile evidence for 10 sessions x peak 4 SDK subagents per session before any production default increase."
+  ]
+}

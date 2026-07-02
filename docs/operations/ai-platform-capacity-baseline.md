@@ -692,6 +692,83 @@ prove current-main `211 verified` for that merge commit, does not provide
 recorded B3 load-test evidence, does not claim a safe maximum concurrency
 number, does not raise production defaults, and does not close B3.
 
+### 211 Runtime Evidence - 2026-07-02, PR #305 merge commit `28676df`
+
+After PR #305 merged, a read-only 211 identity check observed API and worker
+running `ai-platform:28676df-g7-b3-current-main-runtime-only-v1`, with
+source/runtime/OCI labels bound to
+`28676df4abcbb7063211fceb4cc1701648c43d49`. The frontend image observed at the
+same time was `ai-platform-frontend:e2189d1`. API health on
+`http://127.0.0.1:8020/api/ai/health` and frontend proxy health on
+`http://127.0.0.1:18001/api/ai/health` both returned `{"status":"ok"}`.
+The 211 repo-local source marker still read
+`decf33a017e0b97e2a2992f80e3ccdc19152c1f4`, so this is runtime-image
+rollout evidence with a source-authority caveat, not G0 closure.
+
+The read-only capacity runtime evidence command was run inside the 211 API
+container against the local API route:
+
+```powershell
+python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha 28676df4abcbb7063211fceb4cc1701648c43d49 --runtime-profile g7-b3-current-main-runtime-only-v1 --skip-maintenance-cleanup --format json
+```
+
+The output schema was `ai-platform.capacity-runtime-evidence.v1`. The nested
+snapshot schema was `ai-platform.capacity-evidence-snapshot.v1`, and
+`snapshot.runtime_identity.commit_sha` matched
+`28676df4abcbb7063211fceb4cc1701648c43d49`. The source capture used
+`/api/ai/admin/runtime/overview?include_maintenance_cleanup=false` and returned
+HTTP `200`.
+
+The reviewed, redacted repository evidence entry is
+`docs/release-evidence/capacity-gate-readiness/28676df4abcbb7063211fceb4cc1701648c43d49/2026-07-02-211-capacity-runtime-readiness-28676df.json`.
+It summarizes capacity visibility and fail-closed readiness only; it is not a
+raw runtime payload export and is not recorded B3 load evidence.
+
+The gate readiness schema was `ai-platform.capacity-gate-readiness.v1` with
+status `blocked_missing_admin_runtime_sections`. The Admin Runtime evidence
+listed required sections `capacity`, `database_pool`, `queue`, `admission`,
+`backpressure`, `sandbox`, and `observability`; the readiness result treated
+`sandbox` as missing, so the capture is more conservative than the earlier
+`decf33a` capacity visibility record. The production default decision remained
+`do_not_raise_without_recorded_load_test_evidence`, and all seven load-test
+gates were still missing recorded evidence:
+
+- `api_read_write_burst`
+- `run_creation_burst_by_tenant_and_user`
+- `worker_processing_throughput`
+- `queue_depth_and_lease_latency`
+- `cancel_retry_resume_under_load`
+- `sandbox_lease_creation_under_load`
+- `model_gateway_timeout_and_backpressure`
+
+`profile_evidence` was empty, so the `b3_10x4_sdk_subagents` profile remains
+blocked until operator-reviewed profile evidence records the required 10
+sessions x peak 4 SDK subagents/session measurement and the required
+non-expansion flags.
+
+A same-session G7 hardening verifier attempt for run
+`g7-current-main-28676df-20260702130121` did not produce passing G7 evidence:
+the generator summary recorded `No module named 'pydantic'` in the 211 host
+Python path. That failed attempt is a verifier-environment blocker only. It is
+not wrapped as reviewed G7 release evidence, does not close G7, and must not be
+used as B3 load evidence.
+
+After installing verifier-only dependencies in a 211 temp venv, the same
+`28676df` verifier path progressed to the sandbox executor and exposed a second
+runtime blocker: `/v1/tasks/execute` returned HTTP `500` because the executor
+container ran with `cap_drop=["ALL"]` and could not create
+`/workspace/runtime` inside a host-user-owned workspace mount. A patched-source
+diagnostic run, `g7-current-main-28676df-workspace-user-fix-20260702135351`,
+passed all eight verifier checks after the executor was launched as the
+workspace owner. That diagnostic proves the root cause and fix direction only;
+it is not reviewed deployed-runtime G7 evidence and does not close G7.
+
+This `28676df` capture supersedes the earlier `decf33a` capacity visibility
+record only for the currently running API/worker image identity. It still does
+not provide recorded B3 load-test evidence, does not claim a safe maximum
+concurrency number, does not raise production defaults, does not close B3, and
+does not close G0 because the 211 repo-local source marker remains stale.
+
 ### Evidence Bundle Draft Tool
 
 After operators capture start/end runtime evidence, the bounded probe JSON, and
