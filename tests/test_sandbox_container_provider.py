@@ -77,7 +77,7 @@ class FakeDockerContainer:
         self._stop_error = stop_error
         port_bindings = [] if host_port is None else [{"HostIp": "0.0.0.0", "HostPort": host_port}]
         self.attrs = {
-            "Config": {"Labels": self.labels},
+            "Config": {"Labels": self.labels, "User": str(docker_kwargs.get("user") or "")},
             "NetworkSettings": {
                 "Ports": {
                     "18000/tcp": port_bindings
@@ -522,6 +522,36 @@ async def test_docker_provider_cached_lease_revalidates_container_scope_labels()
 
 
 @pytest.mark.asyncio
+async def test_docker_provider_rejects_reuse_when_workspace_owner_user_mismatches(monkeypatch):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    class FakePath:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def stat(self):
+            class StatResult:
+                st_uid = 1003
+                st_gid = 1003
+
+            return StatResult()
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    monkeypatch.setattr(container_provider, "Path", FakePath)
+    monkeypatch.setattr(container_provider.os, "name", "posix")
+    await provider.create_or_reuse(request(), workspace())
+    fake.containers_by_name["executor-exec-run-a"].attrs["Config"]["User"] = ""
+
+    with pytest.raises(ContainerStartFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+
+@pytest.mark.asyncio
 async def test_docker_provider_maps_resource_limits_to_docker_create_kwargs_without_disabling_executor_network():
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
@@ -795,6 +825,66 @@ async def test_docker_provider_runs_executor_as_workspace_owner_when_host_path_i
 
     created = fake.created[0]
     assert created["user"] == "1003:1003"
+    assert created["privileged"] is False
+    assert created["security_opt"] == ["no-new-privileges:true"]
+    assert created["cap_drop"] == ["ALL"]
+    assert created["read_only"] is True
+    assert created["tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=64m"}
+    assert "/var/run/docker.sock" not in str(created).lower()
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_omits_workspace_owner_user_when_stat_is_unavailable(monkeypatch):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    class FakePath:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def stat(self):
+            raise OSError("not available")
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    monkeypatch.setattr(container_provider, "Path", FakePath)
+    monkeypatch.setattr(container_provider.os, "name", "posix")
+
+    await provider.create_or_reuse(request(), workspace())
+
+    assert "user" not in fake.created[0]
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_omits_workspace_owner_user_on_windows(monkeypatch):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    class FakePath:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def stat(self):
+            class StatResult:
+                st_uid = 1003
+                st_gid = 1003
+
+            return StatResult()
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    monkeypatch.setattr(container_provider, "Path", FakePath)
+    monkeypatch.setattr(container_provider.os, "name", "nt")
+
+    await provider.create_or_reuse(request(), workspace())
+
+    assert "user" not in fake.created[0]
 
 
 @pytest.mark.asyncio

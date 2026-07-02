@@ -165,6 +165,10 @@ def _container_status_from_labels(container: Any) -> ContainerStatus | None:
     )
 
 
+def _container_config_user(container: Any) -> str:
+    return str(getattr(container, "attrs", {}).get("Config", {}).get("User") or "")
+
+
 def _status_matches_lease(status: ContainerStatus, lease: ContainerLease) -> bool:
     if not (
         status.tenant_id == lease.tenant_id
@@ -180,7 +184,10 @@ def _status_matches_lease(status: ContainerStatus, lease: ContainerLease) -> boo
     if not isinstance(labels, dict):
         labels = {}
     for key, expected in lease.labels.items():
-        if str(key).startswith("ai-platform.egress.") and str(labels.get(key) or "") != expected:
+        if (
+            str(key).startswith("ai-platform.egress.")
+            or str(key) == "ai-platform.executor.user"
+        ) and str(labels.get(key) or "") != expected:
             return False
     return True
 
@@ -249,6 +256,10 @@ def _docker_workspace_user_kwargs(workspace_host_path: str) -> dict[str, str]:
     ):
         return {"user": f"{uid}:{gid}"}
     return {}
+
+
+def _docker_workspace_user_value(workspace_host_path: str) -> str:
+    return _docker_workspace_user_kwargs(workspace_host_path).get("user", "")
 
 
 def _docker_network_options(network: Any) -> dict[str, str]:
@@ -478,6 +489,9 @@ class DockerContainerProvider:
             return None
         if not _status_matches_lease(status, lease):
             return None
+        expected_user = lease.labels.get("ai-platform.executor.user", "")
+        if expected_user and _container_config_user(container) != expected_user:
+            return None
         executor_url = await self._wait_for_executor_url(container, timeout_seconds)
         return ContainerLease(
             container_id=lease.container_id,
@@ -512,9 +526,12 @@ class DockerContainerProvider:
                 raise normalized_exc from exc
             raise DockerUnavailableError("Docker daemon is unavailable") from exc
         expected_egress_labels = _egress_policy_labels(settings)
+        workspace_user = _docker_workspace_user_value(workspace.workspace_host_path)
         existing = self._leases.get(container_id)
         if existing is not None:
             existing.labels.update(expected_egress_labels)
+            if workspace_user:
+                existing.labels["ai-platform.executor.user"] = workspace_user
             recovered_existing = await self._reuse_existing_container(
                 existing,
                 settings.sandbox_container_start_timeout_seconds,
@@ -527,6 +544,8 @@ class DockerContainerProvider:
 
         bootstrap_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
         bootstrap_lease.labels.update(expected_egress_labels)
+        if workspace_user:
+            bootstrap_lease.labels["ai-platform.executor.user"] = workspace_user
         recovered = await self._reuse_existing_container(
             bootstrap_lease,
             settings.sandbox_container_start_timeout_seconds,
@@ -557,7 +576,7 @@ class DockerContainerProvider:
                 ports={"18000/tcp": None},
                 **_docker_egress_network_kwargs(client, settings),
                 **_docker_security_kwargs(),
-                **_docker_workspace_user_kwargs(workspace.workspace_host_path),
+                **({"user": workspace_user} if workspace_user else {}),
                 **_docker_resource_kwargs(request.resource_limits),
             )
             if hasattr(container, "start"):
