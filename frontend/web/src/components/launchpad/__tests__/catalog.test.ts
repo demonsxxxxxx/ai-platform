@@ -17,7 +17,7 @@ test("launchpad catalog contains the three copied navigation areas", () => {
     );
   }
 
-  assert.equal(tabCounts.get("lingxi"), 29);
+  assert.equal(tabCounts.get("lingxi"), 31);
   assert.equal(tabCounts.get("common"), 122);
   assert.equal(tabCounts.get("ai"), 4);
 });
@@ -51,6 +51,31 @@ test("destination resolver opens urls and maps known nonGMPlims systems", () => 
     kind: "url",
     href: "http://10.56.0.25:8189/#/RDSampleSender/dashboard/overview",
   });
+
+  const adDeviceManage = launchpadGroups
+    .flatMap((group) => group.entries)
+    .find((entry) => entry.systemKey === "ADDeviceManage");
+  assert.deepEqual(resolveLaunchpadDestination(adDeviceManage!), {
+    kind: "url",
+    href: "http://10.56.0.25:8189/#/ADDevice/overview",
+  });
+
+  const adLiquidPrep = launchpadGroups
+    .flatMap((group) => group.entries)
+    .find((entry) => entry.systemKey === "ADLiquidPrep");
+  assert.deepEqual(resolveLaunchpadDestination(adLiquidPrep!), {
+    kind: "url",
+    href: "http://10.56.0.25:8189/#/ADLiquidPrep/print",
+  });
+});
+
+test("lingxi catalog tracks the legacy webUI navigation labels", () => {
+  const entries = launchpadGroups.flatMap((group) => group.entries);
+
+  assert.ok(entries.some((entry) => entry.name === "AD设备管理"));
+  assert.ok(entries.some((entry) => entry.name === "AD配液系统"));
+  assert.ok(entries.some((entry) => entry.name === "商务运营管理系统"));
+  assert.ok(!entries.some((entry) => entry.name === "合同管理系统"));
 });
 
 test("destination resolver marks unknown nonGMPlims systems unavailable", () => {
