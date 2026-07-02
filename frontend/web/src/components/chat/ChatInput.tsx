@@ -778,79 +778,19 @@ export const ChatInput = memo(function ChatInput({
 
   useEffect(() => {
     dispatchComposerSelection({ type: "clear-kind", kind: "skill" });
-    for (const skill of skills.filter((item) => item.enabled)) {
-      dispatchComposerSelection({
-        type: "upsert",
-        selection: {
-          id: `skill:${skill.name}`,
-          kind: "skill",
-          label: skill.name,
-          state: "enabled",
-          source: skill.source,
-          description: skill.description,
-          referenceId: skill.name,
-        },
-      });
-    }
   }, [skills]);
 
   useEffect(() => {
     dispatchComposerSelection({ type: "clear-kind", kind: "mcp" });
-    for (const tool of tools.filter((item) => item.enabled)) {
-      dispatchComposerSelection({
-        type: "upsert",
-        selection: {
-          id: `mcp:${tool.name}`,
-          kind: "mcp",
-          label: tool.name,
-          state: tool.system_disabled ? "denied" : "enabled",
-          source: tool.server ?? tool.category,
-          description: tool.description,
-          referenceId: tool.name,
-        },
-      });
-    }
   }, [tools]);
 
   useEffect(() => {
     dispatchComposerSelection({ type: "clear-kind", kind: "agent" });
-    if (!currentAgent) return;
-    const agent = agents.find((item) => item.id === currentAgent);
-    if (!agent) return;
-    dispatchComposerSelection({
-      type: "upsert",
-      selection: {
-        id: `agent:${agent.id}`,
-        kind: "agent",
-        label: t(agent.name),
-        state: "enabled",
-        source: "agent",
-        description: agent.description ? t(agent.description) : undefined,
-        referenceId: agent.id,
-      },
-    });
-  }, [agents, currentAgent, t]);
+  }, [currentAgent]);
 
   useEffect(() => {
     dispatchComposerSelection({ type: "clear-kind", kind: "model" });
-    if (!currentModelId) return;
-    const selectedModel = availableModels.find(
-      (model) => model.id === currentModelId,
-    );
-    if (!selectedModel) return;
-    dispatchComposerSelection({
-      type: "upsert",
-      selection: {
-        id: `model:${currentModelId}`,
-        kind: "model",
-        label: selectedModel.label,
-        state: "enabled",
-        source: selectedModel.provider ?? "model",
-        description: selectedModel.description ?? selectedModel.value,
-        referenceId: selectedModel.id,
-      },
-    });
-  }, [availableModels, currentModelId]);
+  }, [currentModelId]);
 
   const handleSelectModelChip = useCallback(
     (modelId: string, modelValue: string) => {

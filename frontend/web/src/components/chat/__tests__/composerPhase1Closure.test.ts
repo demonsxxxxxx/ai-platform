@@ -66,7 +66,8 @@ test("chat input opens model selector and keeps context fail-closed", () => {
   assert.match(input, /onSelectModel/);
   assert.match(input, /models:\s*!!availableModels\?\.length && !!onSelectModel/);
   assert.match(input, /context:\s*true/);
-  assert.match(input, /id:\s*`model:\$\{currentModelId\}`/);
+  assert.match(input, /dispatchComposerSelection\(\{ type: "clear-kind", kind: "model" \}\)/);
+  assert.doesNotMatch(input, /id:\s*`model:\$\{currentModelId\}`/);
   assert.match(input, /source:\s*"context-selector"/);
   assert.match(input, /handleSelectModelChip/);
 

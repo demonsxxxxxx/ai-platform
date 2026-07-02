@@ -107,7 +107,7 @@ export function ChatInputToolbar({
   );
 
   return (
-    <div className="flex justify-between flex-nowrap pt-3 pb-3 px-2 mx-0.5 max-w-full">
+    <div className="flex justify-between flex-nowrap pt-2 pb-2 px-2 mx-0.5 max-w-full">
       <div className="flex items-center gap-1 sm:gap-2 self-end flex-1 min-w-0 overflow-x-auto no-scrollbar">
         <input
           ref={fileInputRef}
@@ -179,7 +179,7 @@ export function ChatInputToolbar({
                   />
                 )}
               </span>
-              <span className="max-w-40 truncate text-sm font-semibold text-blue-600 dark:text-blue-400">
+              <span className="max-w-40 truncate text-sm font-medium text-[var(--theme-text-secondary)] group-hover:text-[var(--theme-text)]">
                 {selectedPersonaName}
               </span>
               <ChevronDown size={14} className="opacity-50 shrink-0" />
@@ -232,12 +232,14 @@ export function ChatInputToolbar({
               canSubmit ? "hover:scale-105 active:scale-95" : ""
             }`}
             style={{
-              backgroundColor: "transparent",
+              backgroundColor: canSubmit
+                ? "var(--theme-send-bg)"
+                : "transparent",
               border: canSubmit
-                ? "1px solid color-mix(in srgb, var(--theme-primary) 40%, transparent)"
+                ? "1px solid var(--theme-send-bg)"
                 : "1px solid var(--theme-border)",
               color: canSubmit
-                ? "var(--theme-primary)"
+                ? "var(--theme-send-fg)"
                 : "var(--theme-text-secondary)",
             }}
             title={

@@ -220,7 +220,6 @@ export function ChatView({
   onPersonaPresetsTagChange,
   selectedPersonaPresetId,
   selectedPersonaName,
-  selectedPersonaSnapshot,
   personaSkillsControlled,
   personaPresetsLoading,
   personaPresetsMutating,
@@ -289,8 +288,6 @@ export function ChatView({
   const [messageListSessionKey, setMessageListSessionKey] = useState(
     sessionId ?? "__new_session__",
   );
-  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
-  const [pendingInput, setPendingInput] = useState<string | null>(null);
 
   const {
     messagesContainerRef,
@@ -587,14 +584,6 @@ export function ChatView({
         : range,
     );
   }, []);
-  const handleMentionQueryChange = useCallback(
-    (query: string | null) => setMentionQuery(query),
-    [],
-  );
-  const handleStarterPromptSelect = useCallback((text: string) => {
-    setPendingInput(text);
-  }, []);
-
   const virtuosoComponents = useMemo(
     () => ({
       Scroller: (
@@ -781,11 +770,6 @@ export function ChatView({
 
       <ChatInput
         {...chatInputProps}
-        onMentionQueryChange={
-          messages.length === 0 ? handleMentionQueryChange : undefined
-        }
-        pendingInput={pendingInput}
-        onPendingInputConsumed={() => setPendingInput(null)}
         className="mx-auto max-w-4xl px-2"
       />
     </div>
@@ -793,7 +777,10 @@ export function ChatView({
 
   return (
     <SessionImageGalleryProvider messages={messages}>
-      <WorkbenchShellComponent composer={composer} rightPanel={rightPanel}>
+      <WorkbenchShellComponent
+        composer={messages.length > 0 ? composer : undefined}
+        rightPanel={rightPanel}
+      >
       <main
         ref={messagesContainerRef}
         className={`relative min-h-0 flex-1 bg-[var(--theme-workbench-canvas)] ${
@@ -809,23 +796,7 @@ export function ChatView({
               subtitle={
                 t("chat.welcomeSubtitle") ?? "How can I help you today?"
               }
-              refreshLabel={t("chat.welcomeRefresh") ?? "Refresh"}
-              personasLabel={t("personaPresets.title", "角色")}
-              starterPromptsLabel={t(
-                "personaPresets.starterPrompts",
-                "开始对话",
-              )}
-              changePersonaLabel={t("personaPresets.change", "更换角色")}
-              personaPresets={personaPresets}
-              selectedPersonaPresetId={selectedPersonaPresetId}
-              selectedPersonaSnapshot={selectedPersonaSnapshot}
-              personaPresetsLoading={personaPresetsLoading}
-              personaPresetsMutating={personaPresetsMutating}
-              canSendMessage={canSendMessage}
-              mentionQuery={mentionQuery}
-              onStarterPromptSelect={handleStarterPromptSelect}
-              onUsePersonaPreset={onUsePersonaPreset}
-              onClearPersonaPreset={onClearPersonaPreset}
+              composer={composer}
             />
           )
         ) : (

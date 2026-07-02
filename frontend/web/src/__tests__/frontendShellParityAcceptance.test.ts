@@ -328,18 +328,16 @@ test("authenticated chat workspace keeps one warm-neutral LibreChat canvas inste
   assert.match(surface, /secondaryPanel:/);
   assert.match(rightPanel, /LibreChatSidePanel/);
   assert.match(libreSidePanel, /workbenchSurface\.secondaryPanel/);
-  assert.match(theme, /--theme-bg:\s*#f5f5f3;/);
-  assert.match(theme, /--theme-bg-sidebar:\s*#eeeeec;/);
+  assert.match(theme, /--theme-bg:\s*#ffffff;/);
+  assert.match(theme, /--theme-bg-sidebar:\s*#f7f7f8;/);
   assert.match(theme, /--theme-workbench-panel:\s*#ffffff;/);
   assert.match(theme, /--theme-bg-card:\s*#ffffff;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#f5f5f3;/);
-  assert.doesNotMatch(theme, /--theme-workbench-canvas:\s*#ffffff;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#ffffff;/);
   assert.doesNotMatch(theme, /--theme-workbench-canvas:\s*#e5e8ed;/);
   assert.doesNotMatch(theme, /--theme-workbench-panel:\s*#f3f4f6;/);
   assert.match(libreSurface, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(chatView, /bg-\[var\(--theme-workbench-canvas\)\]/);
   assert.match(authTheme, /html,\s*body\s*\{\s*background:\s*var\(--theme-bg\);/);
-  assert.doesNotMatch(authTheme, /html,\s*body\s*\{\s*background:\s*#ffffff;/);
   assert.doesNotMatch(surface, /thread:[\s\S]{0,180}bg-white/);
   assert.doesNotMatch(surface, /context:[\s\S]{0,180}bg-white/);
   for (const [name, source] of [
@@ -400,11 +398,11 @@ test("authenticated workbench adopts one LibreChat light application shell", () 
   assert.doesNotMatch(enterpriseSelect, /GlassSelect|glass-/);
   assert.match(settingsHook, /ai-platform-settings-\$\{date\}\.json/);
   assert.doesNotMatch(settingsHook, /lamb-agent-settings/);
-  assert.match(theme, /--theme-sidebar-rail:\s*#eeeeec;/);
-  assert.match(theme, /--theme-sidebar-panel:\s*#eeeeec;/);
-  assert.match(theme, /--theme-sidebar-panel-muted:\s*#e5e5e1;/);
-  assert.match(theme, /--theme-bg:\s*#f5f5f3;/);
-  assert.match(theme, /--theme-workbench-canvas:\s*#f5f5f3;/);
+  assert.match(theme, /--theme-sidebar-rail:\s*#f7f7f8;/);
+  assert.match(theme, /--theme-sidebar-panel:\s*#f7f7f8;/);
+  assert.match(theme, /--theme-sidebar-panel-muted:\s*#ececec;/);
+  assert.match(theme, /--theme-bg:\s*#ffffff;/);
+  assert.match(theme, /--theme-workbench-canvas:\s*#ffffff;/);
   assert.match(sidebar, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /data-workbench-sidebar-panel/);

@@ -63,8 +63,8 @@ test("manifest launch colors match the light app shell background", () => {
     theme_color?: string;
   };
 
-  assert.equal(manifest.background_color, "#f5f5f3");
-  assert.equal(manifest.theme_color, "#f5f5f3");
+  assert.equal(manifest.background_color, "#ffffff");
+  assert.equal(manifest.theme_color, "#ffffff");
 });
 
 test("manifest exposes install metadata for desktop, tablet, and phone PWAs", () => {

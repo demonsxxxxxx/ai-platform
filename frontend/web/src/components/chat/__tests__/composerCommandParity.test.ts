@@ -327,6 +327,10 @@ test("composer first screen keeps slash and dollar commands typed-first", () => 
     join(root, "src/components/chat/SlashCommandMenu.tsx"),
     "utf8",
   );
+  const commandMenu = readFileSync(
+    join(root, "src/librechat-ui/CommandMenu.tsx"),
+    "utf8",
+  );
   const zh = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
   const en = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
 
@@ -335,7 +339,9 @@ test("composer first screen keeps slash and dollar commands typed-first", () => 
   assert.doesNotMatch(chatInput, /handleComposerCommandShortcut/);
   assert.match(chatInput, /resolveComposerCommandDraft/);
   assert.match(chatInput, /resolveSlashCommandMenu/);
-  assert.match(slashMenu, /data-composer-command-menu/);
+  assert.match(slashMenu, /data-librechat-command-entrypoint="slash-menu"/);
+  assert.match(commandMenu, /data-composer-command-menu/);
+  assert.match(commandMenu, /data-librechat-command-menu/);
   assert.match(slashMenu, /commandAlias/);
   assert.match(slashMenu, /\$/);
   assert.match(zh, /输入 \//);
@@ -393,11 +399,16 @@ test("slash command menu is anchored outside the clipped textarea region", () =>
     join(root, "src/components/chat/SlashCommandMenu.tsx"),
     "utf8",
   );
+  const commandMenu = readFileSync(
+    join(root, "src/librechat-ui/CommandMenu.tsx"),
+    "utf8",
+  );
 
   assert.match(chatInput, /data-composer-command-menu-anchor/);
   assert.match(chatInput, /<SlashCommandMenu/);
-  assert.match(slashMenu, /composer-command-surface/);
-  assert.match(slashMenu, /composer-command-list/);
+  assert.match(slashMenu, /LibreChatCommandMenu/);
+  assert.match(commandMenu, /composer-command-surface/);
+  assert.match(commandMenu, /composer-command-list/);
   assert.doesNotMatch(
     chatInput,
     /<div className="px-2\.5 pt-1">[\s\S]*?<SlashCommandMenu[\s\S]*?<\/div>[\s\S]*?<textarea/,
@@ -449,8 +460,20 @@ test("composer workflow exposes stable browser smoke selectors for PRD evidence"
     join(root, "src/components/chat/ComposerChips.tsx"),
     "utf8",
   );
+  const chipPrimitive = readFileSync(
+    join(root, "src/librechat-ui/Chips.tsx"),
+    "utf8",
+  );
+  const composerPrimitive = readFileSync(
+    join(root, "src/librechat-ui/Composer.tsx"),
+    "utf8",
+  );
   const slashMenu = readFileSync(
     join(root, "src/components/chat/SlashCommandMenu.tsx"),
+    "utf8",
+  );
+  const commandMenu = readFileSync(
+    join(root, "src/librechat-ui/CommandMenu.tsx"),
     "utf8",
   );
   const skillSelector = readFileSync(
@@ -466,19 +489,24 @@ test("composer workflow exposes stable browser smoke selectors for PRD evidence"
     "utf8",
   );
 
-  assert.match(slashMenu, /data-composer-command-menu/);
-  assert.match(slashMenu, /data-composer-command-item=\{item\.command\}/);
+  assert.match(slashMenu, /data-librechat-command-entrypoint="slash-menu"/);
+  assert.match(commandMenu, /data-composer-command-menu/);
+  assert.match(commandMenu, /data-composer-command-item=\{id\}/);
   assert.match(skillSelector, /data-composer-skill-selector/);
   assert.match(skillSelector, /data-composer-skill-row=\{skill\.name\}/);
   assert.match(toolSelector, /data-composer-mcp-selector/);
   assert.match(toolSelector, /data-composer-mcp-row=\{tool\.name\}/);
-  assert.match(chips, /data-composer-chip-kind=\{selection\.kind\}/);
-  assert.match(chips, /data-composer-chip-state=\{selection\.state\}/);
-  assert.match(chips, /data-composer-chip-reference=\{selection\.referenceId/);
+  assert.match(chips, /kind=\{selection\.kind\}/);
+  assert.match(chips, /state=\{selection\.state\}/);
+  assert.match(chips, /referenceId=\{selection\.referenceId\}/);
+  assert.match(chipPrimitive, /data-composer-chip-kind=\{kind\}/);
+  assert.match(chipPrimitive, /data-composer-chip-state=\{state\}/);
+  assert.match(chipPrimitive, /data-composer-chip-reference=\{referenceId \?\? id\}/);
   assert.match(attachmentList, /data-composer-file-reference/);
   assert.match(attachmentList, /data-composer-file-state/);
   assert.match(chatInput, /data-composer-command-menu-anchor/);
-  assert.match(chatInput, /data-librechat-composer-region="chips"/);
+  assert.match(chatInput, /<LibreChatComposerRegion region="chips">/);
+  assert.match(composerPrimitive, /data-librechat-composer-region=\{region\}/);
 });
 
 test("all supported placeholders are slash and dollar skills first", () => {
