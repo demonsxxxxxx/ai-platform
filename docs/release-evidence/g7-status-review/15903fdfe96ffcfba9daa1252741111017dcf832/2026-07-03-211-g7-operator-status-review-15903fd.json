@@ -1,0 +1,75 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-03-211-g7-operator-status-review-15903fd",
+  "artifact_kind": "211_g7_operator_status_review",
+  "gate": "G7 Sandbox / Resource Hardening",
+  "commit_sha": "15903fdfe96ffcfba9daa1252741111017dcf832",
+  "runtime_subject_commit_sha": "15903fdfe96ffcfba9daa1252741111017dcf832",
+  "captured_at": "2026-07-03T04:45:00+00:00",
+  "issue_refs": [],
+  "pr_refs": [
+    "#308"
+  ],
+  "source_ref": {
+    "branch": "origin/main",
+    "runtime_subject_commit_sha": "15903fdfe96ffcfba9daa1252741111017dcf832",
+    "g7_live_env_evidence_path": "g7-sandbox/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-sandbox-live-env-hardening-15903fd.json",
+    "foundation_runtime_concurrency_evidence_path": "foundation-runtime-concurrency/15903fdfe96ffcfba9daa1252741111017dcf832-frc-g7-b3-20260703/2026-07-03-211-foundation-alpha-poc-15903fd-foundation-runtime-concurrency.json",
+    "review_basis": [
+      "reviewed live-default G7 sandbox hardening evidence for runtime subject 15903fd",
+      "same-subject Foundation Runtime concurrency evidence for runtime subject 15903fd",
+      "G7/B3 completion audit reading with stale legacy alias label cleanup still open and B3 still blocked"
+    ],
+    "source_runtime_boundary": {
+      "runtime_subject_matches_g7_evidence": true,
+      "runtime_subject_matches_frc_evidence": true,
+      "canonical_source_runtime_labels_current": true,
+      "legacy_alias_label_cleanup_required": true,
+      "source_runtime_boundary_reviewed_for_candidate_status": false,
+      "external_env_file_secret_values_exported": false
+    }
+  },
+  "evidence_ref": {
+    "operator_status_review": {
+      "schema_version": "ai-platform.g7-operator-status-review.v1",
+      "runtime_subject_commit_sha": "15903fdfe96ffcfba9daa1252741111017dcf832",
+      "status": "blocked",
+      "status_label_recommendation": "local partial",
+      "status_upgrade_decision": "not_approved_for_closure",
+      "g7_runtime_blocking_reasons": [
+        "stale_runtime_alias_label_mismatch"
+      ],
+      "b3_blocking_reasons": [
+        "b3_recorded_load_test_gates_missing",
+        "b3_10x4_sdk_subagents_profile_evidence_missing"
+      ],
+      "required_next_steps": [
+        "clean stale legacy underscore alias labels that still point to 9c669761 before any G7 source-authority status upgrade",
+        "operator must explicitly approve any future G7 status upgrade after source-runtime and non-expansion boundary review",
+        "record B3 seven-gate load evidence and b3_10x4_sdk_subagents profile evidence before any B3 closure or default increase"
+      ],
+      "non_expansion_invariants": {
+        "ordinary_user_high_risk_sandbox_allowed": false,
+        "ordinary_user_platform_multi_run_orchestration_enabled": false,
+        "production_concurrency_defaults_raised": false,
+        "g7_closed": false,
+        "b3_closed": false,
+        "foundation_alpha_complete": false
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This operator status-review artifact records that the paired 2026-07-03 G7 live-env evidence and same-subject Foundation Runtime concurrency evidence improve the 15903fd runtime subject evidence set.",
+    "This artifact is not load evidence and does not supply B3 seven-gate recorded load results or b3_10x4_sdk_subagents profile measurements.",
+    "This artifact intentionally omits secret env values, callback token values, host workdirs, raw Docker payloads, and private runtime payloads.",
+    "The 15903fd API/worker image has current canonical source/runtime labels, but legacy underscore aliases still include 9c669761 values; this keeps source-authority status upgrade blocked."
+  ],
+  "open_followups": [
+    "Clean stale legacy underscore alias labels before any G7 source-authority status upgrade.",
+    "G7 remains pending explicit operator status-upgrade approval; this artifact records local partial status only.",
+    "B3 recorded seven-gate load evidence and b3_10x4_sdk_subagents profile evidence remain missing.",
+    "Do not use issue #164 closure history as current G7/B3 closure evidence."
+  ]
+}

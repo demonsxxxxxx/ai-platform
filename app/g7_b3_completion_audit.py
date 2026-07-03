@@ -102,6 +102,22 @@ def _legacy_runtime_label_commit(labels: dict[str, Any]) -> str:
     return ""
 
 
+def _legacy_runtime_label_commits(labels: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in (
+        "ai-platform.source_revision",
+        "ai-platform.runtime_subject",
+        "ai-platform.source_tree_commit",
+        "ai_platform_source_revision",
+        "ai_platform_runtime_subject",
+        "ai_platform_source_tree_commit",
+    ):
+        value = _safe_text(labels.get(key))
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
 def _canonical_source_runtime_mismatch(
     *,
     current_source_commit: str,
@@ -118,9 +134,13 @@ def _canonical_source_runtime_mismatch(
 def _legacy_source_runtime_mismatch(
     *,
     current_source_commit: str,
-    legacy_runtime_label_commit: str,
+    legacy_runtime_label_commit: str = "",
+    legacy_runtime_label_commits: list[str] | None = None,
 ) -> bool:
-    return bool(legacy_runtime_label_commit and legacy_runtime_label_commit != current_source_commit)
+    commits = legacy_runtime_label_commits
+    if commits is None:
+        commits = [legacy_runtime_label_commit] if legacy_runtime_label_commit else []
+    return any(commit != current_source_commit for commit in commits)
 
 
 def _reviewed_g7_release_evidence_id(
@@ -310,6 +330,7 @@ def _build_g7_audit(
     runtime_image = _safe_text(runtime_observation.get("runtime_image"))
     canonical_label_commit = _canonical_runtime_label_commit(labels)
     legacy_label_commit = _legacy_runtime_label_commit(labels)
+    legacy_label_commits = _legacy_runtime_label_commits(labels)
     live_api_provider = safe_env.get("SANDBOX_CONTAINER_PROVIDER", "")
     live_executor_image = safe_env.get("SANDBOX_EXECUTOR_IMAGE", "")
     live_egress_enabled = safe_env.get("SANDBOX_EGRESS_POLICY_ENABLED", "")
@@ -331,6 +352,7 @@ def _build_g7_audit(
     legacy_mismatch = _legacy_source_runtime_mismatch(
         current_source_commit=current_source_commit,
         legacy_runtime_label_commit=legacy_label_commit,
+        legacy_runtime_label_commits=legacy_label_commits,
     )
 
     if canonical_mismatch:
