@@ -23,3 +23,15 @@ test("auth pages use safe centered mobile layout classes", () => {
   assert.equal(authPage.includes("auth-crosshatch"), true);
   assert.equal(authPage.includes("min-h-[100dvh]"), true);
 });
+
+test("login page omits nonessential helper links and footer copy", () => {
+  const authPage = readAuthSource("AuthPage.tsx");
+
+  assert.equal(authPage.includes("supportsUsernameOrEmailLogin"), false);
+  assert.equal(authPage.includes("registrationDisabled"), false);
+  assert.equal(authPage.includes("forgotPassword"), false);
+  assert.equal(authPage.includes("termsHint"), false);
+  assert.equal(authPage.includes("Powered by"), false);
+  assert.equal(authPage.includes(">GitHub<"), false);
+  assert.equal(authPage.includes("getFullYear"), false);
+});
