@@ -708,15 +708,16 @@ def _sandbox_live_signals(overview: dict[str, Any]) -> dict[str, object]:
     sandbox = _dict(overview.get("sandbox"))
     containers = _numeric_bool_map(_dict(sandbox.get("containers")), _SANDBOX_CONTAINER_KEYS)
     leases = _numeric_bool_map(_dict(sandbox.get("leases")), _SANDBOX_LEASE_KEYS)
+    list_runtime_containers_status = str(
+        sandbox.get("list_runtime_containers_status") or "available"
+    )
     return {
         "containers": containers,
         "running_containers": _coerce_int(containers.get("running")),
         "active_leases": _coerce_int(leases.get("active")),
         "leases": leases,
-        "list_runtime_containers_status": str(
-            sandbox.get("list_runtime_containers_status") or "available"
-        ),
-        "container_observation_degraded": bool(sandbox.get("container_observation_degraded")),
+        "list_runtime_containers_status": list_runtime_containers_status,
+        "container_observation_degraded": _sandbox_container_observation_degraded(sandbox),
     }
 
 
@@ -747,13 +748,20 @@ def _admin_runtime_section_evidence(overview: dict[str, Any]) -> dict[str, objec
         if section not in observed_sections
     ]
     sandbox = _dict(overview.get("sandbox"))
-    if sandbox.get("container_observation_degraded") is True and "sandbox" not in missing_sections:
+    if _sandbox_container_observation_degraded(sandbox) and "sandbox" not in missing_sections:
         missing_sections.append("sandbox")
     return {
         "required_sections": list(_LOAD_TEST_REQUIRED_ADMIN_RUNTIME_SECTIONS),
         "observed_sections": observed_sections,
         "missing_sections": missing_sections,
     }
+
+
+def _sandbox_container_observation_degraded(sandbox: dict[str, Any]) -> bool:
+    if sandbox.get("container_observation_degraded") is True:
+        return True
+    status = str(sandbox.get("list_runtime_containers_status") or "available")
+    return status != "available"
 
 
 def _safe_capacity_value(value: object, default: object) -> object:
@@ -1147,7 +1155,7 @@ def _snapshot_admin_runtime_evidence(snapshot: dict[str, Any]) -> dict[str, obje
 
     live_signals = _dict(snapshot.get("live_signals"))
     sandbox_signals = _dict(live_signals.get("sandbox"))
-    if sandbox_signals.get("container_observation_degraded") is True:
+    if _sandbox_container_observation_degraded(sandbox_signals):
         reported_missing_sections.add("sandbox")
     observed_from_fields = {
         section

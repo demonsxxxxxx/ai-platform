@@ -949,6 +949,35 @@ def test_capacity_gate_readiness_treats_degraded_container_observation_as_missin
     assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
 
 
+def test_capacity_gate_readiness_treats_unavailable_container_status_as_degraded_sandbox():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 1, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 1, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {
+                "list_runtime_containers_status": "unavailable",
+                "containers": {"running": 0},
+                "leases": {"active": 0},
+            },
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="default-stack",
+    )
+
+    assert snapshot["admin_runtime_evidence"]["missing_sections"] == ["sandbox"]
+    assert snapshot["live_signals"]["sandbox"]["list_runtime_containers_status"] == "unavailable"
+    assert snapshot["live_signals"]["sandbox"]["container_observation_degraded"] is True
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "blocked_missing_admin_runtime_sections"
+    assert readiness["admin_runtime_evidence"]["missing_sections"] == ["sandbox"]
+    assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+
+
 def test_capacity_gate_readiness_rejects_recorded_gates_without_evidence_contract():
     snapshot = build_capacity_evidence_snapshot(
         {
