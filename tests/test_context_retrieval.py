@@ -1,3 +1,5 @@
+import subprocess
+
 import pytest
 
 from app.context_retrieval import (
@@ -6,6 +8,21 @@ from app.context_retrieval import (
     InMemoryContextRetrievalRepository,
     RepositoryContextRetrievalRepository,
 )
+
+
+def _symlink_or_skip(target, link):
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except OSError as exc:
+        if not target.is_dir():
+            pytest.skip(f"symlink creation not available: {exc}")
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            pytest.skip(f"symlink/junction creation not available: {exc}; {result.stderr.strip()}")
 
 
 def _retrieval() -> ContextRetrieval:
@@ -330,6 +347,78 @@ async def test_stage_context_file_to_workspace_uses_stable_file_prefix_to_avoid_
 
 
 @pytest.mark.asyncio
+async def test_stage_context_file_to_workspace_normalizes_windows_path_separators(tmp_path):
+    retrieval = ContextRetrieval(
+        InMemoryContextRetrievalRepository(
+            files=[
+                {
+                    "tenant_id": "tenant-a",
+                    "workspace_id": "workspace-a",
+                    "user_id": "user-a",
+                    "session_id": "session-a",
+                    "run_id": "run-a",
+                    "file_id": "file-a",
+                    "original_name": "..\\..\\.claude\\settings.json",
+                    "content": "safe staged content",
+                }
+            ]
+        )
+    )
+
+    result = await retrieval.stage_context_file_to_workspace(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        file_id="file-a",
+        workspace_root=str(tmp_path),
+    )
+
+    assert result["workspace_path"] == "context/file-a/settings.json"
+    assert (tmp_path / "context" / "file-a" / "settings.json").read_text(encoding="utf-8") == "safe staged content"
+    assert not (tmp_path / ".claude" / "settings.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_stage_context_file_to_workspace_rejects_symlinked_context_parent(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _symlink_or_skip(outside, workspace / "context")
+    retrieval = ContextRetrieval(
+        InMemoryContextRetrievalRepository(
+            files=[
+                {
+                    "tenant_id": "tenant-a",
+                    "workspace_id": "workspace-a",
+                    "user_id": "user-a",
+                    "session_id": "session-a",
+                    "run_id": "run-a",
+                    "file_id": "file-a",
+                    "original_name": "source.txt",
+                    "content": "must not escape workspace",
+                }
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match="context_file_workspace_escape"):
+        await retrieval.stage_context_file_to_workspace(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            file_id="file-a",
+            workspace_root=str(workspace),
+        )
+
+    assert not (outside / "file-a" / "source.txt").exists()
+
+
+@pytest.mark.asyncio
 async def test_repository_context_retrieval_reads_file_through_scoped_repository_and_storage(monkeypatch):
     calls = []
 
@@ -426,6 +515,55 @@ async def test_repository_stage_context_file_rejects_oversize_metadata_before_st
                 "session_id": "session-a",
                 "run_id": "run-a",
                 "file_id": "file-large",
+            },
+        )
+    ]
+    assert not (tmp_path / "context").exists()
+
+
+@pytest.mark.asyncio
+async def test_repository_stage_context_file_requires_declared_size_before_storage_read(monkeypatch, tmp_path):
+    calls = []
+
+    async def fake_get_scoped_context_file(conn, **kwargs):
+        calls.append(("file_scope", kwargs))
+        return {
+            "id": kwargs["file_id"],
+            "original_name": "unknown-size.txt",
+            "content_type": "text/plain",
+            "storage_key": "tenants/tenant-a/private/unknown-size.txt",
+        }
+
+    class FakeStorage:
+        def get_bytes(self, *, storage_key):
+            calls.append(("storage", storage_key))
+            return b"x" * 4096
+
+    monkeypatch.setattr("app.context_retrieval.repositories.get_scoped_context_file", fake_get_scoped_context_file)
+    retrieval = ContextRetrieval(RepositoryContextRetrievalRepository(object(), storage=FakeStorage()))
+
+    with pytest.raises(ContextRetrievalDenied, match="context_file_size_required"):
+        await retrieval.stage_context_file_to_workspace(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            file_id="file-unknown-size",
+            workspace_root=str(tmp_path),
+            max_bytes=1024,
+        )
+
+    assert calls == [
+        (
+            "file_scope",
+            {
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "file_id": "file-unknown-size",
             },
         )
     ]

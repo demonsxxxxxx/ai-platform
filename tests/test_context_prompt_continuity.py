@@ -255,3 +255,10 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     assert too_large_result["is_error"] is True
     assert "context_file_too_large" in too_large_result["content"][0]["text"]
     assert "workspace staged content" not in too_large_result["content"][0]["text"]
+    too_large_payload = json.loads(too_large_result["content"][0]["text"])
+    assert too_large_payload["audit"] == {
+        "action": "context_retrieval.stage_context_file_to_workspace",
+        "result": "denied",
+        "reason": "context_file_too_large",
+    }
+    assert too_large_payload["redaction"] == {"object_locator_refs_removed": True}

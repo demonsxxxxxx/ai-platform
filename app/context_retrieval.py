@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
-from pathlib import PurePosixPath
 from typing import Any, Protocol
 
 from app import repositories
@@ -452,12 +451,15 @@ class ContextRetrieval:
         file_segment = self._safe_id_segment(file_id)
         byte_cap = max(1, int(max_bytes))
         declared_size = self._declared_size_bytes(row)
+        if declared_size is None and not isinstance(self._repository, InMemoryContextRetrievalRepository):
+            raise ContextRetrievalDenied("context_file_size_required")
         if declared_size is not None and declared_size > byte_cap:
             raise ContextRetrievalDenied("context_file_too_large")
         raw_bytes = self._raw_content_bytes(row)
         if len(raw_bytes) > byte_cap:
             raise ContextRetrievalDenied("context_file_too_large")
-        target_path = Path(workspace_root) / "context" / file_segment / name
+        target_dir = Path(workspace_root) / "context" / file_segment
+        target_path = target_dir / name
         ensure_creatable_inside(workspace_root, target_path, "context_file_workspace_escape")
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_bytes(raw_bytes)
@@ -646,7 +648,9 @@ class ContextRetrieval:
 
     def _safe_name(self, row: dict[str, Any]) -> str:
         name = str(row.get("original_name") or row.get("label") or row.get("name") or row.get("file_id") or row.get("artifact_id") or "context.bin")
-        return PurePosixPath(name).name or "context.bin"
+        normalized = name.replace("\\", "/")
+        safe_name = normalized.rsplit("/", 1)[-1]
+        return safe_name or "context.bin"
 
     def _safe_id_segment(self, value: object) -> str:
         text = str(value or "").strip()

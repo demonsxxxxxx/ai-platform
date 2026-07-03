@@ -8,6 +8,7 @@ import types
 from pathlib import Path
 from typing import Any
 
+from app.control_plane_contracts import sanitize_public_payload
 from app.context_manifest import ContextPlanner
 from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied, InMemoryContextRetrievalRepository
 from app.executors.claude_agent_sdk_runner import ScopedContextRetrievalIdentity, build_skill_prompt, run_claude_agent_sdk
@@ -72,12 +73,16 @@ def build_b1_b5_context_runtime_readiness(
     stage_probe = _run_async(_stage_byte_cap_probe())
     session_probe = _run_async(_session_continuity_probe())
     design_probe = _session_continuity_design_probe(root)
+    sdk_evidence = _public_evidence(sdk_probe)
+    stage_evidence = _public_evidence(stage_probe)
+    session_evidence = _public_evidence(session_probe)
+    design_evidence = _public_evidence(design_probe)
     redaction_payload = {
         "chat_prompt": chat_probe["prompt"],
         "document_prompt": document_probe["prompt"],
-        "sdk_probe": sdk_probe,
-        "stage_probe": stage_probe,
-        "session_probe": session_probe,
+        "sdk_probe": sdk_evidence,
+        "stage_probe": stage_evidence,
+        "session_probe": session_evidence,
     }
     private_probe_present = (
         chat_probe["input_private_payload_present"] is True
@@ -112,11 +117,11 @@ def build_b1_b5_context_runtime_readiness(
             and sdk_probe["allowed_tools_include_retrieval"] is True
             and sdk_probe["stage_tool_redacted"] is True
             and sdk_probe["stage_tool_wrote_workspace_file"] is True,
-            sdk_probe,
+            sdk_evidence,
         ),
         "stage_context_file_byte_cap_enforced": _check(
             stage_probe["oversize_denied"] is True and stage_probe["workspace_write_absent"] is True,
-            stage_probe,
+            stage_evidence,
         ),
         "public_projection_redacts_private_context_material": _check(
             redaction_ok,
@@ -129,7 +134,7 @@ def build_b1_b5_context_runtime_readiness(
             session_probe["resume_key_stable"] is True
             and session_probe["fork_isolated"] is True
             and design_probe["recorded"] is True,
-            {**session_probe, **design_probe},
+            {**session_evidence, **design_evidence},
         ),
     }
     ok = all(check["passed"] is True for check in checks.values())
@@ -316,7 +321,12 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
                         "run_id": "run-a",
                         "file_id": "file-a",
                         "original_name": "source.txt",
-                        "content": "workspace staged content",
+                        "content": "workspace staged content SENTINEL_RAW_CONTEXT_BODY_DO_NOT_LEAK",
+                        "private_payload": {
+                            "storage_key": "tenants/tenant-a/private/source.txt",
+                            "raw_storage_key": "tenants/tenant-a/private/source.txt",
+                            "sandbox_workdir": "C:\\Users\\agent\\private\\workspace",
+                        },
                     }
                 ]
             )
@@ -352,8 +362,18 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
                     "search_memory",
                 ],
                 "allowed_tools_include_retrieval": "stage_context_file_to_workspace" in captured.get("allowed_tools", []),
-                "stage_tool_redacted": "storage_key" not in stage_text and "workspace staged content" not in stage_text,
+                "stage_tool_redacted": (
+                    "storage_key" not in stage_text
+                    and "workspace staged content" not in stage_text
+                    and "SENTINEL_RAW_CONTEXT_BODY_DO_NOT_LEAK" not in stage_text
+                ),
                 "stage_tool_wrote_workspace_file": (tmp_root / "context" / "file-a" / "source.txt").exists(),
+                "private_material_seeded": True,
+                "private_payload": {
+                    "storage_key": "tenants/tenant-a/private/source.txt",
+                    "raw_storage_key": "tenants/tenant-a/private/source.txt",
+                    "sandbox_workdir": "C:\\Users\\agent\\private\\workspace",
+                },
             }
         finally:
             sdk_runner.get_settings = original_get_settings
@@ -367,6 +387,7 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
         "allowed_tools_include_retrieval": False,
         "stage_tool_redacted": False,
         "stage_tool_wrote_workspace_file": False,
+        "private_material_seeded": False,
     }
 
 
@@ -469,6 +490,11 @@ def _session_continuity_design_probe(repo_root: Path) -> dict[str, Any]:
 
 def _check(passed: bool, evidence: dict[str, Any]) -> dict[str, Any]:
     return {"passed": bool(passed), "evidence": evidence}
+
+
+def _public_evidence(payload: dict[str, Any]) -> dict[str, Any]:
+    sanitized = sanitize_public_payload(payload)
+    return sanitized if isinstance(sanitized, dict) else {}
 
 
 def _contains_private_marker(payload: Any) -> bool:

@@ -19,6 +19,7 @@ def test_b1_b5_context_runtime_readiness_verifies_bounded_context_runtime_contra
     assert readiness["target"] == "local_b1_b5_context_runtime"
     assert set(readiness["checks"]) == set(REQUIRED_CHECKS)
     assert all(item["passed"] is True for item in readiness["checks"].values())
+    assert readiness["checks"]["sdk_runner_wires_scoped_retrieval_tools"]["evidence"]["private_material_seeded"] is True
     assert readiness["non_expansion_invariants"] == {
         "does_not_touch_211": True,
         "does_not_close_b1_or_b5_gate": True,
@@ -58,6 +59,38 @@ def test_b1_b5_context_runtime_readiness_requires_retrieval_tools_in_allowed_too
     assert sdk_check["evidence"]["allowed_tools_include_retrieval"] is False
 
 
+def test_b1_b5_context_runtime_readiness_proves_private_material_redaction(monkeypatch):
+    async def fake_sdk_retrieval_probe():
+        return {
+            "sdk_used": True,
+            "retrieval_tools_wired": True,
+            "allowed_tools_include_retrieval": True,
+            "stage_tool_redacted": True,
+            "stage_tool_wrote_workspace_file": True,
+            "private_payload": {"storage_key": "tenants/tenant-a/private/source.txt"},
+            "sandbox_workdir": "C:\\Users\\agent\\private\\workspace",
+        }
+
+    monkeypatch.setattr(readiness_module, "_sdk_retrieval_probe", fake_sdk_retrieval_probe)
+
+    readiness = build_b1_b5_context_runtime_readiness()
+
+    assert readiness["ok"] is True
+    serialized = json.dumps(readiness, ensure_ascii=False).lower()
+    assert "private_payload" not in serialized
+    assert "storage_key" not in serialized
+    assert "tenants/tenant-a/private" not in serialized
+    assert "c:\\users\\" not in serialized
+    sdk_evidence = readiness["checks"]["sdk_runner_wires_scoped_retrieval_tools"]["evidence"]
+    assert sdk_evidence == {
+        "sdk_used": True,
+        "retrieval_tools_wired": True,
+        "allowed_tools_include_retrieval": True,
+        "stage_tool_redacted": True,
+        "stage_tool_wrote_workspace_file": True,
+    }
+
+
 def test_b1_b5_context_runtime_readiness_cli_outputs_redacted_json():
     result = subprocess.run(
         [sys.executable, "tools/verify_b1_b5_context_runtime.py", "--format", "json"],
@@ -72,5 +105,6 @@ def test_b1_b5_context_runtime_readiness_cli_outputs_redacted_json():
     serialized = result.stdout.lower()
     assert "storage_key" not in serialized
     assert "private/source" not in serialized
+    assert "sentinel_raw_context_body_do_not_leak" not in serialized
     assert "c:\\users\\" not in serialized
     assert "/home/" not in serialized
