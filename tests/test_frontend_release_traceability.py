@@ -464,6 +464,10 @@ def test_frontend_packaged_image_files_define_static_proxy_contract():
     assert "proxy_read_timeout ${AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT}" in nginx_template
     assert "proxy_send_timeout ${AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT}" in nginx_template
     assert "proxy_request_buffering off" in nginx_template
+    assert 'location = /sw.js' in nginx_template
+    assert 'location = /index.html' in nginx_template
+    assert 'location = /ai-platform-build-provenance.json' in nginx_template
+    assert 'Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate"' in nginx_template
     assert "try_files $uri $uri/ /index.html" in nginx_template
     assert "dockerfile: frontend/web/Dockerfile" in compose_overlay
     assert "AI_PLATFORM_BUILD_COMMIT" in compose_overlay
