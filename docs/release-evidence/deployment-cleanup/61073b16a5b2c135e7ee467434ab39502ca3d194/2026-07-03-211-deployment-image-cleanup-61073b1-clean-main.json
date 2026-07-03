@@ -1,0 +1,89 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-03-211-deployment-image-cleanup-61073b1-clean-main",
+  "artifact_kind": "211_deployment_image_cleanup",
+  "gate": "G7 Sandbox / Resource Hardening",
+  "commit_sha": "61073b16a5b2c135e7ee467434ab39502ca3d194",
+  "runtime_subject_commit_sha": "61073b16a5b2c135e7ee467434ab39502ca3d194",
+  "captured_at": "2026-07-03T16:25:00Z",
+  "issue_refs": [],
+  "pr_refs": [
+    "#315"
+  ],
+  "source_ref": {
+    "subject": "clean current-main 61073b1 runtime subject",
+    "api_worker_image": "ai-platform:61073b1-g7-b3-clean-main-v1",
+    "frontend_image": "ai-platform-frontend:4518a05",
+    "api_worker_image_id": "sha256:59292f7687a1df372367e6cc3018b51d08661a94e13c1e91fbf6b8e37c113a0c",
+    "frontend_image_id": "sha256:1ccbbe0f15da4715b6ac14c0b5dd0075904a6a301bf8e6967606c38b76e763c8",
+    "compose_project": "ai-platform-phaseb",
+    "running_containers": {
+      "ai-platform-api": {
+        "image": "ai-platform:61073b1-g7-b3-clean-main-v1",
+        "status": "running"
+      },
+      "ai-platform-worker": {
+        "image": "ai-platform:61073b1-g7-b3-clean-main-v1",
+        "status": "running"
+      },
+      "ai-platform-frontend": {
+        "image": "ai-platform-frontend:4518a05",
+        "status": "running",
+        "health": "healthy"
+      }
+    },
+    "health": {
+      "api_health": "ok",
+      "api_health_url": "http://127.0.0.1:8020/api/ai/health",
+      "frontend_proxy_health": "ok",
+      "frontend_proxy_health_url": "http://127.0.0.1:18001/api/ai/health",
+      "frontend_root_http_status": 200
+    }
+  },
+  "evidence_ref": {
+    "cleanup_scope": "unreferenced_old_deployment_images_and_dangling_build_cache_after_clean_current_main_rollout",
+    "removed_images": [
+      {
+        "image": "ai-platform:755e50e-g7-b3-principal-userid-fix-v1",
+        "image_id": "sha256:c7bac34456c432d06fc27cf19d631e61bfe9354857cbb226feb3d15c92b14525"
+      },
+      {
+        "image": "ai-platform:755e50e-g7-b3-principal-userid-fix-v2",
+        "image_id": "sha256:f1b50184d0093c1622a035c2a49d6bcc93d4335e2565474ee40d695efc4e3d6f"
+      }
+    ],
+    "before": {
+      "images_total": 59,
+      "images_reclaimable": "83.66GB",
+      "build_cache_items": 4026,
+      "build_cache_reclaimable": "83.51GB",
+      "dangling_images": 0
+    },
+    "after": {
+      "images_total": 57,
+      "images_reclaimable": "81.97GB",
+      "build_cache_items": 3826,
+      "build_cache_reclaimable": "74.86GB",
+      "dangling_images": 0
+    },
+    "running_image_safety_check": "old 755e50e images had no container references before removal; running API/worker continued to reference ai-platform:61073b1-g7-b3-clean-main-v1",
+    "post_cleanup_health": {
+      "api_health": "ok",
+      "api_health_url": "http://127.0.0.1:8020/api/ai/health",
+      "frontend_proxy_health": "ok",
+      "frontend_proxy_health_url": "http://127.0.0.1:18001/api/ai/health",
+      "frontend_root_http_status": 200
+    },
+    "does_not_close_g7_gate": true,
+    "does_not_close_b3_gate": true,
+    "does_not_make_issue_164_gate_closable": true
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "Post-deploy cleanup removed only unreferenced old ai-platform 755e50e deployment images; running API/worker remained on ai-platform:61073b1-g7-b3-clean-main-v1 and frontend remained on ai-platform-frontend:4518a05.",
+    "Docker dangling image count remained 0 after cleanup, image count dropped from 59 to 57, and build cache reclaimable size dropped from 83.51GB to 74.86GB before the prune command timeout/recheck boundary.",
+    "API health, frontend proxy health, and frontend root HTTP checks remained healthy after cleanup.",
+    "This is deployment hygiene evidence only; it does not approve G7 closure, close B3, complete Foundation Alpha, raise production defaults, or make issue #164 current G7/B3 closure evidence."
+  ]
+}

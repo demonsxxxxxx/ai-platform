@@ -165,12 +165,18 @@ when it directly executes this plan, not to preserve general status snapshots.
 - [x] Add CLI coverage for `tools/capacity_recorded_gate_snapshot.py` direct packet rejection.
 - [x] Document that hand-rewrapped probe output cannot be promoted through the direct packet path.
 
-## Current cleanup outcome
+## Historical cleanup outcome
 
 Status remains `local partial`, not G7 complete, B3 complete, Foundation Alpha
 complete, production-ready, `211 verified`, or `gate closable`.
 
-2026-07-03 refresh: current 211 source/runtime has advanced to
+This plan ledger records the 2026-07-03 `755e50e` cleanup slice and is now
+historical for current-state naming. The current gate/runtime status moved to
+PR #315 / clean current-main `61073b1`; use
+`docs/operations/ai-platform-gate-status.md` and
+`docs/release-evidence/README.md` for current status.
+
+2026-07-03 refresh: the then-current 211 source/runtime advanced to
 `755e50ea2ad08c2d4218ae5d8cc612970b19e2a4`. The repo-local source marker,
 API/worker image ID, source/runtime/OCI labels, and legacy source alias labels
 bind to `755e50e`; fresh 211 readback still observed legacy in-container marker
@@ -193,7 +199,7 @@ This still does not close status. Same-subject FRC evidence is now recorded at
 `verified_foundation_runtime_concurrency`, `verified=true`, `failures=[]`, and
 12 concurrent requests/runs/sessions across 2 tenants and 4 users. The earlier
 `/tmp/frc-755e50e-20260703T090109Z` `queue_payload_invalid` attempt is superseded
-diagnostic history. Current status remains `local partial`, because B3 recorded
+diagnostic history. That slice remained `local partial`, because B3 recorded
 load evidence, `b3_10x4_sdk_subagents` profile evidence, approved G7
 status-upgrade review, and clean current-main `211 verified` evidence are still
 missing. A later read-only B3 capacity visibility capture for the same `755e50e`
@@ -247,16 +253,18 @@ Remaining blockers before any status upgrade:
 
 - G0/source-authority and production-hardening boundaries: external runtime
   env-file label caveat and current local runtime-affecting source rollout gap;
-- current `755e50e` Admin Runtime capacity visibility remains
-  `blocked_missing_admin_runtime_sections` because sandbox container observation
-  is unavailable/degraded and therefore does not count as valid B3 `sandbox`
-  evidence;
+- current `61073b1` Admin Runtime capacity visibility remains
+  `blocked_missing_admin_runtime_sections` because the `sandbox` Admin Runtime
+  section is missing/degraded and therefore does not count as valid B3
+  `sandbox` evidence;
 - B3 operator-reviewed recorded load evidence, including all seven recorded
   load-test gates and the `b3_10x4_sdk_subagents` profile evidence;
-- G7 operator status-upgrade review. Latest audit reads
+- G7 operator status-upgrade approval. The current `61073b1` operator
+  status-review artifact is recorded, but it sets
+  `status_upgrade_decision=not_approved_for_closure`; that preserves
   `status=candidate_evidence_requires_review`, `blocking_reasons=[]`, and
-  `required_next_steps=["complete operator status-upgrade review before claiming G7 closure or 211 verified status"]`
-  for G7 after reviewed label-repair, live-env hardening, and FRC overrides.
+  `status_label=local partial` for G7 after reviewed live-env hardening and FRC
+  evidence.
 
 Tasks 4 and 5 reduce B3 operator assembly friction only. They do not create
 recorded load evidence, accept bounded probes as recorded gates, close B3,
