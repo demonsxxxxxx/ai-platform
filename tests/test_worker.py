@@ -1468,6 +1468,99 @@ async def test_worker_uses_scoped_db_context_snapshot_instead_of_queue_copy(monk
 
 
 @pytest.mark.asyncio
+async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monkeypatch):
+    captured = {}
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            captured["payload"] = payload
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="capture/1",
+                capabilities={},
+                result={"message": "done"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-context-manifest"
+
+    async def get_context_snapshot_for_worker(conn, **kwargs):
+        return {
+            "id": kwargs["context_snapshot_id"],
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "session_id": kwargs["session_id"],
+            "run_id": kwargs["run_id"],
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": "executor",
+            "included_message_ids": ["msg-a"],
+            "included_file_ids": ["file-a"],
+            "included_artifact_ids": [],
+            "included_memory_record_ids": [],
+            "redaction_summary_json": {},
+            "payload_json": {
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "source": "chat_stream",
+                "context_manifest": {
+                    "schema_version": "ai-platform.context-manifest.v1",
+                    "context_manifest_version": "v1",
+                    "generated_at": "2026-07-02T01:02:03Z",
+                    "recent_messages": [{"message_id": "msg-a", "requires_retrieval": True}],
+                    "files": [
+                        {
+                            "file_id": "file-a",
+                            "requires_retrieval": True,
+                            "storage_key": "tenants/tenant-a/private/source.docx",
+                        }
+                    ],
+                    "available_retrieval_tools": ["read_context_file"],
+                },
+            },
+            "created_at": None,
+        }
+
+    async def fail_record_context(*args, **kwargs):
+        raise AssertionError("verified queue snapshots must be reconstructed from DB scope")
+
+    async def complete_run(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr("app.worker.record_initial_context_snapshot", fail_record_context)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(
+        base_payload(
+            executor_type="claude-agent-worker",
+            context_snapshot={"source": "tampered_queue_copy"},
+        ),
+        AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert captured["payload"].context_pack["source"] == "context_manifest"
+    assert captured["payload"].context_pack["context_manifest"]["files"] == [
+        {"file_id": "file-a", "requires_retrieval": True}
+    ]
+    serialized = json.dumps(captured["payload"].context_pack, ensure_ascii=False).lower()
+    assert "storage_key" not in serialized
+    assert "tenants/tenant-a/private" not in serialized
+    assert "tampered_queue_copy" not in serialized
+
+
+@pytest.mark.asyncio
 async def test_worker_uses_scoped_db_context_snapshot_when_queue_copy_missing(monkeypatch):
     captured = {}
 

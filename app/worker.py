@@ -22,6 +22,7 @@ from app.context_builder import (
     executor_context_pack_from_snapshot,
     record_initial_context_snapshot,
 )
+from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, sanitize_context_manifest_payload
 from app.db import transaction
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
@@ -923,6 +924,9 @@ def _context_snapshot_ref_from_row(row: dict[str, Any]) -> dict[str, Any]:
     memory_policy = _safe_context_memory_policy(payload.get("memory_policy"))
     if memory_policy is not None:
         context_ref["memory_policy"] = memory_policy
+    context_manifest = payload.get("context_manifest")
+    if isinstance(context_manifest, dict) and context_manifest.get("schema_version") == CONTEXT_MANIFEST_SCHEMA_VERSION:
+        context_ref["context_manifest"] = sanitize_context_manifest_payload(context_manifest)
     return context_ref
 
 

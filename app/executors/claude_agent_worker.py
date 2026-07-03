@@ -12,15 +12,19 @@ from typing import Any
 from app import repositories
 from app.control_plane_contracts import artifact_lineage_contract, standard_trace_id
 from app.context_builder import executor_context_pack_from_snapshot
+from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
+from app.context_retrieval import ContextRetrieval, TransactionalContextRetrievalRepository
 from app.db import transaction
 from app.executors.base import ArtifactManifest, ExecutorEventSink, ExecutorResult, RunPayload
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
+    ScopedContextRetrievalIdentity,
     build_skill_prompt,
     run_claude_agent_sdk,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
 from app.settings import get_settings
+from app.session_continuity import SessionContinuity
 from app.skills.pinning import MAX_SKILL_SNAPSHOT_FILE_BYTES, MAX_SKILL_SNAPSHOT_TOTAL_BYTES
 from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry, skill_content_hash
 from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
@@ -76,6 +80,7 @@ class ClaudeAgentWorkerAdapter:
         # Primary execution is Claude Agent SDK with platform-owned staged Skills.
         # runtime211 is not a dependency of ai-platform execution.
         self._delegate = delegate
+        self._session_continuity = SessionContinuity()
 
     async def submit_run(self, payload: RunPayload, event_sink: ExecutorEventSink | None = None) -> ExecutorResult:
         if payload.input.get("execution_mode") == "multi_agent":
@@ -503,6 +508,25 @@ class ClaudeAgentWorkerAdapter:
             return payload.context_pack
         return executor_context_pack_from_snapshot(payload.context_snapshot)
 
+    def _context_retrieval_for_payload(
+        self,
+        payload: RunPayload,
+        context_pack: dict[str, Any],
+    ) -> tuple[ContextRetrieval | None, ScopedContextRetrievalIdentity | None]:
+        manifest = context_pack.get("context_manifest")
+        if not isinstance(manifest, dict) or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
+            return None, None
+        repository = TransactionalContextRetrievalRepository(transaction, storage=ObjectStorage())
+        identity = ScopedContextRetrievalIdentity(
+            tenant_id=payload.tenant_id,
+            workspace_id=payload.workspace_id,
+            user_id=payload.user_id,
+            session_id=payload.session_id,
+            run_id=payload.run_id,
+            agent_id=payload.agent_id,
+        )
+        return ContextRetrieval(repository), identity
+
     async def _run_with_staged_skills(
         self,
         payload: RunPayload,
@@ -876,12 +900,14 @@ class ClaudeAgentWorkerAdapter:
             )
             workspace.mkdir(parents=True, exist_ok=True)
         file_names = file_names if file_names is not None else await self._materialize_files(payload, workspace)
+        context_pack = self._executor_context_pack(payload)
         prompt = prompt or build_skill_prompt(
             skill_id=payload.skill_id,
             user_message=str(payload.input.get("message") or payload.input.get("prompt") or ""),
             file_names=file_names,
-            context_pack=self._executor_context_pack(payload),
+            context_pack=context_pack,
         )
+        context_retrieval, context_retrieval_identity = self._context_retrieval_for_payload(payload, context_pack)
         async def on_text(delta: str) -> None:
             if event_sink:
                 await event_sink(
@@ -1095,16 +1121,36 @@ class ClaudeAgentWorkerAdapter:
                 }
 
         try:
-            return await run_claude_agent_sdk(
-                prompt=prompt,
-                cwd=workspace,
+            continuity = await self._session_continuity.resolve(
+                tenant_id=payload.tenant_id,
+                workspace_id=payload.workspace_id,
+                user_id=payload.user_id,
+                session_id=payload.session_id,
+                agent_id=payload.agent_id,
                 skill_id=payload.skill_id,
-                model_id=payload.model_value or payload.model_id or None,
-                skills=staged_skill_names,
-                on_text=on_text,
-                on_skill_use=on_skill_use,
-                on_tool_permission=on_tool_permission,
+                model_key=payload.model_value or payload.model_id or "default-model",
+                fork_reason=str(payload.input.get("context_fork_reason") or "")
+                if payload.input.get("context_fork_reason")
+                else None,
             )
+            async with self._session_continuity.sdk_session_lock(continuity.lock_key):
+                sdk_kwargs = {
+                    "prompt": prompt,
+                    "cwd": workspace,
+                    "skill_id": payload.skill_id,
+                    "session_id": continuity.sdk_session_id,
+                    "model_id": payload.model_value or payload.model_id or None,
+                    "skills": staged_skill_names,
+                    "on_text": on_text,
+                    "on_skill_use": on_skill_use,
+                    "on_tool_permission": on_tool_permission,
+                }
+                if context_retrieval is not None and context_retrieval_identity is not None:
+                    sdk_kwargs["context_retrieval"] = context_retrieval
+                    sdk_kwargs["context_retrieval_identity"] = context_retrieval_identity
+                return await run_claude_agent_sdk(
+                    **sdk_kwargs,
+                )
         except ClaudeAgentSdkNotAvailable as exc:
             return type("SdkUnavailable", (), {
                 "used_sdk": False,
