@@ -383,6 +383,56 @@ async def test_repository_context_retrieval_reads_file_through_scoped_repository
 
 
 @pytest.mark.asyncio
+async def test_repository_stage_context_file_rejects_oversize_metadata_before_storage_read(monkeypatch, tmp_path):
+    calls = []
+
+    async def fake_get_scoped_context_file(conn, **kwargs):
+        calls.append(("file_scope", kwargs))
+        return {
+            "id": kwargs["file_id"],
+            "original_name": "huge-source.txt",
+            "content_type": "text/plain",
+            "size_bytes": 4096,
+            "storage_key": "tenants/tenant-a/private/huge-source.txt",
+        }
+
+    class FakeStorage:
+        def get_bytes(self, *, storage_key):
+            calls.append(("storage", storage_key))
+            return b"x" * 4096
+
+    monkeypatch.setattr("app.context_retrieval.repositories.get_scoped_context_file", fake_get_scoped_context_file)
+    retrieval = ContextRetrieval(RepositoryContextRetrievalRepository(object(), storage=FakeStorage()))
+
+    with pytest.raises(ContextRetrievalDenied, match="context_file_too_large"):
+        await retrieval.stage_context_file_to_workspace(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            file_id="file-large",
+            workspace_root=str(tmp_path),
+            max_bytes=1024,
+        )
+
+    assert calls == [
+        (
+            "file_scope",
+            {
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "file_id": "file-large",
+            },
+        )
+    ]
+    assert not (tmp_path / "context").exists()
+
+
+@pytest.mark.asyncio
 async def test_repository_context_retrieval_message_pagination_uses_limit_plus_one(monkeypatch):
     calls = []
 

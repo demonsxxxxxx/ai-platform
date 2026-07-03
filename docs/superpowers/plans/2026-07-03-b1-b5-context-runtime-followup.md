@@ -35,8 +35,10 @@
   Evidence: `docs/operations/b1-b5-context-runtime-follow-up.md` records SDK session resume key, fork isolation, multi-worker lock, restart recovery, and DB/Redis split.
 - [x] Phase 6: compileall, focused pytest, verifier CLI, and `git diff --check` verified.
   Evidence: `python -m compileall -q app tools scripts` exited 0; `python -m pytest tests/test_context_retrieval.py tests/test_context_prompt_continuity.py tests/test_session_continuity.py tests/test_b1_b5_context_runtime_readiness.py -q --basetemp .pytest-tmp` passed with 18 tests; `python tools/verify_b1_b5_context_runtime.py --format json` exited 0 with `ok: true`; `git diff --check` exited 0.
+- [x] Phase 7: post-review P2 red/green fixes completed locally.
+  Evidence: `python -m pytest tests/test_context_retrieval.py::test_repository_stage_context_file_rejects_oversize_metadata_before_storage_read -q --basetemp .pytest-tmp` first failed because storage was read before oversize rejection, then passed; `python -m pytest tests/test_b1_b5_context_runtime_readiness.py::test_b1_b5_context_runtime_readiness_requires_retrieval_tools_in_allowed_tools -q --basetemp .pytest-tmp` first failed because readiness ignored `allowed_tools_include_retrieval=False`, then passed. Follow-up local checks: `python -m pytest tests/test_context_retrieval.py -q --basetemp .pytest-tmp` passed with 10 tests; `python -m pytest tests/test_b1_b5_context_runtime_readiness.py -q --basetemp .pytest-tmp` passed with 4 tests; `python -m compileall -q app tools scripts` exited 0; `python -m pytest tests/test_context_retrieval.py tests/test_context_prompt_continuity.py tests/test_session_continuity.py tests/test_b1_b5_context_runtime_readiness.py -q --basetemp .pytest-tmp` passed with 20 tests; `python tools/verify_b1_b5_context_runtime.py --format json` exited 0 with `ok: true`; `git diff --check` exited 0.
 
-Current status label: `PR ready` for local branch review only; not `reviewed`, not `merged`, not `211 verified`, and not `gate closable`.
+Status boundary before push: post-review fixes remain `local partial` until committed, pushed, and checked on PR #309. Do not claim `reviewed`, `merged`, `211 verified`, or `gate closable` from this local phase record.
 
 ## File Structure
 

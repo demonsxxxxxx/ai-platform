@@ -109,6 +109,7 @@ def build_b1_b5_context_runtime_readiness(
         ),
         "sdk_runner_wires_scoped_retrieval_tools": _check(
             sdk_probe["retrieval_tools_wired"] is True
+            and sdk_probe["allowed_tools_include_retrieval"] is True
             and sdk_probe["stage_tool_redacted"] is True
             and sdk_probe["stage_tool_wrote_workspace_file"] is True,
             sdk_probe,

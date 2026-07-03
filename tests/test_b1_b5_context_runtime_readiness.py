@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 
+import app.b1_b5_context_runtime_readiness as readiness_module
 from app.b1_b5_context_runtime_readiness import (
     REQUIRED_CHECKS,
     build_b1_b5_context_runtime_readiness,
@@ -34,6 +35,27 @@ def test_b1_b5_context_runtime_readiness_detects_prompt_private_material_leak():
     assert readiness["ok"] is False
     assert readiness["status"] == "blocked_runtime_contract"
     assert readiness["checks"]["public_projection_redacts_private_context_material"]["passed"] is False
+
+
+def test_b1_b5_context_runtime_readiness_requires_retrieval_tools_in_allowed_tools(monkeypatch):
+    async def fake_sdk_retrieval_probe():
+        return {
+            "sdk_used": True,
+            "retrieval_tools_wired": True,
+            "allowed_tools_include_retrieval": False,
+            "stage_tool_redacted": True,
+            "stage_tool_wrote_workspace_file": True,
+        }
+
+    monkeypatch.setattr(readiness_module, "_sdk_retrieval_probe", fake_sdk_retrieval_probe)
+
+    readiness = build_b1_b5_context_runtime_readiness()
+
+    assert readiness["ok"] is False
+    assert readiness["status"] == "blocked_runtime_contract"
+    sdk_check = readiness["checks"]["sdk_runner_wires_scoped_retrieval_tools"]
+    assert sdk_check["passed"] is False
+    assert sdk_check["evidence"]["allowed_tools_include_retrieval"] is False
 
 
 def test_b1_b5_context_runtime_readiness_cli_outputs_redacted_json():

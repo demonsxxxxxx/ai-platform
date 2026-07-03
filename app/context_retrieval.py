@@ -450,8 +450,11 @@ class ContextRetrieval:
         )
         name = self._safe_name(row)
         file_segment = self._safe_id_segment(file_id)
-        raw_bytes = self._raw_content_bytes(row)
         byte_cap = max(1, int(max_bytes))
+        declared_size = self._declared_size_bytes(row)
+        if declared_size is not None and declared_size > byte_cap:
+            raise ContextRetrievalDenied("context_file_too_large")
+        raw_bytes = self._raw_content_bytes(row)
         if len(raw_bytes) > byte_cap:
             raise ContextRetrievalDenied("context_file_too_large")
         target_path = Path(workspace_root) / "context" / file_segment / name
@@ -624,6 +627,13 @@ class ContextRetrieval:
         if isinstance(self._repository, InMemoryContextRetrievalRepository):
             return str(row.get("content") or "").encode("utf-8")
         return self._repository.read_storage_bytes(row)
+
+    def _declared_size_bytes(self, row: dict[str, Any]) -> int | None:
+        try:
+            declared_size = int(row.get("size_bytes"))
+        except (TypeError, ValueError):
+            return None
+        return declared_size if declared_size >= 0 else None
 
     def _bounded_content_from_row(self, row: dict[str, Any], *, max_bytes: int) -> tuple[str, bool]:
         if isinstance(self._repository, InMemoryContextRetrievalRepository):
