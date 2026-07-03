@@ -36,8 +36,9 @@ def main() -> int:
     parser.add_argument(
         "--profile-evidence-json",
         help=(
-            "Optional operator-reviewed B3 profile evidence JSON. When provided, "
-            "it is sanitized and written only to load_test_evidence.profile_evidence."
+            "Operator-reviewed B3 profile evidence JSON. Optional for a single "
+            "recorded gate merge, required when repeated --recorded-gate-evidence-json "
+            "inputs assemble the all-gates B3 batch snapshot."
         ),
     )
     parser.add_argument("--gate", default="api_read_write_burst")

@@ -140,6 +140,26 @@
 - [x] Add the packet builder CLI to the generated operator workflow before snapshot assembly.
 - [x] Document the packet command and non-closure boundary.
 
+### Task 6: Reject direct probe-marked recorded-gate packets
+
+**Files:**
+- Modify: `app/capacity_baseline.py`
+- Modify: `tests/test_capacity_baseline.py`
+- Modify: `docs/operations/ai-platform-capacity-baseline.md`
+
+**Interfaces:**
+- Consumes: direct `ai-platform.capacity-recorded-gate-evidence.v1` packets
+  passed to `tools/capacity_recorded_gate_snapshot.py`.
+- Produces: fail-closed rejection when a direct packet still carries
+  `load_test_evidence_status=probe_only_not_recorded` or
+  `does_not_mark_gate_recorded=true`, even if the nested measured fields look
+  complete.
+
+- [x] Add a failing regression test proving direct probe-marked packets were accepted before the guard.
+- [x] Reject top-level bounded-probe markers inside `_capacity_recorded_gate_evidence_packet`.
+- [x] Add CLI coverage for `tools/capacity_recorded_gate_snapshot.py` direct packet rejection.
+- [x] Document that hand-rewrapped probe output cannot be promoted through the direct packet path.
+
 ## Current cleanup outcome
 
 Status remains `local partial`, not G7 complete, B3 complete, Foundation Alpha
