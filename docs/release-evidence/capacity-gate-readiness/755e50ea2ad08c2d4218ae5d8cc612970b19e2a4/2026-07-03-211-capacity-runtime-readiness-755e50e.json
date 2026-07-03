@@ -1,0 +1,96 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-03-211-capacity-runtime-readiness-755e50e",
+  "commit_sha": "755e50ea2ad08c2d4218ae5d8cc612970b19e2a4",
+  "runtime_subject_commit_sha": "755e50ea2ad08c2d4218ae5d8cc612970b19e2a4",
+  "gate": "B3 Capacity Baseline",
+  "issue_refs": [
+    "#21",
+    "#122",
+    "#144"
+  ],
+  "pr_refs": [],
+  "artifact_kind": "capacity_gate_readiness",
+  "captured_at": "2026-07-03T12:20:00Z",
+  "source_ref": {
+    "subject": "dirty-runtime v2 755e50e principal user-id fix runtime subject",
+    "runtime_subject_commit_sha": "755e50ea2ad08c2d4218ae5d8cc612970b19e2a4",
+    "api_worker_image": "ai-platform:755e50e-g7-b3-principal-userid-fix-v2",
+    "frontend_image": "ai-platform-frontend:4518a05",
+    "source_marker_status": "repo_ai_platform_source_revision_matched_runtime_subject_with_legacy_source_commit_caveat",
+    "source_marker_commit": "755e50ea2ad08c2d4218ae5d8cc612970b19e2a4",
+    "health_status": "ok",
+    "capture_route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+    "capture_mode": "container_local_operator_captured_admin_projection_no_maintenance_cleanup",
+    "source_authority_caveat": "This is 755e50e dirty-runtime visibility only. The API and worker image labels bind to 755e50e with build-dirty=true, while the runtime is not latest clean origin/main evidence after origin/main advanced to 1230dbc. This capture is not clean current-main 211 verified evidence, not G0 source-authority closure, and not gate-closable evidence."
+  },
+  "evidence_ref": {
+    "verifier": "tools/capacity_runtime_evidence.py",
+    "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+    "snapshot_schema_version": "ai-platform.capacity-evidence-snapshot.v1",
+    "readiness_schema_version": "ai-platform.capacity-gate-readiness.v1",
+    "runtime_profile": "g7-b3-755e50e-principal-userid-fix-v2",
+    "source_http_status": 200,
+    "admin_runtime_required_sections": [
+      "capacity",
+      "database_pool",
+      "queue",
+      "admission",
+      "backpressure",
+      "sandbox",
+      "observability"
+    ],
+    "admin_runtime_observed_sections": [
+      "capacity",
+      "database_pool",
+      "queue",
+      "admission",
+      "backpressure",
+      "observability"
+    ],
+    "admin_runtime_missing_sections": [
+      "sandbox"
+    ],
+    "readiness_status": "blocked_missing_admin_runtime_sections",
+    "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
+    "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+    "load_test_evidence_status": "missing",
+    "missing_load_test_gates": [
+      "api_read_write_burst",
+      "run_creation_burst_by_tenant_and_user",
+      "worker_processing_throughput",
+      "queue_depth_and_lease_latency",
+      "cancel_retry_resume_under_load",
+      "sandbox_lease_creation_under_load",
+      "model_gateway_timeout_and_backpressure"
+    ],
+    "profile_evidence_status": "missing",
+    "profile_evidence": {},
+    "target_profile_id": "b3_10x4_sdk_subagents",
+    "non_expansion_invariants": {
+      "production_concurrency_defaults_raised": false,
+      "safe_concurrency_claimed": false,
+      "ordinary_user_platform_multi_run_orchestration_enabled": false
+    },
+    "does_not_raise_defaults": true,
+    "does_not_claim_safe_concurrency": true,
+    "does_not_mark_recorded_load_test_gate": true,
+    "does_not_close_b3": true,
+    "does_not_close_g7": true,
+    "does_not_make_source_authority_gate_closable": true,
+    "does_not_make_clean_current_main_211_verified": true,
+    "does_not_make_issue_164_gate_closable": true
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "notes": [
+    "This reviewed, redacted summary records dirty-runtime v2 755e50e Admin Runtime capacity visibility returning HTTP 200 through the deployed API container environment.",
+    "The evidence remains fail-closed because the sandbox Admin Runtime section is missing, all seven recorded load-test gates are missing, and no b3_10x4_sdk_subagents profile evidence is attached.",
+    "This entry is capacity visibility and readiness evidence only; it is not recorded load evidence, not a production default increase, not clean current-main 211 verified evidence, and not a gate-closure claim."
+  ],
+  "open_followups": [
+    "Promote or rebuild the principal user-id fix into clean current-main runtime evidence before any clean 211 verified claim.",
+    "Record operator-reviewed load-test evidence for all seven B3 gates.",
+    "Record b3_10x4_sdk_subagents profile evidence for 10 sessions x peak 4 SDK subagents per session before any production default increase."
+  ]
+}

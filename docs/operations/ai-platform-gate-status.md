@@ -2,10 +2,10 @@
 
 Date: 2026-07-03
 
-This snapshot keeps the current PRD, foundation roadmap, guardrails, repository
-code, 211 runtime, and issue-driven priorities aligned. It is not automatic
-gate-closure evidence and must not be used to auto-close GitHub issues. Gate
-closure still requires the
+This snapshot is the single current gate/runtime status matrix for the current
+PRD, foundation roadmap, guardrails, repository code, 211 runtime, and
+issue-driven priorities. It is not automatic gate-closure evidence and must not
+be used to auto-close GitHub issues. Gate closure still requires the
 issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue workflow in
 `docs/agent-rules/github-issue-pr-workflow.md`.
 
@@ -19,17 +19,24 @@ closure evidence by themselves.
 
 ## Current Reading Guide
 
-At the start of this status-sync slice, GitHub `main` already included PR #312
-merge commit `881493d042a522b343c9df2044bd3830fd02e62f`, while 211 still runs
-the PR #308 runtime subject `15903fdfe96ffcfba9daa1252741111017dcf832`.
-Current status must therefore be read as PR #312 merged docs/test
-status-boundary progress layered on top of PR #311 source/docs/audit-boundary
-progress and the deployed PR #308 label-clean runtime evidence, plus earlier
-reviewed `9c669761`, `decf33a`, `4805031`, `ae6b7e5`, and `28676df` evidence.
-It is not gate closure. PR #312 and later docs/test status-sync merges are not
-211 rollouts unless fresh 211 rollout/smoke evidence binds that exact merge
-commit to the running backend/worker image and source marker, and they do not
-make current `main` `211 verified`.
+At this status-sync slice, GitHub `main` already included PR #312 merge commit
+`881493d042a522b343c9df2044bd3830fd02e62f`, and a later 211 rollout now binds
+the repo-local source marker plus API/worker source/runtime labels to runtime
+subject `755e50ea2ad08c2d4218ae5d8cc612970b19e2a4`. Fresh local Git readback
+on 2026-07-03 showed `origin/main` at
+`1230dbc64a39805d6492a60c2688a2fed31ef3d9` after a frontend-only merge, so the
+`755e50e` runtime evidence must not be called latest clean `origin/main`
+evidence. Current status must therefore be read as `755e50e` G7 runtime evidence
+layered on top of PR #312 merged docs/test status-boundary progress, PR #311
+source/docs/audit-boundary progress, the deployed PR #308 label-clean runtime
+evidence, plus earlier reviewed `9c669761`, `decf33a`, `4805031`, `ae6b7e5`,
+and `28676df` evidence.
+It is not gate closure. The current `755e50e` dirty-runtime v2 G7 verifier and
+same-subject Foundation Runtime concurrency evidence are both present, but this
+does not make clean current `main` `211 verified`: B3 recorded load evidence is
+still missing, operator status-upgrade approval is still absent, and the running
+API/worker image is a dirty runtime-only local patch rather than a clean
+current-main rollout.
 
 PR #308 is merged into GitHub `main` at
 `15903fdfe96ffcfba9daa1252741111017dcf832`; GitHub checks were successful,
@@ -65,7 +72,7 @@ for runtime subject `9c669761`. The reviewed operator status-review artifact at
 records `status_upgrade_decision=not_approved_for_closure`, so this remains a
 historical candidate status rather than G7 closure.
 
-The deployed PR #308 runtime subject `15903fd` now has a reviewed label-clean
+The deployed PR #308 runtime subject `15903fd` has a reviewed label-clean
 live-default G7 hardening entry at
 `docs/release-evidence/g7-sandbox/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-sandbox-live-env-hardening-15903fd-label-clean.json`
 and same-subject Foundation Runtime concurrency evidence at
@@ -77,12 +84,38 @@ reviewed label-clean operator status-review artifact at
 `docs/release-evidence/g7-status-review/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-operator-status-review-15903fd-label-clean.json`
 records `status=candidate_evidence_requires_review`,
 `g7_runtime_blocking_reasons=[]`, and
-`status_upgrade_decision=not_approved_for_closure`. There is still no
-reviewed B3 capacity entry for `15903fd`; the latest reviewed B3 visibility
-entry remains the historical `28676df` record, where all seven B3 recorded load
-gates and the `b3_10x4_sdk_subagents` profile evidence were still missing. Do
-not call G7 complete, B3 complete, Foundation Alpha complete, production-ready,
-`211 verified`, or `gate closable`.
+`status_upgrade_decision=not_approved_for_closure`. There is still no reviewed
+B3 capacity entry for `15903fd`; newer latest-status reading must use the
+reviewed `755e50e` dirty-runtime v2 capacity visibility entry. That newer entry
+is still fail-closed at `blocked_missing_admin_runtime_sections` because the
+Admin Runtime capacity section `sandbox` is missing, and all seven B3 recorded
+load gates plus the `b3_10x4_sdk_subagents` profile evidence are still missing.
+Do not call G7 complete, B3 complete, Foundation Alpha complete,
+production-ready, `211 verified`, or `gate closable`.
+
+The later current runtime subject `755e50e` has a reviewed G7 live-env
+hardening entry at
+`docs/release-evidence/g7-sandbox/755e50ea2ad08c2d4218ae5d8cc612970b19e2a4/2026-07-03-211-g7-sandbox-live-env-hardening-755e50e.json`.
+The 211 repo-local source marker, API/worker image ID, canonical
+source/runtime/OCI labels, and legacy source alias labels bind to `755e50e`,
+with `ai-platform.build-dirty=true` and rollout
+`g7-b3-755e50e-principal-userid-fix-v2`. Fresh 211 readback still observed
+legacy in-container marker files at `9c669761` and `28676df`, so this remains
+source-authority caveated and not clean current-main `211 verified`. API health
+on `127.0.0.1:8020`, the
+frontend proxy health on `127.0.0.1:18001`, and the frontend root were healthy.
+The current v2 G7 verifier summary recorded all eight checks passing for
+`g7-live-env-hardening-755e50e-principal-userid-fix-v2-container-20260703115120`.
+The earlier blocked FRC attempt at `/tmp/frc-755e50e-20260703T090109Z` is
+superseded by same-subject FRC evidence in
+`docs/release-evidence/foundation-runtime-concurrency/755e50ea2ad08c2d4218ae5d8cc612970b19e2a4-frc-g7-b3-20260703/`,
+whose readiness file reports `verified_foundation_runtime_concurrency`,
+`verified=true`, `failures=[]`, 12 concurrent requests/runs/sessions across 2
+tenants and 4 users, and passed queue, sandbox, memory/context, artifact ACL,
+tool permission, skill snapshot, and run playback checks. This advances the
+current `755e50e` G7/FRC evidence set only to reviewed dirty-runtime candidate
+evidence; it still does not close G7, B3, Foundation Alpha, #164, or clean
+current-main `211 verified`.
 
 Reviewed 211 runtime evidence for earlier subjects remains historical
 same-subject evidence only. PR #304 runtime subject `decf33a`, PR #297 runtime
@@ -92,13 +125,15 @@ records that can read `status=candidate_evidence_requires_review`,
 `required_next_steps=["complete operator status-upgrade review before claiming G7 closure or 211 verified status"]`
 for their own runtime subjects. The reviewed `28676df` capacity visibility entry
 and its patched-source workspace-owner diagnostic explain the PR #306 fix
-direction. The `9c669761` live-default G7/FRC pair is now historical same-subject
-evidence. The `15903fd` label-clean live-default G7/FRC pair advances the
-deployed runtime evidence set to `candidate_evidence_requires_review`, but it
-still lacks approved G7 status upgrade and does not provide B3 recorded load
-evidence. PR #312 and later docs/test status-sync merges do not change that
-runtime-subject boundary until a future 211 rollout and smoke bind the exact
-merge commit to the running backend/worker image and source marker.
+direction. The `9c669761` live-default G7/FRC pair and the `15903fd`
+label-clean live-default G7/FRC pair are now historical same-subject evidence.
+The `755e50e` dirty-runtime v2 G7 verifier plus same-subject FRC success advance
+the current evidence set only to reviewed dirty-runtime candidate evidence; they
+do not provide approved G7 status upgrade, B3 recorded load evidence, clean
+current-main `211 verified`, or #164 closure evidence.
+GitHub issue #164 is already closed as historical B0 latest-main
+runtime-refresh work; its closure history is not current G7/B3 closure
+evidence.
 
 Earlier current-live `4805031` observation remains historical operational
 context: API/worker images, labels, and `SANDBOX_EXECUTOR_IMAGE` were observed
@@ -110,10 +145,11 @@ labels bound to `decf33a` and `/api/ai/health` returning HTTP `200`; this
 supports the historical current-source runtime rollout gap for `a9c78ef` rather
 than closing it. The later `28676df`, `9c669761`, and `15903fd` rollouts changed
 the running API/worker image identity and, for `15903fd`, the repo-local source
-marker. The 2026-07-03 label-clean readback confirmed API/worker live defaults now use
+marker. At the `15903fd` slice, the 2026-07-03 label-clean readback confirmed
+API/worker live defaults used
 `SANDBOX_CONTAINER_PROVIDER=docker`,
 `SANDBOX_EXECUTOR_IMAGE=ai-platform:15903fd-g7-b3-label-clean-v2`, and
-`SANDBOX_EGRESS_POLICY_ENABLED=true`; this removes the current-subject G7
+`SANDBOX_EGRESS_POLICY_ENABLED=true`; this removed that subject's G7
 executor-image drift and stale legacy alias blockers, but operator status-upgrade
 approval and B3 recorded load evidence remain open.
 
@@ -156,7 +192,8 @@ Passing those into the audit also reaches
 `status=candidate_evidence_requires_review` with `blocking_reasons=[]`, but only
 for the `decf33a` runtime evidence subject. PR #304 is now merged, but this
 does not make the merge commit `a9c78ef` current-source runtime verified, does
-not make post-`decf33a` commits 211 runtime evidence, and does not close #164.
+not make post-`decf33a` commits 211 runtime evidence, and does not constitute
+current G7/B3 closure evidence for the already-closed historical #164.
 The compose external env-file label and local runtime-affecting source delta are
 G0/source-authority and production-hardening boundaries; B3 seven-gate load
 evidence remains the B3 blocker. The reviewed `ae6b7e5` POC/FRC evidence is POC
@@ -272,7 +309,7 @@ The G8/B3 status boundary should be read as follows:
 - G8 is a deferred parking-lot for platform-owned parent/child multi-run
   orchestration. It is not a current ordinary-user product route and is not a
   Foundation Alpha `open_followups` item.
-- Old G8 exposure wording is a legacy evidence/follow-up name and is
+- Historical G8 exposure wording in old evidence/follow-up keys is
   misleading as current status. It must be read as ordinary-user
   platform-owned parent/child multi-run orchestration exposure, not as SDK
   subagent availability or B3 capacity evidence.
@@ -290,13 +327,14 @@ The G8/B3 status boundary should be read as follows:
   seven recorded load-test gates and the B3 profile evidence remain missing.
 
 Next closure work is operational, not semantic: use the reviewed 2026-07-03
-`15903fd` label-clean live-env G7 evidence plus same-subject Foundation Runtime concurrency
-evidence as the current G7 runtime input, keep earlier `9c669761`, `ae6b7e5`,
-`4805031`, and `decf33a` G7/FRC evidence as historical reviewed inputs, and
-treat the reviewed label-clean `15903fd` operator status-review artifact as a
-local-partial record because it explicitly sets
-`status_upgrade_decision=not_approved_for_closure`, even though its G7 runtime
-blocking list is now empty.
+`755e50e` dirty-runtime v2 live-env G7 evidence plus same-subject Foundation
+Runtime concurrency evidence as the current dirty-runtime G7 input, keep earlier
+`15903fd`, `9c669761`, `ae6b7e5`, `4805031`, and `decf33a` G7/FRC evidence as
+historical reviewed inputs, and treat the current `755e50e` status-upgrade
+review as absent/not recorded. The reviewed label-clean `15903fd` operator
+status-review artifact remains a historical local-partial record because it
+explicitly sets `status_upgrade_decision=not_approved_for_closure`, even though
+its own G7 runtime blocking list is empty.
 Before any status upgrade, `tools/g7_b3_completion_audit.py` can summarize the current
 sanitized runtime observation plus optional reviewed release-evidence entries,
 Foundation Runtime concurrency evidence, and capacity profile readiness into a
@@ -304,22 +342,22 @@ fail-closed G7/B3 blocker list. If an older runtime observation is used, it must
 be merged with the later reviewed label-repair, live-env hardening, and FRC
 evidence for the same runtime subject before reading blockers; otherwise stale
 `stale_runtime_alias_label_mismatch`, fake-provider, or missing-FRC observations
-will overstate the current G7 gap. That audit is a planning/control artifact, not
-runtime or load evidence by itself. The running API and worker containers have
-now been observed with `SANDBOX_CONTAINER_PROVIDER=docker`,
-`SANDBOX_EXECUTOR_IMAGE=ai-platform:15903fd-g7-b3-label-clean-v2`,
-and `SANDBOX_EGRESS_POLICY_ENABLED=true`, while API/worker canonical labels,
-legacy source alias labels, and repo-local source marker are `15903fd`. The
-latest current-live `15903fd` G7 audit is
-`candidate_evidence_requires_review`; it is no longer blocked by
-`live_api_sandbox_executor_image_not_current_main_bound`,
-`stale_runtime_alias_label_mismatch`, or missing same-subject Foundation Runtime
-concurrency evidence. The reviewed `15903fd` G7, FRC, and operator
-status-review entries still do not close G7 because the status-review decision
-is `not_approved_for_closure`. The older `ae6b7e5` reviewed evidence has no G7 runtime
-`blocking_reasons` only when it is audited as the `ae6b7e5` subject with its
-reviewed overrides. The source-authority/local-rollout and B3 load-evidence
-boundaries are tracked separately. A fresh read-only 211 capacity-runtime
+will overstate the current G7 gap. That audit is a planning/control artifact,
+not runtime or load evidence by itself. The current dirty-runtime `755e50e`
+readback observed API/worker image
+`ai-platform:755e50e-g7-b3-principal-userid-fix-v2`, live executor image
+`ai-platform:755e50e-g7-b3-principal-userid-fix-v1`,
+`SANDBOX_CONTAINER_PROVIDER=docker`, `SANDBOX_EGRESS_POLICY_ENABLED=true`, and
+source/runtime labels bound to `755e50e`; legacy in-container source marker
+files still read `9c669761` / `28676df`. The latest current dirty-runtime G7
+audit can reach `candidate_evidence_requires_review` with `blocking_reasons=[]`
+only when paired with the reviewed `755e50e` G7 entry and same-subject FRC
+evidence. It still does not close G7 because operator status-upgrade approval is
+absent/not recorded for `755e50e`, the runtime image is `build-dirty=true`, and
+clean current-main `211 verified` evidence is missing. The source-authority/
+local-rollout and B3 load-evidence boundaries are tracked separately, with the
+current Admin Runtime capacity-section gap recorded as its own fail-closed B3
+visibility blocker. A fresh read-only 211 capacity-runtime
 snapshot now exists for the PR #304 runtime subject `decf33a`: API/worker
 and the 211 source marker were read back at
 `decf33a017e0b97e2a2992f80e3ccdc19152c1f4`, the capacity capture used
@@ -335,6 +373,11 @@ Its
 This supersedes the earlier `4805031` capacity-pending/HTTP-500 observation for
 the currently running `decf33a` runtime subject only. It is not current-main
 `211 verified` for merge commit `a9c78ef` and does not close B3.
+The newer reviewed `755e50e` capacity visibility entry is now the latest B3
+visibility record for current-status reading, and it remains
+`blocked_missing_admin_runtime_sections` because the Admin Runtime capacity
+section `sandbox` is missing, with all seven recorded load-test gates and the
+B3 profile evidence still absent.
 Until those checks and evidence close, do not call the current source `211
 verified`, `gate closable`, B3 complete, G7 complete, Foundation Alpha
 complete, or production-ready.
@@ -596,7 +639,8 @@ workaround; the configured 211 source path remains a dirty synced source, and
 the compose environment-file label still records the external env-file caveat.
 This records reviewed 211 runtime-subject evidence for #164 and is superseded
 by the post-PR #173 `d94d274` refresh below for current-main #164 closure
-evaluation. It does not make #164 `gate closable`, does not close G0 source
+evaluation. It does not constitute current G7/B3 closure evidence for the
+already-closed historical #164, does not close G0 source
 authority, does not close B1/B2/B3 product gates, does not raise production
 concurrency defaults, does not claim Docker sandbox hardening, and does not
 enable ordinary-user platform-level multi-run orchestration exposure.
@@ -692,8 +736,9 @@ This removes the `foundation_runtime_concurrency_evidence` blocker for the
 named `e4c0e9d` runtime subject only. Docker sandbox hardening, ordinary-user
 platform-level multi-run orchestration exposure, packaged frontend image acceptance, department rollout,
 and B3 capacity evidence remain open. This is controlled Foundation Alpha POC
-runtime evidence only: it does not make #164 `gate closable`, does not close G0
-source authority, does not close B1/B2/B3 product gates, does not raise
+runtime evidence only: it does not constitute current G7/B3 closure evidence
+for the already-closed historical #164, does not close G0 source authority,
+does not close B1/B2/B3 product gates, does not raise
 production concurrency defaults, does not claim Docker sandbox hardening, and
 does not enable ordinary-user platform-level multi-run orchestration exposure.
 
@@ -1399,10 +1444,12 @@ API/worker posture, and same-subject `4805031` Foundation Runtime concurrency
 evidence is now recorded. Together they leave G7 at
 `candidate_evidence_requires_review`, pending operator status-upgrade review.
 PR #304 runtime subject `decf33a` also has same-subject reviewed G7/FRC
-evidence. The latest reviewed B3 capacity visibility entry is still the
-historical `28676df` record; it remains
-`blocked_missing_admin_runtime_sections`. The `28676df` G7 verifier path first
-failed because host Python lacked `pydantic` (`No module named 'pydantic'`),
+evidence. The newer reviewed B3 capacity visibility entry for the current
+`755e50e` dirty-runtime subject supersedes the historical `28676df` capacity
+visibility record for latest-status reading; both remain fail-closed visibility
+only, with `755e50e` still at `blocked_missing_admin_runtime_sections`. The
+`28676df` G7 verifier path first failed because host Python lacked `pydantic`
+(`No module named 'pydantic'`),
 then exposed the executor workspace ownership bug under `cap_drop=["ALL"]`;
 the patched-source diagnostic run passed all eight checks
 (`g7-current-main-28676df-workspace-user-fix-20260702135351`) and led to
@@ -1419,9 +1466,12 @@ historical candidate-evidence boundary, but the operator status-review decision
 was `not_approved_for_closure`. PR #308 then deployed `ai-platform:15903fd-g7-b3-main-runtime-only-v1`, and the
 later label-clean rollout moved API/worker to
 `ai-platform:15903fd-g7-b3-label-clean-v2`; reviewed label-clean `15903fd`
-live-default G7 and same-subject FRC evidence now exist. The current status
-remains `local partial` because G7 status-upgrade approval and B3 recorded load
-evidence are still missing.
+live-default G7 and same-subject FRC evidence now exist. The later `755e50e`
+dirty-runtime v2 read-only capacity entry is the current reviewed B3 visibility
+record and remains fail-closed because the `sandbox` Admin Runtime section and
+all recorded load-test gates are missing. The current status remains `local
+partial` because G7 status-upgrade approval and B3 recorded load evidence are
+still missing.
 A reviewed `ae6b7e5` Foundation Alpha POC evidence
 set for `ae6b7e5` is also recorded and selected by readiness, including
 runtime POC smoke, Auth/RBAC smoke, governance runtime smoke, release-evidence
@@ -1437,11 +1487,11 @@ is retained as same-subject historical evidence and does not close the current
 
 | Gate | Current status | Evidence now in repository | Remaining blocker before closure |
 | --- | --- | --- | --- |
-| G0-G1 Source Authority / Security Baseline | Reviewed B0 runtime-relevant smoke and Foundation Runtime concurrency evidence are retained for `96f27bb`. The 2026-07-03 status-sync baseline has GitHub `main` including PR #312 merge commit `881493d042a522b343c9df2044bd3830fd02e62f`, while the 211 repo-local source marker and 211 API/worker canonical runtime labels remain at PR #308 runtime subject `15903fdfe96ffcfba9daa1252741111017dcf832`; direct API and frontend proxy health return `{"status":"ok"}`, and the frontend root returns HTTP `200`. Reviewed `ae6b7e5` Foundation Alpha POC evidence is retained as a same-subject set and selected by readiness as historical reviewed evidence, `4805031` has reviewed same-subject G7 live-env hardening and Foundation Runtime concurrency evidence, PR #304 runtime subject `decf33a` has same-subject G7/FRC evidence, PR #305 `28676df` has reviewed B3 capacity visibility plus G7 diagnostic history, PR #306 `9c669761` has reviewed explicit verifier-path G7 hardening evidence, reviewed live-default G7 evidence, same-subject FRC evidence, and a reviewed G7 operator status-review artifact, and PR #308 `15903fd` now has reviewed label-clean live-default G7 evidence plus same-subject FRC evidence. This is still not G0 closure: PR #312 and later docs/test status-sync merges are not deployed to 211 by themselves, PR #308 is deployed at `15903fd`, and gate closure still requires B3 recorded load evidence, a future approved G7 status-upgrade decision, external env-file/source-authority review, and production auth rollout evidence where applicable; compose labels still point to an external runtime env file and remain an external env-file label caveat / source-authority caveat, not a secret-bearing artifact. | PRD v2, backend phased PRD, technical acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, PR #312 merge commit `881493d042a522b343c9df2044bd3830fd02e62f`, PR #311 merge commit `40691c01d64d6cd604dd94e6fc24ee6babdf0cad`, 2026-07-03 `15903fd` source/runtime label readback, reviewed label-clean live-default G7 hardening entry `2026-07-03-211-g7-sandbox-live-env-hardening-15903fd-label-clean.json`, `15903fd` FRC evidence entry `2026-07-03-211-foundation-alpha-poc-15903fd-foundation-runtime-concurrency.json`, reviewed label-clean G7 operator status-review entry `2026-07-03-211-g7-operator-status-review-15903fd-label-clean.json`, 2026-07-02 `9c669761` source/runtime label readback, failed G7 verifier diagnostic, reviewed explicit verifier-path G7 hardening entry `2026-07-02-211-g7-sandbox-runtime-hardening-9c669761.json`, reviewed live-default G7 hardening entry `2026-07-03-211-g7-sandbox-live-env-hardening-9c669761.json`, `9c669761` FRC evidence entry `2026-07-03-211-foundation-alpha-poc-9c669761-foundation-runtime-concurrency.json`, reviewed G7 operator status-review entry `2026-07-03-211-g7-operator-status-review-9c669761.json`, 2026-07-02 `28676df` API/worker runtime-image readback and capacity visibility evidence, 2026-07-02 `decf33a` PR #304 runtime-subject G7 live-env hardening evidence, 2026-07-02 `decf33a` verified Foundation Runtime concurrency evidence, 2026-07-02 `ae6b7e5` runtime POC smoke/Auth/RBAC/governance/release-evidence/alert-trace evidence, 2026-07-01 `ae6b7e5` label-repair evidence, 2026-07-02 `4805031` sanitized runtime observation, 2026-07-02 `4805031` reviewed G7 live-env hardening evidence, 2026-07-02 `4805031` verified Foundation Runtime concurrency evidence, 2026-06-30 and older retained historical evidence, 2026-06-15 `380de6b` historical baseline evidence, and issue #164 evidence. | Roll out and smoke current `main` if exact current-main runtime verification is needed, record B3 load evidence, obtain a future approved G7 status-upgrade decision, complete external env-file/source-authority review, and complete production auth rollout evidence before any G0 closure claim. |
+| G0-G1 Source Authority / Security Baseline | Reviewed B0 runtime-relevant smoke and Foundation Runtime concurrency evidence are retained for `96f27bb`. The current 211 repo-local source marker and API/worker canonical runtime labels bind to runtime subject `755e50ea2ad08c2d4218ae5d8cc612970b19e2a4`; direct API health on `8020`, frontend proxy health, and frontend root were healthy. This is still not G0 closure: `755e50e` has reviewed dirty-runtime v2 G7 evidence and same-subject verified FRC evidence, but B3 recorded load evidence remains missing, G7 status-upgrade approval is absent, the API/worker image is `build-dirty=true`, legacy in-container marker files still read `9c669761` / `28676df`, and the external env-file label caveat / external env-file source-authority review plus production auth rollout evidence remain separate gates. Historical same-subject evidence for `15903fd`, `9c669761`, `decf33a`, `4805031`, `ae6b7e5`, `28676df`, and older subjects remains useful but does not make clean current `main` `211 verified`. | PRD v2, backend phased PRD, technical acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, PR #312 merge commit `881493d042a522b343c9df2044bd3830fd02e62f`, PR #311 merge commit `40691c01d64d6cd604dd94e6fc24ee6babdf0cad`, reviewed dirty-runtime v2 `755e50e` G7 live-env hardening entry `2026-07-03-211-g7-sandbox-live-env-hardening-755e50e.json`, verified `755e50e` FRC entry `2026-07-03-211-foundation-alpha-poc-755e50e-foundation-runtime-concurrency.json`, reviewed `15903fd` G7/FRC/status-review entries, reviewed `9c669761` G7/FRC/status-review entries, reviewed `decf33a`, `4805031`, and `ae6b7e5` same-subject evidence, reviewed `28676df` capacity visibility plus G7 diagnostic history, older retained evidence, and issue #164 evidence. | Keep current status at `local partial`; record B3 load evidence, obtain a future approved G7 status-upgrade decision, promote/rebuild the principal user-id fix into clean current-main runtime evidence before any clean `211 verified` claim, complete external env-file/source-authority review, reconcile legacy in-container source marker files, and complete production auth rollout evidence before any G0 closure claim. |
 | G2-G4 Control Plane MVP | Substantial coverage; keep under regression. | Session/run/file/artifact/skill/tool/memory/event/audit contracts, repositories, routes, schema indexes, and focused tests. | Full regression before PR/deploy, plus no executor-owned platform schema drift. |
 | G5 Run Lifecycle / Worker Runtime V1 | Foundation Alpha POC queue/run/worker execution, Admin capacity/backpressure projection, and Foundation Runtime concurrency evidence are retained for `96f27bb`; runtime POC smoke, Auth/RBAC, governance, release/alert acceptance, and Foundation Runtime concurrency evidence are also recorded for reviewed `ae6b7e5`. The 2026-07-02 `ae6b7e5` verified Foundation Runtime concurrency evidence proves Foundation Runtime POC correctness for 12 concurrent requests/sessions/runs but does not close B3 capacity, does not raise defaults, and does not remove the separate current-source rollout requirement for newer runtime-affecting local changes. | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, Admin Runtime capacity/backpressure projection, #20 roadmap closure notes, reviewed `ae6b7e5` runtime POC smoke entry `2026-07-02-211-foundation-alpha-poc-ae6b7e5-runtime-poc-smoke.json`, `ae6b7e5` FRC evidence entry `2026-07-02-211-foundation-alpha-poc-ae6b7e5-foundation-runtime-concurrency.json`, 2026-07-02 `ae6b7e5` Auth/RBAC/governance/release/alert evidence, 2026-06-30 `96f27bb` POC verifier evidence, 2026-06-30 `96f27bb` verified Foundation Runtime concurrency evidence, 2026-06-30 `c3d6525` POC verifier evidence retained as superseded B0 history, 2026-06-30 `c3d6525` verified Foundation Runtime concurrency evidence retained as superseded B0 history, 2026-06-30 `442aa39` POC verifier evidence retained as superseded B0 history, 2026-06-30 `845faf7` verified Foundation Runtime concurrency evidence retained as superseded non-current-subject FRC, 2026-06-29 `f67986a` POC verifier evidence, 2026-06-29 `f67986a` verified Foundation Runtime concurrency evidence, superseded 2026-06-24 `e4c0e9d` POC verifier evidence, superseded 2026-06-24 `e4c0e9d` verified Foundation Runtime concurrency evidence, superseded 2026-06-24 `e7558cc` POC verifier evidence, superseded 2026-06-24 `17dc3ae` POC verifier evidence, superseded 2026-06-23 `0a9e70a` POC verifier evidence, superseded 2026-06-23 `df85a9f` POC verifier evidence, superseded 2026-06-23 `a4bded0` POC verifier evidence, superseded 2026-06-22 `2bc3a35` POC verifier evidence, superseded 2026-06-22 `d94d274` POC verifier evidence, superseded 2026-06-22 `dab7dbc` POC verifier evidence, superseded 2026-06-20 `4039e4b` POC verifier evidence, superseded 2026-06-19 `87528bf` POC verifier evidence, superseded 2026-06-19 `75ab69b` POC verifier evidence, superseded 2026-06-19 `dde1749` POC verifier evidence, superseded 2026-06-19 `14808bc` POC verifier evidence, superseded 2026-06-19 `14808bc` 240s blocked FRC diagnostic, superseded 2026-06-18 `5698873` evidence, superseded 2026-06-18 `de12191` evidence, superseded 2026-06-17 `a15c74f` evidence, superseded 2026-06-16 `8e0389e` failed-closed FRC diagnostics, superseded 2026-06-17 `8e0389e` verified Foundation Runtime concurrency evidence, and 2026-06-15 `380de6b` historical accepted concurrency evidence. | Keep #21/B3 capacity evidence, large queue bounded lookup pressure, worker parallelism/capacity profiling, and multi-tenant load evidence separate from #164. #21 is currently closed in GitHub but the B3 capacity evidence remains incomplete. Production defaults stay unchanged. |
 | G6 Tool / Skill / Memory Governance | Admin Runtime governance projection now has focused 211 smoke evidence for the POC runtime, and Foundation readiness records `memory_context_controls` with `session_scoped_memory=true`, `ordinary_user_opt_out=true`, `retention_cleanup=true`, `delete_redaction=true`, `public_admin_projection_safe=true`, `long_term_cross_session_memory_fail_closed=true`, exact tool-permission decision lookup source tests, admin bulk-review source-route runtime-control tests, Admin Skill release dashboard source-route runtime-control tests, source-level context-pack persistence/versioning, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, document-centric follow-up state source tests, reviewed `8e0389e` 211 executor context-pack evidence, and reviewed PR #44 211 sandbox latency split evidence. G6 remains partial and ordinary-user governance/frontend rollout remains blocked. | Tool policy taxonomy/history, exact tool-permission decision lookup source tests, admin bulk-review source-route runtime-control tests, Admin Skill release dashboard source-route runtime-control tests, public permission-card projection, skill release/dependency policy contracts, memory delete/retention/redaction/export readiness, office context-pack architecture readiness, `source_level_context_pack_persistence_and_versioning`, `context_pack_version`, `context_pack_generated_at`, context snapshot public provenance projection contract, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, document-centric follow-up state source tests, `8e0389e` executor context-pack runtime evidence, PR #44 `office-context-runtime` sandbox latency evidence, governance readiness CLI, POC runs using governed skills, and 2026-06-15 380de6b governance runtime smoke evidence. | Legacy frontend route remap/policy enforcement, signed package or SBOM review evidence, dependency vulnerability/license evidence, admin bulk-review visual acceptance, admin bulk-review 211 acceptance, Admin Skill release visual acceptance, Admin Skill release 211 acceptance, long-term cross-session memory policy closure, ordinary-user platform-level multi-run orchestration exposure controls, production Docker sandbox hardening, packaged frontend acceptance, and broader 211 acceptance. |
-| G7 Sandbox / Resource Hardening | local partial. Named 211 runtime-only formal verifier evidence exists for `d318f9f` / `g7-runtime-probe-20260701203418`, covering platform/docker execution, callbacks, cancel cleanup, resource-limit timeout cleanup, egress default-deny evidence, and security options. Reviewed same-subject G7/FRC evidence exists for `ae6b7e5`, `4805031`, PR #304 runtime subject `decf33a`, and PR #306 runtime subject `9c669761`; those evidence-only audits can reach `candidate_evidence_requires_review` with `blocking_reasons=[]` for their own runtime subjects when their source/runtime labels are clean. Current 211 API/worker images now run `ai-platform:15903fd-g7-b3-label-clean-v2` with canonical OCI/source labels and legacy source alias labels bound to `15903fd`; reviewed 2026-07-03 label-clean live-default G7 hardening evidence and same-subject FRC evidence now exist for `15903fd`. The 15903fd verifier passed all eight checks, including the controlled `platform_resource_timeout` cleanup probe, and the reviewed label-clean operator status-review artifact records `status=candidate_evidence_requires_review`, `g7_runtime_blocking_reasons=[]`, and `status_upgrade_decision=not_approved_for_closure`; B3 load evidence is tracked in the B3 row. | Historical B2 sandbox release-evidence, the `d318f9f` named formal verifier observation recorded in this status snapshot, reviewed `ae6b7e5` G7 release-evidence entry `2026-07-01-211-g7-sandbox-runtime-smoke-ae6b7e5.json`, reviewed `ae6b7e5` formal hardening evidence entry `2026-07-01-211-g7-sandbox-runtime-hardening-ae6b7e5.json`, reviewed `ae6b7e5` live-env hardening evidence entry `2026-07-02-211-g7-sandbox-live-env-hardening-ae6b7e5.json`, reviewed `ae6b7e5` label-repair evidence entry `2026-07-01-211-g7-runtime-identity-label-repair-ae6b7e5.json`, reviewed `4805031` G7 live-env hardening evidence entry `2026-07-02-211-g7-sandbox-live-env-hardening-4805031.json`, `4805031` FRC evidence entry `2026-07-02-211-foundation-alpha-poc-4805031-foundation-runtime-concurrency.json`, reviewed `decf33a` PR #304 runtime-subject G7 live-env hardening evidence entry `2026-07-02-211-g7-sandbox-live-env-hardening-decf33a.json`, `decf33a` FRC evidence entry `2026-07-02-211-foundation-alpha-poc-decf33a-foundation-runtime-concurrency.json`, reviewed `9c669761` explicit verifier-path G7 hardening evidence entry `2026-07-02-211-g7-sandbox-runtime-hardening-9c669761.json`, reviewed `9c669761` live-default G7 hardening evidence entry `2026-07-03-211-g7-sandbox-live-env-hardening-9c669761.json`, `9c669761` FRC evidence entry `2026-07-03-211-foundation-alpha-poc-9c669761-foundation-runtime-concurrency.json`, reviewed `9c669761` G7 operator status-review entry `2026-07-03-211-g7-operator-status-review-9c669761.json`, reviewed `15903fd` label-clean live-default G7 hardening evidence entry `2026-07-03-211-g7-sandbox-live-env-hardening-15903fd-label-clean.json`, `15903fd` FRC evidence entry `2026-07-03-211-foundation-alpha-poc-15903fd-foundation-runtime-concurrency.json`, reviewed `15903fd` label-clean G7 operator status-review entry `2026-07-03-211-g7-operator-status-review-15903fd-label-clean.json`, 2026-07-02 `28676df` runtime-image readback and failed G7 verifier diagnostics, patched-source `28676df` workspace-owner diagnostic verifier pass, 2026-07-02 `9c669761` runtime-image readback and permission-denied G7 verifier diagnostic, 2026-07-03 `15903fd` label-clean runtime-image readback, sanitized `4805031` runtime observation, prior `bd690f7` resource-limit diagnostic, merged verifier-helper callback default tests, and capacity docs expose sandbox limits and missing hardening warnings. | Obtain a future approved G7 status-upgrade decision without broadening ordinary-user high-risk sandbox exposure, keep the G0/source-authority and B3 evidence gates separate, and keep B3 blocked until recorded load evidence exists. |
+| G7 Sandbox / Resource Hardening | local partial. Current 211 API/worker images run `ai-platform:755e50e-g7-b3-principal-userid-fix-v2` with image ID `sha256:f1b50184d0093c1622a035c2a49d6bcc93d4335e2565474ee40d695efc4e3d6f`, `build-dirty=true`, rollout `g7-b3-755e50e-principal-userid-fix-v2`, and `SANDBOX_EXECUTOR_IMAGE=ai-platform:755e50e-g7-b3-principal-userid-fix-v1`; the repo-local source marker, canonical source/runtime/OCI labels, and legacy source alias labels bind to `755e50e`, while legacy in-container source marker files still read `9c669761` / `28676df`. Reviewed dirty-runtime v2 `755e50e` live-env G7 hardening evidence exists and the verifier passed all eight checks, including platform Docker execution, callback stream, cancel cleanup, resource limits, egress policy, security options, and no-secret leakage. Same-subject FRC evidence is now verified for 12 concurrent requests/runs/sessions across 2 tenants and 4 users. It is not G7 closure because B3 load evidence is missing, operator status-upgrade approval is absent, and the current runtime is dirty patch evidence rather than clean current-main `211 verified` evidence. | Historical B2 sandbox release-evidence; named `d318f9f` formal verifier observation; reviewed G7 entries for `ae6b7e5`, `4805031`, `decf33a`, `9c669761`, `15903fd`, and dirty-runtime v2 `755e50e`; reviewed FRC entries for same-subject `ae6b7e5`, `4805031`, `decf33a`, `9c669761`, `15903fd`, and `755e50e`; the superseded blocked 755e50e FRC attempt `/tmp/frc-755e50e-20260703T090109Z`; reviewed status-review entries for `9c669761` and `15903fd`; `28676df` capacity visibility plus workspace-owner diagnostic history; merged verifier-helper callback default tests; and capacity docs exposing sandbox limits and missing hardening warnings. | Obtain a future approved G7 status-upgrade decision, promote/rebuild the principal user-id fix into clean current-main runtime evidence before any clean `211 verified` claim, keep G0/source-authority and B3 evidence gates separate, reconcile legacy in-container source marker files, and keep B3 blocked until recorded load evidence exists. |
 | G8 Deferred Platform Multi-Run Gate | Deferred parking-lot for platform-owned parent/child multi-run orchestration. Historical evidence may mention the old title "G8 Multi-Agent Controlled Beta"; current status must not use that beta title and must not be read as ordinary-user platform-level multi-run product exposure. SDK-internal Agent/subagent fanout stays inside one governed platform run, and the current question is B3 deployment capacity for SDK subagent fanout rather than a G8 product route. This is a blocked expansion, not a current Foundation Alpha `open_followups` item. | Historical dispatcher and child-run admission work exists behind controls but is not the current product route; Claude Agent SDK remains the execution-layer route for SDK Agent/subagent fanout patterns. | Do not build a separate agent harness as the next step. Reopen only after prior gates have recorded tenant quota/backpressure, model-gateway pressure, sandbox pressure, artifact/event volume, token/cost accounting, rollback, and no ordinary-user platform-level multi-run orchestration exposure evidence. |
 | G9 Observability / Quality / Ops | Reviewed release-evidence runtime acceptance and alert/trace runtime acceptance are retained for `96f27bb`; G9 remains partial for Operations Beta and current-main evidence still needs refresh where gate-specific reviewed evidence matters. | Admin Runtime overview, capacity/governance/observability readiness docs and tools, error taxonomy/dashboard contracts, release-evidence contracts, reviewed 211 release-evidence runtime export/retention acceptance for `96f27bb`, reviewed 211 alert/trace export runtime acceptance for `96f27bb`, superseded `c3d6525`, `442aa39`, `f67986a`, `e4c0e9d`, `e7558cc`, `17dc3ae`, `0a9e70a`, `df85a9f`, `a4bded0`, `2bc3a35`, `d94d274`, `dab7dbc`, `4039e4b`, and `87528bf` G9 runtime evidence, trace/audit export contracts, frontend projection audit, and reviewed 211 POC smoke entry. | S2/G9 closure still requires runtime dashboard acceptance, recorded capacity evidence, model-gateway backpressure evidence, golden-set eval runtime, alert delivery enablement/runtime calibration, and remaining Admin Runtime observability follow-ups. |
 | G10 Internal Beta / Department Rollout | Blocked. | Candidate internal workflows are named only as examples in roadmap. | Select 1-2 real internal workflow owners, complete prior gates, record cost/quality/audit/rollback evidence, and pass 211 acceptance. |
@@ -1451,7 +1501,7 @@ is retained as same-subject historical evidence and does not close the current
 | Issue area | Current judgment | Next closure action |
 | --- | --- | --- |
 | #17 frontend source migration | Source lives under `frontend/web` with projection audit, `ci:verify`, release traceability, GitHub Actions workflow, packaged frontend image definition, and 211 thin-shell POC smoke. | Run or refresh frontend install/lint/build when changing browser code; complete packaged frontend image smoke/release acceptance on 211 or another Docker-capable host. |
-| #21 capacity baseline / #122/#144 B3 source contract | GitHub issue #21 is currently closed, but baseline plan, snapshot/verdict/profile tools, bounded probe harness, Admin Runtime capacity/backpressure visibility, and the B3 operator-reviewed recorded snapshot source contract remain a capacity-upgrade evidence gate. The contract schema is `ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1` for `b3_10x4_sdk_subagents`, the 10 sessions x peak 4 SDK subagents/session profile. It requires profile evidence bound to `target_profile_id = b3_10x4_sdk_subagents`, an allowlisted `evidence_source = platform_runtime_profile`, `observed_concurrent_sessions >= 10`, `observed_peak_sdk_subagents_per_session >= 4`, `sdk_subagent_fanout_measurement_ref`, and non-expansion flags `production_concurrency_defaults_raised = false`, `safe_concurrency_claimed = false`, and `ordinary_user_platform_multi_run_orchestration_enabled = false`. Historical snapshots may still import the legacy alias `ordinary_user_multi_agent_enabled = false`; the readiness path normalizes it to the canonical platform-level multi-run flag. This means no ordinary-user platform-level multi-run orchestration exposure and is not evidence that B3 is a G8 product route. The latest reviewed `28676df` read-only capacity runtime evidence records Admin Runtime HTTP `200`, schema `ai-platform.capacity-runtime-evidence.v1`, nested gate readiness `blocked_missing_admin_runtime_sections`, and missing Admin Runtime capacity section `sandbox`; all seven recorded load-test gates remain missing, `profile_evidence` is empty, every required `b3_10x4_sdk_subagents` profile evidence field is missing, and production decision remains `do_not_raise_without_recorded_load_test_evidence`; earlier reviewed visibility records could read nested gate readiness `blocked_missing_load_test_evidence` when Admin Runtime sections were present but recorded load evidence was absent. There is no new reviewed B3 capacity entry for `15903fd`. The latest bounded B3 sweep covered all seven harness load-test gates as probes only. The separate operator profile review evidence still has eight required fields: `runtime_source_identity_and_image_labels`, `tenant_user_skill_mix`, `token_cost_ledger`, `event_artifact_volume`, `sandbox_pressure_and_cleanup`, `latency_p50_p95_p99`, `error_budget_and_dead_letters`, and `rollback_plan_and_stop_conditions`. Every probe remained `probe_completed_not_gate_evidence`, `probe_only_not_recorded`, and `does_not_mark_gate_recorded = true`, so all recorded load-test gates are still missing. Contract flags remain `does_not_raise_defaults = true`, `does_not_claim_safe_concurrency = true`, `does_not_enable_ordinary_user_platform_multi_run_orchestration = true`, and `does_not_close_b3_gate = true`. This is source/runtime visibility plus source contract only, not B3 closure. | Record approved load evidence for the seven gates before raising any production default, including SDK Agent/subagent fanout pressure for workflows where each session may invoke subagents. Until then every profile remains `do_not_raise_without_recorded_load_test_evidence`; #122/#144 do not raise production defaults, do not close B3, and must not be used as ordinary-user platform-level multi-run orchestration exposure evidence. This source/runtime visibility does not raise production defaults and does not close B3. |
+| #21 capacity baseline / #122/#144 B3 source contract | GitHub issue #21 is currently closed, but baseline plan, snapshot/verdict/profile tools, bounded probe harness, Admin Runtime capacity/backpressure visibility, and the B3 operator-reviewed recorded snapshot source contract remain a capacity-upgrade evidence gate. The contract schema is `ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1` for `b3_10x4_sdk_subagents`, the 10 sessions x peak 4 SDK subagents/session profile. It requires profile evidence bound to `target_profile_id = b3_10x4_sdk_subagents`, an allowlisted `evidence_source = platform_runtime_profile`, `observed_concurrent_sessions >= 10`, `observed_peak_sdk_subagents_per_session >= 4`, `sdk_subagent_fanout_measurement_ref`, and non-expansion flags `production_concurrency_defaults_raised = false`, `safe_concurrency_claimed = false`, and `ordinary_user_platform_multi_run_orchestration_enabled = false`. Historical snapshots may still import the legacy alias `ordinary_user_multi_agent_enabled = false`; the readiness path normalizes it to the canonical platform-level multi-run flag. This means no ordinary-user platform-level multi-run orchestration exposure and is not evidence that B3 is a G8 product route. The latest reviewed `755e50e` read-only capacity runtime evidence records Admin Runtime HTTP `200`, schema `ai-platform.capacity-runtime-evidence.v1`, nested gate readiness `blocked_missing_admin_runtime_sections`, and missing Admin Runtime capacity section `sandbox`; earlier reviewed visibility records could read nested gate readiness `blocked_missing_load_test_evidence` when Admin Runtime sections were present but recorded load evidence was absent. There is no new reviewed B3 capacity entry for `15903fd` beyond the newer `755e50e` visibility record. The latest bounded B3 sweep covered all seven harness load-test gates as probes only. The separate operator profile review evidence still has eight required fields: `runtime_source_identity_and_image_labels`, `tenant_user_skill_mix`, `token_cost_ledger`, `event_artifact_volume`, `sandbox_pressure_and_cleanup`, `latency_p50_p95_p99`, `error_budget_and_dead_letters`, and `rollback_plan_and_stop_conditions`. Every probe remained `probe_completed_not_gate_evidence`, `probe_only_not_recorded`, and `does_not_mark_gate_recorded = true`, so all recorded load-test gates and every required `b3_10x4_sdk_subagents` profile evidence field are still missing. Contract flags remain `does_not_raise_defaults = true`, `does_not_claim_safe_concurrency = true`, `does_not_enable_ordinary_user_platform_multi_run_orchestration = true`, and `does_not_close_b3_gate = true`. This is source/runtime visibility plus source contract only, not B3 closure. | Record approved load evidence for the seven gates before raising any production default, including SDK Agent/subagent fanout pressure for workflows where each session may invoke subagents. Until then every profile remains `do_not_raise_without_recorded_load_test_evidence`; #122/#144 do not raise production defaults, do not close B3, and must not be used as ordinary-user platform-level multi-run orchestration exposure evidence. This source/runtime visibility does not raise production defaults and does not close B3. |
 | G6 governance | Source-level policies and readiness contracts exist, source-level context-pack persistence/versioning records `context_pack_version` / `context_pack_generated_at`, frontend run-playback context provenance has source tests, admin bulk-review source-route runtime-control tests and Admin Skill release dashboard source-route runtime-control tests are recorded, the Admin Runtime governance projection has a focused 211 smoke, reviewed `8e0389e` live evidence records executor context-pack acceptance, and PR #44 records reviewed 211 sandbox latency split evidence. | Keep reviewed executor context-pack and PR #44 sandbox runtime evidence under regression, convert contracts into full dashboard/visual acceptance, add real reviewed Skill release evidence, record admin bulk-review 211 acceptance and Admin Skill release 211 acceptance, and keep long-term cross-session memory fail-closed. |
 | G8 / G10 expansion | Not a current platform-orchestration implementation target. SDK subagent execution can be used inside governed platform runs, but broad ordinary-user platform-level multi-run exposure needs a future reopened G8 gate. | Keep feature flags and do not broaden ordinary-user platform-level multi-run orchestration exposure until G5/G6/G7/G9 gates are closed and B3 SDK subagent fanout capacity evidence exists. |
 

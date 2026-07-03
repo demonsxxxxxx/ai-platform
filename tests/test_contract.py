@@ -235,6 +235,53 @@ def test_queue_run_payload_rejects_unsupported_schema_version():
         raise AssertionError("queue payload should reject unsupported schema version")
 
 
+def test_queue_payload_accepts_email_style_principal_user_id():
+    payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": "frc-test-a",
+            "workspace_id": "frc_test_a_default",
+            "user_id": "alice@example.test",
+            "session_id": "ses_frc",
+            "run_id": "run_frc",
+            "agent_id": "frc_agent_83ebaed7aa4c5f49",
+            "skill_id": "general-chat",
+            "file_ids": [],
+            "input": {"message": "hello"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-general-chat",
+            "release_decision": release_decision("hash-general-chat"),
+            "skill_manifests": [primary_manifest("general-chat", "hash-general-chat")],
+        }
+    )
+
+    assert payload.user_id == "alice@example.test"
+
+
+def test_queue_payload_rejects_path_like_principal_user_id():
+    try:
+        QueueRunPayload.model_validate(
+            {
+                "tenant_id": "frc-test-a",
+                "workspace_id": "frc_test_a_default",
+                "user_id": "../alice@example.test",
+                "session_id": "ses_frc",
+                "run_id": "run_frc",
+                "agent_id": "frc_agent_83ebaed7aa4c5f49",
+                "skill_id": "general-chat",
+                "file_ids": [],
+                "input": {"message": "hello"},
+                "executor_type": "claude-agent-worker",
+                "skill_version": "hash-general-chat",
+                "release_decision": release_decision("hash-general-chat"),
+                "skill_manifests": [primary_manifest("general-chat", "hash-general-chat")],
+            }
+        )
+    except ValueError as exc:
+        assert "user_id contains unsupported characters" in str(exc)
+    else:
+        raise AssertionError("path-like user_id should fail validation")
+
+
 def test_run_payload_rejects_missing_release_decision():
     try:
         RunPayload(

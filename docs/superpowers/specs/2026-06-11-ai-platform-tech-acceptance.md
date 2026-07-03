@@ -135,6 +135,8 @@ platform-level orchestration.
 B3 evidence must use `b3_10x4_sdk_subagents` and
 `ordinary_user_platform_multi_run_orchestration_enabled=false`; do not report
 `g8_ordinary_user_multi_agent_exposure` as a B3 blocker or closure field.
+Imported historical evidence may still contain that legacy negative key, but
+current B3 evidence must not emit it.
 
 ## 3. Module Acceptance Matrix
 

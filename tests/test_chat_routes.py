@@ -7,8 +7,15 @@ from fastapi import HTTPException
 
 from app.auth import AuthPrincipal
 from app.models import ChatSessionRequest, ChatStreamRequest
+from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError
-from app.routes.chat import chat_stream, create_chat_session, list_messages, list_sessions
+from app.routes.chat import (
+    _validate_queue_payload_for_enqueue,
+    chat_stream,
+    create_chat_session,
+    list_messages,
+    list_sessions,
+)
 
 
 @asynccontextmanager
@@ -75,6 +82,79 @@ def uploaded_skill_version_row(skill_id="qa-file-reviewer", version="hash-upload
         "created_by": "admin-a",
         "created_at": None,
     }
+
+
+def test_queue_payload_invalid_detail_is_field_level_and_redacted():
+    payload = {
+        "tenant_id": "frc-test-a",
+        "workspace_id": "frc_test_a_default",
+        "user_id": "alice",
+        "session_id": "ses_123abc",
+        "run_id": "run_123abc",
+        "agent_id": "frc_agent_83ebaed7aa4c5f49",
+        "skill_id": "general-chat",
+        "file_ids": [],
+        "input": {"message": "alice 并发创建运行验收，请简短回复。"},
+        "executor_type": "claude-agent-worker",
+        "skill_version": "0.1.0",
+        "release_decision": {
+            "schema_version": "ai-platform.skill-release-decision.v1",
+            "policy_active": False,
+            "selected_version": "0.1.0",
+            "selected_track": "catalog",
+        },
+        "skill_manifests": [],
+        "context_snapshot_id": "ctx_123abc",
+        "context_snapshot": {"context_snapshot_id": "ctx_123abc"},
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        _validate_queue_payload_for_enqueue(payload)
+
+    assert exc_info.value.status_code == 500
+    detail = exc_info.value.detail
+    assert detail["code"] == "queue_payload_invalid"
+    assert detail["errors"] == [
+        {
+            "loc": [],
+            "type": "value_error",
+            "message": "Value error, release_decision_primary_manifest_missing",
+        }
+    ]
+    serialized = str(detail)
+    assert "alice" not in serialized
+    assert "frc-test-a" not in serialized
+    assert "frc_agent_83ebaed7aa4c5f49" not in serialized
+
+
+def test_queue_payload_invalid_detail_sanitizes_validation_messages():
+    class PydanticStyleError(ValueError):
+        def errors(self):
+            return [
+                {
+                    "loc": ("input", "token=loc-secret"),
+                    "type": "value_error /var/lib/ai-platform/private/type.log",
+                    "msg": "bad token=queue-secret-token at /var/lib/ai-platform/private/run.log",
+                }
+            ]
+
+    detail = queue_payload_invalid_detail(PydanticStyleError("invalid"))
+
+    assert detail == {
+        "code": "queue_payload_invalid",
+        "errors": [
+            {
+                "loc": ["input", "field"],
+                "type": "validation_error",
+                "message": "validation_error",
+            }
+        ],
+    }
+    serialized = str(detail)
+    assert "queue-secret-token" not in serialized
+    assert "loc-secret" not in serialized
+    assert "/var/lib/ai-platform/private/run.log" not in serialized
+    assert "/var/lib/ai-platform/private/type.log" not in serialized
 
 
 class EmptyBuiltinRegistry:
@@ -467,6 +547,47 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_prevalidates_queue_payload_before_persisting(monkeypatch):
+    calls = []
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": []}
+
+    async def fail_persist(*args, **kwargs):
+        calls.append(("persist", args, kwargs))
+        raise AssertionError("invalid queue payload must be rejected before persistence")
+
+    async def fail_enqueue_run(payload):
+        calls.append(("enqueue", payload))
+        raise AssertionError("invalid queue payload must be rejected before enqueue")
+
+    async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
+        return [snapshot_manifest(skill_id)]
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
+    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fail_persist)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_persist)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_persist)
+    monkeypatch.setattr("app.routes.chat.repositories.append_message", fail_persist)
+    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", fail_persist)
+    monkeypatch.setattr("app.routes.chat.repositories.append_event", fail_persist)
+    monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", fail_persist)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", fail_enqueue_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(message="hello"),
+            principal=principal(user_id="../runtime/private"),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "invalid_principal_user_id"
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_chat_stream_rejects_unavailable_model_id_before_creating_run(monkeypatch):
     calls = []
 
@@ -647,6 +768,115 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
         assert calls[key]["message"] == "run chat with forged resume"
         assert "resume" not in calls[key]
         assert "multi_agent_dispatch" not in calls[key]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_developer_fixture_general_chat_uses_builtin_manifest_pin(monkeypatch):
+    calls = {}
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        assert tenant_id == "frc-test-a"
+        assert agent_id == "frc_agent_83ebaed7aa4c5f49"
+        assert skill_id == "general-chat"
+        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def fake_create_session(conn, **kwargs):
+        return "ses_frc_general"
+
+    async def fake_create_run(conn, **kwargs):
+        calls["create_run"] = kwargs
+        return "run_frc_general"
+
+    async def fake_append_message(conn, **kwargs):
+        return "msg_frc_general"
+
+    async def fake_record_context(conn, **kwargs):
+        calls["context"] = kwargs
+        return {
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_snapshot_id": "ctx_frc_general",
+            "source": kwargs["source"],
+            "message_count": len(kwargs.get("message_ids") or []),
+            "file_count": len(kwargs.get("file_ids") or []),
+            "memory_record_count": 0,
+        }
+
+    async def fake_append_event(conn, **kwargs):
+        calls.setdefault("events", []).append(kwargs)
+
+    async def fake_enqueue_run(payload):
+        calls["queue"] = payload
+        return 1
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
+    monkeypatch.setattr("app.routes.chat.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
+    monkeypatch.setattr("app.routes.chat.record_initial_context_snapshot", fake_record_context)
+    monkeypatch.setattr("app.routes.chat.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+
+    response = await chat_stream(
+        ChatStreamRequest(
+            workspace_id="frc_test_a_default",
+            agent_id="frc_agent_83ebaed7aa4c5f49",
+            skill_id="general-chat",
+            message="alice 并发创建运行验收，请简短回复。",
+        ),
+        principal=principal(user_id="alice", tenant_id="frc-test-a", roles=["developer"]),
+    )
+
+    assert response.run_id == "run_frc_general"
+    queue_payload = calls["queue"]
+    assert queue_payload["skill_id"] == "general-chat"
+    assert queue_payload["skill_manifests"][0]["skill_id"] == "general-chat"
+    assert queue_payload["skill_manifests"][0]["source"]["kind"] == "builtin"
+    assert queue_payload["skill_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
+    assert queue_payload["skill_version"] == queue_payload["skill_manifests"][0]["content_hash"]
+    assert queue_payload["release_decision"]["selected_version"] == queue_payload["skill_version"]
+    assert queue_payload["release_decision"]["selected_track"] == "manifest_pin"
+    assert calls["create_run"]["input_json"]["skill_version"] == queue_payload["skill_version"]
+    assert calls["context"]["workspace_id"] == "frc_test_a_default"
+    assert calls["context"]["source"] == "chat_stream"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_rejects_unsafe_principal_user_id_before_persistence(monkeypatch):
+    calls = []
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        calls.append(("resolve_agent_skill", tenant_id, agent_id, skill_id))
+        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
+
+    async def fail_persistence(*args, **kwargs):
+        calls.append(("persisted", kwargs))
+        raise AssertionError("unsafe principal user_id should fail before persistence")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", fail_persistence)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_persistence)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                workspace_id="default",
+                agent_id="agent-a",
+                skill_id="general-chat",
+                message="hello",
+            ),
+            principal=principal(user_id="../alice@example.test", tenant_id="tenant-a"),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "invalid_principal_user_id"
+    assert calls == []
 
 
 @pytest.mark.asyncio

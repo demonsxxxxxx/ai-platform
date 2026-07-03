@@ -10,9 +10,11 @@
 
 后续 ai-platform 计划只允许引用当前 PRD、当前路线图、仓库 guardrails（`docs/agent-rules/ai-platform-guardrails.md`）、真实代码和当次 211 运行证据。任何非当前主链路重新进入范围，必须先更新 PRD、本路线图和 guardrails。
 
-本路线图不再追加非当前主链路、短期执行证据或临时服务说明。下方
-legacy accumulated evidence 段落仅保留历史上下文；当前状态以 PRD v2、
-technical acceptance、gate status、GitHub issue/PR 和最新 211 evidence 为准。
+本路线图不再追加非当前主链路、短期执行证据或临时服务说明。当前 gate /
+runtime 状态矩阵只在 `docs/operations/ai-platform-gate-status.md` 维护；本
+路线图只保留路线、边界和必要历史上下文。下方 legacy accumulated evidence
+段落仅保留历史上下文；若它们与 gate status 的当前矩阵不一致，以 gate
+status、GitHub issue/PR 和最新 211 evidence 为准。
 
 本路线图不维护已退出范围对象的名称清单。后续执行只按本文“当前主链路”和 P0 交付门槛推进；未列入当前主链路的入口、服务、端口、页面或候选方案，不作为计划依据。
 
@@ -48,9 +50,10 @@ vulnerability evidence。
   multi-run follow-up 不再作为 Foundation Alpha 顶层 `open_followups`；
   ordinary-user 平台级 multi-run orchestration 只保留在 blocked expansion /
   non-expansion invariant 中。机器可读 blocked expansion 名称是
-  `ordinary_user_platform_multi_run_orchestration_exposure`；当前权威文档不再
+  `ordinary_user_platform_multi_run_orchestration_exposure`；当前权威状态名不再
   使用旧的 `g8_ordinary_user_multi_agent_exposure` / 泛化 multi-agent
-  exposure 命名。旧普通用户 multi-agent exposure 说法会把普通用户平台级
+  exposure 命名，也不得用该旧 key 创建或关闭当前 issue/PR。旧普通用户
+  multi-agent exposure 说法会把普通用户平台级
   parent/child multi-run 产品曝光和 SDK subagent fanout 容量证据混在一起，
   只能作为历史 evidence/follow-up 含义读取；不能作为当前状态名。
 - B3 边界：`b3_10x4_sdk_subagents` source contract 是 SDK subagent
@@ -59,15 +62,23 @@ vulnerability evidence。
   PR #312 `codex/g7-b3-pr311-status-boundary`
   `881493d042a522b343c9df2044bd3830fd02e62f`，并叠加 PR #311
   `40691c01d64d6cd604dd94e6fc24ee6babdf0cad` 的 source/docs/
-  audit-boundary progress。PR #312 和后续 docs/test status-sync merge 都不是
-  211 rollout，除非新的 211 rollout/smoke 证据把对应 exact merge commit 绑定到
-  运行中的 backend/worker image 和 source marker；当前 211 仍运行
-  `15903fd` runtime subject，即 API/worker 运行
-  `ai-platform:15903fd-g7-b3-label-clean-v2`，repo-local source marker 与
-  API/worker source/runtime/OCI labels 仍绑定到
-  `15903fdfe96ffcfba9daa1252741111017dcf832`。所以 `15903fd` 的 G7/FRC
-  evidence 仍是当前部署 runtime input，PR #312 和后续 docs/test status-sync
-  merge 都不能直接叫 current-main `211 verified`。
+  audit-boundary progress。fresh local Git readback 还显示 `origin/main`
+  在 2026-07-03 readback 时是 `1230dbc64a39805d6492a60c2688a2fed31ef3d9`（frontend-only
+  merge），所以 `755e50e` runtime evidence 不能叫 latest clean
+  `origin/main` evidence。后续 211 rollout 已把 repo-local source marker、API/worker source/runtime/OCI labels 和 legacy alias labels 绑定到
+  `755e50ea2ad08c2d4218ae5d8cc612970b19e2a4`，但 fresh 211 readback 仍读到
+  legacy in-container marker files 为 `9c669761` / `28676df`，所以 G0/source-authority
+  closure 仍未完成。API/worker 运行 dirty
+  runtime-only local patch image
+  `ai-platform:755e50e-g7-b3-principal-userid-fix-v2`。`755e50e`
+  已有 reviewed dirty-runtime v2 G7 live-env hardening evidence 和 same-subject
+  `verified_foundation_runtime_concurrency` FRC evidence，但 B3 recorded load
+  evidence、G7 status-upgrade approval 和 clean current-main runtime evidence
+  缺失。2026-07-03 `755e50e` read-only capacity runtime evidence 已记录
+  Admin Runtime HTTP `200`，但 readiness 仍是
+  `blocked_missing_admin_runtime_sections`，缺 `sandbox` section，七门 recorded
+  load gates 和 `b3_10x4_sdk_subagents` profile evidence 仍缺；所以仍不能叫
+  current-main `211 verified`、G7 closure 或 B3 closure；也不能重新解释已经历史关闭的 #164。
 - 已部分推进但未完成：PR #297 已合入 GitHub `main`
   `4805031fc3333ccbf38224172e4e85e21c0630bb`，随后 `main` 又前进到
   `ba81a0b18da4d4d30c1a8ce44d4bf03bb051fca8`。最新只读 poll 必须拆层读取：211 backend
@@ -149,9 +160,32 @@ vulnerability evidence。
   `g7_runtime_blocking_reasons=[]` 和
   `status_upgrade_decision=not_approved_for_closure`；没有新的 reviewed
   `15903fd` B3 capacity entry。
+- 当前 `755e50e` runtime subject：
+  `755e50ea2ad08c2d4218ae5d8cc612970b19e2a4`，211 repo-local source marker、
+  API/worker source/runtime/OCI labels 和 legacy alias labels 已绑定到该
+  commit；fresh 211 readback 仍读到 legacy in-container marker files 为
+  `9c669761` / `28676df`，所以仍不是 G0/source-authority closure。API/worker
+  运行 dirty runtime-only local patch image
+  `ai-platform:755e50e-g7-b3-principal-userid-fix-v2`，executor image 为
+  `ai-platform:755e50e-g7-b3-principal-userid-fix-v1`。2026-07-03
+  dirty-runtime v2 live-env verifier
+  `g7-live-env-hardening-755e50e-principal-userid-fix-v2-container-20260703115120`
+  已包装为 reviewed G7 runtime evidence
+  `docs/release-evidence/g7-sandbox/755e50ea2ad08c2d4218ae5d8cc612970b19e2a4/2026-07-03-211-g7-sandbox-live-env-hardening-755e50e.json`；
+  verifier summary 8 项通过。same-subject FRC evidence 位于
+  `docs/release-evidence/foundation-runtime-concurrency/755e50ea2ad08c2d4218ae5d8cc612970b19e2a4-frc-g7-b3-20260703/`，readiness 为
+  `verified_foundation_runtime_concurrency`，12 concurrent requests/runs/sessions
+  across 2 tenants and 4 users，所有 FRC 检查通过。早先
+  `/tmp/frc-755e50e-20260703T090109Z` 的 `queue_payload_invalid` 只是 superseded
+  diagnostic history。因此 `755e50e` 仍是 `local partial`，但当前 blocker 已从
+  FRC 缺失变成 B3 recorded load evidence、G7 status-upgrade approval 和 clean
+  current-main `211 verified` evidence 缺失；不是 G7/B3/#164 closure。
+  GitHub issue #164 已经是历史 B0 latest-main runtime-refresh 已关闭 issue；
+  它的 closure history 不是当前 G7/B3 closure 证据。
   PR #304 `codex/g7-b3-post-300-followup` 已 merge 到 GitHub `main`
   `a9c78efa812efe96b0366011a0c731cb11eb0099`，merge message 明确保留
-  G7、B3、Foundation Alpha、#164 和 current-main `211 verified` 未闭合。
+  G7、B3、Foundation Alpha 和 current-main `211 verified` 未闭合；#164 已经是历史关闭 issue，不能用当前 G7/B3 evidence 重新解释。
+  这是当时的 merge-message 边界，不覆盖当前 GitHub issue state。
   PR head 在 merge 前是 `4afa0dd2366a932855902363f09c42da54257a88`，
   GitHub checks 成功，但 `reviewDecision` 仍为空；已 posted 的 sub-agent
   review substitute 是 review evidence，不是 formal GitHub approval。runtime
@@ -162,8 +196,7 @@ vulnerability evidence。
   `docs/release-evidence/foundation-runtime-concurrency/decf33a017e0b97e2a2992f80e3ccdc19152c1f4-frc-g7-b3-20260702/2026-07-02-211-foundation-alpha-poc-decf33a-foundation-runtime-concurrency.json`。
   对 PR #304 runtime evidence subject，G7 evidence-only audit 也是
   `candidate_evidence_requires_review`、`blocking_reasons=[]`；但这不让
-  `a9c78ef` merge commit 变成 current-main `211 verified`，也不让 #164
-  `gate closable`；post-`decf33a` commits 只是 docs/evidence-index/test
+  `a9c78ef` merge commit 变成 current-main `211 verified`，也不构成当前 G7/B3 对已历史关闭 #164 的 closure evidence；post-`decf33a` commits 只是 docs/evidence-index/test
   follow-up，不是新 runtime rollout evidence。B3 load evidence 仍缺失，是
   B3 blocker。compose label 仍指向外部 runtime env file，当前 source/runtime/
   reviewed-evidence 拆层仍属于 G0/source-authority 与 production-hardening
@@ -275,7 +308,7 @@ vulnerability evidence。
   `client_case_timestamps` 并发窗口、7 类 Foundation Runtime checks 全部
   passed、cleanup verified。它只是 Foundation Runtime POC correctness evidence；
   不关闭 B3，不提高生产并发默认值，不声明 Docker sandbox hardening，不打开
-  ordinary-user 平台级 multi-run orchestration，不让 #164 `gate closable`。
+  ordinary-user 平台级 multi-run orchestration，也不构成当前 G7/B3 对已历史关闭 #164 的 closure evidence。
 - 仍未完成：external runtime env-file label caveat、当前本地 runtime-affecting
   source rollout gap、B3 operator-reviewed recorded load evidence、G7 operator
   status-upgrade review、G9 Operations Beta acceptance、G10 workflow-owner
@@ -341,21 +374,29 @@ vulnerability evidence。
   hardening evidence 和 same-subject FRC evidence 均已 reviewed/recorded；
   当前 `15903fd` G7 runtime blockers 已清空，可读作
   `candidate_evidence_requires_review` / `local partial`，但 status-upgrade
-  approval 仍未获批。B3 仍
-blocked，因为七个 recorded load-test gates 和 `b3_10x4_sdk_subagents`
-profile evidence 缺失；`decf33a` 和 `28676df` capacity runtime visibility 都
-  只是 fail-closed visibility evidence，不是 recorded load evidence；15903fd
-  目前没有新的 reviewed B3 capacity entry。external env-file redacted
+  approval 仍未获批。当前 755e50e 已有 dirty-runtime v2 G7 live-env
+  hardening evidence、same-subject FRC success 和 read-only capacity visibility
+  evidence；但因为 API/worker 是
+  `build-dirty=true` runtime-only local patch，legacy in-container marker files
+  仍读到 `9c669761` / `28676df`，且 status-upgrade approval 未获批，
+  所以不能升级为 G7 closure 或 clean current-main `211 verified`。B3 仍
+  blocked，因为七个 recorded load-test gates 和 `b3_10x4_sdk_subagents`
+  profile evidence 缺失；`decf33a` 和 `28676df` capacity runtime visibility 都只是
+  fail-closed visibility evidence，不是 recorded load evidence；`755e50e`
+  capacity runtime visibility 也只是 fail-closed visibility evidence，缺
+  `sandbox` Admin Runtime section，不是 recorded load evidence。external env-file redacted
 readback 已能支持当前 G7 live-default posture，但完整 env/source-authority
 review 仍是
   G0/source-authority / production-hardening 非闭合边界。
-G7/B3 的证据边界现在应拆开读：G7 对历史 `9c669761` 可到
-`candidate_evidence_requires_review` 但未获 closure approval；当前 `15903fd`
-已有 reviewed label-clean G7/FRC evidence，G7 runtime blockers 已清空但仍是
-`candidate_evidence_requires_review` / `local partial`。B3 仍是 `blocked_missing_load_test_evidence` /
-`local partial`，直到七门 recorded load evidence 和
-`b3_10x4_sdk_subagents` profile evidence 齐备。该 audit 只是控制/计划工件，
-不是 G7 runtime evidence、G7 closure approval 或 B3 load evidence。
+G7/B3 的证据边界现在应拆开读：G7 对历史 `9c669761` 和 `15903fd` 可到
+`candidate_evidence_requires_review` 但未获 closure approval；当前 `755e50e`
+已有 reviewed dirty-runtime v2 G7 runtime evidence 和 same-subject FRC success，
+但仍是 `local partial`，因为 status-upgrade approval、B3 recorded load evidence
+和 clean current-main `211 verified` evidence 缺失。当前 `755e50e` capacity
+visibility verdict 是 `blocked_missing_admin_runtime_sections`；总体 B3 closure
+仍是 `local partial`，因为七门 recorded load evidence 和
+`b3_10x4_sdk_subagents` profile evidence 未齐备。该 audit 只是控制/计划
+工件，不是 G7 closure approval 或 B3 load evidence。
 
 ## 2026-06-06 Gate-Based Roadmap Sync
 
@@ -1462,7 +1503,7 @@ are not implemented by this migration.
 2. Tenant-aware concurrency / fair scheduling / DB pool / bounded queue metadata。
 3. Admin Runtime / Observability / Quality / Ops。
 4. Memory / Context Management 与 Tool Permission / Agent Frontend V1 用户闭环。
-5. Long Task / Platform Multi-Run Orchestration / SDK Subagent Patterns controlled beta。
+5. Future/deferred Long Task / Platform Multi-Run Orchestration / SDK Subagent Patterns after prior gates。
 
 ### P1 Admin Runtime Overview Snapshot
 

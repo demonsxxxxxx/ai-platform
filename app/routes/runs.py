@@ -23,6 +23,7 @@ from app.models import (
     RunResponse,
 )
 from app.product_events import initial_run_event_specs
+from app.queue_payload_validation import queue_payload_invalid_detail
 from app.control_plane_contracts import (
     HASH_LIKE_VALUE_PATTERN,
     artifact_lineage_contract,
@@ -75,6 +76,7 @@ from app.skills.pinning import (
 )
 from app.skills.release_policy import release_decision_payload_for_locked_version, resolve_rollout_skill_decision
 from app.skills.registry import BuiltinSkillRegistry
+from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
 RUN_PLAYBACK_CONTRACT_VERSION = "ai-platform.run-playback.v1"
@@ -157,7 +159,14 @@ def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, An
     try:
         return QueueRunPayload.model_validate(payload).model_dump(mode="json")
     except ValueError as exc:
-        raise HTTPException(status_code=500, detail="queue_payload_invalid") from exc
+        raise HTTPException(status_code=500, detail=queue_payload_invalid_detail(exc)) from exc
+
+
+def _validate_principal_user_id_for_route(principal: AuthPrincipal) -> None:
+    try:
+        assert_safe_principal_user_id(principal.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid_principal_user_id") from exc
 
 
 async def _governed_skill_manifest_pins(
@@ -796,6 +805,7 @@ async def create_run(
     request: CreateRunRequest,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> CreateRunResponse:
+    _validate_principal_user_id_for_route(principal)
     tenant_id = principal.tenant_id
     user_id = principal.user_id
     resolved_agent_id, resolved_skill_id = resolve_run_selector(request, principal)
@@ -962,6 +972,7 @@ async def copy_run(
     run_id: str,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
+    _validate_principal_user_id_for_route(principal)
     try:
         async with transaction() as conn:
             await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
@@ -1000,6 +1011,7 @@ async def retry_run(
     run_id: str,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
+    _validate_principal_user_id_for_route(principal)
     try:
         async with transaction() as conn:
             await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
@@ -1041,6 +1053,7 @@ async def resume_run(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> RunControlResponse:
     """Queue a platform-controlled resume run for an authorized checkpointed source."""
+    _validate_principal_user_id_for_route(principal)
     try:
         async with transaction() as conn:
             await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)

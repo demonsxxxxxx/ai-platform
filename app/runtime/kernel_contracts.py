@@ -2,7 +2,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.validation import assert_safe_id
+from app.validation import assert_safe_id, assert_safe_principal_user_id
 
 
 SUPPORTED_AGENT_EVENT_TYPES = {
@@ -60,7 +60,7 @@ class RunContext(BaseModel):
     @field_validator("user_id")
     @classmethod
     def validate_user_id(cls, value: str):
-        return assert_safe_id(value, "user_id")
+        return assert_safe_principal_user_id(value)
 
     @field_validator("skill_ids", "mcp_tool_ids", "file_ids")
     @classmethod

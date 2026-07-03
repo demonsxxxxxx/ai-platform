@@ -5,7 +5,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from app.control_plane_contracts import RUN_PAYLOAD_SCHEMA_VERSION
 from app.skills.release_policy import validate_release_decision_lock, validate_release_decision_payload
 
-from app.validation import assert_safe_id
+from app.validation import assert_safe_id, assert_safe_principal_user_id
 
 
 class CreateRunRequest(BaseModel):
@@ -35,7 +35,7 @@ class CreateRunRequest(BaseModel):
     @field_validator("user_id")
     @classmethod
     def validate_optional_user_id(cls, value: str | None):
-        return assert_safe_id(value, "user_id") if value else value
+        return assert_safe_principal_user_id(value) if value else value
 
     @field_validator("session_id")
     @classmethod
@@ -411,10 +411,15 @@ class QueueRunPayload(BaseModel):
     model_value: str | None = None
     schema_version: str = RUN_PAYLOAD_SCHEMA_VERSION
 
-    @field_validator("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "agent_id", "skill_id", "executor_type")
+    @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "agent_id", "skill_id", "executor_type")
     @classmethod
     def validate_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)
+
+    @field_validator("user_id")
+    @classmethod
+    def validate_user_id(cls, value: str):
+        return assert_safe_principal_user_id(value)
 
     @field_validator("context_snapshot_id")
     @classmethod
