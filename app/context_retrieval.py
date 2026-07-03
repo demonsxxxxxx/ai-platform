@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 from pathlib import Path
-from pathlib import PurePosixPath
 from typing import Any, Protocol
 
 from app import repositories
@@ -438,6 +437,7 @@ class ContextRetrieval:
         run_id: str,
         file_id: str,
         workspace_root: str,
+        max_bytes: int = 1048576,
     ) -> dict[str, Any]:
         row = await self._get_file_row(
             tenant_id=tenant_id,
@@ -449,8 +449,17 @@ class ContextRetrieval:
         )
         name = self._safe_name(row)
         file_segment = self._safe_id_segment(file_id)
+        byte_cap = max(1, int(max_bytes))
+        declared_size = self._declared_size_bytes(row)
+        if declared_size is None and not isinstance(self._repository, InMemoryContextRetrievalRepository):
+            raise ContextRetrievalDenied("context_file_size_required")
+        if declared_size is not None and declared_size > byte_cap:
+            raise ContextRetrievalDenied("context_file_too_large")
         raw_bytes = self._raw_content_bytes(row)
-        target_path = Path(workspace_root) / "context" / file_segment / name
+        if len(raw_bytes) > byte_cap:
+            raise ContextRetrievalDenied("context_file_too_large")
+        target_dir = Path(workspace_root) / "context" / file_segment
+        target_path = target_dir / name
         ensure_creatable_inside(workspace_root, target_path, "context_file_workspace_escape")
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_bytes(raw_bytes)
@@ -459,6 +468,7 @@ class ContextRetrieval:
             file_id=file_id,
             workspace_path=f"context/{file_segment}/{name}",
             bytes_staged=len(raw_bytes),
+            max_bytes=byte_cap,
         )
 
     async def search_memory(
@@ -620,6 +630,13 @@ class ContextRetrieval:
             return str(row.get("content") or "").encode("utf-8")
         return self._repository.read_storage_bytes(row)
 
+    def _declared_size_bytes(self, row: dict[str, Any]) -> int | None:
+        try:
+            declared_size = int(row.get("size_bytes"))
+        except (TypeError, ValueError):
+            return None
+        return declared_size if declared_size >= 0 else None
+
     def _bounded_content_from_row(self, row: dict[str, Any], *, max_bytes: int) -> tuple[str, bool]:
         if isinstance(self._repository, InMemoryContextRetrievalRepository):
             return _bounded_text(row.get("content"), max_bytes=max_bytes)
@@ -631,7 +648,9 @@ class ContextRetrieval:
 
     def _safe_name(self, row: dict[str, Any]) -> str:
         name = str(row.get("original_name") or row.get("label") or row.get("name") or row.get("file_id") or row.get("artifact_id") or "context.bin")
-        return PurePosixPath(name).name or "context.bin"
+        normalized = name.replace("\\", "/")
+        safe_name = normalized.rsplit("/", 1)[-1]
+        return safe_name or "context.bin"
 
     def _safe_id_segment(self, value: object) -> str:
         text = str(value or "").strip()
@@ -639,8 +658,13 @@ class ContextRetrieval:
         return safe or "context-file"
 
     def _envelope(self, action: str, **payload: Any) -> dict[str, Any]:
+        audit = {"action": action}
+        if "bytes_staged" in payload:
+            audit["bytes_read"] = payload["bytes_staged"]
+            audit["max_bytes"] = payload.get("max_bytes")
+            audit["result"] = "staged"
         return {
             **payload,
-            "audit": {"action": action},
+            "audit": audit,
             "redaction": {"object_locator_refs_removed": True},
         }

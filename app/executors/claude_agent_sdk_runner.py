@@ -636,9 +636,25 @@ def _safe_retrieval_workspace_path(value: object) -> str | None:
     return path.as_posix()
 
 
-def _context_retrieval_tool_error(reason: str) -> dict[str, Any]:
+def _context_retrieval_tool_error(reason: str, *, action: str = "context_retrieval.tool") -> dict[str, Any]:
     return {
-        "content": [{"type": "text", "text": json.dumps({"error": reason}, ensure_ascii=False)}],
+        "content": [
+            {
+                "type": "text",
+                "text": json.dumps(
+                    {
+                        "error": reason,
+                        "audit": {
+                            "action": action,
+                            "result": "denied",
+                            "reason": reason,
+                        },
+                        "redaction": {"object_locator_refs_removed": True},
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        ],
         "is_error": True,
     }
 
@@ -673,13 +689,16 @@ def _build_context_retrieval_mcp_server(
     if sdk_tool is None or create_server is None:
         return None
 
-    async def _run(action, args: dict[str, Any]) -> dict[str, Any]:
+    async def _run(action, args: dict[str, Any], *, audit_action: str = "context_retrieval.tool") -> dict[str, Any]:
         try:
             return _context_retrieval_tool_response(await action(args))
-        except ContextRetrievalDenied:
-            return _context_retrieval_tool_error("context_scope_denied")
+        except ContextRetrievalDenied as exc:
+            reason = str(exc) or "context_scope_denied"
+            if reason not in {"context_file_too_large", "context_file_size_required"}:
+                reason = "context_scope_denied"
+            return _context_retrieval_tool_error(reason, action=audit_action)
         except Exception:
-            return _context_retrieval_tool_error("context_retrieval_failed")
+            return _context_retrieval_tool_error("context_retrieval_failed", action=audit_action)
 
     @sdk_tool(
         "read_session_messages",
@@ -703,6 +722,7 @@ def _build_context_retrieval_mcp_server(
                 max_tokens=_safe_positive_int(tool_args.get("max_tokens"), default=1200, maximum=8000),
             ),
             args if isinstance(args, dict) else {},
+            audit_action="context_retrieval.read_session_messages",
         )
 
     @sdk_tool(
@@ -729,6 +749,7 @@ def _build_context_retrieval_mcp_server(
                 max_bytes=_safe_positive_int(inner.get("max_bytes"), default=65536, maximum=262144),
             ),
             tool_args,
+            audit_action="context_retrieval.read_context_file",
         )
 
     @sdk_tool(
@@ -755,6 +776,7 @@ def _build_context_retrieval_mcp_server(
                 max_bytes=_safe_positive_int(inner.get("max_bytes"), default=65536, maximum=262144),
             ),
             tool_args,
+            audit_action="context_retrieval.read_run_artifact",
         )
 
     @sdk_tool(
@@ -762,6 +784,7 @@ def _build_context_retrieval_mcp_server(
         "Stage an uploaded context file into the current run workspace and return a workspace-relative path.",
         {
             "file_id": str,
+            "max_bytes": int,
         },
     )
     async def stage_context_file_to_workspace(args):
@@ -778,8 +801,10 @@ def _build_context_retrieval_mcp_server(
                 run_id=identity.run_id,
                 file_id=file_id,
                 workspace_root=str(workspace_root),
+                max_bytes=_safe_positive_int(tool_args.get("max_bytes"), default=1048576, maximum=1048576),
             ),
             tool_args,
+            audit_action="context_retrieval.stage_context_file_to_workspace",
         )
 
     @sdk_tool(
@@ -805,6 +830,7 @@ def _build_context_retrieval_mcp_server(
                 max_tokens=_safe_positive_int(inner.get("max_tokens"), default=1200, maximum=8000),
             ),
             tool_args,
+            audit_action="context_retrieval.search_memory",
         )
 
     return create_server(
