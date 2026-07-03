@@ -785,7 +785,14 @@ visibility record above, with all seven recorded load-test gates and
 verifier diagnostic for `9c669761`, `g7-current-main-9c66976-20260702145801`,
 recorded `executed_task=false`, `sandbox_provider=unknown`, and
 `[Errno 13] Permission denied: '[redacted-path]'`; this is not B3 load evidence
-and does not make G7 or B3 gate-closable.
+and does not make G7 or B3 gate-closable. A later sudo-context G7 verifier run,
+`g7-current-main-9c66976-sudo-20260702155816`, passed all eight verifier
+checks and is wrapped in reviewed release evidence at
+`docs/release-evidence/g7-sandbox/9c669761bbb4bd719af64a341d361b7c3b3e380e/2026-07-02-211-g7-sandbox-runtime-hardening-9c669761.json`.
+That record proves the explicit 9c669761 verifier path only: live API/worker default `SANDBOX_EXECUTOR_IMAGE` still points to
+`ai-platform:4805031-g7-b3-post-297-label-repair-v2`, same-subject Foundation Runtime concurrency evidence for `9c669761` has not been recorded, all B3
+recorded load gates remain missing, and operator status-upgrade review is still
+required.
 
 ### Evidence Bundle Draft Tool
 

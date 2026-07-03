@@ -226,7 +226,7 @@ image matches the exact current source tree.
 
 | Field | Standard |
 | --- | --- |
-| Current state | Sandbox lease, provider abstraction, callback normalization, fake provider, and Docker-provider hardening evidence exist for reviewed prior runtime subjects; default local provider remains fake. Those reviewed prior subjects can support `candidate_evidence_requires_review`, but the latest `9c669761` subject remains verifier-failed until a deployed-runtime passing verifier and operator status-upgrade review exist. |
+| Current state | Sandbox lease, provider abstraction, callback normalization, fake provider, Docker-provider hardening evidence for reviewed prior runtime subjects, and reviewed explicit verifier-path hardening evidence for the latest `9c669761` subject exist; default local provider remains fake. Those reviewed prior subjects can support `candidate_evidence_requires_review`; the latest `9c669761` subject has reviewed passing explicit verifier-path evidence, but the live default executor image, same-subject FRC, and operator status-upgrade review remain open. |
 | S1 target | Fake provider remains local/test-only; high-risk sandbox is not broadly exposed; lease lifecycle is platform-owned. |
 | S2 target | Docker provider hardening covers egress/network policy, quota, cleanup, container security options, callback token, and Docker-capable smoke. |
 | S3/S4 target | Sandbox profiles map to workflow risk classes and have operational rollback and cleanup evidence. |

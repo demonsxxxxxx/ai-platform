@@ -101,12 +101,16 @@ vulnerability evidence。
   和 runtime labels 均已读到 `9c669761`，API/worker 运行
   `ai-platform:9c66976-g7-b3-workspace-owner-v1`，API health 返回
   `{"status":"ok"}`，frontend root 返回 HTTP `200`。这说明 PR #306 的
-  workspace-owner executor fix 已合并并部署，但仍不是 G7 closure：最新
+  workspace-owner executor fix 已合并并部署，但仍不是 G7 closure：较早的
   deployed-runtime verifier `g7-current-main-9c66976-20260702145801`
   仍是 diagnostic-only，记录 `executed_task=false`、`sandbox_provider=unknown`
-  和 `[Errno 13] Permission denied: '[redacted-path]'`。当前没有 reviewed
-  passing `9c669761` G7 hardening entry，也没有新的 reviewed `9c669761` B3
-  capacity entry。
+  和 `[Errno 13] Permission denied: '[redacted-path]'`；后续 sudo-context
+  verifier `g7-current-main-9c66976-sudo-20260702155816` 已包装为 reviewed
+  explicit verifier-path G7 hardening evidence
+  `docs/release-evidence/g7-sandbox/9c669761bbb4bd719af64a341d361b7c3b3e380e/2026-07-02-211-g7-sandbox-runtime-hardening-9c669761.json`。
+  这只证明显式 9c669761 verifier path，不证明 live default executor image
+  已 rebinding 到 9c669761；same-subject FRC、operator status-upgrade review
+  仍缺，也没有新的 reviewed `9c669761` B3 capacity entry。
   PR #304 `codex/g7-b3-post-300-followup` 已 merge 到 GitHub `main`
   `a9c78efa812efe96b0366011a0c731cb11eb0099`，merge message 明确保留
   G7、B3、Foundation Alpha、#164 和 current-main `211 verified` 未闭合。
@@ -286,8 +290,9 @@ vulnerability evidence。
   `live_api_sandbox_executor_image_not_current_main_bound`；G7 对 PR #304 runtime
   subject `decf33a` reviewed evidence + same-subject FRC 的读法也可以到
   `candidate_evidence_requires_review`；PR #306 已 merge 且 211 API/worker
-  已跑到 9c669761，但 current 9c669761 G7 verifier 仍停在 permission-denied
-  diagnostic，没有 dependency-safe passing deployed-runtime evidence。B3 仍
+  已跑到 9c669761，且 sudo-context explicit verifier-path G7 hardening evidence
+  已 reviewed；但 live default executor image 仍指向 4805031，same-subject FRC
+  和 operator status-upgrade review 仍缺。B3 仍
   blocked，因为七个 recorded load-test gates 和 `b3_10x4_sdk_subagents`
   profile evidence 缺失；`decf33a` 和 `28676df` capacity runtime visibility 都
   只是 fail-closed visibility evidence，不是 recorded load evidence；9c669761
