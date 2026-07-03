@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Awaitable, Callable
 
 from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied
@@ -606,6 +607,10 @@ def _extract_skill_names_from_tool_input(tool_input: Any, allowed_skill_names: s
 
 def _context_retrieval_tool_response(payload: dict[str, Any]) -> dict[str, Any]:
     sanitized = sanitize_public_payload(payload)
+    if isinstance(sanitized, dict):
+        workspace_path = _safe_retrieval_workspace_path(payload.get("workspace_path"))
+        if workspace_path:
+            sanitized["workspace_path"] = workspace_path
     return {
         "content": [
             {
@@ -614,6 +619,21 @@ def _context_retrieval_tool_response(payload: dict[str, Any]) -> dict[str, Any]:
             }
         ]
     }
+
+
+def _safe_retrieval_workspace_path(value: object) -> str | None:
+    text = str(value or "").replace("\\", "/").strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("storage_key", "raw_storage_key", "tenants/", "s3://", "private")):
+        return None
+    path = PurePosixPath(text)
+    if path.is_absolute() or not path.parts or path.parts[0] != "context":
+        return None
+    if any(part in {"", ".", ".."} for part in path.parts):
+        return None
+    return path.as_posix()
 
 
 def _context_retrieval_tool_error(reason: str) -> dict[str, Any]:
@@ -644,6 +664,7 @@ def _build_context_retrieval_mcp_server(
     *,
     retrieval: ContextRetrieval | None,
     identity: ScopedContextRetrievalIdentity | None,
+    workspace_root: Path,
 ):
     if retrieval is None or identity is None:
         return None
@@ -737,6 +758,31 @@ def _build_context_retrieval_mcp_server(
         )
 
     @sdk_tool(
+        "stage_context_file_to_workspace",
+        "Stage an uploaded context file into the current run workspace and return a workspace-relative path.",
+        {
+            "file_id": str,
+        },
+    )
+    async def stage_context_file_to_workspace(args):
+        tool_args = args if isinstance(args, dict) else {}
+        file_id = str(tool_args.get("file_id") or "")
+        if not file_id:
+            return _context_retrieval_tool_error("file_id_required")
+        return await _run(
+            lambda _inner: retrieval.stage_context_file_to_workspace(
+                tenant_id=identity.tenant_id,
+                workspace_id=identity.workspace_id,
+                user_id=identity.user_id,
+                session_id=identity.session_id,
+                run_id=identity.run_id,
+                file_id=file_id,
+                workspace_root=str(workspace_root),
+            ),
+            tool_args,
+        )
+
+    @sdk_tool(
         "search_memory",
         "Search active session-scoped memory records for the current ai-platform agent scope only.",
         {
@@ -764,7 +810,13 @@ def _build_context_retrieval_mcp_server(
     return create_server(
         "ai-platform-context",
         version="1.0.0",
-        tools=[read_session_messages, read_context_file, read_run_artifact, search_memory],
+        tools=[
+            read_session_messages,
+            read_context_file,
+            read_run_artifact,
+            stage_context_file_to_workspace,
+            search_memory,
+        ],
     )
 
 
@@ -819,9 +871,16 @@ async def run_claude_agent_sdk(
         sdk,
         retrieval=context_retrieval,
         identity=context_retrieval_identity,
+        workspace_root=cwd,
     )
     if context_retrieval_server is not None:
-        for tool_name in ("read_session_messages", "read_context_file", "read_run_artifact", "search_memory"):
+        for tool_name in (
+            "read_session_messages",
+            "read_context_file",
+            "read_run_artifact",
+            "stage_context_file_to_workspace",
+            "search_memory",
+        ):
             if tool_name not in allowed_tools:
                 allowed_tools.append(tool_name)
     disallowed_tools = _safe_disallowed_tools(

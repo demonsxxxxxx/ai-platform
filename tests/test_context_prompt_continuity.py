@@ -190,7 +190,20 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
                     "role": "user",
                     "content": "scoped private message",
                 }
-            ]
+            ],
+            files=[
+                {
+                    "tenant_id": "tenant-a",
+                    "workspace_id": "workspace-a",
+                    "user_id": "user-a",
+                    "session_id": "session-a",
+                    "run_id": "run-a",
+                    "file_id": "file-a",
+                    "original_name": "source.txt",
+                    "content": "workspace staged content",
+                    "storage_key": "tenants/tenant-a/private/source.txt",
+                }
+            ],
         )
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
@@ -218,12 +231,19 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
         "read_session_messages",
         "read_context_file",
         "read_run_artifact",
+        "stage_context_file_to_workspace",
         "search_memory",
     ]
     assert "read_session_messages" in captured["allowed_tools"]
     assert "read_context_file" in captured["allowed_tools"]
-    assert "stage_context_file_to_workspace" not in captured["allowed_tools"]
+    assert "stage_context_file_to_workspace" in captured["allowed_tools"]
     message_tool = server["tools"][0]
     tool_result = await message_tool.handler({"tenant_id": "tenant-b", "limit": 5, "offset": 0, "max_tokens": 20})
     assert "scoped private message" in tool_result["content"][0]["text"]
     assert "tenant-b" not in tool_result["content"][0]["text"]
+    stage_tool = server["tools"][3]
+    stage_result = await stage_tool.handler({"file_id": "file-a"})
+    assert "context/source.txt" in stage_result["content"][0]["text"]
+    assert "workspace staged content" not in stage_result["content"][0]["text"]
+    assert "storage_key" not in stage_result["content"][0]["text"]
+    assert (tmp_path / "context" / "source.txt").read_text(encoding="utf-8") == "workspace staged content"
