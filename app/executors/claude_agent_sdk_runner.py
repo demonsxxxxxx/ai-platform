@@ -676,8 +676,11 @@ def _build_context_retrieval_mcp_server(
     async def _run(action, args: dict[str, Any]) -> dict[str, Any]:
         try:
             return _context_retrieval_tool_response(await action(args))
-        except ContextRetrievalDenied:
-            return _context_retrieval_tool_error("context_scope_denied")
+        except ContextRetrievalDenied as exc:
+            reason = str(exc) or "context_scope_denied"
+            if reason not in {"context_file_too_large"}:
+                reason = "context_scope_denied"
+            return _context_retrieval_tool_error(reason)
         except Exception:
             return _context_retrieval_tool_error("context_retrieval_failed")
 
@@ -762,6 +765,7 @@ def _build_context_retrieval_mcp_server(
         "Stage an uploaded context file into the current run workspace and return a workspace-relative path.",
         {
             "file_id": str,
+            "max_bytes": int,
         },
     )
     async def stage_context_file_to_workspace(args):
@@ -778,6 +782,7 @@ def _build_context_retrieval_mcp_server(
                 run_id=identity.run_id,
                 file_id=file_id,
                 workspace_root=str(workspace_root),
+                max_bytes=_safe_positive_int(tool_args.get("max_bytes"), default=1048576, maximum=1048576),
             ),
             tool_args,
         )

@@ -438,6 +438,7 @@ class ContextRetrieval:
         run_id: str,
         file_id: str,
         workspace_root: str,
+        max_bytes: int = 1048576,
     ) -> dict[str, Any]:
         row = await self._get_file_row(
             tenant_id=tenant_id,
@@ -450,6 +451,9 @@ class ContextRetrieval:
         name = self._safe_name(row)
         file_segment = self._safe_id_segment(file_id)
         raw_bytes = self._raw_content_bytes(row)
+        byte_cap = max(1, int(max_bytes))
+        if len(raw_bytes) > byte_cap:
+            raise ContextRetrievalDenied("context_file_too_large")
         target_path = Path(workspace_root) / "context" / file_segment / name
         ensure_creatable_inside(workspace_root, target_path, "context_file_workspace_escape")
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -459,6 +463,7 @@ class ContextRetrieval:
             file_id=file_id,
             workspace_path=f"context/{file_segment}/{name}",
             bytes_staged=len(raw_bytes),
+            max_bytes=byte_cap,
         )
 
     async def search_memory(
@@ -639,8 +644,13 @@ class ContextRetrieval:
         return safe or "context-file"
 
     def _envelope(self, action: str, **payload: Any) -> dict[str, Any]:
+        audit = {"action": action}
+        if "bytes_staged" in payload:
+            audit["bytes_read"] = payload["bytes_staged"]
+            audit["max_bytes"] = payload.get("max_bytes")
+            audit["result"] = "staged"
         return {
             **payload,
-            "audit": {"action": action},
+            "audit": audit,
             "redaction": {"object_locator_refs_removed": True},
         }

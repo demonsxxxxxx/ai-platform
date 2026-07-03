@@ -251,3 +251,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     assert "workspace staged content" not in stage_result["content"][0]["text"]
     assert "storage_key" not in stage_result["content"][0]["text"]
     assert (tmp_path / "context" / "file-a" / "source.txt").read_text(encoding="utf-8") == "workspace staged content"
+    too_large_result = await stage_tool.handler({"file_id": "file-a", "max_bytes": 8})
+    assert too_large_result["is_error"] is True
+    assert "context_file_too_large" in too_large_result["content"][0]["text"]
+    assert "workspace staged content" not in too_large_result["content"][0]["text"]

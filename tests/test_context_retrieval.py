@@ -244,10 +244,35 @@ async def test_stage_context_file_to_workspace_returns_safe_workspace_ref_withou
         "file_id": "file-a",
         "workspace_path": "context/file-a/source.txt",
         "bytes_staged": len("file content is bounded by bytes".encode("utf-8")),
-        "audit": {"action": "context_retrieval.stage_context_file_to_workspace"},
+        "max_bytes": 1048576,
+        "audit": {
+            "action": "context_retrieval.stage_context_file_to_workspace",
+            "bytes_read": len("file content is bounded by bytes".encode("utf-8")),
+            "max_bytes": 1048576,
+            "result": "staged",
+        },
         "redaction": {"object_locator_refs_removed": True},
     }
     assert (tmp_path / "context" / "file-a" / "source.txt").read_text(encoding="utf-8") == "file content is bounded by bytes"
+
+
+@pytest.mark.asyncio
+async def test_stage_context_file_to_workspace_rejects_file_over_byte_cap_without_writing(tmp_path):
+    retrieval = _retrieval()
+
+    with pytest.raises(ContextRetrievalDenied, match="context_file_too_large"):
+        await retrieval.stage_context_file_to_workspace(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            file_id="file-a",
+            workspace_root=str(tmp_path),
+            max_bytes=8,
+        )
+
+    assert not (tmp_path / "context").exists()
 
 
 @pytest.mark.asyncio
