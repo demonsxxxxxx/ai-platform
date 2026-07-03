@@ -55,16 +55,19 @@ vulnerability evidence。
   只能作为历史 evidence/follow-up 含义读取；不能作为当前状态名。
 - B3 边界：`b3_10x4_sdk_subagents` source contract 是 SDK subagent
   fanout 容量证据，不是 G8 普通用户平台级 multi-run 产品曝光证据。
-- 最新 `main` / 211 边界：PR #311 `codex/g7-b3-label-clean-followup`
-  已 squash-merge 到 GitHub `main`
-  `40691c01d64d6cd604dd94e6fc24ee6babdf0cad`。这次 merge 是 source/docs/
-  audit-boundary progress，不是 `40691c0` 的 211 rollout；当前 211 仍运行
+- 最新 `main` / 211 边界：本轮 status-sync 的 GitHub `main` 基线已包含
+  PR #312 `codex/g7-b3-pr311-status-boundary`
+  `881493d042a522b343c9df2044bd3830fd02e62f`，并叠加 PR #311
+  `40691c01d64d6cd604dd94e6fc24ee6babdf0cad` 的 source/docs/
+  audit-boundary progress。PR #312 和后续 docs/test status-sync merge 都不是
+  211 rollout，除非新的 211 rollout/smoke 证据把对应 exact merge commit 绑定到
+  运行中的 backend/worker image 和 source marker；当前 211 仍运行
   `15903fd` runtime subject，即 API/worker 运行
   `ai-platform:15903fd-g7-b3-label-clean-v2`，repo-local source marker 与
   API/worker source/runtime/OCI labels 仍绑定到
   `15903fdfe96ffcfba9daa1252741111017dcf832`。所以 `15903fd` 的 G7/FRC
-  evidence 仍是当前部署 runtime input，`40691c0` 还不能叫 current-main
-  `211 verified`。
+  evidence 仍是当前部署 runtime input，PR #312 和后续 docs/test status-sync
+  merge 都不能直接叫 current-main `211 verified`。
 - 已部分推进但未完成：PR #297 已合入 GitHub `main`
   `4805031fc3333ccbf38224172e4e85e21c0630bb`，随后 `main` 又前进到
   `ba81a0b18da4d4d30c1a8ce44d4bf03bb051fca8`。最新只读 poll 必须拆层读取：211 backend
@@ -165,10 +168,12 @@ vulnerability evidence。
   B3 blocker。compose label 仍指向外部 runtime env file，当前 source/runtime/
   reviewed-evidence 拆层仍属于 G0/source-authority 与 production-hardening
   非闭合边界；任何 G7 status upgrade 仍需要 operator review。
-  所以当前是 PR #311 merged current `main`
-  `40691c01d64d6cd604dd94e6fc24ee6babdf0cad` + 211 仍运行 PR #308
-  `15903fd` source/runtime rollout + reviewed label-clean `15903fd` G7/FRC
-  candidate evidence progress + PR #305 reviewed capacity visibility +
+  所以当前路线读法是 PR #312 merged status-sync baseline
+  `881493d042a522b343c9df2044bd3830fd02e62f` + PR #311 source/docs
+  audit-boundary progress + 后续 docs/test status-sync merge 不改变 runtime
+  subject + 211 仍运行 PR #308 `15903fd` source/runtime rollout + reviewed
+  label-clean `15903fd` G7/FRC candidate evidence progress + PR #305 reviewed
+  capacity visibility +
   PR #306/PR #304/PR #297 historical same-subject evidence + reviewed `ae6b7e5`
   evidence progress；它仍不是 G0/G7 closure、不是 B3 load evidence，也不是
   current-main `211 verified`。
