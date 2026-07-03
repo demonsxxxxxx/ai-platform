@@ -44,6 +44,7 @@ PR304_G7_B3_SHA = "decf33a017e0b97e2a2992f80e3ccdc19152c1f4"
 PR305_G7_B3_SHA = "28676df4abcbb7063211fceb4cc1701648c43d49"
 PR306_G7_B3_SHA = "9c669761bbb4bd719af64a341d361b7c3b3e380e"
 PR308_G7_B3_SHA = "15903fdfe96ffcfba9daa1252741111017dcf832"
+PR311_G7_B3_SHA = "40691c01d64d6cd604dd94e6fc24ee6babdf0cad"
 POST_PR299_MAIN_SHA = "ba81a0b18da4d4d30c1a8ce44d4bf03bb051fca8"
 ACTIVE_RUNTIME_SUBJECT_SHORT_SHA = ACTIVE_RUNTIME_SUBJECT_SHA[:7]
 CURRENT_SOURCE_FRC_EVIDENCE_DIR = (
@@ -1669,7 +1670,27 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "旧普通用户 multi-agent exposure 说法会把普通用户平台级 parent/child" in compact_roadmap_text
     assert "只能作为历史 evidence/follow-up 含义读取" in compact_roadmap_text
     assert "不能作为当前状态名" in compact_roadmap_text
-    assert "PR #308 merged source/runtime progress plus a 211 runtime-image rollout to `15903fdfe96ffcfba9daa1252741111017dcf832`" in compact_gate_status_text
+    assert (
+        "Current GitHub `main` is PR #311 merge commit "
+        "`40691c01d64d6cd604dd94e6fc24ee6babdf0cad`, while 211 still runs "
+        "the PR #308 runtime subject `15903fdfe96ffcfba9daa1252741111017dcf832`"
+        in compact_gate_status_text
+    )
+    assert (
+        "PR #311 is merged source/docs/audit-boundary progress, not a 211 "
+        "rollout for `40691c01d64d6cd604dd94e6fc24ee6babdf0cad`"
+        in compact_gate_status_text
+    )
+    assert (
+        "PR #311 `codex/g7-b3-label-clean-followup` 已 squash-merge 到 GitHub "
+        "`main` `40691c01d64d6cd604dd94e6fc24ee6babdf0cad`"
+        in compact_roadmap_text
+    )
+    assert (
+        "211 仍运行 `15903fd` runtime subject"
+        in compact_roadmap_text
+    )
+    assert PR311_G7_B3_SHA in combined_text
     assert "PR #308 is merged into GitHub `main` at `15903fdfe96ffcfba9daa1252741111017dcf832`" in compact_gate_status_text
     assert "reviewDecision` remained empty" in compact_gate_status_text
     assert PR304_G7_B3_SHA in combined_text
@@ -1733,7 +1754,8 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "executor workspace ownership bug under `cap_drop=[\"ALL\"]`" in compact_gate_status_text
     assert "led to PR #306" in compact_gate_status_text
     assert "The `9c669761` live-default G7/FRC pair is now historical same-subject evidence" in compact_gate_status_text
-    assert "The newer `15903fd` label-clean live-default G7/FRC pair advances the deployed runtime evidence set" in compact_gate_status_text
+    assert "The `15903fd` label-clean live-default G7/FRC pair advances the deployed runtime evidence set" in compact_gate_status_text
+    assert "PR #311 does not change that runtime-subject boundary until a future 211 rollout and smoke bind" in compact_gate_status_text
     assert "The later `28676df`, `9c669761`, and `15903fd` rollouts changed the running API/worker image identity" in compact_gate_status_text
     assert "for `15903fd`, the repo-local source marker" in compact_gate_status_text
     assert "The 2026-07-03 label-clean readback confirmed API/worker live defaults now use" in compact_gate_status_text
