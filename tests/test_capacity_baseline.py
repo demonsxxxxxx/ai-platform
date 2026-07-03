@@ -3339,6 +3339,30 @@ def test_capacity_recorded_gate_snapshot_rejects_direct_packet_with_probe_marker
     assert result["does_not_raise_defaults"] is True
 
 
+def test_capacity_recorded_gate_snapshot_rejects_direct_packet_with_nested_probe_markers():
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+    evidence_packet = _recorded_gate_packet("api_read_write_burst")
+    evidence_packet["evidence"]["load_test_evidence_status"] = "probe_only_not_recorded"
+    evidence_packet["evidence"]["does_not_mark_gate_recorded"] = True
+
+    result = build_capacity_recorded_gate_snapshot(runtime_evidence, evidence_packet)
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert result["input_status"]["recorded_gate_evidence"] == "not_accepted"
+    assert "bounded_probe_input_cannot_be_recorded_gate_evidence" in result["input_errors"]
+    assert result["snapshot"]["load_test_evidence"]["status"] == "missing"
+    assert result["does_not_raise_defaults"] is True
+
+
 def test_capacity_recorded_gate_snapshot_cli_outputs_snapshot_and_verdict(tmp_path):
     snapshot = build_capacity_evidence_snapshot(
         _admin_runtime_overview(),

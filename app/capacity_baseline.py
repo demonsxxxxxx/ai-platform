@@ -1812,13 +1812,15 @@ def _capacity_recorded_gate_evidence_packet(
         errors.append("recorded_gate_evidence_gate_mismatch")
     if source.get("does_not_raise_defaults") is not True:
         errors.append("recorded_gate_evidence_missing_no_default_raise_policy")
+    source_evidence = _dict(source.get("evidence"))
     if (
         source.get("load_test_evidence_status") == "probe_only_not_recorded"
         or source.get("does_not_mark_gate_recorded") is True
+        or source_evidence.get("load_test_evidence_status") == "probe_only_not_recorded"
+        or source_evidence.get("does_not_mark_gate_recorded") is True
     ):
         errors.append("bounded_probe_input_cannot_be_recorded_gate_evidence")
 
-    source_evidence = _dict(source.get("evidence"))
     safe_evidence: dict[str, object] = {}
     for field in _LOAD_TEST_REQUIRED_EVIDENCE:
         safe_value = _safe_recorded_gate_evidence_value(source_evidence.get(field))

@@ -56,7 +56,7 @@
     "verifier": "scripts/verify_sandbox_runtime_211.py",
     "result": "ok:true",
     "command": "two-stage 211 G7 sandbox runtime hardening verifier using sudo Docker access against deployed 9c669761 source/runtime labels, with an explicit sandbox executor image override to ai-platform:9c66976-g7-b3-workspace-owner-v1",
-    "remote_artifact_dir": "/tmp/g7-b3-9c66976-sudo-evidence-g7-current-main-9c66976-sudo-20260702155816",
+    "remote_artifact_dir": "[redacted-host-artifact-dir]",
     "artifact_hashes": {
       "runtime_probe_results_sha256": "a017bf0c18ca71c8fe1594410897dd85ff148dd1315d2285b28d8480ebe896c4",
       "sandbox_evidence_sha256": "225164a043a5b9301173756159d991a7195ee8b5e10d1d75cf24589809e29a8c",

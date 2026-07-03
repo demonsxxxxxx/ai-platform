@@ -51,7 +51,7 @@
     "verifier": "scripts/verify_sandbox_runtime_211.py",
     "result": "ok:true",
     "command": "two-stage 211 live-env hardening verifier using sudo Docker access against deployed 9c669761 API/worker default sandbox posture",
-    "remote_artifact_dir": "/tmp/g7-live-env-hardening-9c669761-sudo-20260703091724",
+    "remote_artifact_dir": "[redacted-host-artifact-dir]",
     "artifact_hashes": {
       "runtime_probe_results_sha256": "061366c5d3156d8ab18c5be0ea5168847d52f9fd44ea2b2db2945f41beaab427",
       "sandbox_evidence_sha256": "52bd69ccf46f1a7d575c4a53c512daff1cf9fbc8f5fd590bd58dc8765c160359",
