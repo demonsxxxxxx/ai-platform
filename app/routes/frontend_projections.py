@@ -373,7 +373,7 @@ def _revealed_item(row: dict[str, Any]) -> RevealedFileItemResponse:
         user_id=str(row.get("user_id") or ""),
         source=source,  # type: ignore[arg-type]
         description=str(row.get("artifact_type") or "") or None,
-        original_path=str(row.get("storage_key") or "") or None,
+        original_path=_file_name_for(row) or None,
         created_at=row.get("created_at"),
         is_favorite=False,
         card_preview={

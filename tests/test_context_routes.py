@@ -267,6 +267,84 @@ def test_context_snapshot_response_omits_raw_material_ids_from_public_projection
     assert "memory-sensitive" not in serialized
 
 
+def test_context_snapshot_response_projects_context_manifest_without_inline_private_material(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-a", "trace_id": "trace-a"}
+
+    async def fake_list_context_snapshots(conn, *, tenant_id, user_id, run_id):
+        return [
+            {
+                "id": "ctx-manifest-public",
+                "tenant_id": tenant_id,
+                "workspace_id": "workspace-a",
+                "user_id": user_id,
+                "session_id": "session-a",
+                "run_id": run_id,
+                "trace_id": "trace-a",
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_kind": "executor",
+                "included_message_ids": ["msg-payroll"],
+                "included_file_ids": ["file-payroll"],
+                "included_artifact_ids": [],
+                "included_memory_record_ids": [],
+                "redaction_summary_json": {},
+                "payload_json": {
+                    "context_manifest": {
+                        "schema_version": "ai-platform.context-manifest.v1",
+                        "context_manifest_version": "v1",
+                        "generated_at": "2026-07-02T01:02:03Z",
+                        "current_message": "please process payroll draft",
+                        "recent_messages": [
+                            {
+                                "message_id": "msg-payroll",
+                                "inline_content": "private conversation text",
+                                "summary": "salary preview",
+                            }
+                        ],
+                        "files": [
+                            {
+                                "file_id": "file-payroll",
+                                "name": "salary.xlsx",
+                                "inline_preview": "salary preview",
+                                "storage_key": "tenants/tenant-a/private/salary.xlsx",
+                            }
+                        ],
+                        "available_retrieval_tools": ["read_context_file"],
+                    }
+                },
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.context.repositories.list_context_snapshots", fake_list_context_snapshots)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/runs/run-a/context/snapshots", headers=headers())
+
+    assert response.status_code == 200
+    manifest = response.json()["context_snapshots"][0]["payload"]["context_manifest"]
+    assert manifest["schema_version"] == "ai-platform.context-manifest.v1"
+    assert manifest["referenced_materials"] == {
+        "message_count": 1,
+        "file_count": 1,
+        "artifact_count": 0,
+        "memory_record_count": 0,
+        "source_run_count": 0,
+    }
+    assert manifest["redaction"]["private_payloads_removed"] is True
+    assert manifest["audit"]["retrieval_required_for_full_content"] is True
+    serialized = response.text.lower()
+    assert "please process payroll draft" not in serialized
+    assert "private conversation text" not in serialized
+    assert "salary preview" not in serialized
+    assert "salary.xlsx" not in serialized
+    assert "storage_key" not in serialized
+    assert "tenants/tenant-a/private" not in serialized
+
+
 def test_context_snapshot_response_preserves_stored_safe_summary_metadata(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-a", "trace_id": "trace-a"}

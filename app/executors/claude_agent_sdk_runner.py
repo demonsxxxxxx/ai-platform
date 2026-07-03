@@ -1,12 +1,15 @@
 import asyncio
+import json
 import os
 import shlex
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Awaitable, Callable
 
+from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied
 from app.control_plane_contracts import sanitize_public_payload
 from app.public_context_keys import safe_public_context_pack_version
 from app.settings import get_settings
@@ -61,6 +64,16 @@ class ClaudeAgentSdkRunResult:
 
 class ClaudeAgentSdkNotAvailable(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ScopedContextRetrievalIdentity:
+    tenant_id: str
+    workspace_id: str
+    user_id: str
+    session_id: str
+    run_id: str
+    agent_id: str
 
 
 def _split_csv(value: str) -> list[str]:
@@ -450,6 +463,32 @@ def _context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
     )
     if context_pack_generated_at:
         metadata_lines.append(f"- Context pack generated at: {context_pack_generated_at}")
+    manifest = context_pack.get("context_manifest")
+    if isinstance(manifest, dict) and manifest.get("schema_version") == "ai-platform.context-manifest.v1":
+        message_count = len(manifest.get("recent_messages") or [])
+        file_count = len(manifest.get("files") or [])
+        artifact_count = len(manifest.get("artifacts") or [])
+        memory_count = len(manifest.get("memory_records") or [])
+        metadata_lines.append(
+            "- Context manifest refs: "
+            f"{message_count} message(s), {file_count} file(s), "
+            f"{artifact_count} artifact(s), {memory_count} memory record(s)"
+        )
+        tools = manifest.get("available_retrieval_tools")
+        if isinstance(tools, list):
+            safe_tools = [
+                str(tool)
+                for tool in tools
+                if str(tool) in {
+                    "read_session_messages",
+                    "read_context_file",
+                    "read_run_artifact",
+                    "stage_context_file_to_workspace",
+                    "search_memory",
+                }
+            ]
+            if safe_tools:
+                metadata_lines.append(f"- Available context retrieval tools: {', '.join(safe_tools)}")
     metadata_text = "\n".join(metadata_lines)
     if metadata_text:
         metadata_text += "\n"
@@ -458,7 +497,8 @@ def _context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
         f"- {prompt_summary}\n"
         f"{metadata_text}"
         "- Use this bounded context only as background; do not infer raw storage keys, "
-        "sandbox paths, private payloads, or long-term memory beyond what is listed."
+        "sandbox paths, private payloads, or long-term memory beyond what is listed.\n"
+        "- Use context retrieval tools before assuming full prior message, file, artifact, or memory content is available."
     )
 
 
@@ -501,12 +541,12 @@ def build_skill_prompt(
     )
 
 
-async def _sdk_user_prompt_stream(prompt: str) -> AsyncIterator[dict[str, Any]]:
+async def _sdk_user_prompt_stream(prompt: str, *, session_id: str | None = None) -> AsyncIterator[dict[str, Any]]:
     yield {
         "type": "user",
         "message": {"role": "user", "content": prompt},
         "parent_tool_use_id": None,
-        "session_id": "default",
+        "session_id": session_id or "default",
     }
 
 
@@ -565,11 +605,229 @@ def _extract_skill_names_from_tool_input(tool_input: Any, allowed_skill_names: s
     return names
 
 
+def _context_retrieval_tool_response(payload: dict[str, Any]) -> dict[str, Any]:
+    sanitized = sanitize_public_payload(payload)
+    if isinstance(sanitized, dict):
+        workspace_path = _safe_retrieval_workspace_path(payload.get("workspace_path"))
+        if workspace_path:
+            sanitized["workspace_path"] = workspace_path
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": json.dumps(sanitized if isinstance(sanitized, dict) else {}, ensure_ascii=False),
+            }
+        ]
+    }
+
+
+def _safe_retrieval_workspace_path(value: object) -> str | None:
+    text = str(value or "").replace("\\", "/").strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("storage_key", "raw_storage_key", "tenants/", "s3://", "private")):
+        return None
+    path = PurePosixPath(text)
+    if path.is_absolute() or not path.parts or path.parts[0] != "context":
+        return None
+    if any(part in {"", ".", ".."} for part in path.parts):
+        return None
+    return path.as_posix()
+
+
+def _context_retrieval_tool_error(reason: str) -> dict[str, Any]:
+    return {
+        "content": [{"type": "text", "text": json.dumps({"error": reason}, ensure_ascii=False)}],
+        "is_error": True,
+    }
+
+
+def _safe_positive_int(value: object, *, default: int, maximum: int) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        normalized = default
+    return max(1, min(maximum, normalized))
+
+
+def _safe_non_negative_int(value: object, *, default: int, maximum: int) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        normalized = default
+    return max(0, min(maximum, normalized))
+
+
+def _build_context_retrieval_mcp_server(
+    sdk: object,
+    *,
+    retrieval: ContextRetrieval | None,
+    identity: ScopedContextRetrievalIdentity | None,
+    workspace_root: Path,
+):
+    if retrieval is None or identity is None:
+        return None
+    sdk_tool = getattr(sdk, "tool", None)
+    create_server = getattr(sdk, "create_sdk_mcp_server", None)
+    if sdk_tool is None or create_server is None:
+        return None
+
+    async def _run(action, args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return _context_retrieval_tool_response(await action(args))
+        except ContextRetrievalDenied:
+            return _context_retrieval_tool_error("context_scope_denied")
+        except Exception:
+            return _context_retrieval_tool_error("context_retrieval_failed")
+
+    @sdk_tool(
+        "read_session_messages",
+        "Read prior messages for the current ai-platform run scope only.",
+        {
+            "limit": int,
+            "offset": int,
+            "max_tokens": int,
+        },
+    )
+    async def read_session_messages(args):
+        return await _run(
+            lambda tool_args: retrieval.read_session_messages(
+                tenant_id=identity.tenant_id,
+                workspace_id=identity.workspace_id,
+                user_id=identity.user_id,
+                session_id=identity.session_id,
+                run_id=identity.run_id,
+                limit=_safe_positive_int(tool_args.get("limit"), default=20, maximum=100),
+                offset=_safe_non_negative_int(tool_args.get("offset"), default=0, maximum=10000),
+                max_tokens=_safe_positive_int(tool_args.get("max_tokens"), default=1200, maximum=8000),
+            ),
+            args if isinstance(args, dict) else {},
+        )
+
+    @sdk_tool(
+        "read_context_file",
+        "Read an uploaded context file for the current ai-platform run scope only.",
+        {
+            "file_id": str,
+            "max_bytes": int,
+        },
+    )
+    async def read_context_file(args):
+        tool_args = args if isinstance(args, dict) else {}
+        file_id = str(tool_args.get("file_id") or "")
+        if not file_id:
+            return _context_retrieval_tool_error("file_id_required")
+        return await _run(
+            lambda inner: retrieval.read_context_file(
+                tenant_id=identity.tenant_id,
+                workspace_id=identity.workspace_id,
+                user_id=identity.user_id,
+                session_id=identity.session_id,
+                run_id=identity.run_id,
+                file_id=file_id,
+                max_bytes=_safe_positive_int(inner.get("max_bytes"), default=65536, maximum=262144),
+            ),
+            tool_args,
+        )
+
+    @sdk_tool(
+        "read_run_artifact",
+        "Read a run artifact for the current ai-platform run scope only.",
+        {
+            "artifact_id": str,
+            "max_bytes": int,
+        },
+    )
+    async def read_run_artifact(args):
+        tool_args = args if isinstance(args, dict) else {}
+        artifact_id = str(tool_args.get("artifact_id") or "")
+        if not artifact_id:
+            return _context_retrieval_tool_error("artifact_id_required")
+        return await _run(
+            lambda inner: retrieval.read_run_artifact(
+                tenant_id=identity.tenant_id,
+                workspace_id=identity.workspace_id,
+                user_id=identity.user_id,
+                session_id=identity.session_id,
+                run_id=identity.run_id,
+                artifact_id=artifact_id,
+                max_bytes=_safe_positive_int(inner.get("max_bytes"), default=65536, maximum=262144),
+            ),
+            tool_args,
+        )
+
+    @sdk_tool(
+        "stage_context_file_to_workspace",
+        "Stage an uploaded context file into the current run workspace and return a workspace-relative path.",
+        {
+            "file_id": str,
+        },
+    )
+    async def stage_context_file_to_workspace(args):
+        tool_args = args if isinstance(args, dict) else {}
+        file_id = str(tool_args.get("file_id") or "")
+        if not file_id:
+            return _context_retrieval_tool_error("file_id_required")
+        return await _run(
+            lambda _inner: retrieval.stage_context_file_to_workspace(
+                tenant_id=identity.tenant_id,
+                workspace_id=identity.workspace_id,
+                user_id=identity.user_id,
+                session_id=identity.session_id,
+                run_id=identity.run_id,
+                file_id=file_id,
+                workspace_root=str(workspace_root),
+            ),
+            tool_args,
+        )
+
+    @sdk_tool(
+        "search_memory",
+        "Search active session-scoped memory records for the current ai-platform agent scope only.",
+        {
+            "query": str,
+            "limit": int,
+            "max_tokens": int,
+        },
+    )
+    async def search_memory(args):
+        tool_args = args if isinstance(args, dict) else {}
+        return await _run(
+            lambda inner: retrieval.search_memory(
+                tenant_id=identity.tenant_id,
+                workspace_id=identity.workspace_id,
+                user_id=identity.user_id,
+                agent_id=identity.agent_id,
+                session_id=identity.session_id,
+                query=str(inner.get("query") or ""),
+                limit=_safe_positive_int(inner.get("limit"), default=10, maximum=50),
+                max_tokens=_safe_positive_int(inner.get("max_tokens"), default=1200, maximum=8000),
+            ),
+            tool_args,
+        )
+
+    return create_server(
+        "ai-platform-context",
+        version="1.0.0",
+        tools=[
+            read_session_messages,
+            read_context_file,
+            read_run_artifact,
+            stage_context_file_to_workspace,
+            search_memory,
+        ],
+    )
+
+
 async def run_claude_agent_sdk(
     *,
     prompt: str,
     cwd: Path,
     skill_id: str,
+    session_id: str | None = None,
+    context_retrieval: ContextRetrieval | None = None,
+    context_retrieval_identity: ScopedContextRetrievalIdentity | None = None,
     model_id: str | None = None,
     skills: list[str] | None = None,
     query_fn: Callable[..., Any] | None = None,
@@ -609,6 +867,22 @@ async def run_claude_agent_sdk(
         getattr(settings, "claude_agent_allowed_tools", "Read,Glob,LS"),
         full_access=full_access,
     )
+    context_retrieval_server = _build_context_retrieval_mcp_server(
+        sdk,
+        retrieval=context_retrieval,
+        identity=context_retrieval_identity,
+        workspace_root=cwd,
+    )
+    if context_retrieval_server is not None:
+        for tool_name in (
+            "read_session_messages",
+            "read_context_file",
+            "read_run_artifact",
+            "stage_context_file_to_workspace",
+            "search_memory",
+        ):
+            if tool_name not in allowed_tools:
+                allowed_tools.append(tool_name)
     disallowed_tools = _safe_disallowed_tools(
         getattr(settings, "claude_agent_disallowed_tools", ""),
         full_access=full_access,
@@ -772,11 +1046,13 @@ async def run_claude_agent_sdk(
         cwd=str(cwd),
         model=model_id or settings.claude_agent_model or settings.anthropic_model or None,
         tools=_sdk_tools_for_mode(full_access=full_access),
+        mcp_servers={"ai-platform-context": context_retrieval_server} if context_retrieval_server is not None else {},
         permission_mode=permission_mode,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,
         env=build_sdk_env(cwd=cwd),
         skills=configured_skills,
+        session_id=session_id,
         max_turns=max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 128))),
         max_thinking_tokens=max(1, int(getattr(settings, "claude_agent_sdk_max_thinking_tokens", 16384))),
         effort=str(getattr(settings, "claude_agent_sdk_effort", "xhigh") or "xhigh"),
@@ -786,12 +1062,12 @@ async def run_claude_agent_sdk(
     )
 
     texts: list[str] = []
-    session_id: str | None = None
+    result_session_id: str | None = None
     usage: dict[str, Any] = {}
 
     async def consume() -> ClaudeAgentSdkRunResult:
-        nonlocal session_id, usage
-        async for message in query(prompt=_sdk_user_prompt_stream(prompt), options=options):
+        nonlocal result_session_id, usage
+        async for message in query(prompt=_sdk_user_prompt_stream(prompt, session_id=session_id), options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock):
@@ -799,14 +1075,14 @@ async def run_claude_agent_sdk(
                         if on_text and block.text:
                             await on_text(block.text)
             elif isinstance(message, ResultMessage):
-                session_id = message.session_id
+                result_session_id = message.session_id
                 usage = message.usage or message.model_usage or {}
                 _append_result_text(texts, message.result)
                 if message.is_error:
                     return ClaudeAgentSdkRunResult(
                         used_sdk=True,
                         message="\n".join(texts).strip(),
-                        session_id=session_id,
+                        session_id=result_session_id,
                         usage=usage,
                         error="; ".join(message.errors or []) or message.stop_reason or "claude_agent_sdk_error",
                         used_skills=list(used_skill_names),
@@ -815,7 +1091,7 @@ async def run_claude_agent_sdk(
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
             message="\n".join(texts).strip(),
-            session_id=session_id,
+            session_id=result_session_id,
             usage=usage,
             used_skills=list(used_skill_names),
             used_skills_source="executor_hook" if used_skill_names else "",
@@ -829,7 +1105,7 @@ async def run_claude_agent_sdk(
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
             message="\n".join(texts).strip(),
-            session_id=session_id,
+            session_id=result_session_id,
             usage=usage,
             error="claude_agent_sdk_timeout",
             used_skills=list(used_skill_names),
@@ -839,7 +1115,7 @@ async def run_claude_agent_sdk(
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
             message="\n".join(texts).strip(),
-            session_id=session_id,
+            session_id=result_session_id,
             usage=usage,
             error=str(exc),
             used_skills=list(used_skill_names),

@@ -11,6 +11,89 @@ from app.context_builder import (
 )
 
 
+@pytest.mark.asyncio
+async def test_record_initial_context_snapshot_persists_context_manifest_for_executor_pack(monkeypatch):
+    calls = []
+
+    async def fake_get_effective_memory_policy(conn, **kwargs):
+        return {
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "agent_id": kwargs["agent_id"],
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+            "source": "default",
+        }
+
+    async def fake_create_context_snapshot(conn, **kwargs):
+        calls.append(("snapshot", kwargs))
+        return {"id": "ctx-manifest"}
+
+    async def fake_update_run_context_snapshot_ref(conn, **kwargs):
+        calls.append(("run_ref", kwargs))
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-manifest"
+
+    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_get_effective_memory_policy)
+    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_update_run_context_snapshot_ref)
+    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_append_event)
+
+    context_ref = await record_initial_context_snapshot(
+        object(),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        trace_id="trace-a",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input_payload={
+            "message": "continue from prior context",
+            "raw_storage_key": "tenants/tenant-a/private/source.docx",
+            "history": [{"role": "user", "content": "history must not become prompt stuffing"}],
+        },
+        message_ids=["msg-a"],
+        file_ids=["file-a"],
+        source="chat_stream",
+    )
+
+    snapshot_call = next(item[1] for item in calls if item[0] == "snapshot")
+    manifest = snapshot_call["payload_json"]["context_manifest"]
+    assert manifest["schema_version"] == "ai-platform.context-manifest.v1"
+    assert manifest["scope"] == {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+    }
+    assert manifest["current_message"] == "continue from prior context"
+    assert manifest["recent_messages"] == [{"message_id": "msg-a", "requires_retrieval": True}]
+    assert manifest["files"] == [{"file_id": "file-a", "requires_retrieval": True}]
+    assert manifest["budget"]["max_prompt_tokens"] > 0
+    assert context_ref["context_manifest"]["schema_version"] == "ai-platform.context-manifest.v1"
+    assert context_ref["context_manifest"]["redaction"]["object_locator_refs_removed"] is True
+    assert "file-a" not in str(context_ref)
+    assert "msg-a" not in str(context_ref)
+
+    context_pack = executor_context_pack_from_snapshot(snapshot_call["payload_json"])
+    assert context_pack["source"] == "context_manifest"
+    assert context_pack["context_manifest"]["files"][0]["file_id"] == "file-a"
+    assert "Use context retrieval tools" in context_pack["prompt_summary"]
+    serialized = str(context_pack).lower()
+    assert "raw_storage_key" not in serialized
+    assert "tenants/tenant-a/private" not in serialized
+    assert "history must not become prompt stuffing" not in serialized
+
+
 def test_initial_context_summary_strips_context_private_aliases_from_input_keys():
     summary = initial_context_summary(
         source="runs_api",

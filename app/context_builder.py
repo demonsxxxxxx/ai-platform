@@ -5,6 +5,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app import repositories
+from app.context_manifest import (
+    CONTEXT_MANIFEST_SCHEMA_VERSION,
+    ContextPlanner,
+    public_context_manifest_projection,
+)
 from app.control_plane_contracts import CONTEXT_SNAPSHOT_SCHEMA_VERSION, sanitize_public_payload
 from app.office_execution_tier import route_office_execution_tier
 from app.projection_redaction import capability_id_from_skill
@@ -306,6 +311,9 @@ def _stored_public_context_referenced_materials(payload: dict[str, Any]) -> dict
 def executor_context_pack_from_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     """Return the bounded context pack that executor prompts may consume."""
     payload = snapshot if isinstance(snapshot, dict) else {}
+    context_manifest = payload.get("context_manifest")
+    if isinstance(context_manifest, dict) and context_manifest.get("schema_version") == CONTEXT_MANIFEST_SCHEMA_VERSION:
+        return ContextPlanner().executor_context_pack(context_manifest)
     referenced_materials = _stored_public_context_referenced_materials(payload)
     sanitized_payload = ensure_public_context_provenance(
         payload,
@@ -468,6 +476,66 @@ def initial_context_summary(
     return summary
 
 
+def _manifest_current_message(input_payload: dict[str, Any]) -> str:
+    message = input_payload.get("message")
+    if isinstance(message, str):
+        return message
+    return ""
+
+
+def _manifest_context_chips(input_payload: dict[str, Any]) -> list[str]:
+    chips = input_payload.get("context_chips")
+    if isinstance(chips, list):
+        return [str(chip) for chip in chips if isinstance(chip, str)]
+    return []
+
+
+def _manifest_message_refs(message_ids: list[str]) -> list[dict[str, Any]]:
+    return [{"id": message_id, "requires_retrieval": True} for message_id in message_ids if message_id]
+
+
+def _manifest_file_refs(file_ids: list[str]) -> list[dict[str, Any]]:
+    return [{"id": file_id, "requires_retrieval": True} for file_id in file_ids if file_id]
+
+
+def _manifest_artifact_refs(artifact_ids: list[str]) -> list[dict[str, Any]]:
+    return [{"id": artifact_id, "requires_retrieval": True} for artifact_id in artifact_ids if artifact_id]
+
+
+def _build_initial_context_manifest(
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+    agent_id: str,
+    skill_id: str,
+    input_payload: dict[str, Any],
+    message_ids: list[str],
+    file_ids: list[str],
+    artifact_ids: list[str],
+    memory_record_ids: list[str],
+    source_run_id: str | None,
+) -> dict[str, Any]:
+    return ContextPlanner().plan(
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        session_id=session_id,
+        run_id=run_id,
+        agent_id=agent_id,
+        skill_id=skill_id,
+        current_message=_manifest_current_message(input_payload),
+        recent_messages=_manifest_message_refs(message_ids),
+        context_chips=_manifest_context_chips(input_payload),
+        files=_manifest_file_refs(file_ids),
+        artifacts=_manifest_artifact_refs(artifact_ids),
+        memory_records=[{"id": memory_id, "status": "active"} for memory_id in memory_record_ids if memory_id],
+        source_run_ids=[source_run_id] if source_run_id else [],
+    )
+
+
 async def record_initial_context_snapshot(
     conn,
     *,
@@ -548,6 +616,21 @@ async def record_initial_context_snapshot(
         latest_artifact_version=latest_artifact_version,
         memory_policy=memory_policy,
     )
+    summary["context_manifest"] = _build_initial_context_manifest(
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        session_id=session_id,
+        run_id=run_id,
+        agent_id=agent_id,
+        skill_id=skill_id,
+        input_payload=input_payload,
+        message_ids=included_message_ids,
+        file_ids=included_file_ids,
+        artifact_ids=included_artifact_ids,
+        memory_record_ids=[],
+        source_run_id=source_run_id if included_artifact_ids else None,
+    )
     memory_policy_summary = {
         "memory_policy_source": str(memory_policy.get("source") or "default"),
         "memory_enabled": bool(memory_policy.get("memory_enabled", True)),
@@ -594,6 +677,7 @@ async def record_initial_context_snapshot(
         "execution_tier": summary["execution_tier"],
         "context_pack_version": summary["context_pack_version"],
         "context_pack_generated_at": summary["context_pack_generated_at"],
+        "context_manifest": public_context_manifest_projection(summary["context_manifest"]),
     }
     await repositories.update_run_context_snapshot_ref(
         conn,

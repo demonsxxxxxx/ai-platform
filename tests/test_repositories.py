@@ -33,8 +33,12 @@ from app.repositories import (
     list_tool_permission_inbox,
     list_run_events,
     list_run_artifacts,
+    list_scoped_context_messages,
     mark_multi_agent_dispatch_enqueue_failed,
     mark_multi_agent_dispatch_parent_awaiting_dispatch,
+    get_scoped_context_file,
+    get_scoped_context_artifact,
+    list_scoped_context_memory_records,
     renew_sandbox_lease,
     upsert_run_step,
 )
@@ -66,6 +70,205 @@ class RecordingConnection:
     async def execute(self, sql, params):
         self.calls.append((" ".join(sql.split()), params))
         return FakeCursor()
+
+
+class SingleRowCursor:
+    def __init__(self, row):
+        self.row = row
+
+    async def fetchone(self):
+        return self.row
+
+    async def fetchall(self):
+        return [self.row] if self.row is not None else []
+
+
+class SingleRowConnection:
+    def __init__(self, row):
+        self.row = row
+        self.sql = ""
+        self.params = None
+
+    async def execute(self, sql, params):
+        self.sql = " ".join(sql.split())
+        self.params = params
+        return SingleRowCursor(self.row)
+
+
+@pytest.mark.asyncio
+async def test_create_context_snapshot_preserves_private_context_manifest_refs_without_storage_keys():
+    conn = SingleRowConnection({"id": "ctx-row"})
+
+    await create_context_snapshot(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        trace_id="trace-a",
+        context_kind="executor",
+        included_message_ids=["msg-a"],
+        included_file_ids=["file-a"],
+        included_artifact_ids=[],
+        included_memory_record_ids=[],
+        redaction_summary_json={},
+        payload_json={
+            "context_manifest": {
+                "schema_version": "ai-platform.context-manifest.v1",
+                "recent_messages": [{"message_id": "msg-a", "requires_retrieval": True}],
+                "files": [
+                    {
+                        "file_id": "file-a",
+                        "storage_key": "tenants/tenant-a/private/source.docx",
+                        "requires_retrieval": True,
+                    }
+                ],
+                "raw_storage_key": "tenants/tenant-a/private/raw.docx",
+            }
+        },
+    )
+
+    persisted_payload = json.loads(conn.params[-1])
+    assert persisted_payload["context_manifest"]["recent_messages"] == [
+        {"message_id": "msg-a", "requires_retrieval": True}
+    ]
+    assert persisted_payload["context_manifest"]["files"] == [
+        {"file_id": "file-a", "requires_retrieval": True}
+    ]
+    serialized = json.dumps(persisted_payload)
+    assert "storage_key" not in serialized
+    assert "tenants/tenant-a/private" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_list_scoped_context_messages_filters_full_scope_and_limits_rows():
+    conn = SingleRowConnection(
+        {
+            "id": "msg-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "role": "user",
+            "content": "hello",
+            "metadata_json": {},
+            "created_at": "now",
+        }
+    )
+
+    rows = await list_scoped_context_messages(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        limit=25,
+        offset=5,
+    )
+
+    assert rows[0]["id"] == "msg-a"
+    assert "join sessions" in conn.sql
+    assert "join runs" in conn.sql
+    assert "runs.workspace_id = %s" in conn.sql
+    assert "runs.user_id = %s" in conn.sql
+    assert conn.params == ("tenant-a", "workspace-a", "user-a", "session-a", "run-a", 25, 5)
+
+
+@pytest.mark.asyncio
+async def test_scoped_context_file_and_artifact_queries_bind_full_scope():
+    file_conn = SingleRowConnection(
+        {
+            "id": "file-a",
+            "original_name": "source.txt",
+            "content_type": "text/plain",
+            "size_bytes": 10,
+            "storage_key": "tenants/private/source.txt",
+            "sha256": "hash",
+        }
+    )
+    artifact_conn = SingleRowConnection(
+        {
+            "id": "artifact-a",
+            "artifact_type": "report_txt",
+            "label": "report.txt",
+            "content_type": "text/plain",
+            "size_bytes": 10,
+            "storage_key": "tenants/private/report.txt",
+        }
+    )
+
+    file_row = await get_scoped_context_file(
+        file_conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        file_id="file-a",
+    )
+    artifact_row = await get_scoped_context_artifact(
+        artifact_conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        artifact_id="artifact-a",
+    )
+
+    assert file_row["id"] == "file-a"
+    assert "files.workspace_id = %s" in file_conn.sql
+    assert "files.user_id = %s" in file_conn.sql
+    assert "files.session_id = %s" in file_conn.sql
+    assert "files.run_id = %s" in file_conn.sql
+    assert file_conn.params == ("tenant-a", "workspace-a", "user-a", "session-a", "run-a", "file-a")
+    assert artifact_row["id"] == "artifact-a"
+    assert "join runs" in artifact_conn.sql
+    assert "runs.workspace_id = %s" in artifact_conn.sql
+    assert "runs.user_id = %s" in artifact_conn.sql
+    assert "runs.session_id = %s" in artifact_conn.sql
+    assert artifact_conn.params == ("tenant-a", "workspace-a", "user-a", "session-a", "run-a", "artifact-a")
+
+
+@pytest.mark.asyncio
+async def test_list_scoped_context_memory_records_excludes_deleted_and_binds_session_scope():
+    conn = SingleRowConnection(
+        {
+            "id": "mem-a",
+            "record_type": "preference",
+            "content": "prefer concise answers",
+            "metadata_json": {},
+            "status": "active",
+            "deleted_at": None,
+            "created_at": "now",
+        }
+    )
+
+    rows = await list_scoped_context_memory_records(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        agent_id="general-agent",
+        session_id="session-a",
+        query="prefer",
+        limit=10,
+    )
+
+    assert rows[0]["id"] == "mem-a"
+    assert "status = 'active'" in conn.sql
+    assert "deleted_at is null" in conn.sql
+    assert "session_id = %s" in conn.sql
+    assert conn.params == (
+        "tenant-a",
+        "workspace-a",
+        "user-a",
+        "general-agent",
+        "session-a",
+        "%prefer%",
+        "%prefer%",
+        10,
+    )
 
 
 @pytest.mark.asyncio

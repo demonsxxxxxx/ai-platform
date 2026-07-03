@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app import repositories
 from app.auth import BREAK_GLASS_ADMIN_ROLE, PLATFORM_ADMIN_ROLE, TENANT_ADMIN_ROLE, AuthPrincipal, normalized_roles, require_principal
 from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
+from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, public_context_manifest_projection
 from app.db import transaction
 from app.memory_redaction import redact_memory_metadata, redact_memory_text
 from app.context_builder import ensure_public_context_provenance
@@ -78,6 +79,7 @@ def _snapshot_response(
     payload = sanitize_public_payload(row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {})
     if not isinstance(payload, dict):
         payload = {}
+    context_manifest = payload.get("context_manifest")
     redaction_summary = sanitize_public_payload(
         row.get("redaction_summary_json") if isinstance(row.get("redaction_summary_json"), dict) else {}
     )
@@ -94,6 +96,8 @@ def _snapshot_response(
         long_term_memory_read=False,
         preserve_stored_input_keys=True,
     )
+    if isinstance(context_manifest, dict) and context_manifest.get("schema_version") == CONTEXT_MANIFEST_SCHEMA_VERSION:
+        payload["context_manifest"] = public_context_manifest_projection(context_manifest)
     return {
         "context_snapshot_id": str(row["id"]),
         "schema_version": str(row.get("schema_version") or "ai-platform.context-snapshot.v1"),
