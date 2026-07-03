@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PRD = ROOT / "docs/superpowers/specs/2026-06-10-ai-platform-product-prd-v2.md"
@@ -12,6 +14,7 @@ GUARDRAILS = ROOT / "docs/agent-rules/ai-platform-guardrails.md"
 MULTI_AGENT_CONTEXT_WORKFLOW = ROOT / "docs/agent-rules/multi-agent-context-workflow.md"
 GITHUB_WORKFLOW = ROOT / "docs/agent-rules/github-issue-pr-workflow.md"
 AGENTS = ROOT / "AGENTS.md"
+BACKEND_DOCKERFILE = ROOT / "Dockerfile"
 COMPOSE = ROOT / "deploy/ai-platform/docker-compose.yml"
 ENV_EXAMPLE = ROOT / "deploy/ai-platform/.env.example"
 DOCKERIGNORE = ROOT / ".dockerignore"
@@ -192,9 +195,9 @@ def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
     assert "Status: active companion acceptance document" in tech_text
     assert "The `9c669761` same-subject evidence pair can support `candidate_evidence_requires_review`" in tech_text
     assert "reviewed 2026-07-03 live-default G7/FRC evidence for `9c669761`" in tech_text
-    assert "reviewed 2026-07-03 live-default G7/FRC evidence for `15903fd`" in tech_text
-    assert "The newer `15903fd` evidence pair is current runtime evidence" in tech_text
-    assert '`g7_runtime_blocking_reasons=["stale_runtime_alias_label_mismatch"]`' in tech_text
+    assert "reviewed 2026-07-03 label-clean live-default G7/FRC evidence for `15903fd`" in tech_text
+    assert "The newer `15903fd` label-clean evidence pair is current runtime evidence" in tech_text
+    assert "`g7_runtime_blocking_reasons=[]`" in tech_text
     assert "`status_upgrade_decision=not_approved_for_closure`" in tech_text
     assert "B3 recorded load/profile evidence remains a separate blocker" in tech_text
     assert "G7 remains blocked until Docker-provider smoke and hardening evidence exist" not in tech_text
@@ -1080,6 +1083,35 @@ def test_default_compose_uses_current_repo_context_and_no_docker_socket():
     assert "/var/run/docker.sock:/var/run/docker.sock" not in compose_text
 
 
+def test_backend_dockerfile_defines_source_authority_label_contract():
+    dockerfile = read(BACKEND_DOCKERFILE)
+    compose_text = read(COMPOSE)
+    compose = yaml.safe_load(compose_text)
+    env_text = read(ENV_EXAMPLE)
+
+    assert "ARG AI_PLATFORM_BUILD_COMMIT=unknown" in dockerfile
+    assert "ARG AI_PLATFORM_BUILD_DIRTY=unknown" in dockerfile
+    for label in (
+        "org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT",
+        "ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT",
+        "ai-platform.runtime-subject=$AI_PLATFORM_BUILD_COMMIT",
+        "ai-platform.source_revision=$AI_PLATFORM_BUILD_COMMIT",
+        "ai-platform.runtime_subject=$AI_PLATFORM_BUILD_COMMIT",
+        "ai-platform.source_tree_commit=$AI_PLATFORM_BUILD_COMMIT",
+        "ai-platform.source_commit=$AI_PLATFORM_BUILD_COMMIT",
+        'ai-platform.build-dirty="$AI_PLATFORM_BUILD_DIRTY"',
+    ):
+        assert label in dockerfile
+    expected_backend_args = {
+        "AI_PLATFORM_BUILD_COMMIT": "${AI_PLATFORM_BUILD_COMMIT:-unknown}",
+        "AI_PLATFORM_BUILD_DIRTY": "${AI_PLATFORM_BUILD_DIRTY:-unknown}",
+    }
+    assert compose["services"]["api"]["build"]["args"] == expected_backend_args
+    assert compose["services"]["worker"]["build"]["args"] == expected_backend_args
+    assert "AI_PLATFORM_BUILD_COMMIT=unknown" in env_text
+    assert "AI_PLATFORM_BUILD_DIRTY=unknown" in env_text
+
+
 def test_env_template_satisfies_required_runtime_defaults_without_real_secrets():
     env_text = read(ENV_EXAMPLE)
     assert "SANDBOX_CALLBACK_TOKEN=change_me_sandbox_callback_token" in env_text
@@ -1701,19 +1733,20 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "executor workspace ownership bug under `cap_drop=[\"ALL\"]`" in compact_gate_status_text
     assert "led to PR #306" in compact_gate_status_text
     assert "The `9c669761` live-default G7/FRC pair is now historical same-subject evidence" in compact_gate_status_text
-    assert "The newer `15903fd` live-default G7/FRC pair advances the deployed runtime evidence set" in compact_gate_status_text
+    assert "The newer `15903fd` label-clean live-default G7/FRC pair advances the deployed runtime evidence set" in compact_gate_status_text
     assert "The later `28676df`, `9c669761`, and `15903fd` rollouts changed the running API/worker image identity" in compact_gate_status_text
     assert "for `15903fd`, the repo-local source marker" in compact_gate_status_text
-    assert "The 2026-07-03 readback confirmed API/worker live defaults now use" in compact_gate_status_text
-    assert "this removes the current-subject G7 executor-image drift blocker" in compact_gate_status_text
+    assert "The 2026-07-03 label-clean readback confirmed API/worker live defaults now use" in compact_gate_status_text
+    assert "this removes the current-subject G7 executor-image drift and stale legacy alias blockers" in compact_gate_status_text
     assert "These entries are not full issue/gate closure or current-source `211 verified`" in gate_status_text
     assert "`status=candidate_evidence_requires_review`" in gate_status_text
     assert "`blocking_reasons=[]`" in gate_status_text
     assert (
-        "The latest current-live `15903fd` G7 audit is blocked by "
-        "`stale_runtime_alias_label_mismatch`; it is no longer blocked by "
-        "`live_api_sandbox_executor_image_not_current_main_bound` or missing "
-        "same-subject Foundation Runtime concurrency evidence."
+        "The latest current-live `15903fd` G7 audit is "
+        "`candidate_evidence_requires_review`; it is no longer blocked by "
+        "`live_api_sandbox_executor_image_not_current_main_bound`, "
+        "`stale_runtime_alias_label_mismatch`, or missing same-subject "
+        "Foundation Runtime concurrency evidence."
         in " ".join(gate_status_text.split())
     )
     assert (
@@ -1785,7 +1818,7 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "不是 `live_api_sandbox_executor_image_not_current_main_bound`" in compact_roadmap_text
     assert "G7 对 PR #304 runtime subject `decf33a` reviewed evidence + same-subject FRC 的读法也可以到 `candidate_evidence_requires_review`" in compact_roadmap_text
     assert "PR #306 已 merge 且 211 API/worker 已跑到 9c669761" in compact_roadmap_text
-    assert "PR #308 已 merge 且 211 API/worker 已跑到 `15903fd`" in compact_roadmap_text
+    assert "PR #308 已 merge 且 211 API/worker 已跑到 `15903fd` label-clean image" in compact_roadmap_text
     assert (
         "external env-file redacted readback 已能支持当前 G7 live-default posture，"
         "但完整 env/source-authority review 仍是 G0/source-authority / production-hardening 非闭合边界"
@@ -1796,8 +1829,8 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
         "`candidate_evidence_requires_review` 但未获 closure approval"
         in compact_roadmap_text
     )
-    assert "当前 `15903fd` 已有 reviewed G7/FRC evidence" in compact_roadmap_text
-    assert "因 stale legacy alias cleanup 未完成仍是 `blocked` / `local partial`" in compact_roadmap_text
+    assert "当前 `15903fd` 已有 reviewed label-clean G7/FRC evidence" in compact_roadmap_text
+    assert "G7 runtime blockers 已清空但仍是 `candidate_evidence_requires_review` / `local partial`" in compact_roadmap_text
     assert (
         "B3 仍是 `blocked_missing_load_test_evidence` / `local partial`，"
         "直到七门 recorded load evidence 和 `b3_10x4_sdk_subagents` profile evidence 齐备"
@@ -1847,12 +1880,15 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     )
     assert (
         "Current 211 API/worker images now run "
-        "`ai-platform:15903fd-g7-b3-main-runtime-only-v1` with canonical "
-        "OCI/source labels bound to `15903fd`; reviewed 2026-07-03 "
-        "live-default G7 hardening evidence and same-subject FRC evidence now "
-        "exist for `15903fd`"
+        "`ai-platform:15903fd-g7-b3-label-clean-v2` with canonical OCI/source "
+        "labels and legacy source alias labels bound to `15903fd`; reviewed "
+        "2026-07-03 label-clean live-default G7 hardening evidence and "
+        "same-subject FRC evidence now exist for `15903fd`"
         in " ".join(current_gate_table.split())
     )
+    assert "local partial. Named 211 runtime-only formal verifier evidence exists" in " ".join(current_gate_table.split())
+    assert "2026-07-03-211-g7-sandbox-live-env-hardening-15903fd-label-clean.json" in current_gate_table
+    assert "2026-07-03-211-g7-operator-status-review-15903fd-label-clean.json" in current_gate_table
     assert "The 15903fd verifier passed all eight checks" in current_gate_table
     assert (
         "The `28676df` G7 verifier path first failed because host Python lacked `pydantic`"
@@ -1956,6 +1992,10 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert PR304_G7_B3_SHA in release_evidence_text
     assert PR305_G7_B3_SHA in release_evidence_text
     assert PR306_G7_B3_SHA in release_evidence_text
+    assert "2026-07-03-211-deployment-image-cleanup-15903fd-label-clean.json" in release_evidence_text
+    assert "Reviewed 211 deployment-image cleanup evidence for the PR #308 `15903fd` label-clean rollout" in compact_release_evidence_text
+    assert "This is deployment hygiene evidence only; it does not approve G7 closure" in compact_release_evidence_text
+    assert "does not make `15903fd` `211 verified`, and does not make #164 `gate closable`" in compact_release_evidence_text
     assert "PR #306 merged and 211 API/worker now run `ai-platform:9c66976-g7-b3-workspace-owner-v1`" in compact_release_evidence_text
     assert "Earlier deployed-runtime verifier run `g7-current-main-9c66976-20260702145801` did not execute a task" in compact_release_evidence_text
     assert "2026-07-02-211-g7-sandbox-runtime-hardening-9c669761.json" in release_evidence_text

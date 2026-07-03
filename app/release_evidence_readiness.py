@@ -59,6 +59,9 @@ _CONDITIONAL_FIELDS = {
     "211_runtime_identity_label_repair": [
         "runtime_subject_commit_sha",
     ],
+    "211_deployment_image_cleanup": [
+        "runtime_subject_commit_sha",
+    ],
 }
 _FORBIDDEN_MARKER_CLASSES = [
     "executor private payload",
@@ -82,6 +85,7 @@ _ACCEPTED_ARTIFACT_KINDS = [
     "211_sandbox_runtime_smoke",
     "211_runtime_identity_label_repair",
     "211_g7_operator_status_review",
+    "211_deployment_image_cleanup",
 ]
 _RETENTION_POLICY = {
     "schema_version": RETENTION_POLICY_SCHEMA_VERSION,

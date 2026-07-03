@@ -90,9 +90,11 @@ def _canonical_runtime_label_commit(labels: dict[str, Any]) -> str:
 def _legacy_runtime_label_commit(labels: dict[str, Any]) -> str:
     for key in (
         "ai-platform.source_revision",
+        "ai-platform.source_commit",
         "ai-platform.runtime_subject",
         "ai-platform.source_tree_commit",
         "ai_platform_source_revision",
+        "ai_platform_source_commit",
         "ai_platform_runtime_subject",
         "ai_platform_source_tree_commit",
     ):
@@ -106,9 +108,11 @@ def _legacy_runtime_label_commits(labels: dict[str, Any]) -> list[str]:
     values: list[str] = []
     for key in (
         "ai-platform.source_revision",
+        "ai-platform.source_commit",
         "ai-platform.runtime_subject",
         "ai-platform.source_tree_commit",
         "ai_platform_source_revision",
+        "ai_platform_source_commit",
         "ai_platform_runtime_subject",
         "ai_platform_source_tree_commit",
     ):

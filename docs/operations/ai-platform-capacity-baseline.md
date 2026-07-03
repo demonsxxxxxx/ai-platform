@@ -811,12 +811,12 @@ records `status_upgrade_decision=not_approved_for_closure`, so G7 closure and
 
 ### Post-PR #308 Runtime Note - 2026-07-03, merge commit `15903fd`
 
-After PR #308 merged at `15903fdfe96ffcfba9daa1252741111017dcf832`, a read-only
-211 identity check observed the repo-local source marker at `15903fd`, with API
-and worker running `ai-platform:15903fd-g7-b3-main-runtime-only-v1`. Canonical
-API/worker source/runtime/OCI labels bind to `15903fd`, while some legacy
-underscore alias labels still point to `9c669761`; that is a source-authority
-cleanup blocker before any status upgrade. Direct API health on
+After PR #308 merged at `15903fdfe96ffcfba9daa1252741111017dcf832`, a later
+label-clean 211 identity check observed the repo-local source marker at
+`15903fd`, with API and worker running
+`ai-platform:15903fd-g7-b3-label-clean-v2`. Canonical API/worker
+source/runtime/OCI labels and legacy source alias labels bind to `15903fd`.
+Direct API health on
 `http://127.0.0.1:8020/api/ai/health`, frontend proxy health on
 `http://127.0.0.1:18001/api/ai/health`, and frontend root on
 `http://127.0.0.1:18001/` were healthy after the frontend container restart.
@@ -825,16 +825,16 @@ No reviewed B3 capacity runtime evidence entry has been recorded for
 `15903fd`. The latest reviewed B3 capacity entry remains the `28676df`
 visibility record above, with all seven recorded load-test gates and
 `b3_10x4_sdk_subagents` profile evidence still missing. The 2026-07-03
-live-default G7 run
-`g7-live-env-hardening-15903fd-sudo-20260703042000` is wrapped at
-`docs/release-evidence/g7-sandbox/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-sandbox-live-env-hardening-15903fd.json`,
+label-clean live-default G7 run
+`g7-live-env-hardening-15903fd-label-clean-sudo-20260703055828` is wrapped at
+`docs/release-evidence/g7-sandbox/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-sandbox-live-env-hardening-15903fd-label-clean.json`,
 and same-subject Foundation Runtime concurrency evidence is recorded at
 `docs/release-evidence/foundation-runtime-concurrency/15903fdfe96ffcfba9daa1252741111017dcf832-frc-g7-b3-20260703/2026-07-03-211-foundation-alpha-poc-15903fd-foundation-runtime-concurrency.json`.
 Those records improve the current runtime evidence set, but the paired
-operator status-review artifact at
-`docs/release-evidence/g7-status-review/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-operator-status-review-15903fd.json`
-records `status=blocked`,
-`g7_runtime_blocking_reasons=["stale_runtime_alias_label_mismatch"]`, and
+label-clean operator status-review artifact at
+`docs/release-evidence/g7-status-review/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-operator-status-review-15903fd-label-clean.json`
+records `status=candidate_evidence_requires_review`,
+`g7_runtime_blocking_reasons=[]`, and
 `status_upgrade_decision=not_approved_for_closure`. G7 closure, B3 closure,
 `211 verified`, and #164 `gate closable` claims remain blocked.
 
