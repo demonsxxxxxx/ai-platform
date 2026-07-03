@@ -1883,6 +1883,63 @@ def test_capacity_profile_readiness_cli_accepts_runtime_evidence_wrapper(tmp_pat
     assert "executor_private_payload" not in result.stdout
 
 
+def test_capacity_profile_readiness_cli_accepts_release_evidence_entry_wrapper(tmp_path):
+    release_evidence_path = tmp_path / "capacity-release-evidence-entry.json"
+    release_evidence_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.release-evidence-entry.v1",
+                "artifact_kind": "capacity_gate_readiness",
+                "commit_sha": "755e50ea2ad08c2d4218ae5d8cc612970b19e2a4",
+                "runtime_subject_commit_sha": "755e50ea2ad08c2d4218ae5d8cc612970b19e2a4",
+                "evidence_ref": {
+                    "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                    "runtime_profile": "g7-b3-755e50e-principal-userid-fix-v2",
+                    "readiness_status": "blocked_missing_admin_runtime_sections",
+                    "admin_runtime_required_sections": [
+                        "capacity",
+                        "database_pool",
+                        "queue",
+                        "admission",
+                        "backpressure",
+                        "sandbox",
+                        "observability",
+                    ],
+                    "admin_runtime_missing_sections": ["sandbox"],
+                    "missing_load_test_gates": list(LOAD_TEST_GATES),
+                    "profile_evidence": {},
+                    "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_profile_readiness.py",
+            "--readiness-json",
+            str(release_evidence_path),
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "ai-platform.capacity-profile-readiness.v1"
+    assert payload["status"] == "blocked_missing_admin_runtime_sections"
+    assert payload["source_gate_readiness"]["missing_admin_runtime_sections"] == ["sandbox"]
+    assert payload["source_gate_readiness"]["runtime_identity"] == {
+        "commit_sha": "755e50ea2ad08c2d4218ae5d8cc612970b19e2a4",
+        "profile": "g7-b3-755e50e-principal-userid-fix-v2",
+    }
+    assert "executor_private_payload" not in result.stdout
+
+
 def test_render_capacity_gate_readiness_markdown_is_gap_first_and_safe():
     readiness = build_capacity_gate_readiness(
         build_capacity_evidence_snapshot(

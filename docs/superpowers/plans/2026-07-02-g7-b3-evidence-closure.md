@@ -4,6 +4,11 @@
 
 **Goal:** Move G7 and B3 toward documented closure without overclaiming status labels.
 
+**Status:** Historical execution plan plus evidence ledger. Do not treat this
+file as the current G7/B3/G8 status source; current status lives in
+`docs/operations/ai-platform-gate-status.md`. New work should append here only
+when it directly executes this plan, not to preserve general status snapshots.
+
 **Architecture:** G7 progress evidence is repository-owned reviewed release evidence wrapping already captured 211 named runtime-subject verifier artifacts. B3 closure remains evidence-driven: only operator-reviewed recorded load-test gate snapshots and the B3 SDK subagent fanout profile can move B3 beyond `local partial`.
 
 **Tech Stack:** Python evidence tooling, Markdown gate docs, repository JSON release-evidence entries, targeted pytest.
@@ -70,7 +75,7 @@
 
 - [x] Add a reviewed, redacted live-env hardening release-evidence entry.
 - [x] Record live `SANDBOX_CONTAINER_PROVIDER=docker`, `SANDBOX_EXECUTOR_IMAGE=ai-platform:ae6b7e5-g7-b3-label-repair-v1`, and `SANDBOX_EGRESS_POLICY_ENABLED=true` without raw secrets or host paths.
-- [x] Keep G7/B3/#164 non-closure boundaries: external env-file, current-main POC/readiness, B3 load evidence, and operator status-upgrade review remain open.
+- [x] Keep G7/B3 non-closure boundaries: external env-file, current-main POC/readiness, B3 load evidence, and operator status-upgrade review remain open.
 
 ### Task 2: Audit B3 recorded load evidence
 
@@ -165,6 +170,40 @@
 Status remains `local partial`, not G7 complete, B3 complete, Foundation Alpha
 complete, production-ready, `211 verified`, or `gate closable`.
 
+2026-07-03 refresh: current 211 source/runtime has advanced to
+`755e50ea2ad08c2d4218ae5d8cc612970b19e2a4`. The repo-local source marker,
+API/worker image ID, source/runtime/OCI labels, and legacy source alias labels
+bind to `755e50e`; fresh 211 readback still observed legacy in-container marker
+files at `9c669761` and `28676df`, so G0/source-authority closure and clean
+current-main `211 verified` remain unavailable. Fresh local Git readback on 2026-07-03 also
+showed `origin/main` at `1230dbc64a39805d6492a60c2688a2fed31ef3d9`
+after a frontend-only merge, so `755e50e` must be treated as dirty-runtime
+evidence rather than latest clean `origin/main` runtime evidence. API/worker are
+running dirty runtime-only local patch image
+`ai-platform:755e50e-g7-b3-principal-userid-fix-v2`, and API health on
+`127.0.0.1:8020`, frontend proxy health, and frontend root were healthy. The
+755e50e dirty-runtime v2 live-env verifier
+`g7-live-env-hardening-755e50e-principal-userid-fix-v2-container-20260703115120`
+is wrapped as reviewed G7 runtime evidence at
+`docs/release-evidence/g7-sandbox/755e50ea2ad08c2d4218ae5d8cc612970b19e2a4/2026-07-03-211-g7-sandbox-live-env-hardening-755e50e.json`;
+all eight verifier checks passed.
+
+This still does not close status. Same-subject FRC evidence is now recorded at
+`docs/release-evidence/foundation-runtime-concurrency/755e50ea2ad08c2d4218ae5d8cc612970b19e2a4-frc-g7-b3-20260703/`, with readiness status
+`verified_foundation_runtime_concurrency`, `verified=true`, `failures=[]`, and
+12 concurrent requests/runs/sessions across 2 tenants and 4 users. The earlier
+`/tmp/frc-755e50e-20260703T090109Z` `queue_payload_invalid` attempt is superseded
+diagnostic history. Current status remains `local partial`, because B3 recorded
+load evidence, `b3_10x4_sdk_subagents` profile evidence, approved G7
+status-upgrade review, and clean current-main `211 verified` evidence are still
+missing. A later read-only B3 capacity visibility capture for the same `755e50e`
+runtime subject is recorded at
+`docs/release-evidence/capacity-gate-readiness/755e50ea2ad08c2d4218ae5d8cc612970b19e2a4/2026-07-03-211-capacity-runtime-readiness-755e50e.json`:
+Admin Runtime returned HTTP `200`, but readiness stayed
+`blocked_missing_admin_runtime_sections` because `sandbox` was missing, with all
+seven recorded load-test gates and profile evidence still absent. This is B3
+visibility only and does not close B3.
+
 G8 wording is now treated as a status-boundary cleanup issue. The old ordinary-user
 multi-agent exposure machine name is misleading for current status because it
 collapses two different things: ordinary-user platform-owned parent/child
@@ -206,6 +245,9 @@ Remaining blockers before any status upgrade:
 
 - G0/source-authority and production-hardening boundaries: external runtime
   env-file label caveat and current local runtime-affecting source rollout gap;
+- current `755e50e` Admin Runtime capacity visibility remains
+  `blocked_missing_admin_runtime_sections` because the `sandbox` section is
+  missing;
 - B3 operator-reviewed recorded load evidence, including all seven recorded
   load-test gates and the `b3_10x4_sdk_subagents` profile evidence;
 - G7 operator status-upgrade review. Latest audit reads

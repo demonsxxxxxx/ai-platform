@@ -383,8 +383,11 @@ The first stage was accepted after:
 6. G9 provides enough Admin Runtime visibility for controlled operation, but does
    not claim full beta readiness until alerting, golden-set, trace/export, model
    gateway, and release evidence are runtime-accepted.
-7. G8 is deferred/blocked for ordinary users; G10 remains planning-only until
-   workflow-owner rollout evidence exists.
+7. G8 remains a deferred platform-owned parent/child multi-run parking lot, and
+   ordinary-user exposure remains blocked. SDK Agent/subagent fanout is governed
+   inside one platform run and belongs to B3 capacity evidence until a future
+   focused G8 issue explicitly reopens platform orchestration.
+8. G10 remains planning-only until workflow-owner rollout evidence exists.
 
 In one sentence:
 

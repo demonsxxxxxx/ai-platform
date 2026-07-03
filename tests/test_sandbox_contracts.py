@@ -2,11 +2,13 @@ import pytest
 from pydantic import ValidationError
 
 from app.runtime.sandbox.contracts import (
+    ContainerStatus,
     ContainerLease,
     ExecutorCallbackEvent,
     SandboxRuntimeRequest,
     WorkspaceLease,
 )
+from app.runtime.kernel_contracts import RunContext
 
 
 def request_payload(**overrides):
@@ -45,6 +47,152 @@ def test_sandbox_runtime_request_requires_platform_identity():
     assert req.agent_id == "general-agent"
     assert req.sandbox_mode == "ephemeral"
     assert req.model_gateway == "new-api"
+
+
+def test_sandbox_contracts_accept_email_style_principal_user_id():
+    req = SandboxRuntimeRequest.model_validate(request_payload(user_id="alice@example.test"))
+    assert req.user_id == "alice@example.test"
+
+    context = RunContext.model_validate(
+        {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "alice@example.test",
+            "session_id": "session-a",
+            "run_id": "run-a",
+            "agent_id": "general-agent",
+            "skill_ids": ["general-chat"],
+            "mcp_tool_ids": [],
+            "model": "deepseek-v4-flash",
+            "model_gateway": "new-api",
+            "input_message": "write a file",
+            "file_ids": [],
+            "sandbox_mode": "ephemeral",
+            "browser_enabled": False,
+            "permissions": ["chat.respond", "sandbox.execute"],
+            "resource_limits": {"max_seconds": 120, "max_tool_calls": 20},
+        }
+    )
+    assert context.user_id == "alice@example.test"
+
+    workspace = WorkspaceLease(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="alice@example.test",
+        session_id="session-a",
+        run_id="run-a",
+        host_root="C:/runtime/tenants/tenant-a/workspaces/workspace-a/users/alice@example.test/sessions/session-a/runs/run-a",
+        workspace_host_path="C:/runtime/tenants/tenant-a/workspaces/workspace-a/users/alice@example.test/sessions/session-a/runs/run-a/workspace",
+        workspace_container_path="/workspace",
+        inputs_host_path="C:/runtime/tenants/tenant-a/workspaces/workspace-a/users/alice@example.test/sessions/session-a/runs/run-a/inputs",
+        logs_host_path="C:/runtime/tenants/tenant-a/workspaces/workspace-a/users/alice@example.test/sessions/session-a/runs/run-a/logs",
+    )
+    assert workspace.user_id == "alice@example.test"
+
+    lease = ContainerLease(
+        container_id="exec-run-a",
+        container_name="executor-exec-run-a",
+        provider="fake",
+        executor_url="http://127.0.0.1:18000",
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="alice@example.test",
+        session_id="session-a",
+        run_id="run-a",
+        sandbox_mode="ephemeral",
+        browser_enabled=False,
+        workspace_host_path="/runtime/workspace",
+        workspace_container_path="/workspace",
+        labels={"ai-platform.run_id": "run-a"},
+    )
+    assert lease.platform_labels()["ai-platform.user_id"] == "alice@example.test"
+
+    status = ContainerStatus(
+        container_id="exec-run-a",
+        container_name="executor-exec-run-a",
+        provider="fake",
+        status="running",
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="alice@example.test",
+        session_id="session-a",
+        run_id="run-a",
+        sandbox_mode="ephemeral",
+    )
+    assert status.user_id == "alice@example.test"
+
+
+def test_sandbox_contracts_reject_path_like_principal_user_id():
+    for unsafe_user_id in ["alice..escape", "../alice@example.test"]:
+        with pytest.raises(ValidationError, match="user_id"):
+            SandboxRuntimeRequest.model_validate(request_payload(user_id=unsafe_user_id))
+
+        with pytest.raises(ValidationError, match="user_id"):
+            RunContext.model_validate(
+                {
+                    "tenant_id": "tenant-a",
+                    "workspace_id": "workspace-a",
+                    "user_id": unsafe_user_id,
+                    "session_id": "session-a",
+                    "run_id": "run-a",
+                    "agent_id": "general-agent",
+                    "skill_ids": ["general-chat"],
+                    "mcp_tool_ids": [],
+                    "model": "deepseek-v4-flash",
+                    "model_gateway": "new-api",
+                    "input_message": "write a file",
+                    "file_ids": [],
+                    "sandbox_mode": "ephemeral",
+                    "browser_enabled": False,
+                    "permissions": ["chat.respond", "sandbox.execute"],
+                    "resource_limits": {},
+                }
+            )
+
+        with pytest.raises(ValidationError, match="user_id"):
+            WorkspaceLease(
+                tenant_id="tenant-a",
+                workspace_id="workspace-a",
+                user_id=unsafe_user_id,
+                session_id="session-a",
+                run_id="run-a",
+                host_root="/runtime/workspace",
+                workspace_host_path="/runtime/workspace",
+                workspace_container_path="/workspace",
+                inputs_host_path="/runtime/workspace/inputs",
+                logs_host_path="/runtime/workspace/logs",
+            )
+
+        with pytest.raises(ValidationError, match="user_id"):
+            ContainerLease(
+                container_id="exec-run-a",
+                container_name="executor-exec-run-a",
+                provider="fake",
+                executor_url="http://127.0.0.1:18000",
+                tenant_id="tenant-a",
+                workspace_id="workspace-a",
+                user_id=unsafe_user_id,
+                session_id="session-a",
+                run_id="run-a",
+                sandbox_mode="ephemeral",
+                browser_enabled=False,
+                workspace_host_path="/runtime/workspace",
+                workspace_container_path="/workspace",
+            )
+
+        with pytest.raises(ValidationError, match="user_id"):
+            ContainerStatus(
+                container_id="exec-run-a",
+                container_name="executor-exec-run-a",
+                provider="fake",
+                status="running",
+                tenant_id="tenant-a",
+                workspace_id="workspace-a",
+                user_id=unsafe_user_id,
+                session_id="session-a",
+                run_id="run-a",
+                sandbox_mode="ephemeral",
+            )
 
 
 def test_sandbox_runtime_request_rejects_none_mode():

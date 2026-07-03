@@ -786,9 +786,11 @@ source/runtime/OCI labels at `9c669761`, with API and worker running
 frontend root on `http://127.0.0.1:18001/` returned HTTP `200`.
 
 No reviewed B3 capacity runtime evidence entry has been recorded for
-`9c669761`. The latest reviewed B3 capacity entry remains the `28676df`
-visibility record above, with all seven recorded load-test gates and
-`b3_10x4_sdk_subagents` profile evidence still missing. The earlier deployed G7
+`9c669761`. At this historical slice, the latest reviewed B3 capacity entry was
+the `28676df` visibility record above, with all seven recorded load-test gates
+and `b3_10x4_sdk_subagents` profile evidence still missing. Newer latest-status
+reading must use the later `755e50e` visibility record below, which is also
+fail-closed and not recorded load evidence. The earlier deployed G7
 verifier diagnostic for `9c669761`, `g7-current-main-9c66976-20260702145801`,
 recorded `executed_task=false`, `sandbox_provider=unknown`, and
 `[Errno 13] Permission denied: '[redacted-path]'`; this is not B3 load evidence
@@ -822,9 +824,11 @@ Direct API health on
 `http://127.0.0.1:18001/` were healthy after the frontend container restart.
 
 No reviewed B3 capacity runtime evidence entry has been recorded for
-`15903fd`. The latest reviewed B3 capacity entry remains the `28676df`
-visibility record above, with all seven recorded load-test gates and
-`b3_10x4_sdk_subagents` profile evidence still missing. The 2026-07-03
+`15903fd`. At this historical slice, the latest reviewed B3 capacity entry was
+the `28676df` visibility record above, with all seven recorded load-test gates
+and `b3_10x4_sdk_subagents` profile evidence still missing. Newer latest-status
+reading must use the later `755e50e` visibility record below, which is also
+fail-closed and not recorded load evidence. The 2026-07-03
 label-clean live-default G7 run
 `g7-live-env-hardening-15903fd-label-clean-sudo-20260703055828` is wrapped at
 `docs/release-evidence/g7-sandbox/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-sandbox-live-env-hardening-15903fd-label-clean.json`,
@@ -836,7 +840,58 @@ label-clean operator status-review artifact at
 records `status=candidate_evidence_requires_review`,
 `g7_runtime_blocking_reasons=[]`, and
 `status_upgrade_decision=not_approved_for_closure`. G7 closure, B3 closure,
-`211 verified`, and #164 `gate closable` claims remain blocked.
+`211 verified` claims remain blocked, and this does not constitute current G7/B3 closure evidence for the already-closed historical #164.
+
+### Current Runtime Note - 2026-07-03, commit `755e50e`
+
+A later 211 readback observed the repo-local source marker at
+`755e50ea2ad08c2d4218ae5d8cc612970b19e2a4`, with API and worker running the
+dirty runtime-only local patch image
+`ai-platform:755e50e-g7-b3-principal-userid-fix-v2`. Canonical API/worker
+source/runtime/OCI labels and legacy source alias labels bind to `755e50e`;
+`ai-platform.build-dirty=true`, rollout is
+`g7-b3-755e50e-principal-userid-fix-v2`, and the live executor image remains
+`ai-platform:755e50e-g7-b3-principal-userid-fix-v1`. Fresh 211 readback still
+observed legacy in-container marker files at `9c669761` and `28676df`, so this
+is not G0/source-authority closure or clean current-main `211 verified`
+evidence. Fresh local Git readback on 2026-07-03 showed `origin/main` at
+`1230dbc64a39805d6492a60c2688a2fed31ef3d9` after a frontend-only merge, so
+`755e50e` is not latest clean `origin/main` runtime evidence. Direct API health
+on `127.0.0.1:8020`, frontend proxy health, and frontend root were healthy.
+
+The 2026-07-03 dirty-runtime v2 live-env G7 run
+`g7-live-env-hardening-755e50e-principal-userid-fix-v2-container-20260703115120`
+is wrapped at
+`docs/release-evidence/g7-sandbox/755e50ea2ad08c2d4218ae5d8cc612970b19e2a4/2026-07-03-211-g7-sandbox-live-env-hardening-755e50e.json`.
+Its verifier summary records all eight G7 runtime checks passing. Same-subject
+FRC evidence is now recorded at
+`docs/release-evidence/foundation-runtime-concurrency/755e50ea2ad08c2d4218ae5d8cc612970b19e2a4-frc-g7-b3-20260703/`; the readiness file reports
+`verified_foundation_runtime_concurrency`, `verified=true`, `failures=[]`, 12
+concurrent requests/runs/sessions across 2 tenants and 4 users, and passed
+queue, sandbox, memory/context, artifact ACL, tool permission, skill snapshot,
+and run playback checks. The earlier `/tmp/frc-755e50e-20260703T090109Z`
+`queue_payload_invalid` attempt is retained only as superseded diagnostic
+history.
+
+The read-only capacity runtime evidence command was then run inside the 211 API
+container against the same dirty-runtime v2 subject:
+
+```powershell
+python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha 755e50ea2ad08c2d4218ae5d8cc612970b19e2a4 --runtime-profile g7-b3-755e50e-principal-userid-fix-v2 --skip-maintenance-cleanup --format json
+```
+
+The redacted reviewed summary is recorded at
+`docs/release-evidence/capacity-gate-readiness/755e50ea2ad08c2d4218ae5d8cc612970b19e2a4/2026-07-03-211-capacity-runtime-readiness-755e50e.json`.
+It records Admin Runtime HTTP `200`, schema
+`ai-platform.capacity-runtime-evidence.v1`, nested gate readiness
+`blocked_missing_admin_runtime_sections`, observed sections `capacity`,
+`database_pool`, `queue`, `admission`, `backpressure`, and `observability`, and
+missing Admin Runtime capacity section `sandbox`. All seven recorded load-test
+gates and `b3_10x4_sdk_subagents` profile evidence are still missing. This is
+visibility only; it is not a raw runtime payload export and is not recorded B3
+load evidence. G7 closure, B3 closure, and clean current-main `211 verified` claims remain
+blocked; this does not constitute current G7/B3 closure evidence for the
+already-closed historical #164.
 
 ### Evidence Bundle Draft Tool
 

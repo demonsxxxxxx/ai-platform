@@ -8,6 +8,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.capacity_baseline import (
+    LOAD_TEST_GATES,
     build_capacity_profile_readiness,
     render_capacity_profile_readiness_markdown,
 )
@@ -25,10 +26,46 @@ def _read_json(path_value: str) -> dict[str, object]:
 
 
 def _profile_readiness_input(payload: dict[str, object]) -> dict[str, object]:
+    if payload.get("schema_version") == "ai-platform.release-evidence-entry.v1":
+        artifact_kind = payload.get("artifact_kind")
+        evidence_ref = payload.get("evidence_ref")
+        if artifact_kind == "capacity_gate_readiness" and isinstance(evidence_ref, dict):
+            nested = dict(evidence_ref)
+            nested.setdefault(
+                "commit_sha",
+                payload.get("runtime_subject_commit_sha") or payload.get("commit_sha"),
+            )
+            return _profile_readiness_input(nested)
     if payload.get("schema_version") == "ai-platform.capacity-runtime-evidence.v1":
         readiness = payload.get("readiness")
         if isinstance(readiness, dict):
             return readiness
+        missing_sections = payload.get("admin_runtime_missing_sections")
+        missing_gates = payload.get("missing_load_test_gates")
+        profile_evidence = payload.get("profile_evidence")
+        return {
+            "schema_version": "ai-platform.capacity-gate-readiness.v1",
+            "status": payload.get("readiness_status"),
+            "runtime_identity": {
+                "commit_sha": payload.get("commit_sha"),
+                "profile": payload.get("runtime_profile"),
+            },
+            "admin_runtime_evidence": {
+                "required_sections": payload.get("admin_runtime_required_sections"),
+                "missing_sections": missing_sections,
+            },
+            "load_test_gates": [
+                {
+                    "gate": gate,
+                    "status": "missing_recorded_load_test_evidence",
+                }
+                for gate in LOAD_TEST_GATES
+            ],
+            "missing_load_test_gates": missing_gates,
+            "invalid_load_test_evidence": [],
+            "profile_evidence": profile_evidence,
+            "production_default_decision": payload.get("production_default_decision"),
+        }
     return payload
 
 

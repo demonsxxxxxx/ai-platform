@@ -3546,7 +3546,17 @@ async def test_create_run_prevalidates_queue_payload_before_persisting(monkeypat
     class RejectingQueueRunPayload:
         @classmethod
         def model_validate(cls, payload):
-            raise ValueError("queue_payload_invalid")
+            class QueuePayloadError(ValueError):
+                def errors(self):
+                    return [
+                        {
+                            "loc": ("release_decision",),
+                            "type": "value_error",
+                            "msg": "bad token=run-secret-token at /var/lib/ai-platform/private/run.log",
+                        }
+                    ]
+
+            raise QueuePayloadError("queue_payload_invalid")
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
@@ -3568,7 +3578,46 @@ async def test_create_run_prevalidates_queue_payload_before_persisting(monkeypat
         )
 
     assert getattr(exc_info.value, "status_code", None) == 500
-    assert getattr(exc_info.value, "detail", None) == "queue_payload_invalid"
+    assert getattr(exc_info.value, "detail", None) == {
+        "code": "queue_payload_invalid",
+        "errors": [
+            {
+                "loc": ["release_decision"],
+                "type": "value_error",
+                "message": "validation_error",
+            }
+        ],
+    }
+    assert "run-secret-token" not in str(exc_info.value.detail)
+    assert "/var/lib/ai-platform/private/run.log" not in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_create_run_rejects_unsafe_principal_user_id_before_persistence(monkeypatch):
+    calls = []
+
+    @asynccontextmanager
+    async def fail_transaction():
+        calls.append("transaction")
+        raise AssertionError("unsafe principal user_id should fail before opening a transaction")
+        yield object()
+
+    monkeypatch.setattr("app.routes.runs.transaction", fail_transaction)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="qa-word-review",
+                capability_id="document_review",
+                input={"message": "审核"},
+            ),
+            principal=principal(user_id="../alice@example.test"),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "invalid_principal_user_id"
+    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -4017,7 +4066,17 @@ async def test_copy_run_prevalidates_queue_payload_before_seeding_reused_steps(m
     class RejectingQueueRunPayload:
         @classmethod
         def model_validate(cls, payload):
-            raise ValueError("queue_payload_invalid")
+            class QueuePayloadError(ValueError):
+                def errors(self):
+                    return [
+                        {
+                            "loc": ("skill_manifests", 0),
+                            "type": "value_error",
+                            "msg": "bad token=copy-secret-token at /var/lib/ai-platform/private/copy.log",
+                        }
+                    ]
+
+            raise QueuePayloadError("queue_payload_invalid")
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
@@ -4031,7 +4090,38 @@ async def test_copy_run_prevalidates_queue_payload_before_seeding_reused_steps(m
         await copy_run("run_source", principal=principal())
 
     assert getattr(exc_info.value, "status_code", None) == 500
-    assert getattr(exc_info.value, "detail", None) == "queue_payload_invalid"
+    assert getattr(exc_info.value, "detail", None) == {
+        "code": "queue_payload_invalid",
+        "errors": [
+            {
+                "loc": ["skill_manifests", 0],
+                "type": "value_error",
+                "message": "validation_error",
+            }
+        ],
+    }
+    assert "copy-secret-token" not in str(exc_info.value.detail)
+    assert "/var/lib/ai-platform/private/copy.log" not in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_copy_run_rejects_unsafe_principal_user_id_before_copy_persistence(monkeypatch):
+    calls = []
+
+    @asynccontextmanager
+    async def fail_transaction():
+        calls.append("transaction")
+        raise AssertionError("unsafe principal user_id should fail before copy persistence")
+        yield object()
+
+    monkeypatch.setattr("app.routes.runs.transaction", fail_transaction)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await copy_run("run_source", principal=principal(user_id="../alice@example.test"))
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "invalid_principal_user_id"
+    assert calls == []
 
 
 @pytest.mark.asyncio

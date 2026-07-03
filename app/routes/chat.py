@@ -20,6 +20,7 @@ from app.models import (
     QueueRunPayload,
 )
 from app.product_events import initial_run_event_specs, intent_event_specs
+from app.queue_payload_validation import queue_payload_invalid_detail
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
 from app.projection_redaction import (
     capability_id_from_skill,
@@ -41,6 +42,7 @@ from app.skills.pinning import (
 )
 from app.skills.release_policy import release_decision_payload_for_locked_version, resolve_rollout_skill_decision
 from app.skills.registry import BuiltinSkillRegistry
+from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
 _MISSING = object()
@@ -107,7 +109,7 @@ def _validate_queue_payload_for_enqueue(payload: dict[str, Any]) -> dict[str, An
     try:
         return QueueRunPayload.model_validate(payload).model_dump(mode="json")
     except ValueError as exc:
-        raise HTTPException(status_code=500, detail="queue_payload_invalid") from exc
+        raise HTTPException(status_code=500, detail=queue_payload_invalid_detail(exc)) from exc
 
 
 async def _enqueue_chat_run(queue_payload: dict[str, Any]):
@@ -440,6 +442,10 @@ async def chat_stream(
     agent_id: str | None = Query(None),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> ChatStreamResponse:
+    try:
+        assert_safe_principal_user_id(principal.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid_principal_user_id") from exc
     query_agent_id = _normalized_query_agent_id(agent_id)
     requested_agent_id = request.agent_id or query_agent_id or "general-agent"
     requested_skill_id = request.skill_id if is_ai_admin(principal) else None
@@ -513,6 +519,27 @@ async def chat_stream(
                 release_decision,
                 locked_version=skill_version,
             )
+            session_id = request.session_id or repositories.new_id("ses")
+            run_id = repositories.new_id("run")
+            queue_payload = _validate_queue_payload_for_enqueue(
+                {
+                    "tenant_id": principal.tenant_id,
+                    "workspace_id": request.workspace_id,
+                    "user_id": principal.user_id,
+                    "session_id": session_id,
+                    "run_id": run_id,
+                    "agent_id": resolved_agent_id,
+                    "skill_id": resolved_skill_id,
+                    "file_ids": resolved_file_ids,
+                    "input": run_input,
+                    "executor_type": skill["executor_type"],
+                    "skill_version": skill_version,
+                    "release_decision": release_decision_payload,
+                    "skill_manifests": skill_manifests,
+                    "model_id": requested_model_id,
+                    "model_value": requested_model_value,
+                }
+            )
             await repositories.ensure_user(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -526,7 +553,7 @@ async def chat_stream(
                 user_id=principal.user_id,
                 agent_id=resolved_agent_id,
                 title=request.title or request.message[:80],
-                session_id=request.session_id,
+                session_id=session_id,
             )
             run_id = await repositories.create_run(
                 conn,
@@ -638,23 +665,11 @@ async def chat_stream(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     queue_payload = _validate_queue_payload_for_enqueue(
         {
-            "tenant_id": principal.tenant_id,
-            "workspace_id": request.workspace_id,
-            "user_id": principal.user_id,
+            **queue_payload,
             "session_id": session_id,
             "run_id": run_id,
-            "agent_id": resolved_agent_id,
-            "skill_id": resolved_skill_id,
-            "file_ids": resolved_file_ids,
-            "input": run_input,
-            "executor_type": skill["executor_type"],
-            "skill_version": skill_version,
-            "release_decision": release_decision_payload,
-            "skill_manifests": skill_manifests,
             "context_snapshot_id": context_ref["context_snapshot_id"],
             "context_snapshot": context_ref,
-            "model_id": requested_model_id,
-            "model_value": requested_model_value,
         }
     )
     queue_admission = await _enqueue_chat_run(queue_payload)
