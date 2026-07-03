@@ -200,8 +200,10 @@ missing. A later read-only B3 capacity visibility capture for the same `755e50e`
 runtime subject is recorded at
 `docs/release-evidence/capacity-gate-readiness/755e50ea2ad08c2d4218ae5d8cc612970b19e2a4/2026-07-03-211-capacity-runtime-readiness-755e50e.json`:
 Admin Runtime returned HTTP `200`, but readiness stayed
-`blocked_missing_admin_runtime_sections` because `sandbox` was missing, with all
-seven recorded load-test gates and profile evidence still absent. This is B3
+`blocked_missing_admin_runtime_sections` because the no-cleanup capture could not
+provide valid sandbox container observation, so the `sandbox` evidence section is
+treated as missing for B3; all seven recorded load-test gates and profile
+evidence are still absent. This is B3
 visibility only and does not close B3.
 
 G8 wording is now treated as a status-boundary cleanup issue. The old ordinary-user
@@ -246,8 +248,9 @@ Remaining blockers before any status upgrade:
 - G0/source-authority and production-hardening boundaries: external runtime
   env-file label caveat and current local runtime-affecting source rollout gap;
 - current `755e50e` Admin Runtime capacity visibility remains
-  `blocked_missing_admin_runtime_sections` because the `sandbox` section is
-  missing;
+  `blocked_missing_admin_runtime_sections` because sandbox container observation
+  is unavailable/degraded and therefore does not count as valid B3 `sandbox`
+  evidence;
 - B3 operator-reviewed recorded load evidence, including all seven recorded
   load-test gates and the `b3_10x4_sdk_subagents` profile evidence;
 - G7 operator status-upgrade review. Latest audit reads

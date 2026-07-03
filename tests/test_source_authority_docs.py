@@ -1894,7 +1894,7 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "当前 `755e50e` capacity visibility verdict 是 `blocked_missing_admin_runtime_sections`" in compact_roadmap_text
     assert "总体 B3 closure 仍是 `local partial`" in compact_roadmap_text
     assert "因为七门 recorded load evidence 和 `b3_10x4_sdk_subagents` profile evidence 未齐备" in compact_roadmap_text
-    assert "current `755e50e` Admin Runtime capacity visibility remains `blocked_missing_admin_runtime_sections` because the `sandbox` section is missing" in " ".join(read(G7_B3_EVIDENCE_CLOSURE_PLAN).split())
+    assert "current `755e50e` Admin Runtime capacity visibility remains `blocked_missing_admin_runtime_sections` because sandbox container observation is unavailable/degraded" in " ".join(read(G7_B3_EVIDENCE_CLOSURE_PLAN).split())
     assert "`deployed verifier failed` / `local partial`" not in compact_roadmap_text
     assert "tools/g7_b3_completion_audit.py" in gate_status_text
     assert "the captured `4805031` G7 audit was no longer blocked by executor-image drift" in compact_gate_status_text

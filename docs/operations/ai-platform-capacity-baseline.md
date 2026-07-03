@@ -245,8 +245,13 @@ requires `X-AI-Gateway-Secret`, pass only the environment variable name with
 `--gateway-secret-env`; the secret value is read from the environment and never
 printed. The no-cleanup flag is the default-stack capture mode: the production
 compose path intentionally does not mount the Docker socket into the API
-container, so read-only capacity snapshots must not depend on Docker SDK access
-from inside the API process.
+container, so the capture request itself must not fail or run cleanup just
+because Docker SDK access is unavailable from inside the API process. This does
+not make unavailable container observation acceptable B3 evidence: if the
+projection reports `sandbox.container_observation_degraded=true` or
+`sandbox.list_runtime_containers_status` is not `available`, capacity readiness
+still treats `sandbox` as a missing Admin Runtime evidence section and remains
+fail-closed.
 
 ## Operator Load-Test Workflow
 
@@ -308,7 +313,10 @@ successful Admin Runtime overview response, the harness requires the seven
 baseline sections `capacity`, `database_pool`, `queue`, `admission`,
 `backpressure`, `sandbox`, and `observability`; missing sections trigger
 `admin_runtime_projection_sections_missing` and return only section names and
-counts, not the raw projection body. The model-gateway gate records only
+counts, not the raw projection body. A degraded sandbox projection is also
+treated as missing B3 sandbox evidence even when the `sandbox` object is present,
+because the gate requires runtime container observation, not just a schema
+placeholder. The model-gateway gate records only
 observed model-gateway projection field paths,
 and missing required projection fields trigger
 `model_gateway_projection_fields_missing` instead of producing a successful
@@ -886,8 +894,10 @@ It records Admin Runtime HTTP `200`, schema
 `ai-platform.capacity-runtime-evidence.v1`, nested gate readiness
 `blocked_missing_admin_runtime_sections`, observed sections `capacity`,
 `database_pool`, `queue`, `admission`, `backpressure`, and `observability`, and
-missing Admin Runtime capacity section `sandbox`. All seven recorded load-test
-gates and `b3_10x4_sdk_subagents` profile evidence are still missing. This is
+missing Admin Runtime capacity section `sandbox` because live container
+observation was unavailable/degraded in the API-container no-cleanup capture.
+All seven recorded load-test gates and `b3_10x4_sdk_subagents` profile evidence
+are still missing. This is
 visibility only; it is not a raw runtime payload export and is not recorded B3
 load evidence. G7 closure, B3 closure, and clean current-main `211 verified` claims remain
 blocked; this does not constitute current G7/B3 closure evidence for the
