@@ -325,6 +325,125 @@ async def list_agent_app_projections(conn: AsyncConnection, *, tenant_id: str) -
     return list(await cursor.fetchall())
 
 
+async def list_scoped_context_messages(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+    limit: int = 20,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    cursor = await conn.execute(
+        """
+        select messages.id, messages.session_id, messages.run_id, messages.role, messages.content,
+               messages.metadata_json, messages.created_at
+        from messages
+        join sessions on sessions.id = messages.session_id and sessions.tenant_id = messages.tenant_id
+        join runs on runs.id = messages.run_id and runs.tenant_id = messages.tenant_id
+        where messages.tenant_id = %s
+          and runs.workspace_id = %s
+          and runs.user_id = %s
+          and messages.session_id = %s
+          and messages.run_id = %s
+          and sessions.user_id = runs.user_id
+          and sessions.workspace_id = runs.workspace_id
+        order by messages.created_at asc
+        limit %s offset %s
+        """,
+        (tenant_id, workspace_id, user_id, session_id, run_id, max(1, int(limit)), max(0, int(offset))),
+    )
+    return list(await cursor.fetchall())
+
+
+async def get_scoped_context_file(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+    file_id: str,
+) -> dict[str, Any] | None:
+    cursor = await conn.execute(
+        """
+        select files.*
+        from files
+        where files.tenant_id = %s
+          and files.workspace_id = %s
+          and files.user_id = %s
+          and files.session_id = %s
+          and files.run_id = %s
+          and files.id = %s
+        """,
+        (tenant_id, workspace_id, user_id, session_id, run_id, file_id),
+    )
+    return await cursor.fetchone()
+
+
+async def get_scoped_context_artifact(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+    artifact_id: str,
+) -> dict[str, Any] | None:
+    cursor = await conn.execute(
+        """
+        select artifacts.*
+        from artifacts
+        join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
+        where artifacts.tenant_id = %s
+          and runs.workspace_id = %s
+          and runs.user_id = %s
+          and runs.session_id = %s
+          and runs.id = %s
+          and artifacts.id = %s
+        """,
+        (tenant_id, workspace_id, user_id, session_id, run_id, artifact_id),
+    )
+    return await cursor.fetchone()
+
+
+async def list_scoped_context_memory_records(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    agent_id: str,
+    session_id: str,
+    query: str = "",
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    query_pattern = f"%{query}%" if query else ""
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, workspace_id, user_id, agent_id, session_id,
+               record_type, content, metadata_json, status, deleted_at, created_at
+        from memory_records
+        where tenant_id = %s
+          and workspace_id = %s
+          and user_id = %s
+          and agent_id = %s
+          and session_id = %s
+          and status = 'active'
+          and deleted_at is null
+          and (%s = '' or content ilike %s)
+        order by created_at desc
+        limit %s
+        """,
+        (tenant_id, workspace_id, user_id, agent_id, session_id, query_pattern, query_pattern, max(1, int(limit))),
+    )
+    return list(await cursor.fetchall())
+
+
 async def list_lambchat_agents(conn: AsyncConnection, *, tenant_id: str) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """

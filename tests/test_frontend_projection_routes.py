@@ -188,6 +188,38 @@ def test_revealed_files_project_authorized_artifacts(monkeypatch):
     assert sessions_response.json() == [{"session_id": "ses_a", "session_name": "QA session", "file_count": 1}]
 
 
+def test_revealed_files_original_path_does_not_expose_storage_key(monkeypatch):
+    artifacts = [
+        {
+            "id": "art_report",
+            "storage_key": "tenants/default/workspaces/default/sessions/ses_a/runs/run_a/artifacts/1/private-report.docx",
+            "label": "",
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "size_bytes": 2048,
+            "run_id": "run_a",
+            "session_id": "ses_a",
+            "session_name": "QA session",
+            "trace_id": "trace_a",
+            "workspace_id": "default",
+            "user_id": "ordinary",
+            "artifact_type": "reviewed_docx",
+            "created_at": "2026-06-28T08:00:00Z",
+        }
+    ]
+    install_projection_route_fakes(monkeypatch, artifacts=artifacts)
+    client = TestClient(create_app())
+
+    response = client.get("/api/files/revealed", headers=headers("artifact:download"))
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["file_name"] == "private-report.docx"
+    assert item["original_path"] == "private-report.docx"
+    serialized = str(item).lower()
+    assert "tenants/default/workspaces" not in serialized
+    assert "storage_key" not in serialized
+
+
 def test_revealed_files_fail_closed_without_artifact_permission(monkeypatch):
     install_projection_route_fakes(monkeypatch)
     client = TestClient(create_app())

@@ -1559,7 +1559,7 @@ async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch, tmp_path):
-    async def fake_run_claude_agent_sdk(*, prompt, cwd, skill_id, skills, model_id=None, on_text, on_skill_use=None):
+    async def fake_run_claude_agent_sdk(*, prompt, cwd, skill_id, skills, model_id=None, session_id=None, on_text, on_skill_use=None):
         await on_text("partial")
         return FakeQueryResult()
 
@@ -1576,6 +1576,120 @@ async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch
             payload(agent_id="general-agent", skill_id="general-chat", file_ids=[], input={"message": "hello"}),
             event_sink=event_sink,
         )
+
+
+@pytest.mark.asyncio
+async def test_worker_passes_session_continuity_resume_key_to_sdk_runner(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_skill(tmp_path / "skills", name="qa-file-reviewer")
+    captured_session_ids: list[str | None] = []
+
+    async def fake_run_claude_agent_sdk(
+        *,
+        prompt,
+        cwd,
+        skill_id,
+        skills,
+        model_id=None,
+        session_id=None,
+        on_text,
+        on_skill_use,
+        on_tool_permission,
+    ):
+        captured_session_ids.append(session_id)
+        return FakeQueryResult()
+
+    async def no_files(payload, workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+
+    base_payload = payload(
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        file_ids=[],
+        input={"message": "review"},
+    )
+    second_payload = payload(
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        file_ids=[],
+        input={"message": "continue"},
+        run_id="run_2",
+    )
+    fork_payload = payload(
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        file_ids=[],
+        input={"message": "explore", "context_fork_reason": "parallel_exploration"},
+        run_id="run_3",
+    )
+
+    await adapter.submit_run(base_payload)
+    await adapter.submit_run(second_payload)
+    await adapter.submit_run(fork_payload)
+
+    assert captured_session_ids[0]
+    assert captured_session_ids[0] == captured_session_ids[1]
+    assert captured_session_ids[2] != captured_session_ids[0]
+
+
+@pytest.mark.asyncio
+async def test_worker_passes_scoped_context_retrieval_to_sdk_runner_for_manifest(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_skill(tmp_path / "skills", name="qa-file-reviewer")
+    captured = {}
+
+    async def fake_run_claude_agent_sdk(
+        *,
+        prompt,
+        cwd,
+        skill_id,
+        skills,
+        model_id=None,
+        session_id=None,
+        context_retrieval=None,
+        context_retrieval_identity=None,
+        on_text,
+        on_skill_use,
+        on_tool_permission,
+    ):
+        captured["context_retrieval"] = context_retrieval
+        captured["context_retrieval_identity"] = context_retrieval_identity
+        return FakeQueryResult()
+
+    async def no_files(payload, workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+
+    await adapter.submit_run(
+        payload(
+            agent_id="qa-word-review",
+            skill_id="qa-file-reviewer",
+            file_ids=[],
+            input={"message": "review"},
+            context_pack={
+                "schema_version": "ai-platform.executor-context-pack.v1",
+                "context_manifest": {
+                    "schema_version": "ai-platform.context-manifest.v1",
+                    "available_retrieval_tools": ["read_context_file"],
+                },
+            },
+        )
+    )
+
+    assert captured["context_retrieval"] is not None
+    assert captured["context_retrieval_identity"].tenant_id == "default"
+    assert captured["context_retrieval_identity"].workspace_id == "default"
+    assert captured["context_retrieval_identity"].user_id == "user-a"
+    assert captured["context_retrieval_identity"].session_id == "ses_1"
 
 
 @pytest.mark.asyncio
@@ -2793,6 +2907,7 @@ async def test_claude_worker_sdk_permission_hook_creates_request_event_and_audit
         skill_id,
         skills,
         model_id=None,
+        session_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -2930,6 +3045,7 @@ async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_p
         skill_id,
         skills,
         model_id=None,
+        session_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -2970,6 +3086,7 @@ async def test_claude_worker_sdk_permission_hook_allows_existing_decision(monkey
         skill_id,
         skills,
         model_id=None,
+        session_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -3066,6 +3183,7 @@ async def test_claude_worker_sdk_permission_hook_uses_exact_decision_lookup(monk
         skill_id,
         skills,
         model_id=None,
+        session_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -3162,6 +3280,7 @@ async def test_claude_worker_sdk_permission_hook_consumes_allow_once_decision(mo
         skill_id,
         skills,
         model_id=None,
+        session_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -3279,6 +3398,7 @@ async def test_claude_worker_sdk_permission_hook_fails_closed_when_allow_once_co
         skill_id,
         skills,
         model_id=None,
+        session_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -3384,6 +3504,7 @@ async def test_claude_worker_sdk_permission_hook_allows_run_decision_for_same_ba
         skill_id,
         skills,
         model_id=None,
+        session_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -3480,6 +3601,7 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_decision_fo
         skill_id,
         skills,
         model_id=None,
+        session_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
@@ -3593,6 +3715,7 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_deny_for_ot
         skill_id,
         skills,
         model_id=None,
+        session_id=None,
         on_text,
         on_skill_use,
         on_tool_permission,
