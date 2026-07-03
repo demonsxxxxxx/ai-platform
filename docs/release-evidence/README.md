@@ -1,10 +1,17 @@
 # ai-platform Release Evidence Index
 
-Date: 2026-07-02
+Date: 2026-07-03
 
 This directory is the repository-owned location for reviewed, redacted release
 evidence entries. It is an index and contract baseline only. This contract
 does not close G9.
+
+Current GitHub `main` is PR #311 merge commit
+`40691c01d64d6cd604dd94e6fc24ee6babdf0cad`, but the latest reviewed G7/B3
+runtime-subject evidence in this index remains the deployed PR #308 subject
+`15903fdfe96ffcfba9daa1252741111017dcf832`. Do not read PR #311's merged
+docs/audit-boundary updates as a 211 rollout, `211 verified`, G7 closure, B3
+closure, or #164 closure evidence.
 
 Legacy evidence keys such as `g8_ordinary_user_multi_agent_exposure` are
 retained only as historical negative follow-up names. Interpret them as
