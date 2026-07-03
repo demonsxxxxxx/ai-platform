@@ -186,8 +186,11 @@ def _reviewed_g7_source_override_allowed(
         return False
     if evidence.get("gate") != "G7 Sandbox / Resource Hardening":
         return False
-    if evidence.get("artifact_kind") == "211_runtime_identity_label_repair":
+    artifact_kind = evidence.get("artifact_kind")
+    if artifact_kind == "211_runtime_identity_label_repair":
         return True
+    if artifact_kind != "211_sandbox_runtime_smoke":
+        return False
     source_ref = _dict(evidence.get("source_ref"))
     image_labels = _dict(source_ref.get("image_labels"))
     return _legacy_runtime_label_commit(image_labels) == current_source_commit
@@ -440,13 +443,18 @@ def _build_b3_audit(capacity_profile_readiness: dict[str, Any] | None) -> dict[s
         blocking_reasons.append("b3_recorded_load_test_gates_missing")
     if missing_profile:
         blocking_reasons.append("b3_10x4_sdk_subagents_profile_evidence_missing")
+    production_default_decision = (
+        "do_not_raise_without_recorded_load_test_evidence"
+        if blocking_reasons
+        else "operator_review_required_before_default_change"
+    )
     return {
         "status": "blocked" if blocking_reasons else "operator_review_required",
         "target_profile_id": B3_TARGET_PROFILE_ID,
         "missing_recorded_load_test_gates": missing_gates,
         "missing_profile_evidence": missing_profile,
         "blocking_reasons": blocking_reasons,
-        "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+        "production_default_decision": production_default_decision,
         "does_not_raise_production_defaults": True,
         "does_not_enable_ordinary_user_platform_multi_run_orchestration": True,
     }

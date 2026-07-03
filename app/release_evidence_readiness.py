@@ -81,6 +81,7 @@ _ACCEPTED_ARTIFACT_KINDS = [
     "211_memory_enabled_document_workflow_smoke",
     "211_sandbox_runtime_smoke",
     "211_runtime_identity_label_repair",
+    "211_g7_operator_status_review",
 ]
 _RETENTION_POLICY = {
     "schema_version": RETENTION_POLICY_SCHEMA_VERSION,

@@ -274,9 +274,16 @@ The workflow is intentionally conservative:
    `tools/capacity_recorded_gate_snapshot.py`. When the same operator packet
    includes the B3 SDK subagent fanout measurement, pass it through
    `--profile-evidence-json` so the tool writes only
-   `load_test_evidence.profile_evidence.b3_10x4_sdk_subagents`.
+    `load_test_evidence.profile_evidence.b3_10x4_sdk_subagents`.
 8. Generate the final fail-closed verdict with
-   `tools/capacity_gate_readiness.py`.
+    `tools/capacity_gate_readiness.py`.
+9. For the all-gates B3 plan, build a sanitized B3 profile evidence packet with
+   `tools/capacity_profile_evidence_packet.py`, then build all seven sanitized
+   recorded-gate packets and assemble one
+   `capacity-recorded-gate-batch-snapshot.json` with repeated
+   `--recorded-gate-evidence-json` inputs. This reaches only
+   `operator_review_required` when every gate packet and the B3 profile evidence
+   packet are accepted; it still does not close B3.
 
 Every workflow step carries `does_not_raise_defaults = true`. The only step
 that requires real load is marked `requires_explicit_operator_execution = true`.
@@ -781,18 +788,26 @@ frontend root on `http://127.0.0.1:18001/` returned HTTP `200`.
 No reviewed B3 capacity runtime evidence entry has been recorded for
 `9c669761`. The latest reviewed B3 capacity entry remains the `28676df`
 visibility record above, with all seven recorded load-test gates and
-`b3_10x4_sdk_subagents` profile evidence still missing. The latest deployed G7
+`b3_10x4_sdk_subagents` profile evidence still missing. The earlier deployed G7
 verifier diagnostic for `9c669761`, `g7-current-main-9c66976-20260702145801`,
 recorded `executed_task=false`, `sandbox_provider=unknown`, and
 `[Errno 13] Permission denied: '[redacted-path]'`; this is not B3 load evidence
-and does not make G7 or B3 gate-closable. A later sudo-context G7 verifier run,
-`g7-current-main-9c66976-sudo-20260702155816`, passed all eight verifier
-checks and is wrapped in reviewed release evidence at
+and does not make G7 or B3 gate-closable. A later sudo-context explicit G7
+verifier run, `g7-current-main-9c66976-sudo-20260702155816`, passed all eight
+verifier checks and is wrapped in reviewed release evidence at
 `docs/release-evidence/g7-sandbox/9c669761bbb4bd719af64a341d361b7c3b3e380e/2026-07-02-211-g7-sandbox-runtime-hardening-9c669761.json`.
-That record proves the explicit 9c669761 verifier path only: live API/worker default `SANDBOX_EXECUTOR_IMAGE` still points to
-`ai-platform:4805031-g7-b3-post-297-label-repair-v2`, same-subject Foundation Runtime concurrency evidence for `9c669761` has not been recorded, all B3
-recorded load gates remain missing, and operator status-upgrade review is still
-required.
+After the live default executor image was rebound to the current 9c669761 image,
+the 2026-07-03 live-default G7 run
+`g7-live-env-hardening-9c669761-sudo-20260703091724` was wrapped at
+`docs/release-evidence/g7-sandbox/9c669761bbb4bd719af64a341d361b7c3b3e380e/2026-07-03-211-g7-sandbox-live-env-hardening-9c669761.json`,
+and same-subject Foundation Runtime concurrency evidence was recorded at
+`docs/release-evidence/foundation-runtime-concurrency/9c669761bbb4bd719af64a341d361b7c3b3e380e-frc-g7-b3-20260703/2026-07-03-211-foundation-alpha-poc-9c669761-foundation-runtime-concurrency.json`.
+Those G7/FRC records can support a G7
+`candidate_evidence_requires_review` reading for `9c669761`, but all B3 recorded
+load gates remain missing. The operator status-review artifact at
+`docs/release-evidence/g7-status-review/9c669761bbb4bd719af64a341d361b7c3b3e380e/2026-07-03-211-g7-operator-status-review-9c669761.json`
+records `status_upgrade_decision=not_approved_for_closure`, so G7 closure and
+`211 verified` claims remain blocked.
 
 ### Evidence Bundle Draft Tool
 
@@ -849,6 +864,21 @@ rejects `ai-platform.capacity-bounded-load-harness.v1`,
 bounded probe output cannot be promoted into recorded gate evidence by renaming
 the file.
 
+After the SDK subagent fanout measurement has been reviewed, build the B3
+profile evidence packet separately:
+
+```powershell
+python tools/capacity_profile_evidence_packet.py --evidence-json capacity-operator-reviewed-profile-values-b3-10x4-sdk-subagents.json --format json > capacity-profile-evidence-b3-10x4-sdk-subagents.json
+```
+
+The profile packet builder output schema is
+`ai-platform.capacity-profile-evidence-packet-result.v1`. Its nested `packet`
+is exactly the value passed to `tools/capacity_recorded_gate_snapshot.py` via
+`--profile-evidence-json`. It validates the `b3_10x4_sdk_subagents` target id,
+10 observed concurrent sessions, peak 4 SDK subagents per session, safe fanout
+measurement reference, and the non-expansion flags before any batch snapshot can
+reach `operator_review_required`.
+
 After the packet is ready, assemble the recorded-gate snapshot with:
 
 ```powershell
@@ -866,15 +896,23 @@ The snapshot input packet schema is
 `ai-platform.capacity-recorded-gate-evidence.v1`. The output schema is
 `ai-platform.capacity-recorded-gate-snapshot.v1`. These steps are recorded in
 the generated operator workflow as `build_recorded_gate_evidence_packet` and
-`assemble_recorded_gate_snapshot`.
+`assemble_recorded_gate_snapshot`. When `tools/capacity_load_plan.py` is run
+without a single `--scenario`, the generated workflow also includes
+`build_b3_profile_evidence_packet`, `build_all_recorded_gate_evidence_packets`, and
+`assemble_recorded_gate_batch_snapshot` so operators have a copyable all-seven
+gate assembly path for B3.
 
 The recorded-gate tool only accepts explicit operator-reviewed values for all
 required gate evidence fields. Each field must be a safe relative artifact
 reference or a scalar measured value, and the packet must carry
 `does_not_raise_defaults = true`, accepted cleanup proof status, accepted
-stop-condition status, and no triggered stop conditions. When
-`--profile-evidence-json` is supplied, that separate packet is sanitized through
-the B3 profile contract and can only populate
+stop-condition status, and no triggered stop conditions. A direct
+`ai-platform.capacity-recorded-gate-evidence.v1` packet is still rejected if it
+carries bounded-probe markers such as
+`load_test_evidence_status = probe_only_not_recorded` or
+`does_not_mark_gate_recorded = true`, even when the nested field values look
+complete. When `--profile-evidence-json` is supplied, that separate packet is
+sanitized through the B3 profile contract and can only populate
 `load_test_evidence.profile_evidence.b3_10x4_sdk_subagents`; it does not mark
 any gate recorded. URLs, absolute paths, path traversal, raw/private path
 segments, secret-like markers, raw storage keys, sandbox workdirs, and executor

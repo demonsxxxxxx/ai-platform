@@ -22,6 +22,9 @@ CAPACITY_RECORDED_GATE_EVIDENCE_SCHEMA = "ai-platform.capacity-recorded-gate-evi
 CAPACITY_RECORDED_GATE_EVIDENCE_PACKET_RESULT_SCHEMA = (
     "ai-platform.capacity-recorded-gate-evidence-packet-result.v1"
 )
+CAPACITY_PROFILE_EVIDENCE_PACKET_RESULT_SCHEMA = (
+    "ai-platform.capacity-profile-evidence-packet-result.v1"
+)
 CAPACITY_PROFILE_IDS = [
     "b3_10x4_sdk_subagents",
     "conservative_internal",
@@ -405,6 +408,87 @@ _LOAD_TEST_OPERATOR_WORKFLOW = [
         "does_not_raise_defaults": True,
     },
 ]
+
+
+def _capacity_recorded_gate_packet_command(gate: str) -> str:
+    slug = gate.replace("_", "-")
+    return (
+        "python tools/capacity_recorded_gate_evidence_packet.py"
+        f" --gate {gate}"
+        f" --evidence-json capacity-operator-reviewed-evidence-values-{slug}.json"
+        " --cleanup-proof-status verified"
+        " --stop-condition-status passed"
+        f" --format json > capacity-recorded-gate-evidence-{slug}.json"
+    )
+
+
+def _capacity_recorded_gate_batch_snapshot_command() -> str:
+    gate_inputs = " ".join(
+        (
+            "--recorded-gate-evidence-json "
+            f"capacity-recorded-gate-evidence-{gate.replace('_', '-')}.json"
+        )
+        for gate in LOAD_TEST_GATES
+    )
+    return (
+        "python tools/capacity_recorded_gate_snapshot.py"
+        " --runtime-evidence-json capacity-runtime-evidence-end.json"
+        f" {gate_inputs}"
+        " --profile-evidence-json capacity-profile-evidence-b3-10x4-sdk-subagents.json"
+        " --format json > capacity-recorded-gate-batch-snapshot.json;"
+        " expected status recorded_gate_batch_input_accepted and readiness operator_review_required;"
+        " this prepares operator review only and does not close B3"
+    )
+
+
+def _capacity_recorded_gate_batch_workflow_steps() -> list[dict[str, Any]]:
+    packet_commands = "; ".join(
+        _capacity_recorded_gate_packet_command(gate)
+        for gate in LOAD_TEST_GATES
+    )
+    return [
+        {
+            "id": "build_b3_profile_evidence_packet",
+            "purpose": (
+                "Build the sanitized B3 10x4 SDK subagent profile evidence packet "
+                "from operator-reviewed fanout measurement values."
+            ),
+            "command": (
+                "python tools/capacity_profile_evidence_packet.py"
+                " --evidence-json capacity-operator-reviewed-profile-values-b3-10x4-sdk-subagents.json"
+                " --format json > capacity-profile-evidence-b3-10x4-sdk-subagents.json;"
+                " output status profile_evidence_packet_ready only prepares profile input and does not close B3"
+            ),
+            "expected_evidence": "capacity-profile-evidence-b3-10x4-sdk-subagents.json",
+            "requires_explicit_operator_execution": True,
+            "does_not_raise_defaults": True,
+        },
+        {
+            "id": "build_all_recorded_gate_evidence_packets",
+            "purpose": (
+                "Build sanitized packets for all seven B3 recorded load-test gates "
+                "from operator-reviewed measured values."
+            ),
+            "command": (
+                f"{packet_commands}; bounded probe output must not be used as packet input;"
+                " each packet only prepares capacity_recorded_gate_snapshot.py input and does not close B3"
+            ),
+            "expected_evidence": "seven capacity-recorded-gate-evidence-<gate-slug>.json files",
+            "requires_explicit_operator_execution": True,
+            "does_not_raise_defaults": True,
+        },
+        {
+            "id": "assemble_recorded_gate_batch_snapshot",
+            "purpose": (
+                "Assemble all seven recorded gate packets plus accepted B3 profile "
+                "evidence into one fail-closed batch snapshot."
+            ),
+            "command": _capacity_recorded_gate_batch_snapshot_command(),
+            "expected_evidence": "capacity-recorded-gate-batch-snapshot.json",
+            "requires_explicit_operator_execution": False,
+            "does_not_raise_defaults": True,
+        },
+    ]
 _BACKPRESSURE_REASON_VALUES = {
     "active_run_limit_saturated",
     "processing_lease_reclaimable",
@@ -940,6 +1024,8 @@ def build_capacity_load_test_plan(
                         value.replace("api_read_write_burst", workflow_gate)
                         .replace("api-read-write-burst", workflow_slug)
                     )
+    if scenario is None:
+        operator_workflow.extend(_capacity_recorded_gate_batch_workflow_steps())
     return {
         "schema_version": "ai-platform.capacity-load-test-plan.v1",
         "baseline": build_capacity_baseline(settings),
@@ -1726,6 +1812,11 @@ def _capacity_recorded_gate_evidence_packet(
         errors.append("recorded_gate_evidence_gate_mismatch")
     if source.get("does_not_raise_defaults") is not True:
         errors.append("recorded_gate_evidence_missing_no_default_raise_policy")
+    if (
+        source.get("load_test_evidence_status") == "probe_only_not_recorded"
+        or source.get("does_not_mark_gate_recorded") is True
+    ):
+        errors.append("bounded_probe_input_cannot_be_recorded_gate_evidence")
 
     source_evidence = _dict(source.get("evidence"))
     safe_evidence: dict[str, object] = {}
@@ -1761,10 +1852,23 @@ def _capacity_recorded_gate_evidence_packet(
     return ("accepted" if not errors else "not_accepted"), gate_packet, errors
 
 
+def _recorded_gate_evidence_packet_input(packet: dict[str, Any]) -> dict[str, Any]:
+    source = _dict(packet)
+    if source.get("schema_version") == CAPACITY_RECORDED_GATE_EVIDENCE_PACKET_RESULT_SCHEMA:
+        if source.get("status") == "recorded_gate_evidence_packet_ready":
+            return _dict(source.get("packet"))
+        return {}
+    return source
+
+
 def _capacity_recorded_profile_evidence_packet(
     packet: dict[str, Any],
 ) -> tuple[str, dict[str, Any], list[str]]:
     source = _dict(packet)
+    if source.get("schema_version") == CAPACITY_PROFILE_EVIDENCE_PACKET_RESULT_SCHEMA:
+        if source.get("status") != "profile_evidence_packet_ready":
+            return "not_accepted", {}, ["profile_evidence_packet_result_not_ready"]
+        source = _dict(source.get("packet"))
     safe_profile_evidence = _safe_profile_evidence(source)
     if not safe_profile_evidence:
         safe_b3_evidence = _safe_b3_profile_evidence(source)
@@ -1933,7 +2037,7 @@ def build_capacity_recorded_gate_snapshot(
         input_errors.append("unsupported_gate")
 
     packet_status, gate_packet, packet_errors = _capacity_recorded_gate_evidence_packet(
-        _dict(recorded_gate_evidence),
+        _recorded_gate_evidence_packet_input(recorded_gate_evidence),
         safe_gate,
     )
     input_errors.extend(packet_errors)
@@ -2067,6 +2171,37 @@ def build_capacity_recorded_gate_evidence_packet_result(
     }
 
 
+def build_capacity_profile_evidence_packet_result(
+    profile_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a sanitized operator-reviewed B3 profile evidence packet."""
+    profile_status, packet, profile_errors = _capacity_recorded_profile_evidence_packet(
+        _dict(profile_evidence)
+    )
+    input_errors = list(profile_errors)
+    return {
+        "schema_version": CAPACITY_PROFILE_EVIDENCE_PACKET_RESULT_SCHEMA,
+        "status": (
+            "profile_evidence_packet_ready"
+            if not input_errors
+            else "blocked_incomplete_inputs"
+        ),
+        "input_status": "accepted" if not input_errors else "not_accepted",
+        "input_errors": input_errors,
+        "packet": packet if not input_errors else {},
+        "next_step": "submit_packet_to_capacity_recorded_gate_snapshot",
+        "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
+        "production_default_decision": (
+            "operator_review_required_before_default_change"
+            if not input_errors
+            else "do_not_raise_without_recorded_load_test_evidence"
+        ),
+        "does_not_raise_defaults": True,
+        "does_not_close_b3_gate": True,
+        "input_profile_evidence_status": profile_status,
+    }
+
+
 def build_capacity_recorded_gate_batch_snapshot(
     runtime_evidence: dict[str, Any],
     recorded_gate_evidence_packets: list[dict[str, Any]],
@@ -2092,7 +2227,8 @@ def build_capacity_recorded_gate_batch_snapshot(
     gate_packets: dict[str, dict[str, Any]] = {}
     seen_gates: set[str] = set()
     for packet in packets:
-        gate = str(packet.get("gate") or "").strip()
+        gate_input = _recorded_gate_evidence_packet_input(packet)
+        gate = str(gate_input.get("gate") or "").strip()
         if gate not in LOAD_TEST_GATES:
             gate_errors.append("recorded_gate_evidence_gate_unsupported")
             continue
@@ -2101,7 +2237,7 @@ def build_capacity_recorded_gate_batch_snapshot(
             continue
         seen_gates.add(gate)
         packet_status, gate_packet, packet_errors = _capacity_recorded_gate_evidence_packet(
-            packet,
+            gate_input,
             gate,
         )
         if packet_status == "accepted":
@@ -2119,6 +2255,9 @@ def build_capacity_recorded_gate_batch_snapshot(
         profile_status, profile_packet, profile_errors = (
             _capacity_recorded_profile_evidence_packet(_dict(profile_evidence))
         )
+    else:
+        profile_status = "not_accepted"
+        profile_errors.append("profile_evidence_b3_10x4_sdk_subagents_missing")
 
     input_errors = runtime_errors + gate_errors + profile_errors
     snapshot_output = json.loads(json.dumps(snapshot if snapshot else build_capacity_evidence_snapshot({})))

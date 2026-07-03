@@ -108,9 +108,17 @@ vulnerability evidence。
   verifier `g7-current-main-9c66976-sudo-20260702155816` 已包装为 reviewed
   explicit verifier-path G7 hardening evidence
   `docs/release-evidence/g7-sandbox/9c669761bbb4bd719af64a341d361b7c3b3e380e/2026-07-02-211-g7-sandbox-runtime-hardening-9c669761.json`。
-  这只证明显式 9c669761 verifier path，不证明 live default executor image
-  已 rebinding 到 9c669761；same-subject FRC、operator status-upgrade review
-  仍缺，也没有新的 reviewed `9c669761` B3 capacity entry。
+  后续 2026-07-03 live-default verifier
+  `g7-live-env-hardening-9c669761-sudo-20260703091724` 已包装为 reviewed
+  G7 live-env evidence
+  `docs/release-evidence/g7-sandbox/9c669761bbb4bd719af64a341d361b7c3b3e380e/2026-07-03-211-g7-sandbox-live-env-hardening-9c669761.json`，
+  且 same-subject FRC evidence 已记录在
+  `docs/release-evidence/foundation-runtime-concurrency/9c669761bbb4bd719af64a341d361b7c3b3e380e-frc-g7-b3-20260703/2026-07-03-211-foundation-alpha-poc-9c669761-foundation-runtime-concurrency.json`。
+  这让 G7 对 9c669761 的读法推进到
+  `candidate_evidence_requires_review`；operator status-review artifact
+  `docs/release-evidence/g7-status-review/9c669761bbb4bd719af64a341d361b7c3b3e380e/2026-07-03-211-g7-operator-status-review-9c669761.json`
+  已记录 `status_upgrade_decision=not_approved_for_closure`，也没有新的
+  reviewed `9c669761` B3 capacity entry。
   PR #304 `codex/g7-b3-post-300-followup` 已 merge 到 GitHub `main`
   `a9c78efa812efe96b0366011a0c731cb11eb0099`，merge message 明确保留
   G7、B3、Foundation Alpha、#164 和 current-main `211 verified` 未闭合。
@@ -269,10 +277,11 @@ vulnerability evidence。
   `do_not_raise_without_recorded_load_test_evidence`。这只证明 28676df
   runtime 的 B3 visibility / fail-closed 路径；它不关闭 B3，也不关闭
   G0/source-authority。PR #306 merge commit `9c669761` 已把 211 repo-local
-  source marker 和 API/worker labels 推到当前 source/runtime subject，但还没
-  产生 reviewed B3 capacity entry；所以 B3 最新 reviewed capacity 读法仍以
-  28676df 为 historical visibility evidence，9c669761 只是 live source/runtime
-  rollout + G7 diagnostic state。
+  source marker 和 API/worker labels 推到当前 source/runtime subject，并在
+  2026-07-03 补齐 reviewed live-default G7 evidence 与 same-subject FRC
+  evidence，但还没产生 reviewed B3 capacity entry；所以 B3 最新 reviewed
+  capacity 读法仍以 28676df 为 historical visibility evidence，9c669761 是
+  G7/FRC evidence progress，不是 B3 recorded load evidence。
 
 因此当前下一步不是重开 G8，也不是把 B3 当作普通用户平台级 multi-run 产品曝光；
 下一步是先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime observation
@@ -290,17 +299,23 @@ vulnerability evidence。
   `live_api_sandbox_executor_image_not_current_main_bound`；G7 对 PR #304 runtime
   subject `decf33a` reviewed evidence + same-subject FRC 的读法也可以到
   `candidate_evidence_requires_review`；PR #306 已 merge 且 211 API/worker
-  已跑到 9c669761，且 sudo-context explicit verifier-path G7 hardening evidence
-  已 reviewed；但 live default executor image 仍指向 4805031，same-subject FRC
-  和 operator status-upgrade review 仍缺。B3 仍
+  已跑到 9c669761，且 sudo-context explicit verifier-path、live-default G7
+  hardening evidence 和 same-subject FRC evidence 均已 reviewed/recorded；G7
+  读法可到 `candidate_evidence_requires_review`，但 operator status-review
+  artifact 的决策仍是 `not_approved_for_closure`。B3 仍
   blocked，因为七个 recorded load-test gates 和 `b3_10x4_sdk_subagents`
   profile evidence 缺失；`decf33a` 和 `28676df` capacity runtime visibility 都
   只是 fail-closed visibility evidence，不是 recorded load evidence；9c669761
-  目前没有新的 reviewed B3 capacity entry。external env-file label 仍是
+  目前没有新的 reviewed B3 capacity entry。external env-file redacted
+  readback 已能支持当前 G7 live-default posture，但完整 env/source-authority
+  review 仍是
   G0/source-authority / production-hardening 非闭合边界。
-G7/B3 的证据边界继续保持为 `deployed verifier failed` / `local partial`，直到
-真实运行证据闭合。该 audit 只是控制/计划工件，不是 G7 runtime evidence 或
-B3 load evidence。
+G7/B3 的证据边界现在应拆开读：G7 对 `9c669761` 可到
+`candidate_evidence_requires_review` 但未获 closure approval；B3 仍是
+`blocked_missing_load_test_evidence` / `local partial`，直到七门 recorded
+load evidence 和 `b3_10x4_sdk_subagents` profile evidence 齐备。该 audit
+只是控制/计划工件，不是 G7 runtime evidence、G7 closure approval 或 B3 load
+evidence。
 
 ## 2026-06-06 Gate-Based Roadmap Sync
 
