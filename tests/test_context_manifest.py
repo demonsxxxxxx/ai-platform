@@ -1,6 +1,8 @@
 import json
+from datetime import datetime
 
 from app.context_manifest import ContextPlanner
+from app.context_manifest import public_context_manifest_projection
 
 
 def test_context_planner_builds_bounded_manifest_without_large_file_or_private_payload():
@@ -189,3 +191,41 @@ def test_context_planner_token_budget_limits_inline_context_material():
     assert manifest["files"][0]["requires_retrieval"] is True
     assert manifest["budget"]["inline_tokens_used"] == 4
     assert manifest["budget"]["inline_budget_exhausted"] is True
+
+
+def test_public_context_manifest_projection_exposes_only_counts_flags_and_valid_timestamp():
+    projection = public_context_manifest_projection(
+        {
+            "context_manifest_version": "v1",
+            "generated_at": "not-a-timestamp read_context_file secret",
+            "recent_messages": [{"message_id": "msg-secret", "content": "secret body"}],
+            "files": [{"file_id": "file-secret", "original_name": "source.txt"}],
+            "artifacts": [{"artifact_id": "artifact-secret"}],
+            "memory_records": [{"memory_record_id": "mem-secret"}],
+            "source_runs": [{"run_id": "run-secret"}],
+            "available_retrieval_tools": ["read_context_file", "stage_context_file_to_workspace"],
+        }
+    )
+
+    assert projection["referenced_materials"] == {
+        "message_count": 1,
+        "file_count": 1,
+        "artifact_count": 1,
+        "memory_record_count": 1,
+        "source_run_count": 1,
+    }
+    assert projection["retrieval"] == {
+        "available": True,
+        "tool_count": 2,
+        "workspace_staging_available": True,
+    }
+    datetime.fromisoformat(projection["generated_at"].replace("Z", "+00:00"))
+    assert projection["generated_at"] != "not-a-timestamp read_context_file secret"
+
+    serialized = json.dumps(projection, ensure_ascii=False)
+    assert "available_retrieval_tools" not in serialized
+    assert "read_context_file" not in serialized
+    assert "stage_context_file_to_workspace" not in serialized
+    assert "msg-secret" not in serialized
+    assert "file-secret" not in serialized
+    assert "artifact-secret" not in serialized

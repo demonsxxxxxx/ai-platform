@@ -1,4 +1,5 @@
 import asyncio
+from uuid import UUID
 
 import pytest
 
@@ -28,6 +29,7 @@ async def test_session_continuity_reuses_same_sdk_session_for_same_scope_and_ser
     )
 
     assert first.sdk_session_id == second.sdk_session_id
+    UUID(first.sdk_session_id)
     assert first.forked is False
     order: list[str] = []
 
@@ -67,8 +69,9 @@ async def test_session_continuity_forks_parallel_exploration_and_isolates_lock_k
 
     assert fork.forked is True
     assert fork.sdk_session_id != base.sdk_session_id
+    UUID(fork.sdk_session_id)
     assert fork.lock_key != base.lock_key
-    assert "parallel_exploration" in fork.sdk_session_id
+    assert "parallel_exploration" in fork.lock_key
 
 
 @pytest.mark.asyncio

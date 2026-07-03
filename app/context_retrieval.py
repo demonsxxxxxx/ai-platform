@@ -448,15 +448,16 @@ class ContextRetrieval:
             file_id=file_id,
         )
         name = self._safe_name(row)
+        file_segment = self._safe_id_segment(file_id)
         raw_bytes = self._raw_content_bytes(row)
-        target_path = Path(workspace_root) / "context" / name
+        target_path = Path(workspace_root) / "context" / file_segment / name
         ensure_creatable_inside(workspace_root, target_path, "context_file_workspace_escape")
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_bytes(raw_bytes)
         return self._envelope(
             "context_retrieval.stage_context_file_to_workspace",
             file_id=file_id,
-            workspace_path=f"context/{name}",
+            workspace_path=f"context/{file_segment}/{name}",
             bytes_staged=len(raw_bytes),
         )
 
@@ -631,6 +632,11 @@ class ContextRetrieval:
     def _safe_name(self, row: dict[str, Any]) -> str:
         name = str(row.get("original_name") or row.get("label") or row.get("name") or row.get("file_id") or row.get("artifact_id") or "context.bin")
         return PurePosixPath(name).name or "context.bin"
+
+    def _safe_id_segment(self, value: object) -> str:
+        text = str(value or "").strip()
+        safe = "".join(char if char.isalnum() or char in "-_" else "_" for char in text)
+        return safe or "context-file"
 
     def _envelope(self, action: str, **payload: Any) -> dict[str, Any]:
         return {

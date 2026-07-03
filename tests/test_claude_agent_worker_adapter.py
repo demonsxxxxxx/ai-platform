@@ -1635,7 +1635,6 @@ async def test_worker_passes_session_continuity_resume_key_to_sdk_runner(monkeyp
     assert captured_session_ids[0]
     assert captured_session_ids[0] == captured_session_ids[1]
     assert captured_session_ids[2] != captured_session_ids[0]
-    assert "parallel_exploration" in str(captured_session_ids[2])
 
 
 @pytest.mark.asyncio

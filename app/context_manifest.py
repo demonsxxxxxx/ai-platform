@@ -30,6 +30,17 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def _safe_iso_timestamp(value: object) -> str:
+    text = _safe_text(value)
+    if not text:
+        return _utc_now_iso()
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return _utc_now_iso()
+    return text
+
+
 def _safe_text(value: object, *, limit: int | None = None) -> str:
     text = str(value or "").strip()
     if not text:
@@ -77,14 +88,19 @@ def sanitize_context_manifest_payload(value: Any) -> dict[str, Any]:
 
 
 def public_context_manifest_projection(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Return a projection that proves a manifest exists without exposing material IDs."""
+    """Return a counts-and-flags projection without material IDs or tool internals."""
     safe_manifest = sanitize_context_manifest_payload(manifest)
+    available_tools = [
+        str(tool)
+        for tool in safe_manifest.get("available_retrieval_tools") or []
+        if str(tool) in CONTEXT_RETRIEVAL_TOOLS
+    ]
     return {
         "schema_version": CONTEXT_MANIFEST_SCHEMA_VERSION,
         "context_manifest_version": str(
             safe_manifest.get("context_manifest_version") or DEFAULT_CONTEXT_MANIFEST_VERSION
         ),
-        "generated_at": str(safe_manifest.get("generated_at") or _utc_now_iso()),
+        "generated_at": _safe_iso_timestamp(safe_manifest.get("generated_at")),
         "referenced_materials": {
             "message_count": len(safe_manifest.get("recent_messages") or []),
             "file_count": len(safe_manifest.get("files") or []),
@@ -92,11 +108,11 @@ def public_context_manifest_projection(manifest: dict[str, Any]) -> dict[str, An
             "memory_record_count": len(safe_manifest.get("memory_records") or []),
             "source_run_count": len(safe_manifest.get("source_runs") or []),
         },
-        "available_retrieval_tools": [
-            str(tool)
-            for tool in safe_manifest.get("available_retrieval_tools") or []
-            if str(tool) in CONTEXT_RETRIEVAL_TOOLS
-        ],
+        "retrieval": {
+            "available": bool(available_tools),
+            "tool_count": len(available_tools),
+            "workspace_staging_available": "stage_context_file_to_workspace" in available_tools,
+        },
         "redaction": {
             "private_payloads_removed": True,
             "object_locator_refs_removed": True,

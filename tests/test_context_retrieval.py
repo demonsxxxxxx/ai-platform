@@ -242,12 +242,66 @@ async def test_stage_context_file_to_workspace_returns_safe_workspace_ref_withou
 
     assert result == {
         "file_id": "file-a",
-        "workspace_path": "context/source.txt",
+        "workspace_path": "context/file-a/source.txt",
         "bytes_staged": len("file content is bounded by bytes".encode("utf-8")),
         "audit": {"action": "context_retrieval.stage_context_file_to_workspace"},
         "redaction": {"object_locator_refs_removed": True},
     }
-    assert (tmp_path / "context" / "source.txt").read_text(encoding="utf-8") == "file content is bounded by bytes"
+    assert (tmp_path / "context" / "file-a" / "source.txt").read_text(encoding="utf-8") == "file content is bounded by bytes"
+
+
+@pytest.mark.asyncio
+async def test_stage_context_file_to_workspace_uses_stable_file_prefix_to_avoid_name_collisions(tmp_path):
+    retrieval = ContextRetrieval(
+        InMemoryContextRetrievalRepository(
+            files=[
+                {
+                    "tenant_id": "tenant-a",
+                    "workspace_id": "workspace-a",
+                    "user_id": "user-a",
+                    "session_id": "session-a",
+                    "run_id": "run-a",
+                    "file_id": "file-a",
+                    "original_name": "source.txt",
+                    "content": "alpha",
+                },
+                {
+                    "tenant_id": "tenant-a",
+                    "workspace_id": "workspace-a",
+                    "user_id": "user-a",
+                    "session_id": "session-a",
+                    "run_id": "run-a",
+                    "file_id": "file-b",
+                    "original_name": "source.txt",
+                    "content": "bravo",
+                },
+            ]
+        )
+    )
+
+    first = await retrieval.stage_context_file_to_workspace(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        file_id="file-a",
+        workspace_root=str(tmp_path),
+    )
+    second = await retrieval.stage_context_file_to_workspace(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        file_id="file-b",
+        workspace_root=str(tmp_path),
+    )
+
+    assert first["workspace_path"] == "context/file-a/source.txt"
+    assert second["workspace_path"] == "context/file-b/source.txt"
+    assert (tmp_path / "context" / "file-a" / "source.txt").read_text(encoding="utf-8") == "alpha"
+    assert (tmp_path / "context" / "file-b" / "source.txt").read_text(encoding="utf-8") == "bravo"
 
 
 @pytest.mark.asyncio

@@ -38,6 +38,7 @@ def test_skill_prompt_lists_context_manifest_and_requires_retrieval_tools_withou
 @pytest.mark.asyncio
 async def test_sdk_runner_uses_authorized_session_id_in_stream_instead_of_global_default(monkeypatch, tmp_path):
     captured_messages = []
+    captured_options = {}
 
     class TextBlock:
         def __init__(self, text):
@@ -59,6 +60,7 @@ async def test_sdk_runner_uses_authorized_session_id_in_stream_instead_of_global
     class ClaudeAgentOptions:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            captured_options.update(kwargs)
 
     async def query(prompt, options):
         async for item in prompt:
@@ -102,6 +104,8 @@ async def test_sdk_runner_uses_authorized_session_id_in_stream_instead_of_global
     )
 
     assert result.session_id == "sdk-session-returned"
+    assert captured_options["session_id"] == "sdk-session-authorized"
+    assert captured_options.get("resume") is None
     assert captured_messages[0]["session_id"] == "sdk-session-authorized"
     assert captured_messages[0]["session_id"] != "default"
 
@@ -243,7 +247,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     assert "tenant-b" not in tool_result["content"][0]["text"]
     stage_tool = server["tools"][3]
     stage_result = await stage_tool.handler({"file_id": "file-a"})
-    assert "context/source.txt" in stage_result["content"][0]["text"]
+    assert "context/file-a/source.txt" in stage_result["content"][0]["text"]
     assert "workspace staged content" not in stage_result["content"][0]["text"]
     assert "storage_key" not in stage_result["content"][0]["text"]
-    assert (tmp_path / "context" / "source.txt").read_text(encoding="utf-8") == "workspace staged content"
+    assert (tmp_path / "context" / "file-a" / "source.txt").read_text(encoding="utf-8") == "workspace staged content"

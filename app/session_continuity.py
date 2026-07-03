@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator
@@ -23,13 +24,12 @@ class InMemorySessionContinuityStore:
 
     async def get_or_create(self, key: str) -> str:
         if key not in self._resume_keys:
-            self._resume_keys[key] = f"sdk-{_digest(key)}"
+            self._resume_keys[key] = _stable_sdk_session_uuid(key)
         return self._resume_keys[key]
 
     async def fork(self, key: str, reason: str) -> str:
         self._fork_counter += 1
-        safe_reason = "".join(char if char.isalnum() or char in "-_" else "_" for char in reason or "fork")
-        return f"sdk-{_digest(key)}-{safe_reason}-{self._fork_counter}"
+        return _stable_sdk_session_uuid(f"{key}\x1f{reason or 'fork'}\x1f{self._fork_counter}")
 
 
 class SessionContinuity:
@@ -62,7 +62,8 @@ class SessionContinuity:
         )
         if fork_reason:
             sdk_session_id = await self._store.fork(key, fork_reason)
-            lock_key = f"{key}:fork:{_digest(sdk_session_id)}"
+            safe_reason = _safe_lock_segment(fork_reason)
+            lock_key = f"{key}:fork:{safe_reason}:{_digest(sdk_session_id)}"
             return SessionContinuityRef(sdk_session_id=sdk_session_id, lock_key=lock_key, forked=True)
         sdk_session_id = await self._store.get_or_create(key)
         return SessionContinuityRef(sdk_session_id=sdk_session_id, lock_key=key, forked=False)
@@ -99,3 +100,11 @@ class SessionContinuity:
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
+
+
+def _stable_sdk_session_uuid(value: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"ai-platform-sdk-session:{value}"))
+
+
+def _safe_lock_segment(value: str) -> str:
+    return "".join(char if char.isalnum() or char in "-_" else "_" for char in value or "fork")

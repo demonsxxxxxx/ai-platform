@@ -1052,6 +1052,7 @@ async def run_claude_agent_sdk(
         disallowed_tools=disallowed_tools,
         env=build_sdk_env(cwd=cwd),
         skills=configured_skills,
+        session_id=session_id,
         max_turns=max(1, int(getattr(settings, "claude_agent_sdk_max_turns", 128))),
         max_thinking_tokens=max(1, int(getattr(settings, "claude_agent_sdk_max_thinking_tokens", 16384))),
         effort=str(getattr(settings, "claude_agent_sdk_effort", "xhigh") or "xhigh"),
