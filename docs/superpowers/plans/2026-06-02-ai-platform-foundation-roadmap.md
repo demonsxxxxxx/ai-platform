@@ -122,18 +122,19 @@ vulnerability evidence。
   PR #308 `codex/g8-b3-doc-status-cleanup` 已 squash-merge 到 GitHub `main`
   `15903fdfe96ffcfba9daa1252741111017dcf832`，GitHub checks 成功但
   `reviewDecision` 仍为空。211 repo-local source marker、API/worker canonical
-  source/runtime/OCI labels 已读到 `15903fd`，API/worker 运行
-  `ai-platform:15903fd-g7-b3-main-runtime-only-v1`；但部分 legacy underscore
-  alias labels 仍指向 `9c669761`。2026-07-03 live-default verifier
-  `g7-live-env-hardening-15903fd-sudo-20260703042000` 已包装为 reviewed G7
-  live-env evidence
-  `docs/release-evidence/g7-sandbox/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-sandbox-live-env-hardening-15903fd.json`，
+  source/runtime/OCI labels 和 legacy source alias labels 已读到 `15903fd`，
+  API/worker 运行 `ai-platform:15903fd-g7-b3-label-clean-v2`。2026-07-03
+  label-clean live-default verifier
+  `g7-live-env-hardening-15903fd-label-clean-sudo-20260703055828` 已包装为
+  reviewed G7 live-env evidence
+  `docs/release-evidence/g7-sandbox/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-sandbox-live-env-hardening-15903fd-label-clean.json`，
   same-subject FRC evidence 已记录在
   `docs/release-evidence/foundation-runtime-concurrency/15903fdfe96ffcfba9daa1252741111017dcf832-frc-g7-b3-20260703/2026-07-03-211-foundation-alpha-poc-15903fd-foundation-runtime-concurrency.json`。
-  operator status-review artifact
-  `docs/release-evidence/g7-status-review/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-operator-status-review-15903fd.json`
-  记录 `status=blocked`、`g7_runtime_blocking_reasons=["stale_runtime_alias_label_mismatch"]`
-  和 `status_upgrade_decision=not_approved_for_closure`；没有新的 reviewed
+  label-clean operator status-review artifact
+  `docs/release-evidence/g7-status-review/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-operator-status-review-15903fd-label-clean.json`
+  记录 `status=candidate_evidence_requires_review`、
+  `g7_runtime_blocking_reasons=[]` 和
+  `status_upgrade_decision=not_approved_for_closure`；没有新的 reviewed
   `15903fd` B3 capacity entry。
   PR #304 `codex/g7-b3-post-300-followup` 已 merge 到 GitHub `main`
   `a9c78efa812efe96b0366011a0c731cb11eb0099`，merge message 明确保留
@@ -155,7 +156,7 @@ vulnerability evidence。
   reviewed-evidence 拆层仍属于 G0/source-authority 与 production-hardening
   非闭合边界；任何 G7 status upgrade 仍需要 operator review。
   所以当前是 PR #308 merged + 15903fd source/runtime rollout + reviewed
-  `15903fd` G7/FRC evidence progress + stale legacy alias cleanup blocker +
+  label-clean `15903fd` G7/FRC candidate evidence progress +
   PR #305 reviewed capacity visibility + PR #306/PR #304/PR #297 historical
   same-subject evidence + reviewed `ae6b7e5` evidence progress；它仍不是
   G0/G7 closure、不是 B3 load evidence，也不是 current-main `211 verified`。
@@ -306,7 +307,7 @@ vulnerability evidence。
 `g7-current-main-ae6b7e5-20260701172910` G7 sandbox evidence、formal hardening
   evidence、live-env hardening evidence、label-repair evidence、runtime POC smoke
   和 FRC evidence 作为输入；读取当前 `4805031` 状态时，不能沿用这些
-  evidence 作为 same-subject closure。当前审计结果应读作：G7 对 `ae6b7e5`
+  evidence 作为 same-subject current-state evidence 或 closure support。当前审计结果应读作：G7 对 `ae6b7e5`
   无 runtime `blocking_reasons`，但需要 operator status-upgrade review；G7 对
   `4805031` reviewed evidence + same-subject FRC 的历史证据读法可以到
   `candidate_evidence_requires_review`；当前 211 live env 读到 executor image 已是
@@ -319,10 +320,11 @@ vulnerability evidence。
   hardening evidence 和 same-subject FRC evidence 均已 reviewed/recorded；G7
   读法可到 `candidate_evidence_requires_review`，但 operator status-review
   artifact 的决策仍是 `not_approved_for_closure`。PR #308 已 merge 且 211
-  API/worker 已跑到 `15903fd`，live-default G7 hardening evidence 和
-  same-subject FRC evidence 均已 reviewed/recorded；但 legacy underscore alias
-  labels 仍指向 `9c669761`，所以当前 `15903fd` G7 status-upgrade 仍是
-  `blocked` / `local partial`。B3 仍
+  API/worker 已跑到 `15903fd` label-clean image，label-clean live-default G7
+  hardening evidence 和 same-subject FRC evidence 均已 reviewed/recorded；
+  当前 `15903fd` G7 runtime blockers 已清空，可读作
+  `candidate_evidence_requires_review` / `local partial`，但 status-upgrade
+  approval 仍未获批。B3 仍
 blocked，因为七个 recorded load-test gates 和 `b3_10x4_sdk_subagents`
 profile evidence 缺失；`decf33a` 和 `28676df` capacity runtime visibility 都
   只是 fail-closed visibility evidence，不是 recorded load evidence；15903fd
@@ -332,8 +334,8 @@ review 仍是
   G0/source-authority / production-hardening 非闭合边界。
 G7/B3 的证据边界现在应拆开读：G7 对历史 `9c669761` 可到
 `candidate_evidence_requires_review` 但未获 closure approval；当前 `15903fd`
-已有 reviewed G7/FRC evidence，但因 stale legacy alias cleanup 未完成仍是
-`blocked` / `local partial`。B3 仍是 `blocked_missing_load_test_evidence` /
+已有 reviewed label-clean G7/FRC evidence，G7 runtime blockers 已清空但仍是
+`candidate_evidence_requires_review` / `local partial`。B3 仍是 `blocked_missing_load_test_evidence` /
 `local partial`，直到七门 recorded load evidence 和
 `b3_10x4_sdk_subagents` profile evidence 齐备。该 audit 只是控制/计划工件，
 不是 G7 runtime evidence、G7 closure approval 或 B3 load evidence。

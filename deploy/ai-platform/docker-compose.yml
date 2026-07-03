@@ -57,6 +57,9 @@ services:
     image: ${AI_PLATFORM_IMAGE:-ai-platform:local}
     build:
       context: ../..
+      args:
+        AI_PLATFORM_BUILD_COMMIT: ${AI_PLATFORM_BUILD_COMMIT:-unknown}
+        AI_PLATFORM_BUILD_DIRTY: ${AI_PLATFORM_BUILD_DIRTY:-unknown}
     container_name: ai-platform-api
     restart: unless-stopped
     environment:
@@ -145,6 +148,9 @@ services:
     image: ${AI_PLATFORM_IMAGE:-ai-platform:local}
     build:
       context: ../..
+      args:
+        AI_PLATFORM_BUILD_COMMIT: ${AI_PLATFORM_BUILD_COMMIT:-unknown}
+        AI_PLATFORM_BUILD_DIRTY: ${AI_PLATFORM_BUILD_DIRTY:-unknown}
     container_name: ai-platform-worker
     restart: unless-stopped
     command: ["python", "-m", "app.worker_main"]

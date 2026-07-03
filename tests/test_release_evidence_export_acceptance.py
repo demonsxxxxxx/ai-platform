@@ -335,6 +335,22 @@ def test_release_evidence_export_acceptance_requires_runtime_subject_for_identit
     assert acceptance["blocked_entries"][0]["reasons"] == ["missing_runtime_subject_commit_sha"]
 
 
+def test_release_evidence_export_acceptance_requires_runtime_subject_for_deployment_cleanup(tmp_path):
+    entry = _valid_entry(
+        evidence_id="deployment-image-cleanup",
+        artifact_kind="211_deployment_image_cleanup",
+    )
+    entry.pop("runtime_subject_commit_sha")
+    _write_entry(tmp_path, entry)
+
+    acceptance = build_release_evidence_export_acceptance(evidence_root=tmp_path)
+
+    assert acceptance["status"] == "blocked_invalid_evidence"
+    assert acceptance["safe_entry_count"] == 0
+    assert acceptance["blocked_entry_count"] == 1
+    assert acceptance["blocked_entries"][0]["reasons"] == ["missing_runtime_subject_commit_sha"]
+
+
 def test_release_evidence_export_acceptance_cli_outputs_safe_json(tmp_path):
     _write_entry(tmp_path, _valid_entry())
 
