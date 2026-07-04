@@ -136,11 +136,12 @@ records `status=candidate_evidence_requires_review`,
 `g7_runtime_blocking_reasons=[]`, and
 `status_upgrade_decision=not_approved_for_closure`. There is still no reviewed
 B3 capacity entry for `15903fd`; later historical status readings first used the
-reviewed `755e50e` dirty-runtime v2 capacity visibility entry, while the current
-latest-status reading uses the reviewed `a294727` capacity visibility entry.
-The current `a294727` entry is still fail-closed at
-`blocked_missing_load_test_evidence` because all seven B3 recorded load gates
-plus the `b3_10x4_sdk_subagents` profile evidence are still missing.
+reviewed `755e50e` dirty-runtime v2 capacity visibility entry, then retained
+`a294727` as a prior reviewed visibility baseline. The current latest-status
+reading uses the reviewed `945db2b` capacity visibility entry. The current
+`945db2b` entry is still fail-closed at `blocked_missing_load_test_evidence`
+because all seven B3 recorded load gates plus the `b3_10x4_sdk_subagents`
+profile evidence are still missing.
 Do not call G7 complete, B3 complete, Foundation Alpha complete,
 production-ready, `211 verified`, or `gate closable`.
 

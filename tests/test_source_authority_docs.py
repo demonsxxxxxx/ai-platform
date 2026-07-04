@@ -1714,6 +1714,13 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
 
     assert "Reviewed `945db2b` B3 capacity visibility also exists" in gate_status_text
     assert "The latest reviewed `a294727` read-only capacity runtime evidence records Admin Runtime HTTP `200`" not in gate_status_text
+    assert "current latest-status reading uses the reviewed `a294727` capacity visibility entry" not in gate_status_text
+    assert "The current `a294727` entry is still fail-closed" not in gate_status_text
+    assert (
+        "The current `945db2b` entry is still fail-closed at "
+        "`blocked_missing_load_test_evidence`"
+        in " ".join(gate_status_text.split())
+    )
     assert "the earlier reviewed `a294727`, `bbe23d5`, and `61073b1` visibility records are retained as prior baselines" in gate_status_text
     assert "`blocked_missing_admin_runtime_sections`" in gate_status_text
     assert "`sandbox` was missing/degraded" in gate_status_text
