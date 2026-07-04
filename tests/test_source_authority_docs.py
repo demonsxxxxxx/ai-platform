@@ -1676,6 +1676,8 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "Current Reading Guide" in gate_status_text
     assert "single current gate/runtime status matrix" in compact_gate_status_text
     assert "当前路线进展读法" in roadmap_text
+    assert "Historical progress retained below current state" in roadmap_text
+    assert "`61073b1` current-state paragraph" in roadmap_text
     current_gate_table = gate_status_text.split("## Current Gate Status", 1)[1].split(
         "## Issue-Driven Thin Spots",
         1,

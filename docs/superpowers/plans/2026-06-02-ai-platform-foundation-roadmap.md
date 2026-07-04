@@ -76,7 +76,7 @@ vulnerability evidence。
   Foundation Alpha complete、production-ready 或 `gate closable`；也不能重新解释已经历史关闭的 #164。
   `755e50e` dirty-runtime v2 G7/FRC/capacity visibility 只作为历史 reviewed
   candidate evidence 保留。
-- 已部分推进但未完成：PR #297 已合入 GitHub `main`
+- Historical progress retained below current state：PR #297 已合入 GitHub `main`
   `4805031fc3333ccbf38224172e4e85e21c0630bb`，随后 `main` 又前进到
   `ba81a0b18da4d4d30c1a8ce44d4bf03bb051fca8`。最新只读 poll 必须拆层读取：211 backend
   source marker 仍是 `ae6b7e52c656fd8296cf039834ce8d8559b01228`；211
@@ -342,9 +342,10 @@ vulnerability evidence。
   G0/source-authority。PR #306 merge commit `9c669761` 已把 211 repo-local
   source marker 和 API/worker labels 推到当前 source/runtime subject，并在
   2026-07-03 补齐 reviewed live-default G7 evidence 与 same-subject FRC
-  evidence，但还没产生 reviewed B3 capacity entry；所以 B3 最新 reviewed
-  capacity 读法仍以 28676df 为 historical visibility evidence，9c669761 是
-  G7/FRC evidence progress，不是 B3 recorded load evidence。
+  evidence，但还没产生 reviewed B3 capacity entry；所以这段只能作为
+  historical B3 visibility evidence 解读。当前 B3 状态必须以上面的
+  `61073b1` current-state paragraph 和 gate status snapshot 为准；9c669761
+  是 G7/FRC evidence progress，不是 B3 recorded load evidence。
 
 因此当前下一步不是重开 G8，也不是把 B3 当作普通用户平台级 multi-run 产品曝光；
 下一步是先用 `tools/g7_b3_completion_audit.py` 把 sanitized runtime observation
