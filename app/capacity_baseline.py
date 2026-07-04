@@ -25,6 +25,12 @@ CAPACITY_RECORDED_GATE_EVIDENCE_PACKET_RESULT_SCHEMA = (
 CAPACITY_PROFILE_EVIDENCE_PACKET_RESULT_SCHEMA = (
     "ai-platform.capacity-profile-evidence-packet-result.v1"
 )
+CAPACITY_OPERATOR_EVIDENCE_TEMPLATE_BUNDLE_SCHEMA = (
+    "ai-platform.capacity-operator-evidence-template-bundle.v1"
+)
+CAPACITY_HOST_SANDBOX_OBSERVATION_SCHEMA = (
+    "ai-platform.capacity-host-sandbox-observation.v1"
+)
 CAPACITY_PROFILE_IDS = [
     "b3_10x4_sdk_subagents",
     "conservative_internal",
@@ -232,6 +238,10 @@ _CLEANUP_PROOF_REQUIRED_FLAGS = (
     "generated_documents_removed",
 )
 _STOP_CONDITION_STATUS_VALUES = ["passed", "not_triggered", "verified", "clear"]
+_HOST_SANDBOX_OBSERVATION_SOURCES = {
+    "host_docker_cli",
+    "docker_capable_operator_host",
+}
 _SECRET_EVIDENCE_MARKERS = (
     "secret",
     "token",
@@ -438,6 +448,19 @@ def _capacity_recorded_gate_batch_snapshot_command() -> str:
         " --format json > capacity-recorded-gate-batch-snapshot.json;"
         " expected status recorded_gate_batch_input_accepted and readiness operator_review_required;"
         " this prepares operator review only and does not close B3"
+    )
+
+
+def _capacity_recorded_gate_batch_from_values_command() -> str:
+    return (
+        "python tools/capacity_recorded_gate_batch_from_values.py"
+        " --runtime-evidence-json capacity-runtime-evidence-end.json"
+        " --operator-input-dir capacity-operator-inputs"
+        " --cleanup-proof-status verified"
+        " --stop-condition-status passed"
+        " --format json > capacity-recorded-gate-batch-snapshot.json;"
+        " expected status recorded_gate_batch_input_accepted and readiness operator_review_required;"
+        " this still requires operator-reviewed values and does not close B3"
     )
 
 
@@ -711,7 +734,7 @@ def _sandbox_live_signals(overview: dict[str, Any]) -> dict[str, object]:
     list_runtime_containers_status = str(
         sandbox.get("list_runtime_containers_status") or "available"
     )
-    return {
+    signals: dict[str, object] = {
         "containers": containers,
         "running_containers": _coerce_int(containers.get("running")),
         "active_leases": _coerce_int(leases.get("active")),
@@ -719,6 +742,27 @@ def _sandbox_live_signals(overview: dict[str, Any]) -> dict[str, object]:
         "list_runtime_containers_status": list_runtime_containers_status,
         "container_observation_degraded": _sandbox_container_observation_degraded(sandbox),
     }
+    observation_source = _safe_identity(sandbox.get("observation_source"))
+    if observation_source in _HOST_SANDBOX_OBSERVATION_SOURCES:
+        signals["observation_source"] = observation_source
+    socket_policy = _dict(sandbox.get("socket_policy"))
+    safe_socket_bearing_path = _safe_capacity_evidence_ref(
+        socket_policy.get("socket_bearing_compose_path")
+    )
+    if safe_socket_bearing_path is not None:
+        signals["socket_policy"] = {
+            "api_container_docker_socket_present": socket_policy.get(
+                "api_container_docker_socket_present"
+            ) is True,
+            "default_compose_mounts_docker_socket": socket_policy.get(
+                "default_compose_mounts_docker_socket"
+            ) is True,
+            "sandbox_compose_mounts_docker_socket": socket_policy.get(
+                "sandbox_compose_mounts_docker_socket"
+            ) is True,
+            "socket_bearing_compose_path": safe_socket_bearing_path,
+        }
+    return signals
 
 
 def _observability_live_signals(overview: dict[str, Any]) -> dict[str, object]:
@@ -762,6 +806,97 @@ def _sandbox_container_observation_degraded(sandbox: dict[str, Any]) -> bool:
         return True
     status = str(sandbox.get("list_runtime_containers_status") or "available")
     return status != "available"
+
+
+def _safe_host_sandbox_observation(
+    value: object,
+    *,
+    commit_sha: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    source = _dict(value)
+    if not source:
+        return None, {"status": "not_provided", "input_errors": []}
+
+    errors: list[str] = []
+    if source.get("schema_version") != CAPACITY_HOST_SANDBOX_OBSERVATION_SCHEMA:
+        errors.append("host_sandbox_observation_schema_unsupported")
+
+    observation_source = _safe_identity(source.get("observation_source"))
+    if observation_source not in _HOST_SANDBOX_OBSERVATION_SOURCES:
+        errors.append("host_sandbox_observation_source_unsupported")
+
+    runtime_subject = _safe_runtime_identity(source.get("runtime_subject_commit_sha"))
+    expected_runtime_subject = _safe_runtime_identity(commit_sha)
+    if runtime_subject == "unknown":
+        errors.append("host_sandbox_observation_runtime_subject_missing")
+    elif expected_runtime_subject != "unknown" and runtime_subject != expected_runtime_subject:
+        errors.append("host_sandbox_observation_runtime_subject_mismatch")
+
+    evidence_ref = _safe_capacity_evidence_ref(source.get("evidence_ref"))
+    if evidence_ref is None:
+        errors.append("host_sandbox_observation_evidence_ref_missing_or_invalid")
+
+    if source.get("api_container_docker_socket_present") is not False:
+        errors.append("host_sandbox_observation_api_container_socket_present")
+    if source.get("default_compose_mounts_docker_socket") is not False:
+        errors.append("host_sandbox_observation_default_compose_mounts_socket")
+    if source.get("sandbox_compose_mounts_docker_socket") is not True:
+        errors.append("host_sandbox_observation_sandbox_compose_socket_missing")
+
+    socket_bearing_path = _safe_capacity_evidence_ref(source.get("socket_bearing_compose_path"))
+    if socket_bearing_path is None:
+        errors.append("host_sandbox_observation_socket_bearing_path_missing_or_invalid")
+
+    list_runtime_containers_status = str(
+        source.get("list_runtime_containers_status") or ""
+    ).strip()
+    if list_runtime_containers_status != "available":
+        errors.append("host_sandbox_observation_container_status_not_available")
+    if source.get("container_observation_degraded") is not False:
+        errors.append("host_sandbox_observation_container_observation_degraded")
+
+    containers = _numeric_bool_map(_dict(source.get("containers")), _SANDBOX_CONTAINER_KEYS)
+    leases = _numeric_bool_map(_dict(source.get("leases")), _SANDBOX_LEASE_KEYS)
+    if "running" not in containers:
+        errors.append("host_sandbox_observation_running_container_count_missing")
+    if "active" not in leases:
+        errors.append("host_sandbox_observation_active_lease_count_missing")
+
+    status = {
+        "schema_version": CAPACITY_HOST_SANDBOX_OBSERVATION_SCHEMA,
+        "status": "accepted" if not errors else "not_accepted",
+        "input_errors": errors,
+        "review_status": "diagnostic_only_not_reviewed_release_evidence",
+        "diagnostic_only": True,
+        "does_not_mark_b3_recorded_evidence": True,
+        "does_not_close_b3": True,
+    }
+    if evidence_ref is not None:
+        status["evidence_ref"] = evidence_ref
+    if observation_source in _HOST_SANDBOX_OBSERVATION_SOURCES:
+        status["observation_source"] = observation_source
+    if runtime_subject != "unknown":
+        status["runtime_subject_commit_sha"] = runtime_subject
+
+    if errors:
+        return None, status
+
+    return (
+        {
+            "observation_source": observation_source,
+            "containers": containers,
+            "leases": leases,
+            "list_runtime_containers_status": "available",
+            "container_observation_degraded": False,
+            "socket_policy": {
+                "api_container_docker_socket_present": False,
+                "default_compose_mounts_docker_socket": False,
+                "sandbox_compose_mounts_docker_socket": True,
+                "socket_bearing_compose_path": socket_bearing_path,
+            },
+        },
+        status,
+    )
 
 
 def _safe_capacity_value(value: object, default: object) -> object:
@@ -1091,18 +1226,89 @@ def build_capacity_recorded_gate_evidence_contract(gate: str) -> dict[str, Any]:
     }
 
 
+def build_capacity_operator_evidence_template_bundle() -> dict[str, Any]:
+    """Build draft-only operator input templates for B3 recorded capacity evidence."""
+    recorded_gate_value_templates = {}
+    for gate in LOAD_TEST_GATES:
+        slug = gate.replace("_", "-")
+        recorded_gate_value_templates[gate] = {
+            "template_status": "draft_not_recorded",
+            "does_not_mark_gate_recorded": True,
+            "does_not_close_b3_gate": True,
+            "output_filename": f"capacity-operator-reviewed-evidence-values-{slug}.json",
+            "packet_command": _capacity_recorded_gate_packet_command(gate),
+            "values": {
+                field: f"TODO_OPERATOR_REVIEWED_{field.upper()}"
+                for field in _LOAD_TEST_REQUIRED_EVIDENCE
+            },
+        }
+
+    return {
+        "schema_version": CAPACITY_OPERATOR_EVIDENCE_TEMPLATE_BUNDLE_SCHEMA,
+        "template_status": "draft_not_recorded",
+        "does_not_mark_gate_recorded": True,
+        "does_not_close_b3_gate": True,
+        "target_profile": dict(_B3_TARGET_PROFILE),
+        "profile_template": {
+            "template_status": "draft_not_recorded",
+            "does_not_mark_gate_recorded": True,
+            "does_not_close_b3_gate": True,
+            "output_filename": "capacity-operator-reviewed-profile-values-b3-10x4-sdk-subagents.json",
+            "packet_command": (
+                "python tools/capacity_profile_evidence_packet.py"
+                " --evidence-json capacity-operator-reviewed-profile-values-b3-10x4-sdk-subagents.json"
+                " --format json > capacity-profile-evidence-b3-10x4-sdk-subagents.json"
+            ),
+            "values": {
+                "target_profile_id": _B3_TARGET_PROFILE_ID,
+                "evidence_source": "operator_reviewed_recorded_snapshot",
+                "observed_concurrent_sessions": (
+                    "TODO_OPERATOR_REVIEWED_OBSERVED_CONCURRENT_SESSIONS_GE_10"
+                ),
+                "observed_peak_sdk_subagents_per_session": (
+                    "TODO_OPERATOR_REVIEWED_PEAK_SDK_SUBAGENTS_PER_SESSION_GE_4"
+                ),
+                "sdk_subagent_fanout_measurement_ref": (
+                    "TODO_OPERATOR_REVIEWED_SDK_SUBAGENT_FANOUT_MEASUREMENT_REF"
+                ),
+                "production_concurrency_defaults_raised": False,
+                "safe_concurrency_claimed": False,
+                _ORDINARY_USER_PLATFORM_MULTI_RUN_FLAG: False,
+            },
+        },
+        "recorded_gate_value_templates": recorded_gate_value_templates,
+        "batch_snapshot_command": _capacity_recorded_gate_batch_snapshot_command(),
+        "batch_from_values_command": _capacity_recorded_gate_batch_from_values_command(),
+        "operator_warnings": [
+            "template_values_are_placeholders_not_recorded_evidence",
+            "replace_every_todo_value_with_operator_reviewed_measurement_or_artifact_ref",
+            "bounded_probe_output_must_not_be_submitted_as_recorded_gate_evidence",
+            "do_not_raise_production_defaults_from_template_bundle",
+        ],
+        "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+    }
+
+
 def build_capacity_evidence_snapshot(
     overview: dict[str, Any],
     *,
     commit_sha: str = "unknown",
     runtime_profile: str = "unproven_default",
+    host_sandbox_observation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a secret-safe #21 evidence snapshot from an Admin Runtime overview projection."""
     safe_overview = _dict(overview)
+    host_sandbox, host_sandbox_status = _safe_host_sandbox_observation(
+        host_sandbox_observation,
+        commit_sha=commit_sha,
+    )
+    if host_sandbox is not None:
+        safe_overview = dict(safe_overview)
+        safe_overview["sandbox"] = host_sandbox
     capacity = _safe_capacity_snapshot(safe_overview.get("capacity"))
     backpressure = _dict(safe_overview.get("backpressure"))
     admin_runtime_evidence = _admin_runtime_section_evidence(safe_overview)
-    return {
+    snapshot = {
         "schema_version": "ai-platform.capacity-evidence-snapshot.v1",
         "source": {
             "projection": "/api/ai/admin/runtime/overview",
@@ -1133,6 +1339,9 @@ def build_capacity_evidence_snapshot(
         "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
         "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
     }
+    if host_sandbox_status["status"] != "not_provided":
+        snapshot["host_sandbox_observation"] = host_sandbox_status
+    return snapshot
 
 
 def _snapshot_admin_runtime_evidence(snapshot: dict[str, Any]) -> dict[str, object]:
@@ -1800,12 +2009,73 @@ def build_capacity_evidence_bundle(
     }
 
 
-def _safe_recorded_gate_evidence_value(value: object) -> object | None:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int | float) and not isinstance(value, bool):
-        return int(value) if isinstance(value, int) or float(value).is_integer() else float(value)
+_RECORDED_GATE_EVIDENCE_REF_FIELDS = {
+    "commit_sha",
+    "api_worker_image_labels",
+    "frontend_commit_or_image_label",
+    "runtime_profile",
+    "cleanup_proof",
+}
+
+
+def _contains_diagnostic_release_evidence_marker(value: object) -> bool:
+    if isinstance(value, dict):
+        if (
+            value.get("schema_version") == "ai-platform.release-evidence-diagnostic-entry.v1"
+            or value.get("diagnostic_only") is True
+            or value.get("review_status") == "diagnostic_only_not_reviewed_release_evidence"
+            or value.get("does_not_mark_b3_recorded_evidence") is True
+        ):
+            return True
+        return any(_contains_diagnostic_release_evidence_marker(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_diagnostic_release_evidence_marker(item) for item in value)
+    return False
+
+
+def _contains_probe_only_evidence_marker(value: object) -> bool:
+    if isinstance(value, dict):
+        if (
+            value.get("schema_version") == "ai-platform.capacity-bounded-load-harness.v1"
+            or value.get("load_test_evidence_status") == "probe_only_not_recorded"
+            or value.get("does_not_mark_gate_recorded") is True
+        ):
+            return True
+        return any(_contains_probe_only_evidence_marker(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_probe_only_evidence_marker(item) for item in value)
+    return False
+
+
+def _safe_recorded_gate_evidence_value(field: str, value: object) -> object | None:
+    if (
+        _contains_diagnostic_release_evidence_marker(value)
+        or _contains_probe_only_evidence_marker(value)
+    ):
+        return None
+    if field in _RECORDED_GATE_EVIDENCE_REF_FIELDS:
+        return _safe_capacity_evidence_ref(value)
+    if isinstance(value, dict):
+        cleaned: dict[str, object] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if _contains_secret_marker(key_text) or _is_placeholder_evidence_text(key_text):
+                return None
+            compact = _compact_evidence_value(item)
+            if compact is None:
+                return None
+            cleaned[key_text] = compact
+        return cleaned if cleaned else None
+    if isinstance(value, list):
+        cleaned_items = [_compact_evidence_value(item) for item in value]
+        if any(item is None for item in cleaned_items):
+            return None
+        return cleaned_items if cleaned_items else None
     return _safe_capacity_evidence_ref(value)
+
+
+def _is_diagnostic_release_evidence(source: dict[str, Any]) -> bool:
+    return _contains_diagnostic_release_evidence_marker(source)
 
 
 def _capacity_recorded_gate_evidence_packet(
@@ -1821,17 +2091,14 @@ def _capacity_recorded_gate_evidence_packet(
     if source.get("does_not_raise_defaults") is not True:
         errors.append("recorded_gate_evidence_missing_no_default_raise_policy")
     source_evidence = _dict(source.get("evidence"))
-    if (
-        source.get("load_test_evidence_status") == "probe_only_not_recorded"
-        or source.get("does_not_mark_gate_recorded") is True
-        or source_evidence.get("load_test_evidence_status") == "probe_only_not_recorded"
-        or source_evidence.get("does_not_mark_gate_recorded") is True
-    ):
+    if _contains_probe_only_evidence_marker(source):
         errors.append("bounded_probe_input_cannot_be_recorded_gate_evidence")
+    if _contains_diagnostic_release_evidence_marker(source):
+        errors.append("diagnostic_input_cannot_be_recorded_gate_evidence")
 
     safe_evidence: dict[str, object] = {}
     for field in _LOAD_TEST_REQUIRED_EVIDENCE:
-        safe_value = _safe_recorded_gate_evidence_value(source_evidence.get(field))
+        safe_value = _safe_recorded_gate_evidence_value(field, source_evidence.get(field))
         if safe_value is None:
             errors.append(f"recorded_evidence_{field}_unsafe")
         else:
@@ -1879,6 +2146,13 @@ def _capacity_recorded_profile_evidence_packet(
         if source.get("status") != "profile_evidence_packet_ready":
             return "not_accepted", {}, ["profile_evidence_packet_result_not_ready"]
         source = _dict(source.get("packet"))
+    marker_errors: list[str] = []
+    if _contains_diagnostic_release_evidence_marker(source):
+        marker_errors.append("profile_evidence_diagnostic_input_not_allowed")
+    if _contains_probe_only_evidence_marker(source):
+        marker_errors.append("profile_evidence_probe_input_not_allowed")
+    if marker_errors:
+        return "not_accepted", {}, marker_errors
     safe_profile_evidence = _safe_profile_evidence(source)
     if not safe_profile_evidence:
         safe_b3_evidence = _safe_b3_profile_evidence(source)
@@ -1908,7 +2182,7 @@ def _safe_recorded_load_test_gate_packet(value: object) -> dict[str, Any] | None
     source_evidence = _dict(source.get("evidence"))
     safe_evidence: dict[str, object] = {}
     for field in _LOAD_TEST_REQUIRED_EVIDENCE:
-        safe_value = _safe_recorded_gate_evidence_value(source_evidence.get(field))
+        safe_value = _safe_recorded_gate_evidence_value(field, source_evidence.get(field))
         if safe_value is None:
             return None
         safe_evidence[field] = safe_value
@@ -1968,6 +2242,37 @@ def _safe_snapshot_live_signals(snapshot: dict[str, Any]) -> dict[str, object]:
     backpressure = _dict(source.get("backpressure"))
     containers = _numeric_bool_map(_dict(sandbox.get("containers")), _SANDBOX_CONTAINER_KEYS)
     leases = _numeric_bool_map(_dict(sandbox.get("leases")), _SANDBOX_LEASE_KEYS)
+    sandbox_signals: dict[str, object] = {
+        "containers": containers,
+        "running_containers": _coerce_int(sandbox.get("running_containers") or containers.get("running")),
+        "active_leases": _coerce_int(sandbox.get("active_leases") or leases.get("active")),
+        "leases": leases,
+        "list_runtime_containers_status": str(
+            sandbox.get("list_runtime_containers_status") or "available"
+        ),
+        "container_observation_degraded": _sandbox_container_observation_degraded(sandbox),
+    }
+    observation_source = _safe_identity(sandbox.get("observation_source"))
+    if observation_source in _HOST_SANDBOX_OBSERVATION_SOURCES:
+        sandbox_signals["observation_source"] = observation_source
+    socket_policy = _dict(sandbox.get("socket_policy"))
+    safe_socket_bearing_path = _safe_capacity_evidence_ref(
+        socket_policy.get("socket_bearing_compose_path")
+    )
+    if safe_socket_bearing_path is not None:
+        sandbox_signals["socket_policy"] = {
+            "api_container_docker_socket_present": socket_policy.get(
+                "api_container_docker_socket_present"
+            ) is True,
+            "default_compose_mounts_docker_socket": socket_policy.get(
+                "default_compose_mounts_docker_socket"
+            ) is True,
+            "sandbox_compose_mounts_docker_socket": socket_policy.get(
+                "sandbox_compose_mounts_docker_socket"
+            ) is True,
+            "socket_bearing_compose_path": safe_socket_bearing_path,
+        }
+
     return {
         "queue": {
             "depths": _numeric_bool_map(queue.get("depths"), _QUEUE_DEPTH_KEYS),
@@ -1992,12 +2297,7 @@ def _safe_snapshot_live_signals(snapshot: dict[str, Any]) -> dict[str, object]:
         "backpressure": {
             "reasons": _safe_reason_list(backpressure.get("reasons")),
         },
-        "sandbox": {
-            "containers": containers,
-            "running_containers": _coerce_int(sandbox.get("running_containers") or containers.get("running")),
-            "active_leases": _coerce_int(sandbox.get("active_leases") or leases.get("active")),
-            "leases": leases,
-        },
+        "sandbox": sandbox_signals,
         "observability": {
             **_numeric_bool_map(observability, _OBSERVABILITY_KEYS),
             "error_categories": _numeric_bool_map(
@@ -2009,8 +2309,46 @@ def _safe_snapshot_live_signals(snapshot: dict[str, Any]) -> dict[str, object]:
     }
 
 
+def _safe_snapshot_host_sandbox_observation(snapshot: dict[str, Any]) -> dict[str, Any]:
+    source = _dict(snapshot.get("host_sandbox_observation"))
+    if not source:
+        return {}
+    result: dict[str, Any] = {
+        "schema_version": CAPACITY_HOST_SANDBOX_OBSERVATION_SCHEMA,
+        "status": "not_accepted",
+        "input_errors": [],
+        "review_status": "diagnostic_only_not_reviewed_release_evidence",
+        "diagnostic_only": True,
+        "does_not_mark_b3_recorded_evidence": True,
+        "does_not_close_b3": True,
+    }
+    if source.get("schema_version") != CAPACITY_HOST_SANDBOX_OBSERVATION_SCHEMA:
+        result["input_errors"] = ["host_sandbox_observation_schema_unsupported"]
+        return result
+
+    status = str(source.get("status") or "").strip()
+    result["status"] = status if status in {"accepted", "not_accepted"} else "not_accepted"
+    input_errors = source.get("input_errors")
+    if isinstance(input_errors, list):
+        result["input_errors"] = [
+            str(error)
+            for error in input_errors
+            if isinstance(error, str) and error.strip()
+        ]
+    evidence_ref = _safe_capacity_evidence_ref(source.get("evidence_ref"))
+    if evidence_ref is not None:
+        result["evidence_ref"] = evidence_ref
+    observation_source = _safe_identity(source.get("observation_source"))
+    if observation_source in _HOST_SANDBOX_OBSERVATION_SOURCES:
+        result["observation_source"] = observation_source
+    runtime_subject = _safe_runtime_identity(source.get("runtime_subject_commit_sha"))
+    if runtime_subject != "unknown":
+        result["runtime_subject_commit_sha"] = runtime_subject
+    return result
+
+
 def _safe_capacity_evidence_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
-    return {
+    result = {
         "schema_version": "ai-platform.capacity-evidence-snapshot.v1",
         "source": {
             "projection": "/api/ai/admin/runtime/overview",
@@ -2027,6 +2365,10 @@ def _safe_capacity_evidence_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]
         "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
         "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
     }
+    host_sandbox_observation = _safe_snapshot_host_sandbox_observation(snapshot)
+    if host_sandbox_observation:
+        result["host_sandbox_observation"] = host_sandbox_observation
+    return result
 
 
 def build_capacity_recorded_gate_snapshot(
@@ -2131,12 +2473,10 @@ def build_capacity_recorded_gate_evidence_packet_result(
     source_evidence = _dict(evidence)
     if safe_gate == "unknown":
         input_errors.append("unsupported_gate")
-    if (
-        source_evidence.get("schema_version") == "ai-platform.capacity-bounded-load-harness.v1"
-        or source_evidence.get("load_test_evidence_status") == "probe_only_not_recorded"
-        or source_evidence.get("does_not_mark_gate_recorded") is True
-    ):
+    if _contains_probe_only_evidence_marker(source_evidence):
         input_errors.append("bounded_probe_input_cannot_be_recorded_gate_evidence")
+    if _contains_diagnostic_release_evidence_marker(source_evidence):
+        input_errors.append("diagnostic_input_cannot_be_recorded_gate_evidence")
 
     candidate_packet = {
         "schema_version": CAPACITY_RECORDED_GATE_EVIDENCE_SCHEMA,
@@ -2224,7 +2564,12 @@ def build_capacity_recorded_gate_batch_snapshot(
     gate_errors: list[str] = []
     profile_errors: list[str] = []
     if not snapshot:
-        runtime_errors.append("missing_capacity_evidence_snapshot")
+        runtime_schema = _dict(runtime_evidence).get("schema_version")
+        runtime_errors.append(
+            "runtime_evidence_release_entry_not_supported"
+            if runtime_schema == "ai-platform.release-evidence-entry.v1"
+            else "missing_capacity_evidence_snapshot"
+        )
 
     packets = [
         _dict(packet)
@@ -2610,6 +2955,7 @@ def build_capacity_profile_readiness(payload: dict[str, Any]) -> dict[str, Any]:
             "status": gate_status,
             "runtime_identity": gate_readiness["runtime_identity"],
             "missing_admin_runtime_sections": missing_sections,
+            "load_test_gates": gate_readiness["load_test_gates"],
             "missing_load_test_gates": missing_gates,
             "invalid_load_test_gates": invalid_gates,
             "profile_evidence": profile_evidence,

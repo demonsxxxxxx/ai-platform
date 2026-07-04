@@ -58,11 +58,14 @@ vulnerability evidence。
   只能作为历史 evidence/follow-up 含义读取；不能作为当前状态名。
 - B3 边界：`b3_10x4_sdk_subagents` source contract 是 SDK subagent
   fanout 容量证据，不是 G8 普通用户平台级 multi-run 产品曝光证据。
-- 最新 `main` / 211 边界：本轮 status-sync 的 GitHub `main` 基线已包含
-  PR #315 `codex/g7-b3-clean-main-rollout`
+- 最新 `main` / 211 边界：本轮 post-PR #316 status-sync 的 GitHub `main`
+  已包含 PR #316 merge commit
+  `5fe44827708fe24441a4c451dee9c691281d3c21`。PR #316 只是 reviewed
+  docs/test/evidence-status cleanup，没有部署新的 211 runtime；最新已审 211
+  runtime subject 仍是 PR #315 `codex/g7-b3-clean-main-rollout`
   `61073b16a5b2c135e7ee467434ab39502ca3d194`。211 repo-local source marker、
   source snapshot、API/worker image labels 和 API/worker in-container source
-  markers 已绑定到同一个 clean current-main runtime subject；API/worker 运行
+  markers 仍绑定到这个 `61073b1` runtime subject；API/worker 运行
   `ai-platform:61073b1-g7-b3-clean-main-v1`，`build-dirty=false`，且
   `SANDBOX_EXECUTOR_IMAGE=ai-platform:61073b1-g7-b3-clean-main-v1`。2026-07-03
   `61073b1` live-env G7 verifier 已记录 all eight checks passing，deployment
@@ -72,8 +75,9 @@ vulnerability evidence。
   `local partial`：G7 status-upgrade review 已记录
   `status_upgrade_decision=not_approved_for_closure`，B3 recorded load evidence
   和 `b3_10x4_sdk_subagents` profile evidence 仍缺；
-  所以不能叫 current-main `211 verified`、G7 closure、B3 closure、
-  Foundation Alpha complete、production-ready 或 `gate closable`；也不能重新解释已经历史关闭的 #164。
+  所以不能叫 post-PR #316 current-main `211 verified`、G7 closure、B3
+  closure、Foundation Alpha complete、production-ready 或 `gate closable`；
+  也不能重新解释已经历史关闭的 #164。
   `755e50e` dirty-runtime v2 G7/FRC/capacity visibility 只作为历史 reviewed
   candidate evidence 保留。
 - Historical progress retained below current state：PR #297 已合入 GitHub `main`
@@ -98,7 +102,7 @@ vulnerability evidence。
   subject。对捕获时的 `4805031` runtime subject，reviewed G7 release evidence
   和 same-subject FRC evidence 均已记录；evidence-only `4805031` audit 的 G7
   读法是 `status=candidate_evidence_requires_review`、`blocking_reasons=[]`、
-  且下一步是 operator status-upgrade review。当前 live `4805031` audit 也已不再
+  且下一步是 operator status-upgrade review。当时 live `4805031` audit 也已不再
   因 executor-image drift blocked，因为 live env 读到 executor image 已是
   `ai-platform:4805031-g7-b3-post-297-label-repair-v2`。
   PR #305 `codex/g7-b3-post304-doc-state` 已 merge 到 GitHub `main`
@@ -268,8 +272,8 @@ vulnerability evidence。
    并清除了 `4805031` 的 `reviewed_local_release_evidence_entry_missing`
    blocker。同 subject FRC evidence 也已记录，所以 G7 对捕获时的 `4805031`
    runtime subject 的 evidence-only 读法是 `candidate_evidence_requires_review`；
-   当前 211 live env 读到 executor image 已是
-    `ai-platform:4805031-g7-b3-post-297-label-repair-v2`，所以 current live `4805031`
+   当时 211 live env 读到 executor image 已是
+    `ai-platform:4805031-g7-b3-post-297-label-repair-v2`，所以 then-live `4805031`
     audit 的 G7 读法是 `candidate_evidence_requires_review`，不是
     `live_api_sandbox_executor_image_not_current_main_bound`。operator status-upgrade review 也仍未完成，
     所以不能声明 G7 closure 或 `211 verified`。PR #304 runtime subject
@@ -340,7 +344,7 @@ vulnerability evidence。
   `do_not_raise_without_recorded_load_test_evidence`。这只证明 28676df
   runtime 的 B3 visibility / fail-closed 路径；它不关闭 B3，也不关闭
   G0/source-authority。PR #306 merge commit `9c669761` 已把 211 repo-local
-  source marker 和 API/worker labels 推到当前 source/runtime subject，并在
+  source marker 和 API/worker labels 推到当时 source/runtime subject，并在
   2026-07-03 补齐 reviewed live-default G7 evidence 与 same-subject FRC
   evidence，但还没产生 reviewed B3 capacity entry；所以这段只能作为
   historical B3 visibility evidence 解读。当前 B3 状态必须以上面的
@@ -357,8 +361,8 @@ vulnerability evidence。
   evidence 作为 same-subject current-state evidence 或 closure support。当前审计结果应读作：G7 对 `ae6b7e5`
   无 runtime `blocking_reasons`，但需要 operator status-upgrade review；G7 对
   `4805031` reviewed evidence + same-subject FRC 的历史证据读法可以到
-  `candidate_evidence_requires_review`；当前 211 live env 读到 executor image 已是
-  `ai-platform:4805031-g7-b3-post-297-label-repair-v2`，因此 current live `4805031`
+  `candidate_evidence_requires_review`；当时 211 live env 读到 executor image 已是
+  `ai-platform:4805031-g7-b3-post-297-label-repair-v2`，因此 then-live `4805031`
   audit 的 G7 读法也是 `candidate_evidence_requires_review`，不是
   `live_api_sandbox_executor_image_not_current_main_bound`；G7 对 PR #304 runtime
   subject `decf33a` reviewed evidence + same-subject FRC 的读法也可以到
@@ -523,11 +527,16 @@ accepted cleanup/stop-condition statuses, and `does_not_raise_defaults = true`.
 This contract reduces operator evidence drift. It does not raise production concurrency defaults or replace real load-test artifacts.
 
 `python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overview.json>
---commit-sha <deployed-commit>` now turns an operator-captured Admin Runtime
-overview into a secret-safe capacity evidence snapshot. The snapshot binds
-allowlisted live queue, admission, backpressure, DB-pool, sandbox, and
-observability signals to a deployed commit while still marking load-test
-evidence as missing until a real harness records the required gates.
+--host-sandbox-observation-json <host-sandbox-observation.json> --commit-sha
+<deployed-commit>` now turns an operator-captured Admin Runtime overview, plus
+an optional controlled host-side sandbox observation, into a secret-safe
+capacity evidence snapshot. The snapshot binds allowlisted live queue,
+admission, backpressure, DB-pool, sandbox, and observability signals to a
+deployed commit while still marking load-test evidence as missing until a real
+harness records the required gates. The host-side sandbox observation path is
+for no-socket default-stack visibility only; it must not be used to mount the
+Docker socket into the default stack, accept probes as recorded gates, raise
+production defaults, or close B3/G7.
 `python tools/capacity_gate_readiness.py --snapshot-json <capacity-evidence-snapshot.json>`
 then converts that snapshot into a fail-closed gate verdict, listing missing
 Admin Runtime sections and missing recorded load-test gates without sending
@@ -543,9 +552,13 @@ evidence can advance only to `operator_review_required_before_default_change`,
 not an automatic production default increase or safe concurrency-number claim.
 `python tools/capacity_runtime_evidence.py --base-url <api-url> --user-id
 <audit-user> --tenant-id <tenant> --roles admin --commit-sha <deployed-commit>
---runtime-profile <profile> --format json` now wraps the read-only Admin
-Runtime capture, sanitized evidence snapshot, and gate verdict into one
-operator command without printing the raw overview or secret values.
+--runtime-profile <profile> --host-sandbox-observation-json
+<host-sandbox-observation.json> --format json` now wraps the read-only Admin
+Runtime capture, optional controlled host-side sandbox observation, sanitized
+evidence snapshot, and gate verdict into one operator command without printing
+the raw overview or secret values. The host-side observation can clear only the
+Admin Runtime `sandbox` missing-section blocker for that snapshot; it does not
+create recorded load evidence or close B3/G7.
 `python tools/capacity_bounded_load_harness.py --base-url <api-url> --gate
 api_read_write_burst --requests <n> --concurrency <n> --format json` and
 `python tools/capacity_bounded_load_harness.py --base-url <api-url> --gate

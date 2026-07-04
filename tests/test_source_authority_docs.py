@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import yaml
@@ -30,6 +31,10 @@ GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readin
 GATE_STATUS_DOC = ROOT / "docs/operations/ai-platform-gate-status.md"
 FOUNDATION_ALPHA_CLOSURE_DOC = ROOT / "docs/operations/ai-platform-foundation-alpha-closure.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
+CURRENT_G7_B3_SANDBOX_DIAGNOSTIC = (
+    ROOT
+    / "docs/release-evidence/diagnostics/2026-07-04-211-b3-sandbox-observation-61073b1.json"
+)
 SOURCE_RUNTIME_RELATION_MANIFEST = (
     ROOT / "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json"
 )
@@ -1388,10 +1393,33 @@ def test_capacity_docs_record_machine_readable_gate_evidence_contract():
         assert "MODEL_GATEWAY_REQUEST_CONCURRENCY_LIMIT" in text
         assert "model_gateway_timeout_and_backpressure" in text
         assert "contract-only" in text
+
         assert "--start-runtime-evidence-json capacity-runtime-evidence-start.json" in text
         assert "--cleanup-proof-json capacity-cleanup-proof-api-read-write-burst.json" in text
         assert "capacity-cleanup-proof-api-read-write-burst.json" in text
         assert "C:\\Users" not in text
+
+    assert "tools/capacity_operator_evidence_template_bundle.py" in capacity_text
+    assert "tools/capacity_recorded_gate_batch_from_values.py" in capacity_text
+    assert "New-Item -ItemType Directory -Force capacity-operator-inputs | Out-Null" in capacity_text
+    assert "--output-dir capacity-operator-inputs" in capacity_text
+    assert "--operator-input-dir capacity-operator-inputs" in capacity_text
+    assert "The `--runtime-evidence-json` input must be the raw" in capacity_text
+    assert "ai-platform.capacity-runtime-evidence.v1" in capacity_text
+    assert "runtime_evidence_release_entry_not_supported" in capacity_text
+    assert "ai-platform.capacity-operator-evidence-template-bundle.v1" in capacity_text
+    assert "TODO_OPERATOR_REVIEWED_" in capacity_text
+    assert "--host-sandbox-observation-json" in capacity_text
+    assert "ai-platform.capacity-host-sandbox-observation.v1" in capacity_text
+    assert "default_compose_mounts_docker_socket = false" in capacity_text
+    assert (
+        "Template bundle output is draft-only and is not recorded B3 evidence"
+        in " ".join(capacity_text.split())
+    )
+    plan_text = read(G7_B3_EVIDENCE_CLOSURE_PLAN)
+    compact_plan_text = " ".join(plan_text.split())
+    assert "tools/capacity_recorded_gate_batch_from_values.py" in plan_text
+    assert "directory-based fail-closed batch assembler" in compact_plan_text
 
 
 def test_gate_status_records_foundation_runtime_concurrency_context_pack_blocker():
@@ -1604,7 +1632,10 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
         assert "b3_10x4_sdk_subagents" in text
         assert "10 sessions x peak 4 SDK subagents/session" in text
         assert "target_profile_id = b3_10x4_sdk_subagents" in text
-        assert "evidence_source = platform_runtime_profile" in text
+        assert "allowlisted `evidence_source`" in text or "allowlisted evidence source" in text
+        assert "platform_runtime_profile" in text
+        assert "live_worker_run_payload" in text
+        assert "operator_reviewed_recorded_snapshot" in text
         assert "observed_concurrent_sessions >= 10" in text
         assert "observed_peak_sdk_subagents_per_session >= 4" in text
         assert "sdk_subagent_fanout_measurement_ref" in text
@@ -1613,10 +1644,13 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
         assert "ordinary_user_platform_multi_run_orchestration_enabled = false" in text
         assert "legacy alias `ordinary_user_multi_agent_enabled = false`" in text
         assert (
-            "normalizes it to the canonical platform-level multi-run flag"
+            "normalizes it only to the canonical B3 packet-level non-expansion boolean"
+            in compact_capacity_or_status_text
+            or "readiness normalizes it only as B3 packet non-expansion evidence"
             in compact_capacity_or_status_text
         )
-        assert "no ordinary-user platform-level multi-run orchestration exposure" in compact_capacity_or_status_text
+        assert "not a substitute for the route/status invariant" in compact_capacity_or_status_text
+        assert "canonical platform-level multi-run flag" not in compact_capacity_or_status_text
         assert "runtime_source_identity_and_image_labels" in text
         assert "tenant_user_skill_mix" in text
         assert "token_cost_ledger" in text
@@ -1665,6 +1699,78 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     assert "This is source/runtime visibility plus source contract only, not B3 closure" in gate_status_text
 
 
+def test_current_b3_sandbox_diagnostic_documents_socket_boundary_without_gate_closure():
+    index_text = read(RELEASE_EVIDENCE_INDEX)
+    gate_status_text = read(GATE_STATUS_DOC)
+    plan_text = read(G7_B3_EVIDENCE_CLOSURE_PLAN)
+    compact_index_text = " ".join(index_text.split())
+    compact_gate_status_text = " ".join(gate_status_text.split())
+    compact_plan_text = " ".join(plan_text.split())
+
+    assert CURRENT_G7_B3_SANDBOX_DIAGNOSTIC.is_file()
+    payload = json.loads(CURRENT_G7_B3_SANDBOX_DIAGNOSTIC.read_text(encoding="utf-8"))
+
+    assert "2026-07-04-211-b3-sandbox-observation-61073b1.json" in index_text
+    assert "API container Docker socket absent" in compact_index_text
+    assert "default compose does not mount Docker socket" in compact_index_text
+    assert "`docker-compose.sandbox.yml` is the explicit socket-bearing path" in compact_index_text
+    assert "overview sandbox remains degraded/unavailable" in compact_index_text
+    assert "host_sandbox_observation_status=accepted" in compact_index_text
+    assert "readiness_status_after_host_observation=blocked_missing_load_test_evidence" in compact_index_text
+    assert "diagnostic only and does not close B3/G7" in compact_index_text
+    assert "same-subject host-side replay records `host_sandbox_observation_status=accepted`" in compact_gate_status_text
+    assert "`readiness_status_after_host_observation=blocked_missing_load_test_evidence`" in compact_gate_status_text
+    assert "controlled host-side replay" in compact_plan_text
+    assert "advances the capacity readiness result to `blocked_missing_load_test_evidence`" in compact_plan_text
+
+    assert payload["schema_version"] == "ai-platform.release-evidence-diagnostic-entry.v1"
+    assert payload["evidence_id"] == "2026-07-04-211-b3-sandbox-observation-61073b1"
+    assert payload["commit_sha"] == CURRENT_G7_B3_RUNTIME_SHA
+    assert payload["runtime_subject_commit_sha"] == CURRENT_G7_B3_RUNTIME_SHA
+    assert payload["issue_refs"] == ["#21"]
+    assert payload["review_status"] == "diagnostic_only_not_reviewed_release_evidence"
+    assert payload["does_not_close_b3"] is True
+    assert payload["does_not_close_g7"] is True
+    assert payload["does_not_mark_b3_recorded_evidence"] is True
+    assert payload["does_not_make_211_verified"] is True
+    assert payload["does_not_make_gate_closable"] is True
+
+    observations = payload["observations"]
+    assert observations["api_container_docker_socket_present"] is False
+    assert observations["default_compose_mounts_docker_socket"] is False
+    assert observations["sandbox_compose_mounts_docker_socket"] is True
+    assert observations["socket_bearing_compose_path"] == "deploy/ai-platform/docker-compose.sandbox.yml"
+
+    sandbox = payload["admin_runtime_overview_sandbox"]
+    assert sandbox["container_observation_degraded"] is True
+    assert sandbox["list_runtime_containers_status"] == "unavailable"
+    assert sandbox["leases"]["active"] == 0
+    assert sandbox["leases"]["released"] == 100
+
+    replay = payload["host_side_snapshot_replay"]
+    assert replay["replay_status"] == "diagnostic_replay_only_not_reviewed_release_evidence"
+    assert replay["host_sandbox_observation_status"] == "accepted"
+    assert replay["admin_runtime_missing_sections_after_host_observation"] == []
+    assert replay["readiness_status_after_host_observation"] == "blocked_missing_load_test_evidence"
+    assert replay["missing_load_test_gates_after_host_observation"] == [
+        "api_read_write_burst",
+        "run_creation_burst_by_tenant_and_user",
+        "worker_processing_throughput",
+        "queue_depth_and_lease_latency",
+        "cancel_retry_resume_under_load",
+        "sandbox_lease_creation_under_load",
+        "model_gateway_timeout_and_backpressure",
+    ]
+    assert replay["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+    assert replay["does_not_mark_b3_recorded_evidence"] is True
+    assert replay["does_not_make_gate_closable"] is True
+
+    assert "default stack must stay no-socket" in " ".join(payload["notes"])
+    assert "controlled host-side observation or explicit approved sandbox compose path" in " ".join(
+        payload["required_next_steps"]
+    )
+
+
 def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     gate_status_text = read(GATE_STATUS_DOC)
     roadmap_text = read(ROADMAP)
@@ -1684,7 +1790,8 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     )[0]
     assert "The table below is a gate/evidence matrix" in current_gate_table
     assert "Rows that mention `96f27bb` describe reviewed 2026-06-30" in current_gate_table
-    assert "GitHub `main` includes PR #315 merge commit" in current_gate_table
+    assert "GitHub `main` includes PR #316 merge commit" in current_gate_table
+    assert "latest reviewed 211 runtime subject remains PR #315 merge commit" in " ".join(current_gate_table.split())
     assert "current GitHub `main`, the 211 repo-local source marker, and the 211 API/worker canonical runtime image labels are at `15903fdfe96ffcfba9daa1252741111017dcf832`" not in " ".join(current_gate_table.split())
     assert "`ae6b7e5` FRC evidence is recorded as Foundation Runtime POC correctness evidence" in " ".join(current_gate_table.split())
     assert "and B3 follow-ups remain open" in " ".join(current_gate_table.split())
@@ -1714,10 +1821,10 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "只能作为历史 evidence/follow-up 含义读取" in compact_roadmap_text
     assert "不能作为当前状态名" in compact_roadmap_text
     assert (
-        "At this status-sync slice, GitHub `main` includes PR #315 merge commit "
-        "`61073b16a5b2c135e7ee467434ab39502ca3d194`, and the 211 repo-local source "
-        "marker, source snapshot, API/worker image labels, and API/worker in-container "
-        "source markers now bind to the same clean current-main runtime subject"
+        "At this post-PR #316 status-sync slice, GitHub `main` includes PR #316 "
+        "merge commit `5fe44827708fe24441a4c451dee9c691281d3c21`. PR #316 "
+        "merged reviewed docs/test/evidence-status cleanup only; it did not deploy "
+        "a new 211 runtime"
         in compact_gate_status_text
     )
     assert (
@@ -1730,15 +1837,15 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
         "is now recorded with `verified_foundation_runtime_concurrency`"
         in compact_gate_status_text
     )
-    assert "clean current `main` `211 verified`" in compact_gate_status_text
+    assert "post-PR #316 current `main` or the `61073b1` runtime subject `211 verified`" in compact_gate_status_text
     assert (
-        "本轮 status-sync 的 GitHub `main` 基线已包含 PR #315 "
-        "`codex/g7-b3-clean-main-rollout` `61073b16a5b2c135e7ee467434ab39502ca3d194`"
+        "本轮 post-PR #316 status-sync 的 GitHub `main` 已包含 PR #316 merge "
+        "commit `5fe44827708fe24441a4c451dee9c691281d3c21`"
         in compact_roadmap_text
     )
     assert (
-        "211 repo-local source marker、 source snapshot、API/worker image labels "
-        "和 API/worker in-container source markers 已绑定到同一个 clean current-main runtime subject"
+        "最新已审 211 runtime subject 仍是 PR #315 `codex/g7-b3-clean-main-rollout` "
+        "`61073b16a5b2c135e7ee467434ab39502ca3d194`"
         in compact_roadmap_text
     )
     assert "`755e50e` dirty-runtime v2 G7/FRC/capacity visibility 只作为历史 reviewed candidate evidence 保留" in compact_roadmap_text
@@ -1906,8 +2013,8 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "2026-07-02-211-g7-sandbox-live-env-hardening-decf33a.json" in compact_gate_status_text
     assert "G7 对 `ae6b7e5` 证据集不是 blocked，而是 `candidate_evidence_requires_review`" in compact_roadmap_text
     assert "G7 对捕获时的 `4805031` runtime subject 的 evidence-only 读法是 `candidate_evidence_requires_review`" in compact_roadmap_text
-    assert "当前 211 live env 读到 executor image 已是 `ai-platform:4805031-g7-b3-post-297-label-repair-v2`" in compact_roadmap_text
-    assert "current live `4805031` audit 的 G7 读法是 `candidate_evidence_requires_review`" in compact_roadmap_text
+    assert "当时 211 live env 读到 executor image 已是 `ai-platform:4805031-g7-b3-post-297-label-repair-v2`" in compact_roadmap_text
+    assert "then-live `4805031` audit 的 G7 读法是 `candidate_evidence_requires_review`" in compact_roadmap_text
     assert "不是 `live_api_sandbox_executor_image_not_current_main_bound`" in compact_roadmap_text
     assert "G7 对 PR #304 runtime subject `decf33a` reviewed evidence + same-subject FRC 的读法也可以到 `candidate_evidence_requires_review`" in compact_roadmap_text
     assert "PR #306 已 merge 且 211 API/worker 已跑到 9c669761" in compact_roadmap_text
@@ -2045,6 +2152,8 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "first controlled write-side multi-agent runtime ledger slice" not in roadmap_text
     assert "multi-agent fanout exposure" not in roadmap_text
     assert "SDK subagent fanout capacity inside governed platform runs" in roadmap_text
+    assert "--host-sandbox-observation-json <host-sandbox-observation.json>" in roadmap_text
+    assert "for no-socket default-stack visibility only" in compact_roadmap_text
     assert "g8_ordinary_user_multi_agent_exposure" not in gate_status_text
     assert "旧的 `g8_ordinary_user_multi_agent_exposure` / 泛化 multi-agent exposure 命名" in compact_roadmap_text
     assert (
@@ -2057,11 +2166,35 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
         in " ".join(read(RELEASE_EVIDENCE_INDEX).split())
     )
     assert "ordinary_user_multi_agent_exposure" not in gate_status_text
+    assert (
+        "`ordinary_user_platform_multi_run_orchestration_enabled=false`. The former is a route/status concept"
+        in compact_gate_status_text
+    )
+    assert "--g7-status-upgrade-review-json" in gate_status_text
+    assert (
+        "an accepted future G7 status-upgrade review can remove only the G7 status-upgrade blocker"
+        in compact_gate_status_text
+    )
+    assert (
+        "must still not close B3, mark `211 verified`, or make the overall gate closable"
+        in compact_gate_status_text
+    )
+    capacity_text = read(CAPACITY_BASELINE_DOC)
+    compact_capacity_text = " ".join(capacity_text.split())
+    assert (
+        "The current route/status blocked-expansion invariant remains `ordinary_user_platform_multi_run_orchestration_exposure=false`"
+        in compact_capacity_text
+    )
+    assert (
+        "the B3 packet boolean is not a substitute for the route/status invariant"
+        in compact_capacity_text
+    )
 
     release_evidence_text = read(RELEASE_EVIDENCE_INDEX)
     compact_release_evidence_text = " ".join(release_evidence_text.split())
-    assert "The 2026-07-04 status-sync baseline has GitHub `main` including PR #315 merge" in compact_release_evidence_text
-    assert "clean current-main `61073b1` live-env hardening entry" in compact_release_evidence_text
+    assert "The 2026-07-04 post-PR #316 status-sync baseline has GitHub `main` including PR #316 merge" in compact_release_evidence_text
+    assert "latest reviewed 211 runtime subject remains PR #315 merge commit" in compact_release_evidence_text
+    assert "clean-main `61073b1` live-env hardening entry" in compact_release_evidence_text
     assert "2026-07-03-211-g7-sandbox-live-env-hardening-61073b1-clean-main.json" in release_evidence_text
     assert "2026-07-03-211-g7-operator-status-review-61073b1-clean-main.json" in release_evidence_text
     assert "2026-07-03-211-foundation-alpha-poc-61073b1-foundation-runtime-concurrency.json" in release_evidence_text

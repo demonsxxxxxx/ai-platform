@@ -15,6 +15,7 @@ from app.capacity_baseline import (
     build_capacity_evidence_snapshot,
     build_capacity_gate_readiness,
 )
+from capacity_cli_inputs import read_optional_host_sandbox_observation_json
 
 
 OVERVIEW_ROUTE = "/api/ai/admin/runtime/overview"
@@ -89,6 +90,7 @@ def build_capacity_runtime_evidence(
     runtime_profile: str = "unproven_default",
     timeout_seconds: float = 10.0,
     include_maintenance_cleanup: bool = True,
+    host_sandbox_observation: dict[str, object] | None = None,
 ) -> dict[str, object]:
     safe_base_url = _safe_base_url(base_url)
     overview, http_status = _read_overview(
@@ -104,6 +106,7 @@ def build_capacity_runtime_evidence(
         overview,
         commit_sha=commit_sha,
         runtime_profile=runtime_profile,
+        host_sandbox_observation=host_sandbox_observation,
     )
     readiness = build_capacity_gate_readiness(snapshot)
     return {
@@ -168,9 +171,19 @@ def main() -> None:
             "must not require a mounted Docker socket."
         ),
     )
+    parser.add_argument(
+        "--host-sandbox-observation-json",
+        help=(
+            "Optional host-side sandbox observation JSON from a Docker-capable "
+            "operator host. Does not create load-test evidence."
+        ),
+    )
     parser.add_argument("--format", choices=("json", "markdown"), default="markdown")
     args = parser.parse_args()
 
+    host_sandbox_observation, host_sandbox_observation_error = (
+        read_optional_host_sandbox_observation_json(args.host_sandbox_observation_json)
+    )
     evidence = build_capacity_runtime_evidence(
         base_url=args.base_url,
         user_id=args.user_id,
@@ -181,7 +194,11 @@ def main() -> None:
         runtime_profile=args.runtime_profile,
         timeout_seconds=args.timeout_seconds,
         include_maintenance_cleanup=not args.skip_maintenance_cleanup,
+        host_sandbox_observation=host_sandbox_observation,
     )
+    if host_sandbox_observation_error is not None:
+        evidence["snapshot"]["host_sandbox_observation"] = host_sandbox_observation_error
+        evidence["readiness"] = build_capacity_gate_readiness(evidence["snapshot"])
     if args.format == "json":
         print(json.dumps(evidence, ensure_ascii=False, indent=2, sort_keys=True))
         return

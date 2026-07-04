@@ -1,6 +1,8 @@
 # ai-platform Capacity Baseline
 
-Date: 2026-07-02
+Date: 2026-07-02 initial baseline; later sections include 2026-07-03/2026-07-04
+status updates. Use `docs/operations/ai-platform-gate-status.md` for the
+current gate matrix.
 
 This document closes the first #21 baseline step without raising production
 concurrency defaults. It records the current configured ceiling, the live Admin
@@ -20,11 +22,14 @@ python tools/capacity_load_plan.py --format markdown --base-url http://127.0.0.1
 python tools/capacity_load_plan.py --format json --base-url http://127.0.0.1:8020
 python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overview.json> --commit-sha <deployed-commit> --format markdown
 python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overview.json> --commit-sha <deployed-commit> --format json
+python tools/capacity_evidence_snapshot.py --overview-json <admin-runtime-overview.json> --host-sandbox-observation-json <host-sandbox-observation.json> --commit-sha <deployed-commit> --format json
 python tools/capacity_gate_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format markdown
 python tools/capacity_gate_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format json
 python tools/capacity_profile_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format markdown
 python tools/capacity_profile_readiness.py --snapshot-json <capacity-evidence-snapshot.json> --format json
+python tools/capacity_operator_evidence_template_bundle.py --format json
 python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile <profile> --skip-maintenance-cleanup --format json
+python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile <profile> --skip-maintenance-cleanup --host-sandbox-observation-json <host-sandbox-observation.json> --format json
 python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate api_read_write_burst --requests 10 --concurrency 2 --format json
 python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate run_creation_burst_by_tenant_and_user --requests 10 --concurrency 2 --format json
 python tools/capacity_bounded_load_harness.py --base-url http://127.0.0.1:8020 --gate worker_processing_throughput --requests 10 --concurrency 2 --format json
@@ -133,6 +138,7 @@ runtime, generate a secret-safe evidence snapshot:
 ```powershell
 python tools/capacity_evidence_snapshot.py --overview-json .\admin-runtime-overview.json --commit-sha <deployed-commit> --format markdown
 python tools/capacity_evidence_snapshot.py --overview-json .\admin-runtime-overview.json --commit-sha <deployed-commit> --format json
+python tools/capacity_evidence_snapshot.py --overview-json .\admin-runtime-overview.json --host-sandbox-observation-json .\host-sandbox-observation.json --commit-sha <deployed-commit> --format json
 ```
 
 This snapshot extracts only allowlisted capacity, queue, admission,
@@ -141,6 +147,22 @@ bind live signals to a deployed commit while preserving the #21 rule that
 load-test evidence is still `missing` until a real harness run records the
 required gates. It does not read gateway secrets, send load, create runs, or
 raise any default.
+
+When the default API stack intentionally has no Docker socket mount and the
+Admin Runtime sandbox section reports container observation as degraded,
+operators may attach a controlled host-side observation with schema
+`ai-platform.capacity-host-sandbox-observation.v1` through
+`--host-sandbox-observation-json`. Accepted host observations must bind to the
+same deployed commit, keep `api_container_docker_socket_present = false`, keep
+`default_compose_mounts_docker_socket = false`, identify the explicit
+socket-bearing sandbox compose path, and report
+`list_runtime_containers_status = available`. This only satisfies the sandbox
+visibility input; it does not create load-test evidence, mark any recorded gate,
+raise production defaults, close B3/G7, or make the default stack socket-bearing.
+Recorded-gate snapshot assembly preserves accepted host-side observation status
+only as sanitized diagnostic provenance with
+`does_not_mark_b3_recorded_evidence = true` and `does_not_close_b3 = true`; the
+recorded gates and profile packet must still provide the B3 evidence values.
 
 After generating a snapshot, operators can produce a gate verdict with:
 
@@ -179,8 +201,9 @@ B3 operator-reviewed recorded snapshot source contract:
 operator-reviewed recorded snapshot must contain for the
 10 sessions x peak 4 SDK subagents/session profile; it is not load evidence by
 itself. The profile-evidence section must bind the snapshot to
-`target_profile_id = b3_10x4_sdk_subagents`, use an allowlisted platform
-runtime source such as `evidence_source = platform_runtime_profile`, record
+`target_profile_id = b3_10x4_sdk_subagents`, use an allowlisted evidence source
+(`platform_runtime_profile`, `live_worker_run_payload`, or
+`operator_reviewed_recorded_snapshot`), record
 `observed_concurrent_sessions >= 10`, record
 `observed_peak_sdk_subagents_per_session >= 4`, and include a safe
 `sdk_subagent_fanout_measurement_ref` artifact reference. It must also keep
@@ -191,9 +214,13 @@ the non-expansion flags
 `tools/capacity_profile_readiness.py` keeps the B3 profile at
 `blocked_missing_profile_evidence`. Historical snapshots may still import the
 legacy alias `ordinary_user_multi_agent_enabled = false`; the readiness path
-normalizes it to the canonical platform-level multi-run flag. This flag means
-no ordinary-user platform-level multi-run orchestration exposure; it is not
-evidence that B3 is a G8 product route. Required review evidence:
+normalizes it only to the canonical B3 packet-level non-expansion boolean
+`ordinary_user_platform_multi_run_orchestration_enabled=false`. The current
+route/status blocked-expansion invariant remains
+`ordinary_user_platform_multi_run_orchestration_exposure=false`; the B3 packet
+boolean is not a substitute for the route/status invariant and is not evidence
+that B3 is a G8 product route. Required review
+evidence:
 
 - `runtime_source_identity_and_image_labels`
 - `tenant_user_skill_mix`
@@ -210,6 +237,30 @@ Contract flags stay fail-closed: `does_not_raise_defaults = true`,
 `does_not_close_b3_gate = true`. This is source contract only; it does not raise production defaults,
 does not close B3, and must not be used as ordinary-user platform-level multi-run
 orchestration exposure evidence.
+
+Operators can generate a draft-only JSON input scaffold with:
+
+```powershell
+python tools/capacity_operator_evidence_template_bundle.py --format json > capacity-operator-evidence-template-bundle.json
+New-Item -ItemType Directory -Force capacity-operator-inputs | Out-Null
+python tools/capacity_operator_evidence_template_bundle.py --format json --output-dir capacity-operator-inputs > capacity-operator-evidence-template-bundle-result.json
+```
+
+The template bundle schema is
+`ai-platform.capacity-operator-evidence-template-bundle.v1`. It lists all seven
+recorded gate value files, the `b3_10x4_sdk_subagents` profile value file, the
+packet commands, and the batch snapshot command. With `--output-dir`, the tool
+materializes the draft value JSON files and manifest under the named directory,
+while stdout reports only file names. Template bundle output is draft-only and
+is not recorded B3 evidence: every `TODO_OPERATOR_REVIEWED_` value must be
+replaced with a real operator-reviewed measurement or safe artifact reference
+before the packet builders can accept it, and the bundle keeps
+`does_not_mark_gate_recorded = true` and `does_not_close_b3_gate = true`.
+After those values are replaced, operators can run
+`tools/capacity_recorded_gate_batch_from_values.py` against the same directory
+to build the seven packet results and assemble the all-gates batch snapshot in
+one fail-closed step; this helper still returns `blocked_incomplete_inputs` when
+any gate/profile value is missing or unsafe.
 
 This is a fail-closed operator catalog. When load-test evidence is missing or
 incomplete, every profile keeps
@@ -236,6 +287,7 @@ For a single read-only capture command, use:
 
 ```powershell
 python tools/capacity_runtime_evidence.py --base-url http://10.56.0.211:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile 211-current --skip-maintenance-cleanup --format json
+python tools/capacity_runtime_evidence.py --base-url http://10.56.0.211:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha <deployed-commit> --runtime-profile 211-current --skip-maintenance-cleanup --host-sandbox-observation-json <host-sandbox-observation.json> --format json
 ```
 
 This command fetches only
@@ -254,6 +306,15 @@ projection reports `sandbox.container_observation_degraded=true` or
 `sandbox.list_runtime_containers_status` is not `available`, capacity readiness
 still treats `sandbox` as a missing Admin Runtime evidence section and remains
 fail-closed.
+When an operator has a controlled host-side observation JSON, the same command
+may pass `--host-sandbox-observation-json`. That can clear the Admin Runtime
+`sandbox` missing-section blocker for the captured snapshot only when the host
+observation is accepted, but readiness must still remain
+`blocked_missing_load_test_evidence` until all seven recorded load-test gates
+and the `b3_10x4_sdk_subagents` profile packet exist.
+If recorded-gate snapshot assembly later consumes that captured snapshot, the
+host-side observation marker is retained only as diagnostic provenance; it does
+not become recorded load evidence.
 
 ## Operator Load-Test Workflow
 
@@ -1053,7 +1114,16 @@ fail-closed batch command instead of assembling seven intermediate snapshots:
 
 ```powershell
 python tools/capacity_recorded_gate_snapshot.py --runtime-evidence-json capacity-runtime-evidence-end.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-api-read-write-burst.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-run-creation-burst-by-tenant-and-user.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-worker-processing-throughput.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-queue-depth-and-lease-latency.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-cancel-retry-resume-under-load.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-sandbox-lease-creation-under-load.json --recorded-gate-evidence-json capacity-recorded-gate-evidence-model-gateway-timeout-and-backpressure.json --profile-evidence-json capacity-profile-evidence-b3-10x4-sdk-subagents.json --format json
+python tools/capacity_recorded_gate_batch_from_values.py --runtime-evidence-json capacity-runtime-evidence-end.json --operator-input-dir capacity-operator-inputs --cleanup-proof-status verified --stop-condition-status passed --format json
 ```
+
+The `--runtime-evidence-json` input must be the raw
+`ai-platform.capacity-runtime-evidence.v1` output that contains the nested
+`ai-platform.capacity-evidence-snapshot.v1` snapshot, or the raw snapshot
+itself. A reviewed `ai-platform.release-evidence-entry.v1` index entry is not a
+substitute for this input and is rejected with
+`runtime_evidence_release_entry_not_supported`, because the safe index entry
+does not contain the full sanitized snapshot needed for batch assembly.
 
 The snapshot input packet schema is
 `ai-platform.capacity-recorded-gate-evidence.v1`. The output schema is
@@ -1064,6 +1134,11 @@ without a single `--scenario`, the generated workflow also includes
 `build_b3_profile_evidence_packet`, `build_all_recorded_gate_evidence_packets`, and
 `assemble_recorded_gate_batch_snapshot` so operators have a copyable all-seven
 gate assembly path for B3.
+The `capacity_recorded_gate_batch_from_values.py` helper is the directory-based
+variant of the same path: it reads the template-bundle filenames, builds the
+profile/recorded-gate packet results through the existing validators, and then
+calls the same batch snapshot assembler. It does not accept probe output and
+does not create evidence values by itself.
 
 The recorded-gate tool only accepts explicit operator-reviewed values for all
 required gate evidence fields. Each field must be a safe relative artifact

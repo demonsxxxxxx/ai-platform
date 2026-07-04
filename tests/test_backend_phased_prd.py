@@ -131,12 +131,17 @@ def test_backend_prd_records_claim_ladder_and_stage_evidence_fields():
 
     for invariant in (
         "production_concurrency_defaults_raised=false",
-        "ordinary_user_platform_multi_run_orchestration_enabled=false",
+        "ordinary_user_platform_multi_run_orchestration_exposure=false",
         "docker_sandbox_hardening_claimed=false",
         "long_term_cross_session_memory_default_enabled=false",
         "department_rollout_allowed=false",
     ):
         assert invariant in text
+    assert (
+        "B3 packet/profile evidence separately carries "
+        "`ordinary_user_platform_multi_run_orchestration_enabled=false`"
+    ) in compact_text
+    assert "that packet boolean does not replace the route/status invariant above" in compact_text
 
 
 def test_backend_prd_records_explicit_gate_register():

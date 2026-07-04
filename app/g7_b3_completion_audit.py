@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.capacity_baseline import LOAD_TEST_GATES
@@ -40,6 +41,21 @@ _BLOCKED_CAPACITY_PROFILE_STATUSES = {
     "blocked_incomplete_load_test_evidence",
     "blocked_missing_admin_runtime_sections",
 }
+_G7_STATUS_UPGRADE_REVIEW_SCHEMA = "ai-platform.g7-operator-status-review.v1"
+_G7_STATUS_UPGRADE_APPROVED_DECISION = "approved_for_g7_status_upgrade"
+_G7_REQUIRED_NON_EXPANSION_INVARIANTS = {
+    "ordinary_user_high_risk_sandbox_allowed": False,
+    "ordinary_user_platform_multi_run_orchestration_exposure": False,
+    "production_concurrency_defaults_raised": False,
+    "g7_closed": True,
+    "b3_closed": False,
+    "foundation_alpha_complete": False,
+}
+_B3_PROFILE_EVIDENCE_ALLOWED_SOURCES = {
+    "platform_runtime_profile",
+    "live_worker_run_payload",
+    "operator_reviewed_recorded_snapshot",
+}
 
 
 def _dict(value: object) -> dict[str, Any]:
@@ -48,6 +64,52 @@ def _dict(value: object) -> dict[str, Any]:
 
 def _safe_text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _is_placeholder_text(value: object) -> bool:
+    text = _safe_text(value)
+    if not text:
+        return True
+    lowered = text.lower()
+    if re.search(r"<[^<>]+>", text) or re.search(r"\$\{[^{}]+\}", text):
+        return True
+    if lowered.startswith("todo_operator_reviewed_"):
+        return True
+    placeholder_tokens = {
+        "todo",
+        "tbd",
+        "placeholder",
+        "fill-me",
+        "fill_me",
+        "fill me",
+        "replace-me",
+        "replace_me",
+        "replace me",
+        "example",
+        "sample",
+    }
+    if lowered in placeholder_tokens:
+        return True
+    return bool(re.fullmatch(r"(?:todo|tbd)[:\s_-].*", lowered)) or bool(
+        re.search(r"\b(?:placeholder|fill[-_ ]?me|replace[-_ ]?me)\b", lowered)
+    )
+
+
+def _safe_evidence_ref(value: object) -> str:
+    text = _safe_text(value)
+    if (
+        _is_placeholder_text(text)
+        or "\\" in text
+        or "://" in text
+        or text.startswith("/")
+        or re.match(r"^[A-Za-z]:", text)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", text)
+    ):
+        return ""
+    parts = text.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return ""
+    return text
 
 
 def _safe_runtime_env(env: object) -> dict[str, str]:
@@ -428,25 +490,126 @@ def _profile_readiness_b3_profile(capacity_profile_readiness: dict[str, Any]) ->
     return {}
 
 
+def _source_b3_profile_evidence(capacity_profile_readiness: dict[str, Any]) -> dict[str, Any]:
+    source = _dict(capacity_profile_readiness.get("source_gate_readiness"))
+    profile_evidence = _dict(source.get("profile_evidence"))
+    return _dict(profile_evidence.get(B3_TARGET_PROFILE_ID))
+
+
+def _invalid_b3_profile_evidence_fields(profile_evidence: dict[str, Any]) -> list[str]:
+    if not profile_evidence:
+        return list(B3_REQUIRED_PROFILE_EVIDENCE)
+
+    invalid: list[str] = []
+    if profile_evidence.get("target_profile_id") != B3_TARGET_PROFILE_ID:
+        invalid.append("target_profile_id")
+    if profile_evidence.get("evidence_source") not in _B3_PROFILE_EVIDENCE_ALLOWED_SOURCES:
+        invalid.append("evidence_source")
+
+    observed_sessions = profile_evidence.get("observed_concurrent_sessions")
+    if not isinstance(observed_sessions, int) or isinstance(observed_sessions, bool) or observed_sessions < 10:
+        invalid.append("observed_concurrent_sessions")
+
+    observed_subagents = profile_evidence.get("observed_peak_sdk_subagents_per_session")
+    if (
+        not isinstance(observed_subagents, int)
+        or isinstance(observed_subagents, bool)
+        or observed_subagents < 4
+    ):
+        invalid.append("observed_peak_sdk_subagents_per_session")
+
+    if not _safe_evidence_ref(profile_evidence.get("sdk_subagent_fanout_measurement_ref")):
+        invalid.append("sdk_subagent_fanout_measurement_ref")
+    if profile_evidence.get("production_concurrency_defaults_raised") is not False:
+        invalid.append("production_concurrency_defaults_raised")
+    if profile_evidence.get("safe_concurrency_claimed") is not False:
+        invalid.append("safe_concurrency_claimed")
+    if profile_evidence.get("ordinary_user_platform_multi_run_orchestration_enabled") is not False:
+        invalid.append("ordinary_user_platform_multi_run_orchestration_enabled")
+    return invalid
+
+
 def _readiness_status_is_blocked(status: object) -> bool:
     return str(status or "").strip() in _BLOCKED_CAPACITY_PROFILE_STATUSES
 
 
+def _source_gate_statuses(
+    capacity_profile_readiness: dict[str, Any],
+) -> tuple[dict[str, str], bool]:
+    source = _dict(capacity_profile_readiness.get("source_gate_readiness"))
+    rows = source.get("load_test_gates")
+    statuses: dict[str, str] = {}
+    if not isinstance(rows, list):
+        return statuses, False
+    for row in rows:
+        item = _dict(row)
+        gate = str(item.get("gate") or "").strip()
+        status = str(item.get("status") or "").strip()
+        if gate in LOAD_TEST_GATES and status:
+            statuses[gate] = status
+    return statuses, set(statuses) == set(LOAD_TEST_GATES)
+
+
+def _normalized_non_empty_strings(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [text for item in value if (text := str(item).strip())]
+
+
+def _dedupe_preserving_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
 def _missing_load_test_gates(capacity_profile_readiness: dict[str, Any]) -> tuple[list[str], bool]:
     source = _dict(capacity_profile_readiness.get("source_gate_readiness"))
+    if not source:
+        return list(LOAD_TEST_GATES), False
     missing = source.get("missing_load_test_gates")
+    invalid_gates = _dedupe_preserving_order(
+        _normalized_non_empty_strings(source.get("invalid_load_test_gates"))
+        + _normalized_non_empty_strings(
+            _profile_readiness_b3_profile(capacity_profile_readiness).get(
+                "invalid_load_test_gates"
+            )
+        )
+    )
     if isinstance(missing, list):
-        normalized = [str(gate) for gate in missing if str(gate).strip()]
-        if normalized:
-            return normalized, False
+        normalized = _normalized_non_empty_strings(missing)
+        if normalized or invalid_gates:
+            return _dedupe_preserving_order(normalized + invalid_gates), bool(
+                invalid_gates
+            )
         if _readiness_status_is_blocked(source.get("status")):
             return list(LOAD_TEST_GATES), True
+        gate_statuses, statuses_complete = _source_gate_statuses(capacity_profile_readiness)
+        missing_by_status = [
+            gate
+            for gate in LOAD_TEST_GATES
+            if gate_statuses.get(gate) != "recorded"
+        ]
+        if missing_by_status:
+            return missing_by_status, True
+        if not statuses_complete or str(source.get("status") or "").strip() != "ready_for_operator_review":
+            return list(LOAD_TEST_GATES), True
+        if _invalid_b3_profile_evidence_fields(
+            _source_b3_profile_evidence(capacity_profile_readiness)
+        ):
+            return list(LOAD_TEST_GATES), True
         return [], False
-    return list(LOAD_TEST_GATES), False
+    return list(LOAD_TEST_GATES), True
 
 
 def _missing_profile_evidence(capacity_profile_readiness: dict[str, Any]) -> tuple[list[str], bool]:
     profile = _profile_readiness_b3_profile(capacity_profile_readiness)
+    if not profile:
+        return list(B3_REQUIRED_PROFILE_EVIDENCE), False
     missing = profile.get("missing_profile_evidence")
     if isinstance(missing, list):
         normalized = [str(field) for field in missing if str(field).strip()]
@@ -454,8 +617,20 @@ def _missing_profile_evidence(capacity_profile_readiness: dict[str, Any]) -> tup
             return normalized, False
         if _readiness_status_is_blocked(profile.get("status")):
             return list(B3_REQUIRED_PROFILE_EVIDENCE), True
+        observed = _dict(profile.get("observed_profile_evidence"))
+        invalid_observed = _invalid_b3_profile_evidence_fields(observed)
+        invalid_source = _invalid_b3_profile_evidence_fields(
+            _source_b3_profile_evidence(capacity_profile_readiness)
+        )
+        if (
+            str(profile.get("status") or "").strip() != "operator_review_required"
+            or str(profile.get("profile_evidence_status") or "").strip() != "accepted"
+            or invalid_observed
+            or invalid_source
+        ):
+            return list(B3_REQUIRED_PROFILE_EVIDENCE), True
         return [], False
-    return list(B3_REQUIRED_PROFILE_EVIDENCE), False
+    return list(B3_REQUIRED_PROFILE_EVIDENCE), True
 
 
 def _build_b3_audit(capacity_profile_readiness: dict[str, Any] | None) -> dict[str, Any]:
@@ -486,10 +661,107 @@ def _build_b3_audit(capacity_profile_readiness: dict[str, Any] | None) -> dict[s
     }
 
 
+def _g7_status_upgrade_review_status(
+    value: object,
+    *,
+    current_source_commit: str,
+    b3_blocking_reasons: list[str],
+) -> dict[str, Any]:
+    source = _dict(value)
+    if not source:
+        return {"status": "not_provided", "input_errors": []}
+
+    errors: list[str] = []
+    if source.get("schema_version") != "ai-platform.release-evidence-entry.v1":
+        errors.append("g7_status_upgrade_review_entry_schema_unsupported")
+    if source.get("artifact_kind") != "211_g7_operator_status_review":
+        errors.append("g7_status_upgrade_review_artifact_kind_invalid")
+    if source.get("gate") != "G7 Sandbox / Resource Hardening":
+        errors.append("g7_status_upgrade_review_gate_invalid")
+    if _safe_text(source.get("review_status")) != "reviewed":
+        errors.append("g7_status_upgrade_review_not_reviewed")
+    if _safe_text(source.get("redaction_scan_status")) != "passed":
+        errors.append("g7_status_upgrade_review_redaction_not_passed")
+    if _safe_text(source.get("commit_sha")) != current_source_commit:
+        errors.append("g7_status_upgrade_review_commit_mismatch")
+    if _safe_text(source.get("runtime_subject_commit_sha")) != current_source_commit:
+        errors.append("g7_status_upgrade_review_runtime_subject_mismatch")
+
+    review = _dict(_dict(source.get("evidence_ref")).get("operator_status_review"))
+    if review.get("schema_version") != _G7_STATUS_UPGRADE_REVIEW_SCHEMA:
+        errors.append("g7_status_upgrade_review_schema_unsupported")
+    if _safe_text(review.get("runtime_subject_commit_sha")) != current_source_commit:
+        errors.append("g7_status_upgrade_review_runtime_subject_mismatch")
+    if _safe_text(review.get("status_upgrade_decision")) != _G7_STATUS_UPGRADE_APPROVED_DECISION:
+        errors.append("g7_status_upgrade_review_not_approved")
+    if _safe_text(review.get("status")) != "status_upgrade_approved":
+        errors.append("g7_status_upgrade_review_status_not_approved")
+    if review.get("g7_runtime_blocking_reasons") != []:
+        errors.append("g7_status_upgrade_review_g7_blockers_not_empty")
+
+    reviewed_b3_blockers = review.get("b3_blocking_reasons")
+    if not isinstance(reviewed_b3_blockers, list):
+        errors.append("g7_status_upgrade_review_b3_blockers_missing")
+    else:
+        missing_acknowledgements = [
+            reason
+            for reason in b3_blocking_reasons
+            if reason not in reviewed_b3_blockers
+        ]
+        if missing_acknowledgements:
+            errors.append("g7_status_upgrade_review_b3_blockers_not_acknowledged")
+
+    invariants = _dict(review.get("non_expansion_invariants"))
+    for key, expected in _G7_REQUIRED_NON_EXPANSION_INVARIANTS.items():
+        if invariants.get(key) is not expected:
+            errors.append(f"g7_status_upgrade_review_{key}_invalid")
+
+    return {
+        "status": "accepted" if not errors else "not_accepted",
+        "input_errors": errors,
+        "status_upgrade_decision": _safe_text(review.get("status_upgrade_decision")),
+    }
+
+
+def _apply_g7_status_upgrade_review(
+    g7: dict[str, Any],
+    *,
+    g7_status_upgrade_review: object,
+    current_source_commit: str,
+    b3: dict[str, Any],
+) -> dict[str, Any]:
+    result = dict(g7)
+    review_status = _g7_status_upgrade_review_status(
+        g7_status_upgrade_review,
+        current_source_commit=current_source_commit,
+        b3_blocking_reasons=[str(reason) for reason in b3.get("blocking_reasons", [])],
+    )
+    result["status_upgrade_review"] = review_status
+    if result.get("blocking_reasons") == [] and review_status["status"] == "accepted":
+        result["status"] = "status_upgrade_approved"
+        result["required_next_steps"] = []
+    return result
+
+
+def _overall_audit_status(g7: dict[str, Any], b3: dict[str, Any]) -> str:
+    g7_blocked = g7["status"] != "status_upgrade_approved"
+    b3_blocked = b3["status"] == "blocked"
+    if g7_blocked and b3_blocked:
+        return "blocked_missing_g7_b3_completion_evidence"
+    if g7_blocked:
+        return "blocked_missing_g7_completion_evidence"
+    if b3_blocked:
+        return "blocked_missing_b3_completion_evidence"
+    if g7["status"] != "status_upgrade_approved":
+        return "operator_review_required_before_status_upgrade"
+    return "operator_review_required_before_gate_closure"
+
+
 def build_g7_b3_completion_audit(
     *,
     runtime_observation: dict[str, object] | None,
     capacity_profile_readiness: dict[str, object] | None,
+    g7_status_upgrade_review: dict[str, object] | None = None,
     current_source_commit: str,
 ) -> dict[str, Any]:
     """Build a gap-first G7/B3 audit without treating probes as closure evidence."""
@@ -497,21 +769,22 @@ def build_g7_b3_completion_audit(
     source_commit = _safe_text(current_source_commit)
     g7 = _build_g7_audit(runtime, current_source_commit=source_commit)
     b3 = _build_b3_audit(capacity_profile_readiness)
-    blocked = g7["status"] == "blocked" or b3["status"] == "blocked"
+    g7 = _apply_g7_status_upgrade_review(
+        g7,
+        g7_status_upgrade_review=g7_status_upgrade_review,
+        current_source_commit=source_commit,
+        b3=b3,
+    )
     return {
         "schema_version": SCHEMA_VERSION,
-        "status": (
-            "blocked_missing_g7_b3_completion_evidence"
-            if blocked
-            else "operator_review_required_before_status_upgrade"
-        ),
+        "status": _overall_audit_status(g7, b3),
         "status_label": "local partial",
         "current_source_commit": source_commit,
         "g7": g7,
         "b3": b3,
         "does_not_claim_211_verified": True,
         "does_not_claim_gate_closable": True,
-        "does_not_close_g7": True,
+        "does_not_close_g7": g7["status"] != "status_upgrade_approved",
         "does_not_close_b3": True,
         "does_not_complete_foundation_alpha": True,
     }

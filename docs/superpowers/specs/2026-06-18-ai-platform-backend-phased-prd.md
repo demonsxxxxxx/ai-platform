@@ -279,10 +279,14 @@ Use these default `non_expansion_invariants` unless a later issue explicitly
 changes and proves them:
 
 - `production_concurrency_defaults_raised=false`
-- `ordinary_user_platform_multi_run_orchestration_enabled=false`
+- `ordinary_user_platform_multi_run_orchestration_exposure=false`
 - `docker_sandbox_hardening_claimed=false`
 - `long_term_cross_session_memory_default_enabled=false`
 - `department_rollout_allowed=false`
+
+B3 packet/profile evidence separately carries
+`ordinary_user_platform_multi_run_orchestration_enabled=false`; that packet
+boolean does not replace the route/status invariant above.
 
 ### 5.2 B0 Latest-Main Backend Readiness Refresh
 
@@ -473,13 +477,14 @@ not Foundation Runtime concurrency correctness evidence.
   The target profile is `b3_10x4_sdk_subagents`: 10 sessions x peak 4 SDK
   subagents/session, equivalent to 10 concurrent user sessions with
   peak 4 Claude Agent SDK subagents per session. This local contract records
-  expected fields and fail-closed flags only. The canonical schema flag is
+  expected fields and fail-closed flags only. The B3 packet-level
+  non-expansion field is
   `ordinary_user_platform_multi_run_orchestration_enabled=false`; historical
   snapshots may still import the legacy alias
-  `ordinary_user_multi_agent_enabled=false`, which is normalized to the
-  canonical platform-level multi-run flag. This means no ordinary-user
-  platform-level multi-run orchestration exposure; it is not evidence that B3
-  is a G8 product route. The contract does not raise production defaults or claim safe concurrency,
+  `ordinary_user_multi_agent_enabled=false`, which is normalized only into that
+  B3 packet field. Route/status exposure remains governed by
+  `ordinary_user_platform_multi_run_orchestration_exposure=false`; the packet
+  field is not evidence that B3 is a G8 product route. The contract does not raise production defaults or claim safe concurrency,
   does not enable ordinary-user platform-level multi-run orchestration exposure,
   and does not close B3 or G9. It does not reopen G8.
 

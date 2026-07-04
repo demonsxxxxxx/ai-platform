@@ -67,6 +67,7 @@ def main() -> int:
         help="Additional reviewed release-evidence JSON to merge over the runtime observation.",
     )
     parser.add_argument("--foundation-runtime-concurrency-evidence-json")
+    parser.add_argument("--g7-status-upgrade-review-json")
     parser.add_argument("--current-source-commit", required=True)
     parser.add_argument("--format", choices=("json", "markdown"), default="markdown")
     args = parser.parse_args()
@@ -79,6 +80,7 @@ def main() -> int:
     audit = build_g7_b3_completion_audit(
         runtime_observation=runtime_observation,
         capacity_profile_readiness=_read_json(args.capacity_profile_readiness_json),
+        g7_status_upgrade_review=_read_json(args.g7_status_upgrade_review_json),
         current_source_commit=args.current_source_commit,
     )
     if args.format == "json":

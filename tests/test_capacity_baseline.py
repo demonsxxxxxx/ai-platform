@@ -25,6 +25,7 @@ from app.capacity_baseline import (
     render_capacity_profile_readiness_markdown,
     render_capacity_load_test_plan_markdown,
 )
+import app.capacity_baseline as capacity_baseline
 
 
 LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST = [
@@ -525,6 +526,119 @@ def test_capacity_recorded_gate_evidence_contract_is_machine_readable_and_fail_c
     assert "executor_private_payload" not in serialized
 
 
+def test_capacity_operator_evidence_template_bundle_is_draft_only_and_covers_b3():
+    bundle = capacity_baseline.build_capacity_operator_evidence_template_bundle()
+
+    assert bundle["schema_version"] == "ai-platform.capacity-operator-evidence-template-bundle.v1"
+    assert bundle["template_status"] == "draft_not_recorded"
+    assert bundle["does_not_mark_gate_recorded"] is True
+    assert bundle["does_not_close_b3_gate"] is True
+    assert sorted(bundle["recorded_gate_value_templates"]) == sorted(LOAD_TEST_GATES)
+    assert "capacity-profile-evidence-b3-10x4-sdk-subagents.json" in bundle["profile_template"]["packet_command"]
+    assert "--profile-evidence-json capacity-profile-evidence-b3-10x4-sdk-subagents.json" in bundle["batch_snapshot_command"]
+    assert "tools/capacity_recorded_gate_batch_from_values.py" in bundle[
+        "batch_from_values_command"
+    ]
+    assert "--operator-input-dir capacity-operator-inputs" in bundle[
+        "batch_from_values_command"
+    ]
+
+    for gate in LOAD_TEST_GATES:
+        template = bundle["recorded_gate_value_templates"][gate]
+        assert template["template_status"] == "draft_not_recorded"
+        assert template["does_not_mark_gate_recorded"] is True
+        assert template["output_filename"].startswith("capacity-operator-reviewed-evidence-values-")
+        assert set(template["values"]) == set(LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST)
+        assert all(str(value).startswith("TODO_OPERATOR_REVIEWED_") for value in template["values"].values())
+
+        rejected = build_capacity_recorded_gate_evidence_packet_result(
+            gate,
+            template["values"],
+            cleanup_proof_status="verified",
+            stop_condition_status="passed",
+            triggered_stop_conditions=[],
+        )
+        assert rejected["status"] == "blocked_incomplete_inputs"
+        assert rejected["packet"] == {}
+
+    profile_values = bundle["profile_template"]["values"]
+    assert profile_values["target_profile_id"] == "b3_10x4_sdk_subagents"
+    assert profile_values["production_concurrency_defaults_raised"] is False
+    assert profile_values["safe_concurrency_claimed"] is False
+    assert profile_values["ordinary_user_platform_multi_run_orchestration_enabled"] is False
+    assert profile_values["observed_concurrent_sessions"] == "TODO_OPERATOR_REVIEWED_OBSERVED_CONCURRENT_SESSIONS_GE_10"
+    assert profile_values["observed_peak_sdk_subagents_per_session"] == "TODO_OPERATOR_REVIEWED_PEAK_SDK_SUBAGENTS_PER_SESSION_GE_4"
+
+
+def test_capacity_operator_evidence_template_bundle_cli_outputs_draft_bundle():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_operator_evidence_template_bundle.py",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+
+    assert payload["schema_version"] == "ai-platform.capacity-operator-evidence-template-bundle.v1"
+    assert payload["template_status"] == "draft_not_recorded"
+    assert payload["does_not_mark_gate_recorded"] is True
+    assert payload["does_not_close_b3_gate"] is True
+    assert sorted(payload["recorded_gate_value_templates"]) == sorted(LOAD_TEST_GATES)
+    assert "TODO_OPERATOR_REVIEWED_COMMIT_SHA" in result.stdout
+    assert "recorded_gate_batch_input_accepted" in payload["batch_snapshot_command"]
+    assert "capacity_recorded_gate_batch_from_values.py" in payload["batch_from_values_command"]
+    assert "C:\\Users" not in result.stdout
+
+
+def test_capacity_operator_evidence_template_bundle_cli_materializes_operator_inputs(tmp_path):
+    output_dir = tmp_path / "b3-operator-inputs"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_operator_evidence_template_bundle.py",
+            "--format",
+            "json",
+            "--output-dir",
+            str(output_dir),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+
+    assert payload["materialization"]["status"] == "template_files_written"
+    assert payload["materialization"]["output_dir"] == "b3-operator-inputs"
+    assert "C:\\Users" not in result.stdout
+    assert "capacity-operator-evidence-template-bundle.json" in payload["materialization"]["files"]
+    assert "capacity-operator-reviewed-profile-values-b3-10x4-sdk-subagents.json" in payload["materialization"]["files"]
+
+    bundle_file = output_dir / "capacity-operator-evidence-template-bundle.json"
+    profile_file = output_dir / "capacity-operator-reviewed-profile-values-b3-10x4-sdk-subagents.json"
+    assert bundle_file.exists()
+    assert profile_file.exists()
+    assert json.loads(bundle_file.read_text(encoding="utf-8"))["template_status"] == "draft_not_recorded"
+    profile_values = json.loads(profile_file.read_text(encoding="utf-8"))
+    assert profile_values["target_profile_id"] == "b3_10x4_sdk_subagents"
+    assert profile_values["ordinary_user_platform_multi_run_orchestration_enabled"] is False
+
+    for gate in LOAD_TEST_GATES:
+        slug = gate.replace("_", "-")
+        filename = f"capacity-operator-reviewed-evidence-values-{slug}.json"
+        assert filename in payload["materialization"]["files"]
+        values = json.loads((output_dir / filename).read_text(encoding="utf-8"))
+        assert set(values) == set(LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST)
+        assert all(str(value).startswith("TODO_OPERATOR_REVIEWED_") for value in values.values())
+
+
 def test_capacity_load_test_plan_uses_selected_gate_in_operator_workflow():
     plan = build_capacity_load_test_plan(
         SecretBearingSettings(),
@@ -888,6 +1002,136 @@ def test_capacity_evidence_snapshot_cli_outputs_json_from_overview_file(tmp_path
     assert "executor_private_payload" not in result.stdout
 
 
+def test_capacity_evidence_snapshot_cli_accepts_host_sandbox_observation_json(tmp_path):
+    overview_path = tmp_path / "overview.json"
+    overview_path.write_text(
+        json.dumps(
+            {
+                "capacity": build_capacity_baseline(SecretBearingSettings()),
+                "queue": {"status": {"depths": {"queued": 2, "processing": 1, "dead_letter": 0}}},
+                "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+                "admission": {"active_runs": 1, "saturated_users": 0},
+                "backpressure": {"reasons": []},
+                "sandbox": {
+                    "list_runtime_containers_status": "unavailable",
+                    "container_observation_degraded": True,
+                    "containers": {"running": 0},
+                    "leases": {"active": 0},
+                },
+                "observability": {"event_count": 3, "error_count": 0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    host_sandbox_path = tmp_path / "host-sandbox-observation.json"
+    host_sandbox_path.write_text(
+        json.dumps(_host_sandbox_observation()),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_evidence_snapshot.py",
+            "--overview-json",
+            str(overview_path),
+            "--host-sandbox-observation-json",
+            str(host_sandbox_path),
+            "--commit-sha",
+            "abc123",
+            "--runtime-profile",
+            "default-stack",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    readiness = build_capacity_gate_readiness(payload)
+
+    assert payload["host_sandbox_observation"]["status"] == "accepted"
+    assert payload["admin_runtime_evidence"]["missing_sections"] == []
+    assert payload["live_signals"]["sandbox"]["observation_source"] == "host_docker_cli"
+    assert readiness["status"] == "blocked_missing_load_test_evidence"
+    assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+
+
+def test_capacity_evidence_snapshot_cli_reports_missing_host_sandbox_observation_as_safe_json(tmp_path):
+    overview_path = tmp_path / "overview.json"
+    overview_path.write_text(json.dumps(_admin_runtime_overview()), encoding="utf-8")
+    missing_path = tmp_path / "missing-host-observation.json"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_evidence_snapshot.py",
+            "--overview-json",
+            str(overview_path),
+            "--host-sandbox-observation-json",
+            str(missing_path),
+            "--commit-sha",
+            "abc123",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    host_status = payload["host_sandbox_observation"]
+
+    assert host_status["status"] == "not_accepted"
+    assert host_status["input_errors"] == [
+        "host_sandbox_observation_json_read_failed:missing-host-observation.json"
+    ]
+    assert host_status["diagnostic_only"] is True
+    assert host_status["does_not_mark_b3_recorded_evidence"] is True
+    assert "Traceback" not in result.stderr
+    assert str(tmp_path) not in result.stdout
+    assert str(tmp_path) not in result.stderr
+
+
+def test_capacity_evidence_snapshot_cli_reports_malformed_host_sandbox_observation_as_safe_json(tmp_path):
+    overview_path = tmp_path / "overview.json"
+    overview_path.write_text(json.dumps(_admin_runtime_overview()), encoding="utf-8")
+    malformed_path = tmp_path / "malformed-host-observation.json"
+    malformed_path.write_text("{not-json", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_evidence_snapshot.py",
+            "--overview-json",
+            str(overview_path),
+            "--host-sandbox-observation-json",
+            str(malformed_path),
+            "--commit-sha",
+            "abc123",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    host_status = payload["host_sandbox_observation"]
+
+    assert host_status["status"] == "not_accepted"
+    assert host_status["input_errors"] == [
+        "host_sandbox_observation_json_decode_failed:malformed-host-observation.json"
+    ]
+    assert "Traceback" not in result.stderr
+    assert str(tmp_path) not in result.stdout
+    assert str(tmp_path) not in result.stderr
+
+
 def test_capacity_gate_readiness_blocks_default_raise_until_load_gates_are_recorded():
     snapshot = build_capacity_evidence_snapshot(
         {
@@ -976,6 +1220,109 @@ def test_capacity_gate_readiness_treats_unavailable_container_status_as_degraded
     assert readiness["status"] == "blocked_missing_admin_runtime_sections"
     assert readiness["admin_runtime_evidence"]["missing_sections"] == ["sandbox"]
     assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+
+
+def _host_sandbox_observation(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": "ai-platform.capacity-host-sandbox-observation.v1",
+        "observation_source": "host_docker_cli",
+        "runtime_subject_commit_sha": "abc123",
+        "evidence_ref": "release-evidence/diagnostics/host-sandbox-observation.json",
+        "api_container_docker_socket_present": False,
+        "default_compose_mounts_docker_socket": False,
+        "sandbox_compose_mounts_docker_socket": True,
+        "socket_bearing_compose_path": "deploy/ai-platform/docker-compose.sandbox.yml",
+        "list_runtime_containers_status": "available",
+        "container_observation_degraded": False,
+        "containers": {
+            "running": 0,
+            "total": 0,
+            "ephemeral_running": 0,
+            "persistent_running": 0,
+        },
+        "leases": {"active": 0, "released": 100, "expired": 0},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_capacity_snapshot_accepts_host_side_sandbox_observation_without_mounting_default_socket():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 1, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 1, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {
+                "list_runtime_containers_status": "unavailable",
+                "container_observation_degraded": True,
+                "containers": {"running": 0},
+                "leases": {"active": 0},
+            },
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="default-stack",
+        host_sandbox_observation=_host_sandbox_observation(),
+    )
+
+    assert snapshot["host_sandbox_observation"]["status"] == "accepted"
+    assert snapshot["host_sandbox_observation"]["evidence_ref"] == (
+        "release-evidence/diagnostics/host-sandbox-observation.json"
+    )
+    assert snapshot["admin_runtime_evidence"]["missing_sections"] == []
+    assert snapshot["live_signals"]["sandbox"]["observation_source"] == "host_docker_cli"
+    assert snapshot["live_signals"]["sandbox"]["list_runtime_containers_status"] == "available"
+    assert snapshot["live_signals"]["sandbox"]["container_observation_degraded"] is False
+    assert snapshot["live_signals"]["sandbox"]["socket_policy"] == {
+        "api_container_docker_socket_present": False,
+        "default_compose_mounts_docker_socket": False,
+        "sandbox_compose_mounts_docker_socket": True,
+        "socket_bearing_compose_path": "deploy/ai-platform/docker-compose.sandbox.yml",
+    }
+    readiness = build_capacity_gate_readiness(snapshot)
+
+    assert readiness["status"] == "blocked_missing_load_test_evidence"
+    assert readiness["admin_runtime_evidence"]["missing_sections"] == []
+    assert readiness["production_default_decision"] == "do_not_raise_without_recorded_load_test_evidence"
+
+
+def test_capacity_snapshot_rejects_host_sandbox_observation_that_mounts_default_socket():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 1, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 1, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {
+                "list_runtime_containers_status": "unavailable",
+                "container_observation_degraded": True,
+                "containers": {"running": 0},
+                "leases": {"active": 0},
+            },
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="default-stack",
+        host_sandbox_observation=_host_sandbox_observation(
+            default_compose_mounts_docker_socket=True,
+            evidence_ref="C:\\Sensitive\\private\\sandbox.json",
+        ),
+    )
+    serialized = json.dumps(snapshot, ensure_ascii=False)
+
+    assert snapshot["host_sandbox_observation"]["status"] == "not_accepted"
+    assert "host_sandbox_observation_default_compose_mounts_socket" in snapshot[
+        "host_sandbox_observation"
+    ]["input_errors"]
+    assert "host_sandbox_observation_evidence_ref_missing_or_invalid" in snapshot[
+        "host_sandbox_observation"
+    ]["input_errors"]
+    assert snapshot["admin_runtime_evidence"]["missing_sections"] == ["sandbox"]
+    assert "C:\\Users" not in serialized
+    assert "private" not in serialized.lower()
 
 
 def test_capacity_gate_readiness_rejects_recorded_gates_without_evidence_contract():
@@ -2326,6 +2673,207 @@ def test_capacity_runtime_evidence_cli_can_skip_maintenance_cleanup_for_default_
     assert requests == ["/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"]
 
 
+def test_capacity_runtime_evidence_cli_accepts_host_sandbox_observation_json(tmp_path):
+    requests: list[str] = []
+
+    class OverviewHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            requests.append(self.path)
+            payload = {
+                "capacity": build_capacity_baseline(SecretBearingSettings()),
+                "queue": {"status": {"depths": {"queued": 2, "processing": 1, "dead_letter": 0}}},
+                "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+                "admission": {"active_runs": 1, "saturated_users": 0},
+                "backpressure": {"reasons": []},
+                "sandbox": {
+                    "list_runtime_containers_status": "unavailable",
+                    "container_observation_degraded": True,
+                    "containers": {"running": 0},
+                    "leases": {"active": 0},
+                },
+                "observability": {"event_count": 3, "error_count": 0},
+            }
+            raw = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    host_sandbox_path = tmp_path / "host-sandbox-observation.json"
+    host_sandbox_path.write_text(
+        json.dumps(_host_sandbox_observation()),
+        encoding="utf-8",
+    )
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OverviewHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/capacity_runtime_evidence.py",
+                "--base-url",
+                base_url,
+                "--host-sandbox-observation-json",
+                str(host_sandbox_path),
+                "--commit-sha",
+                "abc123",
+                "--runtime-profile",
+                "default-stack",
+                "--skip-maintenance-cleanup",
+                "--format",
+                "json",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(result.stdout)
+
+    assert payload["snapshot"]["host_sandbox_observation"]["status"] == "accepted"
+    assert payload["snapshot"]["host_sandbox_observation"]["diagnostic_only"] is True
+    assert (
+        payload["snapshot"]["host_sandbox_observation"]["does_not_mark_b3_recorded_evidence"]
+        is True
+    )
+    assert payload["snapshot"]["host_sandbox_observation"]["does_not_close_b3"] is True
+    assert payload["snapshot"]["admin_runtime_evidence"]["missing_sections"] == []
+    assert payload["readiness"]["status"] == "blocked_missing_load_test_evidence"
+    assert payload["readiness"]["missing_load_test_gates"] == LOAD_TEST_GATES
+    assert requests == ["/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"]
+
+
+def test_capacity_runtime_evidence_cli_reports_missing_host_sandbox_observation_as_safe_json(tmp_path):
+    requests: list[str] = []
+
+    class OverviewHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            requests.append(self.path)
+            raw = json.dumps(_admin_runtime_overview()).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    missing_path = tmp_path / "missing-host-observation.json"
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OverviewHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/capacity_runtime_evidence.py",
+                "--base-url",
+                base_url,
+                "--host-sandbox-observation-json",
+                str(missing_path),
+                "--commit-sha",
+                "abc123",
+                "--skip-maintenance-cleanup",
+                "--format",
+                "json",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(result.stdout)
+    host_status = payload["snapshot"]["host_sandbox_observation"]
+
+    assert host_status["status"] == "not_accepted"
+    assert host_status["input_errors"] == [
+        "host_sandbox_observation_json_read_failed:missing-host-observation.json"
+    ]
+    assert host_status["diagnostic_only"] is True
+    assert host_status["does_not_mark_b3_recorded_evidence"] is True
+    assert payload["readiness"]["status"] == "blocked_missing_load_test_evidence"
+    assert requests == ["/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"]
+    assert "Traceback" not in result.stderr
+    assert str(tmp_path) not in result.stdout
+    assert str(tmp_path) not in result.stderr
+
+
+def test_capacity_runtime_evidence_cli_reports_malformed_host_sandbox_observation_as_safe_json(tmp_path):
+    requests: list[str] = []
+
+    class OverviewHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            requests.append(self.path)
+            raw = json.dumps(_admin_runtime_overview()).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    malformed_path = tmp_path / "malformed-host-observation.json"
+    malformed_path.write_text("{not-json", encoding="utf-8")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OverviewHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/capacity_runtime_evidence.py",
+                "--base-url",
+                base_url,
+                "--host-sandbox-observation-json",
+                str(malformed_path),
+                "--commit-sha",
+                "abc123",
+                "--skip-maintenance-cleanup",
+                "--format",
+                "json",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(result.stdout)
+    host_status = payload["snapshot"]["host_sandbox_observation"]
+
+    assert host_status["status"] == "not_accepted"
+    assert host_status["input_errors"] == [
+        "host_sandbox_observation_json_decode_failed:malformed-host-observation.json"
+    ]
+    assert host_status["diagnostic_only"] is True
+    assert host_status["does_not_mark_b3_recorded_evidence"] is True
+    assert payload["readiness"]["status"] == "blocked_missing_load_test_evidence"
+    assert requests == ["/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"]
+    assert "Traceback" not in result.stderr
+    assert str(tmp_path) not in result.stdout
+    assert str(tmp_path) not in result.stderr
+
+
 def test_capacity_evidence_bundle_drafts_probe_evidence_without_marking_gate_recorded():
     snapshot = build_capacity_evidence_snapshot(
         _admin_runtime_overview(),
@@ -2949,9 +3497,82 @@ def test_capacity_recorded_gate_evidence_packet_result_rejects_probe_only_input(
     assert result["does_not_raise_defaults"] is True
 
 
+def test_capacity_recorded_gate_evidence_packet_result_rejects_diagnostic_input():
+    result = build_capacity_recorded_gate_evidence_packet_result(
+        "api_read_write_burst",
+        {
+            "schema_version": "ai-platform.release-evidence-diagnostic-entry.v1",
+            "review_status": "diagnostic_only_not_reviewed_release_evidence",
+            "diagnostic_only": True,
+            "does_not_mark_b3_recorded_evidence": True,
+            "does_not_close_b3": True,
+            **_recorded_gate_evidence_values("api_read_write_burst"),
+        },
+        cleanup_proof_status="verified",
+        stop_condition_status="passed",
+        triggered_stop_conditions=[],
+    )
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert result["input_status"] == "not_accepted"
+    assert "diagnostic_input_cannot_be_recorded_gate_evidence" in result["input_errors"]
+    assert result["packet"] == {}
+
+
+def test_capacity_recorded_gate_evidence_packet_result_rejects_nested_diagnostic_field():
+    values = _recorded_gate_evidence_values("api_read_write_burst")
+    values["latency_p50_p95_p99"] = {
+        "schema_version": "ai-platform.release-evidence-diagnostic-entry.v1",
+        "review_status": "diagnostic_only_not_reviewed_release_evidence",
+        "diagnostic_only": True,
+        "does_not_mark_b3_recorded_evidence": True,
+        "p50_ms": 120,
+        "p95_ms": 800,
+        "p99_ms": 1300,
+    }
+
+    result = build_capacity_recorded_gate_evidence_packet_result(
+        "api_read_write_burst",
+        values,
+        cleanup_proof_status="verified",
+        stop_condition_status="passed",
+        triggered_stop_conditions=[],
+    )
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert result["input_status"] == "not_accepted"
+    assert "diagnostic_input_cannot_be_recorded_gate_evidence" in result["input_errors"]
+    assert "recorded_evidence_latency_p50_p95_p99_unsafe" in result["input_errors"]
+    assert result["packet"] == {}
+
+
+def test_capacity_recorded_gate_evidence_packet_result_rejects_nested_probe_field():
+    values = _recorded_gate_evidence_values("api_read_write_burst")
+    values["error_taxonomy_counts"] = {
+        "load_test_evidence_status": "probe_only_not_recorded",
+        "does_not_mark_gate_recorded": True,
+        "timeouts": 0,
+        "validation_errors": 0,
+    }
+
+    result = build_capacity_recorded_gate_evidence_packet_result(
+        "api_read_write_burst",
+        values,
+        cleanup_proof_status="verified",
+        stop_condition_status="passed",
+        triggered_stop_conditions=[],
+    )
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert result["input_status"] == "not_accepted"
+    assert "bounded_probe_input_cannot_be_recorded_gate_evidence" in result["input_errors"]
+    assert "recorded_evidence_error_taxonomy_counts_unsafe" in result["input_errors"]
+    assert result["packet"] == {}
+
+
 def test_capacity_recorded_gate_evidence_packet_result_rejects_unsafe_values_without_echoing_them():
     evidence_values = _recorded_gate_evidence_values("api_read_write_burst")
-    evidence_values["commit_sha"] = "C:\\Users\\Xinlin.jiang\\private\\commit.json"
+    evidence_values["commit_sha"] = "C:\\Private\\unsafe\\commit.json"
     evidence_values["api_worker_image_labels"] = {
         "raw_storage_key": "tenants/default/private/labels.json"
     }
@@ -2974,6 +3595,23 @@ def test_capacity_recorded_gate_evidence_packet_result_rejects_unsafe_values_wit
     assert "tenants/default/private" not in serialized
 
 
+def test_capacity_recorded_gate_evidence_packet_result_rejects_scalar_only_fake_evidence():
+    result = build_capacity_recorded_gate_evidence_packet_result(
+        "api_read_write_burst",
+        {field: 1 for field in LOAD_TEST_REQUIRED_EVIDENCE_FOR_TEST},
+        cleanup_proof_status="verified",
+        stop_condition_status="passed",
+        triggered_stop_conditions=[],
+    )
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert result["input_status"] == "not_accepted"
+    assert result["packet"] == {}
+    assert "recorded_evidence_commit_sha_unsafe" in result["input_errors"]
+    assert "recorded_evidence_api_worker_image_labels_unsafe" in result["input_errors"]
+    assert "recorded_evidence_cleanup_proof_unsafe" in result["input_errors"]
+
+
 def test_capacity_profile_evidence_packet_result_builds_operator_reviewed_packet():
     result = build_capacity_profile_evidence_packet_result(_b3_profile_evidence_packet())
 
@@ -2993,7 +3631,7 @@ def test_capacity_profile_evidence_packet_result_builds_operator_reviewed_packet
 
 def test_capacity_profile_evidence_packet_result_rejects_unsafe_or_expanding_input():
     values = _b3_profile_evidence_packet()
-    values["sdk_subagent_fanout_measurement_ref"] = "C:\\Users\\Xinlin.jiang\\private\\fanout.json"
+    values["sdk_subagent_fanout_measurement_ref"] = "C:\\Private\\unsafe\\fanout.json"
     values["ordinary_user_platform_multi_run_orchestration_enabled"] = True
     values["api_key"] = "sk-secret"
 
@@ -3010,6 +3648,25 @@ def test_capacity_profile_evidence_packet_result_rejects_unsafe_or_expanding_inp
     assert "c:\\users" not in serialized
 
 
+def test_capacity_profile_evidence_packet_result_rejects_diagnostic_input():
+    values = _b3_profile_evidence_packet()
+    values.update(
+        {
+            "schema_version": "ai-platform.release-evidence-diagnostic-entry.v1",
+            "review_status": "diagnostic_only_not_reviewed_release_evidence",
+            "diagnostic_only": True,
+            "does_not_mark_b3_recorded_evidence": True,
+        }
+    )
+
+    result = build_capacity_profile_evidence_packet_result(values)
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert result["input_status"] == "not_accepted"
+    assert "profile_evidence_diagnostic_input_not_allowed" in result["input_errors"]
+    assert result["packet"] == {}
+
+
 def test_capacity_recorded_gate_snapshot_does_not_echo_unsafe_runtime_snapshot_fields():
     snapshot = build_capacity_evidence_snapshot(
         _admin_runtime_overview(),
@@ -3022,10 +3679,10 @@ def test_capacity_recorded_gate_snapshot_does_not_echo_unsafe_runtime_snapshot_f
         "postgresql://user:secret@db.internal/ai_platform"
     )
     snapshot["runtime_identity"]["commit_sha"] = (
-        "C:\\Users\\Xinlin.jiang\\Temp\\capacity.json"
+        "C:\\Private\\unsafe\\capacity.json"
     )
     snapshot["runtime_identity"]["profile"] = "mailto:operator@example.com"
-    snapshot["local_path"] = "C:\\Users\\Xinlin.jiang\\AppData\\Local\\Temp\\capacity.json"
+    snapshot["local_path"] = "C:\\Private\\unsafe\\capacity.json"
     runtime_evidence = {
         "schema_version": "ai-platform.capacity-runtime-evidence.v1",
         "snapshot": snapshot,
@@ -3511,6 +4168,35 @@ def test_capacity_recorded_gate_snapshot_rejects_direct_packet_with_nested_probe
     assert result["does_not_raise_defaults"] is True
 
 
+def test_capacity_recorded_gate_snapshot_rejects_direct_packet_with_nested_diagnostic_markers():
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_evidence = {
+        "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+        "snapshot": snapshot,
+        "readiness": build_capacity_gate_readiness(snapshot),
+    }
+    evidence_packet = _recorded_gate_packet("api_read_write_burst")
+    evidence_packet["evidence"]["schema_version"] = (
+        "ai-platform.release-evidence-diagnostic-entry.v1"
+    )
+    evidence_packet["evidence"]["review_status"] = (
+        "diagnostic_only_not_reviewed_release_evidence"
+    )
+    evidence_packet["evidence"]["diagnostic_only"] = True
+    evidence_packet["evidence"]["does_not_mark_b3_recorded_evidence"] = True
+
+    result = build_capacity_recorded_gate_snapshot(runtime_evidence, evidence_packet)
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert result["input_status"]["recorded_gate_evidence"] == "not_accepted"
+    assert "diagnostic_input_cannot_be_recorded_gate_evidence" in result["input_errors"]
+    assert result["snapshot"]["load_test_evidence"]["status"] == "missing"
+
+
 def test_capacity_recorded_gate_snapshot_cli_outputs_snapshot_and_verdict(tmp_path):
     snapshot = build_capacity_evidence_snapshot(
         _admin_runtime_overview(),
@@ -3685,7 +4371,7 @@ def test_capacity_profile_evidence_packet_cli_outputs_packet(tmp_path):
 def test_capacity_profile_evidence_packet_cli_rejects_unsafe_input(tmp_path):
     profile_evidence_path = tmp_path / "operator-reviewed-profile-values.json"
     values = _b3_profile_evidence_packet()
-    values["sdk_subagent_fanout_measurement_ref"] = "C:\\Users\\Xinlin.jiang\\private\\fanout.json"
+    values["sdk_subagent_fanout_measurement_ref"] = "C:\\Private\\unsafe\\fanout.json"
     values["api_key"] = "sk-secret"
     profile_evidence_path.write_text(json.dumps(values), encoding="utf-8")
 
@@ -4129,3 +4815,314 @@ def test_capacity_recorded_gate_snapshot_cli_rejects_batch_missing_gate(tmp_path
     assert payload["recorded_gates"] == []
     assert "recorded_gate_evidence_model_gateway_timeout_and_backpressure_missing" in payload["input_errors"]
     assert payload["snapshot"]["load_test_evidence"]["status"] == "missing"
+
+
+def test_capacity_recorded_gate_batch_from_values_cli_builds_packets_and_snapshot(tmp_path):
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_path = tmp_path / "capacity-runtime-evidence-end.json"
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                "snapshot": snapshot,
+                "readiness": build_capacity_gate_readiness(snapshot),
+            }
+        ),
+        encoding="utf-8",
+    )
+    values_dir = tmp_path / "operator-inputs"
+    values_dir.mkdir()
+    for gate in LOAD_TEST_GATES:
+        slug = gate.replace("_", "-")
+        (values_dir / f"capacity-operator-reviewed-evidence-values-{slug}.json").write_text(
+            json.dumps(_recorded_gate_evidence_values(gate)),
+            encoding="utf-8",
+        )
+    profile_values_path = values_dir / "capacity-operator-reviewed-profile-values-b3-10x4-sdk-subagents.json"
+    profile_values_path.write_text(
+        json.dumps(_b3_profile_evidence_packet()),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_recorded_gate_batch_from_values.py",
+            "--runtime-evidence-json",
+            str(runtime_path),
+            "--operator-input-dir",
+            str(values_dir),
+            "--cleanup-proof-status",
+            "verified",
+            "--stop-condition-status",
+            "passed",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+    profile_readiness = build_capacity_profile_readiness(payload["readiness"])
+
+    assert payload["schema_version"] == "ai-platform.capacity-recorded-gate-snapshot.v1"
+    assert payload["status"] == "recorded_gate_batch_input_accepted"
+    assert payload["recorded_gates"] == list(LOAD_TEST_GATES)
+    assert payload["readiness"]["status"] == "ready_for_operator_review"
+    assert profile_readiness["status"] == "operator_review_required"
+    assert payload["does_not_raise_defaults"] is True
+    assert "C:\\Users" not in result.stdout
+
+
+def test_capacity_recorded_gate_batch_snapshot_preserves_host_sandbox_diagnostic_provenance():
+    snapshot = build_capacity_evidence_snapshot(
+        {
+            "capacity": build_capacity_baseline(SecretBearingSettings()),
+            "queue": {"status": {"depths": {"queued": 1, "processing": 0, "dead_letter": 0}}},
+            "database_pool": {"open": True, "stats": {"requests_waiting": 0}},
+            "admission": {"active_runs": 1, "saturated_users": 0},
+            "backpressure": {"reasons": []},
+            "sandbox": {
+                "list_runtime_containers_status": "unavailable",
+                "container_observation_degraded": True,
+                "containers": {"running": 0},
+                "leases": {"active": 0},
+            },
+            "observability": {"event_count": 3, "error_count": 0},
+        },
+        commit_sha="abc123",
+        runtime_profile="default-stack",
+        host_sandbox_observation=_host_sandbox_observation(),
+    )
+    gate_packets = [
+        build_capacity_recorded_gate_evidence_packet_result(
+            gate,
+            _recorded_gate_evidence_values(gate),
+            cleanup_proof_status="verified",
+            stop_condition_status="passed",
+            triggered_stop_conditions=[],
+        )
+        for gate in LOAD_TEST_GATES
+    ]
+
+    result = build_capacity_recorded_gate_batch_snapshot(
+        {
+            "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+            "snapshot": snapshot,
+            "readiness": build_capacity_gate_readiness(snapshot),
+        },
+        gate_packets,
+        profile_evidence=build_capacity_profile_evidence_packet_result(
+            _b3_profile_evidence_packet()
+        ),
+    )
+
+    assert result["status"] == "recorded_gate_batch_input_accepted"
+    assert result["readiness"]["status"] == "ready_for_operator_review"
+    assert result["snapshot"]["host_sandbox_observation"] == {
+        "schema_version": "ai-platform.capacity-host-sandbox-observation.v1",
+        "status": "accepted",
+        "input_errors": [],
+        "review_status": "diagnostic_only_not_reviewed_release_evidence",
+        "evidence_ref": "release-evidence/diagnostics/host-sandbox-observation.json",
+        "observation_source": "host_docker_cli",
+        "runtime_subject_commit_sha": "abc123",
+        "diagnostic_only": True,
+        "does_not_mark_b3_recorded_evidence": True,
+        "does_not_close_b3": True,
+    }
+    sandbox_signals = result["snapshot"]["live_signals"]["sandbox"]
+    assert sandbox_signals["observation_source"] == "host_docker_cli"
+    assert sandbox_signals["socket_policy"] == {
+        "api_container_docker_socket_present": False,
+        "default_compose_mounts_docker_socket": False,
+        "sandbox_compose_mounts_docker_socket": True,
+        "socket_bearing_compose_path": "deploy/ai-platform/docker-compose.sandbox.yml",
+    }
+
+
+def test_capacity_recorded_gate_batch_from_values_cli_rejects_missing_gate_values(tmp_path):
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_path = tmp_path / "capacity-runtime-evidence-end.json"
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                "snapshot": snapshot,
+                "readiness": build_capacity_gate_readiness(snapshot),
+            }
+        ),
+        encoding="utf-8",
+    )
+    values_dir = tmp_path / "operator-inputs"
+    values_dir.mkdir()
+    for gate in LOAD_TEST_GATES[:-1]:
+        slug = gate.replace("_", "-")
+        (values_dir / f"capacity-operator-reviewed-evidence-values-{slug}.json").write_text(
+            json.dumps(_recorded_gate_evidence_values(gate)),
+            encoding="utf-8",
+        )
+    (values_dir / "capacity-operator-reviewed-profile-values-b3-10x4-sdk-subagents.json").write_text(
+        json.dumps(_b3_profile_evidence_packet()),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_recorded_gate_batch_from_values.py",
+            "--runtime-evidence-json",
+            str(runtime_path),
+            "--operator-input-dir",
+            str(values_dir),
+            "--cleanup-proof-status",
+            "verified",
+            "--stop-condition-status",
+            "passed",
+            "--format",
+            "json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 2
+    assert payload["status"] == "blocked_incomplete_inputs"
+    assert payload["recorded_gates"] == []
+    assert "recorded_gate_evidence_model_gateway_timeout_and_backpressure_missing" in payload[
+        "input_errors"
+    ]
+    assert "C:\\Users" not in result.stdout
+
+
+def test_capacity_recorded_gate_batch_from_values_cli_rejects_missing_profile_values_as_json(tmp_path):
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_path = tmp_path / "capacity-runtime-evidence-end.json"
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                "snapshot": snapshot,
+                "readiness": build_capacity_gate_readiness(snapshot),
+            }
+        ),
+        encoding="utf-8",
+    )
+    values_dir = tmp_path / "operator-inputs"
+    values_dir.mkdir()
+    for gate in LOAD_TEST_GATES:
+        slug = gate.replace("_", "-")
+        (values_dir / f"capacity-operator-reviewed-evidence-values-{slug}.json").write_text(
+            json.dumps(_recorded_gate_evidence_values(gate)),
+            encoding="utf-8",
+        )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_recorded_gate_batch_from_values.py",
+            "--runtime-evidence-json",
+            str(runtime_path),
+            "--operator-input-dir",
+            str(values_dir),
+            "--cleanup-proof-status",
+            "verified",
+            "--stop-condition-status",
+            "passed",
+            "--format",
+            "json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 2
+    assert payload["status"] == "blocked_incomplete_inputs"
+    assert payload["recorded_gates"] == []
+    assert "profile_evidence_packet_result_not_ready" in payload["input_errors"]
+    assert "failed to read JSON input" not in result.stderr
+    assert "C:\\Users" not in result.stdout
+
+
+def test_capacity_recorded_gate_batch_from_values_cli_rejects_release_evidence_wrapper(tmp_path):
+    snapshot = build_capacity_evidence_snapshot(
+        _admin_runtime_overview(),
+        commit_sha="3d607c96b8d8e21f59461bd94cc4b64de1d49dd5",
+        runtime_profile="211-current-end",
+    )
+    runtime_path = tmp_path / "capacity-release-evidence-entry.json"
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.release-evidence-entry.v1",
+                "artifact_kind": "capacity_gate_readiness",
+                "evidence_ref": {
+                    "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+                    "snapshot_schema_version": snapshot["schema_version"],
+                    "readiness_schema_version": "ai-platform.capacity-gate-readiness.v1",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    values_dir = tmp_path / "operator-inputs"
+    values_dir.mkdir()
+    for gate in LOAD_TEST_GATES:
+        slug = gate.replace("_", "-")
+        (values_dir / f"capacity-operator-reviewed-evidence-values-{slug}.json").write_text(
+            json.dumps(_recorded_gate_evidence_values(gate)),
+            encoding="utf-8",
+        )
+    (values_dir / "capacity-operator-reviewed-profile-values-b3-10x4-sdk-subagents.json").write_text(
+        json.dumps(_b3_profile_evidence_packet()),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/capacity_recorded_gate_batch_from_values.py",
+            "--runtime-evidence-json",
+            str(runtime_path),
+            "--operator-input-dir",
+            str(values_dir),
+            "--cleanup-proof-status",
+            "verified",
+            "--stop-condition-status",
+            "passed",
+            "--format",
+            "json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 2
+    assert payload["status"] == "blocked_incomplete_inputs"
+    assert payload["recorded_gates"] == []
+    assert "runtime_evidence_release_entry_not_supported" in payload["input_errors"]
+    assert "capacity-release-evidence-entry.json" not in result.stdout
+    assert "C:\\Users" not in result.stdout

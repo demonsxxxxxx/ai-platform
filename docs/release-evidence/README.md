@@ -7,20 +7,24 @@ evidence entries. It is an index and contract baseline only. This contract
 does not close G9 and is not the current gate/runtime status matrix; read
 `docs/operations/ai-platform-gate-status.md` for current status.
 
-The 2026-07-04 status-sync baseline has GitHub `main` including PR #315 merge
-commit `61073b16a5b2c135e7ee467434ab39502ca3d194`, and the 211 repo-local
-source marker, source snapshot, API/worker image labels, and API/worker
-in-container source markers bind to that clean current-main runtime subject.
-The latest reviewed G7 runtime-subject evidence in this index is the clean
-current-main `61073b1` live-env hardening entry below; same-subject Foundation
-Runtime concurrency evidence for `61073b1` is also recorded and verified, and
-deployment cleanup evidence records API/worker still running
+The 2026-07-04 post-PR #316 status-sync baseline has GitHub `main` including PR
+#316 merge commit `5fe44827708fe24441a4c451dee9c691281d3c21`. PR #316 merged
+reviewed docs/test/evidence-status cleanup only; it did not deploy a new 211
+runtime. The latest reviewed 211 runtime subject remains PR #315 merge commit
+`61073b16a5b2c135e7ee467434ab39502ca3d194`, and the 211 repo-local source
+marker, source snapshot, API/worker image labels, and API/worker in-container
+source markers bind to that `61073b1` runtime subject. The latest reviewed G7
+runtime-subject evidence in this index is the clean-main `61073b1` live-env
+hardening entry below; same-subject Foundation Runtime concurrency evidence for
+`61073b1` is also recorded and verified, and deployment cleanup evidence records
+API/worker still running
 `ai-platform:61073b1-g7-b3-clean-main-v1` after removing unreferenced old
 backend images. The `61073b1` operator status-review artifact records
 `status_upgrade_decision=not_approved_for_closure`. B3 recorded load evidence
 and `b3_10x4_sdk_subagents` profile evidence are still missing. Do not read PR
-#315's merged docs/test/evidence updates, the `61073b1` G7 verifier, the
-same-subject FRC entry, the status-review artifact, or deployment cleanup
+#316's merged docs/status cleanup, PR #315's merged docs/test/evidence updates,
+the `61073b1` G7 verifier, the same-subject FRC entry, the status-review
+artifact, or deployment cleanup
 evidence as `211 verified`, G7 closure, B3 closure, Foundation Alpha completion,
 production-ready, or #164 closure evidence. GitHub issue #164 is already closed
 as historical B0 latest-main runtime-refresh work; its closure history is not
@@ -32,6 +36,10 @@ retained only as historical negative follow-up names. Interpret them as
 ordinary-user platform-level parent/child multi-run exposure. They are not SDK
 subagent availability evidence, not B3 profile evidence, and not a G8 reopen or
 closure signal.
+Future G7 status-upgrade approval evidence must use the route/status invariant
+`ordinary_user_platform_multi_run_orchestration_exposure=false`; the B3 packet
+boolean `ordinary_user_platform_multi_run_orchestration_enabled=false` is not a
+substitute for that approval field.
 
 Generate the current readiness contract from the repository root:
 
@@ -168,6 +176,7 @@ not reviewed release-evidence entries and must not be used to close gates.
 
 | Date | Gate | Commit | Evidence | Status |
 | --- | --- | --- | --- | --- |
+| 2026-07-04 | B3 Capacity Baseline | `61073b16a5b2c135e7ee467434ab39502ca3d194` | [`2026-07-04-211-b3-sandbox-observation-61073b1.json`](diagnostics/2026-07-04-211-b3-sandbox-observation-61073b1.json) | Diagnostic only and not a reviewed release-evidence entry. Fresh read-only 211 observation confirms API/worker still running `ai-platform:61073b1-g7-b3-clean-main-v1`, API container Docker socket absent, no current host containers with label `ai-platform.owner=sandbox-runtime`, and Admin Runtime overview HTTP `200` via target-runtime gateway secret without printing the secret. The default compose does not mount Docker socket; `docker-compose.sandbox.yml` is the explicit socket-bearing path. The overview sandbox remains degraded/unavailable with `container_observation_degraded=true`, `list_runtime_containers_status=unavailable`, active leases `0`, and released leases `100`. A same-subject diagnostic replay using controlled host-side observation records `host_sandbox_observation_status=accepted`, `admin_runtime_missing_sections_after_host_observation=[]`, and `readiness_status_after_host_observation=blocked_missing_load_test_evidence` with all seven recorded gates still missing. This is diagnostic only and does not close B3/G7, does not mark B3 recorded evidence, does not make `61073b1` `211 verified`, and does not make any gate closable. |
 | 2026-07-02 | G7 Sandbox / Resource Hardening | `9c669761bbb4bd719af64a341d361b7c3b3e380e` | diagnostic only, not a reviewed release-evidence entry | PR #306 merged and 211 API/worker now run `ai-platform:9c66976-g7-b3-workspace-owner-v1` with source/runtime/OCI labels and repo-local source marker bound to `9c669761`; direct API health returned `{"status":"ok"}` and the frontend root returned HTTP `200`. Earlier deployed-runtime verifier run `g7-current-main-9c66976-20260702145801` did not execute a task: the diagnostic artifact records `runtime_mode=executor`, `sandbox_provider=unknown`, `executed_task=false`, and `[Errno 13] Permission denied: '[redacted-path]'`. This is diagnostic evidence only; it does not close G7, does not close B3, does not make `9c669761` `211 verified`, and does not constitute current G7/B3 closure evidence for the already-closed historical #164. |
 | 2026-07-02 | G7 Sandbox / Resource Hardening | `28676df4abcbb7063211fceb4cc1701648c43d49` | diagnostic only, not a reviewed release-evidence entry | The `28676df` G7 verifier path is now root-caused but not closed: after the host Python `pydantic` blocker was bypassed with a verifier-only venv, `/v1/tasks/execute` returned HTTP `500` because the executor ran with `cap_drop=["ALL"]` and could not write `/workspace/runtime` in a host-user-owned workspace. Patched-source diagnostic run `g7-current-main-28676df-workspace-user-fix-20260702135351` passed all eight verifier checks by launching the executor as the workspace owner. This is diagnostic evidence for the fix direction only; it is not deployed/reviewed runtime-image G7 evidence, does not close G7, does not close B3, does not make `28676df` `211 verified`, and does not constitute current G7/B3 closure evidence for the already-closed historical #164. |
 
