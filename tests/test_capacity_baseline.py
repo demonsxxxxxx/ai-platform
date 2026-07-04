@@ -2200,6 +2200,68 @@ def test_capacity_runtime_evidence_cli_captures_overview_without_printing_raw_pr
     assert "executor_private_payload" not in result.stdout
 
 
+def test_capacity_runtime_evidence_cli_sends_gateway_secret_without_printing_value():
+    requests: list[dict[str, str]] = []
+
+    class OverviewHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            requests.append(
+                {
+                    "path": self.path,
+                    "gateway_secret": self.headers.get("X-AI-Gateway-Secret", ""),
+                }
+            )
+            payload = _admin_runtime_overview()
+            raw = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), OverviewHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        env = {
+            **os.environ,
+            "TEST_AI_PLATFORM_GATEWAY_SECRET": "test-capacity-secret",
+        }
+        result = subprocess.run(
+            [
+                sys.executable,
+                "tools/capacity_runtime_evidence.py",
+                "--base-url",
+                base_url,
+                "--gateway-secret-env",
+                "TEST_AI_PLATFORM_GATEWAY_SECRET",
+                "--format",
+                "json",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = json.loads(result.stdout)
+    assert payload["source"]["http_status"] == 200
+    assert requests == [
+        {
+            "path": "/api/ai/admin/runtime/overview",
+            "gateway_secret": "test-capacity-secret",
+        }
+    ]
+    assert "test-capacity-secret" not in result.stdout
+
+
 def test_capacity_runtime_evidence_cli_can_skip_maintenance_cleanup_for_default_stack():
     requests: list[str] = []
 

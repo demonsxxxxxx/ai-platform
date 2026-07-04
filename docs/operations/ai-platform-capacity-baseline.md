@@ -82,9 +82,11 @@ gate remains `model_gateway_timeout_and_backpressure`. The contract records
 it does not raise production concurrency defaults, satisfy the recorded
 capacity-evidence gate, or close G9.
 
-Even if a deployment profile sets `SANDBOX_CONTAINER_PROVIDER=docker`, the
-baseline must still warn that sandbox hardening evidence is missing until G7
-records provider hardening, egress/quota, orphan-cleanup, and load-test proof.
+Even when a deployment profile sets `SANDBOX_CONTAINER_PROVIDER=docker` and
+reviewed G7 sandbox hardening evidence exists for a runtime subject, the
+capacity baseline remains fail-closed until an approved G7 status-upgrade
+decision and B3 recorded load/profile evidence are present. Docker-provider
+posture alone does not raise defaults or close G7/B3.
 
 The current configured default answer remains: current defaults execute about three
 background Agent runs concurrently per shared worker capacity. The API can
@@ -796,8 +798,9 @@ frontend root on `http://127.0.0.1:18001/` returned HTTP `200`.
 No reviewed B3 capacity runtime evidence entry has been recorded for
 `9c669761`. At this historical slice, the latest reviewed B3 capacity entry was
 the `28676df` visibility record above, with all seven recorded load-test gates
-and `b3_10x4_sdk_subagents` profile evidence still missing. Newer latest-status
-reading must use the later `755e50e` visibility record below, which is also
+and `b3_10x4_sdk_subagents` profile evidence still missing. Newer historical
+latest-status reading used the later `755e50e` visibility record below; current
+status reading must use the later `61073b1` visibility record, which is also
 fail-closed and not recorded load evidence. The earlier deployed G7
 verifier diagnostic for `9c669761`, `g7-current-main-9c66976-20260702145801`,
 recorded `executed_task=false`, `sandbox_provider=unknown`, and
@@ -834,8 +837,9 @@ Direct API health on
 No reviewed B3 capacity runtime evidence entry has been recorded for
 `15903fd`. At this historical slice, the latest reviewed B3 capacity entry was
 the `28676df` visibility record above, with all seven recorded load-test gates
-and `b3_10x4_sdk_subagents` profile evidence still missing. Newer latest-status
-reading must use the later `755e50e` visibility record below, which is also
+and `b3_10x4_sdk_subagents` profile evidence still missing. Newer historical
+latest-status reading used the later `755e50e` visibility record below; current
+status reading must use the later `61073b1` visibility record, which is also
 fail-closed and not recorded load evidence. The 2026-07-03
 label-clean live-default G7 run
 `g7-live-env-hardening-15903fd-label-clean-sudo-20260703055828` is wrapped at
@@ -850,7 +854,7 @@ records `status=candidate_evidence_requires_review`,
 `status_upgrade_decision=not_approved_for_closure`. G7 closure, B3 closure,
 `211 verified` claims remain blocked, and this does not constitute current G7/B3 closure evidence for the already-closed historical #164.
 
-### Current Runtime Note - 2026-07-03, commit `755e50e`
+### Historical Runtime Note - 2026-07-03, commit `755e50e`
 
 A later 211 readback observed the repo-local source marker at
 `755e50ea2ad08c2d4218ae5d8cc612970b19e2a4`, with API and worker running the
@@ -902,6 +906,71 @@ visibility only; it is not a raw runtime payload export and is not recorded B3
 load evidence. G7 closure, B3 closure, and clean current-main `211 verified` claims remain
 blocked; this does not constitute current G7/B3 closure evidence for the
 already-closed historical #164.
+
+### Current Runtime Note - 2026-07-03, commit `61073b1`
+
+A later clean current-main 211 rollout binds the repo-local source marker,
+source snapshot, API/worker image labels, and API/worker in-container source
+markers to
+`61073b16a5b2c135e7ee467434ab39502ca3d194`, with API and worker running
+`ai-platform:61073b1-g7-b3-clean-main-v1`, image ID
+`sha256:59292f7687a1df372367e6cc3018b51d08661a94e13c1e91fbf6b8e37c113a0c`,
+and `ai-platform.build-dirty=false`. The safe runtime env records
+`SANDBOX_CONTAINER_PROVIDER=docker`,
+`SANDBOX_EXECUTOR_IMAGE=ai-platform:61073b1-g7-b3-clean-main-v1`, and
+`SANDBOX_EGRESS_POLICY_ENABLED=true`. Direct API health, frontend proxy health,
+and frontend root HTTP remained healthy after rollout and image cleanup.
+
+The clean current-main live-env G7 run
+`g7-live-env-hardening-61073b1-clean-main-20260703161911` is wrapped at
+`docs/release-evidence/g7-sandbox/61073b16a5b2c135e7ee467434ab39502ca3d194/2026-07-03-211-g7-sandbox-live-env-hardening-61073b1-clean-main.json`.
+Its verifier summary records all eight G7 runtime checks passing. Same-subject
+FRC evidence is now recorded at
+`docs/release-evidence/foundation-runtime-concurrency/61073b16a5b2c135e7ee467434ab39502ca3d194-frc-g7-b3-20260703/`;
+the readiness file reports `verified_foundation_runtime_concurrency`,
+`verified=true`, `failures=[]`, 12 concurrent requests/runs/sessions across 2
+tenants and 4 users, and passed queue, sandbox, memory/context, artifact ACL,
+tool permission, skill snapshots, and run playback checks. This is clean
+current-main G7 runtime and Foundation Runtime POC correctness evidence. The
+paired operator status-review artifact at
+`docs/release-evidence/g7-status-review/61073b16a5b2c135e7ee467434ab39502ca3d194/2026-07-03-211-g7-operator-status-review-61073b1-clean-main.json`
+records `status=candidate_evidence_requires_review`,
+`g7_runtime_blocking_reasons=[]`, and
+`status_upgrade_decision=not_approved_for_closure`. This is not G7 closure
+because no approved status upgrade exists and B3 recorded load/profile evidence
+is still missing.
+
+The read-only capacity runtime evidence command was then run inside the 211 API
+container against the same clean current-main subject:
+
+```powershell
+python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --user-id codex-capacity-audit --tenant-id default --roles admin --commit-sha 61073b16a5b2c135e7ee467434ab39502ca3d194 --runtime-profile g7-b3-61073b1-clean-main-v1 --skip-maintenance-cleanup --format json
+```
+
+For a fresh 61073b1 refresh, operators must treat Admin Runtime as a protected
+admin projection. A bare `curl` or tool run without the required gateway secret
+can return HTTP `401`, while principal-header tool runs with a missing or
+invalid gateway secret can return HTTP `403`; neither is evidence that the
+capacity projection is unavailable. Use the same command shape with
+`--gateway-secret-env AI_PLATFORM_GATEWAY_SECRET` when the deployed route
+requires `X-AI-Gateway-Secret`; never print or commit the secret value. This
+refresh is still visibility-only unless it is followed by approved load
+execution, operator-reviewed measured values, cleanup proof, stop-condition
+evidence, all seven recorded-gate packets, and the `b3_10x4_sdk_subagents`
+profile packet.
+
+The redacted reviewed summary is recorded at
+`docs/release-evidence/capacity-gate-readiness/61073b16a5b2c135e7ee467434ab39502ca3d194/2026-07-03-211-capacity-runtime-readiness-61073b1.json`.
+It records Admin Runtime HTTP `200`, schema
+`ai-platform.capacity-runtime-evidence.v1`, nested gate readiness
+`blocked_missing_admin_runtime_sections`, observed sections `capacity`,
+`database_pool`, `queue`, `admission`, `backpressure`, and `observability`, and
+missing Admin Runtime capacity section `sandbox`. All seven recorded load-test
+gates and `b3_10x4_sdk_subagents` profile evidence are still missing. This is
+visibility only; it is not a raw runtime payload export and is not recorded B3
+load evidence. G7 closure, B3 closure, Foundation Alpha completion, production
+readiness, and `gate closable` claims remain blocked; this does not constitute
+current G7/B3 closure evidence for the already-closed historical #164.
 
 ### Evidence Bundle Draft Tool
 
