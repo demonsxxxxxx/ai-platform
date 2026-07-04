@@ -55,6 +55,10 @@ open, or close ordinary-user platform-level multi-run product exposure.
   deployment, and destructive operations unless inheritance of the main
   session's filesystem, network, approval, and permission posture is explicitly
   confirmed.
+- Standing main-thread phrases such as `主线程全部授权`, `主线程有权限操作`, or
+  `执行` authorize the current main session for the active task only. They do
+  not authorize sub-agents to perform writes, GitHub writes, Docker, deployment,
+  remote runtime, or destructive operations.
 - Do not delegate write, deployment, remote runtime, long-running operational,
   Docker, GitHub write, or destructive tasks to sub-agents unless the
   delegation path is confirmed to inherit the same filesystem, network,

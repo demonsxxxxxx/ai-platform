@@ -860,9 +860,10 @@ No reviewed B3 capacity runtime evidence entry has been recorded for
 `9c669761`. At this historical slice, the latest reviewed B3 capacity entry was
 the `28676df` visibility record above, with all seven recorded load-test gates
 and `b3_10x4_sdk_subagents` profile evidence still missing. Newer historical
-latest-status reading used the later `755e50e` and then `61073b1` visibility
-records below; current status reading must use the later `a294727` visibility
-record, which is still fail-closed and not recorded load evidence. The earlier deployed G7
+latest-status reading used the later `755e50e`, `61073b1`, and `a294727`
+visibility records below; the current runtime is `945db2b`, while the latest
+reviewed capacity visibility remains the historical `a294727` record, which is
+still fail-closed and not recorded load evidence. The earlier deployed G7
 verifier diagnostic for `9c669761`, `g7-current-main-9c66976-20260702145801`,
 recorded `executed_task=false`, `sandbox_provider=unknown`, and
 `[Errno 13] Permission denied: '[redacted-path]'`; this is not B3 load evidence
@@ -899,9 +900,10 @@ No reviewed B3 capacity runtime evidence entry has been recorded for
 `15903fd`. At this historical slice, the latest reviewed B3 capacity entry was
 the `28676df` visibility record above, with all seven recorded load-test gates
 and `b3_10x4_sdk_subagents` profile evidence still missing. Newer historical
-latest-status reading used the later `755e50e` and then `61073b1` visibility
-records below; current status reading must use the later `a294727` visibility
-record, which is still fail-closed and not recorded load evidence. The 2026-07-03
+latest-status reading used the later `755e50e`, `61073b1`, and `a294727`
+visibility records below; the current runtime is `945db2b`, while the latest
+reviewed capacity visibility remains the historical `a294727` record, which is
+still fail-closed and not recorded load evidence. The 2026-07-03
 label-clean live-default G7 run
 `g7-live-env-hardening-15903fd-label-clean-sudo-20260703055828` is wrapped at
 `docs/release-evidence/g7-sandbox/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-sandbox-live-env-hardening-15903fd-label-clean.json`,
@@ -1170,30 +1172,29 @@ recorded and B3 profile evidence is accepted, the batch output records
 `operator_review_required`; it still does not close B3 or raise production
 defaults.
 
-### Current Runtime Note - 2026-07-04, commit `a294727`
+### Current Runtime Note - 2026-07-05, commit `945db2b`
 
-Post-PR #319, 211 now runs API/worker image
-`ai-platform:a294727-g7-b3-source-marker-fix-v1` for runtime subject
-`a294727046024958c41b15f646512e68f3c04b47`. The repo-local source marker,
-source snapshot, image labels, and canonical API/worker in-container marker
-`/app/.ai-platform-source-revision` bind to `a294727`; legacy
-`/app/.codex-source-revision` and `/app/.source-commit` still show `28676df`.
-Direct API and frontend proxy health returned `{"status":"ok"}`. The reviewed
-capacity visibility entry is recorded at
+Post-PR #321, 211 now runs API/worker image
+`ai-platform:945db2b-g7-legacy-source-markers-v1` for runtime subject
+`945db2bb5926ad7b01ead98c3283d55b77d2677d`. The repo-local source marker,
+source snapshot, image labels, and all three API/worker in-container marker
+files bind to `945db2b`. Direct API health, frontend proxy health, and frontend
+root returned HTTP `200` after frontend restart and Docker cleanup. The latest
+reviewed capacity visibility entry is still the historical `a294727` record at
 `docs/release-evidence/capacity-gate-readiness/a294727046024958c41b15f646512e68f3c04b47/2026-07-04-211-capacity-runtime-readiness-a294727.json`.
 
-This preserves the B3 visibility achieved after the earlier `bbe23d5` and
-`61073b1` baselines: Admin Runtime HTTP returned `200`, all required sections
-including `sandbox` were observed after accepted host-side sandbox observation,
-and readiness reports `blocked_missing_load_test_evidence`. The host-side
-sandbox observation is diagnostic-only and recorded separately at
+That historical `a294727` entry preserves the B3 visibility achieved after the
+earlier `bbe23d5` and `61073b1` baselines: Admin Runtime HTTP returned `200`,
+all required sections including `sandbox` were observed after accepted host-side
+sandbox observation, and readiness reports `blocked_missing_load_test_evidence`.
+The host-side sandbox observation is diagnostic-only and recorded separately at
 `docs/release-evidence/diagnostics/2026-07-04-211-b3-host-sandbox-observation-a294727.json`;
 it does not mark B3 recorded evidence.
 
 B3 remains blocked. All seven recorded load-test gates are still missing, the
 `b3_10x4_sdk_subagents` profile evidence is still empty, and production default
-decision remains `do_not_raise_without_recorded_load_test_evidence`. This
-runtime visibility supports the current source-marker/runtime-health slice, but
+decision remains `do_not_raise_without_recorded_load_test_evidence`. The
+`945db2b` readback supports only the current source-marker/runtime-health slice;
 it is not B3 closure and does not make the overall gate closable.
 
 ## Required Load-Test Gates

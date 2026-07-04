@@ -58,21 +58,21 @@ vulnerability evidence。
   只能作为历史 evidence/follow-up 含义读取；不能作为当前状态名。
 - B3 边界：`b3_10x4_sdk_subagents` source contract 是 SDK subagent
   fanout 容量证据，不是 G8 普通用户平台级 multi-run 产品曝光证据。
-- 最新 `main` / 211 边界：本轮 post-PR #319 source-marker-fix runtime refresh
-  的 GitHub `main` 已包含 PR #319 merge commit
-  `a294727046024958c41b15f646512e68f3c04b47`。211 repo-local source marker、
-  source snapshot、API/worker image labels 和 canonical API/worker
-  in-container marker `/app/.ai-platform-source-revision` 已绑定
-  `a294727`；legacy `/app/.codex-source-revision` 和 `/app/.source-commit`
-  仍显示 `28676df`。API/worker 运行
-  `ai-platform:a294727-g7-b3-source-marker-fix-v1`，`build-dirty=false`，
-  且 `SANDBOX_EXECUTOR_IMAGE=ai-platform:a294727-g7-b3-source-marker-fix-v1`。
-  2026-07-04 `a294727` live-env G7 verifier
-  `g7-live-env-hardening-a294727-source-marker-fix-20260704170251` 已记录 all
-  eight checks passing。B3 capacity visibility 现在能观测全部 Admin Runtime
-  sections，并读到 `blocked_missing_load_test_evidence`。但这仍是
-  `local partial`：当前 `a294727` 还没有 approved G7 status-upgrade artifact，
-  B3 recorded load evidence 和 `b3_10x4_sdk_subagents` profile evidence 仍缺；
+- 最新 `main` / 211 边界：本轮 post-PR #321 legacy source-marker cleanup
+  runtime refresh 的 GitHub `main` 已包含 PR #321 merge commit
+  `945db2bb5926ad7b01ead98c3283d55b77d2677d`。211 repo-local source marker、
+  source snapshot、API/worker image labels 和三个 API/worker in-container
+  marker `/app/.ai-platform-source-revision`、`/app/.codex-source-revision`、
+  `/app/.source-commit` 已绑定 `945db2b`。API/worker 运行
+  `ai-platform:945db2b-g7-legacy-source-markers-v1`，`build-dirty=false`；
+  direct API、frontend proxy health、frontend root 均返回 HTTP `200`。最新
+  reviewed G7 live-env verifier 和 B3 capacity visibility 仍是历史
+  `a294727` evidence：`g7-live-env-hardening-a294727-source-marker-fix-20260704170251`
+  已记录 all eight checks passing，B3 capacity visibility 能观测全部 Admin
+  Runtime sections，并读到 `blocked_missing_load_test_evidence`。但这仍是
+  `local partial`：当前 `945db2b` 还没有 reviewed G7 live-env verifier 或
+  approved G7 status-upgrade artifact，B3 recorded load evidence 和
+  `b3_10x4_sdk_subagents` profile evidence 仍缺；
   所以不能叫 G7 closure、
   B3 closure、Foundation Alpha complete、production-ready 或 `gate closable`；
   也不能重新解释已经历史关闭的 #164。`61073b1` clean-main evidence 和
@@ -200,13 +200,12 @@ vulnerability evidence。
   B3 blocker。compose label 仍指向外部 runtime env file，当前 source/runtime/
   reviewed-evidence 拆层仍属于 G0/source-authority 与 production-hardening
   非闭合边界；任何 G7 status upgrade 仍需要 operator review。
-  当前路线读法已前进到 PR #319 `a294727` runtime refresh：211 repo-local
-  source marker、source snapshot、API/worker image labels 和 canonical
-  API/worker in-container marker `/app/.ai-platform-source-revision` 已绑定
-  `a294727`；legacy `/app/.codex-source-revision` 和 `/app/.source-commit`
-  仍显示 `28676df`。已有 reviewed G7 live-env verifier 和 capacity visibility
-  evidence；但当前仍不是 G0/G7 closure、不是 legacy marker cleanup、不是 B3
-  load evidence、不是 Foundation Alpha complete，也不是 G7/B3 gate-closable。
+  当前路线读法已前进到 PR #321 `945db2b` runtime refresh：211 repo-local
+  source marker、source snapshot、API/worker image labels 和三个 API/worker
+  in-container marker 均已绑定 `945db2b`。已有 reviewed G7 live-env verifier
+  和 capacity visibility evidence 仍是历史 `a294727` 输入；当前 `945db2b`
+  仍不是 G0/G7 closure、不是 B3 load evidence、不是 Foundation Alpha
+  complete，也不是 G7/B3 gate-closable。
   PR #317 `bbe23d5`、PR #315 `61073b1`、PR #312/PR #311、
   PR #308 `15903fd`、PR #306/PR #304/PR #297、`755e50e` dirty-runtime 和
   reviewed `ae6b7e5` 证据全部降为 historical same-subject evidence。
@@ -378,24 +377,28 @@ vulnerability evidence。
   approval 仍未获批。历史 `755e50e` 已有 dirty-runtime v2 G7 live-env
   hardening evidence、same-subject FRC success 和 read-only capacity visibility
   evidence；但它是 `build-dirty=true` runtime-only local patch，不能作为当前
-  clean-main closure。PR #319 已 merge 且 211 API/worker 已跑到
-  `a294727` image，a294727 G7 verifier all eight checks passing，并修复了
-  repo marker / source snapshot / image labels / canonical in-container marker
-  的当前 source-marker mismatch；legacy `.codex-source-revision` 和
-  `.source-commit` 仍显示 `28676df`。当前 `a294727` 仍没有 approved G7
-  status-upgrade artifact，所以不能升级为 G0/G7 closure，且 B3 recorded
-  load/profile evidence 仍缺。
+  clean-main closure。PR #319 / `a294727` 已作为历史 reviewed G7/capacity
+  evidence 保留：a294727 G7 verifier all eight checks passing，且 capacity
+  visibility 读到 `blocked_missing_load_test_evidence`，但当时 legacy marker
+  仍未清理。PR #321 已 merge 且 211 API/worker 已跑到
+  `945db2b` image，并修复 repo marker / source snapshot / image labels / 三个
+  in-container marker 的当前 source-marker mismatch；但当前 `945db2b` 仍没有
+  reviewed G7 live-env verifier 或 approved G7 status-upgrade artifact，所以不能
+  升级为 G0/G7 closure，且 B3 recorded load/profile evidence 仍缺。
   `decf33a`、`28676df`、`755e50e`、`61073b1`、`bbe23d5` 和 `a294727` capacity runtime
   visibility 都只是 fail-closed visibility evidence，不是 recorded load
   evidence。external env-file redacted readback 可支持 G7
   live-default posture，但完整 env/source-authority review 仍是
   G0/source-authority / production-hardening 非闭合边界。
 G7/B3 的证据边界现在应拆开读：G7 对历史 `9c669761`、`15903fd` 和 `755e50e`
-可到 candidate / local-partial 层级但未获 closure approval；当前 `a294727`
-已有 reviewed G7 runtime evidence 和 capacity visibility evidence，但仍是
-`local partial`，因为没有 approved G7 status-upgrade artifact，且 B3 recorded
-load evidence 和 `b3_10x4_sdk_subagents` profile evidence 未齐备。当前 `a294727` capacity
-visibility verdict 是 `blocked_missing_load_test_evidence`；总体 B3 closure
+可到 candidate / local-partial 层级但未获 closure approval；历史 `a294727`
+已有 reviewed G7 runtime evidence 和 capacity visibility evidence。当前
+`945db2b` 只有 source-marker/runtime-health readback，仍是 `local partial`，
+因为没有 reviewed `945db2b` G7 live-env verifier 或 approved G7
+status-upgrade artifact，且 B3 recorded load evidence 和
+`b3_10x4_sdk_subagents` profile evidence 未齐备。当前最新 reviewed capacity
+visibility verdict 仍是历史 `a294727` 的 `blocked_missing_load_test_evidence`；
+总体 B3 closure
 仍是 `local partial`，因为七门 recorded load evidence 和
 `b3_10x4_sdk_subagents` profile evidence 未齐备。该 audit 只是控制/计划工件，
 不是 G7 closure approval 或 B3 load evidence。
