@@ -1,0 +1,187 @@
+{
+  "artifact_kind": "211_sandbox_runtime_smoke",
+  "captured_at": "2026-07-04T17:02:51Z",
+  "commit_sha": "a294727046024958c41b15f646512e68f3c04b47",
+  "does_not_close_b3": true,
+  "does_not_close_g7": true,
+  "does_not_complete_foundation_alpha": true,
+  "does_not_make_gate_closable": true,
+  "does_not_raise_production_defaults": true,
+  "evidence_id": "2026-07-04-211-g7-sandbox-live-env-hardening-a294727-source-marker-fix",
+  "evidence_ref": {
+    "artifact_hashes": {
+      "evidence_generator_summary_sha256": "b530d55f8e214497f83313a4af88f1939982ca769644773052d543a89dcb11db",
+      "probe_generator_summary_sha256": "58770496620f317d6c710ee3f5e77b7a1484a0240631ae8373e72c2ccddf7eb9",
+      "runtime_probe_results_sha256": "08e345074be90f800753f8a0ad8b9af214bcca336b05c8267900b8ad64cd5480",
+      "sandbox_evidence_sha256": "89da0d5d549bba83b2f4ea835ee9017a7106d4a9253eb3bc3f56700aafcaab77",
+      "verifier_summary_sha256": "ce458763a8ef33382a454e435b3ab856bbb521d53e6f47d00a39abd5db58c01a"
+    },
+    "command": "containerized 211 live-env hardening verifier using ai-platform:a294727-g7-b3-source-marker-fix-v1, host Docker socket/CLI, host-network callback receiver, same-path mounted workspace/output directories, and runtime probe results generated for the same run id",
+    "evidence_generator_summary": {
+      "callbacks": 2,
+      "cancel_stops_container": true,
+      "evidence_file": "[redacted-path]",
+      "executed_task": true,
+      "messages": [],
+      "run_id": "g7-live-env-hardening-a294727-source-marker-fix-20260704170251",
+      "runtime_mode": "platform",
+      "sandbox_provider": "docker"
+    },
+    "generator": "scripts/generate_sandbox_runtime_evidence_211.py",
+    "probe_generator_summary": {
+      "callbacks": 4,
+      "cancel_stops_container": false,
+      "evidence_file": "[redacted-path]",
+      "executed_task": true,
+      "messages": [],
+      "run_id": "g7-live-env-hardening-a294727-source-marker-fix-20260704170251",
+      "runtime_mode": "platform_probe_results",
+      "runtime_probe_results_file": "[redacted-path]",
+      "sandbox_provider": "docker",
+      "sections": [
+        "resource_limits",
+        "egress_policy",
+        "security_options"
+      ]
+    },
+    "remote_artifact_dir": "[redacted-host-artifact-dir]",
+    "result": "all_eight_checks_passed",
+    "run_id": "g7-live-env-hardening-a294727-source-marker-fix-20260704170251",
+    "verifier": "scripts/verify_sandbox_runtime_211.py",
+    "verifier_summary": {
+      "checks": [
+        {
+          "message": "Docker daemon reachable",
+          "name": "check_docker_socket",
+          "passed": true
+        },
+        {
+          "message": "workspace writeable",
+          "name": "check_workspace_write",
+          "passed": true
+        },
+        {
+          "message": "platform runtime evidence includes executor cold-start and healthcheck",
+          "name": "check_executor_health",
+          "passed": true
+        },
+        {
+          "message": "callback stream evidence present",
+          "name": "check_callback_stream",
+          "passed": true
+        },
+        {
+          "message": "cancel stop evidence present",
+          "name": "check_cancel_stops_container",
+          "passed": true
+        },
+        {
+          "message": "platform runtime latency split evidence present",
+          "name": "check_platform_runtime_evidence",
+          "passed": true
+        },
+        {
+          "message": "platform hardening evidence present",
+          "name": "check_platform_hardening_evidence",
+          "passed": true
+        },
+        {
+          "message": "no sensitive evidence detected",
+          "name": "check_no_secret_leakage",
+          "passed": true
+        }
+      ]
+    }
+  },
+  "gate": "G7 Sandbox / Resource Hardening",
+  "issue_refs": [],
+  "non_expansion": {
+    "admin_or_allowlist_only": true,
+    "docker_sandbox_production_hardening_claimed": false,
+    "ordinary_user_high_risk_sandbox_allowed": false,
+    "ordinary_user_multi_agent_allowed": false,
+    "ordinary_user_platform_multi_run_orchestration_exposure": false,
+    "production_concurrency_defaults_raised": false
+  },
+  "pr_refs": [
+    "#319"
+  ],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "remaining_blockers": [
+    "approved G7 status-upgrade review is still missing for a294727",
+    "B3 seven recorded load-test gates are still missing",
+    "b3_10x4_sdk_subagents profile evidence is still missing"
+  ],
+  "runtime_subject_commit_sha": "a294727046024958c41b15f646512e68f3c04b47",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "branch": "origin/main",
+    "container_source_marker": "a294727046024958c41b15f646512e68f3c04b47",
+    "container_source_marker_kind": "/app/.ai-platform-source-revision",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "health": {
+      "api_health": "ok",
+      "api_health_url": "http://127.0.0.1:8020/api/ai/health",
+      "frontend_proxy_health": "ok",
+      "frontend_proxy_health_url": "http://127.0.0.1:18001/api/ai/health",
+      "frontend_root_http_status": 200,
+      "frontend_root_size_bytes": 10962
+    },
+    "image": "ai-platform:a294727-g7-b3-source-marker-fix-v1",
+    "image_id": "sha256:b7637c85a625e6dd9e596b351947d3df730c93c5abe22ee0b7eeaec133799bfc",
+    "image_labels": {
+      "ai-platform.build-dirty": "false",
+      "ai-platform.build-mode": "runtime-only-rebase",
+      "ai-platform.runtime-rollout": "g7-b3-source-marker-fix-v1",
+      "ai-platform.runtime-subject": "a294727046024958c41b15f646512e68f3c04b47",
+      "ai-platform.runtime_subject": "a294727046024958c41b15f646512e68f3c04b47",
+      "ai-platform.source-branch": "origin/main",
+      "ai-platform.source-note": "g7-b3-source-marker-fix-v1",
+      "ai-platform.source-revision": "a294727046024958c41b15f646512e68f3c04b47",
+      "ai-platform.source_commit": "a294727046024958c41b15f646512e68f3c04b47",
+      "ai-platform.source_revision": "a294727046024958c41b15f646512e68f3c04b47",
+      "ai-platform.source_tree_commit": "a294727046024958c41b15f646512e68f3c04b47",
+      "org.opencontainers.image.revision": "a294727046024958c41b15f646512e68f3c04b47",
+      "org.opencontainers.image.title": "ai-platform"
+    },
+    "merge_commit": "a294727046024958c41b15f646512e68f3c04b47",
+    "repo_backend_source_marker": "a294727046024958c41b15f646512e68f3c04b47",
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "runtime_source_marker": "a294727046024958c41b15f646512e68f3c04b47",
+    "safe_live_runtime_env": {
+      "SANDBOX_CONTAINER_PROVIDER": "docker",
+      "SANDBOX_EGRESS_POLICY_ENABLED": "true",
+      "SANDBOX_EXECUTOR_IMAGE": "ai-platform:a294727-g7-b3-source-marker-fix-v1"
+    },
+    "legacy_container_source_markers": {
+      "/app/.codex-source-revision": "28676df4abcbb7063211fceb4cc1701648c43d49",
+      "/app/.source-commit": "28676df4abcbb7063211fceb4cc1701648c43d49"
+    },
+    "legacy_container_marker_status": "stale_legacy_marker_files_retained_not_source_authority",
+    "source_authority_caveat": "The 211 repo-local source marker, source snapshot, API/worker image labels, and canonical API/worker in-container marker /app/.ai-platform-source-revision bind to a294727. Fresh 2026-07-05 MCP readback found legacy /app/.codex-source-revision and /app/.source-commit still show 28676df. This is canonical source-marker reconciliation and G7 runtime evidence only; it is not legacy marker cleanup, G0 source-authority closure, G7 closure, or B3 closure without approved G7 status-upgrade and B3 recorded load/profile evidence.",
+    "post_review_corrections": [
+      {
+        "observed_date": "2026-07-05",
+        "evidence": "ssh_mcp_s211_read_only_marker_readback",
+        "finding": "canonical_marker_and_labels_match_a294727_but_legacy_container_marker_files_still_show_28676df"
+      }
+    ],
+    "source_snapshot": {
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "runtime_subject_commit_sha": "a294727046024958c41b15f646512e68f3c04b47",
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "snapshot_source": "codex_origin_main_archive_sync",
+      "source_tree_commit_sha": "a294727046024958c41b15f646512e68f3c04b47",
+      "source_tree_dirty": false
+    }
+  },
+  "status_label_recommendation": "local partial"
+}

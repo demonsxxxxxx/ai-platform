@@ -1,0 +1,945 @@
+{
+  "artifact_kind": "capacity_gate_readiness",
+  "capacity_profile_readiness": {
+    "blocking_policy": "do_not_raise_without_recorded_load_test_evidence; no automatic default raise",
+    "does_not_raise_defaults": true,
+    "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+    "profiles": [
+      {
+        "automatic_default_raise": false,
+        "does_not_raise_defaults": true,
+        "id": "b3_10x4_sdk_subagents",
+        "intent": "Initial backend productization measurement profile for selected SDK subagent workflows.",
+        "invalid_load_test_gates": [],
+        "label": "B3 target: 10 sessions x 4 SDK subagents",
+        "measurement_first": true,
+        "missing_admin_runtime_sections": [],
+        "missing_load_test_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "missing_profile_evidence": [
+          "target_profile_id",
+          "evidence_source",
+          "observed_concurrent_sessions",
+          "observed_peak_sdk_subagents_per_session",
+          "sdk_subagent_fanout_measurement_ref",
+          "production_concurrency_defaults_raised",
+          "safe_concurrency_claimed",
+          "ordinary_user_platform_multi_run_orchestration_enabled"
+        ],
+        "observed_profile_evidence": {},
+        "operator_reviewed_recorded_snapshot_contract": {
+          "acceptance_rule": "all seven load-test gates recorded, b3_10x4 profile evidence accepted, operator review attached, and production defaults unchanged",
+          "allowed_profile_evidence_sources": [
+            "live_worker_run_payload",
+            "operator_reviewed_recorded_snapshot",
+            "platform_runtime_profile"
+          ],
+          "does_not_claim_safe_concurrency": true,
+          "does_not_close_b3_gate": true,
+          "does_not_enable_ordinary_user_platform_multi_run_orchestration": true,
+          "does_not_raise_defaults": true,
+          "evidence_level": "source_contract",
+          "profile_id": "b3_10x4_sdk_subagents",
+          "required_admin_runtime_sections": [
+            "capacity",
+            "database_pool",
+            "queue",
+            "admission",
+            "backpressure",
+            "sandbox",
+            "observability"
+          ],
+          "required_load_test_gates": [
+            "api_read_write_burst",
+            "run_creation_burst_by_tenant_and_user",
+            "worker_processing_throughput",
+            "queue_depth_and_lease_latency",
+            "cancel_retry_resume_under_load",
+            "sandbox_lease_creation_under_load",
+            "model_gateway_timeout_and_backpressure"
+          ],
+          "required_non_expansion_flags": {
+            "ordinary_user_platform_multi_run_orchestration_enabled": false,
+            "production_concurrency_defaults_raised": false,
+            "safe_concurrency_claimed": false
+          },
+          "required_operator_review_evidence": [
+            "runtime_source_identity_and_image_labels",
+            "tenant_user_skill_mix",
+            "token_cost_ledger",
+            "event_artifact_volume",
+            "sandbox_pressure_and_cleanup",
+            "latency_p50_p95_p99",
+            "error_budget_and_dead_letters",
+            "rollback_plan_and_stop_conditions"
+          ],
+          "required_profile_evidence": [
+            "target_profile_id",
+            "evidence_source",
+            "observed_concurrent_sessions",
+            "observed_peak_sdk_subagents_per_session",
+            "sdk_subagent_fanout_measurement_ref",
+            "production_concurrency_defaults_raised",
+            "safe_concurrency_claimed",
+            "ordinary_user_platform_multi_run_orchestration_enabled"
+          ],
+          "required_status_before_operator_review": "operator_review_required",
+          "schema_version": "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1",
+          "stage": "B3",
+          "target_profile": {
+            "concurrent_sessions": 10,
+            "peak_sdk_subagents_per_session": 4
+          }
+        },
+        "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+        "profile_evidence_status": "missing",
+        "profile_specific_requirements": [
+          "measure 10 concurrent sessions with peak 4 SDK subagents per session",
+          "record queue, worker, model-gateway, sandbox, artifact/event, token/cost, and cleanup pressure",
+          "keep production defaults unchanged until operator-reviewed seven-gate evidence and rollback are recorded"
+        ],
+        "required_admin_runtime_sections": [
+          "capacity",
+          "database_pool",
+          "queue",
+          "admission",
+          "backpressure",
+          "sandbox",
+          "observability"
+        ],
+        "required_load_test_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "safe_concurrency_claim": "not_claimed",
+        "stage": "B3",
+        "status": "blocked_missing_load_test_evidence",
+        "target_profile": {
+          "concurrent_sessions": 10,
+          "peak_sdk_subagents_per_session": 4
+        }
+      },
+      {
+        "automatic_default_raise": false,
+        "does_not_raise_defaults": true,
+        "id": "conservative_internal",
+        "intent": "Small internal pilot profile for bounded office-agent usage.",
+        "invalid_load_test_gates": [],
+        "label": "Conservative internal profile",
+        "measurement_first": true,
+        "missing_admin_runtime_sections": [],
+        "missing_load_test_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "missing_profile_evidence": [],
+        "observed_profile_evidence": {},
+        "operator_reviewed_recorded_snapshot_contract": {
+          "acceptance_rule": "all required load-test gates recorded, operator review attached, and production defaults unchanged",
+          "allowed_profile_evidence_sources": [],
+          "does_not_claim_safe_concurrency": true,
+          "does_not_close_b3_gate": true,
+          "does_not_enable_ordinary_user_platform_multi_run_orchestration": true,
+          "does_not_raise_defaults": true,
+          "evidence_level": "source_contract",
+          "profile_id": "conservative_internal",
+          "required_admin_runtime_sections": [
+            "capacity",
+            "database_pool",
+            "queue",
+            "admission",
+            "backpressure",
+            "sandbox",
+            "observability"
+          ],
+          "required_load_test_gates": [
+            "api_read_write_burst",
+            "run_creation_burst_by_tenant_and_user",
+            "worker_processing_throughput",
+            "queue_depth_and_lease_latency",
+            "cancel_retry_resume_under_load",
+            "sandbox_lease_creation_under_load",
+            "model_gateway_timeout_and_backpressure"
+          ],
+          "required_non_expansion_flags": {},
+          "required_operator_review_evidence": [
+            "runtime_source_identity_and_image_labels",
+            "tenant_user_skill_mix",
+            "token_cost_ledger",
+            "event_artifact_volume",
+            "sandbox_pressure_and_cleanup",
+            "latency_p50_p95_p99",
+            "error_budget_and_dead_letters",
+            "rollback_plan_and_stop_conditions"
+          ],
+          "required_profile_evidence": [],
+          "required_status_before_operator_review": "operator_review_required",
+          "schema_version": "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1",
+          "stage": "B3",
+          "target_profile": {
+            "concurrent_sessions": 0,
+            "peak_sdk_subagents_per_session": 0
+          }
+        },
+        "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+        "profile_evidence_status": "not_required_for_profile",
+        "profile_specific_requirements": [
+          "prove current worker, DB pool, queue, sandbox, and model-gateway settings under bounded load",
+          "keep tenant/user queue quota and active-run saturation visible in Admin Runtime",
+          "record cleanup proof before any production-default decision"
+        ],
+        "required_admin_runtime_sections": [
+          "capacity",
+          "database_pool",
+          "queue",
+          "admission",
+          "backpressure",
+          "sandbox",
+          "observability"
+        ],
+        "required_load_test_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "safe_concurrency_claim": "not_claimed",
+        "stage": "B3",
+        "status": "blocked_missing_load_test_evidence",
+        "target_profile": {
+          "concurrent_sessions": 0,
+          "peak_sdk_subagents_per_session": 0
+        }
+      },
+      {
+        "automatic_default_raise": false,
+        "does_not_raise_defaults": true,
+        "id": "medium_team",
+        "intent": "Team-level intranet profile that needs tenant/user fairness and sustained queue evidence.",
+        "invalid_load_test_gates": [],
+        "label": "Medium team profile",
+        "measurement_first": true,
+        "missing_admin_runtime_sections": [],
+        "missing_load_test_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "missing_profile_evidence": [],
+        "observed_profile_evidence": {},
+        "operator_reviewed_recorded_snapshot_contract": {
+          "acceptance_rule": "all required load-test gates recorded, operator review attached, and production defaults unchanged",
+          "allowed_profile_evidence_sources": [],
+          "does_not_claim_safe_concurrency": true,
+          "does_not_close_b3_gate": true,
+          "does_not_enable_ordinary_user_platform_multi_run_orchestration": true,
+          "does_not_raise_defaults": true,
+          "evidence_level": "source_contract",
+          "profile_id": "medium_team",
+          "required_admin_runtime_sections": [
+            "capacity",
+            "database_pool",
+            "queue",
+            "admission",
+            "backpressure",
+            "sandbox",
+            "observability"
+          ],
+          "required_load_test_gates": [
+            "api_read_write_burst",
+            "run_creation_burst_by_tenant_and_user",
+            "worker_processing_throughput",
+            "queue_depth_and_lease_latency",
+            "cancel_retry_resume_under_load",
+            "sandbox_lease_creation_under_load",
+            "model_gateway_timeout_and_backpressure"
+          ],
+          "required_non_expansion_flags": {},
+          "required_operator_review_evidence": [
+            "runtime_source_identity_and_image_labels",
+            "tenant_user_skill_mix",
+            "token_cost_ledger",
+            "event_artifact_volume",
+            "sandbox_pressure_and_cleanup",
+            "latency_p50_p95_p99",
+            "error_budget_and_dead_letters",
+            "rollback_plan_and_stop_conditions"
+          ],
+          "required_profile_evidence": [],
+          "required_status_before_operator_review": "operator_review_required",
+          "schema_version": "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1",
+          "stage": "B3",
+          "target_profile": {
+            "concurrent_sessions": 0,
+            "peak_sdk_subagents_per_session": 0
+          }
+        },
+        "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+        "profile_evidence_status": "not_required_for_profile",
+        "profile_specific_requirements": [
+          "prove N-tenant and M-user run creation bursts with no noisy-neighbor starvation",
+          "record worker throughput, queue depth, lease latency, DB waiting, and error taxonomy",
+          "require operator review before changing API, worker, DB-pool, Redis, sandbox, or model-gateway settings"
+        ],
+        "required_admin_runtime_sections": [
+          "capacity",
+          "database_pool",
+          "queue",
+          "admission",
+          "backpressure",
+          "sandbox",
+          "observability"
+        ],
+        "required_load_test_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "safe_concurrency_claim": "not_claimed",
+        "stage": "B3",
+        "status": "blocked_missing_load_test_evidence",
+        "target_profile": {
+          "concurrent_sessions": 0,
+          "peak_sdk_subagents_per_session": 0
+        }
+      },
+      {
+        "automatic_default_raise": false,
+        "does_not_raise_defaults": true,
+        "id": "high_capacity_1t",
+        "intent": "Large single-server profile; memory size is not accepted as capacity proof.",
+        "invalid_load_test_gates": [],
+        "label": "High-capacity 1T-memory server profile",
+        "measurement_first": true,
+        "missing_admin_runtime_sections": [],
+        "missing_load_test_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "missing_profile_evidence": [],
+        "observed_profile_evidence": {},
+        "operator_reviewed_recorded_snapshot_contract": {
+          "acceptance_rule": "all required load-test gates recorded, operator review attached, and production defaults unchanged",
+          "allowed_profile_evidence_sources": [],
+          "does_not_claim_safe_concurrency": true,
+          "does_not_close_b3_gate": true,
+          "does_not_enable_ordinary_user_platform_multi_run_orchestration": true,
+          "does_not_raise_defaults": true,
+          "evidence_level": "source_contract",
+          "profile_id": "high_capacity_1t",
+          "required_admin_runtime_sections": [
+            "capacity",
+            "database_pool",
+            "queue",
+            "admission",
+            "backpressure",
+            "sandbox",
+            "observability"
+          ],
+          "required_load_test_gates": [
+            "api_read_write_burst",
+            "run_creation_burst_by_tenant_and_user",
+            "worker_processing_throughput",
+            "queue_depth_and_lease_latency",
+            "cancel_retry_resume_under_load",
+            "sandbox_lease_creation_under_load",
+            "model_gateway_timeout_and_backpressure"
+          ],
+          "required_non_expansion_flags": {},
+          "required_operator_review_evidence": [
+            "runtime_source_identity_and_image_labels",
+            "tenant_user_skill_mix",
+            "token_cost_ledger",
+            "event_artifact_volume",
+            "sandbox_pressure_and_cleanup",
+            "latency_p50_p95_p99",
+            "error_budget_and_dead_letters",
+            "rollback_plan_and_stop_conditions"
+          ],
+          "required_profile_evidence": [],
+          "required_status_before_operator_review": "operator_review_required",
+          "schema_version": "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1",
+          "stage": "B3",
+          "target_profile": {
+            "concurrent_sessions": 0,
+            "peak_sdk_subagents_per_session": 0
+          }
+        },
+        "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+        "profile_evidence_status": "not_required_for_profile",
+        "profile_specific_requirements": [
+          "do not treat 1T memory as evidence of safe concurrency",
+          "prove sandbox lease/container behavior and model-gateway backpressure under target load",
+          "record alert, cleanup, stop-condition, latency percentile, and operator-review evidence before any default increase"
+        ],
+        "required_admin_runtime_sections": [
+          "capacity",
+          "database_pool",
+          "queue",
+          "admission",
+          "backpressure",
+          "sandbox",
+          "observability"
+        ],
+        "required_load_test_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "safe_concurrency_claim": "not_claimed",
+        "stage": "B3",
+        "status": "blocked_missing_load_test_evidence",
+        "target_profile": {
+          "concurrent_sessions": 0,
+          "peak_sdk_subagents_per_session": 0
+        }
+      }
+    ],
+    "required_evidence": [
+      "commit_sha",
+      "api_worker_image_labels",
+      "frontend_commit_or_image_label",
+      "runtime_profile",
+      "api_worker_process_counts",
+      "database_pool_settings",
+      "redis_queue_settings",
+      "admission_worker_queue_sandbox_model_settings",
+      "peak_and_sustained_queue_depths",
+      "active_worker_runs_users_and_tenants",
+      "database_pool_waiting_and_saturation",
+      "latency_p50_p95_p99",
+      "error_taxonomy_counts",
+      "dead_letter_counts",
+      "cleanup_proof"
+    ],
+    "schema_version": "ai-platform.capacity-profile-readiness.v1",
+    "source_gate_readiness": {
+      "invalid_load_test_gates": [],
+      "load_test_gates": [
+        {
+          "gate": "api_read_write_burst",
+          "status": "missing_recorded_load_test_evidence"
+        },
+        {
+          "gate": "run_creation_burst_by_tenant_and_user",
+          "status": "missing_recorded_load_test_evidence"
+        },
+        {
+          "gate": "worker_processing_throughput",
+          "status": "missing_recorded_load_test_evidence"
+        },
+        {
+          "gate": "queue_depth_and_lease_latency",
+          "status": "missing_recorded_load_test_evidence"
+        },
+        {
+          "gate": "cancel_retry_resume_under_load",
+          "status": "missing_recorded_load_test_evidence"
+        },
+        {
+          "gate": "sandbox_lease_creation_under_load",
+          "status": "missing_recorded_load_test_evidence"
+        },
+        {
+          "gate": "model_gateway_timeout_and_backpressure",
+          "status": "missing_recorded_load_test_evidence"
+        }
+      ],
+      "missing_admin_runtime_sections": [],
+      "missing_load_test_gates": [
+        "api_read_write_burst",
+        "run_creation_burst_by_tenant_and_user",
+        "worker_processing_throughput",
+        "queue_depth_and_lease_latency",
+        "cancel_retry_resume_under_load",
+        "sandbox_lease_creation_under_load",
+        "model_gateway_timeout_and_backpressure"
+      ],
+      "profile_evidence": {},
+      "runtime_identity": {
+        "commit_sha": "a294727046024958c41b15f646512e68f3c04b47",
+        "profile": "g7-b3-a294727-source-marker-fix-v1"
+      },
+      "schema_version": "ai-platform.capacity-gate-readiness.v1",
+      "status": "blocked_missing_load_test_evidence"
+    },
+    "status": "blocked_missing_load_test_evidence"
+  },
+  "captured_at": "2026-07-04T17:04:00Z",
+  "commit_sha": "a294727046024958c41b15f646512e68f3c04b47",
+  "does_not_claim_safe_concurrency": true,
+  "does_not_close_b3": true,
+  "does_not_close_g7": true,
+  "does_not_make_211_verified": true,
+  "does_not_make_gate_closable": true,
+  "does_not_mark_b3_recorded_evidence": true,
+  "does_not_raise_production_defaults": true,
+  "evidence_id": "2026-07-04-211-capacity-runtime-readiness-a294727",
+  "evidence_ref": {
+    "admin_runtime_missing_sections": [],
+    "admin_runtime_observed_sections": [
+      "capacity",
+      "database_pool",
+      "queue",
+      "admission",
+      "backpressure",
+      "sandbox",
+      "observability"
+    ],
+    "admin_runtime_required_sections": [
+      "capacity",
+      "database_pool",
+      "queue",
+      "admission",
+      "backpressure",
+      "sandbox",
+      "observability"
+    ],
+    "artifact_hashes": {
+      "capacity_profile_readiness_sha256": "5a48191080f69537935fa960b6c9e05ec565a139e2eecee4ba281eac656674f7",
+      "capacity_runtime_evidence_sha256": "b84ab71b84ab7223f95b8ff6178c9df8ba53a8e05b9dcb921a53b39b886fa53c",
+      "capacity_summary_sha256": "db40be902582c6ae2866216c1091c30aea76b2237b51e02880e7cbcdc9cf18a6",
+      "host_sandbox_observation_sha256": "e4ca29f8c84693b7f1a8df567bb58d9afe925e45d3b9e534eeb7396ddfab9ae7"
+    },
+    "host_sandbox_observation_status": "accepted",
+    "load_test_evidence_status": "missing",
+    "missing_load_test_gates": [
+      "api_read_write_burst",
+      "run_creation_burst_by_tenant_and_user",
+      "worker_processing_throughput",
+      "queue_depth_and_lease_latency",
+      "cancel_retry_resume_under_load",
+      "sandbox_lease_creation_under_load",
+      "model_gateway_timeout_and_backpressure"
+    ],
+    "missing_profile_evidence": [
+      "target_profile_id",
+      "evidence_source",
+      "observed_concurrent_sessions",
+      "observed_peak_sdk_subagents_per_session",
+      "sdk_subagent_fanout_measurement_ref",
+      "production_concurrency_defaults_raised",
+      "safe_concurrency_claimed",
+      "ordinary_user_platform_multi_run_orchestration_enabled"
+    ],
+    "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+    "profile_readiness_schema_version": "ai-platform.capacity-profile-readiness.v1",
+    "profile_readiness_tool": "tools/capacity_profile_readiness.py",
+    "profile_status": "blocked_missing_load_test_evidence",
+    "readiness_schema_version": "ai-platform.capacity-gate-readiness.v1",
+    "readiness_status": "blocked_missing_load_test_evidence",
+    "runtime_profile": "g7-b3-a294727-source-marker-fix-v1",
+    "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+    "snapshot_schema_version": "ai-platform.capacity-evidence-snapshot.v1",
+    "source_http_status": 200,
+    "summary": [
+      "capacity_schema=ai-platform.capacity-runtime-evidence.v1",
+      "source_http_status=200",
+      "runtime_commit=a294727046024958c41b15f646512e68f3c04b47",
+      "admin_missing_sections=",
+      "admin_observed_sections=capacity,database_pool,queue,admission,backpressure,sandbox,observability",
+      "host_sandbox_observation_status=accepted",
+      "gate_status=blocked_missing_load_test_evidence",
+      "missing_load_test_gates=api_read_write_burst,run_creation_burst_by_tenant_and_user,worker_processing_throughput,queue_depth_and_lease_latency,cancel_retry_resume_under_load,sandbox_lease_creation_under_load,model_gateway_timeout_and_backpressure",
+      "profile_status=blocked_missing_load_test_evidence",
+      "missing_profile_fields=target_profile_id,evidence_source,observed_concurrent_sessions,observed_peak_sdk_subagents_per_session,sdk_subagent_fanout_measurement_ref,production_concurrency_defaults_raised,safe_concurrency_claimed,ordinary_user_platform_multi_run_orchestration_enabled",
+      "production_default_decision=do_not_raise_without_recorded_load_test_evidence"
+    ],
+    "verifier": "tools/capacity_runtime_evidence.py"
+  },
+  "gate": "B3 Capacity Baseline",
+  "issue_refs": [
+    "#21",
+    "#122",
+    "#144"
+  ],
+  "pr_refs": [
+    "#319"
+  ],
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "runtime_evidence": {
+    "readiness": {
+      "admin_runtime_evidence": {
+        "missing_sections": [],
+        "observed_sections": [
+          "capacity",
+          "database_pool",
+          "queue",
+          "admission",
+          "backpressure",
+          "sandbox",
+          "observability"
+        ],
+        "required_sections": [
+          "capacity",
+          "database_pool",
+          "queue",
+          "admission",
+          "backpressure",
+          "sandbox",
+          "observability"
+        ]
+      },
+      "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
+      "invalid_load_test_evidence": [],
+      "load_test_evidence_status": "missing",
+      "load_test_gates": [
+        {
+          "gate": "api_read_write_burst",
+          "status": "missing_recorded_load_test_evidence"
+        },
+        {
+          "gate": "run_creation_burst_by_tenant_and_user",
+          "status": "missing_recorded_load_test_evidence"
+        },
+        {
+          "gate": "worker_processing_throughput",
+          "status": "missing_recorded_load_test_evidence"
+        },
+        {
+          "gate": "queue_depth_and_lease_latency",
+          "status": "missing_recorded_load_test_evidence"
+        },
+        {
+          "gate": "cancel_retry_resume_under_load",
+          "status": "missing_recorded_load_test_evidence"
+        },
+        {
+          "gate": "sandbox_lease_creation_under_load",
+          "status": "missing_recorded_load_test_evidence"
+        },
+        {
+          "gate": "model_gateway_timeout_and_backpressure",
+          "status": "missing_recorded_load_test_evidence"
+        }
+      ],
+      "missing_load_test_gates": [
+        "api_read_write_burst",
+        "run_creation_burst_by_tenant_and_user",
+        "worker_processing_throughput",
+        "queue_depth_and_lease_latency",
+        "cancel_retry_resume_under_load",
+        "sandbox_lease_creation_under_load",
+        "model_gateway_timeout_and_backpressure"
+      ],
+      "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+      "profile_evidence": {},
+      "runtime_identity": {
+        "commit_sha": "a294727046024958c41b15f646512e68f3c04b47",
+        "profile": "g7-b3-a294727-source-marker-fix-v1"
+      },
+      "schema_version": "ai-platform.capacity-gate-readiness.v1",
+      "status": "blocked_missing_load_test_evidence"
+    },
+    "schema_version": "ai-platform.capacity-runtime-evidence.v1",
+    "snapshot": {
+      "admin_runtime_evidence": {
+        "missing_sections": [],
+        "observed_sections": [
+          "capacity",
+          "database_pool",
+          "queue",
+          "admission",
+          "backpressure",
+          "sandbox",
+          "observability"
+        ],
+        "required_sections": [
+          "capacity",
+          "database_pool",
+          "queue",
+          "admission",
+          "backpressure",
+          "sandbox",
+          "observability"
+        ]
+      },
+      "capacity": {
+        "limits": {
+          "admission": {
+            "max_active_runs_per_user": 3
+          },
+          "api": {
+            "capacity_evidence": "unproven_without_load_test",
+            "request_concurrency_limit": null,
+            "uvicorn_processes": 1
+          },
+          "database_pool": {
+            "max_size": 10,
+            "max_waiting": 100,
+            "min_size": 1,
+            "timeout_seconds": 10.0
+          },
+          "model_gateway": {
+            "capacity_evidence": "unproven_without_load_test",
+            "configured_request_concurrency_limit": null,
+            "limit_enforcement": "not_implemented",
+            "provider": "openai_compatible",
+            "request_concurrency_limit": null
+          },
+          "multi_agent": {
+            "worker_enabled": false,
+            "worker_limit": 1
+          },
+          "queue": {
+            "insight_scan_limit": 500,
+            "lease_scan_limit": 50,
+            "metadata_fallback_scan_limit": 500,
+            "tenant_processing_limit": 0,
+            "tenant_processing_quota_enabled": false,
+            "user_processing_limit": 0,
+            "user_processing_quota_enabled": false
+          },
+          "sandbox": {
+            "container_provider": "docker",
+            "container_start_timeout_seconds": 30,
+            "executor_health_timeout_seconds": 60,
+            "max_active_ephemeral_containers": 2,
+            "max_active_persistent_containers": 1
+          },
+          "worker": {
+            "max_active_worker_runs": 3,
+            "worker_processes": 1
+          }
+        },
+        "live_signal_route": "/api/ai/admin/runtime/overview",
+        "load_test_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "production_default_policy": "do_not_raise_without_recorded_load_test_evidence",
+        "profile": "unproven_default",
+        "schema_version": "ai-platform.capacity-baseline.v1",
+        "warnings": [
+          "api_request_concurrency_unbounded_by_platform",
+          "model_gateway_concurrency_unbounded_by_platform",
+          "queue_tenant_processing_quota_disabled",
+          "queue_user_processing_quota_disabled",
+          "sandbox_hardening_evidence_missing"
+        ]
+      },
+      "capacity_answer": "safe_max_concurrency_unproven_without_recorded_load_test_evidence",
+      "host_sandbox_observation": {
+        "diagnostic_only": true,
+        "does_not_close_b3": true,
+        "does_not_mark_b3_recorded_evidence": true,
+        "evidence_ref": "release-evidence/diagnostics/2026-07-04-211-b3-host-sandbox-observation-a294727.json",
+        "input_errors": [],
+        "observation_source": "host_docker_cli",
+        "review_status": "diagnostic_only_not_reviewed_release_evidence",
+        "runtime_subject_commit_sha": "a294727046024958c41b15f646512e68f3c04b47",
+        "schema_version": "ai-platform.capacity-host-sandbox-observation.v1",
+        "status": "accepted"
+      },
+      "live_signals": {
+        "admission": {
+          "active_runs": 28,
+          "active_users": 25,
+          "max_active_runs_per_user": 3,
+          "policy_active": true,
+          "saturated_users": 0
+        },
+        "backpressure": {
+          "reasons": []
+        },
+        "database_pool": {
+          "configured": {
+            "max_size": 10,
+            "max_waiting": 100,
+            "min_size": 1,
+            "timeout_seconds": 10
+          },
+          "max_waiting": 100,
+          "open": true,
+          "requests_waiting": 0,
+          "stats": {
+            "requests_waiting": 0
+          }
+        },
+        "observability": {
+          "artifact_count": 448,
+          "error_categories": {
+            "executor": 12,
+            "unknown": 62
+          },
+          "error_count": 83,
+          "estimated_cost_minor": 0,
+          "event_count": 6312,
+          "latency_ms": {
+            "avg": 93115,
+            "max": 2087762,
+            "p50": 10250,
+            "p95": 315158,
+            "p99": 803408
+          }
+        },
+        "queue": {
+          "active_worker_heartbeats": 0,
+          "capacity": {
+            "available_worker_slots": 3,
+            "max_active_worker_runs": 3,
+            "processing_saturated": false,
+            "queue_lease_scan_limit": 50,
+            "queue_tenant_processing_limit": 0,
+            "queue_user_processing_limit": 0
+          },
+          "depths": {
+            "dead_letter": 54,
+            "processing": 0,
+            "queued": 0,
+            "tenant_processing": 0,
+            "tenant_queued": 0
+          },
+          "processing_state": {
+            "active": 0,
+            "missing_metadata": 0,
+            "reclaimable": 0,
+            "stale": 0
+          },
+          "reason": null,
+          "sample": {
+            "queued_sample_complete": true,
+            "queued_sampled": 0,
+            "queued_scan_limit": 500
+          },
+          "throttling": {
+            "tenant_processing_limit": 0,
+            "tenant_processing_saturated": false,
+            "user_processing_limit": 0
+          }
+        },
+        "sandbox": {
+          "active_leases": 0,
+          "container_observation_degraded": false,
+          "containers": {
+            "ephemeral_running": 0,
+            "persistent_running": 0,
+            "running": 0,
+            "total": 0
+          },
+          "leases": {
+            "active": 0,
+            "expired": 0,
+            "released": 0
+          },
+          "list_runtime_containers_status": "available",
+          "observation_source": "host_docker_cli",
+          "running_containers": 0,
+          "socket_policy": {
+            "api_container_docker_socket_present": false,
+            "default_compose_mounts_docker_socket": false,
+            "sandbox_compose_mounts_docker_socket": true,
+            "socket_bearing_compose_path": "deploy/ai-platform/docker-compose.sandbox.yml"
+          }
+        }
+      },
+      "load_test_evidence": {
+        "profile_evidence": {},
+        "required_evidence": [
+          "commit_sha",
+          "api_worker_image_labels",
+          "frontend_commit_or_image_label",
+          "runtime_profile",
+          "api_worker_process_counts",
+          "database_pool_settings",
+          "redis_queue_settings",
+          "admission_worker_queue_sandbox_model_settings",
+          "peak_and_sustained_queue_depths",
+          "active_worker_runs_users_and_tenants",
+          "database_pool_waiting_and_saturation",
+          "latency_p50_p95_p99",
+          "error_taxonomy_counts",
+          "dead_letter_counts",
+          "cleanup_proof"
+        ],
+        "required_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "status": "missing"
+      },
+      "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+      "runtime_identity": {
+        "commit_sha": "a294727046024958c41b15f646512e68f3c04b47",
+        "profile": "g7-b3-a294727-source-marker-fix-v1"
+      },
+      "schema_version": "ai-platform.capacity-evidence-snapshot.v1",
+      "source": {
+        "mode": "operator_captured_admin_projection",
+        "projection": "/api/ai/admin/runtime/overview"
+      }
+    },
+    "source": {
+      "base_url": "http://127.0.0.1:8020",
+      "http_status": 200,
+      "mode": "admin_runtime_overview_capture",
+      "overview_route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false"
+    }
+  },
+  "runtime_subject_commit_sha": "a294727046024958c41b15f646512e68f3c04b47",
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "source_ref": {
+    "api_worker_image": "ai-platform:a294727-g7-b3-source-marker-fix-v1",
+    "capture_mode": "container_local_operator_captured_admin_projection_no_maintenance_cleanup_with_host_sandbox_observation",
+    "capture_route": "/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
+    "frontend_image": "ai-platform-frontend:4518a05",
+    "health_status": "ok",
+    "runtime_subject_commit_sha": "a294727046024958c41b15f646512e68f3c04b47",
+    "source_authority_caveat": "This is a294727 capacity visibility only. Canonical source marker, source snapshot, and runtime labels bind to a294727, but fresh 2026-07-05 MCP readback found legacy /app/.codex-source-revision and /app/.source-commit still show 28676df. This is not recorded B3 load evidence, not a production default increase, not legacy marker cleanup, not G0 source-authority closure, not B3 closure, and not gate-closable evidence.",
+    "source_marker_commit": "a294727046024958c41b15f646512e68f3c04b47",
+    "source_marker_status": "canonical_source_revision_snapshot_and_runtime_labels_match_a294727_legacy_container_markers_stale_28676df",
+    "legacy_container_source_markers": {
+      "/app/.codex-source-revision": "28676df4abcbb7063211fceb4cc1701648c43d49",
+      "/app/.source-commit": "28676df4abcbb7063211fceb4cc1701648c43d49"
+    },
+    "subject": "post-PR #319 a294727 source-marker-fix runtime subject"
+  }
+}
