@@ -949,13 +949,15 @@ python tools/capacity_runtime_evidence.py --base-url http://127.0.0.1:8020 --use
 
 For a fresh 61073b1 refresh, operators must treat Admin Runtime as a protected
 admin projection. A bare `curl` or tool run without the required gateway secret
-can return HTTP `401` and is not evidence that the capacity projection is
-unavailable. Use the same command shape with `--gateway-secret-env
-AI_PLATFORM_GATEWAY_SECRET` when the deployed route requires
-`X-AI-Gateway-Secret`; never print or commit the secret value. This refresh is
-still visibility-only unless it is followed by approved load execution,
-operator-reviewed measured values, cleanup proof, stop-condition evidence, all
-seven recorded-gate packets, and the `b3_10x4_sdk_subagents` profile packet.
+can return HTTP `401`, while principal-header tool runs with a missing or
+invalid gateway secret can return HTTP `403`; neither is evidence that the
+capacity projection is unavailable. Use the same command shape with
+`--gateway-secret-env AI_PLATFORM_GATEWAY_SECRET` when the deployed route
+requires `X-AI-Gateway-Secret`; never print or commit the secret value. This
+refresh is still visibility-only unless it is followed by approved load
+execution, operator-reviewed measured values, cleanup proof, stop-condition
+evidence, all seven recorded-gate packets, and the `b3_10x4_sdk_subagents`
+profile packet.
 
 The redacted reviewed summary is recorded at
 `docs/release-evidence/capacity-gate-readiness/61073b16a5b2c135e7ee467434ab39502ca3d194/2026-07-03-211-capacity-runtime-readiness-61073b1.json`.

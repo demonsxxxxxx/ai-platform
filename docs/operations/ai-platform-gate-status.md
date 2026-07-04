@@ -393,12 +393,13 @@ section `sandbox` is missing/degraded, with all seven recorded load-test gates
 and the B3 profile evidence still absent.
 Fresh ad-hoc anonymous reads of
 `/api/ai/admin/runtime/overview?include_maintenance_cleanup=false` may return
-HTTP `401`; that confirms the route is a protected admin projection, not that B3
-evidence exists or that the projection is unavailable. Any fresh capacity
-refresh must use the documented `tools/capacity_runtime_evidence.py`
-`--gateway-secret-env` path when the deployed route requires
-`X-AI-Gateway-Secret`, and still remains visibility-only until approved
-operator load evidence is recorded.
+HTTP `401`, while principal-header tool runs with a missing or invalid gateway
+secret may return HTTP `403`; that confirms the route is a protected admin
+projection, not that B3 evidence exists or that the projection is unavailable.
+Any fresh capacity refresh must use the documented
+`tools/capacity_runtime_evidence.py` `--gateway-secret-env` path when the
+deployed route requires `X-AI-Gateway-Secret`, and still remains
+visibility-only until approved operator load evidence is recorded.
 Until those checks and evidence close, do not call the current source `211
 verified`, `gate closable`, B3 complete, G7 complete, Foundation Alpha
 complete, or production-ready.

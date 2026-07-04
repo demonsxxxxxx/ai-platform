@@ -1556,6 +1556,7 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     assert "not a raw runtime payload export and is not recorded B3 load evidence" in compact_capacity_text
     assert "Fresh ad-hoc anonymous reads of" in gate_status_text
     assert "HTTP `401`" in gate_status_text
+    assert "HTTP `403`" in gate_status_text
     assert "--gateway-secret-env" in capacity_text
     assert "AI_PLATFORM_GATEWAY_SECRET" in capacity_text
     assert "still visibility-only unless it is followed by approved load execution" in compact_capacity_text
