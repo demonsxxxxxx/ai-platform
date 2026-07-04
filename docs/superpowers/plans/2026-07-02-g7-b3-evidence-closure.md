@@ -249,7 +249,10 @@ audit tool accepts those reviewed evidence entries as explicit overrides so stal
 alias, fake-provider, or missing-FRC observations do not reappear as current
 G7 blockers.
 
-Remaining blockers before any status upgrade:
+Historical remaining blockers before any status upgrade at the `a294727` slice:
+
+Current `945db2b` blockers are tracked in `docs/operations/ai-platform-gate-status.md`
+and in the later post-PR #321 status lines below.
 
 - G0/source-authority and production-hardening boundaries: external runtime
   env-file label caveat and production auth rollout remain separate gates;
