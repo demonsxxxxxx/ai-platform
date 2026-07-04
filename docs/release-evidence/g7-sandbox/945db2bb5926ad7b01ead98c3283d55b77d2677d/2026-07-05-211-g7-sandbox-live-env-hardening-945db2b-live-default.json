@@ -1,0 +1,192 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default",
+  "artifact_kind": "211_sandbox_runtime_smoke",
+  "gate": "G7 Sandbox / Resource Hardening",
+  "commit_sha": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+  "runtime_subject_commit_sha": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+  "captured_at": "2026-07-04T18:55:09Z",
+  "issue_refs": [],
+  "pr_refs": [
+    "#321",
+    "#322"
+  ],
+  "review_status": "reviewed",
+  "redaction_scan_status": "passed",
+  "does_not_close_g7": true,
+  "does_not_close_b3": true,
+  "does_not_complete_foundation_alpha": true,
+  "does_not_make_211_verified": true,
+  "does_not_make_gate_closable": true,
+  "does_not_raise_production_defaults": true,
+  "source_ref": {
+    "subject": "post-PR #321 945db2b live-default runtime subject",
+    "branch": "origin/main",
+    "merge_commit": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+    "runtime_subject_commit_sha": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+    "repo_backend_source_marker": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+    "runtime_source_marker": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+    "container_source_marker": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+    "container_source_marker_kind": "/app/.ai-platform-source-revision",
+    "container_source_markers": {
+      "/app/.ai-platform-source-revision": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+      "/app/.codex-source-revision": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+      "/app/.source-commit": "945db2bb5926ad7b01ead98c3283d55b77d2677d"
+    },
+    "legacy_container_marker_status": "legacy_marker_files_reconciled_current_subject",
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "image": "ai-platform:945db2b-g7-legacy-source-markers-v1",
+    "image_id": "sha256:7c191741cab4d6415dafdaea4d1ef5a38d9f80ff8574eba30109ccdbdf860dec",
+    "image_labels": {
+      "ai-platform.build-dirty": "false",
+      "ai-platform.build-mode": "runtime-only-rebase",
+      "ai-platform.runtime-rollout": "g7-b3-source-marker-fix-v1",
+      "ai-platform.runtime-subject": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+      "ai-platform.runtime_subject": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+      "ai-platform.source-branch": "origin/main",
+      "ai-platform.source-note": "g7-b3-source-marker-fix-v1",
+      "ai-platform.source-revision": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+      "ai-platform.source_commit": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+      "ai-platform.source_revision": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+      "ai-platform.source_tree_commit": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+      "org.opencontainers.image.revision": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+      "org.opencontainers.image.title": "ai-platform"
+    },
+    "safe_live_runtime_env": {
+      "SANDBOX_CONTAINER_PROVIDER": "docker",
+      "SANDBOX_EGRESS_POLICY_ENABLED": "true",
+      "SANDBOX_EXECUTOR_IMAGE": "ai-platform:945db2b-g7-legacy-source-markers-v1"
+    },
+    "health": {
+      "api_health": "ok",
+      "api_health_http_status": 200,
+      "api_health_url": "http://127.0.0.1:8020/api/ai/health",
+      "frontend_proxy_health": "ok",
+      "frontend_proxy_health_http_status": 200,
+      "frontend_proxy_health_url": "http://127.0.0.1:18001/api/ai/health",
+      "frontend_root_http_status": 200,
+      "frontend_root_size_bytes": 10962
+    },
+    "deployment_cleanup": {
+      "dangling_image_count": 0,
+      "old_9c66976_backend_image_present": false
+    },
+    "source_snapshot": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "snapshot_source": "codex_origin_main_archive_sync",
+      "runtime_subject_commit_sha": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+      "source_tree_commit_sha": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+      "source_tree_dirty": false,
+      "runtime_affecting_dirty_paths": [],
+      "runtime_affecting_changes_since_runtime_subject": []
+    },
+    "source_authority_caveat": "This reviewed G7 evidence is bound to the 211 runtime subject 945db2b. GitHub main later includes PR #322 documentation at f955ba8, and this entry does not claim G0 source-authority closure, G7 closure, B3 closure, Foundation Alpha completion, production readiness, or gate-closable status without same-subject Foundation Runtime concurrency evidence, an approved G7 status-upgrade review, and B3 recorded load/profile evidence."
+  },
+  "evidence_ref": {
+    "generator": "scripts/generate_sandbox_runtime_evidence_211.py",
+    "verifier": "scripts/verify_sandbox_runtime_211.py",
+    "command": "containerized 211 live-env hardening verifier using ai-platform:945db2b-g7-legacy-source-markers-v1, host Docker CLI, host-network callback receiver, same-path mounted workspace/output directories, and runtime probe results generated for the same run id",
+    "remote_artifact_dir": "[redacted-host-artifact-dir]",
+    "run_id": "g7-live-env-hardening-945db2b-live-default-20260704185430",
+    "result": "all_eight_checks_passed",
+    "artifact_hashes": {
+      "evidence_generator_summary_sha256": "d44a28cfcf7e665d5f9a5905d5eb3cd88e3654afa5825e47d36b15023ed825d3",
+      "probe_generator_summary_sha256": "05087aefc1aa60dcf74bc5da4266387e2d60607d4dc404cf06e91432bb4311c6",
+      "runtime_probe_results_sha256": "4f26aa85cec109283a99806f6ebe029c6cee1dcf30a96d2931aec9233c1ef52d",
+      "sandbox_evidence_sha256": "ea03a66b36c63b1a4a7f6147c81d1686b297cb6dd68cb8caa50d3592fc3661f1",
+      "verifier_summary_sha256": "ce458763a8ef33382a454e435b3ab856bbb521d53e6f47d00a39abd5db58c01a"
+    },
+    "evidence_generator_summary": {
+      "run_id": "g7-live-env-hardening-945db2b-live-default-20260704185430",
+      "evidence_file": "[redacted-path]",
+      "executed_task": true,
+      "runtime_mode": "platform",
+      "sandbox_provider": "docker",
+      "callbacks": 2,
+      "cancel_stops_container": true,
+      "messages": []
+    },
+    "probe_generator_summary": {
+      "run_id": "g7-live-env-hardening-945db2b-live-default-20260704185430",
+      "evidence_file": "[redacted-path]",
+      "runtime_probe_results_file": "[redacted-path]",
+      "sections": [
+        "resource_limits",
+        "egress_policy",
+        "security_options"
+      ],
+      "executed_task": true,
+      "runtime_mode": "platform_probe_results",
+      "sandbox_provider": "docker",
+      "callbacks": 4,
+      "cancel_stops_container": false,
+      "messages": []
+    },
+    "verifier_summary": {
+      "checks": [
+        {
+          "name": "check_docker_socket",
+          "passed": true,
+          "message": "Docker daemon reachable"
+        },
+        {
+          "name": "check_workspace_write",
+          "passed": true,
+          "message": "workspace writeable"
+        },
+        {
+          "name": "check_executor_health",
+          "passed": true,
+          "message": "platform runtime evidence includes executor cold-start and healthcheck"
+        },
+        {
+          "name": "check_callback_stream",
+          "passed": true,
+          "message": "callback stream evidence present"
+        },
+        {
+          "name": "check_cancel_stops_container",
+          "passed": true,
+          "message": "cancel stop evidence present"
+        },
+        {
+          "name": "check_platform_runtime_evidence",
+          "passed": true,
+          "message": "platform runtime latency split evidence present"
+        },
+        {
+          "name": "check_platform_hardening_evidence",
+          "passed": true,
+          "message": "platform hardening evidence present"
+        },
+        {
+          "name": "check_no_secret_leakage",
+          "passed": true,
+          "message": "no sensitive evidence detected"
+        }
+      ]
+    }
+  },
+  "non_expansion": {
+    "admin_or_allowlist_only": true,
+    "docker_sandbox_production_hardening_claimed": false,
+    "ordinary_user_high_risk_sandbox_allowed": false,
+    "ordinary_user_multi_agent_allowed": false,
+    "ordinary_user_platform_multi_run_orchestration_exposure": false,
+    "production_concurrency_defaults_raised": false
+  },
+  "remaining_blockers": [
+    "same-subject Foundation Runtime concurrency evidence is still missing for 945db2b",
+    "approved G7 status-upgrade review is still missing for 945db2b",
+    "B3 seven recorded load-test gates are still missing",
+    "b3_10x4_sdk_subagents profile evidence is still missing"
+  ],
+  "status_label_recommendation": "local partial"
+}
