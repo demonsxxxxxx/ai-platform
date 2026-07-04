@@ -8,25 +8,31 @@ does not close G9 and is not the current gate/runtime status matrix; read
 `docs/operations/ai-platform-gate-status.md` for current status.
 
 The 2026-07-05 post-PR #321 runtime refresh has GitHub `main` including PR
-#321 merge commit `945db2bb5926ad7b01ead98c3283d55b77d2677d`, and 211 now
-runs API/worker image `ai-platform:945db2b-g7-legacy-source-markers-v1`.
-The repo-local source marker, source snapshot, image labels, and all three
-API/worker in-container source marker files bind to `945db2b`; direct API
-health, frontend proxy health, and frontend root returned HTTP `200` after
-frontend restart and Docker cleanup. Reviewed G7 live-env hardening evidence and
-reviewed B3 capacity visibility remain the historical `a294727` entries:
-`a294727` G7 passed all eight verifier checks, and capacity visibility reached
-`blocked_missing_load_test_evidence` with all Admin Runtime sections observed
-after accepted host-side sandbox observation. B3 still lacks all seven
+#322 documentation merge commit `f955ba83b96db13366d6e228c132d4fcdcc5fa55`,
+while 211 still runs PR #321 runtime subject
+`945db2bb5926ad7b01ead98c3283d55b77d2677d` and runs API/worker image
+`ai-platform:945db2b-g7-legacy-source-markers-v1`. The repo-local source
+marker, source snapshot, image labels, and all three API/worker in-container
+source marker files bind to `945db2b`; direct API health, frontend proxy health,
+and frontend root returned HTTP `200` after frontend restart and Docker cleanup.
+Reviewed `945db2b` G7 live-env hardening evidence now exists at
+`docs/release-evidence/g7-sandbox/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default.json`;
+the verifier passed all eight checks. Reviewed `945db2b` B3 capacity visibility
+also exists at
+`docs/release-evidence/capacity-gate-readiness/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-capacity-runtime-readiness-945db2b.json`;
+it records Admin Runtime HTTP `200`, all required sections observed after
+accepted host-side sandbox observation, and
+`readiness_status=blocked_missing_load_test_evidence`. B3 still lacks all seven
 operator-reviewed recorded load-test gates and the `b3_10x4_sdk_subagents`
-profile evidence. No reviewed `945db2b` G7 live-env verifier or approved G7
-status-upgrade artifact exists; the historical `bbe23d5` status-review remains
+profile evidence. Same-subject Foundation Runtime concurrency evidence and an
+approved G7 status-upgrade artifact are still missing for `945db2b`; the
+historical `bbe23d5` status-review remains
 `status_upgrade_decision=not_approved_for_closure`. Current status remains
-`local partial`; do not read PR #321, the `945db2b` runtime readback, historical
-`a294727` evidence, or capacity visibility as G7 closure, B3 closure, Foundation
-Alpha completion, production-ready, `gate closable`, or #164 closure evidence.
-Use `211 verified` only for the narrow source-marker/runtime-health slice, not
-for overall G7/B3 closure.
+`local partial`; do not read PR #321, PR #322, the `945db2b` runtime evidence, or
+capacity visibility as G7 closure, B3 closure, Foundation Alpha completion,
+production-ready, `gate closable`, or #164 closure evidence. Use `211 verified`
+only for the narrow source-marker/runtime-health slice, not for overall G7/B3
+closure.
 
 The earlier 2026-07-04 post-PR #316 status-sync baseline has GitHub `main` including PR
 #316 merge commit `5fe44827708fe24441a4c451dee9c691281d3c21`. PR #316 merged
@@ -198,6 +204,7 @@ not reviewed release-evidence entries and must not be used to close gates.
 
 | Date | Gate | Commit | Evidence | Status |
 | --- | --- | --- | --- | --- |
+| 2026-07-05 | B3 Capacity Baseline | `945db2bb5926ad7b01ead98c3283d55b77d2677d` | [`2026-07-05-211-b3-host-sandbox-observation-945db2b.json`](diagnostics/2026-07-05-211-b3-host-sandbox-observation-945db2b.json) | Diagnostic only and not a reviewed release-evidence entry. Host-side sandbox observation for the 945db2b capacity visibility capture was accepted, default compose still does not mount the Docker socket, and `docker-compose.sandbox.yml` remains the explicit socket-bearing path. This diagnostic can support Admin Runtime visibility only; it does not mark B3 recorded evidence, does not close B3/G7, does not make the overall gate `211 verified`, and does not make any gate closable. |
 | 2026-07-04 | B3 Capacity Baseline | `a294727046024958c41b15f646512e68f3c04b47` | [`2026-07-04-211-b3-host-sandbox-observation-a294727.json`](diagnostics/2026-07-04-211-b3-host-sandbox-observation-a294727.json) | Diagnostic only and not a reviewed release-evidence entry. Host-side sandbox observation for the a294727 capacity visibility capture was accepted, default compose still does not mount the Docker socket, and `docker-compose.sandbox.yml` remains the explicit socket-bearing path. This diagnostic can support Admin Runtime visibility only; it does not mark B3 recorded evidence, does not close B3/G7, does not make the overall gate `211 verified`, and does not make any gate closable. |
 | 2026-07-04 | B3 Capacity Baseline | `bbe23d53d14398378b4870de4cbf4bec0b045193` | [`2026-07-04-211-b3-host-sandbox-observation-bbe23d5.json`](diagnostics/2026-07-04-211-b3-host-sandbox-observation-bbe23d5.json) | Diagnostic only and not a reviewed release-evidence entry. Host-side sandbox observation for the bbe23d5 capacity visibility capture was accepted, default compose still does not mount the Docker socket, and `docker-compose.sandbox.yml` remains the explicit socket-bearing path. This diagnostic can support Admin Runtime visibility only; it does not mark B3 recorded evidence, does not close B3/G7, does not make `bbe23d5` `211 verified`, and does not make any gate closable. |
 | 2026-07-04 | B3 Capacity Baseline | `61073b16a5b2c135e7ee467434ab39502ca3d194` | [`2026-07-04-211-b3-sandbox-observation-61073b1.json`](diagnostics/2026-07-04-211-b3-sandbox-observation-61073b1.json) | Diagnostic only and not a reviewed release-evidence entry. Fresh read-only 211 observation confirms API/worker still running `ai-platform:61073b1-g7-b3-clean-main-v1`, API container Docker socket absent, no current host containers with label `ai-platform.owner=sandbox-runtime`, and Admin Runtime overview HTTP `200` via target-runtime gateway secret without printing the secret. The default compose does not mount Docker socket; `docker-compose.sandbox.yml` is the explicit socket-bearing path. The overview sandbox remains degraded/unavailable with `container_observation_degraded=true`, `list_runtime_containers_status=unavailable`, active leases `0`, and released leases `100`. A same-subject diagnostic replay using controlled host-side observation records `host_sandbox_observation_status=accepted`, `admin_runtime_missing_sections_after_host_observation=[]`, and `readiness_status_after_host_observation=blocked_missing_load_test_evidence` with all seven recorded gates still missing. This is diagnostic only and does not close B3/G7, does not mark B3 recorded evidence, does not make `61073b1` `211 verified`, and does not make any gate closable. |
@@ -208,6 +215,8 @@ not reviewed release-evidence entries and must not be used to close gates.
 
 | Date | Gate | Commit | Evidence | Status |
 | --- | --- | --- | --- | --- |
+| 2026-07-05 | G7 Sandbox / Resource Hardening | `945db2bb5926ad7b01ead98c3283d55b77d2677d` | [`2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default.json`](g7-sandbox/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default.json) | Reviewed 211 post-PR #321 945db2b live-env G7 sandbox hardening artifacts for `g7-live-env-hardening-945db2b-live-default-20260704185430` against API/worker image `ai-platform:945db2b-g7-legacy-source-markers-v1` with `build-dirty=false`. The verifier summary recorded all eight checks passing, including platform Docker execution, callback stream, cancel cleanup, resource limits, egress policy, security options, and no-secret-leakage checks. Repo-local source marker, source snapshot, image labels, and all API/worker in-container source marker files bind to `945db2b`; this is G7 runtime evidence only, not G0 source-authority closure, not approved G7 closure, not B3 closure, and not #164 gate-closable. |
+| 2026-07-05 | B3 Capacity Baseline | `945db2bb5926ad7b01ead98c3283d55b77d2677d` | [`2026-07-05-211-capacity-runtime-readiness-945db2b.json`](capacity-gate-readiness/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-capacity-runtime-readiness-945db2b.json) | Reviewed redacted 945db2b capacity visibility: API/worker image `ai-platform:945db2b-g7-legacy-source-markers-v1`, frontend image `ai-platform-frontend:4518a05`, Admin Runtime overview HTTP `200`, all required Admin Runtime sections observed after accepted host-side sandbox observation, and readiness status `blocked_missing_load_test_evidence`. All seven recorded load-test gates are still missing, `profile_evidence` is empty, target profile remains `b3_10x4_sdk_subagents`, and `production_default_decision` remains `do_not_raise_without_recorded_load_test_evidence`. This is B3 visibility and fail-closed readiness evidence only; it does not close B3, raise production defaults, claim safe concurrency, or make current G7/B3 gate closure evidence for any current #164/G7/B3 closure claim. |
 | 2026-07-04 | G7 Sandbox / Resource Hardening | `a294727046024958c41b15f646512e68f3c04b47` | [`2026-07-04-211-g7-sandbox-live-env-hardening-a294727-source-marker-fix.json`](g7-sandbox/a294727046024958c41b15f646512e68f3c04b47/2026-07-04-211-g7-sandbox-live-env-hardening-a294727-source-marker-fix.json) | Reviewed 211 post-PR #319 a294727 live-env G7 sandbox hardening artifacts for `g7-live-env-hardening-a294727-source-marker-fix-20260704170251` against API/worker image `ai-platform:a294727-g7-b3-source-marker-fix-v1` with `build-dirty=false`. The verifier summary recorded all eight checks passing, including platform Docker execution, callback stream, cancel cleanup, resource limits, egress policy, security options, and no-secret-leakage checks. Repo-local source marker, source snapshot, image labels, and canonical API/worker in-container marker `/app/.ai-platform-source-revision` bind to `a294727`, while legacy `/app/.codex-source-revision` and `/app/.source-commit` still show `28676df`; this is canonical source-marker reconciliation and G7 runtime evidence only, not legacy marker cleanup, not G0 source-authority closure, not approved G7 closure, not B3 closure, and not #164 gate-closable. |
 | 2026-07-04 | B3 Capacity Baseline | `a294727046024958c41b15f646512e68f3c04b47` | [`2026-07-04-211-capacity-runtime-readiness-a294727.json`](capacity-gate-readiness/a294727046024958c41b15f646512e68f3c04b47/2026-07-04-211-capacity-runtime-readiness-a294727.json) | Reviewed redacted a294727 capacity visibility: API/worker image `ai-platform:a294727-g7-b3-source-marker-fix-v1`, frontend image `ai-platform-frontend:4518a05`, Admin Runtime overview HTTP `200`, all required Admin Runtime sections observed after accepted host-side sandbox observation, and readiness status `blocked_missing_load_test_evidence`. All seven recorded load-test gates are still missing, `profile_evidence` is empty, target profile remains `b3_10x4_sdk_subagents`, and `production_default_decision` remains `do_not_raise_without_recorded_load_test_evidence`. This is B3 visibility and fail-closed readiness evidence only; it does not close B3, raise production defaults, claim safe concurrency, or make current G7/B3 gate closure evidence for any current #164/G7/B3 closure claim. |
 | 2026-07-04 | G7 Sandbox / Resource Hardening | `bbe23d53d14398378b4870de4cbf4bec0b045193` | [`2026-07-04-211-g7-operator-status-review-bbe23d5-post-317.json`](g7-status-review/bbe23d53d14398378b4870de4cbf4bec0b045193/2026-07-04-211-g7-operator-status-review-bbe23d5-post-317.json) | Reviewed operator status-review artifact for paired bbe23d5 live-default G7 sandbox hardening evidence and same-subject Foundation Runtime concurrency evidence. It records `status=candidate_evidence_requires_review`, `status_label_recommendation=local partial`, `g7_runtime_blocking_reasons=[]`, and `status_upgrade_decision=not_approved_for_closure`; it also records the source-authority caveat that API/worker in-container source marker files still show `61073b1`. It does not close G7, does not close B3, does not complete Foundation Alpha, does not raise production defaults, does not provide B3 recorded load evidence, does not make `bbe23d5` `211 verified`, and does not constitute current G7/B3 closure evidence for any current #164/G7/B3 closure claim. |

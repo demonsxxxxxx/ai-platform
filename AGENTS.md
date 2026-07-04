@@ -105,6 +105,11 @@ entry file.
   cleanup, and other high-risk operational work, provided the normal secret,
   verification, source-authority, and deployment-cleanup rules in this file are
   followed.
+- Sub-agent restrictions must not be read backward as main-thread restrictions.
+  If the active user authorizes the main thread with wording such as
+  `主线程全部授权`, `主线程有权限操作`, `执行`, or a concrete deploy/review/close
+  command, keep high-risk operational work in the main session and execute it
+  directly under the normal verification and cleanup rules.
 - Standing phrases such as `主线程全部授权`, `主线程有权限操作`, or `执行`
   authorize the current main session to perform those direct operations for the
   active task; they do not grant sub-agents write, GitHub write, Docker,

@@ -50,6 +50,10 @@ open, or close ordinary-user platform-level multi-run product exposure.
   other high-risk operational work directly, while still following the
   repository's secret, verification, source-authority, and deployment-cleanup
   rules.
+- Sub-agent restrictions must not be read backward as main-session restrictions.
+  When the active user authorizes the main thread, keep write, GitHub, 211,
+  Docker, deployment, and cleanup operations in the main session and execute
+  them directly there instead of delegating them.
 - In this workflow, main-thread authorization is a direct-operation allowance,
   not a delegation allowance. Sub-agents stay read-only for GitHub, Docker, 211,
   deployment, and destructive operations unless inheritance of the main

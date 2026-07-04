@@ -249,7 +249,10 @@ audit tool accepts those reviewed evidence entries as explicit overrides so stal
 alias, fake-provider, or missing-FRC observations do not reappear as current
 G7 blockers.
 
-Remaining blockers before any status upgrade:
+Historical remaining blockers before any status upgrade at the `a294727` slice:
+
+Current `945db2b` blockers are tracked in `docs/operations/ai-platform-gate-status.md`
+and in the later post-PR #321 status lines below.
 
 - G0/source-authority and production-hardening boundaries: external runtime
   env-file label caveat and production auth rollout remain separate gates;
@@ -404,12 +407,31 @@ production defaults, or upgrade the overall status beyond `local partial`.
   unreferenced old backend image
   `ai-platform:a294727-g7-b3-source-marker-fix-v1` was removed, and dangling
   image prune reclaimed `0B`. This is narrow source-marker/runtime-health and
-  deployment-cleanup evidence only; no reviewed `945db2b` G7 live-env verifier,
-  approved G7 status-upgrade artifact, B3 recorded load evidence, or
+  deployment-cleanup evidence only.
+- [x] 2026-07-05 post-PR #321 reviewed G7 live-env evidence for `945db2b` is
+  wrapped at
+  `docs/release-evidence/g7-sandbox/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default.json`.
+  Verifier run `g7-live-env-hardening-945db2b-live-default-20260704185430`
+  passed all eight checks. This removes the obsolete missing-verifier wording
+  for `945db2b`, but it still does not close G7 because
+  same-subject Foundation Runtime concurrency evidence and approved G7
+  status-upgrade evidence are missing for `945db2b`.
+- [x] 2026-07-05 post-PR #321 reviewed B3 capacity visibility for `945db2b` is
+  wrapped at
+  `docs/release-evidence/capacity-gate-readiness/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-capacity-runtime-readiness-945db2b.json`.
+  It records Admin Runtime HTTP `200`, all required sections observed after
+  accepted host-side sandbox observation, and
+  `readiness_status=blocked_missing_load_test_evidence`. This is visibility and
+  fail-closed readiness only; no B3 recorded load evidence or
   `b3_10x4_sdk_subagents` profile evidence exists.
 - [ ] B3 still requires real operator-reviewed values for all seven recorded
   load-test gates and the `b3_10x4_sdk_subagents` profile before closure.
-- [ ] G7 still requires a future approved operator status-upgrade decision
-  before any G7 closure or `gate closable` claim; `211 verified` may only be
-  used for the narrow source-marker/runtime-health slice, not overall G7/B3
-  closure.
+- [ ] G7 still requires same-subject Foundation Runtime concurrency evidence for
+  `945db2b` and a future approved operator status-upgrade decision before any
+  G7 closure or `gate closable` claim; `211 verified` may only be used for the
+  narrow source-marker/runtime-health slice, not overall G7/B3 closure.
+- [x] 2026-07-05 local verification refreshed after status cleanup:
+  `python -m pytest tests\test_g7_b3_completion_audit.py tests\test_source_authority_docs.py -q --basetemp .pytest-tmp`
+  passed with 91 tests, stale `a294727`/missing-verifier wording search
+  returned no matches, the three new `945db2b` JSON evidence entries parsed, and
+  the new evidence JSON sensitive-string scan returned no matches.
