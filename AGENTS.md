@@ -99,7 +99,17 @@ entry file.
   available delegation path cannot expose or confirm those fields, record the
   review as inherited/default only; do not mark that explicit gate closed until
   the requirement is revised or a suitable review path is available.
-- Do not delegate write, deployment, remote runtime, or long-running operational tasks unless the delegation path is confirmed to inherit the same filesystem, network, approval, and permission posture as the main session. Keep those tasks in the main session when inheritance cannot be proven.
+- Main-session authority and sub-agent restrictions are separate. When the
+  active user explicitly authorizes the current main thread, the main session
+  may perform repository writes, GitHub writes, 211 sync/deploy/restart, Docker
+  cleanup, and other high-risk operational work, provided the normal secret,
+  verification, source-authority, and deployment-cleanup rules in this file are
+  followed.
+- Do not delegate write, deployment, remote runtime, Docker, GitHub write, or
+  long-running operational tasks to sub-agents unless the delegation path is
+  confirmed to inherit the same filesystem, network, approval, and permission
+  posture as the main session. Keep those tasks in the main session when
+  inheritance cannot be proven.
 - Complex or high-risk coding should use multi-agent collaboration and review
   when the active user request and available delegation path permit it.
   Lightweight documentation, wording, and single-point fixes do not require

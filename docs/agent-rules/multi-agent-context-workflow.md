@@ -44,10 +44,16 @@ open, or close ordinary-user platform-level multi-run product exposure.
   and ownership boundary.
 - For code-editing sub-agents, assign disjoint file or module ownership and tell
   them that other agents may be editing nearby files.
+- Main-session authority is not a sub-agent permission grant. When the active
+  user explicitly authorizes the current main thread, the main agent may perform
+  repository writes, GitHub writes, 211 sync/deploy/restart, Docker cleanup, and
+  other high-risk operational work directly, while still following the
+  repository's secret, verification, source-authority, and deployment-cleanup
+  rules.
 - Do not delegate write, deployment, remote runtime, long-running operational,
-  or destructive tasks unless the delegation path is confirmed to inherit the
-  same filesystem, network, approval, and permission posture as the main
-  session.
+  Docker, GitHub write, or destructive tasks to sub-agents unless the
+  delegation path is confirmed to inherit the same filesystem, network,
+  approval, and permission posture as the main session.
 - Do not delegate tasks that are tightly coupled, require continuous cross-file
   design judgment, or would immediately block the main agent.
 
