@@ -1,0 +1,78 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-04-211-g7-operator-status-review-bbe23d5-post-317",
+  "artifact_kind": "211_g7_operator_status_review",
+  "gate": "G7 Sandbox / Resource Hardening",
+  "commit_sha": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+  "runtime_subject_commit_sha": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+  "captured_at": "2026-07-04T15:28:00Z",
+  "issue_refs": [],
+  "pr_refs": [
+    "#317"
+  ],
+  "source_ref": {
+    "branch": "origin/main",
+    "runtime_subject_commit_sha": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+    "g7_live_env_evidence_path": "g7-sandbox/bbe23d53d14398378b4870de4cbf4bec0b045193/2026-07-04-211-g7-sandbox-live-env-hardening-bbe23d5-post-317.json",
+    "foundation_runtime_concurrency_evidence_path": "foundation-runtime-concurrency/bbe23d53d14398378b4870de4cbf4bec0b045193-frc-g7-b3-20260704/2026-07-04-211-foundation-alpha-poc-bbe23d5-foundation-runtime-concurrency.json",
+    "capacity_visibility_evidence_path": "capacity-gate-readiness/bbe23d53d14398378b4870de4cbf4bec0b045193/2026-07-04-211-capacity-runtime-readiness-bbe23d5.json",
+    "review_basis": [
+      "reviewed post-PR #317 bbe23d5 live-default G7 sandbox hardening evidence",
+      "same-subject Foundation Runtime concurrency evidence for runtime subject bbe23d5",
+      "G7/B3 completion audit reading with G7 runtime blockers cleared but B3 still blocked",
+      "source-authority caveat: API/worker in-container source marker files still show 61073b1"
+    ],
+    "source_runtime_boundary": {
+      "runtime_subject_matches_g7_evidence": true,
+      "runtime_subject_matches_frc_evidence": true,
+      "canonical_source_runtime_labels_current": true,
+      "legacy_alias_label_cleanup_required": false,
+      "container_source_marker_reconciliation_required": true,
+      "source_runtime_boundary_reviewed_for_candidate_status": true,
+      "external_env_file_secret_values_exported": false
+    }
+  },
+  "evidence_ref": {
+    "operator_status_review": {
+      "schema_version": "ai-platform.g7-operator-status-review.v1",
+      "runtime_subject_commit_sha": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+      "status": "candidate_evidence_requires_review",
+      "status_label_recommendation": "local partial",
+      "status_upgrade_decision": "not_approved_for_closure",
+      "g7_runtime_blocking_reasons": [],
+      "source_authority_blocking_reasons": [
+        "api_worker_in_container_source_marker_stale_61073b1"
+      ],
+      "b3_blocking_reasons": [
+        "b3_recorded_load_test_gates_missing",
+        "b3_10x4_sdk_subagents_profile_evidence_missing"
+      ],
+      "required_next_steps": [
+        "operator must explicitly approve any future G7 status upgrade after source-runtime and non-expansion boundary review",
+        "reconcile API/worker in-container source marker files before any 211 verified or G0 source-authority closure claim",
+        "record B3 seven-gate load evidence and b3_10x4_sdk_subagents profile evidence before any B3 closure or default increase"
+      ],
+      "non_expansion_invariants": {
+        "ordinary_user_high_risk_sandbox_allowed": false,
+        "ordinary_user_platform_multi_run_orchestration_enabled": false,
+        "production_concurrency_defaults_raised": false,
+        "g7_closed": false,
+        "b3_closed": false,
+        "foundation_alpha_complete": false
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This operator status-review artifact records that paired bbe23d5 G7 live-env evidence and same-subject Foundation Runtime concurrency evidence clear the G7 runtime blocker list for that subject.",
+    "This artifact is not load evidence and does not supply B3 seven-gate recorded load results or b3_10x4_sdk_subagents profile measurements.",
+    "The API/worker in-container source marker files still show 61073b1, so this artifact does not approve 211 verified or G0 source-authority closure.",
+    "G7 closure and runtime-verified status promotion remain unapproved; this records candidate evidence only."
+  ],
+  "open_followups": [
+    "G7 remains pending explicit operator status-upgrade approval; this artifact records candidate evidence only.",
+    "B3 recorded seven-gate load evidence and b3_10x4_sdk_subagents profile evidence remain missing.",
+    "Do not use issue #164 closure history as current G7/B3 closure evidence."
+  ]
+}
