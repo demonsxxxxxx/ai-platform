@@ -172,7 +172,7 @@ complete, production-ready, `211 verified`, or `gate closable`.
 
 This plan ledger records the 2026-07-03 `755e50e` cleanup slice and is now
 historical for current-state naming. The current gate/runtime status moved to
-PR #315 / clean current-main `61073b1`; use
+PR #317 / post-PR #317 `bbe23d5`; use
 `docs/operations/ai-platform-gate-status.md` and
 `docs/release-evidence/README.md` for current status.
 
@@ -253,30 +253,25 @@ Remaining blockers before any status upgrade:
 
 - G0/source-authority and production-hardening boundaries: external runtime
   env-file label caveat and current local runtime-affecting source rollout gap;
-- current `61073b1` Admin Runtime capacity visibility remains
-  `blocked_missing_admin_runtime_sections` because the `sandbox` Admin Runtime
-  section is missing/degraded and therefore does not count as valid B3
-  `sandbox` evidence. A 2026-07-04 read-only diagnostic entry at
-  `docs/release-evidence/diagnostics/2026-07-04-211-b3-sandbox-observation-61073b1.json`
-  confirms the root cause without changing status: API/worker still run
-  `ai-platform:61073b1-g7-b3-clean-main-v1`, the API container and default
-  compose path have no Docker socket mount, the explicit socket-bearing path is
-  `deploy/ai-platform/docker-compose.sandbox.yml`, and the protected overview
-  still reports `container_observation_degraded=true` with
-  `list_runtime_containers_status=unavailable`. The same diagnostic now also
-  records a controlled host-side replay: attaching the host observation clears
-  Admin Runtime missing sections and advances the capacity readiness result to
-  `blocked_missing_load_test_evidence`, but all seven recorded load-test gates
-  remain missing and the replay is diagnostic-only, not reviewed release
-  evidence;
+- current `bbe23d5` Admin Runtime capacity visibility now reaches
+  `blocked_missing_load_test_evidence`: the 2026-07-04 reviewed redacted entry at
+  `docs/release-evidence/capacity-gate-readiness/bbe23d53d14398378b4870de4cbf4bec0b045193/2026-07-04-211-capacity-runtime-readiness-bbe23d5.json`
+  records HTTP `200`, all required Admin Runtime sections including `sandbox`,
+  and host-side sandbox observation status `accepted`. The matching diagnostic
+  entry at
+  `docs/release-evidence/diagnostics/2026-07-04-211-b3-host-sandbox-observation-bbe23d5.json`
+  is diagnostic-only and does not mark B3 recorded evidence. The earlier
+  `61073b1` sandbox-missing diagnostic remains retained as prior baseline
+  evidence only;
 - B3 operator-reviewed recorded load evidence, including all seven recorded
   load-test gates and the `b3_10x4_sdk_subagents` profile evidence;
-- G7 operator status-upgrade approval. The current `61073b1` operator
+- G7 operator status-upgrade approval. The current `bbe23d5` operator
   status-review artifact is recorded, but it sets
   `status_upgrade_decision=not_approved_for_closure`; that preserves
   `status=candidate_evidence_requires_review`, `blocking_reasons=[]`, and
   `status_label=local partial` for G7 after reviewed live-env hardening and FRC
-  evidence.
+  evidence. It also records that API/worker in-container source marker files
+  still show `61073b1`, so source-authority reconciliation remains open.
 
 Tasks 4 and 5 plus the draft-only operator evidence template bundle reduce B3
 operator assembly friction only. The template bundle provides
@@ -363,6 +358,30 @@ production defaults, or upgrade the overall status beyond `local partial`.
   status-upgrade review remained `not_accepted` /
   `not_approved_for_closure`. This reproduces the documented blockers; it is
   not new release evidence and does not close G7/B3.
+- [x] 2026-07-04 211 post-PR #317 runtime refresh advanced the live runtime to
+  `bbe23d53d14398378b4870de4cbf4bec0b045193` with API/worker image
+  `ai-platform:bbe23d5-g7-b3-post-317-runtime-only-v1`; direct API health
+  returned `{"status":"ok"}`. The bbe23d5 G7 live-env verifier
+  `g7-live-env-hardening-bbe23d5-post-317-20260704151940` passed all eight
+  verifier checks, and same-subject Foundation Runtime concurrency evidence
+  verified 12 concurrent requests/runs/sessions across 2 tenants and 4 users.
+  Reviewed evidence entries were added under
+  `docs/release-evidence/g7-sandbox/bbe23d53d14398378b4870de4cbf4bec0b045193/`,
+  `docs/release-evidence/foundation-runtime-concurrency/bbe23d53d14398378b4870de4cbf4bec0b045193-frc-g7-b3-20260704/`,
+  and
+  `docs/release-evidence/g7-status-review/bbe23d53d14398378b4870de4cbf4bec0b045193/`.
+  This moves the bbe23d5 G7 runtime evidence set to
+  `candidate_evidence_requires_review`, not closure.
+- [x] 2026-07-04 bbe23d5 capacity visibility is recorded at
+  `docs/release-evidence/capacity-gate-readiness/bbe23d53d14398378b4870de4cbf4bec0b045193/2026-07-04-211-capacity-runtime-readiness-bbe23d5.json`.
+  Admin Runtime returned HTTP `200`, all required sections including `sandbox`
+  were observed, and readiness improved to `blocked_missing_load_test_evidence`.
+  All seven recorded gates and the `b3_10x4_sdk_subagents` profile evidence are
+  still missing, so this does not close B3 or raise defaults.
+- [x] 2026-07-04 source-authority caveat: bbe23d5 repo-local source marker and
+  image labels are current, but API/worker in-container source marker files
+  still show `61073b1`; therefore the current slice is not `211 verified`, not
+  G0 source-authority closure, and not `gate closable`.
 - [ ] B3 still requires real operator-reviewed values for all seven recorded
   load-test gates and the `b3_10x4_sdk_subagents` profile before closure.
 - [ ] G7 still requires a future approved operator status-upgrade decision

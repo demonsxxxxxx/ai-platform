@@ -1,0 +1,348 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-04-211-g7-sandbox-live-env-hardening-bbe23d5-post-317",
+  "artifact_kind": "211_sandbox_runtime_smoke",
+  "gate": "G7 Sandbox / Resource Hardening",
+  "commit_sha": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+  "runtime_subject_commit_sha": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+  "captured_at": "2026-07-04T15:19:40Z",
+  "issue_refs": [],
+  "pr_refs": [
+    "#317"
+  ],
+  "source_ref": {
+    "branch": "origin/main",
+    "merge_commit": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+    "image": "ai-platform:bbe23d5-g7-b3-post-317-runtime-only-v1",
+    "image_id": "sha256:4136e3536d2b04b2130439060763fce4adfcd8c20b047572d06b41bbf85f3ca9",
+    "image_labels": {
+      "ai-platform.source-revision": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+      "ai-platform.runtime-subject": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+      "ai-platform.runtime_subject": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+      "ai-platform.source_commit": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+      "ai-platform.source_revision": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+      "ai-platform.source_tree_commit": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+      "org.opencontainers.image.revision": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+      "ai-platform.build-dirty": "false",
+      "ai-platform.build-mode": "runtime-only-rebase",
+      "ai-platform.runtime-rollout": "g7-b3-post-317-runtime-only-v1",
+      "ai-platform.source-branch": "origin/main",
+      "ai-platform.source-note": "g7-b3-post-317-runtime-only-v1",
+      "org.opencontainers.image.title": "ai-platform"
+    },
+    "runtime_source_marker": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+    "container_source_marker": "61073b16a5b2c135e7ee467434ab39502ca3d194",
+    "repo_backend_source_marker": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+    "source_snapshot": {
+      "source_tree_commit_sha": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+      "runtime_subject_commit_sha": "bbe23d53d14398378b4870de4cbf4bec0b045193",
+      "source_tree_dirty": false,
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "snapshot_source": "codex_origin_main_archive_sync",
+      "archive_path": "[redacted-host-artifact-path]"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "safe_live_runtime_env": {
+      "SANDBOX_CONTAINER_PROVIDER": "docker",
+      "SANDBOX_EXECUTOR_IMAGE": "ai-platform:bbe23d5-g7-b3-post-317-runtime-only-v1",
+      "SANDBOX_EGRESS_POLICY_ENABLED": "true"
+    },
+    "health": {
+      "api_health": "ok",
+      "api_health_url": "http://127.0.0.1:8020/api/ai/health",
+      "frontend_root_http_status": 200
+    },
+    "source_authority_caveat": "The 211 repo-local source marker and image labels bind to bbe23d5, but API/worker in-container source marker files still show 61073b1 after the runtime-only rebase. This record is bbe23d5 G7 runtime evidence, not 211 verified, not G0 source-authority closure, not G7 closure, not B3 closure, and not gate-closable evidence without marker reconciliation, operator status-upgrade approval, and B3 recorded load/profile evidence."
+  },
+  "evidence_ref": {
+    "verifier": "scripts/verify_sandbox_runtime_211.py",
+    "generator": "scripts/generate_sandbox_runtime_evidence_211.py",
+    "result": "all_eight_checks_passed",
+    "command": "containerized 211 live-env hardening verifier using ai-platform:bbe23d5-g7-b3-post-317-runtime-only-v1, host Docker socket/CLI, host-network callback receiver, same-path mounted workspace/output directories, and runtime probe results generated for the same run id",
+    "remote_artifact_dir": "[redacted-host-artifact-dir]",
+    "run_id": "g7-live-env-hardening-bbe23d5-post-317-20260704151940",
+    "artifact_hashes": {
+      "runtime_probe_results_sha256": "d68e270c68661bda2c093b5e0969e16c1bc943dcd2014e167acfdfc83eae4343",
+      "sandbox_evidence_sha256": "07605cb74a4c42189cbefb2d6a62940d0aa5a3fb6505165c37904ee792cf0592",
+      "verifier_summary_sha256": "ce458763a8ef33382a454e435b3ab856bbb521d53e6f47d00a39abd5db58c01a"
+    },
+    "probe_generator_summary": {
+      "run_id": "g7-live-env-hardening-bbe23d5-post-317-20260704151940",
+      "evidence_file": "[redacted-path]",
+      "runtime_probe_results_file": "[redacted-path]",
+      "sections": [
+        "resource_limits",
+        "egress_policy",
+        "security_options"
+      ],
+      "executed_task": true,
+      "runtime_mode": "platform_probe_results",
+      "sandbox_provider": "docker",
+      "callbacks": 4,
+      "cancel_stops_container": false,
+      "messages": []
+    },
+    "evidence_generator_summary": {
+      "run_id": "g7-live-env-hardening-bbe23d5-post-317-20260704151940",
+      "evidence_file": "[redacted-path]",
+      "executed_task": true,
+      "runtime_mode": "platform",
+      "sandbox_provider": "docker",
+      "callbacks": 2,
+      "cancel_stops_container": true,
+      "messages": []
+    },
+    "runtime_probe_results": {
+      "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
+      "run_id": "g7-live-env-hardening-bbe23d5-post-317-20260704151940",
+      "source": "platform_runtime_probe",
+      "resource_limits": {
+        "over_limit_cleanup_verified": true,
+        "probe_kind": "platform_resource_timeout",
+        "timeout_probe_seconds": 0,
+        "bounded_error_projection": {
+          "source": "admin_runtime_projection",
+          "run_id": "g7-live-env-hardening-bbe23d5-post-317-20260704151940",
+          "status": "failed",
+          "error_code": "executor_health_timeout",
+          "host_paths_redacted": true,
+          "raw_docker_payload_absent": true,
+          "callback_token_absent": true
+        }
+      },
+      "egress_policy": {
+        "default_deny_outbound": true,
+        "platform_allowlist_enforced": true,
+        "callback_exception_scoped_to_run_token": true,
+        "denied_egress_redacted": true,
+        "denied_target": "https://egress-denied.invalid/",
+        "denied_probe_error_code": "egress_denied",
+        "allowed_callback_host": "host.docker.internal",
+        "callback_probe_status": "delivered",
+        "policy_source": "platform_policy",
+        "probe_source": "runtime_probe_results"
+      },
+      "security_options": {
+        "privileged": false,
+        "no_new_privileges": true,
+        "capabilities_dropped": true,
+        "docker_socket_mounted": false,
+        "workspace_mount_mode": "rw",
+        "root_filesystem_read_only_or_minimal": true
+      }
+    },
+    "runtime_checks": {
+      "g7_211_sandbox_runtime_hardening": {
+        "schema_version": "ai-platform.sandbox-runtime-211.v1",
+        "run_id": "g7-live-env-hardening-bbe23d5-post-317-20260704151940",
+        "runtime_mode": "platform",
+        "sandbox_provider": "docker",
+        "executed_task": true,
+        "callback_statuses": [
+          "completed",
+          "running"
+        ],
+        "cancel_stops_container": true,
+        "timings": {
+          "schema_version": "ai-platform.sandbox-latency-split.v1",
+          "sandbox_lease_acquire_latency_ms": 2548,
+          "sandbox_container_cold_start_latency_ms": 1461,
+          "sandbox_healthcheck_latency_ms": 1077,
+          "sandbox_executor_dispatch_latency_ms": 54,
+          "executor_model_latency_ms": 40,
+          "document_processing_latency_ms": 0,
+          "sandbox_cleanup_latency_ms": 1019,
+          "sandbox_total_latency_ms": 3650
+        },
+        "hardening": {
+          "lease_isolation": {
+            "evidence_class": "live_platform_probe",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-g7-live-env-hardening-bbe23d5-post-317-20260704151940",
+            "run_id": "g7-live-env-hardening-bbe23d5-post-317-20260704151940",
+            "recorded_lease_id": "lease-g7-live-env-hardening-bbe23d5-post-317-20260704151940",
+            "released_lease_id": "lease-g7-live-env-hardening-bbe23d5-post-317-20260704151940",
+            "release_reason": "dispatch_completed",
+            "host_paths_redacted": true
+          },
+          "workspace_isolation": {
+            "evidence_class": "live_platform_probe",
+            "workspace_container_path": "/workspace",
+            "inputs_container_path": "/workspace/inputs",
+            "host_paths_redacted": true,
+            "marker_path_is_container_path": true
+          },
+          "cleanup": {
+            "evidence_class": "live_platform_probe",
+            "ephemeral_container_removed": true,
+            "cancel_probe_container_removed": true,
+            "active_lease_released": true
+          },
+          "resource_timeout": {
+            "evidence_class": "source_regression_guard",
+            "max_seconds_enforced": true,
+            "timeout_error_code": "executor_health_timeout",
+            "failed_container_removed": true,
+            "source_regression_tests": [
+              "tests/test_sandbox_container_provider.py::test_docker_provider_maps_health_false_to_timeout",
+              "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout"
+            ]
+          },
+          "failure_fallback": {
+            "evidence_class": "source_regression_guard",
+            "dispatch_failure_stops_container": true,
+            "lease_record_failure_stops_container": true,
+            "db_lease_not_released_when_stop_fails": true,
+            "source_regression_tests": [
+              "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_completion_stop_fails",
+              "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fails",
+              "tests/test_sandbox_runtime.py::test_runtime_stops_live_container_when_lease_recording_fails"
+            ]
+          },
+          "cached_lease_revalidation": {
+            "evidence_class": "source_regression_guard",
+            "cached_lease_revalidates_scope_labels": true,
+            "scope_mismatch_fails_closed": true,
+            "tenant_workspace_user_session_checked": true,
+            "source_regression_tests": [
+              "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels"
+            ]
+          },
+          "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "memory_limit_mb": 512,
+            "cpu_limit_count": 0.5,
+            "pids_limit": 128,
+            "process_timeout_seconds": 60,
+            "limit_source": "platform_request",
+            "docker_inspection_verified": true,
+            "over_limit_cleanup_verified": true,
+            "bounded_error_projection_verified": true,
+            "bounded_error_projection": {
+              "source": "admin_runtime_projection",
+              "run_id": "g7-live-env-hardening-bbe23d5-post-317-20260704151940",
+              "status": "failed",
+              "error_code": "executor_health_timeout",
+              "host_paths_redacted": true,
+              "raw_docker_payload_absent": true,
+              "callback_token_absent": true
+            },
+            "over_limit_probe_kind": "platform_resource_timeout",
+            "over_limit_timeout_probe_seconds": 0
+          },
+          "egress_policy": {
+            "evidence_class": "live_platform_probe",
+            "default_deny_outbound": true,
+            "platform_allowlist_enforced": true,
+            "callback_exception_scoped_to_run_token": true,
+            "denied_egress_redacted": true,
+            "denied_target": "https://egress-denied.invalid/",
+            "denied_probe_error_code": "egress_denied",
+            "allowed_callback_host": "host.docker.internal",
+            "callback_probe_status": "delivered",
+            "policy_source": "platform_policy",
+            "probe_source": "runtime_probe_results",
+            "network_inspection_verified": false,
+            "docker_network_masquerade_disabled": false
+          },
+          "security_options": {
+            "evidence_class": "live_platform_probe",
+            "privileged": false,
+            "no_new_privileges": true,
+            "capabilities_dropped": true,
+            "docker_socket_mounted": false,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": true
+          },
+          "source": {
+            "runtime_submit": "app.runtime.sandbox.runtime.SandboxRuntime.submit",
+            "workspace_root": "[redacted-path]",
+            "resource_timeout_and_failure_fallback": "source_regression_tests_plus_live_platform_runtime_smoke",
+            "cached_lease_revalidation": "source_regression_tests_plus_live_platform_runtime_smoke"
+          }
+        },
+        "non_expansion_invariants": {
+          "ordinary_user_high_risk_sandbox_allowed": false,
+          "admin_or_allowlist_only": true,
+          "production_concurrency_defaults_raised": false,
+          "docker_sandbox_production_hardening_claimed": false,
+          "ordinary_user_multi_agent_allowed": false
+        },
+        "does_not_close_g7_gate": true,
+        "does_not_close_b3_gate": true,
+        "remaining_gate_boundaries": [
+          "B3 seven-gate recorded load evidence remains missing",
+          "b3_10x4_sdk_subagents operator-reviewed profile evidence remains missing",
+          "operator status-upgrade review is still required before any G7 closure claim",
+          "API/worker in-container source marker files still show 61073b1 and must be reconciled before any 211 verified or G0 source-authority closure claim",
+          "Foundation Runtime concurrency evidence for bbe23d5 is recorded separately and does not replace B3 recorded load/profile evidence"
+        ]
+      },
+      "verifier_checks": [
+        {
+          "name": "check_docker_socket",
+          "passed": true,
+          "message": "Docker daemon reachable"
+        },
+        {
+          "name": "check_workspace_write",
+          "passed": true,
+          "message": "workspace writeable"
+        },
+        {
+          "name": "check_executor_health",
+          "passed": true,
+          "message": "platform runtime evidence includes executor cold-start and healthcheck"
+        },
+        {
+          "name": "check_callback_stream",
+          "passed": true,
+          "message": "callback stream evidence present"
+        },
+        {
+          "name": "check_cancel_stops_container",
+          "passed": true,
+          "message": "cancel stop evidence present"
+        },
+        {
+          "name": "check_platform_runtime_evidence",
+          "passed": true,
+          "message": "platform runtime latency split evidence present"
+        },
+        {
+          "name": "check_platform_hardening_evidence",
+          "passed": true,
+          "message": "platform hardening evidence present"
+        },
+        {
+          "name": "check_no_secret_leakage",
+          "passed": true,
+          "message": "no sensitive evidence detected"
+        }
+      ]
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "The 211 live-env hardening verifier recorded the bbe23d5 API/worker sandbox posture as Docker provider and all eight verifier checks passed.",
+    "The runtime image labels, repo-local source marker, and sandbox executor image bind to bbe23d5 with build-dirty=false.",
+    "The API/worker in-container source marker files still show 61073b1; that is retained as a source-authority caveat and blocks any 211 verified or G0 closure claim.",
+    "This is bbe23d5 G7 runtime evidence only. It does not close G7 or B3, does not complete Foundation Alpha, and still requires operator status-upgrade approval plus B3 recorded load/profile evidence."
+  ],
+  "open_followups": [
+    "Reconcile API/worker in-container source marker files before any 211 verified or G0 source-authority closure claim.",
+    "Record B3 operator-reviewed seven-gate load evidence and b3_10x4_sdk_subagents profile evidence before any B3 closure or production default increase.",
+    "Complete operator status-upgrade review before any G7 or production Docker sandbox hardening closure claim."
+  ]
+}

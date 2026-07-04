@@ -860,9 +860,9 @@ No reviewed B3 capacity runtime evidence entry has been recorded for
 `9c669761`. At this historical slice, the latest reviewed B3 capacity entry was
 the `28676df` visibility record above, with all seven recorded load-test gates
 and `b3_10x4_sdk_subagents` profile evidence still missing. Newer historical
-latest-status reading used the later `755e50e` visibility record below; current
-status reading must use the later `61073b1` visibility record, which is also
-fail-closed and not recorded load evidence. The earlier deployed G7
+latest-status reading used the later `755e50e` and then `61073b1` visibility
+records below; current status reading must use the later `bbe23d5` visibility
+record, which is still fail-closed and not recorded load evidence. The earlier deployed G7
 verifier diagnostic for `9c669761`, `g7-current-main-9c66976-20260702145801`,
 recorded `executed_task=false`, `sandbox_provider=unknown`, and
 `[Errno 13] Permission denied: '[redacted-path]'`; this is not B3 load evidence
@@ -899,9 +899,9 @@ No reviewed B3 capacity runtime evidence entry has been recorded for
 `15903fd`. At this historical slice, the latest reviewed B3 capacity entry was
 the `28676df` visibility record above, with all seven recorded load-test gates
 and `b3_10x4_sdk_subagents` profile evidence still missing. Newer historical
-latest-status reading used the later `755e50e` visibility record below; current
-status reading must use the later `61073b1` visibility record, which is also
-fail-closed and not recorded load evidence. The 2026-07-03
+latest-status reading used the later `755e50e` and then `61073b1` visibility
+records below; current status reading must use the later `bbe23d5` visibility
+record, which is still fail-closed and not recorded load evidence. The 2026-07-03
 label-clean live-default G7 run
 `g7-live-env-hardening-15903fd-label-clean-sudo-20260703055828` is wrapped at
 `docs/release-evidence/g7-sandbox/15903fdfe96ffcfba9daa1252741111017dcf832/2026-07-03-211-g7-sandbox-live-env-hardening-15903fd-label-clean.json`,
@@ -968,7 +968,7 @@ load evidence. G7 closure, B3 closure, and clean current-main `211 verified` cla
 blocked; this does not constitute current G7/B3 closure evidence for the
 already-closed historical #164.
 
-### Current Runtime Note - 2026-07-03, commit `61073b1`
+### Prior Clean-Main Runtime Note - 2026-07-03, commit `61073b1`
 
 A later clean current-main 211 rollout binds the repo-local source marker,
 source snapshot, API/worker image labels, and API/worker in-container source
@@ -1169,6 +1169,29 @@ recorded and B3 profile evidence is accepted, the batch output records
 `tools/capacity_profile_readiness.py` can then advance only to
 `operator_review_required`; it still does not close B3 or raise production
 defaults.
+
+### Current Runtime Note - 2026-07-04, commit `bbe23d5`
+
+Post-PR #317, 211 now runs API/worker image
+`ai-platform:bbe23d5-g7-b3-post-317-runtime-only-v1` for runtime subject
+`bbe23d53d14398378b4870de4cbf4bec0b045193`. The repo-local source marker and
+image labels bind to `bbe23d5`, direct API health returned `{"status":"ok"}`,
+and the reviewed capacity visibility entry is recorded at
+`docs/release-evidence/capacity-gate-readiness/bbe23d53d14398378b4870de4cbf4bec0b045193/2026-07-04-211-capacity-runtime-readiness-bbe23d5.json`.
+
+This improves B3 visibility over the earlier `61073b1` baseline: Admin Runtime
+HTTP returned `200`, all required sections including `sandbox` were observed,
+and readiness now reports `blocked_missing_load_test_evidence` instead of
+`blocked_missing_admin_runtime_sections`. The host-side sandbox observation is
+diagnostic-only and recorded separately at
+`docs/release-evidence/diagnostics/2026-07-04-211-b3-host-sandbox-observation-bbe23d5.json`;
+it does not mark B3 recorded evidence.
+
+B3 remains blocked. All seven recorded load-test gates are still missing, the
+`b3_10x4_sdk_subagents` profile evidence is still empty, and production default
+decision remains `do_not_raise_without_recorded_load_test_evidence`. The
+API/worker in-container source marker files still show `61073b1`, so this
+runtime visibility is also not `211 verified` or G0 source-authority closure.
 
 ## Required Load-Test Gates
 
