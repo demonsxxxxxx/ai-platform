@@ -50,6 +50,11 @@ open, or close ordinary-user platform-level multi-run product exposure.
   other high-risk operational work directly, while still following the
   repository's secret, verification, source-authority, and deployment-cleanup
   rules.
+- In this workflow, main-thread authorization is a direct-operation allowance,
+  not a delegation allowance. Sub-agents stay read-only for GitHub, Docker, 211,
+  deployment, and destructive operations unless inheritance of the main
+  session's filesystem, network, approval, and permission posture is explicitly
+  confirmed.
 - Do not delegate write, deployment, remote runtime, long-running operational,
   Docker, GitHub write, or destructive tasks to sub-agents unless the
   delegation path is confirmed to inherit the same filesystem, network,

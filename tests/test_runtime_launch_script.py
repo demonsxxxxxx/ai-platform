@@ -185,6 +185,20 @@ def test_dockerfile_packages_release_evidence_for_runtime_readiness():
     assert "COPY docs /app/docs" not in content
 
 
+def test_dockerfile_generates_in_container_source_authority_markers():
+    content = Path("Dockerfile").read_text(encoding="utf-8")
+
+    assert "printf '%s\\n' \"$AI_PLATFORM_BUILD_COMMIT\" > /app/.ai-platform-source-revision" in content
+    assert "schema_version='ai-platform.source-snapshot.v1'" in content
+    assert "source_tree_commit_sha=commit" in content
+    assert "runtime_subject_commit_sha=commit" in content
+    assert "dirty = dirty_text != 'false'" in content
+    assert "dirty_paths = [] if not dirty else ['unknown_runtime_affecting_dirty_paths']" in content
+    assert "runtime_affecting_changes_since_runtime_subject=[]" in content
+    assert "runtime_affecting_dirty_paths=dirty_paths" in content
+    assert "snapshot_source='dockerfile_build_args'" in content
+
+
 def test_docker_entrypoint_validates_runtime_env():
     content = Path("docker-entrypoint.sh").read_text(encoding="utf-8")
 
