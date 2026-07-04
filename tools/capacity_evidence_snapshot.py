@@ -11,6 +11,7 @@ from app.capacity_baseline import (
     build_capacity_evidence_snapshot,
     render_capacity_evidence_snapshot_markdown,
 )
+from capacity_cli_inputs import read_optional_host_sandbox_observation_json
 
 
 def _read_overview_json(path_value: str) -> dict[str, object]:
@@ -44,6 +45,13 @@ def main() -> None:
         help="Operator profile label for this snapshot. Defaults to unproven_default.",
     )
     parser.add_argument(
+        "--host-sandbox-observation-json",
+        help=(
+            "Optional host-side sandbox observation JSON from a Docker-capable "
+            "operator host. Does not create load-test evidence."
+        ),
+    )
+    parser.add_argument(
         "--format",
         choices=("json", "markdown"),
         default="markdown",
@@ -52,11 +60,17 @@ def main() -> None:
     args = parser.parse_args()
 
     overview = _read_overview_json(args.overview_json)
+    host_sandbox_observation, host_sandbox_observation_error = (
+        read_optional_host_sandbox_observation_json(args.host_sandbox_observation_json)
+    )
     snapshot = build_capacity_evidence_snapshot(
         overview,
         commit_sha=args.commit_sha,
         runtime_profile=args.runtime_profile,
+        host_sandbox_observation=host_sandbox_observation,
     )
+    if host_sandbox_observation_error is not None:
+        snapshot["host_sandbox_observation"] = host_sandbox_observation_error
     if args.format == "json":
         print(json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True))
         return

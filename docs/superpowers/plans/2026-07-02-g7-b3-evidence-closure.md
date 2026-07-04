@@ -256,7 +256,19 @@ Remaining blockers before any status upgrade:
 - current `61073b1` Admin Runtime capacity visibility remains
   `blocked_missing_admin_runtime_sections` because the `sandbox` Admin Runtime
   section is missing/degraded and therefore does not count as valid B3
-  `sandbox` evidence;
+  `sandbox` evidence. A 2026-07-04 read-only diagnostic entry at
+  `docs/release-evidence/diagnostics/2026-07-04-211-b3-sandbox-observation-61073b1.json`
+  confirms the root cause without changing status: API/worker still run
+  `ai-platform:61073b1-g7-b3-clean-main-v1`, the API container and default
+  compose path have no Docker socket mount, the explicit socket-bearing path is
+  `deploy/ai-platform/docker-compose.sandbox.yml`, and the protected overview
+  still reports `container_observation_degraded=true` with
+  `list_runtime_containers_status=unavailable`. The same diagnostic now also
+  records a controlled host-side replay: attaching the host observation clears
+  Admin Runtime missing sections and advances the capacity readiness result to
+  `blocked_missing_load_test_evidence`, but all seven recorded load-test gates
+  remain missing and the replay is diagnostic-only, not reviewed release
+  evidence;
 - B3 operator-reviewed recorded load evidence, including all seven recorded
   load-test gates and the `b3_10x4_sdk_subagents` profile evidence;
 - G7 operator status-upgrade approval. The current `61073b1` operator
@@ -266,7 +278,92 @@ Remaining blockers before any status upgrade:
   `status_label=local partial` for G7 after reviewed live-env hardening and FRC
   evidence.
 
-Tasks 4 and 5 reduce B3 operator assembly friction only. They do not create
-recorded load evidence, accept bounded probes as recorded gates, close B3,
-raise production defaults, or upgrade the overall status beyond `local
-partial`.
+Tasks 4 and 5 plus the draft-only operator evidence template bundle reduce B3
+operator assembly friction only. The template bundle provides
+`ai-platform.capacity-operator-evidence-template-bundle.v1` placeholders and
+packet commands for all seven gates and the `b3_10x4_sdk_subagents` profile,
+but every `TODO_OPERATOR_REVIEWED_` value must be replaced with real measured
+evidence before packet builders can accept it. The directory-based fail-closed
+batch assembler `tools/capacity_recorded_gate_batch_from_values.py` can then
+read the filled `capacity-operator-inputs` directory, build the seven packet
+results through the existing validators, and call the same all-gate batch
+snapshot assembler; it still returns `blocked_incomplete_inputs` when any
+gate/profile value is missing or unsafe. These helpers do not create recorded
+load evidence, accept bounded probes as recorded gates, close B3, raise
+production defaults, or upgrade the overall status beyond `local partial`.
+
+2026-07-04 local follow-up status:
+
+- [x] Directory-based B3 batch assembler now fails closed with structured JSON
+  when the `b3_10x4_sdk_subagents` profile values file is missing; it no longer
+  exits before emitting a batch snapshot result for that missing-profile path.
+- [x] Operator template materialization docs now create
+  `capacity-operator-inputs` before redirecting command output, so the
+  PowerShell copy path is executable on a clean workspace.
+- [x] Docs clarify that
+  `ordinary_user_platform_multi_run_orchestration_exposure` is the route/status
+  blocked-expansion name, while
+  `ordinary_user_platform_multi_run_orchestration_enabled=false` is only the B3
+  profile packet non-expansion boolean.
+- [x] G7 completion audit now has a fail-closed future
+  `--g7-status-upgrade-review-json` path: only an accepted
+  `approved_for_g7_status_upgrade` artifact bound to the same runtime subject can
+  remove the G7 status-upgrade blocker. Future approval evidence must use the
+  route/status invariant
+  `ordinary_user_platform_multi_run_orchestration_exposure=false`; the B3 packet
+  boolean `ordinary_user_platform_multi_run_orchestration_enabled=false` is not
+  accepted as a substitute. The approval still does not close B3, mark `211
+  verified`, or make the overall gate closable.
+- [x] Code-review follow-up tightened B3 audit input validation: truncated or
+  fabricated capacity-profile readiness with empty `missing_*` lists now fails
+  closed as inconsistent, while real complete readiness still only advances B3
+  to `operator_review_required_before_default_change`.
+- [x] Code-review follow-up preserves accepted host-side sandbox observation
+  status through recorded-gate snapshot normalization as diagnostic provenance
+  with `does_not_mark_b3_recorded_evidence=true` and `does_not_close_b3=true`;
+  it does not turn host observation into recorded load evidence or B3 closure.
+- [x] Recorded-gate packet and snapshot validators now reject diagnostic-only
+  release evidence markers, including
+  `ai-platform.release-evidence-diagnostic-entry.v1`,
+  `diagnostic_only=true`,
+  `diagnostic_only_not_reviewed_release_evidence`, and
+  `does_not_mark_b3_recorded_evidence=true`. The G7/B3 audit CLI regression
+  also verifies that passing the B3 diagnostic observation through
+  `--reviewed-release-evidence-json` is ignored as reviewed evidence and keeps
+  B3 blocked.
+- [x] 2026-07-04 read-only 211 source check confirmed the target source path is
+  a git-archive snapshot at `.ai-platform-source-revision=61073b1`, API/worker
+  still run `ai-platform:61073b1-g7-b3-clean-main-v1`, `/api/ai/health`
+  returns `{"status":"ok"}`, and the remote tools set does not yet include the
+  local draft helpers `capacity_operator_evidence_template_bundle.py` or
+  `capacity_recorded_gate_batch_from_values.py`. Therefore a remote B3 operator
+  assembly run still requires merging/syncing this local tooling before it can
+  be executed on 211.
+- [x] Batch assembly now rejects a reviewed release-evidence index entry passed
+  as `--runtime-evidence-json` with
+  `runtime_evidence_release_entry_not_supported`. Operators must pass the raw
+  `ai-platform.capacity-runtime-evidence.v1` output containing the nested
+  `ai-platform.capacity-evidence-snapshot.v1`, or the raw snapshot itself.
+- [x] 2026-07-04 local verification covered
+  `tests/test_capacity_baseline.py`,
+  `tests/test_g7_b3_completion_audit.py`,
+  `tests/test_source_authority_docs.py`,
+  `tests/test_release_evidence_export_acceptance.py`, and
+  `tests/test_backend_phased_prd.py` (`218 passed`), plus
+  `python -m compileall -q app tools scripts`,
+  `python tools\release_evidence_export_acceptance.py --format json` reporting
+  `status=ready_for_operator_review blocked=0 safe=256 excluded=106`,
+  host sandbox observation missing/malformed JSON CLI regressions, and
+  `git diff --check`.
+- [x] 2026-07-04 local completion-audit reproduction used the reviewed
+  `61073b1` G7/FRC/capacity evidence set and reported
+  `audit_status=blocked_missing_g7_b3_completion_evidence`,
+  `status_label=local partial`, `g7=candidate_evidence_requires_review`,
+  `b3=blocked`, `missing_gates=7`, and `missing_profile=8`; the current G7
+  status-upgrade review remained `not_accepted` /
+  `not_approved_for_closure`. This reproduces the documented blockers; it is
+  not new release evidence and does not close G7/B3.
+- [ ] B3 still requires real operator-reviewed values for all seven recorded
+  load-test gates and the `b3_10x4_sdk_subagents` profile before closure.
+- [ ] G7 still requires a future approved operator status-upgrade decision
+  before any G7 closure, `211 verified`, or `gate closable` claim.

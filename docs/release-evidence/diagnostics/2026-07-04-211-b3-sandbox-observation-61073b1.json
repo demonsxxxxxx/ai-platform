@@ -1,0 +1,98 @@
+{
+  "schema_version": "ai-platform.release-evidence-diagnostic-entry.v1",
+  "evidence_id": "2026-07-04-211-b3-sandbox-observation-61073b1",
+  "commit_sha": "61073b16a5b2c135e7ee467434ab39502ca3d194",
+  "runtime_subject_commit_sha": "61073b16a5b2c135e7ee467434ab39502ca3d194",
+  "gate": "B3 Capacity Baseline",
+  "issue_refs": [
+    "#21"
+  ],
+  "pr_refs": [
+    "#315",
+    "#316"
+  ],
+  "artifact_kind": "b3_sandbox_observation_diagnostic",
+  "captured_at": "2026-07-04T04:14:42Z",
+  "review_status": "diagnostic_only_not_reviewed_release_evidence",
+  "redaction_scan_status": "passed",
+  "source_ref": {
+    "subject": "clean current-main 61073b1 runtime subject",
+    "api_worker_image": "ai-platform:61073b1-g7-b3-clean-main-v1",
+    "api_worker_image_id": "sha256:59292f7687a1df372367e6cc3018b51d08661a94e13c1e91fbf6b8e37c113a0c",
+    "runtime_profile": "g7-b3-61073b1-clean-main-v1",
+    "capture_mode": "read_only_211_diagnostic_no_deploy_no_cleanup"
+  },
+  "observations": {
+    "api_container_docker_socket_present": false,
+    "default_compose_mounts_docker_socket": false,
+    "sandbox_compose_mounts_docker_socket": true,
+    "socket_bearing_compose_path": "deploy/ai-platform/docker-compose.sandbox.yml",
+    "host_sandbox_runtime_label_container_count": 0,
+    "admin_runtime_overview_http_status": 200,
+    "gateway_secret_value_printed": false,
+    "used_gateway_secret_from_target_runtime_environment": true
+  },
+  "admin_runtime_overview_sandbox": {
+    "container_observation_degraded": true,
+    "list_runtime_containers_status": "unavailable",
+    "containers": {
+      "by_status": {},
+      "ephemeral_running": 0,
+      "persistent_running": 0,
+      "running": 0,
+      "total": 0
+    },
+    "leases": {
+      "active": 0,
+      "expired": 0,
+      "history_included": true,
+      "released": 100
+    }
+  },
+  "host_side_snapshot_replay": {
+    "captured_at": "2026-07-04T04:36:21Z",
+    "replay_status": "diagnostic_replay_only_not_reviewed_release_evidence",
+    "input_overview_http_status": 200,
+    "host_sandbox_observation_status": "accepted",
+    "admin_runtime_missing_sections_after_host_observation": [],
+    "readiness_status_after_host_observation": "blocked_missing_load_test_evidence",
+    "missing_load_test_gates_after_host_observation": [
+      "api_read_write_burst",
+      "run_creation_burst_by_tenant_and_user",
+      "worker_processing_throughput",
+      "queue_depth_and_lease_latency",
+      "cancel_retry_resume_under_load",
+      "sandbox_lease_creation_under_load",
+      "model_gateway_timeout_and_backpressure"
+    ],
+    "production_default_decision": "do_not_raise_without_recorded_load_test_evidence",
+    "does_not_close_b3": true,
+    "does_not_close_g7": true,
+    "does_not_mark_b3_recorded_evidence": true,
+    "does_not_make_211_verified": true,
+    "does_not_make_gate_closable": true
+  },
+  "diagnostic_interpretation": {
+    "root_cause_reading": "The default API stack is intentionally no-socket, so the API process cannot list Docker runtime containers from inside the container. Admin Runtime therefore reports sandbox container observation as degraded/unavailable even though the deployed sandbox provider is docker.",
+    "fail_closed_policy": "B3 capacity readiness must continue treating sandbox container observation as missing evidence while list_runtime_containers_status is unavailable.",
+    "approved_fix_direction_required": "Use controlled host-side observation or an explicitly approved sandbox compose path when operator evidence requires runtime container listing; do not loosen readiness and do not mount the Docker socket in the default stack by accident."
+  },
+  "does_not_close_b3": true,
+  "does_not_close_g7": true,
+  "does_not_mark_b3_recorded_evidence": true,
+  "does_not_raise_production_defaults": true,
+  "does_not_make_211_verified": true,
+  "does_not_make_gate_closable": true,
+  "notes": [
+    "API container Docker socket absent; default stack must stay no-socket.",
+    "The default compose does not mount Docker socket; docker-compose.sandbox.yml is the explicit socket-bearing path for approved sandbox-mode operation.",
+    "The overview sandbox remains degraded/unavailable for container observation, so this diagnostic stays fail-closed for B3.",
+    "This is diagnostic only and does not close B3/G7."
+  ],
+  "required_next_steps": [
+    "Record all seven operator-reviewed B3 load-test gate packets before any B3 closure or production default increase.",
+    "Record b3_10x4_sdk_subagents profile evidence before any B3 closure.",
+    "Resolve sandbox observation through controlled host-side observation or explicit approved sandbox compose path before treating sandbox runtime-container visibility as B3 evidence.",
+    "Complete operator status-upgrade review before claiming G7 closure or 211 verified status."
+  ]
+}
