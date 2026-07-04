@@ -1,0 +1,34 @@
+{
+  "api_container_docker_socket_present": false,
+  "commit_sha": "a294727046024958c41b15f646512e68f3c04b47",
+  "container_observation_degraded": false,
+  "containers": {
+    "ephemeral_running": 0,
+    "persistent_running": 0,
+    "running": 0,
+    "total": 0
+  },
+  "default_compose_mounts_docker_socket": false,
+  "diagnostic_only": true,
+  "does_not_close_b3": true,
+  "does_not_mark_b3_recorded_evidence": true,
+  "evidence_id": "2026-07-04-211-b3-host-sandbox-observation-a294727",
+  "evidence_ref": "release-evidence/diagnostics/2026-07-04-211-b3-host-sandbox-observation-a294727.json",
+  "leases": {
+    "active": 0,
+    "expired": 0,
+    "released": 0
+  },
+  "list_runtime_containers_status": "available",
+  "notes": [
+    "Diagnostic host-side sandbox observation for the a294727 capacity visibility capture.",
+    "Default API/worker compose does not mount the Docker socket; docker-compose.sandbox.yml remains the explicit socket-bearing path.",
+    "This diagnostic may support Admin Runtime visibility but is not reviewed release evidence and does not mark B3 recorded load evidence."
+  ],
+  "observation_source": "host_docker_cli",
+  "review_status": "diagnostic_only_not_reviewed_release_evidence",
+  "runtime_subject_commit_sha": "a294727046024958c41b15f646512e68f3c04b47",
+  "sandbox_compose_mounts_docker_socket": true,
+  "schema_version": "ai-platform.capacity-host-sandbox-observation.v1",
+  "socket_bearing_compose_path": "deploy/ai-platform/docker-compose.sandbox.yml"
+}

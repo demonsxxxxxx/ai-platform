@@ -172,7 +172,7 @@ complete, production-ready, `211 verified`, or `gate closable`.
 
 This plan ledger records the 2026-07-03 `755e50e` cleanup slice and is now
 historical for current-state naming. The current gate/runtime status moved to
-PR #317 / post-PR #317 `bbe23d5`; use
+PR #319 / post-PR #319 `a294727`; use
 `docs/operations/ai-platform-gate-status.md` and
 `docs/release-evidence/README.md` for current status.
 
@@ -252,26 +252,26 @@ G7 blockers.
 Remaining blockers before any status upgrade:
 
 - G0/source-authority and production-hardening boundaries: external runtime
-  env-file label caveat and current local runtime-affecting source rollout gap;
-- current `bbe23d5` Admin Runtime capacity visibility now reaches
+  env-file label caveat and production auth rollout remain separate gates;
+- current `a294727` Admin Runtime capacity visibility now reaches
   `blocked_missing_load_test_evidence`: the 2026-07-04 reviewed redacted entry at
-  `docs/release-evidence/capacity-gate-readiness/bbe23d53d14398378b4870de4cbf4bec0b045193/2026-07-04-211-capacity-runtime-readiness-bbe23d5.json`
+  `docs/release-evidence/capacity-gate-readiness/a294727046024958c41b15f646512e68f3c04b47/2026-07-04-211-capacity-runtime-readiness-a294727.json`
   records HTTP `200`, all required Admin Runtime sections including `sandbox`,
   and host-side sandbox observation status `accepted`. The matching diagnostic
   entry at
-  `docs/release-evidence/diagnostics/2026-07-04-211-b3-host-sandbox-observation-bbe23d5.json`
+  `docs/release-evidence/diagnostics/2026-07-04-211-b3-host-sandbox-observation-a294727.json`
   is diagnostic-only and does not mark B3 recorded evidence. The earlier
-  `61073b1` sandbox-missing diagnostic remains retained as prior baseline
+  `bbe23d5` and `61073b1` visibility entries remain retained as prior baseline
   evidence only;
 - B3 operator-reviewed recorded load evidence, including all seven recorded
   load-test gates and the `b3_10x4_sdk_subagents` profile evidence;
-- G7 operator status-upgrade approval. The current `bbe23d5` operator
-  status-review artifact is recorded, but it sets
-  `status_upgrade_decision=not_approved_for_closure`; that preserves
-  `status=candidate_evidence_requires_review`, `blocking_reasons=[]`, and
-  `status_label=local partial` for G7 after reviewed live-env hardening and FRC
-  evidence. It also records that API/worker in-container source marker files
-  still show `61073b1`, so source-authority reconciliation remains open.
+- G7 operator status-upgrade approval. No approved status-upgrade artifact exists
+  for current `a294727`; the historical `bbe23d5` operator status-review
+  artifact is recorded but sets `status_upgrade_decision=not_approved_for_closure`.
+  Current `a294727` canonical source-marker reconciliation is present, but
+  legacy `/app/.codex-source-revision` and `/app/.source-commit` still show
+  `28676df`; neither the canonical marker evidence nor the legacy marker caveat
+  removes the G7 approval blocker or any B3 blocker.
 
 Tasks 4 and 5 plus the draft-only operator evidence template bundle reduce B3
 operator assembly friction only. The template bundle provides
@@ -382,7 +382,20 @@ production defaults, or upgrade the overall status beyond `local partial`.
   image labels are current, but API/worker in-container source marker files
   still show `61073b1`; therefore the current slice is not `211 verified`, not
   G0 source-authority closure, and not `gate closable`.
+- [x] 2026-07-04 post-PR #319 source-marker fix advanced the current live
+  runtime to `a294727046024958c41b15f646512e68f3c04b47` with API/worker image
+  `ai-platform:a294727-g7-b3-source-marker-fix-v1`. Repo-local marker, source
+  snapshot, image labels, and canonical API/worker in-container marker
+  `/app/.ai-platform-source-revision` bind to `a294727`; legacy
+  `/app/.codex-source-revision` and `/app/.source-commit` still show `28676df`.
+  Direct API health and frontend proxy health returned `{"status":"ok"}`. The G7 verifier
+  `g7-live-env-hardening-a294727-source-marker-fix-20260704170251` passed all
+  eight checks and the capacity visibility entry
+  `2026-07-04-211-capacity-runtime-readiness-a294727.json` reports
+  `blocked_missing_load_test_evidence`.
 - [ ] B3 still requires real operator-reviewed values for all seven recorded
   load-test gates and the `b3_10x4_sdk_subagents` profile before closure.
 - [ ] G7 still requires a future approved operator status-upgrade decision
-  before any G7 closure, `211 verified`, or `gate closable` claim.
+  before any G7 closure or `gate closable` claim; `211 verified` may only be
+  used for the narrow source-marker/runtime-health slice, not overall G7/B3
+  closure.

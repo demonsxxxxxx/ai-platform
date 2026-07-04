@@ -227,7 +227,8 @@ def _reviewed_g7_release_evidence_id(
         return ""
     if _safe_text(evidence.get("commit_sha")) != current_source_commit:
         return ""
-    runtime_checks = _dict(_dict(evidence.get("evidence_ref")).get("runtime_checks"))
+    evidence_ref = _dict(evidence.get("evidence_ref"))
+    runtime_checks = _dict(evidence_ref.get("runtime_checks"))
     for key in ("g7_211_sandbox_runtime_hardening", "b2_211_real_sandbox_smoke"):
         check = _dict(runtime_checks.get(key))
         if (
@@ -236,6 +237,17 @@ def _reviewed_g7_release_evidence_id(
             and check.get("sandbox_provider") == "docker"
         ):
             return _safe_text(check.get("run_id")) or _safe_text(evidence.get("evidence_id"))
+    generator_summary = _dict(evidence_ref.get("evidence_generator_summary"))
+    verifier_checks = _dict(evidence_ref.get("verifier_summary")).get("checks", [])
+    if (
+        evidence_ref.get("result") == "all_eight_checks_passed"
+        and generator_summary.get("runtime_mode") == "platform"
+        and generator_summary.get("sandbox_provider") == "docker"
+        and isinstance(verifier_checks, list)
+        and len(verifier_checks) >= 8
+        and all(_dict(item).get("passed") is True for item in verifier_checks)
+    ):
+        return _safe_text(evidence_ref.get("run_id")) or _safe_text(evidence.get("evidence_id"))
     return ""
 
 
