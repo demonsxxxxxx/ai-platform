@@ -1554,6 +1554,11 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     assert "returned HTTP `200`" in compact_capacity_text
     assert "2026-07-02-211-capacity-runtime-readiness-decf33a.json" in capacity_text
     assert "not a raw runtime payload export and is not recorded B3 load evidence" in compact_capacity_text
+    assert "Fresh ad-hoc anonymous reads of" in gate_status_text
+    assert "HTTP `401`" in gate_status_text
+    assert "--gateway-secret-env" in capacity_text
+    assert "AI_PLATFORM_GATEWAY_SECRET" in capacity_text
+    assert "still visibility-only unless it is followed by approved load execution" in compact_capacity_text
     assert "profile `unproven_default`" in capacity_text
     assert "`profile_evidence` was empty" in capacity_text
     assert "This `decf33a` capture supersedes the earlier `4805031`" in compact_capacity_text
