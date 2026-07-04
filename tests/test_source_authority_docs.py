@@ -212,6 +212,27 @@ def test_guardrails_document_exists_and_is_named_by_authority_docs():
     assert "docs/agent-rules/ai-platform-guardrails.md" in read(AGENTS)
 
 
+def test_agent_rules_keep_main_session_authority_separate_from_subagents():
+    agents_text = read(AGENTS)
+    workflow_text = read(MULTI_AGENT_CONTEXT_WORKFLOW)
+    compact_agents_text = " ".join(agents_text.split())
+    compact_workflow_text = " ".join(workflow_text.split())
+
+    assert "Standing phrases such as `主线程全部授权`, `主线程有权限操作`, or `执行`" in agents_text
+    assert (
+        "do not grant sub-agents write, GitHub write, Docker, deployment, or remote runtime authority"
+        in compact_agents_text
+    )
+    assert (
+        "main-thread authorization is a direct-operation allowance, not a delegation allowance"
+        in compact_workflow_text
+    )
+    assert (
+        "Sub-agents stay read-only for GitHub, Docker, 211, deployment, and destructive operations"
+        in compact_workflow_text
+    )
+
+
 def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
     prd_text = read(PRD)
     old_prd_text = read(OLD_PRD)

@@ -105,6 +105,10 @@ entry file.
   cleanup, and other high-risk operational work, provided the normal secret,
   verification, source-authority, and deployment-cleanup rules in this file are
   followed.
+- Standing phrases such as `主线程全部授权`, `主线程有权限操作`, or `执行`
+  authorize the current main session to perform those direct operations for the
+  active task; they do not grant sub-agents write, GitHub write, Docker,
+  deployment, or remote runtime authority.
 - Do not delegate write, deployment, remote runtime, Docker, GitHub write, or
   long-running operational tasks to sub-agents unless the delegation path is
   confirmed to inherit the same filesystem, network, approval, and permission
