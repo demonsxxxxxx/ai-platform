@@ -1,6 +1,6 @@
 # ai-platform Gate Status Snapshot
 
-Date: 2026-07-04
+Date: 2026-07-05
 
 This snapshot is the single current gate/runtime status matrix for the current
 PRD, foundation roadmap, guardrails, repository code, 211 runtime, and
@@ -19,46 +19,45 @@ closure evidence by themselves.
 
 ## Current Reading Guide
 
-At this post-PR #319 source-marker-fix runtime refresh slice, GitHub `main`
-includes PR #319 merge commit
-`a294727046024958c41b15f646512e68f3c04b47`, the 211 repo-local source marker,
-source snapshot, API/worker image labels, and canonical API/worker
-in-container source marker `/app/.ai-platform-source-revision` bind to
-`a294727`, and API/worker currently run
-`ai-platform:a294727-g7-b3-source-marker-fix-v1` with image ID
-`sha256:b7637c85a625e6dd9e596b351947d3df730c93c5abe22ee0b7eeaec133799bfc`.
-Image labels bind to `a294727`, `SANDBOX_CONTAINER_PROVIDER=docker`,
-`SANDBOX_EXECUTOR_IMAGE=ai-platform:a294727-g7-b3-source-marker-fix-v1`, and
-`SANDBOX_EGRESS_POLICY_ENABLED=true`; direct API health and frontend proxy
-health returned `{"status":"ok"}`, and the frontend root returned HTTP `200`.
-Fresh 2026-07-05 MCP readback found legacy API/worker container marker files
-`/app/.codex-source-revision` and `/app/.source-commit` still show `28676df`.
-This reconciles the canonical source marker for the current runtime subject, but
-it is still not legacy marker cleanup or G0/G7/B3 gate closure.
+At this post-PR #321 legacy source-marker cleanup runtime refresh slice, GitHub
+`main` includes PR #321 merge commit
+`945db2bb5926ad7b01ead98c3283d55b77d2677d`, the 211 repo-local source marker,
+source snapshot, API/worker image labels, and all three API/worker in-container
+source marker files (`/app/.ai-platform-source-revision`,
+`/app/.codex-source-revision`, and `/app/.source-commit`) bind to `945db2b`.
+API/worker currently run `ai-platform:945db2b-g7-legacy-source-markers-v1`
+with image ID
+`sha256:7c191741cab4d6415dafdaea4d1ef5a38d9f80ff8574eba30109ccdbdf860dec` and
+`ai-platform.build-dirty=false`. Direct API health, frontend proxy health, and
+frontend root returned HTTP `200`; the frontend container was restarted after
+the API recreate to clear stale nginx upstream resolution, and the superseded
+`ai-platform:a294727-g7-b3-source-marker-fix-v1` image was removed after
+confirming no container referenced it. This supports only the narrow current
+source-marker/runtime-health slice.
 
-It is not gate closure. The a294727 G7 live-env hardening verifier
+It is not gate closure. The latest reviewed G7 live-env hardening evidence and
+B3 capacity visibility evidence remain the earlier `a294727` entries:
 `g7-live-env-hardening-a294727-source-marker-fix-20260704170251` passed all
-eight checks, including platform Docker execution, callback stream, cancel
-cleanup, resource limits, egress policy, security options, and no-secret
-leakage. The paired capacity visibility refresh records Admin Runtime HTTP
-`200`, all required Admin Runtime sections observed after accepted host-side
-sandbox observation, and nested gate readiness
-`blocked_missing_load_test_evidence`. All seven recorded load-test gates and
-the `b3_10x4_sdk_subagents` profile evidence are still missing. The latest
-operator status-review artifact is still the prior `bbe23d5`
-`status_upgrade_decision=not_approved_for_closure`; no approved G7 status
-upgrade exists for `a294727`. Current status remains `local partial`; do not
-call G7 complete, B3 complete, Foundation Alpha complete, production-ready,
-`gate closable`, or #164 current closure evidence. Use `211 verified` only for
-the narrow source-marker/runtime-health slice, not for G7/B3 closure.
+eight checks, and `2026-07-04-211-capacity-runtime-readiness-a294727.json`
+records Admin Runtime HTTP `200`, all required Admin Runtime sections observed
+after accepted host-side sandbox observation, and nested gate readiness
+`blocked_missing_load_test_evidence`. Those reviewed entries are now historical
+inputs for the current status reading; no reviewed `945db2b` G7 live-env
+verifier, B3 capacity visibility entry, or approved G7 status-upgrade artifact
+exists yet. All seven recorded load-test gates and the
+`b3_10x4_sdk_subagents` profile evidence are still missing. Current status
+remains `local partial`; do not call G7 complete, B3 complete, Foundation Alpha
+complete, production-ready, `gate closable`, or #164 current closure evidence.
+Use `211 verified` only for the narrow source-marker/runtime-health slice, not
+for G7/B3 closure.
 
-The earlier post-PR #317 runtime refresh slice is retained as historical
-evidence: GitHub `main` included PR #317 merge commit
-`bbe23d53d14398378b4870de4cbf4bec0b045193`, the 211 repo-local source marker
-and image labels bound to `bbe23d5`, and the bbe23d5 G7 verifier passed all
-eight checks, but API/worker in-container source marker files still showed
-`61073b1`. PR #319 supersedes that source-marker mismatch for the current
-runtime subject.
+The earlier post-PR #319 runtime refresh slice is retained as historical
+evidence: GitHub `main` included PR #319 merge commit
+`a294727046024958c41b15f646512e68f3c04b47`, the repo-local source marker,
+source snapshot, image labels, and canonical in-container marker bound to
+`a294727`, and the a294727 G7 verifier passed all eight checks, but legacy
+marker files still showed `28676df`. PR #321 supersedes that legacy marker
+mismatch for the current runtime subject.
 
 At the earlier post-PR #316 status-sync slice, GitHub `main` included PR #316 merge
 commit `5fe44827708fe24441a4c451dee9c691281d3c21`. PR #316 merged reviewed
@@ -180,15 +179,15 @@ direction. The `9c669761` live-default G7/FRC pair and the `15903fd`
 label-clean live-default G7/FRC pair are now historical same-subject evidence.
 The `755e50e` dirty-runtime v2 G7 verifier plus same-subject FRC success advance
 that historical dirty-runtime evidence set only to reviewed candidate evidence.
-The post-PR #319 `a294727` source-marker-fix rollout advances the current
-runtime source-authority slice: repo-local marker, source snapshot, image
-labels, and canonical API/worker in-container marker
-`/app/.ai-platform-source-revision` now bind to the same runtime subject, while
-legacy `/app/.codex-source-revision` and `/app/.source-commit` still show
-`28676df`. The same-subject G7 verifier passed all eight checks. The overall
-G7/B3 evidence set still remains `local partial`: it does not provide legacy
-marker cleanup, approved G7 status upgrade, B3 recorded load/profile evidence,
-or #164 current closure evidence.
+The post-PR #321 `945db2b` legacy source-marker cleanup rollout advances the
+current runtime source-authority slice: repo-local marker, source snapshot,
+image labels, and all three API/worker in-container marker files now bind to
+the same runtime subject. The same-subject `945db2b` health readback passed for
+direct API, frontend proxy, and frontend root, and the old `a294727` backend
+image was removed after proving it was unreferenced. The overall G7/B3 evidence
+set still remains `local partial`: it does not provide a reviewed `945db2b` G7
+live-env verifier, approved G7 status upgrade, B3 recorded load/profile
+evidence, or #164 current closure evidence.
 GitHub issue #164 history is historical B0 latest-main runtime-refresh context
 only; do not use it as current G7/B3, Foundation Alpha, production-ready,
 gate-closable, or closure evidence.
@@ -404,23 +403,21 @@ be merged with the later reviewed label-repair, live-env hardening, and FRC
 evidence for the same runtime subject before reading blockers; otherwise stale
 `stale_runtime_alias_label_mismatch`, fake-provider, or missing-FRC observations
 will overstate the current G7 gap. That audit is a planning/control artifact,
-not runtime or load evidence by itself. The current post-PR #319 `a294727`
+not runtime or load evidence by itself. The current post-PR #321 `945db2b`
 readback observed API/worker image
-`ai-platform:a294727-g7-b3-source-marker-fix-v1`, image ID
-`sha256:b7637c85a625e6dd9e596b351947d3df730c93c5abe22ee0b7eeaec133799bfc`,
-`ai-platform.build-dirty=false`, `SANDBOX_CONTAINER_PROVIDER=docker`,
-`SANDBOX_EXECUTOR_IMAGE=ai-platform:a294727-g7-b3-source-marker-fix-v1`,
-`SANDBOX_EGRESS_POLICY_ENABLED=true`, and repo-local source marker, source
-snapshot, API/worker image labels, and canonical API/worker in-container source
-marker `/app/.ai-platform-source-revision` bound to `a294727`; legacy
-`/app/.codex-source-revision` and `/app/.source-commit` still show `28676df`.
-The post-PR #319 G7 verifier
-`g7-live-env-hardening-a294727-source-marker-fix-20260704170251` recorded all
-eight checks passing in
+`ai-platform:945db2b-g7-legacy-source-markers-v1`, image ID
+`sha256:7c191741cab4d6415dafdaea4d1ef5a38d9f80ff8574eba30109ccdbdf860dec`,
+`ai-platform.build-dirty=false`, and repo-local source marker, source snapshot,
+API/worker image labels, and all three API/worker in-container source marker
+files bound to `945db2b`. Direct API health, frontend proxy health, and
+frontend root returned HTTP `200` after restarting frontend to refresh nginx
+upstream resolution. The latest reviewed G7 verifier remains the historical
+post-PR #319 `a294727` run
+`g7-live-env-hardening-a294727-source-marker-fix-20260704170251` in
 `docs/release-evidence/g7-sandbox/a294727046024958c41b15f646512e68f3c04b47/2026-07-04-211-g7-sandbox-live-env-hardening-a294727-source-marker-fix.json`.
-It still does not close G0/G7 because legacy marker cleanup is incomplete, no
-approved operator status-upgrade artifact exists for `a294727`, and B3
-load/profile evidence remains missing. The prior
+It still does not close G0/G7 because no approved operator status-upgrade
+artifact exists for `945db2b`, no reviewed `945db2b` G7 live-env verifier is
+recorded yet, and B3 load/profile evidence remains missing. The prior
 `bbe23d5` operator status-review remains historical and
 `not_approved_for_closure`; the source-authority and B3 load-evidence
 boundaries are tracked separately. A
@@ -1531,18 +1528,15 @@ follow-up for S2 instead of a standalone S1 stage blocker.
 
 The table below is a gate/evidence matrix, not a replacement for the Current
 Reading Guide above. Rows that mention `96f27bb` describe reviewed 2026-06-30
-runtime-subject evidence retained in the repository. For this 2026-07-04
-snapshot, GitHub `main` includes PR #319 merge commit
-`a294727046024958c41b15f646512e68f3c04b47`; the 211 repo-local source marker,
-source snapshot, API/worker canonical runtime image labels, and canonical
-API/worker in-container source marker `/app/.ai-platform-source-revision` bind
-to `a294727`; legacy `/app/.codex-source-revision` and `/app/.source-commit`
-still show `28676df`. Direct API health returned
-`{"status":"ok"}` on
-`http://127.0.0.1:8020/api/ai/health`, frontend proxy health returns
-`{"status":"ok"}` on `http://127.0.0.1:18001/api/ai/health`, and the frontend
-root returns HTTP `200` on `http://127.0.0.1:18001/` after rollout and image
-cleanup. The named
+runtime-subject evidence retained in the repository. For this 2026-07-05
+snapshot, GitHub `main` includes PR #321 merge commit
+`945db2bb5926ad7b01ead98c3283d55b77d2677d`; the 211 repo-local source marker,
+source snapshot, API/worker image labels, and all three API/worker
+in-container source marker files bind to `945db2b`. Direct API health returned
+`{"status":"ok"}` on `http://127.0.0.1:8020/api/ai/health`, frontend proxy
+health returns `{"status":"ok"}` on `http://127.0.0.1:18001/api/ai/health`,
+and the frontend root returns HTTP `200` on `http://127.0.0.1:18001/` after
+rollout, frontend restart, and image cleanup. The named
 `g7-runtime-probe-20260701203418` formal verifier evidence remains historical
 `d318f9f`, the `ae6b7e5` one-shot G7
 verifier artifacts for
@@ -1584,12 +1578,12 @@ later label-clean rollout moved API/worker to
 live-default G7 and same-subject FRC evidence now exist. The later historical
 `755e50e` dirty-runtime v2 evidence has reviewed G7, FRC, and capacity
 visibility entries. Prior clean-main `61073b1` G7 evidence and same-subject FRC
-evidence remain reviewed history. The current `a294727` runtime evidence set
-has reviewed G7 live-env evidence and B3 capacity visibility at
-`blocked_missing_load_test_evidence`; the prior `bbe23d5` FRC and status-review
-inputs remain historical. Current status remains `local partial` because no
-approved G7 status-upgrade exists for `a294727`, and B3 recorded load/profile
-evidence is still missing.
+evidence remain reviewed history. The current `945db2b` runtime readback has
+clean source-marker/runtime-health evidence, while the latest reviewed G7
+live-env evidence and B3 capacity visibility remain the historical `a294727`
+entries. Current status remains `local partial` because no reviewed `945db2b`
+G7 live-env verifier or approved G7 status-upgrade exists, and B3 recorded
+load/profile evidence is still missing.
 A reviewed `ae6b7e5` Foundation Alpha POC evidence
 set for `ae6b7e5` is also recorded and selected by readiness, including
 runtime POC smoke, Auth/RBAC smoke, governance runtime smoke, release-evidence
@@ -1601,15 +1595,15 @@ runtime subject.
 For PR #304 runtime subject `decf33a`, the evidence-only audit for `decf33a`
 can reach `candidate_evidence_requires_review` with `blocking_reasons=[]`; this
 is retained as same-subject historical evidence and does not close the post-PR
-#319 current `a294727` slice.
+#321 current `945db2b` slice.
 
 | Gate | Current status | Evidence now in repository | Remaining blocker before closure |
 | --- | --- | --- | --- |
-| G0-G1 Source Authority / Security Baseline | Reviewed B0 runtime-relevant smoke and Foundation Runtime concurrency evidence are retained for `96f27bb`. GitHub `main` now includes PR #319 merge commit `a294727046024958c41b15f646512e68f3c04b47`; the 211 repo-local source marker, source snapshot, API/worker image labels, and canonical API/worker in-container source marker `/app/.ai-platform-source-revision` bind to `a294727`, and API/worker run `ai-platform:a294727-g7-b3-source-marker-fix-v1`. Direct API and frontend proxy health returned `{"status":"ok"}`. Legacy API/worker marker files `/app/.codex-source-revision` and `/app/.source-commit` still show `28676df`, so this reconciles only the canonical marker for the current runtime subject and is still not G0 closure because legacy marker cleanup, B3 recorded load/profile evidence, approved G7 status-upgrade for `a294727`, the external env-file label caveat/source-authority review, and production auth rollout evidence remain separate gates. Historical same-subject evidence for `bbe23d5`, `61073b1`, `755e50e`, `15903fd`, `9c669761`, `decf33a`, `4805031`, `ae6b7e5`, `28676df`, and older subjects remains useful but does not close the post-PR #319 current slice. | PRD v2, backend phased PRD, technical acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, PR #319 merge commit `a294727046024958c41b15f646512e68f3c04b47`, a294727 G7 entry `2026-07-04-211-g7-sandbox-live-env-hardening-a294727-source-marker-fix.json`, a294727 capacity visibility entry `2026-07-04-211-capacity-runtime-readiness-a294727.json`, a294727 host sandbox diagnostic `2026-07-04-211-b3-host-sandbox-observation-a294727.json`, fresh 2026-07-05 MCP readback of stale legacy marker files, PR #317 merge commit `bbe23d53d14398378b4870de4cbf4bec0b045193`, bbe23d5 G7/status-review/FRC/capacity history, PR #316 merge commit `5fe44827708fe24441a4c451dee9c691281d3c21`, prior clean-main `61073b1` G7/FRC/capacity/deployment-cleanup entries, reviewed dirty-runtime `755e50e` G7/FRC/capacity history, reviewed `15903fd` G7/FRC/status-review entries, reviewed `9c669761` G7/FRC/status-review entries, reviewed `decf33a`, `4805031`, and `ae6b7e5` same-subject evidence, reviewed `28676df` capacity visibility plus G7 diagnostic history, older retained evidence, and issue #164 evidence. | Keep current status at `local partial`; clean or retire stale legacy container marker files, record B3 load/profile evidence, obtain a future approved G7 status-upgrade decision for `a294727`, complete external env-file label caveat/source-authority review, and complete production auth rollout evidence before any G0 closure claim. |
+| G0-G1 Source Authority / Security Baseline | Reviewed B0 runtime-relevant smoke and Foundation Runtime concurrency evidence are retained for `96f27bb`. GitHub `main` now includes PR #321 merge commit `945db2bb5926ad7b01ead98c3283d55b77d2677d`; the 211 repo-local source marker, source snapshot, API/worker image labels, and all three API/worker in-container source marker files bind to `945db2b`, and API/worker run `ai-platform:945db2b-g7-legacy-source-markers-v1`. Direct API and frontend proxy health returned `{"status":"ok"}`, and the frontend root returned HTTP `200`. This proves the narrow source-marker/runtime-health slice only and is still not G0 closure because B3 recorded load/profile evidence, reviewed `945db2b` G7 live-env evidence, approved G7 status-upgrade for `945db2b`, the external env-file label caveat/source-authority review, and production auth rollout evidence remain separate gates. Historical same-subject evidence for `a294727`, `bbe23d5`, `61073b1`, `755e50e`, `15903fd`, `9c669761`, `decf33a`, `4805031`, `ae6b7e5`, `28676df`, and older subjects remains useful but does not close the post-PR #321 current slice. | PRD v2, backend phased PRD, technical acceptance matrix, roadmap, guardrails, source-authority tests, repo-local compose context, frontend source migration, redacted deploy templates, PR #321 merge commit `945db2bb5926ad7b01ead98c3283d55b77d2677d`, fresh 2026-07-05 MCP readback of `945db2b` repo marker/source snapshot/image labels/all three in-container source marker files, API/frontend health, frontend restart, and Docker cleanup, PR #319 merge commit `a294727046024958c41b15f646512e68f3c04b47`, a294727 G7 entry `2026-07-04-211-g7-sandbox-live-env-hardening-a294727-source-marker-fix.json`, a294727 capacity visibility entry `2026-07-04-211-capacity-runtime-readiness-a294727.json`, a294727 host sandbox diagnostic `2026-07-04-211-b3-host-sandbox-observation-a294727.json`, PR #317 merge commit `bbe23d53d14398378b4870de4cbf4bec0b045193`, bbe23d5 G7/status-review/FRC/capacity history, PR #316 merge commit `5fe44827708fe24441a4c451dee9c691281d3c21`, prior clean-main `61073b1` G7/FRC/capacity/deployment-cleanup entries, reviewed dirty-runtime `755e50e` G7/FRC/capacity history, reviewed `15903fd` G7/FRC/status-review entries, reviewed `9c669761` G7/FRC/status-review entries, reviewed `decf33a`, `4805031`, and `ae6b7e5` same-subject evidence, reviewed `28676df` capacity visibility plus G7 diagnostic history, older retained evidence, and issue #164 evidence. | Keep current status at `local partial`; record B3 load/profile evidence, obtain reviewed `945db2b` G7 live-env evidence and a future approved G7 status-upgrade decision for `945db2b`, complete external env-file label caveat/source-authority review, and complete production auth rollout evidence before any G0 closure claim. |
 | G2-G4 Control Plane MVP | Substantial coverage; keep under regression. | Session/run/file/artifact/skill/tool/memory/event/audit contracts, repositories, routes, schema indexes, and focused tests. | Full regression before PR/deploy, plus no executor-owned platform schema drift. |
 | G5 Run Lifecycle / Worker Runtime V1 | Foundation Alpha POC queue/run/worker execution, Admin capacity/backpressure projection, and Foundation Runtime concurrency evidence are retained for `96f27bb`; runtime POC smoke, Auth/RBAC, governance, release/alert acceptance, and Foundation Runtime concurrency evidence are also recorded for reviewed `ae6b7e5`. The 2026-07-02 `ae6b7e5` verified Foundation Runtime concurrency evidence proves Foundation Runtime POC correctness for 12 concurrent requests/sessions/runs but does not close B3 capacity, does not raise defaults, and does not remove the separate current-source rollout requirement for newer runtime-affecting local changes. | Tenant-aware queue lease, worker maintenance, active-run admission, bounded metadata, Admin Runtime capacity/backpressure projection, #20 roadmap closure notes, reviewed `ae6b7e5` runtime POC smoke entry `2026-07-02-211-foundation-alpha-poc-ae6b7e5-runtime-poc-smoke.json`, `ae6b7e5` FRC evidence entry `2026-07-02-211-foundation-alpha-poc-ae6b7e5-foundation-runtime-concurrency.json`, 2026-07-02 `ae6b7e5` Auth/RBAC/governance/release/alert evidence, 2026-06-30 `96f27bb` POC verifier evidence, 2026-06-30 `96f27bb` verified Foundation Runtime concurrency evidence, 2026-06-30 `c3d6525` POC verifier evidence retained as superseded B0 history, 2026-06-30 `c3d6525` verified Foundation Runtime concurrency evidence retained as superseded B0 history, 2026-06-30 `442aa39` POC verifier evidence retained as superseded B0 history, 2026-06-30 `845faf7` verified Foundation Runtime concurrency evidence retained as superseded non-current-subject FRC, 2026-06-29 `f67986a` POC verifier evidence, 2026-06-29 `f67986a` verified Foundation Runtime concurrency evidence, superseded 2026-06-24 `e4c0e9d` POC verifier evidence, superseded 2026-06-24 `e4c0e9d` verified Foundation Runtime concurrency evidence, superseded 2026-06-24 `e7558cc` POC verifier evidence, superseded 2026-06-24 `17dc3ae` POC verifier evidence, superseded 2026-06-23 `0a9e70a` POC verifier evidence, superseded 2026-06-23 `df85a9f` POC verifier evidence, superseded 2026-06-23 `a4bded0` POC verifier evidence, superseded 2026-06-22 `2bc3a35` POC verifier evidence, superseded 2026-06-22 `d94d274` POC verifier evidence, superseded 2026-06-22 `dab7dbc` POC verifier evidence, superseded 2026-06-20 `4039e4b` POC verifier evidence, superseded 2026-06-19 `87528bf` POC verifier evidence, superseded 2026-06-19 `75ab69b` POC verifier evidence, superseded 2026-06-19 `dde1749` POC verifier evidence, superseded 2026-06-19 `14808bc` POC verifier evidence, superseded 2026-06-19 `14808bc` 240s blocked FRC diagnostic, superseded 2026-06-18 `5698873` evidence, superseded 2026-06-18 `de12191` evidence, superseded 2026-06-17 `a15c74f` evidence, superseded 2026-06-16 `8e0389e` failed-closed FRC diagnostics, superseded 2026-06-17 `8e0389e` verified Foundation Runtime concurrency evidence, and 2026-06-15 `380de6b` historical accepted concurrency evidence. | Keep #21/B3 capacity evidence, large queue bounded lookup pressure, worker parallelism/capacity profiling, and multi-tenant load evidence separate from #164. #21 is currently closed in GitHub but the B3 capacity evidence remains incomplete. Production defaults stay unchanged. |
 | G6 Tool / Skill / Memory Governance | Admin Runtime governance projection now has focused 211 smoke evidence for the POC runtime, and Foundation readiness records `memory_context_controls` with `session_scoped_memory=true`, `ordinary_user_opt_out=true`, `retention_cleanup=true`, `delete_redaction=true`, `public_admin_projection_safe=true`, `long_term_cross_session_memory_fail_closed=true`, exact tool-permission decision lookup source tests, admin bulk-review source-route runtime-control tests, Admin Skill release dashboard source-route runtime-control tests, source-level context-pack persistence/versioning, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, document-centric follow-up state source tests, reviewed `8e0389e` 211 executor context-pack evidence, and reviewed PR #44 211 sandbox latency split evidence. G6 remains partial and ordinary-user governance/frontend rollout remains blocked. | Tool policy taxonomy/history, exact tool-permission decision lookup source tests, admin bulk-review source-route runtime-control tests, Admin Skill release dashboard source-route runtime-control tests, public permission-card projection, skill release/dependency policy contracts, memory delete/retention/redaction/export readiness, office context-pack architecture readiness, `source_level_context_pack_persistence_and_versioning`, `context_pack_version`, `context_pack_generated_at`, context snapshot public provenance projection contract, user-visible context provenance API projection source tests, frontend run-playback context provenance projection source tests, document-centric follow-up state source tests, `8e0389e` executor context-pack runtime evidence, PR #44 `office-context-runtime` sandbox latency evidence, governance readiness CLI, POC runs using governed skills, and 2026-06-15 380de6b governance runtime smoke evidence. | Legacy frontend route remap/policy enforcement, signed package or SBOM review evidence, dependency vulnerability/license evidence, admin bulk-review visual acceptance, admin bulk-review 211 acceptance, Admin Skill release visual acceptance, Admin Skill release 211 acceptance, long-term cross-session memory policy closure, ordinary-user platform-level multi-run orchestration exposure controls, production Docker sandbox hardening, packaged frontend acceptance, and broader 211 acceptance. |
-| G7 Sandbox / Resource Hardening | local partial. Current 211 API/worker images run `ai-platform:a294727-g7-b3-source-marker-fix-v1` with image ID `sha256:b7637c85a625e6dd9e596b351947d3df730c93c5abe22ee0b7eeaec133799bfc`, `build-dirty=false`, and `SANDBOX_EXECUTOR_IMAGE=ai-platform:a294727-g7-b3-source-marker-fix-v1`; the repo-local source marker, source snapshot, image labels, and canonical API/worker in-container marker `/app/.ai-platform-source-revision` bind to `a294727`, while legacy `/app/.codex-source-revision` and `/app/.source-commit` still show `28676df`. Reviewed a294727 live-env G7 hardening evidence exists and the verifier passed all eight checks, including platform Docker execution, callback stream, cancel cleanup, resource limits, egress policy, security options, and no-secret leakage. This supports the narrow current runtime/canonical-source-marker slice only. It is not G7 closure because B3 load/profile evidence is missing and no approved G7 status-upgrade exists for `a294727`. | Historical B2 sandbox release-evidence; named `d318f9f` formal verifier observation; reviewed G7 entries for `a294727`, `bbe23d5`, `ae6b7e5`, `4805031`, `decf33a`, `9c669761`, `15903fd`, dirty-runtime v2 `755e50e`, and clean current-main `61073b1`; reviewed FRC entries for same-subject `ae6b7e5`, `4805031`, `decf33a`, `9c669761`, `15903fd`, `755e50e`, `61073b1`, and historical `bbe23d5`; reviewed status-review entries for `9c669761`, `15903fd`, `61073b1`, and historical `bbe23d5`; the superseded blocked 755e50e FRC attempt `/tmp/frc-755e50e-20260703T090109Z`; `28676df` capacity visibility plus workspace-owner diagnostic history; merged verifier-helper callback default tests; and capacity docs exposing sandbox limits and missing hardening warnings. | Obtain a future approved G7 status-upgrade decision for `a294727`, keep B3 evidence gates separate, clean or retire stale legacy marker files before G0/source-authority closure, and keep B3 blocked until recorded load/profile evidence exists. |
+| G7 Sandbox / Resource Hardening | local partial. Current 211 API/worker images run `ai-platform:945db2b-g7-legacy-source-markers-v1` with image ID `sha256:7c191741cab4d6415dafdaea4d1ef5a38d9f80ff8574eba30109ccdbdf860dec`, `build-dirty=false`, and all three source marker files bound to `945db2b`. This supports the narrow current source-marker/runtime-health slice only. The latest reviewed G7 live-env hardening evidence remains the historical `a294727` entry, whose verifier passed all eight checks, including platform Docker execution, callback stream, cancel cleanup, resource limits, egress policy, security options, and no-secret leakage. It is not G7 closure because no reviewed `945db2b` G7 live-env verifier or approved G7 status-upgrade exists, and B3 load/profile evidence is missing. | Historical B2 sandbox release-evidence; named `d318f9f` formal verifier observation; reviewed G7 entries for `a294727`, `bbe23d5`, `ae6b7e5`, `4805031`, `decf33a`, `9c669761`, `15903fd`, dirty-runtime v2 `755e50e`, and clean current-main `61073b1`; reviewed FRC entries for same-subject `ae6b7e5`, `4805031`, `decf33a`, `9c669761`, `15903fd`, `755e50e`, `61073b1`, and historical `bbe23d5`; reviewed status-review entries for `9c669761`, `15903fd`, `61073b1`, and historical `bbe23d5`; fresh 2026-07-05 `945db2b` source-marker/runtime-health readback; the superseded blocked 755e50e FRC attempt `/tmp/frc-755e50e-20260703T090109Z`; `28676df` capacity visibility plus workspace-owner diagnostic history; merged verifier-helper callback default tests; and capacity docs exposing sandbox limits and missing hardening warnings. | Obtain reviewed `945db2b` G7 live-env evidence and a future approved G7 status-upgrade decision for `945db2b`, keep B3 evidence gates separate, and keep B3 blocked until recorded load/profile evidence exists. |
 | G8 Deferred Platform Multi-Run Gate | Deferred parking-lot for platform-owned parent/child multi-run orchestration. Historical evidence may mention the old title "G8 Multi-Agent Controlled Beta"; current status must not use that beta title and must not be read as ordinary-user platform-level multi-run product exposure. SDK-internal Agent/subagent fanout stays inside one governed platform run, and the current question is B3 deployment capacity for SDK subagent fanout rather than a G8 product route. This is a blocked expansion, not a current Foundation Alpha `open_followups` item. | Historical dispatcher and child-run admission work exists behind controls but is not the current product route; Claude Agent SDK remains the execution-layer route for SDK Agent/subagent fanout patterns. | Do not build a separate agent harness as the next step. Reopen only after prior gates have recorded tenant quota/backpressure, model-gateway pressure, sandbox pressure, artifact/event volume, token/cost accounting, rollback, and no ordinary-user platform-level multi-run orchestration exposure evidence. |
 | G9 Observability / Quality / Ops | Reviewed release-evidence runtime acceptance and alert/trace runtime acceptance are retained for `96f27bb`; G9 remains partial for Operations Beta and current-main evidence still needs refresh where gate-specific reviewed evidence matters. | Admin Runtime overview, capacity/governance/observability readiness docs and tools, error taxonomy/dashboard contracts, release-evidence contracts, reviewed 211 release-evidence runtime export/retention acceptance for `96f27bb`, reviewed 211 alert/trace export runtime acceptance for `96f27bb`, superseded `c3d6525`, `442aa39`, `f67986a`, `e4c0e9d`, `e7558cc`, `17dc3ae`, `0a9e70a`, `df85a9f`, `a4bded0`, `2bc3a35`, `d94d274`, `dab7dbc`, `4039e4b`, and `87528bf` G9 runtime evidence, trace/audit export contracts, frontend projection audit, and reviewed 211 POC smoke entry. | S2/G9 closure still requires runtime dashboard acceptance, recorded capacity evidence, model-gateway backpressure evidence, golden-set eval runtime, alert delivery enablement/runtime calibration, and remaining Admin Runtime observability follow-ups. |
 | G10 Internal Beta / Department Rollout | Blocked. | Candidate internal workflows are named only as examples in roadmap. | Select 1-2 real internal workflow owners, complete prior gates, record cost/quality/audit/rollback evidence, and pass 211 acceptance. |

@@ -66,6 +66,8 @@ POST_PR317_G7_B3_RUNTIME_SHA = "bbe23d53d14398378b4870de4cbf4bec0b045193"
 POST_PR317_G7_B3_RUNTIME_SHORT_SHA = POST_PR317_G7_B3_RUNTIME_SHA[:7]
 POST_PR319_G7_B3_RUNTIME_SHA = "a294727046024958c41b15f646512e68f3c04b47"
 POST_PR319_G7_B3_RUNTIME_SHORT_SHA = POST_PR319_G7_B3_RUNTIME_SHA[:7]
+POST_PR321_G7_B3_RUNTIME_SHA = "945db2bb5926ad7b01ead98c3283d55b77d2677d"
+POST_PR321_G7_B3_RUNTIME_SHORT_SHA = POST_PR321_G7_B3_RUNTIME_SHA[:7]
 CURRENT_G7_B3_FRC_EVIDENCE_DIR = (
     ROOT
     / "docs/release-evidence/foundation-runtime-concurrency/"
@@ -257,10 +259,10 @@ def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
     assert "reviewed 2026-07-03 live-default G7/FRC evidence for `9c669761`" in tech_text
     assert "reviewed 2026-07-03 label-clean live-default G7/FRC evidence for historical `15903fd`" in tech_text
     assert "The historical `15903fd` label-clean evidence pair also records" in tech_text
-    assert "The current post-PR #319 `a294727` runtime subject now has reviewed live-env G7 evidence" in tech_text
-    assert "canonical source-marker reconciliation across repo marker/source snapshot/image labels/`/app/.ai-platform-source-revision`" in tech_text
-    assert "legacy `/app/.codex-source-revision` and `/app/.source-commit` still show `28676df`" in tech_text
-    assert "capacity visibility evidence at `blocked_missing_load_test_evidence`" in tech_text
+    assert "The current post-PR #321 `945db2b` runtime subject now has source-marker reconciliation" in tech_text
+    assert "all three API/worker in-container marker files" in tech_text
+    assert "latest reviewed live-env G7 evidence and capacity visibility evidence remain historical `a294727` entries" in tech_text
+    assert "capacity visibility at `blocked_missing_load_test_evidence`" in tech_text
     assert "`g7_runtime_blocking_reasons=[]`" in tech_text
     assert "`status_upgrade_decision=not_approved_for_closure`" in tech_text
     assert "B3 recorded load/profile evidence remains a separate blocker" in tech_text
@@ -1711,7 +1713,7 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     assert "the earlier reviewed `bbe23d5` and `61073b1` visibility records are retained as prior baselines" in gate_status_text
     assert HISTORICAL_DIRTY_G7_B3_RUNTIME_SHA in capacity_text
     assert "so `755e50e` is not latest clean `origin/main` runtime evidence" in compact_capacity_text
-    assert "current status reading must use the later `a294727` visibility record" in compact_capacity_text
+    assert "current runtime is `945db2b`, while the latest reviewed capacity visibility remains the historical `a294727` record" in compact_capacity_text
     assert "Even when a deployment profile sets `SANDBOX_CONTAINER_PROVIDER=docker`" in compact_capacity_text
     assert (
         "capacity baseline remains fail-closed until an approved G7 status-upgrade "
@@ -1763,7 +1765,7 @@ def test_current_b3_sandbox_diagnostic_documents_socket_boundary_without_gate_cl
     assert "diagnostic only and does not close B3/G7" in compact_index_text
     assert "same-subject host-side replay records `host_sandbox_observation_status=accepted`" in compact_gate_status_text
     assert "`readiness_status_after_host_observation=blocked_missing_load_test_evidence`" in compact_gate_status_text
-    assert "current `a294727` Admin Runtime capacity visibility now reaches `blocked_missing_load_test_evidence`" in compact_plan_text
+    assert "historical `a294727` Admin Runtime capacity visibility now reaches `blocked_missing_load_test_evidence`" in compact_plan_text
     assert "host-side sandbox observation status `accepted`" in compact_plan_text
     assert "`bbe23d5` and `61073b1` visibility entries remain retained as prior baseline evidence only" in compact_plan_text
 
@@ -1841,16 +1843,16 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "single current gate/runtime status matrix" in compact_gate_status_text
     assert "当前路线进展读法" in roadmap_text
     assert "Historical progress retained below current state" in roadmap_text
-    assert "`a294727` image" in roadmap_text
-    assert "`a294727` post-PR #319 runtime refresh paragraph" in roadmap_text
+    assert "`945db2b` image" in roadmap_text
+    assert "PR #321 `945db2b` runtime refresh" in compact_roadmap_text
     current_gate_table = gate_status_text.split("## Current Gate Status", 1)[1].split(
         "## Issue-Driven Thin Spots",
         1,
     )[0]
     assert "The table below is a gate/evidence matrix" in current_gate_table
     assert "Rows that mention `96f27bb` describe reviewed 2026-06-30" in current_gate_table
-    assert "GitHub `main` now includes PR #319 merge commit" in current_gate_table
-    assert POST_PR319_G7_B3_RUNTIME_SHA in current_gate_table
+    assert "GitHub `main` now includes PR #321 merge commit" in current_gate_table
+    assert POST_PR321_G7_B3_RUNTIME_SHA in current_gate_table
     assert "latest reviewed 211 runtime subject remains PR #315 merge commit" not in " ".join(current_gate_table.split())
     assert "current GitHub `main`, the 211 repo-local source marker, and the 211 API/worker canonical runtime image labels are at `15903fdfe96ffcfba9daa1252741111017dcf832`" not in " ".join(current_gate_table.split())
     assert "`ae6b7e5` FRC evidence is recorded as Foundation Runtime POC correctness evidence" in " ".join(current_gate_table.split())
@@ -1899,18 +1901,17 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     )
     assert "earlier post-PR #316 `main` slice or the `61073b1` runtime subject `211 verified`" in compact_gate_status_text
     assert (
-        "本轮 post-PR #319 source-marker-fix runtime refresh 的 GitHub `main` 已包含 PR #319 merge "
-        f"commit `{POST_PR319_G7_B3_RUNTIME_SHA}`"
+        "本轮 post-PR #321 legacy source-marker cleanup runtime refresh 的 GitHub `main` 已包含 PR #321 merge "
+        f"commit `{POST_PR321_G7_B3_RUNTIME_SHA}`"
         in compact_roadmap_text
     )
     assert (
-        "211 repo-local source marker、 source snapshot、API/worker image labels 和 canonical API/worker "
-        "in-container marker `/app/.ai-platform-source-revision` 已绑定 "
-        f"`{POST_PR319_G7_B3_RUNTIME_SHORT_SHA}`"
+        "211 repo-local source marker、 source snapshot、API/worker image labels 和三个 API/worker in-container marker "
+        "`/app/.ai-platform-source-revision`、`/app/.codex-source-revision`、 `/app/.source-commit` 已绑定 "
+        f"`{POST_PR321_G7_B3_RUNTIME_SHORT_SHA}`"
         in compact_roadmap_text
     )
-    assert "legacy `/app/.codex-source-revision` 和 `/app/.source-commit` 仍显示 `28676df`" in compact_roadmap_text
-    assert "API/worker 运行 `ai-platform:a294727-g7-b3-source-marker-fix-v1`" in compact_roadmap_text
+    assert "API/worker 运行 `ai-platform:945db2b-g7-legacy-source-markers-v1`" in compact_roadmap_text
     assert "`755e50e` dirty-runtime v2 G7/FRC/capacity visibility 都作为历史 reviewed candidate evidence 保留" in compact_roadmap_text
     assert "legacy in-container marker files at `9c669761` and `28676df`" in compact_gate_status_text
     assert PR311_G7_B3_SHA not in current_gate_table
@@ -1981,13 +1982,13 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "led to PR #306" in compact_gate_status_text
     assert "The `9c669761` live-default G7/FRC pair and the `15903fd` label-clean live-default G7/FRC pair are now historical same-subject evidence" in compact_gate_status_text
     assert "The `755e50e` dirty-runtime v2 G7 verifier plus same-subject FRC success advance" in compact_gate_status_text
-    assert "The post-PR #319 `a294727` source-marker-fix rollout advances the current runtime source-authority slice" in compact_gate_status_text
-    assert "it does not provide legacy marker cleanup, approved G7 status upgrade, B3 recorded load/profile evidence, or #164 current closure evidence" in compact_gate_status_text
+    assert "The post-PR #321 `945db2b` legacy source-marker cleanup rollout advances the current runtime source-authority slice" in compact_gate_status_text
+    assert "it does not provide a reviewed `945db2b` G7 live-env verifier, approved G7 status upgrade, B3 recorded load/profile evidence, or #164 current closure evidence" in compact_gate_status_text
     assert "#164 history is historical B0 latest-main runtime-refresh context only" in compact_gate_status_text
     assert "do not use it as current G7/B3, Foundation Alpha, production-ready, gate-closable, or closure evidence" in compact_gate_status_text
-    assert "`a294727` post-PR #319 live-env G7 evidence and source-marker reconciliation as the current G7 runtime input" in compact_gate_status_text
-    assert "legacy `/app/.codex-source-revision` and `/app/.source-commit` still show `28676df`" in compact_gate_status_text
-    assert "No approved `a294727` operator status-upgrade artifact exists yet" in compact_gate_status_text
+    assert "The latest reviewed G7 verifier remains the historical post-PR #319 `a294727` run" in compact_gate_status_text
+    assert "all three API/worker in-container source marker files bound to `945db2b`" in compact_gate_status_text
+    assert "no reviewed `945db2b` G7 live-env verifier is recorded yet" in compact_gate_status_text
     assert "the historical `bbe23d5` operator status-review artifact is recorded but explicitly sets `status_upgrade_decision=not_approved_for_closure`" in compact_gate_status_text
     assert "`15903fd` label-clean live-env G7 evidence plus same-subject Foundation Runtime concurrency evidence as the current G7 runtime input" not in compact_gate_status_text
     assert "At the `15903fd` slice, the 2026-07-03 label-clean readback confirmed API/worker live defaults used" in compact_gate_status_text
@@ -2093,24 +2094,23 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
         "可到 candidate / local-partial 层级但未获 closure approval"
         in compact_roadmap_text
     )
-    assert "当前路线读法已前进到 PR #319 `a294727` runtime refresh" in compact_roadmap_text
-    assert "source marker、source snapshot、API/worker image labels 和 canonical API/worker in-container marker `/app/.ai-platform-source-revision` 已绑定 `a294727`" in compact_roadmap_text
-    assert "legacy `/app/.codex-source-revision` 和 `/app/.source-commit` 仍显示 `28676df`" in compact_roadmap_text
-    assert "当前 `a294727` 仍没有 approved G7 status-upgrade artifact" in compact_roadmap_text
+    assert "当前路线读法已前进到 PR #321 `945db2b` runtime refresh" in compact_roadmap_text
+    assert "source marker、source snapshot、API/worker image labels 和三个 API/worker in-container marker 均已绑定 `945db2b`" in compact_roadmap_text
+    assert "当前 `945db2b` 仍不是 G0/G7 closure" in compact_roadmap_text
     assert "B3 recorded load evidence 和 `b3_10x4_sdk_subagents` profile evidence 仍缺" in compact_roadmap_text
     assert "GitHub issue #164 只作为历史 B0 latest-main runtime-refresh 证据上下文" in compact_roadmap_text
     assert "不得作为当前 G7/B3/#164 closure、gate closable 或 production-ready 证据" in compact_roadmap_text
-    assert "当前 `a294727` capacity visibility verdict 是 `blocked_missing_load_test_evidence`" in compact_roadmap_text
+    assert "当前最新 reviewed capacity visibility verdict 仍是历史 `a294727` 的 `blocked_missing_load_test_evidence`" in compact_roadmap_text
     assert "总体 B3 closure 仍是 `local partial`" in compact_roadmap_text
     assert "因为七门 recorded load evidence 和 `b3_10x4_sdk_subagents` profile evidence 未齐备" in compact_roadmap_text
     compact_g7_b3_evidence_plan = " ".join(read(G7_B3_EVIDENCE_CLOSURE_PLAN).split())
     assert (
-        "current `a294727` Admin Runtime capacity visibility now reaches "
+        "historical `a294727` Admin Runtime capacity visibility now reaches "
         "`blocked_missing_load_test_evidence`"
         in compact_g7_b3_evidence_plan
     )
     assert (
-        "No approved status-upgrade artifact exists for current `a294727`"
+        "No approved status-upgrade artifact exists for current `945db2b`"
         in compact_g7_b3_evidence_plan
     )
     assert (
@@ -2151,16 +2151,16 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
         "g7-live-env-hardening-755e50e-principal-userid-fix-v2-container-20260703115120",
     ):
         assert expected in combined_text
-    assert "The earlier post-PR #317 runtime refresh slice is retained as historical evidence" in compact_text
-    assert "the bbe23d5 G7 verifier passed all eight checks" in compact_text
-    assert "API/worker in-container source marker files still showed `61073b1`" in compact_text
-    assert "PR #319 supersedes that source-marker mismatch for the current runtime subject" in compact_text
+    assert "The earlier post-PR #319 runtime refresh slice is retained as historical evidence" in compact_text
+    assert "the a294727 G7 verifier passed all eight checks" in compact_text
+    assert "legacy marker files still showed `28676df`" in compact_text
+    assert "PR #321 supersedes that legacy marker mismatch for the current runtime subject" in compact_text
     assert "2026-07-04-211-g7-sandbox-live-env-hardening-a294727-source-marker-fix.json" in current_gate_table
     assert "2026-07-04-211-capacity-runtime-readiness-a294727.json" in current_gate_table
     assert "2026-07-04-211-b3-host-sandbox-observation-a294727.json" in current_gate_table
-    assert "#319 current `a294727` slice" in current_gate_table
-    assert "Current 211 API/worker images run `ai-platform:a294727-g7-b3-source-marker-fix-v1`" in " ".join(current_gate_table.split())
-    assert "This supports the narrow current runtime/canonical-source-marker slice only" in " ".join(current_gate_table.split())
+    assert "#321 current `945db2b` slice" in current_gate_table
+    assert "Current 211 API/worker images run `ai-platform:945db2b-g7-legacy-source-markers-v1`" in " ".join(current_gate_table.split())
+    assert "This supports the narrow current source-marker/runtime-health slice only" in " ".join(current_gate_table.split())
     assert "keep B3 blocked until recorded load/profile evidence exists" in current_gate_table
     assert "live API/worker default `SANDBOX_EXECUTOR_IMAGE` still points to `ai-platform:4805031-g7-b3-post-297-label-repair-v2`" not in current_gate_table
     assert "same-subject FRC for `9c669761` is still missing" not in current_gate_table
@@ -2202,11 +2202,11 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "2026-07-02 `ae6b7e5` read-only capacity runtime evidence" in roadmap_text
     assert "Admin Runtime HTTP `200`" in roadmap_text
     assert "required capacity sections present" in roadmap_text
-    assert "2026-07-04 `a294727` live-env G7 verifier" in compact_roadmap_text
+    assert "PR #319 / `a294727` 已作为历史 reviewed G7/capacity evidence 保留" in compact_roadmap_text
     assert "g7-live-env-hardening-a294727-source-marker-fix-20260704170251" in compact_roadmap_text
     assert "all eight checks passing" in compact_roadmap_text
     assert "blocked_missing_admin_runtime_sections" in roadmap_text
-    assert "当前 `a294727` capacity visibility verdict 是 `blocked_missing_load_test_evidence`" in compact_roadmap_text
+    assert "当前最新 reviewed capacity visibility verdict 仍是历史 `a294727` 的 `blocked_missing_load_test_evidence`" in compact_roadmap_text
     assert "总体 B3 closure 仍是 `local partial`" in compact_roadmap_text
     assert "2026-07-02 PR #304 runtime subject `decf33a` 又补了一次 read-only" in roadmap_text
     assert "Admin Runtime no-cleanup overview 返回 HTTP `200`" in compact_roadmap_text
@@ -2266,8 +2266,8 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
 
     release_evidence_text = read(RELEASE_EVIDENCE_INDEX)
     compact_release_evidence_text = " ".join(release_evidence_text.split())
-    assert "The 2026-07-04 post-PR #319 runtime refresh has GitHub `main` including PR #319 merge" in compact_release_evidence_text
-    assert "runs API/worker image `ai-platform:a294727-g7-b3-source-marker-fix-v1`" in compact_release_evidence_text
+    assert "The 2026-07-05 post-PR #321 runtime refresh has GitHub `main` including PR #321 merge" in compact_release_evidence_text
+    assert "runs API/worker image `ai-platform:945db2b-g7-legacy-source-markers-v1`" in compact_release_evidence_text
     assert "Current status remains `local partial`" in compact_release_evidence_text
     assert "The earlier 2026-07-04 post-PR #316 status-sync baseline has GitHub `main` including PR #316 merge" in compact_release_evidence_text
     assert "At that earlier slice, the reviewed 211 runtime subject was PR #315 merge commit" in compact_release_evidence_text

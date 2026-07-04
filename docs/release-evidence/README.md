@@ -1,31 +1,32 @@
 # ai-platform Release Evidence Index
 
-Date: 2026-07-04
+Date: 2026-07-05
 
 This directory is the repository-owned location for reviewed, redacted release
 evidence entries. It is an index and contract baseline only. This contract
 does not close G9 and is not the current gate/runtime status matrix; read
 `docs/operations/ai-platform-gate-status.md` for current status.
 
-The 2026-07-04 post-PR #319 runtime refresh has GitHub `main` including PR
-#319 merge commit `a294727046024958c41b15f646512e68f3c04b47`, and 211 now
-runs API/worker image `ai-platform:a294727-g7-b3-source-marker-fix-v1`.
-The repo-local source marker, source snapshot, image labels, and canonical
-API/worker in-container marker `/app/.ai-platform-source-revision` bind to
-`a294727`; legacy `/app/.codex-source-revision` and `/app/.source-commit` still
-show `28676df`. Direct API and frontend proxy health returned `{"status":"ok"}`.
-Reviewed G7 live-env hardening evidence for `a294727` passed all eight verifier checks, and reviewed B3
-capacity visibility now reaches `blocked_missing_load_test_evidence` with all
-Admin Runtime sections observed after accepted host-side sandbox observation.
-B3 still lacks all seven operator-reviewed recorded load-test gates and the
-`b3_10x4_sdk_subagents` profile evidence. No approved G7 status-upgrade artifact
-exists for `a294727`; the historical `bbe23d5` status-review remains
+The 2026-07-05 post-PR #321 runtime refresh has GitHub `main` including PR
+#321 merge commit `945db2bb5926ad7b01ead98c3283d55b77d2677d`, and 211 now
+runs API/worker image `ai-platform:945db2b-g7-legacy-source-markers-v1`.
+The repo-local source marker, source snapshot, image labels, and all three
+API/worker in-container source marker files bind to `945db2b`; direct API
+health, frontend proxy health, and frontend root returned HTTP `200` after
+frontend restart and Docker cleanup. Reviewed G7 live-env hardening evidence and
+reviewed B3 capacity visibility remain the historical `a294727` entries:
+`a294727` G7 passed all eight verifier checks, and capacity visibility reached
+`blocked_missing_load_test_evidence` with all Admin Runtime sections observed
+after accepted host-side sandbox observation. B3 still lacks all seven
+operator-reviewed recorded load-test gates and the `b3_10x4_sdk_subagents`
+profile evidence. No reviewed `945db2b` G7 live-env verifier or approved G7
+status-upgrade artifact exists; the historical `bbe23d5` status-review remains
 `status_upgrade_decision=not_approved_for_closure`. Current status remains
-`local partial`; do not read PR #319, the `a294727` runtime evidence, or capacity
-visibility as G7 closure, B3 closure, Foundation Alpha completion,
-production-ready, `gate closable`, or #164 closure evidence. Use `211 verified`
-only for the narrow source-marker/runtime-health slice, not for overall G7/B3
-closure.
+`local partial`; do not read PR #321, the `945db2b` runtime readback, historical
+`a294727` evidence, or capacity visibility as G7 closure, B3 closure, Foundation
+Alpha completion, production-ready, `gate closable`, or #164 closure evidence.
+Use `211 verified` only for the narrow source-marker/runtime-health slice, not
+for overall G7/B3 closure.
 
 The earlier 2026-07-04 post-PR #316 status-sync baseline has GitHub `main` including PR
 #316 merge commit `5fe44827708fe24441a4c451dee9c691281d3c21`. PR #316 merged
