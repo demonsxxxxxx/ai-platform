@@ -1,0 +1,657 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-05-211-capacity-recorded-gate-readiness-53887e2",
+  "artifact_kind": "capacity_gate_readiness",
+  "gate": "B3 Capacity Baseline",
+  "commit_sha": "53887e20f5141e66a8f635affc87f4af930348ba",
+  "runtime_subject_commit_sha": "53887e20f5141e66a8f635affc87f4af930348ba",
+  "captured_at": "2026-07-05T11:20:08Z",
+  "issue_refs": [
+    "#21",
+    "#122",
+    "#144",
+    "#164"
+  ],
+  "pr_refs": [],
+  "review_status": "reviewed",
+  "redaction_scan_status": "passed",
+  "does_not_claim_safe_concurrency": true,
+  "does_not_close_b3": true,
+  "does_not_close_g7": true,
+  "does_not_make_211_verified": true,
+  "does_not_make_gate_closable": true,
+  "does_not_raise_production_defaults": true,
+  "source_ref": {
+    "subject": "clean 211 B3 recorded batch runtime subject",
+    "runtime_subject_commit_sha": "53887e20f5141e66a8f635affc87f4af930348ba",
+    "api_worker_image": "ai-platform:53887e2-b3-recorded-clean-v1",
+    "api_worker_image_id": "sha256:a270f7a765cd13f379c735a599578bf8b475fb813116bcf5b7c05c31b11f6055",
+    "api_worker_image_build_dirty": false,
+    "source_marker_commit": "53887e20f5141e66a8f635affc87f4af930348ba",
+    "source_marker_status": "repo_marker_source_snapshot_image_labels_and_all_container_marker_files_match_53887e2",
+    "health_status": "ok",
+    "api_health_http_status": 200,
+    "artifact_root_ref": "b3-recorded-clean-20260705T111004Z",
+    "capture_mode": "clean_committed_image_strict_sdk_fanout_plus_same_subject_live_run_recorded_batch",
+    "source_authority_caveat": "This is clean branch-runtime B3 recorded evidence for 53887e2. It is not a merged-main release, not an automatic production-default increase, not #164 closure, not overall 211 verified, and not gate-closable evidence until the PR/review/merge/deploy/closure loop is completed."
+  },
+  "evidence_ref": {
+    "recorded_batch_tooling": [
+      "tools/capacity_recorded_gate_values_from_live_run.py",
+      "tools/capacity_recorded_gate_batch_from_values.py",
+      "tools/capacity_recorded_gate_snapshot.py",
+      "tools/capacity_profile_evidence_packet.py",
+      "tools/capacity_profile_readiness.py"
+    ],
+    "runtime_evidence_schema_version": "ai-platform.capacity-runtime-evidence.v1",
+    "recorded_gate_values_schema_version": "ai-platform.capacity-recorded-gate-values-from-live-run.v1",
+    "recorded_gate_batch_snapshot_status": "recorded_gate_batch_input_accepted",
+    "recorded_gate_batch_readiness_schema_version": "ai-platform.capacity-gate-readiness.v1",
+    "recorded_gate_batch_readiness_status": "ready_for_operator_review",
+    "capacity_profile_readiness_schema_version": "ai-platform.capacity-profile-readiness.v1",
+    "capacity_profile_readiness_status": "operator_review_required",
+    "profile_packet_schema_version": "ai-platform.capacity-profile-evidence-packet-result.v1",
+    "profile_packet_status": "profile_evidence_packet_ready",
+    "input_status": {
+      "profile_evidence": "accepted",
+      "recorded_gate_evidence": "accepted",
+      "runtime_evidence": "accepted"
+    },
+    "load_test_evidence_status": "recorded",
+    "recorded_gates": [
+      "api_read_write_burst",
+      "run_creation_burst_by_tenant_and_user",
+      "worker_processing_throughput",
+      "queue_depth_and_lease_latency",
+      "cancel_retry_resume_under_load",
+      "sandbox_lease_creation_under_load",
+      "model_gateway_timeout_and_backpressure"
+    ],
+    "missing_load_test_gates": [],
+    "invalid_load_test_evidence": [],
+    "profile_evidence_status": "accepted",
+    "profile_evidence": {
+      "target_profile_id": "b3_10x4_sdk_subagents",
+      "evidence_source": "live_worker_run_payload",
+      "observed_concurrent_sessions": 10,
+      "observed_peak_sdk_subagents_per_session": 4,
+      "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/b3-sdk-subagent-fanout-measurement-summary.json",
+      "production_concurrency_defaults_raised": false,
+      "safe_concurrency_claimed": false,
+      "ordinary_user_platform_multi_run_orchestration_enabled": false
+    },
+    "strict_sdk_fanout_measurement_summary": {
+      "schema_version": "ai-platform.b3-sdk-subagent-fanout-measurement-summary.v1",
+      "evidence_status": "clean_runtime_profile_measurement_pending_operator_review",
+      "requested_runs": 10,
+      "sdk_transcript_run_count": 10,
+      "final_status_counts": {
+        "succeeded": 10
+      },
+      "db_status_counts": {
+        "succeeded": 10
+      },
+      "agent_type_total": {
+        "general-purpose": 40
+      },
+      "runs_with_exactly_4_agent_tool_uses": 10,
+      "runs_with_exactly_4_tool_results": 10,
+      "runs_with_exactly_4_subagent_jsonl": 10,
+      "runs_with_exactly_4_subagent_meta": 10,
+      "workspace_git_head_present_count": 10,
+      "runtime_image": "ai-platform:53887e2-b3-recorded-clean-v1",
+      "runtime_image_dirty": false,
+      "source_runtime_subject_commit_sha": "53887e20f5141e66a8f635affc87f4af930348ba",
+      "redaction": {
+        "absolute_paths_omitted_from_packet_ref": true,
+        "raw_private_content_excluded": true,
+        "run_ids_count": 10,
+        "run_ids_omitted_from_summary": true
+      }
+    },
+    "foundation_runtime_concurrency": {
+      "evidence_ref": "foundation-runtime-concurrency/53887e20f5141e66a8f635affc87f4af930348ba-frc-g7-b3-20260705/2026-07-05-211-foundation-alpha-poc-53887e2-foundation-runtime-concurrency.json",
+      "readiness_status": "verified_foundation_runtime_concurrency",
+      "verified": true,
+      "failures": [],
+      "summary": {
+        "tenant_count": 2,
+        "user_count": 4,
+        "session_count": 12,
+        "run_count": 12,
+        "concurrent_request_count": 12,
+        "max_observed_concurrency": 12,
+        "concurrency_probe_source": "client_case_timestamps",
+        "concurrency_window_sample_count": 12
+      },
+      "cleanup_after_status": "verified"
+    },
+    "host_sandbox_observation_status": null,
+    "host_sandbox_observation_ref": "diagnostics/2026-07-05-211-b3-host-sandbox-observation-53887e2.json",
+    "pre_recorded_runtime_readiness_status": "blocked_missing_load_test_evidence",
+    "pre_recorded_runtime_missing_sections": [],
+    "production_default_decision": "operator_review_required_before_default_change",
+    "non_expansion_invariants": {
+      "production_concurrency_defaults_raised": false,
+      "safe_concurrency_claimed": false,
+      "ordinary_user_platform_multi_run_orchestration_enabled": false,
+      "ordinary_user_platform_multi_run_orchestration_exposure": false
+    },
+    "artifact_hashes": {
+      "capacity_recorded_gate_values_from_live_run_sha256": "a8f3b815d1c89ddd0378a28e6ae27fdd7e7a9a6291b96918caa3f68230322de5",
+      "capacity_recorded_gate_batch_snapshot_from_live_run_sha256": "ce369972680a1a7f540cb95b234ab018bb2a6cd3015108fef9b2690ebc08bdf6",
+      "capacity_recorded_gate_batch_readiness_from_live_run_sha256": "6828a0d076a91e6f465866fc35b068065f903871e2273a1f7d6ea8d9f625b16b",
+      "capacity_profile_readiness_from_live_run_sha256": "f1c8ccdfb314bfc990d3f473eb66bd5dbddd4df38d31df0c1ecd36d93c9db929",
+      "capacity_runtime_evidence_current_with_host_sandbox_sha256": "e5b690fb5458df78dc08ab268497f85558d031269b6811295a40c525812a77a5",
+      "foundation_runtime_concurrency_53887e2_sha256": "34d2c5ab9a272e27209e33c05ad2425ac239fee0ad712516a77ad1e3c77499f5",
+      "host_sandbox_observation_53887e2_sha256": "215e09265f784aa5c1ec350b7c2128f6e76771d16adbef340d08f61db698f514",
+      "b3_sdk_subagent_fanout_measurement_summary_sha256": "f513f58eee3e199151bca932b6d31666dddb38713db06bcfe807aebc262633c8",
+      "capacity_profile_evidence_b3_10x4_sdk_subagents_sha256": "16633b92c8ec11b62c4bbe57e88a912261da88db1a16fe2bd88dbca0e3b63600"
+    },
+    "summary": [
+      "runtime_commit=53887e20f5141e66a8f635affc87f4af930348ba",
+      "api_worker_image=ai-platform:53887e2-b3-recorded-clean-v1",
+      "build_dirty=false",
+      "strict_sdk_fanout_runs=10",
+      "strict_sdk_fanout_general_purpose_agent_calls=40",
+      "strict_sdk_fanout_expected_4_agent_tool_uses=10/10",
+      "strict_sdk_fanout_expected_4_tool_results=10/10",
+      "strict_sdk_fanout_expected_4_subagent_jsonl=10/10",
+      "strict_sdk_fanout_expected_4_subagent_meta=10/10",
+      "foundation_runtime_concurrency=verified_12_requests_2_tenants_4_users",
+      "recorded_gate_batch_status=recorded_gate_batch_input_accepted",
+      "readiness_status=ready_for_operator_review",
+      "missing_load_test_gates=",
+      "production_default_decision=operator_review_required_before_default_change"
+    ],
+    "does_not_raise_defaults": true,
+    "does_not_claim_safe_concurrency": true,
+    "does_not_close_b3": true,
+    "does_not_close_g7": true,
+    "does_not_make_source_authority_gate_closable": true,
+    "does_not_make_issue_164_gate_closable": true
+  },
+  "capacity_profile_readiness": {
+    "blocking_policy": "operator_review_required_before_default_change; no automatic default raise",
+    "does_not_raise_defaults": true,
+    "production_default_decision": "operator_review_required_before_default_change",
+    "profiles": [
+      {
+        "automatic_default_raise": false,
+        "does_not_raise_defaults": true,
+        "id": "b3_10x4_sdk_subagents",
+        "intent": "Initial backend productization measurement profile for selected SDK subagent workflows.",
+        "invalid_load_test_gates": [],
+        "label": "B3 target: 10 sessions x 4 SDK subagents",
+        "measurement_first": true,
+        "missing_admin_runtime_sections": [],
+        "missing_load_test_gates": [],
+        "missing_profile_evidence": [],
+        "observed_profile_evidence": {
+          "evidence_source": "live_worker_run_payload",
+          "observed_concurrent_sessions": 10,
+          "observed_peak_sdk_subagents_per_session": 4,
+          "ordinary_user_platform_multi_run_orchestration_enabled": false,
+          "production_concurrency_defaults_raised": false,
+          "safe_concurrency_claimed": false,
+          "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/b3-sdk-subagent-fanout-measurement-summary.json",
+          "target_profile_id": "b3_10x4_sdk_subagents"
+        },
+        "operator_reviewed_recorded_snapshot_contract": {
+          "acceptance_rule": "all seven load-test gates recorded, b3_10x4 profile evidence accepted, operator review attached, and production defaults unchanged",
+          "allowed_profile_evidence_sources": [
+            "live_worker_run_payload",
+            "operator_reviewed_recorded_snapshot",
+            "platform_runtime_profile"
+          ],
+          "does_not_claim_safe_concurrency": true,
+          "does_not_close_b3_gate": true,
+          "does_not_enable_ordinary_user_platform_multi_run_orchestration": true,
+          "does_not_raise_defaults": true,
+          "evidence_level": "source_contract",
+          "profile_id": "b3_10x4_sdk_subagents",
+          "required_admin_runtime_sections": [
+            "capacity",
+            "database_pool",
+            "queue",
+            "admission",
+            "backpressure",
+            "sandbox",
+            "observability"
+          ],
+          "required_load_test_gates": [
+            "api_read_write_burst",
+            "run_creation_burst_by_tenant_and_user",
+            "worker_processing_throughput",
+            "queue_depth_and_lease_latency",
+            "cancel_retry_resume_under_load",
+            "sandbox_lease_creation_under_load",
+            "model_gateway_timeout_and_backpressure"
+          ],
+          "required_non_expansion_flags": {
+            "ordinary_user_platform_multi_run_orchestration_enabled": false,
+            "production_concurrency_defaults_raised": false,
+            "safe_concurrency_claimed": false
+          },
+          "required_operator_review_evidence": [
+            "runtime_source_identity_and_image_labels",
+            "tenant_user_skill_mix",
+            "token_cost_ledger",
+            "event_artifact_volume",
+            "sandbox_pressure_and_cleanup",
+            "latency_p50_p95_p99",
+            "error_budget_and_dead_letters",
+            "rollback_plan_and_stop_conditions"
+          ],
+          "required_profile_evidence": [
+            "target_profile_id",
+            "evidence_source",
+            "observed_concurrent_sessions",
+            "observed_peak_sdk_subagents_per_session",
+            "sdk_subagent_fanout_measurement_ref",
+            "production_concurrency_defaults_raised",
+            "safe_concurrency_claimed",
+            "ordinary_user_platform_multi_run_orchestration_enabled"
+          ],
+          "required_status_before_operator_review": "operator_review_required",
+          "schema_version": "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1",
+          "stage": "B3",
+          "target_profile": {
+            "concurrent_sessions": 10,
+            "peak_sdk_subagents_per_session": 4
+          }
+        },
+        "production_default_decision": "operator_review_required_before_default_change",
+        "profile_evidence_status": "accepted",
+        "profile_specific_requirements": [
+          "measure 10 concurrent sessions with peak 4 SDK subagents per session",
+          "record queue, worker, model-gateway, sandbox, artifact/event, token/cost, and cleanup pressure",
+          "keep production defaults unchanged until operator-reviewed seven-gate evidence and rollback are recorded"
+        ],
+        "required_admin_runtime_sections": [
+          "capacity",
+          "database_pool",
+          "queue",
+          "admission",
+          "backpressure",
+          "sandbox",
+          "observability"
+        ],
+        "required_load_test_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "safe_concurrency_claim": "not_claimed",
+        "stage": "B3",
+        "status": "operator_review_required",
+        "target_profile": {
+          "concurrent_sessions": 10,
+          "peak_sdk_subagents_per_session": 4
+        }
+      },
+      {
+        "automatic_default_raise": false,
+        "does_not_raise_defaults": true,
+        "id": "conservative_internal",
+        "intent": "Small internal pilot profile for bounded office-agent usage.",
+        "invalid_load_test_gates": [],
+        "label": "Conservative internal profile",
+        "measurement_first": true,
+        "missing_admin_runtime_sections": [],
+        "missing_load_test_gates": [],
+        "missing_profile_evidence": [],
+        "observed_profile_evidence": {},
+        "operator_reviewed_recorded_snapshot_contract": {
+          "acceptance_rule": "all required load-test gates recorded, operator review attached, and production defaults unchanged",
+          "allowed_profile_evidence_sources": [],
+          "does_not_claim_safe_concurrency": true,
+          "does_not_close_b3_gate": true,
+          "does_not_enable_ordinary_user_platform_multi_run_orchestration": true,
+          "does_not_raise_defaults": true,
+          "evidence_level": "source_contract",
+          "profile_id": "conservative_internal",
+          "required_admin_runtime_sections": [
+            "capacity",
+            "database_pool",
+            "queue",
+            "admission",
+            "backpressure",
+            "sandbox",
+            "observability"
+          ],
+          "required_load_test_gates": [
+            "api_read_write_burst",
+            "run_creation_burst_by_tenant_and_user",
+            "worker_processing_throughput",
+            "queue_depth_and_lease_latency",
+            "cancel_retry_resume_under_load",
+            "sandbox_lease_creation_under_load",
+            "model_gateway_timeout_and_backpressure"
+          ],
+          "required_non_expansion_flags": {},
+          "required_operator_review_evidence": [
+            "runtime_source_identity_and_image_labels",
+            "tenant_user_skill_mix",
+            "token_cost_ledger",
+            "event_artifact_volume",
+            "sandbox_pressure_and_cleanup",
+            "latency_p50_p95_p99",
+            "error_budget_and_dead_letters",
+            "rollback_plan_and_stop_conditions"
+          ],
+          "required_profile_evidence": [],
+          "required_status_before_operator_review": "operator_review_required",
+          "schema_version": "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1",
+          "stage": "B3",
+          "target_profile": {
+            "concurrent_sessions": 0,
+            "peak_sdk_subagents_per_session": 0
+          }
+        },
+        "production_default_decision": "operator_review_required_before_default_change",
+        "profile_evidence_status": "not_required_for_profile",
+        "profile_specific_requirements": [
+          "prove current worker, DB pool, queue, sandbox, and model-gateway settings under bounded load",
+          "keep tenant/user queue quota and active-run saturation visible in Admin Runtime",
+          "record cleanup proof before any production-default decision"
+        ],
+        "required_admin_runtime_sections": [
+          "capacity",
+          "database_pool",
+          "queue",
+          "admission",
+          "backpressure",
+          "sandbox",
+          "observability"
+        ],
+        "required_load_test_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "safe_concurrency_claim": "not_claimed",
+        "stage": "B3",
+        "status": "operator_review_required",
+        "target_profile": {
+          "concurrent_sessions": 0,
+          "peak_sdk_subagents_per_session": 0
+        }
+      },
+      {
+        "automatic_default_raise": false,
+        "does_not_raise_defaults": true,
+        "id": "medium_team",
+        "intent": "Team-level intranet profile that needs tenant/user fairness and sustained queue evidence.",
+        "invalid_load_test_gates": [],
+        "label": "Medium team profile",
+        "measurement_first": true,
+        "missing_admin_runtime_sections": [],
+        "missing_load_test_gates": [],
+        "missing_profile_evidence": [],
+        "observed_profile_evidence": {},
+        "operator_reviewed_recorded_snapshot_contract": {
+          "acceptance_rule": "all required load-test gates recorded, operator review attached, and production defaults unchanged",
+          "allowed_profile_evidence_sources": [],
+          "does_not_claim_safe_concurrency": true,
+          "does_not_close_b3_gate": true,
+          "does_not_enable_ordinary_user_platform_multi_run_orchestration": true,
+          "does_not_raise_defaults": true,
+          "evidence_level": "source_contract",
+          "profile_id": "medium_team",
+          "required_admin_runtime_sections": [
+            "capacity",
+            "database_pool",
+            "queue",
+            "admission",
+            "backpressure",
+            "sandbox",
+            "observability"
+          ],
+          "required_load_test_gates": [
+            "api_read_write_burst",
+            "run_creation_burst_by_tenant_and_user",
+            "worker_processing_throughput",
+            "queue_depth_and_lease_latency",
+            "cancel_retry_resume_under_load",
+            "sandbox_lease_creation_under_load",
+            "model_gateway_timeout_and_backpressure"
+          ],
+          "required_non_expansion_flags": {},
+          "required_operator_review_evidence": [
+            "runtime_source_identity_and_image_labels",
+            "tenant_user_skill_mix",
+            "token_cost_ledger",
+            "event_artifact_volume",
+            "sandbox_pressure_and_cleanup",
+            "latency_p50_p95_p99",
+            "error_budget_and_dead_letters",
+            "rollback_plan_and_stop_conditions"
+          ],
+          "required_profile_evidence": [],
+          "required_status_before_operator_review": "operator_review_required",
+          "schema_version": "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1",
+          "stage": "B3",
+          "target_profile": {
+            "concurrent_sessions": 0,
+            "peak_sdk_subagents_per_session": 0
+          }
+        },
+        "production_default_decision": "operator_review_required_before_default_change",
+        "profile_evidence_status": "not_required_for_profile",
+        "profile_specific_requirements": [
+          "prove N-tenant and M-user run creation bursts with no noisy-neighbor starvation",
+          "record worker throughput, queue depth, lease latency, DB waiting, and error taxonomy",
+          "require operator review before changing API, worker, DB-pool, Redis, sandbox, or model-gateway settings"
+        ],
+        "required_admin_runtime_sections": [
+          "capacity",
+          "database_pool",
+          "queue",
+          "admission",
+          "backpressure",
+          "sandbox",
+          "observability"
+        ],
+        "required_load_test_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "safe_concurrency_claim": "not_claimed",
+        "stage": "B3",
+        "status": "operator_review_required",
+        "target_profile": {
+          "concurrent_sessions": 0,
+          "peak_sdk_subagents_per_session": 0
+        }
+      },
+      {
+        "automatic_default_raise": false,
+        "does_not_raise_defaults": true,
+        "id": "high_capacity_1t",
+        "intent": "Large single-server profile; memory size is not accepted as capacity proof.",
+        "invalid_load_test_gates": [],
+        "label": "High-capacity 1T-memory server profile",
+        "measurement_first": true,
+        "missing_admin_runtime_sections": [],
+        "missing_load_test_gates": [],
+        "missing_profile_evidence": [],
+        "observed_profile_evidence": {},
+        "operator_reviewed_recorded_snapshot_contract": {
+          "acceptance_rule": "all required load-test gates recorded, operator review attached, and production defaults unchanged",
+          "allowed_profile_evidence_sources": [],
+          "does_not_claim_safe_concurrency": true,
+          "does_not_close_b3_gate": true,
+          "does_not_enable_ordinary_user_platform_multi_run_orchestration": true,
+          "does_not_raise_defaults": true,
+          "evidence_level": "source_contract",
+          "profile_id": "high_capacity_1t",
+          "required_admin_runtime_sections": [
+            "capacity",
+            "database_pool",
+            "queue",
+            "admission",
+            "backpressure",
+            "sandbox",
+            "observability"
+          ],
+          "required_load_test_gates": [
+            "api_read_write_burst",
+            "run_creation_burst_by_tenant_and_user",
+            "worker_processing_throughput",
+            "queue_depth_and_lease_latency",
+            "cancel_retry_resume_under_load",
+            "sandbox_lease_creation_under_load",
+            "model_gateway_timeout_and_backpressure"
+          ],
+          "required_non_expansion_flags": {},
+          "required_operator_review_evidence": [
+            "runtime_source_identity_and_image_labels",
+            "tenant_user_skill_mix",
+            "token_cost_ledger",
+            "event_artifact_volume",
+            "sandbox_pressure_and_cleanup",
+            "latency_p50_p95_p99",
+            "error_budget_and_dead_letters",
+            "rollback_plan_and_stop_conditions"
+          ],
+          "required_profile_evidence": [],
+          "required_status_before_operator_review": "operator_review_required",
+          "schema_version": "ai-platform.capacity-operator-reviewed-recorded-snapshot-contract.v1",
+          "stage": "B3",
+          "target_profile": {
+            "concurrent_sessions": 0,
+            "peak_sdk_subagents_per_session": 0
+          }
+        },
+        "production_default_decision": "operator_review_required_before_default_change",
+        "profile_evidence_status": "not_required_for_profile",
+        "profile_specific_requirements": [
+          "do not treat 1T memory as evidence of safe concurrency",
+          "prove sandbox lease/container behavior and model-gateway backpressure under target load",
+          "record alert, cleanup, stop-condition, latency percentile, and operator-review evidence before any default increase"
+        ],
+        "required_admin_runtime_sections": [
+          "capacity",
+          "database_pool",
+          "queue",
+          "admission",
+          "backpressure",
+          "sandbox",
+          "observability"
+        ],
+        "required_load_test_gates": [
+          "api_read_write_burst",
+          "run_creation_burst_by_tenant_and_user",
+          "worker_processing_throughput",
+          "queue_depth_and_lease_latency",
+          "cancel_retry_resume_under_load",
+          "sandbox_lease_creation_under_load",
+          "model_gateway_timeout_and_backpressure"
+        ],
+        "safe_concurrency_claim": "not_claimed",
+        "stage": "B3",
+        "status": "operator_review_required",
+        "target_profile": {
+          "concurrent_sessions": 0,
+          "peak_sdk_subagents_per_session": 0
+        }
+      }
+    ],
+    "required_evidence": [
+      "commit_sha",
+      "api_worker_image_labels",
+      "frontend_commit_or_image_label",
+      "runtime_profile",
+      "api_worker_process_counts",
+      "database_pool_settings",
+      "redis_queue_settings",
+      "admission_worker_queue_sandbox_model_settings",
+      "peak_and_sustained_queue_depths",
+      "active_worker_runs_users_and_tenants",
+      "database_pool_waiting_and_saturation",
+      "latency_p50_p95_p99",
+      "error_taxonomy_counts",
+      "dead_letter_counts",
+      "cleanup_proof"
+    ],
+    "schema_version": "ai-platform.capacity-profile-readiness.v1",
+    "source_gate_readiness": {
+      "invalid_load_test_gates": [],
+      "load_test_gates": [
+        {
+          "gate": "api_read_write_burst",
+          "status": "recorded"
+        },
+        {
+          "gate": "run_creation_burst_by_tenant_and_user",
+          "status": "recorded"
+        },
+        {
+          "gate": "worker_processing_throughput",
+          "status": "recorded"
+        },
+        {
+          "gate": "queue_depth_and_lease_latency",
+          "status": "recorded"
+        },
+        {
+          "gate": "cancel_retry_resume_under_load",
+          "status": "recorded"
+        },
+        {
+          "gate": "sandbox_lease_creation_under_load",
+          "status": "recorded"
+        },
+        {
+          "gate": "model_gateway_timeout_and_backpressure",
+          "status": "recorded"
+        }
+      ],
+      "missing_admin_runtime_sections": [],
+      "missing_load_test_gates": [],
+      "profile_evidence": {
+        "b3_10x4_sdk_subagents": {
+          "evidence_source": "live_worker_run_payload",
+          "observed_concurrent_sessions": 10,
+          "observed_peak_sdk_subagents_per_session": 4,
+          "ordinary_user_platform_multi_run_orchestration_enabled": false,
+          "production_concurrency_defaults_raised": false,
+          "safe_concurrency_claimed": false,
+          "sdk_subagent_fanout_measurement_ref": "capacity-evidence/b3/b3-sdk-subagent-fanout-measurement-summary.json",
+          "target_profile_id": "b3_10x4_sdk_subagents"
+        }
+      },
+      "runtime_identity": {
+        "commit_sha": "53887e20f5141e66a8f635affc87f4af930348ba",
+        "profile": "ai-platform-b3-53887e2-recorded-clean-20260705T111004Z"
+      },
+      "schema_version": "ai-platform.capacity-gate-readiness.v1",
+      "status": "ready_for_operator_review"
+    },
+    "status": "operator_review_required"
+  },
+  "notes": [
+    "This reviewed, redacted entry records clean 53887e2 B3 recorded batch evidence produced on the current 211 API/worker image.",
+    "All seven B3 recorded load-test gates and the b3_10x4_sdk_subagents profile evidence are accepted by the batch/readiness path.",
+    "The result advances B3 to operator review required before any production-default change; it does not close B3, does not raise defaults, does not make the overall gate 211 verified, and does not close #164 by itself."
+  ],
+  "open_followups": [
+    "Complete repo review/PR/merge handling for the 53887e2 branch before using this as merged-main closure evidence.",
+    "Run or record any required current-merged-main 211 smoke after merge before claiming overall 211 verified or gate closable.",
+    "Make a separate production-default decision; this evidence keeps production defaults unchanged."
+  ]
+}

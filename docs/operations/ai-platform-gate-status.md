@@ -19,20 +19,25 @@ closure evidence by themselves.
 
 ## Current Reading Guide
 
-At this post-PR #323 evidence-status slice, GitHub `main` includes PR #323
-merge commit `44daf19943aeee5aa53a3410f2558a6785c17168`, while the 211 runtime
-subject is PR #321 merge commit
-`945db2bb5926ad7b01ead98c3283d55b77d2677d`. The 211
+At this B3 recorded-evidence follow-up slice, local branch commit
+`53887e20f5141e66a8f635affc87f4af930348ba` is deployed on 211 as the clean
+API/worker image `ai-platform:53887e2-b3-recorded-clean-v1`. The 211
 repo-local source marker, source snapshot, API/worker image labels, and all
 three API/worker in-container source marker files
 (`/app/.ai-platform-source-revision`, `/app/.codex-source-revision`, and
-`/app/.source-commit`) bind to `945db2b`. API/worker currently run
-`ai-platform:945db2b-g7-legacy-source-markers-v1` with image ID
-`sha256:7c191741cab4d6415dafdaea4d1ef5a38d9f80ff8574eba30109ccdbdf860dec` and
-`ai-platform.build-dirty=false`. Direct API health, frontend proxy health, and
-frontend root returned HTTP `200`; the frontend container was restarted after
-the API recreate to clear stale nginx upstream resolution, and the superseded
-old backend image was removed after confirming no container referenced it.
+`/app/.source-commit`) bind to `53887e2`, and `ai-platform.build-dirty=false`.
+Direct API health returned `{"status":"ok"}`. This is clean branch-runtime
+evidence and has not yet been merged through the issue -> PR -> review -> merge
+-> 211 deploy/smoke -> close issue workflow.
+
+The prior post-PR #323 evidence-status slice has GitHub `main` including PR
+#323 merge commit `44daf19943aeee5aa53a3410f2558a6785c17168`, while the prior
+211 runtime subject was PR #321 merge commit
+`945db2bb5926ad7b01ead98c3283d55b77d2677d`. That slice ran API/worker image
+`ai-platform:945db2b-g7-legacy-source-markers-v1`, with repo-local source
+marker, source snapshot, image labels, and all three API/worker in-container
+source marker files bound to `945db2b`; direct API health, frontend proxy
+health, and frontend root returned HTTP `200`.
 
 It is not gate closure. Reviewed `945db2b` G7 live-env hardening evidence now
 exists:
@@ -52,29 +57,28 @@ with `verified_foundation_runtime_concurrency`, `verified=true`, and
 with `status=status_upgrade_approved` and
 `status_upgrade_decision=approved_for_g7_status_upgrade`. This removes the G7
 FRC/status-upgrade blockers for `945db2b`, but B3 closure remains separate.
-A later dirty-validation SDK Agent/subagent fanout run on
-`ai-platform:39aa862-b3-sdk-git-dirty-v1` produced an accepted
-`b3_10x4_sdk_subagents` profile packet for the strict 10x4
-`general-purpose` Agent path: 10 terminal `succeeded` runs, 10/10 runs with
-exactly four Agent tool uses, 10/10 matching tool results, 10/10 subagent
-JSONL/meta groups, and 40 total Agent calls. A follow-up 211 dirty recorded
-live-run root
-`/tmp/ai-platform-b3-39aa862-recorded-live-20260705T074525Z`
-then generated matching `39aa862` runtime evidence, same-subject Foundation
-Runtime concurrency evidence, seven recorded gate value files, and
-`capacity-recorded-gate-batch-snapshot-from-live-run.json` with
+The newer clean `53887e2` B3 recorded evidence is now reviewed repo-local
+evidence at
+`docs/release-evidence/capacity-gate-readiness/53887e20f5141e66a8f635affc87f4af930348ba/2026-07-05-211-capacity-recorded-gate-readiness-53887e2.json`.
+It records strict 10x4 SDK Agent/subagent fanout on the clean image: 10 terminal `succeeded` runs,
+10/10 runs with exactly four Agent tool uses, 10/10 matching tool results,
+10/10 subagent JSONL/meta groups, and 40 total Agent calls (`general-purpose`).
+Same-subject Foundation Runtime concurrency evidence is recorded
+at
+`docs/release-evidence/foundation-runtime-concurrency/53887e20f5141e66a8f635affc87f4af930348ba-frc-g7-b3-20260705/2026-07-05-211-foundation-alpha-poc-53887e2-foundation-runtime-concurrency.json`
+with `verified_foundation_runtime_concurrency`, `verified=true`, `failures=[]`,
+12 concurrent requests/runs/sessions, 2 tenants, 4 users, and verified cleanup.
+The clean recorded-batch path accepted runtime/profile/recorded-gate inputs, all
+seven load-test gates recorded, and the `b3_10x4_sdk_subagents` profile evidence, with
 `status=recorded_gate_batch_input_accepted`,
-`readiness.status=ready_for_operator_review`,
-`input_status={runtime_evidence: accepted, recorded_gate_evidence: accepted,
-profile_evidence: accepted}`, all seven load-test gates recorded, and
+`readiness.status=ready_for_operator_review`, and
 `production_default_decision=operator_review_required_before_default_change`.
-That proves the recorded-batch assembly path is runnable end-to-end for the
-dirty `39aa862` runtime subject, but it is not closure-grade clean-main
-evidence, not reviewed repo-local release evidence, and not permission to raise
-production defaults. The earlier `945db2b` recorded-gate value gap report
-`recorded-gate-values-gap-report-20260705.json` is retained as historical
-blocker evidence for the pre-adapter attempt, not as the latest dirty
-recorded-batch result.
+This advances B3 to operator review required on clean branch-runtime evidence,
+not B3 closure and not permission to raise production defaults. The earlier
+dirty `39aa862` recorded-batch validation and `945db2b`
+`recorded-gate-values-gap-report-20260705.json` recorded-gate value gap report
+are retained as historical path-validation/blocker evidence. The retained dirty
+batch output file is `capacity-recorded-gate-batch-snapshot-from-live-run.json`.
 Current overall status remains `local partial`; do not call B3 complete,
 Foundation Alpha complete, production-ready, overall `211 verified`,
 `gate closable`, or #164 current closure evidence. Use `211 verified` only for

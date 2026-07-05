@@ -1184,82 +1184,51 @@ Those files are only batch-assembler inputs; a later
 `recorded_gate_batch_input_accepted` result advances to
 `ready_for_operator_review`, not B3 closure or a production-default increase.
 
-### Current Runtime Note - 2026-07-05, commit `945db2b`
+### Current Runtime Note - 2026-07-05, commit `53887e2`
 
-Post-PR #321, 211 now runs API/worker image
-`ai-platform:945db2b-g7-legacy-source-markers-v1` for runtime subject
-`945db2bb5926ad7b01ead98c3283d55b77d2677d`. The repo-local source marker,
-source snapshot, image labels, and all three API/worker in-container marker
-files bind to `945db2b`. Direct API health, frontend proxy health, and frontend
-root returned HTTP `200` after frontend restart and Docker cleanup. The latest
-reviewed capacity visibility entry is now the `945db2b` record at
-`docs/release-evidence/capacity-gate-readiness/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-capacity-runtime-readiness-945db2b.json`.
+The B3 recorded-evidence follow-up branch now has a clean 211 runtime subject
+`53887e20f5141e66a8f635affc87f4af930348ba` running API/worker image
+`ai-platform:53887e2-b3-recorded-clean-v1`. The 211 repo-local source marker,
+source snapshot, API/worker image labels, and all three API/worker in-container
+marker files bind to `53887e2`; direct API health returned `{"status":"ok"}`.
+This is clean branch-runtime evidence and has not yet been merged through the
+issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue workflow.
 
-That `945db2b` entry preserves the B3 visibility achieved after the earlier
-`a294727`, `bbe23d5`, and `61073b1` baselines: Admin Runtime HTTP returned
-`200`, all required sections including `sandbox` were observed after accepted
-host-side sandbox observation, and readiness reports
-`blocked_missing_load_test_evidence`. The host-side sandbox observation is
-diagnostic-only and recorded separately at
-`docs/release-evidence/diagnostics/2026-07-05-211-b3-host-sandbox-observation-945db2b.json`;
-it does not mark B3 recorded evidence.
+The reviewed repo-local B3 recorded evidence entry is
+`docs/release-evidence/capacity-gate-readiness/53887e20f5141e66a8f635affc87f4af930348ba/2026-07-05-211-capacity-recorded-gate-readiness-53887e2.json`.
+It records the strict 10x4 SDK Agent/subagent fanout on the clean image:
+10 terminal `succeeded` runs, 10/10 runs with exactly four Agent tool uses,
+10/10 matching tool results, 10/10 subagent JSONL groups, 10/10 subagent meta
+groups, and `agent_type_total={"general-purpose": 40}`. Same-subject
+Foundation Runtime concurrency evidence is recorded at
+`docs/release-evidence/foundation-runtime-concurrency/53887e20f5141e66a8f635affc87f4af930348ba-frc-g7-b3-20260705/2026-07-05-211-foundation-alpha-poc-53887e2-foundation-runtime-concurrency.json`
+and reports `verified_foundation_runtime_concurrency`, `verified=true`,
+`failures=[]`, 12 concurrent requests/runs/sessions, 2 tenants, 4 users, and
+verified cleanup.
 
-B3 remains blocked for clean closure. A later dirty-validation strict 10x4 SDK
-Agent/subagent fanout run produced an accepted `b3_10x4_sdk_subagents` profile
-packet, but it was generated from `ai-platform:39aa862-b3-sdk-git-dirty-v1`, so
-it is profile-path validation only and not clean-main closure-grade evidence.
-The `945db2b` readback, reviewed capacity visibility, dirty profile packet, and
-dirty recorded-batch validation support only current runtime visibility,
-profile/batch assembly validation, and fail-closed review posture; they are not
-B3 closure and do not make the overall gate closable.
-
-A later 2026-07-05 B3 recorded-load attempt on the same `945db2b` runtime
-subject generated the repeatable plan/template bundle, then ran all seven
-bounded harness probes at 20 requests / concurrency 4. Every probe returned
-`probe_completed_not_gate_evidence`, `load_test_evidence_status =
-probe_only_not_recorded`, `does_not_mark_gate_recorded = true`, and
-`stop_condition_status = passed`; the model-gateway probe observed
-`backpressure.model_gateway`, `capacity.limits.model_gateway`, and
-`observability.error_categories`. A fresh host-side sandbox observation was
-accepted by the runtime evidence tool, moving the post-run readiness back to
-`blocked_missing_load_test_evidence` with `missing_sections=[]`. The
-placeholder recorded-gate batch attempt still returned
-`blocked_incomplete_inputs`, and a single placeholder packet attempt rejected
-all 15 `TODO_OPERATOR_REVIEWED_*` fields as unsafe. This proves the validation
-path is runnable on 211, but it is still probe-only diagnostic evidence: it does
-not create operator-reviewed recorded gate values, does not raise defaults, and
-does not close B3. A follow-up blocker report was written at
-`/tmp/ai-platform-b3-recorded-load-b3-945db2b-20260705T050713Z/summaries/recorded-gate-values-gap-report-20260705.json`;
-it records `blocked_missing_operator_reviewed_recorded_gate_values`,
-`gates_with_probe_only_output=7`, `gates_with_all_template_values_todo=7`,
-`recorded_gate_packets_ready=0`, and the required next action to run or capture
-true operator-approved recorded load scenarios before replacing the
-`TODO_OPERATOR_REVIEWED_*` values.
-
-A later 2026-07-05 211 dirty recorded live-run at
-`/tmp/ai-platform-b3-39aa862-recorded-live-20260705T074525Z` used current
-runtime subject `39aa862b0c6139bcc80578dd51ef5de898ea92cc` and image
-`ai-platform:39aa862-b3-sdk-git-dirty-v1` with `ai-platform.build-dirty=true`.
-The runtime snapshot
-`capacity-runtime-evidence-current-with-host-sandbox.json` observed all required
-Admin Runtime sections and remained `blocked_missing_load_test_evidence` before
-recorded packets were assembled. The same-subject Foundation Runtime
-concurrency packet `foundation-runtime-concurrency-39aa862.json` recorded 12
-concurrent requests/runs/sessions across 2 tenants and 4 users with verified
-cleanup. `tools/capacity_recorded_gate_values_from_live_run.py` wrote seven
-gate value files plus `capacity-recorded-gate-values-from-live-run.json` with
-`status=operator_value_files_ready`, `input_errors=[]`, and all seven recorded
-gates. The batch assembler then wrote
-`capacity-recorded-gate-batch-snapshot-from-live-run.json` with
-`status=recorded_gate_batch_input_accepted`,
-`readiness.status=ready_for_operator_review`, runtime/profile/recorded-gate
-inputs accepted, all seven load-test gates recorded, and
+The clean recorded-batch path accepted the runtime evidence, all seven recorded
+gate packets, and the `b3_10x4_sdk_subagents` profile packet. The batch snapshot
+status is `recorded_gate_batch_input_accepted`; the capacity readiness status is
+`ready_for_operator_review`; the profile readiness status is
+`operator_review_required`; and
 `production_default_decision=operator_review_required_before_default_change`.
-The profile readiness wrapper
-`capacity-profile-readiness-from-live-run.json` returned
-`status=operator_review_required`. This proves the dirty recorded-batch path is
-runnable end-to-end, but it is not clean-main closure-grade evidence, not
-reviewed repo-local release evidence, and not a production-default change.
+This advances B3 from missing clean recorded evidence to operator review
+required, but it is still not B3 closure, not a safe-concurrency claim, not an
+ordinary-user platform-level multi-run orchestration exposure, not a production
+default change, not overall `211 verified`, not gate-closable, and not #164
+closure by itself.
+
+The latest reviewed capacity visibility entry is now the `945db2b` record, and
+it remains prior baseline evidence at
+`docs/release-evidence/capacity-gate-readiness/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-capacity-runtime-readiness-945db2b.json`.
+It recorded Admin Runtime HTTP `200`, all required sections observed after
+accepted host-side sandbox observation, and
+`blocked_missing_load_test_evidence`. The earlier dirty `39aa862` recorded
+live-run root `/tmp/ai-platform-b3-39aa862-recorded-live-20260705T074525Z`
+proved the batch assembly path end-to-end on a dirty image; its live-run adapter
+output recorded `status=operator_value_files_ready`. The clean `53887e2` entry
+above supersedes it for the current B3 recorded-evidence follow-up, while
+retaining the same no-default-raise and no-gate-closure boundary.
 
 ## Required Load-Test Gates
 

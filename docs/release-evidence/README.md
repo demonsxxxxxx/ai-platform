@@ -7,14 +7,23 @@ evidence entries. It is an index and contract baseline only. This contract
 does not close G9 and is not the current gate/runtime status matrix; read
 `docs/operations/ai-platform-gate-status.md` for current status.
 
+The 2026-07-05 B3 recorded-evidence follow-up slice has local branch commit
+`53887e20f5141e66a8f635affc87f4af930348ba` deployed on 211 as the clean
+API/worker image `ai-platform:53887e2-b3-recorded-clean-v1`. The 211 repo-local
+source marker, source snapshot, image labels, and all three API/worker
+in-container source marker files bind to `53887e2`; direct API health returned
+`{"status":"ok"}`. This is clean branch-runtime evidence and has not yet been
+merged through the issue -> PR -> review -> merge -> 211 deploy/smoke -> close
+issue loop.
+
 The 2026-07-05 post-PR #323 evidence-status slice has GitHub `main` including
-PR #323 merge commit `44daf19943aeee5aa53a3410f2558a6785c17168`, while 211
-still runs PR #321 runtime subject
-`945db2bb5926ad7b01ead98c3283d55b77d2677d` and runs API/worker image
-`ai-platform:945db2b-g7-legacy-source-markers-v1`. The repo-local source
+PR #323 merge commit `44daf19943aeee5aa53a3410f2558a6785c17168`, while 211 then
+ran PR #321 runtime subject `945db2bb5926ad7b01ead98c3283d55b77d2677d` and
+runs API/worker image `ai-platform:945db2b-g7-legacy-source-markers-v1`. The repo-local source
 marker, source snapshot, image labels, and all three API/worker in-container
-source marker files bind to `945db2b`; direct API health, frontend proxy health,
-and frontend root returned HTTP `200` after frontend restart and Docker cleanup.
+source marker files bound to `945db2b`; direct API health, frontend proxy
+health, and frontend root returned HTTP `200` after frontend restart and Docker
+cleanup.
 Reviewed `945db2b` G7 live-env hardening evidence now exists at
 `docs/release-evidence/g7-sandbox/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default.json`;
 the verifier passed all eight checks. Reviewed `945db2b` B3 capacity visibility
@@ -26,13 +35,18 @@ accepted host-side sandbox observation, and
 Runtime concurrency evidence for `945db2b` now reports
 `verified_foundation_runtime_concurrency`, and the approved G7 status-upgrade
 artifact now records `status_upgrade_decision=approved_for_g7_status_upgrade`.
-B3 still lacks all seven operator-reviewed recorded load-test gates and the
-`b3_10x4_sdk_subagents` profile evidence. Current overall status remains
-`local partial`; do not read PR #321, PR #323, the `945db2b` runtime evidence,
-FRC evidence, approved G7 status-upgrade, or capacity visibility as B3 closure,
-Foundation Alpha completion, production-ready, overall `211 verified`,
-`gate closable`, or #164 closure evidence. Use `211 verified` only for the
-narrow source-marker/runtime-health slice, not for overall G7/B3 closure.
+The newer clean `53887e2` B3 recorded evidence at
+`docs/release-evidence/capacity-gate-readiness/53887e20f5141e66a8f635affc87f4af930348ba/2026-07-05-211-capacity-recorded-gate-readiness-53887e2.json`
+records all seven B3 recorded gates and the `b3_10x4_sdk_subagents` profile
+evidence accepted, with batch readiness `ready_for_operator_review` and
+`production_default_decision=operator_review_required_before_default_change`.
+Current overall status remains `local partial`; do not read PR #321, PR #323,
+the `945db2b` runtime evidence, the clean `53887e2` branch-runtime evidence,
+FRC evidence, approved G7 status-upgrade, capacity visibility, or recorded
+batch readiness as B3 closure, Foundation Alpha completion, production-ready,
+overall `211 verified`, `gate closable`, or #164 closure evidence. Use
+`211 verified` only for the narrow source-marker/runtime-health slice, not for
+overall G7/B3 closure.
 
 The earlier 2026-07-04 post-PR #316 status-sync baseline has GitHub `main` including PR
 #316 merge commit `5fe44827708fe24441a4c451dee9c691281d3c21`. PR #316 merged
@@ -204,6 +218,7 @@ not reviewed release-evidence entries and must not be used to close gates.
 
 | Date | Gate | Commit | Evidence | Status |
 | --- | --- | --- | --- | --- |
+| 2026-07-05 | B3 Capacity Baseline | `53887e20f5141e66a8f635affc87f4af930348ba` | [`2026-07-05-211-b3-host-sandbox-observation-53887e2.json`](diagnostics/2026-07-05-211-b3-host-sandbox-observation-53887e2.json) | Diagnostic only and not a reviewed release-evidence entry. Host-side sandbox observation for the clean 53887e2 B3 recorded batch capture was accepted, default compose still does not mount the Docker socket, and `docker-compose.sandbox.yml` remains the explicit socket-bearing path. This diagnostic can support Admin Runtime visibility only; it does not mark B3 recorded evidence by itself, does not close B3/G7, does not make the overall gate `211 verified`, and does not make any gate closable. |
 | 2026-07-05 | B3 Capacity Baseline | `945db2bb5926ad7b01ead98c3283d55b77d2677d` | [`2026-07-05-211-b3-host-sandbox-observation-945db2b.json`](diagnostics/2026-07-05-211-b3-host-sandbox-observation-945db2b.json) | Diagnostic only and not a reviewed release-evidence entry. Host-side sandbox observation for the 945db2b capacity visibility capture was accepted, default compose still does not mount the Docker socket, and `docker-compose.sandbox.yml` remains the explicit socket-bearing path. This diagnostic can support Admin Runtime visibility only; it does not mark B3 recorded evidence, does not close B3/G7, does not make the overall gate `211 verified`, and does not make any gate closable. |
 | 2026-07-04 | B3 Capacity Baseline | `a294727046024958c41b15f646512e68f3c04b47` | [`2026-07-04-211-b3-host-sandbox-observation-a294727.json`](diagnostics/2026-07-04-211-b3-host-sandbox-observation-a294727.json) | Diagnostic only and not a reviewed release-evidence entry. Host-side sandbox observation for the a294727 capacity visibility capture was accepted, default compose still does not mount the Docker socket, and `docker-compose.sandbox.yml` remains the explicit socket-bearing path. This diagnostic can support Admin Runtime visibility only; it does not mark B3 recorded evidence, does not close B3/G7, does not make the overall gate `211 verified`, and does not make any gate closable. |
 | 2026-07-04 | B3 Capacity Baseline | `bbe23d53d14398378b4870de4cbf4bec0b045193` | [`2026-07-04-211-b3-host-sandbox-observation-bbe23d5.json`](diagnostics/2026-07-04-211-b3-host-sandbox-observation-bbe23d5.json) | Diagnostic only and not a reviewed release-evidence entry. Host-side sandbox observation for the bbe23d5 capacity visibility capture was accepted, default compose still does not mount the Docker socket, and `docker-compose.sandbox.yml` remains the explicit socket-bearing path. This diagnostic can support Admin Runtime visibility only; it does not mark B3 recorded evidence, does not close B3/G7, does not make `bbe23d5` `211 verified`, and does not make any gate closable. |
@@ -215,6 +230,8 @@ not reviewed release-evidence entries and must not be used to close gates.
 
 | Date | Gate | Commit | Evidence | Status |
 | --- | --- | --- | --- | --- |
+| 2026-07-05 | B3 Capacity Baseline | `53887e20f5141e66a8f635affc87f4af930348ba` | [`2026-07-05-211-capacity-recorded-gate-readiness-53887e2.json`](capacity-gate-readiness/53887e20f5141e66a8f635affc87f4af930348ba/2026-07-05-211-capacity-recorded-gate-readiness-53887e2.json) | Reviewed redacted clean 53887e2 B3 recorded evidence: API/worker image `ai-platform:53887e2-b3-recorded-clean-v1`, `build-dirty=false`, strict SDK Agent/subagent fanout observed 10 succeeded runs with 40 `general-purpose` Agent calls, 10/10 runs with exactly four Agent tool uses, tool results, subagent JSONL groups, and subagent meta groups, same-subject Foundation Runtime concurrency verified 12 concurrent requests/runs/sessions across 2 tenants and 4 users, all seven recorded load-test gates were accepted, and `b3_10x4_sdk_subagents` profile evidence was accepted. The recorded batch status is `recorded_gate_batch_input_accepted`, readiness is `ready_for_operator_review`, and `production_default_decision=operator_review_required_before_default_change`. This is clean branch-runtime B3 evidence awaiting PR/review/merge and operator closure decision; it does not close B3, raise production defaults, claim safe concurrency, make the overall gate `211 verified`, make any gate closable, or close #164 by itself. |
+| 2026-07-05 | Foundation Runtime Concurrency | `53887e20f5141e66a8f635affc87f4af930348ba` | [`2026-07-05-211-foundation-alpha-poc-53887e2-foundation-runtime-concurrency.json`](foundation-runtime-concurrency/53887e20f5141e66a8f635affc87f4af930348ba-frc-g7-b3-20260705/2026-07-05-211-foundation-alpha-poc-53887e2-foundation-runtime-concurrency.json), [`2026-07-05-211-foundation-alpha-poc-53887e2-foundation-runtime-concurrency-readiness.json`](foundation-runtime-concurrency/53887e20f5141e66a8f635affc87f4af930348ba-frc-g7-b3-20260705/2026-07-05-211-foundation-alpha-poc-53887e2-foundation-runtime-concurrency-readiness.json), [`2026-07-05-211-foundation-alpha-poc-53887e2-foundation-runtime-concurrency-summary.md`](foundation-runtime-concurrency/53887e20f5141e66a8f635affc87f4af930348ba-frc-g7-b3-20260705/2026-07-05-211-foundation-alpha-poc-53887e2-foundation-runtime-concurrency-summary.md) | Same-subject Foundation Runtime concurrency evidence for the clean `53887e2` runtime subject. Readiness reports `verified_foundation_runtime_concurrency`, `verified=true`, `failures=[]`, 12 concurrent requests/runs/sessions across 2 tenants and 4 users, and passed queue/admission, sandbox workspace, memory/context, artifact ACL, tool permission, skill snapshots, run playback, fixture, and cleanup checks. This supports the clean B3 recorded batch but remains Foundation Runtime POC correctness evidence only; it does not close B3 or make the overall gate `211 verified` or gate-closable. |
 | 2026-07-05 | G7 Sandbox / Resource Hardening | `945db2bb5926ad7b01ead98c3283d55b77d2677d` | [`2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default.json`](g7-sandbox/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default.json) | Reviewed 211 post-PR #321 945db2b live-env G7 sandbox hardening artifacts for `g7-live-env-hardening-945db2b-live-default-20260704185430` against API/worker image `ai-platform:945db2b-g7-legacy-source-markers-v1` with `build-dirty=false`. The verifier summary recorded all eight checks passing, including platform Docker execution, callback stream, cancel cleanup, resource limits, egress policy, security options, and no-secret-leakage checks. Repo-local source marker, source snapshot, image labels, and all API/worker in-container source marker files bind to `945db2b`; this verifier entry is G7 runtime evidence only, not G0 source-authority closure, not the status-upgrade artifact by itself, not B3 closure, and not #164 gate-closable. |
 | 2026-07-05 | Foundation Runtime Concurrency | `945db2bb5926ad7b01ead98c3283d55b77d2677d` | [`2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency.json`](foundation-runtime-concurrency/945db2bb5926ad7b01ead98c3283d55b77d2677d-frc-g7-b3-20260705/2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency.json), [`2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency-readiness.json`](foundation-runtime-concurrency/945db2bb5926ad7b01ead98c3283d55b77d2677d-frc-g7-b3-20260705/2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency-readiness.json), [`2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency-summary.md`](foundation-runtime-concurrency/945db2bb5926ad7b01ead98c3283d55b77d2677d-frc-g7-b3-20260705/2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency-summary.md) | Same-subject Foundation Runtime concurrency evidence for the `945db2b` runtime subject. Readiness reports `verified_foundation_runtime_concurrency`, `verified=true`, `failures=[]`, 12 concurrent requests/runs/sessions across 2 tenants and 4 users, measured `client_case_timestamps` concurrency, and passed queue/admission, sandbox workspace, memory/context, artifact ACL, tool permission, skill snapshots, run playback, fixture, and cleanup checks. This is Foundation Runtime POC correctness evidence only; it is not B3 load evidence, does not prove the `b3_10x4_sdk_subagents` capacity profile, does not raise production defaults, does not broaden ordinary-user platform-level multi-run orchestration exposure, does not close B3, and does not make the overall gate `211 verified` or gate-closable. |
 | 2026-07-05 | G7 Sandbox / Resource Hardening | `945db2bb5926ad7b01ead98c3283d55b77d2677d` | [`2026-07-05-211-g7-operator-status-upgrade-945db2b.json`](g7-status-review/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-g7-operator-status-upgrade-945db2b.json) | Reviewed operator status-upgrade artifact for paired `945db2b` live-default G7 sandbox hardening evidence and same-subject Foundation Runtime concurrency evidence. It records `status=status_upgrade_approved`, `status_label_recommendation=g7_status_upgrade_approved`, `g7_runtime_blocking_reasons=[]`, and `status_upgrade_decision=approved_for_g7_status_upgrade`. It approves only the G7 sandbox/resource-hardening status for runtime subject `945db2b`; it does not close B3, does not provide B3 recorded load evidence, does not provide `b3_10x4_sdk_subagents` profile evidence, does not raise production defaults, does not complete Foundation Alpha, does not make the overall gate `211 verified`, and does not constitute #164 closure evidence. |

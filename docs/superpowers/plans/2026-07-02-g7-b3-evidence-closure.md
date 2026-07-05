@@ -520,9 +520,30 @@ production defaults, or upgrade the overall status beyond `local partial`.
   `production_default_decision=operator_review_required_before_default_change`.
   This is dirty `ai-platform:39aa862-b3-sdk-git-dirty-v1` validation only and
   does not close B3, raise defaults, or make #164 closable.
-- [ ] 2026-07-05 deployment and recorded-load closure remain pending until a
-  clean 211 image containing the workspace git fix and adapter is deployed, the
-  strict SDK Agent fanout profile evidence and seven recorded gate packets are
-  reproduced on a non-dirty image, the recorded-gate batch assembler accepts
-  that clean evidence, and an operator review decides whether the evidence can
-  be persisted as repo-local release evidence.
+- [x] 2026-07-05 clean 211 deployment and recorded-load evidence reproduction
+  reached repo-local reviewed evidence for branch runtime subject
+  `53887e20f5141e66a8f635affc87f4af930348ba`. API/worker now run clean image
+  `ai-platform:53887e2-b3-recorded-clean-v1` with `build-dirty=false`; the 211
+  source markers, image labels, and all three in-container source marker files
+  bind to `53887e2`, and direct API health returned `{"status":"ok"}`. The
+  strict SDK Agent/subagent fanout profile recorded 10 terminal `succeeded`
+  runs, 10/10 expected Agent tool-use/tool-result/subagent JSONL/meta counts,
+  and 40 total `general-purpose` Agent calls. Same-subject Foundation Runtime
+  concurrency verified 12 concurrent requests/runs/sessions across 2 tenants
+  and 4 users. The recorded-gate batch assembler accepted runtime/profile/gate
+  inputs, all seven recorded gates, and the `b3_10x4_sdk_subagents` profile,
+  producing `status=recorded_gate_batch_input_accepted`,
+  `readiness.status=ready_for_operator_review`, and
+  `production_default_decision=operator_review_required_before_default_change`.
+  Reviewed repo-local evidence is now recorded at
+  `docs/release-evidence/capacity-gate-readiness/53887e20f5141e66a8f635affc87f4af930348ba/2026-07-05-211-capacity-recorded-gate-readiness-53887e2.json`
+  with same-subject FRC evidence under
+  `docs/release-evidence/foundation-runtime-concurrency/53887e20f5141e66a8f635affc87f4af930348ba-frc-g7-b3-20260705/`.
+  This advances B3 to operator review required on clean branch-runtime
+  evidence; it does not close B3, raise defaults, make the overall gate
+  `211 verified`, make #164 gate-closable, or close #164 by itself.
+- [ ] 2026-07-05 remaining closure work: finish local repo verification,
+  publish/review the branch, merge if accepted, redeploy/smoke the merged
+  subject if required by the closure workflow, then decide whether #164 can be
+  closed with the merged evidence. Until then the status label remains
+  `local partial`.
