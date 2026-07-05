@@ -36,6 +36,7 @@ from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import get_settings
 from app.skills.pinning import (
     SkillVersionMaterializationError,
+    attach_skill_snapshot_governance,
     build_skill_manifest_pins,
     build_skill_version_policy_manifest_pins,
     governed_locked_skill_version,
@@ -518,6 +519,10 @@ async def chat_stream(
             release_decision_payload = release_decision_payload_for_locked_version(
                 release_decision,
                 locked_version=skill_version,
+            )
+            skill_manifests = attach_skill_snapshot_governance(
+                skill_manifests,
+                release_decision=release_decision_payload,
             )
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")

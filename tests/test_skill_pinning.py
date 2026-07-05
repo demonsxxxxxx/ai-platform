@@ -1,10 +1,13 @@
 import base64
+import json
 
 import pytest
 
 import app.skills.dependencies as dependency_policy
 from app.skills.dependencies import SkillDependencyPolicyError
 from app.skills.pinning import (
+    attach_skill_snapshot_governance,
+    build_skill_snapshot_governance,
     SkillVersionMaterializationError,
     build_skill_version_dependency_manifest_pins,
     build_skill_manifest_pins,
@@ -49,6 +52,120 @@ def test_build_skill_manifest_pins_includes_primary_dependencies_and_file_snapsh
     assert pins[0]["allowed"] is True
     assert pins[0]["staged"] is False
     assert pins[0]["used"] is False
+
+
+def test_build_skill_snapshot_governance_summarizes_files_without_package_bytes():
+    pin = {
+        "skill_id": "qa-file-reviewer",
+        "version": "hash-primary",
+        "content_hash": "hash-primary",
+        "source": {
+            "kind": "uploaded",
+            "storage_key": "tenants/default/skills/qa-file-reviewer/package.zip",
+        },
+        "files": [
+            {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5},
+            {"relative_path": "references/guide.md", "content_base64": "Z3VpZGU=", "size_bytes": 5},
+        ],
+        "dependency_ids": ["minimax-docx"],
+    }
+
+    governance = build_skill_snapshot_governance(
+        pin,
+        release_decision={
+            "schema_version": "ai-platform.skill-release-decision.v1",
+            "policy_active": True,
+            "selected_track": "current",
+            "rollout_percent": 100,
+            "channel": "stable",
+            "selected_version": "hash-primary",
+        },
+    )
+
+    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
+    assert governance["snapshot_source"] == "platform_release_lock"
+    assert governance["release_lock"] == {
+        "schema_version": "ai-platform.skill-release-decision.v1",
+        "mode": "release_policy",
+    }
+    assert governance["manifest"] == {
+        "source_kind": "uploaded",
+        "selected_file_count": 2,
+    }
+    assert governance["dependency_evidence"] == {
+        "status": "review_required",
+        "ref": "skill_dependency_policy",
+        "dependency_count": 1,
+    }
+    assert [item["relative_path"] for item in governance["selected_files"]] == [
+        "SKILL.md",
+        "references/guide.md",
+    ]
+    assert governance["selected_files"][0]["sha256"] == (
+        "9c53c074d7ac6a2728b638ac1f376c5fa9eb8f71603017c3ea638c2fd40548df"
+    )
+    assert governance["does_not_close_b4_or_211"] is True
+    serialized = json.dumps(governance, ensure_ascii=False)
+    assert "content_base64" not in serialized
+    assert "storage_key" not in serialized
+    assert "release_decision" not in serialized
+    assert "selected_version" not in serialized
+    assert "hash-primary" not in serialized
+    assert "track" not in serialized
+    assert "rollout" not in serialized
+
+
+def test_attach_skill_snapshot_governance_keeps_existing_manifest_fields_immutable():
+    manifest = {
+        "skill_id": "general-chat",
+        "version": "hash-general",
+        "content_hash": "hash-general",
+        "source": {"kind": "builtin", "asset_dir": "general-chat"},
+        "files": [{"relative_path": "SKILL.md", "content_base64": "Y2hhdA==", "size_bytes": 4}],
+        "dependency_ids": [],
+        "allowed": True,
+        "staged": False,
+        "used": False,
+    }
+
+    attached = attach_skill_snapshot_governance(
+        [manifest],
+        release_decision={
+            "schema_version": "ai-platform.skill-release-decision.v1",
+            "policy_active": False,
+            "selected_track": "manifest_pin",
+        },
+    )
+
+    assert attached[0] is not manifest
+    assert "snapshot_governance" not in manifest
+    assert attached[0]["source"] == manifest["source"]
+    assert attached[0]["files"] == manifest["files"]
+    assert attached[0]["snapshot_governance"]["release_lock"]["mode"] == "manifest_pin"
+    assert attached[0]["snapshot_governance"]["dependency_evidence"]["status"] == "not_required"
+
+
+def test_build_skill_snapshot_governance_rejects_invalid_or_escaped_file_entries():
+    base_manifest = {
+        "skill_id": "qa-file-reviewer",
+        "version": "hash-primary",
+        "content_hash": "hash-primary",
+        "source": {"kind": "uploaded"},
+        "dependency_ids": [],
+    }
+
+    for files in (
+        [{"relative_path": "../SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        [{"relative_path": "/absolute/SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        [{"relative_path": "C:/Users/release/SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        [{"relative_path": "references/..", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        [{"relative_path": "SKILL.md", "content_base64": "[not-base64]", "size_bytes": 5}],
+        [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": "not-an-int"}],
+        [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": -1}],
+        [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 999}],
+    ):
+        with pytest.raises(SkillVersionMaterializationError, match="skill_version_not_materializable"):
+            build_skill_snapshot_governance({**base_manifest, "files": files})
 
 
 def test_build_skill_manifest_pins_keeps_ragflow_skill_as_single_zero_dependency_manifest(tmp_path):

@@ -70,6 +70,7 @@ from app.runtime.sandbox.container_provider import create_container_provider
 from app.settings import get_settings
 from app.skills.pinning import (
     SkillVersionMaterializationError,
+    attach_skill_snapshot_governance,
     build_skill_manifest_pins,
     build_skill_version_policy_manifest_pins,
     governed_locked_skill_version,
@@ -704,6 +705,10 @@ async def prepare_copied_run_for_queue(
         copied.get("release_decision") if isinstance(copied.get("release_decision"), dict) else {},
         locked_version=copied_skill_version,
     )
+    skill_manifests = attach_skill_snapshot_governance(
+        skill_manifests,
+        release_decision=copied.get("release_decision") if isinstance(copied.get("release_decision"), dict) else {},
+    )
     await repositories.update_run_input_skill_version(
         conn,
         tenant_id=effective_principal.tenant_id,
@@ -847,6 +852,10 @@ async def create_run(
             release_decision_payload = release_decision_payload_for_locked_version(
                 release_decision,
                 locked_version=skill_version,
+            )
+            skill_manifests = attach_skill_snapshot_governance(
+                skill_manifests,
+                release_decision=release_decision_payload,
             )
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")

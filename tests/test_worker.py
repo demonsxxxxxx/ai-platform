@@ -27,6 +27,28 @@ def primary_manifest(skill_id: str, version: str) -> dict:
     return {"skill_id": skill_id, "content_hash": version}
 
 
+def snapshot_governance(digest: str = "hash-a") -> dict:
+    return {
+        "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
+        "snapshot_source": "platform_release_lock",
+        "release_lock": {"schema_version": RELEASE_DECISION_SCHEMA_VERSION, "mode": "manifest_pin"},
+        "manifest": {"source_kind": "builtin", "selected_file_count": 1},
+        "selected_files": [
+            {
+                "relative_path": "SKILL.md",
+                "size_bytes": 5,
+                "sha256": "9c53c074d7ac6a2728b638ac1f376c5fa9eb8f71603017c3ea638c2fd40548df",
+            }
+        ],
+        "dependency_evidence": {
+            "status": "review_required",
+            "ref": "skill_dependency_policy",
+            "dependency_count": 1,
+        },
+        "does_not_close_b4_or_211": True,
+    }
+
+
 def primary_manifest_version(skill_id: str, manifests: list[dict]) -> str:
     for manifest in manifests:
         if manifest.get("skill_id") == skill_id:
@@ -2434,9 +2456,20 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
                     "skill_manifests": [
                         {
                             "skill_id": "qa-file-reviewer",
-                            "version": "hash-a",
-                            "content_hash": "hash-a",
-                            "source": {"kind": "builtin"},
+                            "version": "hash-evil",
+                            "content_hash": "hash-evil",
+                            "source": {
+                                "kind": "builtin",
+                                "storage_key": "tenants/default/private/package.zip",
+                                "files": [
+                                    {
+                                        "relative_path": "SKILL.md",
+                                        "size_bytes": 5,
+                                        "content_base64": "c2tpbGw=",
+                                    }
+                                ],
+                                "content_hash": "hash-a",
+                            },
                             "dependency_ids": ["minimax-docx"],
                             "allowed": True,
                             "staged": True,
@@ -2467,7 +2500,19 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": SkillSnapshotAdapter()}))
+    outcome = await process_run_payload(
+        base_payload(
+            skill_manifests=[
+                {
+                    "skill_id": "qa-file-reviewer",
+                    "content_hash": "hash-a",
+                    "source": {"kind": "builtin"},
+                    "snapshot_governance": snapshot_governance("hash-a"),
+                }
+            ]
+        ),
+        AdapterRegistry({"fake": SkillSnapshotAdapter()}),
+    )
 
     assert outcome.status == "succeeded"
     assert snapshots == [
@@ -2477,7 +2522,7 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
             "skill_id": "qa-file-reviewer",
             "skill_version": "hash-a",
             "content_hash": "hash-a",
-            "source_json": {"kind": "builtin"},
+            "source_json": {"kind": "builtin", "snapshot_governance": snapshot_governance("hash-a")},
             "dependency_ids": ["minimax-docx"],
             "allowed": True,
             "staged": True,
@@ -2486,6 +2531,229 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
             "inferred_used": False,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_worker_drops_executor_returned_snapshot_governance_without_payload_match(monkeypatch):
+    snapshots = []
+
+    class UntrustedGovernanceAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="test-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="test-executor/1",
+                capabilities={"skills": True},
+                result={"message": "done"},
+                executor_payload={
+                    "skill_manifests": [
+                        {
+                            "skill_id": "qa-file-reviewer",
+                            "version": "hash-evil",
+                            "content_hash": "hash-evil",
+                            "source": {"kind": "builtin"},
+                            "snapshot_governance": {
+                                "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
+                                "release_decision": {"selected_version": "hash-a"},
+                                "storage_key": "tenants/default/private/package.zip",
+                                "content_hash": "hash-a",
+                                "selected_files": [
+                                    {"relative_path": "SKILL.md", "content_base64": "c2tpbGw="}
+                                ],
+                            },
+                            "allowed": True,
+                            "staged": True,
+                            "used": True,
+                        }
+                    ],
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def complete_run(conn, **kwargs):
+        return None
+
+    async def upsert_run_skill_snapshot(conn, **kwargs):
+        snapshots.append(kwargs)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+
+    outcome = await process_run_payload(
+        base_payload(skill_manifests=[{"skill_id": "qa-file-reviewer", "content_hash": "hash-a"}]),
+        AdapterRegistry({"fake": UntrustedGovernanceAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert snapshots[0]["skill_version"] == "hash-a"
+    assert snapshots[0]["content_hash"] == "hash-a"
+    assert snapshots[0]["source_json"] == {}
+    serialized = json.dumps(snapshots[0]["source_json"], ensure_ascii=False)
+    assert "snapshot_governance" not in serialized
+    assert "release_decision" not in serialized
+    assert "storage_key" not in serialized
+    assert "content_hash" not in serialized
+    assert "content_base64" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_worker_uses_payload_source_instead_of_executor_returned_source(monkeypatch):
+    snapshots = []
+
+    class UntrustedSourceAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="test-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="test-executor/1",
+                capabilities={"skills": True},
+                result={"message": "done"},
+                executor_payload={
+                    "skill_manifests": [
+                        {
+                            "skill_id": "qa-file-reviewer",
+                            "version": "hash-evil",
+                            "content_hash": "hash-evil",
+                            "source": {
+                                "kind": "uploaded",
+                                "asset_dir": "executor-controlled",
+                                "storage_key": "tenants/default/private/package.zip",
+                            },
+                            "allowed": True,
+                            "staged": True,
+                            "used": True,
+                        }
+                    ],
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def complete_run(conn, **kwargs):
+        return None
+
+    async def upsert_run_skill_snapshot(conn, **kwargs):
+        snapshots.append(kwargs)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+
+    outcome = await process_run_payload(
+        base_payload(
+            skill_manifests=[
+                {
+                    "skill_id": "qa-file-reviewer",
+                    "content_hash": "hash-a",
+                    "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer", "version": "hash-a"},
+                    "snapshot_governance": snapshot_governance("hash-a"),
+                }
+            ]
+        ),
+        AdapterRegistry({"fake": UntrustedSourceAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert snapshots[0]["skill_version"] == "hash-a"
+    assert snapshots[0]["content_hash"] == "hash-a"
+    assert snapshots[0]["source_json"] == {
+        "kind": "builtin",
+        "asset_dir": "qa-file-reviewer",
+        "snapshot_governance": snapshot_governance("hash-a"),
+    }
+    serialized = json.dumps(snapshots[0]["source_json"], ensure_ascii=False)
+    assert "uploaded" not in serialized
+    assert "executor-controlled" not in serialized
+    assert "storage_key" not in serialized
+    assert "hash-a" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_worker_drops_executor_skill_manifest_without_payload_match(monkeypatch):
+    snapshots = []
+
+    class UnmatchedSkillAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="test-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="test-executor/1",
+                capabilities={"skills": True},
+                result={"message": "done"},
+                executor_payload={
+                    "used_skills": ["qa-file-reviewer", "unlisted-skill"],
+                    "used_skills_source": "executor_hook",
+                    "skill_manifests": [
+                        {
+                            "skill_id": "qa-file-reviewer",
+                            "version": "hash-a",
+                            "content_hash": "hash-a",
+                            "allowed": True,
+                            "staged": True,
+                            "used": True,
+                        },
+                        {
+                            "skill_id": "unlisted-skill",
+                            "version": "hash-unlisted",
+                            "content_hash": "hash-unlisted",
+                            "source": {"kind": "builtin", "asset_dir": "unlisted-skill"},
+                            "dependency_ids": ["hidden-dep"],
+                            "allowed": True,
+                            "staged": True,
+                            "used": True,
+                        },
+                    ],
+                },
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        return "evt-a"
+
+    async def complete_run(conn, **kwargs):
+        return None
+
+    async def upsert_run_skill_snapshot(conn, **kwargs):
+        snapshots.append(kwargs)
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+
+    outcome = await process_run_payload(
+        base_payload(skill_manifests=[{"skill_id": "qa-file-reviewer", "content_hash": "hash-a"}]),
+        AdapterRegistry({"fake": UnmatchedSkillAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert [item["skill_id"] for item in snapshots] == ["qa-file-reviewer"]
 
 
 @pytest.mark.asyncio
@@ -2554,7 +2822,15 @@ async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypa
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ControlledRunnerSkillAdapter()}))
+    outcome = await process_run_payload(
+        base_payload(
+            skill_manifests=[
+                {"skill_id": "qa-file-reviewer", "content_hash": "hash-reviewer"},
+                {"skill_id": "minimax-docx", "content_hash": "hash-docx"},
+            ]
+        ),
+        AdapterRegistry({"fake": ControlledRunnerSkillAdapter()}),
+    )
 
     assert outcome.status == "succeeded"
     assert snapshots[0]["skill_id"] == "qa-file-reviewer"

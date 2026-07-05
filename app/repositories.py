@@ -3314,9 +3314,7 @@ async def list_run_skill_snapshots(conn: AsyncConnection, *, tenant_id: str, run
     rows = list(await cursor.fetchall())
     snapshots = []
     for row in rows:
-        source = sanitize_public_payload(row.get("source_json") if isinstance(row.get("source_json"), dict) else {})
-        if not isinstance(source, dict):
-            source = {}
+        source = _sanitize_skill_snapshot_source(row.get("source_json"))
         dependency_ids = row.get("dependency_ids") if isinstance(row.get("dependency_ids"), list) else []
         used_skills_source = str(row.get("used_skills_source") or "").strip()
         inferred_used = bool(row.get("inferred_used"))
@@ -3328,8 +3326,6 @@ async def list_run_skill_snapshots(conn: AsyncConnection, *, tenant_id: str, run
             usage["inferred_used_skills"] = [str(row["skill_id"])]
         snapshot = {
             "skill_id": row["skill_id"],
-            "skill_version": row["skill_version"],
-            "content_hash": row["content_hash"],
             "source": source,
             "dependency_ids": [str(item) for item in dependency_ids],
             "allowed": bool(row["allowed"]),
@@ -3343,10 +3339,25 @@ async def list_run_skill_snapshots(conn: AsyncConnection, *, tenant_id: str, run
     return snapshots
 
 
-def _sanitize_skill_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
-    source = sanitize_public_payload(snapshot.get("source") if isinstance(snapshot.get("source"), dict) else {})
+def _sanitize_skill_snapshot_source(source_json: object) -> dict[str, Any]:
+    source = sanitize_public_payload(source_json if isinstance(source_json, dict) else {})
     if not isinstance(source, dict):
-        source = {}
+        return {}
+    source.pop("version", None)
+    governance = source.get("snapshot_governance")
+    if isinstance(governance, dict):
+        manifest = governance.get("manifest")
+        if isinstance(manifest, dict):
+            manifest.pop("digest", None)
+        release_lock = governance.get("release_lock")
+        if isinstance(release_lock, dict):
+            release_lock.pop("track", None)
+            release_lock.pop("rollout", None)
+    return source
+
+
+def _sanitize_skill_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    source = _sanitize_skill_snapshot_source(snapshot.get("source"))
     usage = snapshot.get("usage") if isinstance(snapshot.get("usage"), dict) else {}
     sanitized_usage: dict[str, Any] = {}
     for key, value in usage.items():
@@ -3361,8 +3372,6 @@ def _sanitize_skill_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             sanitized_usage[key] = value
     sanitized = {
         "skill_id": str(snapshot.get("skill_id") or ""),
-        "skill_version": str(snapshot.get("skill_version") or ""),
-        "content_hash": str(snapshot.get("content_hash") or ""),
         "source": source,
         "dependency_ids": [str(item) for item in snapshot.get("dependency_ids") or []],
         "allowed": bool(snapshot.get("allowed")),
@@ -3768,9 +3777,7 @@ async def get_admin_skill_detail(
         snapshot = {
             "run_id": row["run_id"],
             "skill_id": row["skill_id"],
-            "skill_version": row["skill_version"],
-            "content_hash": row["content_hash"],
-            "source": _json_dict(row.get("source_json")),
+            "source": _sanitize_skill_snapshot_source(row.get("source_json")),
             "dependency_ids": _json_list(row.get("dependency_ids")),
             "allowed": bool(row["allowed"]),
             "staged": bool(row["staged"]),
