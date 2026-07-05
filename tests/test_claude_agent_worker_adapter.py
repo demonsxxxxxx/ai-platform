@@ -14,6 +14,7 @@ from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.claude_agent_worker import _allowed_skill_names
 from app.executors.claude_agent_worker import _inferred_used_skill_names
+from app.executors.claude_agent_worker import _prepare_run_workspace
 from app.storage import StoredObject
 from app.executors.claude_agent_sdk_runner import build_sdk_env, build_skill_prompt, run_claude_agent_sdk
 from app.executors.registry import AdapterRegistry
@@ -1087,6 +1088,24 @@ async def test_agent_run_clears_stale_workspace_before_sdk(monkeypatch, tmp_path
 
     assert result.status == "succeeded"
     assert result.result["artifact_count"] == 0
+
+
+def test_prepare_run_workspace_initializes_git_worktree_ready_repo_for_sdk_agent_tool(tmp_path):
+    workspace_root = tmp_path / "workspaces"
+    workspace = workspace_root / "default" / "run_1"
+    child_worktree = tmp_path / "agent-worktree"
+
+    _prepare_run_workspace(workspace_root, workspace)
+
+    assert (workspace / ".git").is_dir()
+    subprocess.run(
+        ["git", "worktree", "add", "-q", str(child_worktree)],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert (child_worktree / ".git").exists()
 
 
 @pytest.mark.asyncio

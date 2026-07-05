@@ -34,6 +34,7 @@ from app.tool_policy import evaluate_tool_policy
 
 NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
 _CONTROLLED_RUNNER_SKILLS = {"qa-file-reviewer", "baoyu-translate"}
+_GIT_RUN = subprocess.run
 
 
 def _claude_sdk_tool_id(tool_name: str) -> str:
@@ -1360,6 +1361,38 @@ def _prepare_run_workspace(workspace_root: str | Path, workspace: Path) -> None:
             raise ValueError("run workspace must stay inside the configured workspace root")
         shutil.rmtree(workspace)
     workspace.mkdir(parents=True, exist_ok=False)
+    try:
+        _GIT_RUN(
+            ["git", "init", "-q"],
+            cwd=str(workspace),
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+        _GIT_RUN(
+            [
+                "git",
+                "-c",
+                "user.name=ai-platform",
+                "-c",
+                "user.email=ai-platform@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                "Initialize run workspace",
+            ],
+            cwd=str(workspace),
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("run_workspace_git_init_failed") from exc
     ensure_creatable_inside(
         workspace_root,
         workspace,

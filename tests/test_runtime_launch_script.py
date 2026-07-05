@@ -176,6 +176,12 @@ def test_dockerfile_can_start_sandbox_executor_app():
     assert 'CMD ["uvicorn"]' in content
 
 
+def test_dockerfile_installs_git_for_sdk_agent_worktrees():
+    content = Path("Dockerfile").read_text(encoding="utf-8")
+
+    assert "apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk git" in content
+
+
 def test_dockerfile_packages_release_evidence_for_runtime_readiness():
     content = Path("Dockerfile").read_text(encoding="utf-8")
 

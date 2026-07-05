@@ -89,10 +89,12 @@ capacity-evidence gate, or close G9.
 
 Even when a deployment profile sets `SANDBOX_CONTAINER_PROVIDER=docker` and
 reviewed G7 sandbox hardening evidence exists for a runtime subject, the
-capacity baseline remains fail-closed until B3 recorded load/profile evidence is
-present. For the current `945db2b` runtime subject, approved G7 status-upgrade
-evidence is present, but Docker-provider posture and G7 approval alone do not
-raise defaults, close B3, or make the overall gate closable.
+capacity baseline remains fail-closed until clean-main B3 recorded load/profile
+evidence is reviewed. For the current `945db2b` runtime subject, approved G7
+status-upgrade evidence is present, and a later dirty `39aa862` recorded-batch
+validation reached `ready_for_operator_review`; neither Docker-provider posture,
+G7 approval, nor dirty validation alone raises defaults, closes B3, or makes the
+overall gate closable.
 
 The current configured default answer remains: current defaults execute about three
 background Agent runs concurrently per shared worker capacity. The API can
@@ -1173,6 +1175,15 @@ recorded and B3 profile evidence is accepted, the batch output records
 `operator_review_required`; it still does not close B3 or raise production
 defaults.
 
+`tools/capacity_recorded_gate_values_from_live_run.py` is the bridge for a
+verified Foundation Runtime live-run packet and a matching capacity runtime
+snapshot. It rejects bounded probe JSON, requires the runtime subject commit to
+match, requires verified cleanup proof, and materializes the seven
+`capacity-operator-reviewed-evidence-values-<gate>.json` files plus a manifest.
+Those files are only batch-assembler inputs; a later
+`recorded_gate_batch_input_accepted` result advances to
+`ready_for_operator_review`, not B3 closure or a production-default increase.
+
 ### Current Runtime Note - 2026-07-05, commit `945db2b`
 
 Post-PR #321, 211 now runs API/worker image
@@ -1193,12 +1204,14 @@ diagnostic-only and recorded separately at
 `docs/release-evidence/diagnostics/2026-07-05-211-b3-host-sandbox-observation-945db2b.json`;
 it does not mark B3 recorded evidence.
 
-B3 remains blocked. All seven recorded load-test gates are still missing, the
-`b3_10x4_sdk_subagents` profile evidence is still empty, and production default
-decision remains `do_not_raise_without_recorded_load_test_evidence`. The
-`945db2b` readback and reviewed capacity visibility support only current
-runtime visibility and fail-closed readiness; they are not B3 closure and do not
-make the overall gate closable.
+B3 remains blocked for clean closure. A later dirty-validation strict 10x4 SDK
+Agent/subagent fanout run produced an accepted `b3_10x4_sdk_subagents` profile
+packet, but it was generated from `ai-platform:39aa862-b3-sdk-git-dirty-v1`, so
+it is profile-path validation only and not clean-main closure-grade evidence.
+The `945db2b` readback, reviewed capacity visibility, dirty profile packet, and
+dirty recorded-batch validation support only current runtime visibility,
+profile/batch assembly validation, and fail-closed review posture; they are not
+B3 closure and do not make the overall gate closable.
 
 A later 2026-07-05 B3 recorded-load attempt on the same `945db2b` runtime
 subject generated the repeatable plan/template bundle, then ran all seven
@@ -1214,9 +1227,39 @@ placeholder recorded-gate batch attempt still returned
 `blocked_incomplete_inputs`, and a single placeholder packet attempt rejected
 all 15 `TODO_OPERATOR_REVIEWED_*` fields as unsafe. This proves the validation
 path is runnable on 211, but it is still probe-only diagnostic evidence: it does
-not create operator-reviewed recorded gate values, does not supply the
-`b3_10x4_sdk_subagents` profile measurement, does not raise defaults, and does
-not close B3.
+not create operator-reviewed recorded gate values, does not raise defaults, and
+does not close B3. A follow-up blocker report was written at
+`/tmp/ai-platform-b3-recorded-load-b3-945db2b-20260705T050713Z/summaries/recorded-gate-values-gap-report-20260705.json`;
+it records `blocked_missing_operator_reviewed_recorded_gate_values`,
+`gates_with_probe_only_output=7`, `gates_with_all_template_values_todo=7`,
+`recorded_gate_packets_ready=0`, and the required next action to run or capture
+true operator-approved recorded load scenarios before replacing the
+`TODO_OPERATOR_REVIEWED_*` values.
+
+A later 2026-07-05 211 dirty recorded live-run at
+`/tmp/ai-platform-b3-39aa862-recorded-live-20260705T074525Z` used current
+runtime subject `39aa862b0c6139bcc80578dd51ef5de898ea92cc` and image
+`ai-platform:39aa862-b3-sdk-git-dirty-v1` with `ai-platform.build-dirty=true`.
+The runtime snapshot
+`capacity-runtime-evidence-current-with-host-sandbox.json` observed all required
+Admin Runtime sections and remained `blocked_missing_load_test_evidence` before
+recorded packets were assembled. The same-subject Foundation Runtime
+concurrency packet `foundation-runtime-concurrency-39aa862.json` recorded 12
+concurrent requests/runs/sessions across 2 tenants and 4 users with verified
+cleanup. `tools/capacity_recorded_gate_values_from_live_run.py` wrote seven
+gate value files plus `capacity-recorded-gate-values-from-live-run.json` with
+`status=operator_value_files_ready`, `input_errors=[]`, and all seven recorded
+gates. The batch assembler then wrote
+`capacity-recorded-gate-batch-snapshot-from-live-run.json` with
+`status=recorded_gate_batch_input_accepted`,
+`readiness.status=ready_for_operator_review`, runtime/profile/recorded-gate
+inputs accepted, all seven load-test gates recorded, and
+`production_default_decision=operator_review_required_before_default_change`.
+The profile readiness wrapper
+`capacity-profile-readiness-from-live-run.json` returned
+`status=operator_review_required`. This proves the dirty recorded-batch path is
+runnable end-to-end, but it is not clean-main closure-grade evidence, not
+reviewed repo-local release evidence, and not a production-default change.
 
 ## Required Load-Test Gates
 
