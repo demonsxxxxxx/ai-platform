@@ -34,6 +34,7 @@ HISTORICAL_DIRTY_G7_B3_RUNTIME_SOURCE = "755e50ea2ad08c2d4218ae5d8cc612970b19e2a
 PRIOR_CLEAN_MAIN_G7_B3_RUNTIME_SOURCE = "61073b16a5b2c135e7ee467434ab39502ca3d194"
 POST_PR319_G7_B3_RUNTIME_SOURCE = "a294727046024958c41b15f646512e68f3c04b47"
 CURRENT_G7_B3_RUNTIME_SOURCE = "945db2bb5926ad7b01ead98c3283d55b77d2677d"
+CLEAN_B3_RECORDED_RUNTIME_SOURCE = "53887e20f5141e66a8f635affc87f4af930348ba"
 CURRENT_MAIN_G7_EVIDENCE_PATH = (
     Path(__file__).resolve().parents[1]
     / "docs/release-evidence/g7-sandbox"
@@ -130,6 +131,30 @@ CURRENT_G7_B3_RUNTIME_EVIDENCE_PATH_945DB2B = (
     / CURRENT_G7_B3_RUNTIME_SOURCE
     / "2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default.json"
 )
+CURRENT_G7_B3_FRC_EVIDENCE_PATH_945DB2B = (
+    Path(__file__).resolve().parents[1]
+    / "docs/release-evidence/foundation-runtime-concurrency"
+    / f"{CURRENT_G7_B3_RUNTIME_SOURCE}-frc-g7-b3-20260705"
+    / "2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency.json"
+)
+CURRENT_G7_B3_FRC_READINESS_PATH_945DB2B = (
+    Path(__file__).resolve().parents[1]
+    / "docs/release-evidence/foundation-runtime-concurrency"
+    / f"{CURRENT_G7_B3_RUNTIME_SOURCE}-frc-g7-b3-20260705"
+    / "2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency-readiness.json"
+)
+CLEAN_B3_RECORDED_FRC_EVIDENCE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "docs/release-evidence/foundation-runtime-concurrency"
+    / f"{CLEAN_B3_RECORDED_RUNTIME_SOURCE}-frc-g7-b3-20260705"
+    / "2026-07-05-211-foundation-alpha-poc-53887e2-foundation-runtime-concurrency.json"
+)
+CLEAN_B3_RECORDED_FRC_READINESS_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "docs/release-evidence/foundation-runtime-concurrency"
+    / f"{CLEAN_B3_RECORDED_RUNTIME_SOURCE}-frc-g7-b3-20260705"
+    / "2026-07-05-211-foundation-alpha-poc-53887e2-foundation-runtime-concurrency-readiness.json"
+)
 PR297_FRC_EVIDENCE_PATH = (
     Path(__file__).resolve().parents[1]
     / "docs/release-evidence/foundation-runtime-concurrency"
@@ -189,6 +214,18 @@ CURRENT_G7_B3_CAPACITY_EVIDENCE_PATH_945DB2B = (
     / "docs/release-evidence/capacity-gate-readiness"
     / CURRENT_G7_B3_RUNTIME_SOURCE
     / "2026-07-05-211-capacity-runtime-readiness-945db2b.json"
+)
+CLEAN_B3_RECORDED_CAPACITY_EVIDENCE_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "docs/release-evidence/capacity-gate-readiness"
+    / CLEAN_B3_RECORDED_RUNTIME_SOURCE
+    / "2026-07-05-211-capacity-recorded-gate-readiness-53887e2.json"
+)
+CURRENT_G7_B3_STATUS_UPGRADE_REVIEW_PATH_945DB2B = (
+    Path(__file__).resolve().parents[1]
+    / "docs/release-evidence/g7-status-review"
+    / CURRENT_G7_B3_RUNTIME_SOURCE
+    / "2026-07-05-211-g7-operator-status-upgrade-945db2b.json"
 )
 CURRENT_CLEAN_MAIN_G7_B3_OPERATOR_STATUS_REVIEW_PATH = (
     Path(__file__).resolve().parents[1]
@@ -1611,9 +1648,14 @@ def test_historical_a294727_g7_evidence_and_capacity_visibility_stays_local_part
     assert audit["does_not_close_b3"] is True
 
 
-def test_current_945db2b_g7_evidence_and_capacity_visibility_stays_local_partial_without_frc_or_status_upgrade():
+def test_current_945db2b_g7_status_upgrade_approved_but_b3_stays_blocked():
     evidence = json.loads(CURRENT_G7_B3_RUNTIME_EVIDENCE_PATH_945DB2B.read_text(encoding="utf-8"))
+    frc_evidence = json.loads(CURRENT_G7_B3_FRC_EVIDENCE_PATH_945DB2B.read_text(encoding="utf-8"))
+    frc_readiness = json.loads(CURRENT_G7_B3_FRC_READINESS_PATH_945DB2B.read_text(encoding="utf-8"))
     capacity_evidence = json.loads(CURRENT_G7_B3_CAPACITY_EVIDENCE_PATH_945DB2B.read_text(encoding="utf-8"))
+    status_upgrade_evidence = json.loads(
+        CURRENT_G7_B3_STATUS_UPGRADE_REVIEW_PATH_945DB2B.read_text(encoding="utf-8")
+    )
 
     assert evidence["schema_version"] == "ai-platform.release-evidence-entry.v1"
     assert evidence["evidence_id"] == "2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default"
@@ -1650,11 +1692,26 @@ def test_current_945db2b_g7_evidence_and_capacity_visibility_stays_local_partial
     )
     assert all(item["passed"] is True for item in evidence["evidence_ref"]["verifier_summary"]["checks"])
     assert evidence["remaining_blockers"] == [
-        "same-subject Foundation Runtime concurrency evidence is still missing for 945db2b",
-        "approved G7 status-upgrade review is still missing for 945db2b",
         "B3 seven recorded load-test gates are still missing",
         "b3_10x4_sdk_subagents profile evidence is still missing",
     ]
+    assert "44daf19" in evidence["source_ref"]["source_authority_caveat"]
+    assert (
+        "Same-subject Foundation Runtime concurrency evidence and approved G7 "
+        "status-upgrade evidence are recorded separately"
+        in evidence["source_ref"]["source_authority_caveat"]
+    )
+
+    assert frc_evidence["commit_sha"] == CURRENT_G7_B3_RUNTIME_SOURCE
+    assert frc_evidence["source_tree_commit_sha"] == CURRENT_G7_B3_RUNTIME_SOURCE
+    assert frc_evidence["runtime_subject_commit_sha"] == CURRENT_G7_B3_RUNTIME_SOURCE
+    assert frc_readiness["status"] == "verified_foundation_runtime_concurrency"
+    assert frc_readiness["verified"] is True
+    assert frc_readiness["failures"] == []
+    assert frc_evidence["summary"]["concurrent_request_count"] == 12
+    assert frc_evidence["summary"]["tenant_count"] == 2
+    assert frc_evidence["summary"]["user_count"] == 4
+    assert all(check["status"] == "passed" for check in frc_evidence["checks"].values())
 
     assert capacity_evidence["schema_version"] == "ai-platform.release-evidence-entry.v1"
     assert capacity_evidence["evidence_id"] == "2026-07-05-211-capacity-runtime-readiness-945db2b"
@@ -1689,6 +1746,21 @@ def test_current_945db2b_g7_evidence_and_capacity_visibility_stays_local_partial
         "ordinary_user_platform_multi_run_orchestration_enabled",
     ]
 
+    status_review = status_upgrade_evidence["evidence_ref"]["operator_status_review"]
+    assert status_upgrade_evidence["artifact_kind"] == "211_g7_operator_status_review"
+    assert status_upgrade_evidence["commit_sha"] == CURRENT_G7_B3_RUNTIME_SOURCE
+    assert status_upgrade_evidence["runtime_subject_commit_sha"] == CURRENT_G7_B3_RUNTIME_SOURCE
+    assert status_upgrade_evidence["review_status"] == "reviewed"
+    assert status_upgrade_evidence["redaction_scan_status"] == "passed"
+    assert status_review["status"] == "status_upgrade_approved"
+    assert status_review["status_label_recommendation"] == "g7_status_upgrade_approved"
+    assert status_review["status_upgrade_decision"] == "approved_for_g7_status_upgrade"
+    assert status_review["g7_runtime_blocking_reasons"] == []
+    assert status_review["b3_blocking_reasons"] == [
+        "b3_recorded_load_test_gates_missing",
+        "b3_10x4_sdk_subagents_profile_evidence_missing",
+    ]
+
     audit = build_g7_b3_completion_audit(
         runtime_observation={
             "source_marker_commit": evidence["source_ref"]["runtime_source_marker"],
@@ -1696,30 +1768,43 @@ def test_current_945db2b_g7_evidence_and_capacity_visibility_stays_local_partial
             "runtime_image_labels": evidence["source_ref"]["image_labels"],
             "api_env": evidence["source_ref"]["safe_live_runtime_env"],
             "reviewed_release_evidence": evidence,
+            "foundation_runtime_concurrency_evidence": frc_evidence,
         },
         capacity_profile_readiness=capacity_evidence["capacity_profile_readiness"],
+        g7_status_upgrade_review=status_upgrade_evidence,
         current_source_commit=CURRENT_G7_B3_RUNTIME_SOURCE,
     )
     assert audit["g7"]["reviewed_release_evidence_id"] == (
         "g7-live-env-hardening-945db2b-live-default-20260704185430"
     )
-    assert audit["g7"]["blocking_reasons"] == [
-        "foundation_runtime_concurrency_evidence_missing_or_not_current_subject"
-    ]
-    assert audit["g7"]["status"] == "blocked"
-    assert audit["g7"]["status_upgrade_review"]["status"] == "not_provided"
+    assert audit["g7"]["blocking_reasons"] == []
+    assert audit["g7"]["foundation_runtime_concurrency_current_subject"] is True
+    assert audit["g7"]["foundation_runtime_concurrency_status"] == (
+        "verified_foundation_runtime_concurrency"
+    )
+    assert audit["g7"]["status"] == "status_upgrade_approved"
+    assert audit["g7"]["status_upgrade_review"]["status"] == "accepted"
+    assert audit["g7"]["status_upgrade_review"]["status_upgrade_decision"] == (
+        "approved_for_g7_status_upgrade"
+    )
+    assert audit["g7"]["required_next_steps"] == []
     assert audit["b3"]["blocking_reasons"] == [
         "b3_recorded_load_test_gates_missing",
         "b3_10x4_sdk_subagents_profile_evidence_missing",
     ]
-    assert audit["status"] == "blocked_missing_g7_b3_completion_evidence"
+    assert "g8_ordinary_user_multi_agent_exposure" not in audit["b3"]["blocking_reasons"]
+    assert audit["status"] == "blocked_missing_b3_completion_evidence"
     assert audit["status_label"] == "local partial"
     assert audit["does_not_claim_211_verified"] is True
     assert audit["does_not_claim_gate_closable"] is True
-    assert audit["does_not_close_g7"] is True
+    assert audit["does_not_close_g7"] is False
     assert audit["does_not_close_b3"] is True
 
-    serialized = json.dumps([evidence, capacity_evidence], ensure_ascii=False).lower()
+    serialized = json.dumps(
+        [evidence, frc_evidence, capacity_evidence, status_upgrade_evidence, audit],
+        ensure_ascii=False,
+    ).lower()
+    assert "g8_ordinary_user_multi_agent_exposure" not in serialized
     for forbidden in (
         "openai_api_key",
         "anthropic_auth_token",
@@ -1731,6 +1816,209 @@ def test_current_945db2b_g7_evidence_and_capacity_visibility_stays_local_partial
     ):
         assert forbidden not in serialized
     assert_no_sensitive_callback_token_leak(serialized)
+
+
+def test_clean_53887e2_b3_recorded_evidence_reaches_operator_review_only():
+    capacity_evidence = json.loads(CLEAN_B3_RECORDED_CAPACITY_EVIDENCE_PATH.read_text(encoding="utf-8"))
+    frc_evidence = json.loads(CLEAN_B3_RECORDED_FRC_EVIDENCE_PATH.read_text(encoding="utf-8"))
+    frc_readiness = json.loads(CLEAN_B3_RECORDED_FRC_READINESS_PATH.read_text(encoding="utf-8"))
+
+    assert capacity_evidence["schema_version"] == "ai-platform.release-evidence-entry.v1"
+    assert capacity_evidence["evidence_id"] == (
+        "2026-07-05-211-capacity-recorded-gate-readiness-53887e2"
+    )
+    assert capacity_evidence["artifact_kind"] == "capacity_gate_readiness"
+    assert capacity_evidence["commit_sha"] == CLEAN_B3_RECORDED_RUNTIME_SOURCE
+    assert capacity_evidence["runtime_subject_commit_sha"] == CLEAN_B3_RECORDED_RUNTIME_SOURCE
+    assert capacity_evidence["pr_refs"] == ["#324"]
+    assert capacity_evidence["review_status"] == "reviewed"
+    assert capacity_evidence["redaction_scan_status"] == "passed"
+    assert capacity_evidence["source_ref"]["api_worker_image"] == (
+        "ai-platform:53887e2-b3-recorded-clean-v1"
+    )
+    assert capacity_evidence["source_ref"]["api_worker_image_build_dirty"] is False
+
+    capacity_ref = capacity_evidence["evidence_ref"]
+    assert capacity_ref["recorded_gate_batch_snapshot_status"] == (
+        "recorded_gate_batch_input_accepted"
+    )
+    assert capacity_ref["recorded_gate_batch_readiness_status"] == "ready_for_operator_review"
+    assert capacity_ref["capacity_profile_readiness_status"] == "operator_review_required"
+    assert capacity_ref["input_status"] == {
+        "profile_evidence": "accepted",
+        "recorded_gate_evidence": "accepted",
+        "runtime_evidence": "accepted",
+    }
+    assert capacity_ref["load_test_evidence_status"] == "recorded"
+    assert capacity_ref["recorded_gates"] == [
+        "api_read_write_burst",
+        "run_creation_burst_by_tenant_and_user",
+        "worker_processing_throughput",
+        "queue_depth_and_lease_latency",
+        "cancel_retry_resume_under_load",
+        "sandbox_lease_creation_under_load",
+        "model_gateway_timeout_and_backpressure",
+    ]
+    assert capacity_ref["missing_load_test_gates"] == []
+    assert capacity_ref["invalid_load_test_evidence"] == []
+    assert capacity_ref["profile_evidence"] == {
+        "target_profile_id": "b3_10x4_sdk_subagents",
+        "evidence_source": "live_worker_run_payload",
+        "observed_concurrent_sessions": 10,
+        "observed_peak_sdk_subagents_per_session": 4,
+        "sdk_subagent_fanout_measurement_ref": (
+            "capacity-evidence/b3/b3-sdk-subagent-fanout-measurement-summary.json"
+        ),
+        "production_concurrency_defaults_raised": False,
+        "safe_concurrency_claimed": False,
+        "ordinary_user_platform_multi_run_orchestration_enabled": False,
+    }
+    fanout = capacity_ref["strict_sdk_fanout_measurement_summary"]
+    assert fanout["runtime_image"] == "ai-platform:53887e2-b3-recorded-clean-v1"
+    assert fanout["runtime_image_dirty"] is False
+    assert fanout["sdk_transcript_run_count"] == 10
+    assert fanout["agent_type_total"] == {"general-purpose": 40}
+    assert fanout["runs_with_exactly_4_agent_tool_uses"] == 10
+    assert fanout["runs_with_exactly_4_tool_results"] == 10
+    assert fanout["runs_with_exactly_4_subagent_jsonl"] == 10
+    assert fanout["runs_with_exactly_4_subagent_meta"] == 10
+    assert fanout["workspace_git_head_present_count"] == 10
+    assert fanout["redaction"]["raw_private_content_excluded"] is True
+    assert capacity_ref["foundation_runtime_concurrency"]["readiness_status"] == (
+        "verified_foundation_runtime_concurrency"
+    )
+    assert capacity_ref["foundation_runtime_concurrency"]["verified"] is True
+    assert capacity_ref["foundation_runtime_concurrency"]["failures"] == []
+    assert capacity_ref["production_default_decision"] == (
+        "operator_review_required_before_default_change"
+    )
+    assert capacity_ref["non_expansion_invariants"] == {
+        "production_concurrency_defaults_raised": False,
+        "safe_concurrency_claimed": False,
+        "ordinary_user_platform_multi_run_orchestration_enabled": False,
+        "ordinary_user_platform_multi_run_orchestration_exposure": False,
+    }
+    assert capacity_evidence["does_not_close_b3"] is True
+    assert capacity_evidence["does_not_raise_production_defaults"] is True
+    assert capacity_evidence["does_not_make_gate_closable"] is True
+
+    assert frc_evidence["commit_sha"] == CLEAN_B3_RECORDED_RUNTIME_SOURCE
+    assert frc_evidence["source_tree_commit_sha"] == CLEAN_B3_RECORDED_RUNTIME_SOURCE
+    assert frc_evidence["runtime_subject_commit_sha"] == CLEAN_B3_RECORDED_RUNTIME_SOURCE
+    assert frc_readiness["status"] == "verified_foundation_runtime_concurrency"
+    assert frc_readiness["verified"] is True
+    assert frc_readiness["failures"] == []
+
+    audit = build_g7_b3_completion_audit(
+        runtime_observation={
+            "source_marker_commit": CLEAN_B3_RECORDED_RUNTIME_SOURCE,
+            "runtime_image": "ai-platform:53887e2-b3-recorded-clean-v1",
+            "runtime_image_labels": {
+                "ai-platform.source-revision": CLEAN_B3_RECORDED_RUNTIME_SOURCE,
+                "ai-platform.runtime-subject": CLEAN_B3_RECORDED_RUNTIME_SOURCE,
+                "org.opencontainers.image.revision": CLEAN_B3_RECORDED_RUNTIME_SOURCE,
+            },
+            "api_env": {
+                "SANDBOX_CONTAINER_PROVIDER": "docker",
+                "SANDBOX_EXECUTOR_IMAGE": "ai-platform:53887e2-b3-recorded-clean-v1",
+                "SANDBOX_EGRESS_POLICY_ENABLED": "true",
+            },
+            "foundation_runtime_concurrency_evidence": frc_evidence,
+        },
+        capacity_profile_readiness=capacity_evidence["capacity_profile_readiness"],
+        current_source_commit=CLEAN_B3_RECORDED_RUNTIME_SOURCE,
+    )
+    assert audit["b3"]["status"] == "operator_review_required"
+    assert audit["b3"]["blocking_reasons"] == []
+    assert audit["b3"]["missing_recorded_load_test_gates"] == []
+    assert audit["b3"]["missing_profile_evidence"] == []
+    assert audit["b3"]["production_default_decision"] == (
+        "operator_review_required_before_default_change"
+    )
+    assert audit["status"] == "blocked_missing_g7_completion_evidence"
+    assert audit["status_label"] == "local partial"
+    assert audit["does_not_close_b3"] is True
+    assert audit["does_not_claim_gate_closable"] is True
+    assert audit["does_not_claim_211_verified"] is True
+
+    serialized = json.dumps([capacity_evidence, frc_evidence, audit], ensure_ascii=False).lower()
+    assert "g8_ordinary_user_multi_agent_exposure" not in serialized
+    for forbidden in (
+        "openai_api_key",
+        "anthropic_auth_token",
+        "database_url",
+        "redis_url",
+        "/home/xinlin",
+        "/var/run/docker.sock",
+        "c:\\users",
+    ):
+        assert forbidden not in serialized
+    assert_no_sensitive_callback_token_leak(serialized)
+
+
+def test_cli_accepts_current_945db2b_g7_status_upgrade_without_b3_overclosure(tmp_path):
+    evidence = json.loads(CURRENT_G7_B3_RUNTIME_EVIDENCE_PATH_945DB2B.read_text(encoding="utf-8"))
+    capacity_evidence = json.loads(CURRENT_G7_B3_CAPACITY_EVIDENCE_PATH_945DB2B.read_text(encoding="utf-8"))
+    runtime_observation_path = tmp_path / "runtime-observation-945db2b.json"
+    capacity_profile_readiness_path = tmp_path / "capacity-profile-readiness-945db2b.json"
+    runtime_observation_path.write_text(
+        json.dumps(
+            {
+                "source_marker_commit": evidence["source_ref"]["runtime_source_marker"],
+                "runtime_image": evidence["source_ref"]["image"],
+                "runtime_image_labels": evidence["source_ref"]["image_labels"],
+                "api_env": evidence["source_ref"]["safe_live_runtime_env"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    capacity_profile_readiness_path.write_text(
+        json.dumps(capacity_evidence["capacity_profile_readiness"]),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "tools/g7_b3_completion_audit.py",
+            "--runtime-observation-json",
+            str(runtime_observation_path),
+            "--capacity-profile-readiness-json",
+            str(capacity_profile_readiness_path),
+            "--reviewed-release-evidence-json",
+            str(CURRENT_G7_B3_RUNTIME_EVIDENCE_PATH_945DB2B),
+            "--foundation-runtime-concurrency-evidence-json",
+            str(CURRENT_G7_B3_FRC_EVIDENCE_PATH_945DB2B),
+            "--g7-status-upgrade-review-json",
+            str(CURRENT_G7_B3_STATUS_UPGRADE_REVIEW_PATH_945DB2B),
+            "--current-source-commit",
+            CURRENT_G7_B3_RUNTIME_SOURCE,
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload["g7"]["blocking_reasons"] == []
+    assert payload["g7"]["foundation_runtime_concurrency_current_subject"] is True
+    assert payload["g7"]["status"] == "status_upgrade_approved"
+    assert payload["g7"]["status_upgrade_review"]["status"] == "accepted"
+    assert payload["g7"]["status_upgrade_review"]["status_upgrade_decision"] == (
+        "approved_for_g7_status_upgrade"
+    )
+    assert payload["b3"]["blocking_reasons"] == [
+        "b3_recorded_load_test_gates_missing",
+        "b3_10x4_sdk_subagents_profile_evidence_missing",
+    ]
+    assert "g8_ordinary_user_multi_agent_exposure" not in payload["b3"]["blocking_reasons"]
+    assert payload["status"] == "blocked_missing_b3_completion_evidence"
+    assert payload["does_not_close_g7"] is False
+    assert payload["does_not_close_b3"] is True
+    assert payload["does_not_claim_gate_closable"] is True
+    assert "g8_ordinary_user_multi_agent_exposure" not in json.dumps(payload)
 
 
 def test_prior_clean_main_g7_b3_evidence_records_candidate_without_closure():

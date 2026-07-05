@@ -270,8 +270,9 @@ def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
     assert "`g7_runtime_blocking_reasons=[]`" in tech_text
     assert "`status_upgrade_decision=not_approved_for_closure`" in tech_text
     assert "Same-subject Foundation Runtime concurrency evidence" in tech_text
-    assert "an approved G7 status-upgrade artifact" in tech_text
-    assert "B3 recorded load/profile evidence remain separate blockers" in tech_text
+    assert "approved G7 status-upgrade artifact" in tech_text
+    assert "the G7 runtime slice is `status_upgrade_approved`" in tech_text
+    assert "B3 recorded load/profile evidence remains the blocker" in tech_text
     assert "G7 remains blocked until Docker-provider smoke and hardening evidence exist" not in tech_text
     assert "Docker provider hardening and 211 smoke remain G7 blockers" not in tech_text
     assert "docs/operations/ai-platform-foundation-alpha-closure.md" in prd_text
@@ -1716,11 +1717,7 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     assert "The latest reviewed `a294727` read-only capacity runtime evidence records Admin Runtime HTTP `200`" not in gate_status_text
     assert "current latest-status reading uses the reviewed `a294727` capacity visibility entry" not in gate_status_text
     assert "The current `a294727` entry is still fail-closed" not in gate_status_text
-    assert (
-        "The current `945db2b` entry is still fail-closed at "
-        "`blocked_missing_load_test_evidence`"
-        in " ".join(gate_status_text.split())
-    )
+    assert "The prior `945db2b` entry remains fail-closed at `blocked_missing_load_test_evidence`" in " ".join(gate_status_text.split())
     assert "the earlier reviewed `a294727`, `bbe23d5`, and `61073b1` visibility records are retained as prior baselines" in gate_status_text
     assert "`blocked_missing_admin_runtime_sections`" in gate_status_text
     assert "`sandbox` was missing/degraded" in gate_status_text
@@ -1729,27 +1726,30 @@ def test_capacity_docs_record_latest_211_bounded_probe_without_closing_gate():
     assert "so `755e50e` is not latest clean `origin/main` runtime evidence" in compact_capacity_text
     assert "The latest reviewed capacity visibility entry is now the `945db2b` record" in compact_capacity_text
     assert "Even when a deployment profile sets `SANDBOX_CONTAINER_PROVIDER=docker`" in compact_capacity_text
-    assert (
-        "capacity baseline remains fail-closed until an approved G7 status-upgrade "
-        "decision and B3 recorded load/profile evidence are present"
-        in compact_capacity_text
-    )
+    assert "capacity baseline remains fail-closed until clean-main B3 recorded load/profile evidence is reviewed" in compact_capacity_text
+    assert "approved G7 status-upgrade evidence is present" in compact_capacity_text
     assert "ai-platform:4805031-g7-b3-post-297-label-repair-v2" in capacity_text
     assert "ai-platform-frontend:ba81a0b" in capacity_text
-    assert (
-        "all seven operator-reviewed recorded load-test gates and the `b3_10x4_sdk_subagents` "
-        "profile evidence are still missing"
-        in " ".join(capacity_text.split())
-    )
+    assert "/tmp/ai-platform-b3-39aa862-recorded-live-20260705T074525Z" in capacity_text
+    assert "`status=operator_value_files_ready`" in capacity_text
+    assert "`status=recorded_gate_batch_input_accepted`" in capacity_text
+    assert "`readiness.status=ready_for_operator_review`" in capacity_text
     assert "Admin Runtime HTTP `200`" in gate_status_text
     assert "all required Admin Runtime capacity sections present" not in gate_status_text
     assert "all required Admin Runtime sections observed" in gate_status_text
     assert "schema `ai-platform.capacity-runtime-evidence.v1`" in gate_status_text
     assert "nested gate readiness `blocked_missing_load_test_evidence`" in gate_status_text
-    assert "every required `b3_10x4_sdk_subagents` profile evidence field are still missing" in gate_status_text
+    assert "accepted `b3_10x4_sdk_subagents` profile packet" in gate_status_text
+    assert "10 terminal `succeeded` runs" in gate_status_text
+    assert "40 total Agent calls" in gate_status_text
+    assert "capacity-recorded-gate-batch-snapshot-from-live-run.json" in gate_status_text
+    assert "`status=recorded_gate_batch_input_accepted`" in gate_status_text
+    assert "`readiness.status=ready_for_operator_review`" in gate_status_text
     assert "The latest reviewed `a294727` read-only capacity runtime evidence records Admin Runtime HTTP `200`" not in gate_status_text
-    assert "Record approved load evidence for the seven gates before raising any production default" in gate_status_text
-    assert "This is source/runtime visibility plus source contract only, not B3 closure" in gate_status_text
+    assert "The clean `53887e2` branch-runtime recorded evidence is now repo-local and reviewed" in gate_status_text
+    assert "recorded B3 evidence remains operator-review-required, not closure" in gate_status_text
+    assert "Reproduce the same recorded-batch path on a clean committed image" not in gate_status_text
+    assert "source contract only plus dirty validation evidence" not in gate_status_text
 
 
 def test_current_b3_sandbox_diagnostic_documents_socket_boundary_without_gate_closure():
@@ -1875,7 +1875,7 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     )[0]
     assert "The table below is a gate/evidence matrix" in current_gate_table
     assert "Rows that mention `96f27bb` describe reviewed 2026-06-30" in current_gate_table
-    assert "GitHub `main` now includes PR #322 merge commit" in current_gate_table
+    assert "GitHub `main` now includes PR #323 merge commit" in current_gate_table
     assert POST_PR321_G7_B3_RUNTIME_SHA in current_gate_table
     assert "latest reviewed 211 runtime subject remains PR #315 merge commit" not in " ".join(current_gate_table.split())
     assert "current GitHub `main`, the 211 repo-local source marker, and the 211 API/worker canonical runtime image labels are at `15903fdfe96ffcfba9daa1252741111017dcf832`" not in " ".join(current_gate_table.split())
@@ -2007,8 +2007,8 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "The `9c669761` live-default G7/FRC pair and the `15903fd` label-clean live-default G7/FRC pair are now historical same-subject evidence" in compact_gate_status_text
     assert "The `755e50e` dirty-runtime v2 G7 verifier plus same-subject FRC success advance" in compact_gate_status_text
     assert "The post-PR #321 `945db2b` legacy source-marker cleanup rollout advances the current runtime source-authority slice" in compact_gate_status_text
-    assert "Fresh reviewed `945db2b` G7 live-env hardening evidence and B3 capacity visibility are now recorded" in compact_gate_status_text
-    assert "same-subject Foundation Runtime concurrency evidence, approved G7 status upgrade, B3 recorded load/profile evidence, and #164 current closure evidence are not present" in compact_gate_status_text
+    assert "Fresh reviewed `945db2b` G7 live-env hardening evidence, same-subject Foundation Runtime concurrency evidence, approved G7 status-upgrade evidence, and B3 capacity visibility are now recorded" in compact_gate_status_text
+    assert "B3 recorded load/profile evidence and #164 current closure evidence are not present" in compact_gate_status_text
     assert "#164 history is historical B0 latest-main runtime-refresh context only" in compact_gate_status_text
     assert "do not use it as current G7/B3, Foundation Alpha, production-ready, gate-closable, or closure evidence" in compact_gate_status_text
     assert "The latest reviewed G7 verifier is the `945db2b` run" in compact_gate_status_text
@@ -2119,20 +2119,24 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
         "可到 candidate / local-partial 层级但未获 closure approval"
         in compact_roadmap_text
     )
-    assert "当前路线读法已前进到 PR #321 `945db2b` runtime refresh" in compact_roadmap_text
+    assert "当前路线读法已从 PR #321 `945db2b` runtime refresh 继续前进到 clean branch-runtime `53887e2` B3 recorded evidence" in compact_roadmap_text
     assert "source marker、source snapshot、API/worker image labels 和三个 API/worker in-container marker 均已绑定 `945db2b`" in compact_roadmap_text
     assert "最新 reviewed G7 live-env verifier 和 B3 capacity visibility 已前进到 `945db2b`" in compact_roadmap_text
     assert "最新 reviewed G7 live-env verifier 和 B3 capacity visibility 仍是历史 `a294727` evidence" not in compact_roadmap_text
     assert "当前 `945db2b` 仍不是 G0/G7 closure" in compact_roadmap_text
-    assert "B3 recorded load evidence 和 `b3_10x4_sdk_subagents` profile evidence 仍缺" in compact_roadmap_text
+    assert "dirty-validation `39aa862` strict 10x4 SDK Agent/subagent fanout 和 recorded-batch run 已把" in compact_roadmap_text
+    assert "`recorded_gate_batch_input_accepted` / `readiness.status=ready_for_operator_review`" in compact_roadmap_text
     assert "GitHub issue #164 只作为历史 B0 latest-main runtime-refresh 证据上下文" in compact_roadmap_text
     assert "不得作为当前 G7/B3/#164 closure、gate closable 或 production-ready 证据" in compact_roadmap_text
     assert "当前最新 reviewed capacity visibility verdict 仍是历史 `a294727` 的 `blocked_missing_load_test_evidence`" not in compact_roadmap_text
     assert "总体 B3 closure 仍是 `local partial`" in compact_roadmap_text
-    assert "因为七门 recorded load evidence 和 `b3_10x4_sdk_subagents` profile evidence 未齐备" in compact_roadmap_text
+    assert "clean branch-runtime `53887e2` recorded batch/profile evidence 已进入 `operator_review_required`" in compact_roadmap_text
+    assert "reviewed repo-local release evidence" in compact_roadmap_text
     compact_g7_b3_evidence_plan = " ".join(read(G7_B3_EVIDENCE_CLOSURE_PLAN).split())
     assert "reviewed B3 capacity visibility for `945db2b`" in compact_g7_b3_evidence_plan
-    assert "approved G7 status-upgrade evidence are missing for `945db2b`" in compact_g7_b3_evidence_plan
+    assert "same-subject Foundation Runtime concurrency evidence for `945db2b` is recorded" in compact_g7_b3_evidence_plan
+    assert "approved G7 status-upgrade evidence for `945db2b` is recorded" in compact_g7_b3_evidence_plan
+    assert "it removes only the G7 status-upgrade blocker and does not close B3" in compact_g7_b3_evidence_plan
     assert (
         "the historical `bbe23d5` operator status-review artifact is recorded "
         "but sets `status_upgrade_decision=not_approved_for_closure`"
@@ -2153,7 +2157,7 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "旧的 stale alias、fake-provider 或 missing-FRC observations 会被误读成当前 G7 blockers" in compact_roadmap_text
     assert "fail-closed G7/B3 blocker list" in gate_status_text
     assert "not runtime or load evidence by itself" in compact_gate_status_text
-    assert "不是 G7 closure approval 或 B3 load evidence" in compact_roadmap_text
+    assert "不是 G7 closure approval 或 B3 closure evidence" in compact_roadmap_text
     assert "B3 load evidence" in compact_roadmap_text
     for expected in (
         "d318f9f",
@@ -2184,10 +2188,12 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default.json" in current_gate_table
     assert "2026-07-05-211-capacity-runtime-readiness-945db2b.json" in current_gate_table
     assert "2026-07-05-211-b3-host-sandbox-observation-945db2b.json" in current_gate_table
+    assert "2026-07-05-211-capacity-recorded-gate-readiness-53887e2.json" in current_gate_table
+    assert "2026-07-05-211-foundation-alpha-poc-53887e2-foundation-runtime-concurrency.json" in current_gate_table
     assert "#321 current `945db2b` slice" in current_gate_table
     assert "Current 211 API/worker images run `ai-platform:945db2b-g7-legacy-source-markers-v1`" in " ".join(current_gate_table.split())
     assert "Reviewed `945db2b` live-env hardening evidence now records all eight verifier checks passing" in " ".join(current_gate_table.split())
-    assert "keep B3 blocked until recorded load/profile evidence exists" in current_gate_table
+    assert "clean branch-runtime `53887e2` recorded evidence is reviewed and waits for PR/review/merge/operator decision" in current_gate_table
     assert "live API/worker default `SANDBOX_EXECUTOR_IMAGE` still points to `ai-platform:4805031-g7-b3-post-297-label-repair-v2`" not in current_gate_table
     assert "same-subject FRC for `9c669761` is still missing" not in current_gate_table
     assert "no reviewed repo-local current-main G7 release-evidence entry" not in current_gate_table
@@ -2217,12 +2223,17 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "bounded sweep 覆盖七个 harness gates" in roadmap_text
     assert "probe_only_not_recorded" in combined_text
     assert "does_not_mark_gate_recorded = true" in combined_text
-    assert "sent_requests = 10" in combined_text
+    assert "sent_requests = 20" in combined_text
+    assert "blocked_incomplete_inputs" in combined_text
     assert "stop_condition_status = passed" in combined_text
     assert "missing_sections=[]" in combined_text
     assert "blocked_missing_load_test_evidence" in combined_text
-    assert "all seven recorded load-test gates and the B3 profile evidence remain missing" in compact_text
-    assert "七个 recorded load-test gates 仍缺失" in compact_roadmap_text
+    assert "accepted `b3_10x4_sdk_subagents` profile packet" in compact_text
+    assert "recorded-gate-values-gap-report-20260705.json" in compact_text
+    assert "recorded_gate_packets_ready=0" in compact_text
+    assert "/tmp/ai-platform-b3-39aa862-recorded-live-20260705T074525Z" in compact_text
+    assert "all seven load-test gates recorded" in compact_text
+    assert "七个 recorded load-test gates 已由 clean branch-runtime `53887e2` evidence 接受" in compact_roadmap_text
     assert "bounded `api_read_write_burst` probe was only" not in gate_status_text
     assert "`api_read_write_burst` probe 只是" not in roadmap_text
     assert "2026-07-02 `ae6b7e5` read-only capacity runtime evidence" in roadmap_text
@@ -2232,7 +2243,7 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "g7-live-env-hardening-a294727-source-marker-fix-20260704170251" in compact_roadmap_text
     assert "all eight checks passing" in compact_roadmap_text
     assert "blocked_missing_admin_runtime_sections" in roadmap_text
-    assert "当前最新 reviewed capacity visibility verdict 是 `945db2b` 的 `blocked_missing_load_test_evidence`" in compact_roadmap_text
+    assert "当前最新 B3 读法是 clean branch-runtime `53887e2` recorded evidence 的 `ready_for_operator_review`" in compact_roadmap_text
     assert "总体 B3 closure 仍是 `local partial`" in compact_roadmap_text
     assert "2026-07-02 PR #304 runtime subject `decf33a` 又补了一次 read-only" in roadmap_text
     assert "Admin Runtime no-cleanup overview 返回 HTTP `200`" in compact_roadmap_text
@@ -2240,7 +2251,8 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "PR #304 已 merge" in roadmap_text
     assert "current-main `211 verified`" in roadmap_text
     assert "nested gate readiness `blocked_missing_load_test_evidence`" in compact_roadmap_text
-    assert "`b3_10x4_sdk_subagents` operator-reviewed profile evidence 仍全部缺失" in compact_roadmap_text
+    assert "accepted `b3_10x4_sdk_subagents` profile packet" in compact_roadmap_text
+    assert "clean branch-runtime `53887e2` recorded batch/profile 复现" in compact_roadmap_text
     assert "must not be treated as ordinary-user platform-level multi-run orchestration exposure evidence" in compact_text
     assert "旧 G8 普通用户平台级 multi-run follow-up 不再作为 Foundation Alpha 顶层 `open_followups`" in compact_text
     assert "当前权威状态名不再 使用旧的 `g8_ordinary_user_multi_agent_exposure` / 泛化 multi-agent exposure 命名" in compact_text
@@ -2272,7 +2284,7 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     )
     assert "--g7-status-upgrade-review-json" in gate_status_text
     assert (
-        "an accepted future G7 status-upgrade review can remove only the G7 status-upgrade blocker"
+        "an accepted G7 status-upgrade review removes only the G7 status-upgrade blocker"
         in compact_gate_status_text
     )
     assert (
@@ -2292,12 +2304,18 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
 
     release_evidence_text = read(RELEASE_EVIDENCE_INDEX)
     compact_release_evidence_text = " ".join(release_evidence_text.split())
-    assert "The 2026-07-05 post-PR #321 runtime refresh has GitHub `main` including PR #322 documentation merge" in compact_release_evidence_text
+    assert "The 2026-07-05 post-PR #323 evidence-status slice has GitHub `main` including PR #323 merge" in compact_release_evidence_text
     assert "runs API/worker image `ai-platform:945db2b-g7-legacy-source-markers-v1`" in compact_release_evidence_text
-    assert "Current status remains `local partial`" in compact_release_evidence_text
+    assert "Current overall status remains `local partial`" in compact_release_evidence_text
     assert "The earlier 2026-07-04 post-PR #316 status-sync baseline has GitHub `main` including PR #316 merge" in compact_release_evidence_text
     assert "At that earlier slice, the reviewed 211 runtime subject was PR #315 merge commit" in compact_release_evidence_text
     assert "latest reviewed 211 runtime subject remains PR #315 merge commit" not in compact_release_evidence_text
+    assert "2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency.json" in release_evidence_text
+    assert "2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency-readiness.json" in release_evidence_text
+    assert "2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency-summary.md" in release_evidence_text
+    assert "2026-07-05-211-g7-operator-status-upgrade-945db2b.json" in release_evidence_text
+    assert "`status=status_upgrade_approved`" in release_evidence_text
+    assert "`status_upgrade_decision=approved_for_g7_status_upgrade`" in release_evidence_text
     assert "2026-07-04-211-g7-sandbox-live-env-hardening-bbe23d5-post-317.json" in release_evidence_text
     assert "2026-07-04-211-g7-operator-status-review-bbe23d5-post-317.json" in release_evidence_text
     assert "2026-07-04-211-foundation-alpha-poc-bbe23d5-foundation-runtime-concurrency.json" in release_evidence_text

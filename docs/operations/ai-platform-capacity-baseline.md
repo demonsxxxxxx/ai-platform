@@ -89,9 +89,12 @@ capacity-evidence gate, or close G9.
 
 Even when a deployment profile sets `SANDBOX_CONTAINER_PROVIDER=docker` and
 reviewed G7 sandbox hardening evidence exists for a runtime subject, the
-capacity baseline remains fail-closed until an approved G7 status-upgrade
-decision and B3 recorded load/profile evidence are present. Docker-provider
-posture alone does not raise defaults or close G7/B3.
+capacity baseline remains fail-closed until clean-main B3 recorded load/profile
+evidence is reviewed. For the current `945db2b` runtime subject, approved G7
+status-upgrade evidence is present, and a later dirty `39aa862` recorded-batch
+validation reached `ready_for_operator_review`; neither Docker-provider posture,
+G7 approval, nor dirty validation alone raises defaults, closes B3, or makes the
+overall gate closable.
 
 The current configured default answer remains: current defaults execute about three
 background Agent runs concurrently per shared worker capacity. The API can
@@ -1172,32 +1175,60 @@ recorded and B3 profile evidence is accepted, the batch output records
 `operator_review_required`; it still does not close B3 or raise production
 defaults.
 
-### Current Runtime Note - 2026-07-05, commit `945db2b`
+`tools/capacity_recorded_gate_values_from_live_run.py` is the bridge for a
+verified Foundation Runtime live-run packet and a matching capacity runtime
+snapshot. It rejects bounded probe JSON, requires the runtime subject commit to
+match, requires verified cleanup proof, and materializes the seven
+`capacity-operator-reviewed-evidence-values-<gate>.json` files plus a manifest.
+Those files are only batch-assembler inputs; a later
+`recorded_gate_batch_input_accepted` result advances to
+`ready_for_operator_review`, not B3 closure or a production-default increase.
 
-Post-PR #321, 211 now runs API/worker image
-`ai-platform:945db2b-g7-legacy-source-markers-v1` for runtime subject
-`945db2bb5926ad7b01ead98c3283d55b77d2677d`. The repo-local source marker,
-source snapshot, image labels, and all three API/worker in-container marker
-files bind to `945db2b`. Direct API health, frontend proxy health, and frontend
-root returned HTTP `200` after frontend restart and Docker cleanup. The latest
-reviewed capacity visibility entry is now the `945db2b` record at
+### Current Runtime Note - 2026-07-05, commit `53887e2`
+
+The B3 recorded-evidence follow-up branch now has a clean 211 runtime subject
+`53887e20f5141e66a8f635affc87f4af930348ba` running API/worker image
+`ai-platform:53887e2-b3-recorded-clean-v1`. The 211 repo-local source marker,
+source snapshot, API/worker image labels, and all three API/worker in-container
+marker files bind to `53887e2`; direct API health returned `{"status":"ok"}`.
+This is clean branch-runtime evidence and has not yet been merged through the
+issue -> PR -> review -> merge -> 211 deploy/smoke -> close issue workflow.
+
+The reviewed repo-local B3 recorded evidence entry is
+`docs/release-evidence/capacity-gate-readiness/53887e20f5141e66a8f635affc87f4af930348ba/2026-07-05-211-capacity-recorded-gate-readiness-53887e2.json`.
+It records the strict 10x4 SDK Agent/subagent fanout on the clean image:
+10 terminal `succeeded` runs, 10/10 runs with exactly four Agent tool uses,
+10/10 matching tool results, 10/10 subagent JSONL groups, 10/10 subagent meta
+groups, and `agent_type_total={"general-purpose": 40}`. Same-subject
+Foundation Runtime concurrency evidence is recorded at
+`docs/release-evidence/foundation-runtime-concurrency/53887e20f5141e66a8f635affc87f4af930348ba-frc-g7-b3-20260705/2026-07-05-211-foundation-alpha-poc-53887e2-foundation-runtime-concurrency.json`
+and reports `verified_foundation_runtime_concurrency`, `verified=true`,
+`failures=[]`, 12 concurrent requests/runs/sessions, 2 tenants, 4 users, and
+verified cleanup.
+
+The clean recorded-batch path accepted the runtime evidence, all seven recorded
+gate packets, and the `b3_10x4_sdk_subagents` profile packet. The batch snapshot
+status is `recorded_gate_batch_input_accepted`; the capacity readiness status is
+`ready_for_operator_review`; the profile readiness status is
+`operator_review_required`; and
+`production_default_decision=operator_review_required_before_default_change`.
+This advances B3 from missing clean recorded evidence to operator review
+required, but it is still not B3 closure, not a safe-concurrency claim, not an
+ordinary-user platform-level multi-run orchestration exposure, not a production
+default change, not overall `211 verified`, not gate-closable, and not #164
+closure by itself.
+
+The latest reviewed capacity visibility entry is now the `945db2b` record, and
+it remains prior baseline evidence at
 `docs/release-evidence/capacity-gate-readiness/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-capacity-runtime-readiness-945db2b.json`.
-
-That `945db2b` entry preserves the B3 visibility achieved after the earlier
-`a294727`, `bbe23d5`, and `61073b1` baselines: Admin Runtime HTTP returned
-`200`, all required sections including `sandbox` were observed after accepted
-host-side sandbox observation, and readiness reports
-`blocked_missing_load_test_evidence`. The host-side sandbox observation is
-diagnostic-only and recorded separately at
-`docs/release-evidence/diagnostics/2026-07-05-211-b3-host-sandbox-observation-945db2b.json`;
-it does not mark B3 recorded evidence.
-
-B3 remains blocked. All seven recorded load-test gates are still missing, the
-`b3_10x4_sdk_subagents` profile evidence is still empty, and production default
-decision remains `do_not_raise_without_recorded_load_test_evidence`. The
-`945db2b` readback and reviewed capacity visibility support only current
-runtime visibility and fail-closed readiness; they are not B3 closure and do not
-make the overall gate closable.
+It recorded Admin Runtime HTTP `200`, all required sections observed after
+accepted host-side sandbox observation, and
+`blocked_missing_load_test_evidence`. The earlier dirty `39aa862` recorded
+live-run root `/tmp/ai-platform-b3-39aa862-recorded-live-20260705T074525Z`
+proved the batch assembly path end-to-end on a dirty image; its live-run adapter
+output recorded `status=operator_value_files_ready`. The clean `53887e2` entry
+above supersedes it for the current B3 recorded-evidence follow-up, while
+retaining the same no-default-raise and no-gate-closure boundary.
 
 ## Required Load-Test Gates
 

@@ -413,9 +413,20 @@ production defaults, or upgrade the overall status beyond `local partial`.
   `docs/release-evidence/g7-sandbox/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default.json`.
   Verifier run `g7-live-env-hardening-945db2b-live-default-20260704185430`
   passed all eight checks. This removes the obsolete missing-verifier wording
-  for `945db2b`, but it still does not close G7 because
-  same-subject Foundation Runtime concurrency evidence and approved G7
-  status-upgrade evidence are missing for `945db2b`.
+  for `945db2b`.
+- [x] 2026-07-05 same-subject Foundation Runtime concurrency evidence for
+  `945db2b` is recorded at
+  `docs/release-evidence/foundation-runtime-concurrency/945db2bb5926ad7b01ead98c3283d55b77d2677d-frc-g7-b3-20260705/2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency.json`.
+  Readiness reports `verified_foundation_runtime_concurrency`,
+  `verified=true`, `failures=[]`, 12 concurrent requests/runs/sessions across 2
+  tenants and 4 users, and all required checks passed.
+- [x] 2026-07-05 approved G7 status-upgrade evidence for `945db2b` is recorded
+  at
+  `docs/release-evidence/g7-status-review/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-g7-operator-status-upgrade-945db2b.json`.
+  It records `status=status_upgrade_approved` and
+  `status_upgrade_decision=approved_for_g7_status_upgrade`; it removes only the
+  G7 status-upgrade blocker and does not close B3 or make the overall gate
+  closable.
 - [x] 2026-07-05 post-PR #321 reviewed B3 capacity visibility for `945db2b` is
   wrapped at
   `docs/release-evidence/capacity-gate-readiness/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-capacity-runtime-readiness-945db2b.json`.
@@ -424,14 +435,130 @@ production defaults, or upgrade the overall status beyond `local partial`.
   `readiness_status=blocked_missing_load_test_evidence`. This is visibility and
   fail-closed readiness only; no B3 recorded load evidence or
   `b3_10x4_sdk_subagents` profile evidence exists.
+- [x] 2026-07-05 live 211 B3 recorded-load validation attempt for `945db2b`
+  generated the load plan/template bundle, ran all seven bounded harness probes
+  at 20 requests / concurrency 4, and produced post-run runtime/readback
+  summaries. Every probe remained `probe_completed_not_gate_evidence` /
+  `probe_only_not_recorded`, with `does_not_mark_gate_recorded=true` and
+  `stop_condition_status=passed`. Fresh host-side sandbox observation was
+  accepted, so runtime readiness returned to `blocked_missing_load_test_evidence`
+  with `missing_sections=[]`. Placeholder recorded-gate batch assembly still
+  returned `blocked_incomplete_inputs`; this is validation/probe evidence only,
+  not B3 recorded load evidence.
 - [ ] B3 still requires real operator-reviewed values for all seven recorded
   load-test gates and the `b3_10x4_sdk_subagents` profile before closure.
-- [ ] G7 still requires same-subject Foundation Runtime concurrency evidence for
-  `945db2b` and a future approved operator status-upgrade decision before any
-  G7 closure or `gate closable` claim; `211 verified` may only be used for the
-  narrow source-marker/runtime-health slice, not overall G7/B3 closure.
-- [x] 2026-07-05 local verification refreshed after status cleanup:
+- [x] 2026-07-05 local verification after FRC/status-upgrade status cleanup
+  passed in this follow-up branch:
   `python -m pytest tests\test_g7_b3_completion_audit.py tests\test_source_authority_docs.py -q --basetemp .pytest-tmp`
-  passed with 91 tests, stale `a294727`/missing-verifier wording search
-  returned no matches, the three new `945db2b` JSON evidence entries parsed, and
-  the new evidence JSON sensitive-string scan returned no matches.
+  passed with 92 tests.
+- [x] 2026-07-05 follow-up goal resumed on branch
+  `codex/g7-b3-completion-followup` to unblock B3 SDK Agent/subagent fanout
+  preflight. Local root cause remains `local partial`: the 211 worker image
+  `ai-platform:945db2b-g7-legacy-source-markers-v1` is healthy but does not
+  contain `git`, while SDK Agent worktree isolation requires a git-backed run
+  workspace. Direct 211 API health returned HTTP `200`; worker `git --version`
+  returned `sh: 1: git: not found`.
+- [x] 2026-07-05 local TDD coverage for the SDK Agent worktree prerequisite now
+  verifies `_prepare_run_workspace` initializes a git repo that can create a
+  child worktree, and that the backend Dockerfile installs `git` for SDK Agent
+  worktrees. Targeted checks passed locally:
+  `tests/test_claude_agent_worker_adapter.py` and
+  `tests/test_runtime_launch_script.py` reported `99 passed, 3 skipped`;
+  `python -m compileall -q app tools scripts` and `git diff --check` exited 0.
+- [x] 2026-07-05 dirty-validation SDK Agent/subagent fanout evidence now has an
+  accepted B3 profile packet only. The latest strict general-purpose 10x4 run
+  under
+  `/tmp/ai-platform-b3-recorded-load-b3-945db2b-20260705T050713Z/b3-sdk-10x4-fanout-general-purpose-dirty-20260705T070617Z`
+  recorded 10 terminal `succeeded` runs, 10/10 runs with exactly four
+  `general-purpose` Agent tool uses, 10/10 matching tool results, 10/10
+  subagent JSONL/meta groups, and 40 total Agent calls. The generated sanitized
+  `b3-sdk-subagent-fanout-measurement-summary.json` and
+  `capacity-operator-reviewed-profile-values-b3-10x4-sdk-subagents.json`
+  produced `capacity-profile-evidence-b3-10x4-sdk-subagents.json` with
+  `status=profile_evidence_packet_ready`, `input_errors=[]`, and
+  `production_default_decision=operator_review_required_before_default_change`.
+  This remains dirty validation evidence from
+  `ai-platform:39aa862-b3-sdk-git-dirty-v1`, not closure-grade clean-main
+  evidence.
+- [x] 2026-07-05 profile-only batch assembly was re-run locally from the
+  downloaded 211 runtime evidence/profile values and again on 211 through a
+  one-off `ai-platform:39aa862-b3-sdk-git-dirty-v1` container. Runtime evidence
+  and profile evidence were accepted in the batch path, but
+  `capacity_recorded_gate_batch_from_values.py` returned
+  `status=blocked_incomplete_inputs`, `readiness.status=blocked_missing_load_test_evidence`,
+  all seven `recorded_gate_evidence_*_missing` errors, and container exit code
+  2. This confirms the flow is wired through the profile packet path but still
+  fail-closed because recorded gate packets are absent.
+- [x] 2026-07-05 a 211 machine-readable recorded-gate value gap report was
+  written at
+  `/tmp/ai-platform-b3-recorded-load-b3-945db2b-20260705T050713Z/summaries/recorded-gate-values-gap-report-20260705.json`.
+  It records `status=blocked_missing_operator_reviewed_recorded_gate_values`,
+  `gates_with_probe_only_output=7`, `gates_with_all_template_values_todo=7`,
+  `recorded_gate_packets_ready=0`, `recorded_gate_packets_missing=7`, and
+  the next required action to run or capture true operator-approved recorded
+  load scenarios before replacing the `TODO_OPERATOR_REVIEWED_*` values. This
+  is blocker evidence only and does not mark any gate recorded.
+- [x] 2026-07-05 follow-up adapter
+  `tools/capacity_recorded_gate_values_from_live_run.py` was added to convert
+  verified same-subject Foundation Runtime live-run evidence plus a matching
+  capacity runtime snapshot into the seven recorded-gate operator value files.
+  The tool rejects bounded probe JSON and runtime subject mismatches. Local
+  verification recorded
+  `python -m pytest tests\test_capacity_recorded_gate_values_from_live_run.py -q --basetemp .pytest-tmp`
+  with 4 passed.
+- [x] 2026-07-05 211 dirty recorded live-run evidence for runtime subject
+  `39aa862b0c6139bcc80578dd51ef5de898ea92cc` is assembled at
+  `/tmp/ai-platform-b3-39aa862-recorded-live-20260705T074525Z`. The runtime
+  snapshot observed all required Admin Runtime sections, the Foundation Runtime
+  concurrency packet recorded 12 concurrent requests/runs/sessions across
+  2 tenants and 4 users with verified cleanup, the adapter wrote seven gate
+  value files with `status=operator_value_files_ready` and `input_errors=[]`,
+  and `capacity-recorded-gate-batch-snapshot-from-live-run.json` returned
+  `status=recorded_gate_batch_input_accepted`,
+  `readiness.status=ready_for_operator_review`, accepted runtime/profile/gate
+  inputs, all seven gates recorded, and
+  `production_default_decision=operator_review_required_before_default_change`.
+  This is dirty `ai-platform:39aa862-b3-sdk-git-dirty-v1` validation only and
+  does not close B3, raise defaults, or make #164 closable.
+- [x] 2026-07-05 clean 211 deployment and recorded-load evidence reproduction
+  reached repo-local reviewed evidence for branch runtime subject
+  `53887e20f5141e66a8f635affc87f4af930348ba`. API/worker now run clean image
+  `ai-platform:53887e2-b3-recorded-clean-v1` with `build-dirty=false`; the 211
+  source markers, image labels, and all three in-container source marker files
+  bind to `53887e2`, and direct API health returned `{"status":"ok"}`. The
+  strict SDK Agent/subagent fanout profile recorded 10 terminal `succeeded`
+  runs, 10/10 expected Agent tool-use/tool-result/subagent JSONL/meta counts,
+  and 40 total `general-purpose` Agent calls. Same-subject Foundation Runtime
+  concurrency verified 12 concurrent requests/runs/sessions across 2 tenants
+  and 4 users. The recorded-gate batch assembler accepted runtime/profile/gate
+  inputs, all seven recorded gates, and the `b3_10x4_sdk_subagents` profile,
+  producing `status=recorded_gate_batch_input_accepted`,
+  `readiness.status=ready_for_operator_review`, and
+  `production_default_decision=operator_review_required_before_default_change`.
+  Reviewed repo-local evidence is now recorded at
+  `docs/release-evidence/capacity-gate-readiness/53887e20f5141e66a8f635affc87f4af930348ba/2026-07-05-211-capacity-recorded-gate-readiness-53887e2.json`
+  with same-subject FRC evidence under
+  `docs/release-evidence/foundation-runtime-concurrency/53887e20f5141e66a8f635affc87f4af930348ba-frc-g7-b3-20260705/`.
+  This advances B3 to operator review required on clean branch-runtime
+  evidence; it does not close B3, raise defaults, make the overall gate
+  `211 verified`, make #164 gate-closable, or close #164 by itself.
+- [x] 2026-07-05 reviewer follow-up local verification: `pr_refs=["#324"]`
+  is recorded on the clean 53887e2 capacity readiness entry, partial runtime
+  snapshots now fail closed with
+  `runtime_evidence_field_database_pool_settings_missing`, and stale status
+  docs now describe 53887e2 as reviewed repo-local operator-review-required
+  evidence rather than closure. Verification recorded
+  `python -m pytest tests/test_source_authority_docs.py -q --basetemp .pytest-tmp`
+  as `47 passed`,
+  `python -m pytest tests/test_g7_b3_completion_audit.py -q --basetemp .pytest-tmp`
+  as `46 passed`,
+  `python -m pytest tests/test_capacity_recorded_gate_values_from_live_run.py -q --basetemp .pytest-tmp`
+  as `5 passed`, `tools/release_evidence_export_acceptance.py --format json`
+  as `status=ready_for_operator_review blocked_entry_count=0 safe_entry_count=265`,
+  `python -m compileall -q app tools scripts` exit 0, and `git diff --check`
+  exit 0.
+- [ ] 2026-07-05 remaining closure work: commit/push reviewer follow-up,
+  wait for PR #324 checks/review, merge if accepted, redeploy/smoke the merged
+  subject if required by the closure workflow, then decide whether #164 can be
+  closed with the merged evidence. Until then the status label remains
+  `local partial`.

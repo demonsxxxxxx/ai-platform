@@ -1,0 +1,70 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-05-211-g7-operator-status-upgrade-945db2b",
+  "artifact_kind": "211_g7_operator_status_review",
+  "gate": "G7 Sandbox / Resource Hardening",
+  "commit_sha": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+  "runtime_subject_commit_sha": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+  "captured_at": "2026-07-04T20:25:00Z",
+  "issue_refs": [],
+  "pr_refs": [
+    "#321",
+    "#323"
+  ],
+  "source_ref": {
+    "branch": "origin/main",
+    "runtime_subject_commit_sha": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+    "g7_live_env_evidence_path": "g7-sandbox/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default.json",
+    "foundation_runtime_concurrency_evidence_path": "foundation-runtime-concurrency/945db2bb5926ad7b01ead98c3283d55b77d2677d-frc-g7-b3-20260705/2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency.json",
+    "capacity_visibility_evidence_path": "capacity-gate-readiness/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-capacity-runtime-readiness-945db2b.json",
+    "review_basis": [
+      "reviewed live-default G7 sandbox hardening evidence for runtime subject 945db2b",
+      "same-subject Foundation Runtime concurrency evidence for runtime subject 945db2b",
+      "G7/B3 completion audit reading with no G7 runtime blocking reasons and B3 still blocked"
+    ],
+    "source_runtime_boundary": {
+      "runtime_subject_matches_g7_evidence": true,
+      "runtime_subject_matches_frc_evidence": true,
+      "source_runtime_boundary_reviewed_for_status_upgrade": true,
+      "external_env_file_secret_values_exported": false
+    }
+  },
+  "evidence_ref": {
+    "operator_status_review": {
+      "schema_version": "ai-platform.g7-operator-status-review.v1",
+      "runtime_subject_commit_sha": "945db2bb5926ad7b01ead98c3283d55b77d2677d",
+      "status": "status_upgrade_approved",
+      "status_label_recommendation": "g7_status_upgrade_approved",
+      "status_upgrade_decision": "approved_for_g7_status_upgrade",
+      "g7_runtime_blocking_reasons": [],
+      "b3_blocking_reasons": [
+        "b3_recorded_load_test_gates_missing",
+        "b3_10x4_sdk_subagents_profile_evidence_missing"
+      ],
+      "required_next_steps": [
+        "record B3 seven-gate load evidence and b3_10x4_sdk_subagents profile evidence before any B3 closure or default increase"
+      ],
+      "non_expansion_invariants": {
+        "ordinary_user_high_risk_sandbox_allowed": false,
+        "ordinary_user_platform_multi_run_orchestration_exposure": false,
+        "production_concurrency_defaults_raised": false,
+        "g7_closed": true,
+        "b3_closed": false,
+        "foundation_alpha_complete": false
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "This operator status-upgrade artifact approves only the G7 sandbox/resource hardening status for runtime subject 945db2b.",
+    "The paired G7 live-env evidence and same-subject Foundation Runtime concurrency evidence are both bound to runtime subject 945db2b.",
+    "This artifact is not B3 load evidence, does not provide b3_10x4_sdk_subagents profile measurements, does not raise production defaults, and does not make the overall gate closable.",
+    "This artifact intentionally omits secret env values, callback token values, host workdirs, raw Docker payloads, and private runtime payloads."
+  ],
+  "open_followups": [
+    "B3 recorded seven-gate load evidence and b3_10x4_sdk_subagents profile evidence remain missing.",
+    "Do not use issue #164 closure history as current G7/B3 closure evidence.",
+    "Keep production concurrency defaults unchanged until B3 recorded evidence exists."
+  ]
+}
