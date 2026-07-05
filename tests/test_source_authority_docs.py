@@ -2217,7 +2217,8 @@ def test_current_status_docs_summarize_g8_b3_boundaries_without_overclaiming():
     assert "bounded sweep 覆盖七个 harness gates" in roadmap_text
     assert "probe_only_not_recorded" in combined_text
     assert "does_not_mark_gate_recorded = true" in combined_text
-    assert "sent_requests = 10" in combined_text
+    assert "sent_requests = 20" in combined_text
+    assert "blocked_incomplete_inputs" in combined_text
     assert "stop_condition_status = passed" in combined_text
     assert "missing_sections=[]" in combined_text
     assert "blocked_missing_load_test_evidence" in combined_text

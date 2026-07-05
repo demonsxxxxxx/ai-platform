@@ -1200,6 +1200,24 @@ decision remains `do_not_raise_without_recorded_load_test_evidence`. The
 runtime visibility and fail-closed readiness; they are not B3 closure and do not
 make the overall gate closable.
 
+A later 2026-07-05 B3 recorded-load attempt on the same `945db2b` runtime
+subject generated the repeatable plan/template bundle, then ran all seven
+bounded harness probes at 20 requests / concurrency 4. Every probe returned
+`probe_completed_not_gate_evidence`, `load_test_evidence_status =
+probe_only_not_recorded`, `does_not_mark_gate_recorded = true`, and
+`stop_condition_status = passed`; the model-gateway probe observed
+`backpressure.model_gateway`, `capacity.limits.model_gateway`, and
+`observability.error_categories`. A fresh host-side sandbox observation was
+accepted by the runtime evidence tool, moving the post-run readiness back to
+`blocked_missing_load_test_evidence` with `missing_sections=[]`. The
+placeholder recorded-gate batch attempt still returned
+`blocked_incomplete_inputs`, and a single placeholder packet attempt rejected
+all 15 `TODO_OPERATOR_REVIEWED_*` fields as unsafe. This proves the validation
+path is runnable on 211, but it is still probe-only diagnostic evidence: it does
+not create operator-reviewed recorded gate values, does not supply the
+`b3_10x4_sdk_subagents` profile measurement, does not raise defaults, and does
+not close B3.
+
 ## Required Load-Test Gates
 
 Generate the repeatable command manifest for a target deployment profile:

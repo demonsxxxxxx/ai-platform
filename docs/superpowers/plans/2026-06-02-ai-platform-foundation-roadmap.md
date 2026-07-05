@@ -318,8 +318,10 @@ vulnerability evidence。
   orchestration 暴露。B3 最新 bounded sweep 覆盖七个 harness gates，但每个
   probe 都只是 `probe_completed_not_gate_evidence` /
   `probe_only_not_recorded`，`does_not_mark_gate_recorded = true`，
-  `sent_requests = 10`，`stop_condition_status = passed`；七个 recorded
-  load-test gates 仍缺失。
+  `sent_requests = 20`，`stop_condition_status = passed`；fresh host-side
+  sandbox observation 后 readiness 回到 `blocked_missing_load_test_evidence`
+  且 `missing_sections=[]`，但 placeholder recorded-gate batch 仍是
+  `blocked_incomplete_inputs`；七个 recorded load-test gates 仍缺失。
   2026-07-02 `ae6b7e5` read-only capacity runtime evidence 已确认
   Admin Runtime HTTP `200`、required capacity sections present、nested gate
   readiness `blocked_missing_load_test_evidence` 和

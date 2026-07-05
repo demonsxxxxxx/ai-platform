@@ -385,13 +385,16 @@ The G8/B3 status boundary should be read as follows:
 - B3 profile evidence must not be treated as ordinary-user platform-level
   multi-run orchestration exposure evidence, and it must not raise production
   defaults or close B3 without operator-reviewed recorded evidence. The latest
-  bounded B3 sweep covered all seven harness gates, and every probe remained
+  bounded B3 sweep covered all seven harness gates for current runtime subject
+  `945db2b` at 20 requests / concurrency 4, and every probe remained
   explicitly `probe_completed_not_gate_evidence` with
   `load_test_evidence_status = probe_only_not_recorded`,
-  `does_not_mark_gate_recorded = true`, `sent_requests = 10`, and
+  `does_not_mark_gate_recorded = true`, `sent_requests = 20`, and
   `stop_condition_status = passed`. The current verifier interpretation still
-  reports `blocked_missing_load_test_evidence` with `missing_sections=[]`; all
-  seven recorded load-test gates and the B3 profile evidence remain missing.
+  reports `blocked_missing_load_test_evidence` with `missing_sections=[]`
+  after fresh host-side sandbox observation. The placeholder recorded-gate
+  batch assembly remains `blocked_incomplete_inputs`, so all seven recorded
+  load-test gates and the B3 profile evidence remain missing.
 
 Next closure work is operational, not semantic: use the reviewed 2026-07-04
 `a294727` post-PR #319 live-env G7 evidence and source-marker reconciliation as

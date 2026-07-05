@@ -435,6 +435,16 @@ production defaults, or upgrade the overall status beyond `local partial`.
   `readiness_status=blocked_missing_load_test_evidence`. This is visibility and
   fail-closed readiness only; no B3 recorded load evidence or
   `b3_10x4_sdk_subagents` profile evidence exists.
+- [x] 2026-07-05 live 211 B3 recorded-load validation attempt for `945db2b`
+  generated the load plan/template bundle, ran all seven bounded harness probes
+  at 20 requests / concurrency 4, and produced post-run runtime/readback
+  summaries. Every probe remained `probe_completed_not_gate_evidence` /
+  `probe_only_not_recorded`, with `does_not_mark_gate_recorded=true` and
+  `stop_condition_status=passed`. Fresh host-side sandbox observation was
+  accepted, so runtime readiness returned to `blocked_missing_load_test_evidence`
+  with `missing_sections=[]`. Placeholder recorded-gate batch assembly still
+  returned `blocked_incomplete_inputs`; this is validation/probe evidence only,
+  not B3 recorded load evidence.
 - [ ] B3 still requires real operator-reviewed values for all seven recorded
   load-test gates and the `b3_10x4_sdk_subagents` profile before closure.
 - [x] 2026-07-05 local verification after FRC/status-upgrade status cleanup
