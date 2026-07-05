@@ -21,6 +21,12 @@ RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA = "ai-platform.b1-memory-context-workflow-smo
 RUNTIME_ACCEPTANCE_TARGET = "211_api_memory_context_workflow"
 MEMORY_ERASURE_READINESS_SCHEMA = "ai-platform.memory-erasure-readiness.v1"
 _RUNTIME_EVIDENCE_ROOT = "docs/release-evidence/b1-memory-context"
+_SELECTED_DOCUMENT_WORKFLOW = {
+    "workflow": "internal_document_review",
+    "agent_id": "document-review",
+    "capability_id": "document_review",
+    "memory_scope": "session_workspace",
+}
 
 _IMPLEMENTED_CONTROLS = [
     "tenant_workspace_user_session_scoped_memory_policy",
@@ -48,17 +54,23 @@ _NON_EXPANSION_INVARIANTS = {
 }
 
 _SMOKE_REQUIRED_CHECKS = [
+    "admin_runtime_visibility",
     "context_snapshot_public_provenance",
     "create_governed_run",
+    "cross_tenant_context_denied",
     "cross_user_context_denied",
     "deleted_memory_absent_from_future_context",
+    "live_worker_payload",
     "long_term_memory_fail_closed",
     "memory_policy_disabled_blocks_create",
     "memory_policy_disabled_blocks_list",
     "memory_policy_enabled_for_governed_scope",
     "memory_record_create_and_list",
     "no_private_projection_leakage",
+    "ordinary_user_admin_visibility_denied",
     "playback_public_projection",
+    "rollback_disable_behavior",
+    "same_tenant_context_boundary",
 ]
 
 _SMOKE_REQUIRED_BOUNDARIES = [
@@ -66,6 +78,17 @@ _SMOKE_REQUIRED_BOUNDARIES = [
     "runtime evidence review against merged source",
     "memory export boundary",
     "rollback boundary",
+]
+
+_SMOKE_REQUIRED_STRUCTURED_SECTIONS = [
+    "live_worker_payload",
+    "provenance",
+    "delete_redaction",
+    "rollback_disable",
+    "same_tenant_boundary",
+    "admin_visibility",
+    "deny_path",
+    "policy_posture",
 ]
 
 _CURRENT_GATE_BOUNDARY_LABELS = {
@@ -203,6 +226,15 @@ def _runtime_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     return runtime_payload if isinstance(runtime_payload, dict) else None
 
 
+def _runtime_check_passed(checks: dict[str, Any], check: str) -> bool:
+    value = checks.get(check)
+    if value is True:
+        return True
+    if isinstance(value, dict):
+        return value.get("passed") is True
+    return False
+
+
 def _b1_smoke_evidence_summary(
     payload: dict[str, Any],
     *,
@@ -217,7 +249,9 @@ def _b1_smoke_evidence_summary(
     checks = evidence.get("checks")
     if not isinstance(checks, dict):
         return None
-    if not all(checks.get(check) is True for check in _SMOKE_REQUIRED_CHECKS):
+    if not all(_runtime_check_passed(checks, check) for check in _SMOKE_REQUIRED_CHECKS):
+        return None
+    if not _has_required_structured_runtime_evidence(evidence):
         return None
     if (
         evidence.get("schema_version") != RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA
@@ -254,12 +288,144 @@ def _b1_smoke_evidence_summary(
         "runtime_subject": _runtime_subject(payload),
         "runtime_subject_commit_sha": payload.get("runtime_subject_commit_sha"),
         "target": evidence.get("target"),
+        "workflow": evidence.get("workflow"),
         "memory_record_count": evidence.get("memory_record_count"),
         "checks": {check: True for check in _SMOKE_REQUIRED_CHECKS},
+        "structured_evidence": {
+            key: evidence.get(key)
+            for key in _SMOKE_REQUIRED_STRUCTURED_SECTIONS
+        },
         "redaction_scan_status": evidence.get("redaction_scan_status"),
         "remaining_gate_boundaries": list(boundaries),
         "does_not_close_b1_gate": True,
     }
+
+
+def _has_required_structured_runtime_evidence(evidence: dict[str, Any]) -> bool:
+    workflow = evidence.get("workflow")
+    if not isinstance(workflow, dict):
+        return False
+    if workflow.get("agent_id") != _SELECTED_DOCUMENT_WORKFLOW["agent_id"]:
+        return False
+    if workflow.get("capability_id") != _SELECTED_DOCUMENT_WORKFLOW["capability_id"]:
+        return False
+    for required_flag in (
+        "run_id_present",
+        "session_id_present",
+        "document_run_id_present",
+        "document_session_id_present",
+        "memory_record_created",
+    ):
+        if workflow.get(required_flag) is not True:
+            return False
+
+    live_worker = evidence.get("live_worker_payload")
+    if not isinstance(live_worker, dict):
+        return False
+    if live_worker.get("live_worker_run_observed") is not True:
+        return False
+    if live_worker.get("worker_started_event_observed") is not True:
+        return False
+    if live_worker.get("context_snapshot_id_present") is not True:
+        return False
+    if live_worker.get("context_pack_schema_present") is not True:
+        return False
+    if live_worker.get("document_workflow") is not True:
+        return False
+    if not isinstance(live_worker.get("artifact_count"), int) or live_worker.get("artifact_count") < 1:
+        return False
+
+    provenance = evidence.get("provenance")
+    if not isinstance(provenance, dict):
+        return False
+    if provenance.get("context_snapshot_public_provenance") is not True:
+        return False
+    if provenance.get("memory_policy_source_present") is not True:
+        return False
+    if provenance.get("context_pack_version_present") is not True:
+        return False
+    if provenance.get("context_pack_generated_at_present") is not True:
+        return False
+
+    delete_redaction = evidence.get("delete_redaction")
+    if not isinstance(delete_redaction, dict):
+        return False
+    if delete_redaction.get("deleted_memory_absent_from_future_context") is not True:
+        return False
+    if delete_redaction.get("redaction_scan_status") != "passed":
+        return False
+    if delete_redaction.get("private_projection_terms_present") is not False:
+        return False
+
+    rollback_disable = evidence.get("rollback_disable")
+    if not isinstance(rollback_disable, dict):
+        return False
+    if rollback_disable.get("memory_policy_disabled_blocks_create") is not True:
+        return False
+    if rollback_disable.get("memory_policy_disabled_blocks_list") is not True:
+        return False
+    if rollback_disable.get("memory_policy_reenabled_for_governed_scope") is not True:
+        return False
+    if rollback_disable.get("public_projections_hide_private_context_material") is not True:
+        return False
+
+    same_tenant_boundary = evidence.get("same_tenant_boundary")
+    if not isinstance(same_tenant_boundary, dict):
+        return False
+    if same_tenant_boundary.get("owner_context_visible") is not True:
+        return False
+    if same_tenant_boundary.get("same_tenant_cross_user_denied") is not True:
+        return False
+    if same_tenant_boundary.get("cross_tenant_context_denied") is not True:
+        return False
+
+    admin_visibility = evidence.get("admin_visibility")
+    if not isinstance(admin_visibility, dict):
+        return False
+    if admin_visibility.get("admin_run_detail_visible") is not True:
+        return False
+    if admin_visibility.get("admin_runtime_overview_visible") is not True:
+        return False
+    if admin_visibility.get("ordinary_user_admin_overview_denied") is not True:
+        return False
+    if admin_visibility.get("admin_projection_redacted") is not True:
+        return False
+
+    deny_path = evidence.get("deny_path")
+    if not isinstance(deny_path, dict):
+        return False
+    if deny_path.get("cross_user_context_denied") is not True:
+        return False
+    if deny_path.get("cross_tenant_context_denied") is not True:
+        return False
+    if deny_path.get("memory_policy_disabled_blocks_create") is not True:
+        return False
+    if deny_path.get("memory_policy_disabled_blocks_list") is not True:
+        return False
+    if deny_path.get("ordinary_user_admin_overview_denied") is not True:
+        return False
+    if deny_path.get("long_term_memory_fail_closed") is not True:
+        return False
+
+    policy_posture = evidence.get("policy_posture")
+    if not isinstance(policy_posture, dict):
+        return False
+    if policy_posture.get("session_workspace_scope") is not True:
+        return False
+    retention_days = policy_posture.get("retention_days")
+    if not isinstance(retention_days, int) or retention_days <= 0:
+        return False
+    if policy_posture.get("retention_policy_present") is not True:
+        return False
+    if policy_posture.get("opt_out_disable_policy_present") is not True:
+        return False
+    if policy_posture.get("export_projection_only") is not True:
+        return False
+    if policy_posture.get("delete_redaction_posture_present") is not True:
+        return False
+    if policy_posture.get("long_term_memory_fail_closed") is not True:
+        return False
+    return True
 
 
 def _runtime_acceptance_evidence(repo_root: Path) -> dict[str, dict[str, Any]]:
@@ -541,12 +707,16 @@ def build_b1_memory_context_readiness(repo_root: Path | None = None) -> dict[str
         "verifier_schema_version": RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA,
         "target": RUNTIME_ACCEPTANCE_TARGET,
         "required_workflow": "selected_memory_enabled_document_workflow",
+        "selected_workflow": dict(_SELECTED_DOCUMENT_WORKFLOW),
         "required_evidence": [
-            "211 upload or select document workflow input",
+            "211 upload or select document workflow input for document-review/document_review",
             "memory policy enabled only for governed scope",
             "context snapshot records provenance and memory policy source",
             "executor context pack includes bounded public summary",
             "public/admin projections expose provenance and status only",
+            "same-tenant cross-user context reads fail closed",
+            "cross-tenant context reads fail closed",
+            "ordinary-user Admin Runtime visibility is denied",
             "deleted or redacted memory does not reappear in context",
             "no executor-private payload, raw storage key, or sandbox workdir leaks",
         ],
@@ -724,6 +894,13 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
         f"- `{key}`: `{str(value).lower()}`"
         for key, value in readiness["non_expansion_invariants"].items()
     )
+    selected_workflow = runtime.get("selected_workflow")
+    if isinstance(selected_workflow, dict):
+        selected_workflow_lines = "\n".join(
+            f"- `{key}`: `{value}`" for key, value in selected_workflow.items()
+        )
+    else:
+        selected_workflow_lines = "- not recorded"
     return (
         "# ai-platform B1 Memory/Context Readiness\n\n"
         f"Schema: `{readiness['schema_version']}`\n\n"
@@ -752,6 +929,8 @@ def render_b1_memory_context_readiness_markdown(readiness: dict[str, Any]) -> st
         f"Acceptance gap: `{runtime['acceptance_gap']}`\n\n"
         f"Verifier: `{runtime['verifier_script']}` "
         f"(`{runtime['verifier_schema_version']}` targeting `{runtime['target']}`)\n\n"
+        "Selected workflow:\n\n"
+        f"{selected_workflow_lines}\n\n"
         f"Does not close B1 gate: `{str(runtime['does_not_close_b1_gate']).lower()}`\n\n"
         "Required evidence:\n\n"
         f"{runtime_evidence}\n\n"
