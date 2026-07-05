@@ -928,25 +928,6 @@ def build_b1_memory_context_workflow_smoke(
         payloads["upload_probe_document"] = upload_payload
         file_id = str(_as_dict(upload_payload).get("file_id") or "")
 
-    create_run_status, create_run_payload = _json_request(
-        "POST",
-        f"{safe_base_url}/api/ai/runs",
-        headers=owner_headers,
-        payload={
-            "workspace_id": workspace_id,
-            "agent_id": "general-agent",
-            "capability_id": "general_chat",
-            "title": "b1-memory-context-smoke",
-            "input": {"task": "b1-memory-context-smoke", "memory": "enabled-scope-probe"},
-            "file_ids": [],
-        },
-        timeout_seconds=timeout_seconds,
-    )
-    statuses["create_run"] = create_run_status
-    payloads["create_run"] = create_run_payload
-    run_id = str(_as_dict(create_run_payload).get("run_id") or "")
-    session_id = str(_as_dict(create_run_payload).get("session_id") or "")
-
     enable_policy_status, enable_policy_payload = _json_request(
         "PUT",
         f"{safe_base_url}/api/ai/memory/policy",
@@ -964,6 +945,30 @@ def build_b1_memory_context_workflow_smoke(
     )
     statuses["enable_policy"] = enable_policy_status
     policy = _as_dict(_as_dict(enable_policy_payload).get("memory_policy"))
+
+    create_run_status, create_run_payload = _json_request(
+        "POST",
+        f"{safe_base_url}/api/ai/runs",
+        headers=owner_headers,
+        payload={
+            "workspace_id": workspace_id,
+            "agent_id": agent_id,
+            "capability_id": capability_id,
+            "title": "b1-memory-context-document-worker-smoke",
+            "input": {"task": "b1-memory-context-document-worker-smoke", "memory": "worker-context-probe"},
+            "file_ids": [file_id] if file_id else [],
+        },
+        timeout_seconds=timeout_seconds,
+    )
+    statuses["create_run"] = create_run_status
+    statuses["create_document_run"] = create_run_status
+    payloads["create_run"] = create_run_payload
+    document_run_status = create_run_status
+    document_run_payload = create_run_payload
+    run_id = str(_as_dict(create_run_payload).get("run_id") or "")
+    session_id = str(_as_dict(create_run_payload).get("session_id") or "")
+    document_run_id = run_id
+    document_session_id = session_id
 
     create_memory_status, create_memory_payload = _json_request(
         "POST",
@@ -995,24 +1000,6 @@ def build_b1_memory_context_workflow_smoke(
     )
     statuses["list_memory"] = list_memory_status
     listed_records = _as_list(_as_dict(list_memory_payload).get("memory_records"))
-
-    document_run_status, document_run_payload = _json_request(
-        "POST",
-        f"{safe_base_url}/api/ai/runs",
-        headers=owner_headers,
-        payload={
-            "workspace_id": workspace_id,
-            "agent_id": agent_id,
-            "capability_id": capability_id,
-            "title": "b1-memory-context-document-worker-smoke",
-            "input": {"task": "b1-memory-context-document-worker-smoke", "memory": "worker-context-probe"},
-            "file_ids": [file_id] if file_id else [],
-        },
-        timeout_seconds=timeout_seconds,
-    )
-    statuses["create_document_run"] = document_run_status
-    document_run_id = str(_as_dict(document_run_payload).get("run_id") or "")
-    document_session_id = str(_as_dict(document_run_payload).get("session_id") or "")
 
     run_detail_status, run_detail_payload = _poll_run_detail(
         base_url=safe_base_url,
@@ -1252,11 +1239,14 @@ def build_b1_memory_context_workflow_smoke(
         _contains_private_projection_term(payload)
         for payload in (
             create_run_payload,
+            payloads.get("upload_probe_document"),
+            document_run_payload,
             enable_policy_payload,
             create_memory_payload,
             list_memory_payload,
             snapshot_with_memory_payload,
             playback_payload,
+            cross_context_payload,
             delete_payload,
             list_after_delete_payload,
             snapshot_after_delete_payload,
@@ -1264,6 +1254,10 @@ def build_b1_memory_context_workflow_smoke(
             run_detail_payload,
             ordinary_admin_overview_payload,
             admin_overview_payload,
+            disable_policy_payload,
+            disabled_create_payload,
+            disabled_list_payload,
+            reenable_policy_payload,
             cross_tenant_context_payload,
         )
     )
