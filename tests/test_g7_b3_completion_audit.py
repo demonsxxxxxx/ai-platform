@@ -1830,6 +1830,7 @@ def test_clean_53887e2_b3_recorded_evidence_reaches_operator_review_only():
     assert capacity_evidence["artifact_kind"] == "capacity_gate_readiness"
     assert capacity_evidence["commit_sha"] == CLEAN_B3_RECORDED_RUNTIME_SOURCE
     assert capacity_evidence["runtime_subject_commit_sha"] == CLEAN_B3_RECORDED_RUNTIME_SOURCE
+    assert capacity_evidence["pr_refs"] == ["#324"]
     assert capacity_evidence["review_status"] == "reviewed"
     assert capacity_evidence["redaction_scan_status"] == "passed"
     assert capacity_evidence["source_ref"]["api_worker_image"] == (

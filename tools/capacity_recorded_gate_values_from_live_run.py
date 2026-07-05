@@ -289,10 +289,13 @@ def build_recorded_gate_values_from_live_run(
             foundation_evidence=foundation_evidence,
             evidence_ref_prefix=evidence_ref_prefix.strip("/"),
         )
-        values_by_gate = {
-            gate: {field: values[field] for field in _REQUIRED_EVIDENCE_FIELDS}
-            for gate in LOAD_TEST_GATES
-        }
+        missing_fields = [field for field in _REQUIRED_EVIDENCE_FIELDS if field not in values]
+        errors.extend(f"runtime_evidence_field_{field}_missing" for field in missing_fields)
+        if not errors:
+            values_by_gate = {
+                gate: {field: values[field] for field in _REQUIRED_EVIDENCE_FIELDS}
+                for gate in LOAD_TEST_GATES
+            }
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "operator_value_files_ready" if not errors else "blocked_incomplete_inputs",

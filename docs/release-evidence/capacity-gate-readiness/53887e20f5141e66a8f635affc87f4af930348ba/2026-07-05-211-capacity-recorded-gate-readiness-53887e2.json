@@ -12,7 +12,9 @@
     "#144",
     "#164"
   ],
-  "pr_refs": [],
+  "pr_refs": [
+    "#324"
+  ],
   "review_status": "reviewed",
   "redaction_scan_status": "passed",
   "does_not_claim_safe_concurrency": true,

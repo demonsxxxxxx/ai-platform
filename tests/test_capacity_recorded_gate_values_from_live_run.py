@@ -356,3 +356,27 @@ def test_capacity_recorded_gate_values_rejects_runtime_subject_mismatch():
 
     assert result["status"] == "blocked_incomplete_inputs"
     assert "runtime_subject_commit_mismatch" in result["input_errors"]
+
+
+def test_capacity_recorded_gate_values_fails_closed_for_partial_runtime_snapshot():
+    runtime = _runtime_evidence()
+    snapshot = runtime["snapshot"]
+    assert isinstance(snapshot, dict)
+    live_signals = snapshot["live_signals"]
+    capacity = snapshot["capacity"]
+    assert isinstance(live_signals, dict)
+    assert isinstance(capacity, dict)
+    live_signals.pop("database_pool")
+    limits = capacity["limits"]
+    assert isinstance(limits, dict)
+    limits.pop("database_pool")
+
+    result = build_recorded_gate_values_from_live_run(
+        runtime_evidence=runtime,
+        foundation_runtime_evidence=_foundation_runtime_evidence(),
+        evidence_ref_prefix="capacity-evidence/b3-recorded-live-run-39aa862",
+    )
+
+    assert result["status"] == "blocked_incomplete_inputs"
+    assert "runtime_evidence_field_database_pool_settings_missing" in result["input_errors"]
+    assert result["recorded_gates"] == []

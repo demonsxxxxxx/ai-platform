@@ -542,8 +542,23 @@ production defaults, or upgrade the overall status beyond `local partial`.
   This advances B3 to operator review required on clean branch-runtime
   evidence; it does not close B3, raise defaults, make the overall gate
   `211 verified`, make #164 gate-closable, or close #164 by itself.
-- [ ] 2026-07-05 remaining closure work: finish local repo verification,
-  publish/review the branch, merge if accepted, redeploy/smoke the merged
+- [x] 2026-07-05 reviewer follow-up local verification: `pr_refs=["#324"]`
+  is recorded on the clean 53887e2 capacity readiness entry, partial runtime
+  snapshots now fail closed with
+  `runtime_evidence_field_database_pool_settings_missing`, and stale status
+  docs now describe 53887e2 as reviewed repo-local operator-review-required
+  evidence rather than closure. Verification recorded
+  `python -m pytest tests/test_source_authority_docs.py -q --basetemp .pytest-tmp`
+  as `47 passed`,
+  `python -m pytest tests/test_g7_b3_completion_audit.py -q --basetemp .pytest-tmp`
+  as `46 passed`,
+  `python -m pytest tests/test_capacity_recorded_gate_values_from_live_run.py -q --basetemp .pytest-tmp`
+  as `5 passed`, `tools/release_evidence_export_acceptance.py --format json`
+  as `status=ready_for_operator_review blocked_entry_count=0 safe_entry_count=265`,
+  `python -m compileall -q app tools scripts` exit 0, and `git diff --check`
+  exit 0.
+- [ ] 2026-07-05 remaining closure work: commit/push reviewer follow-up,
+  wait for PR #324 checks/review, merge if accepted, redeploy/smoke the merged
   subject if required by the closure workflow, then decide whether #164 can be
   closed with the merged evidence. Until then the status label remains
   `local partial`.
