@@ -87,7 +87,7 @@
       "runtime_affecting_dirty_paths": [],
       "runtime_affecting_changes_since_runtime_subject": []
     },
-    "source_authority_caveat": "This reviewed G7 evidence is bound to the 211 runtime subject 945db2b. GitHub main later includes PR #322 documentation at f955ba8, and this entry does not claim G0 source-authority closure, G7 closure, B3 closure, Foundation Alpha completion, production readiness, or gate-closable status without same-subject Foundation Runtime concurrency evidence, an approved G7 status-upgrade review, and B3 recorded load/profile evidence."
+    "source_authority_caveat": "This reviewed G7 evidence is bound to the 211 runtime subject 945db2b. GitHub main later includes PR #323 evidence-status documentation at 44daf19, and this verifier entry does not claim G0 source-authority closure, B3 closure, Foundation Alpha completion, production readiness, overall 211 verified status, or gate-closable status. Same-subject Foundation Runtime concurrency evidence and approved G7 status-upgrade evidence are recorded separately; B3 recorded load/profile evidence remains missing."
   },
   "evidence_ref": {
     "generator": "scripts/generate_sandbox_runtime_evidence_211.py",
@@ -183,8 +183,6 @@
     "production_concurrency_defaults_raised": false
   },
   "remaining_blockers": [
-    "same-subject Foundation Runtime concurrency evidence is still missing for 945db2b",
-    "approved G7 status-upgrade review is still missing for 945db2b",
     "B3 seven recorded load-test gates are still missing",
     "b3_10x4_sdk_subagents profile evidence is still missing"
   ],

@@ -89,9 +89,10 @@ capacity-evidence gate, or close G9.
 
 Even when a deployment profile sets `SANDBOX_CONTAINER_PROVIDER=docker` and
 reviewed G7 sandbox hardening evidence exists for a runtime subject, the
-capacity baseline remains fail-closed until an approved G7 status-upgrade
-decision and B3 recorded load/profile evidence are present. Docker-provider
-posture alone does not raise defaults or close G7/B3.
+capacity baseline remains fail-closed until B3 recorded load/profile evidence is
+present. For the current `945db2b` runtime subject, approved G7 status-upgrade
+evidence is present, but Docker-provider posture and G7 approval alone do not
+raise defaults, close B3, or make the overall gate closable.
 
 The current configured default answer remains: current defaults execute about three
 background Agent runs concurrently per shared worker capacity. The API can

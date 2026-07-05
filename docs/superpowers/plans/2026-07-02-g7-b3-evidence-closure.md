@@ -413,9 +413,20 @@ production defaults, or upgrade the overall status beyond `local partial`.
   `docs/release-evidence/g7-sandbox/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-g7-sandbox-live-env-hardening-945db2b-live-default.json`.
   Verifier run `g7-live-env-hardening-945db2b-live-default-20260704185430`
   passed all eight checks. This removes the obsolete missing-verifier wording
-  for `945db2b`, but it still does not close G7 because
-  same-subject Foundation Runtime concurrency evidence and approved G7
-  status-upgrade evidence are missing for `945db2b`.
+  for `945db2b`.
+- [x] 2026-07-05 same-subject Foundation Runtime concurrency evidence for
+  `945db2b` is recorded at
+  `docs/release-evidence/foundation-runtime-concurrency/945db2bb5926ad7b01ead98c3283d55b77d2677d-frc-g7-b3-20260705/2026-07-05-211-foundation-alpha-poc-945db2b-foundation-runtime-concurrency.json`.
+  Readiness reports `verified_foundation_runtime_concurrency`,
+  `verified=true`, `failures=[]`, 12 concurrent requests/runs/sessions across 2
+  tenants and 4 users, and all required checks passed.
+- [x] 2026-07-05 approved G7 status-upgrade evidence for `945db2b` is recorded
+  at
+  `docs/release-evidence/g7-status-review/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-g7-operator-status-upgrade-945db2b.json`.
+  It records `status=status_upgrade_approved` and
+  `status_upgrade_decision=approved_for_g7_status_upgrade`; it removes only the
+  G7 status-upgrade blocker and does not close B3 or make the overall gate
+  closable.
 - [x] 2026-07-05 post-PR #321 reviewed B3 capacity visibility for `945db2b` is
   wrapped at
   `docs/release-evidence/capacity-gate-readiness/945db2bb5926ad7b01ead98c3283d55b77d2677d/2026-07-05-211-capacity-runtime-readiness-945db2b.json`.
@@ -426,12 +437,7 @@ production defaults, or upgrade the overall status beyond `local partial`.
   `b3_10x4_sdk_subagents` profile evidence exists.
 - [ ] B3 still requires real operator-reviewed values for all seven recorded
   load-test gates and the `b3_10x4_sdk_subagents` profile before closure.
-- [ ] G7 still requires same-subject Foundation Runtime concurrency evidence for
-  `945db2b` and a future approved operator status-upgrade decision before any
-  G7 closure or `gate closable` claim; `211 verified` may only be used for the
-  narrow source-marker/runtime-health slice, not overall G7/B3 closure.
-- [x] 2026-07-05 local verification refreshed after status cleanup:
+- [x] 2026-07-05 local verification after FRC/status-upgrade status cleanup
+  passed in this follow-up branch:
   `python -m pytest tests\test_g7_b3_completion_audit.py tests\test_source_authority_docs.py -q --basetemp .pytest-tmp`
-  passed with 91 tests, stale `a294727`/missing-verifier wording search
-  returned no matches, the three new `945db2b` JSON evidence entries parsed, and
-  the new evidence JSON sensitive-string scan returned no matches.
+  passed with 92 tests.
