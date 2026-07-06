@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
+from app.skills.lifecycle import is_admin_materializable_status
 from app.skills.registry import BuiltinSkill, iter_skill_files
 
 MAX_SKILL_SNAPSHOT_FILE_BYTES = 8 * 1024 * 1024
@@ -200,7 +201,7 @@ def _build_skill_version_manifest_pin(
     *,
     allowed_kinds: set[str],
 ) -> dict[str, Any]:
-    if str(skill_version.get("status") or "") != "active":
+    if not is_admin_materializable_status(skill_version.get("status")):
         raise _materialization_error()
     source = skill_version.get("source")
     if not isinstance(source, dict) or str(source.get("kind") or "") not in allowed_kinds:

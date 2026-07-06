@@ -24,6 +24,7 @@ from app.error_taxonomy import summarize_error_categories
 from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
 from app.projection_redaction import sanitize_user_control_input
 from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, is_workbench_skill_public
+from app.skills.lifecycle import is_user_runnable_status
 from app.skills.release_policy import resolve_rollout_skill_decision
 from app.tool_policy import max_risk
 
@@ -213,6 +214,7 @@ async def resolve_agent_skill(
           skills.id as skill_id,
           coalesce(tenant_workbench_skills.status, skills.status) as skill_status,
           coalesce(skill_release_policies.current_version, skills.version) as skill_version,
+          coalesce(skill_versions.status, 'active') as skill_version_status,
           skill_release_policies.current_version as release_policy_version,
           skill_release_policies.previous_version as release_policy_previous_version,
           skill_release_policies.rollout_percent as release_policy_rollout_percent,
@@ -238,6 +240,9 @@ async def resolve_agent_skill(
          and skill_release_policies.skill_id = skills.id
          and skill_release_policies.channel = 'stable'
          and skill_release_policies.status = 'active'
+        left join skill_versions
+          on skill_versions.skill_id = skills.id
+         and skill_versions.version = coalesce(skill_release_policies.current_version, skills.version)
         left join mcp_tools on mcp_tools.id = skills.id
         left join tool_policies
           on tool_policies.tenant_id = agents.tenant_id
@@ -249,10 +254,13 @@ async def resolve_agent_skill(
     row = await cursor.fetchone()
     if row is None:
         raise RepositoryNotFoundError("agent_or_skill_not_found")
+    row = dict(row)
     if row["agent_status"] != "active":
         raise RepositoryConflictError("agent_inactive")
     if row["skill_status"] != "active":
         raise RepositoryConflictError("skill_inactive")
+    if not is_user_runnable_status(row.get("skill_version_status", "active")):
+        raise RepositoryConflictError("skill_version_not_released")
     if row["executor_type"] not in DEFAULT_RUN_EXECUTOR_TYPES:
         raise RepositoryConflictError("executor_type_not_allowed")
     if row["executor_type"] == "ragflow":
@@ -592,6 +600,7 @@ async def list_public_skill_catalog(
           coalesce(skill_versions.description, skills.description) as description,
           coalesce(tenant_workbench_skills.status, skills.status) as status,
           coalesce(tenant_workbench_skills.visible_to_user, true) as visible_to_user,
+          coalesce(skill_versions.status, 'active') as version_status,
           coalesce(skill_versions.source_json, '{}'::jsonb) as source_json,
           coalesce(skill_versions.dependency_ids, '[]'::jsonb) as dependency_ids,
           skill_versions.created_by,
@@ -620,6 +629,8 @@ async def list_public_skill_catalog(
     rows = []
     for row in list(await cursor.fetchall()):
         projected = dict(row)
+        if not include_disabled and not is_user_runnable_status(projected.get("version_status")):
+            continue
         projected["source"] = _json_dict(projected.pop("source_json", {}))
         projected["dependency_ids"] = _json_list(projected.get("dependency_ids"))
         rows.append(projected)
@@ -3585,6 +3596,37 @@ async def get_skill_version(conn: AsyncConnection, *, skill_id: str, version: st
     )
     row = await cursor.fetchone()
     return _project_skill_version(row) if row is not None else None
+
+
+async def update_skill_version_status(
+    conn: AsyncConnection,
+    *,
+    skill_id: str,
+    version: str,
+    status: str,
+) -> dict[str, Any]:
+    cursor = await conn.execute(
+        """
+        update skill_versions
+        set status = %s
+        where skill_id = %s and version = %s
+        returning
+          skill_id,
+          version,
+          content_hash,
+          description,
+          source_json,
+          dependency_ids,
+          status,
+          created_by,
+          created_at
+        """,
+        (status, skill_id, version),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryNotFoundError("skill_version_not_found")
+    return _project_skill_version(row)
 
 
 async def get_effective_skill_version_for_policy(

@@ -9,11 +9,18 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from app.skills.pinning import MAX_SKILL_SNAPSHOT_FILE_BYTES, MAX_SKILL_SNAPSHOT_TOTAL_BYTES
+from app.skills.release_readiness import (
+    _LICENSE_FILE_NAMES,
+    _RELEASE_EVIDENCE_CATEGORIES,
+    _VULNERABILITY_EVIDENCE_NAMES,
+)
 from app.skills.registry import parse_skill_markdown_front_matter
 from app.validation import assert_safe_id
 
 MAX_SKILL_PACKAGE_FILE_BYTES = MAX_SKILL_SNAPSHOT_FILE_BYTES
 MAX_SKILL_PACKAGE_TOTAL_BYTES = MAX_SKILL_SNAPSHOT_TOTAL_BYTES
+SKILL_PACKAGE_CONTRACT_SCHEMA_VERSION = "ai-platform.skill-package-contract.v1"
+SKILL_DEPENDENCY_EVIDENCE_SCHEMA_VERSION = "ai-platform.skill-dependency-evidence.v1"
 
 
 @dataclass(frozen=True)
@@ -44,6 +51,105 @@ def _content_hash(files: list[tuple[str, bytes]]) -> str:
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
     return digest.hexdigest()
+
+
+def _matching_relative_paths(relative_paths: list[str], file_names: set[str]) -> list[str]:
+    return sorted(path for path in relative_paths if PurePosixPath(path).name.lower() in file_names)
+
+
+def _safe_storage_key(storage_key: object) -> str:
+    value = str(storage_key or "").replace("\\", "/").strip()
+    if not value:
+        raise ValueError("skill_package_contract_storage_key_invalid")
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError("skill_package_contract_storage_key_invalid")
+    return path.as_posix()
+
+
+def _evidence_files(parsed: ParsedSkillPackage) -> dict[str, list[str]]:
+    relative_paths = [str(item.get("relative_path") or "") for item in parsed.files if isinstance(item, dict)]
+    return {
+        "sbom_or_signed_package": _matching_relative_paths(
+            relative_paths,
+            _RELEASE_EVIDENCE_CATEGORIES["sbom_or_signed_package"],
+        ),
+        "license_policy": _matching_relative_paths(relative_paths, _LICENSE_FILE_NAMES),
+        "vulnerability_scan": _matching_relative_paths(relative_paths, _VULNERABILITY_EVIDENCE_NAMES),
+    }
+
+
+def build_skill_package_contract(
+    parsed: ParsedSkillPackage,
+    package_sha256: str,
+    storage_key: str,
+    *,
+    uploaded_by: str,
+) -> dict[str, Any]:
+    """Build the immutable upload package contract persisted with a version."""
+
+    return {
+        "schema_version": SKILL_PACKAGE_CONTRACT_SCHEMA_VERSION,
+        "skill_id": parsed.skill_id,
+        "version": parsed.content_hash,
+        "content_hash": parsed.content_hash,
+        "package_sha256": str(package_sha256 or "").strip(),
+        "storage_key": _safe_storage_key(storage_key),
+        "uploaded_by": str(uploaded_by or ""),
+        "file_count": len(parsed.files),
+        "size_bytes": parsed.size_bytes,
+        "evidence_files": _evidence_files(parsed),
+    }
+
+
+def validate_skill_package_contract(
+    contract: dict[str, Any],
+    *,
+    skill_id: str,
+    content_hash: str,
+) -> dict[str, Any]:
+    if contract.get("schema_version") != SKILL_PACKAGE_CONTRACT_SCHEMA_VERSION:
+        raise ValueError("skill_package_contract_schema_invalid")
+    if str(contract.get("skill_id") or "") != skill_id:
+        raise ValueError("skill_package_contract_skill_mismatch")
+    if str(contract.get("version") or "") != content_hash:
+        raise ValueError("skill_package_contract_hash_mismatch")
+    if str(contract.get("content_hash") or "") != content_hash:
+        raise ValueError("skill_package_contract_hash_mismatch")
+    if not str(contract.get("package_sha256") or "").strip():
+        raise ValueError("skill_package_contract_package_sha256_required")
+    contract = dict(contract)
+    contract["storage_key"] = _safe_storage_key(contract.get("storage_key"))
+    evidence_files = contract.get("evidence_files")
+    if not isinstance(evidence_files, dict):
+        raise ValueError("skill_package_contract_evidence_files_invalid")
+    for key in ("sbom_or_signed_package", "license_policy", "vulnerability_scan"):
+        values = evidence_files.get(key)
+        if not isinstance(values, list) or any(not isinstance(item, str) or not item for item in values):
+            raise ValueError("skill_package_contract_evidence_files_invalid")
+    return contract
+
+
+def build_skill_dependency_evidence(
+    *,
+    dependency_ids: list[str],
+    dependency_manifests: list[dict[str, Any]],
+    package_contract: dict[str, Any],
+) -> dict[str, Any]:
+    evidence_files = package_contract.get("evidence_files") if isinstance(package_contract.get("evidence_files"), dict) else {}
+    return {
+        "schema_version": SKILL_DEPENDENCY_EVIDENCE_SCHEMA_VERSION,
+        "status": "review_required" if dependency_ids else "not_required",
+        "dependency_count": len(dependency_ids),
+        "dependency_ids": list(dependency_ids),
+        "manifest_snapshot_present": bool(dependency_manifests),
+        "package_evidence_present": any(bool(evidence_files.get(key)) for key in ("sbom_or_signed_package", "license_policy", "vulnerability_scan")),
+        "evidence_files": {
+            "sbom_or_signed_package": list(evidence_files.get("sbom_or_signed_package") or []),
+            "license_policy": list(evidence_files.get("license_policy") or []),
+            "vulnerability_scan": list(evidence_files.get("vulnerability_scan") or []),
+        },
+    }
 
 
 def parse_skill_package_zip(content: bytes, *, expected_skill_id: str | None = None) -> ParsedSkillPackage:

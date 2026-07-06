@@ -68,6 +68,7 @@ from app.run_control_readiness import (
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.settings import get_settings
+from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import (
     SkillVersionMaterializationError,
     attach_skill_snapshot_governance,
@@ -185,6 +186,8 @@ async def _governed_skill_manifest_pins(
             version=policy_version,
         )
         if version is None:
+            raise SkillVersionMaterializationError("skill_version_not_materializable")
+        if not is_user_runnable_status(version.get("status")):
             raise SkillVersionMaterializationError("skill_version_not_materializable")
         return build_skill_version_policy_manifest_pins(
             version,
