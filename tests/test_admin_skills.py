@@ -108,6 +108,10 @@ def materializable_uploaded_qa_version(version: str, *, description: str = "Uplo
     }
 
 
+def reviewed_skill_version_release(version):
+    return {"status": "passed", "blockers": []}
+
+
 def test_admin_skill_detail_requires_admin(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     client = TestClient(create_app())
@@ -1017,6 +1021,7 @@ def test_admin_promote_skill_version_sets_release_policy_and_audit(monkeypatch):
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", reviewed_skill_version_release)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
 
@@ -1038,6 +1043,44 @@ def test_admin_promote_skill_version_sets_release_policy_and_audit(monkeypatch):
     assert audit_call["action"] == "skill_version_promoted"
     assert audit_call["target_id"] == "qa-file-reviewer"
     assert audit_call["payload_json"]["to_version"] == "hash-b"
+
+
+def test_admin_promote_rejects_unreviewed_release_evidence_before_policy_lookup(monkeypatch):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    async def fake_get_version(conn, *, skill_id, version):
+        return materializable_builtin_qa_version(version)
+
+    async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
+        raise AssertionError("promote must fail before policy lookup")
+
+    def blocked_release_review(version):
+        return {
+            "status": "blocked",
+            "blockers": ["dependency_license_policy_review_not_verified"],
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", blocked_release_review)
+    monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/promote",
+        json={"version": "hash-b"},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "skill_release_review_not_verified"
 
 
 def test_admin_promote_accepts_gray_rollout_policy(monkeypatch):
@@ -1080,6 +1123,7 @@ def test_admin_promote_accepts_gray_rollout_policy(monkeypatch):
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", reviewed_skill_version_release)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
 
@@ -1151,6 +1195,7 @@ def test_admin_promote_gray_rejects_unmaterializable_existing_policy_current_ver
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fail_set_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fail_audit)
+    monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", reviewed_skill_version_release)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())
 
@@ -1203,6 +1248,7 @@ def test_admin_promote_gray_without_policy_uses_catalog_version_as_previous(monk
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", reviewed_skill_version_release)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
 
@@ -1271,6 +1317,7 @@ def test_admin_promote_full_without_policy_allows_unmaterializable_catalog_previ
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", reviewed_skill_version_release)
     client = TestClient(create_app())
 
     response = client.post(
@@ -1453,6 +1500,7 @@ def test_admin_promote_accepts_uploaded_version_with_snapshot_files(monkeypatch)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", reviewed_skill_version_release)
     client = TestClient(create_app())
 
     response = client.post(
