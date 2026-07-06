@@ -40,10 +40,22 @@ Status:
   - `pnpm run build` -> passed; Vite reported existing large chunk warnings.
   - `git diff --cached --check` and `git diff --check` -> passed.
 - [x] Phase 9: follow-up sub-agent review after Important-finding fixes passed with no Critical or Important findings; final narrow re-review after the Minor regression test also passed with no Critical, Important, or Minor findings. Review assessment: ready to merge.
+- [x] Phase 10: CI projection audit failure root cause fixed locally on 2026-07-06:
+  - GitHub Actions run `28774129911`, job `85314111858`, failed because `pnpm run projection:audit` treated `frontend/web/src/services/api/agent.ts` redaction guard strings as active forbidden projection terms.
+  - Root cause: `agent.ts` is part of the frontend sanitizer/redaction boundary but was missing from `REDACTION_GUARD_PATHS`.
+  - Fix: added `frontend/web/src/services/api/agent.ts` to `REDACTION_GUARD_PATHS` in `tools/frontend_projection_audit.py`.
+  - `pnpm run projection:audit` -> passed with status `pass_with_policy_gaps`; no active-browser forbidden projection violations.
+  - `python -m pytest tests/test_agent_workspace_projection.py -q --basetemp .pytest-tmp` -> 5 passed.
+  - `python -m pytest tests/test_repositories.py -q --basetemp .pytest-tmp -k "agent_workspace_tool_permissions or list_tool_permission_inbox"` -> 2 passed, 129 deselected.
+  - `pnpm exec tsx --test src/services/api/__tests__/agentWorkspace.test.ts src/components/panels/SidebarParts/__tests__/navigationState.test.ts` -> 6 passed.
+  - `pnpm exec tsc -b` -> passed.
+  - `python -m compileall -q app tools scripts` -> passed.
+  - `pnpm run build` -> passed; Vite reported existing large chunk warnings.
+  - `git diff --check` -> passed before commit.
 
 Notes:
 - UI/UX source checklist was applied against the Agent Workspace page: tokenized workbench surfaces, Lucide icons, explicit loading/degraded states, responsive two-column layout, semantic buttons, and no hardcoded runtime data.
 - `ui-ux-pro-max` search script path was not available in the local skill install, so no script-generated UX report was produced.
 
-Current status: reviewed locally after review-fix pass on the clean PR branch; commit, push, and PR are still pending. No 211 deployment has been performed.
+Current status: local CI-failure fix verified on the clean PR branch; fix commit, push, fresh GitHub CI, and post-fix review are still pending. No 211 deployment has been performed.
 Browser visual smoke was not run; validation is source review, targeted tests, typecheck, build, compile, and diff whitespace only.

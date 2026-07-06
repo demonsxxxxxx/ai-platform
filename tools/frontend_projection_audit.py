@@ -80,6 +80,7 @@ _FORBIDDEN_TERM_SCAN = re.compile(
 REDACTION_GUARD_PATHS = {
     "frontend/web/src/components/documents/documentUrlSafety.ts",
     "frontend/web/src/hooks/useAgent/eventProcessor.ts",
+    "frontend/web/src/services/api/agent.ts",
     "frontend/web/src/services/api/memory.ts",
     "frontend/web/src/services/api/runPlayback.ts",
 }
