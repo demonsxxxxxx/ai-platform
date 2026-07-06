@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from tools import verify_poc_gate
@@ -395,6 +396,136 @@ def test_container_env_reads_only_poc_whitelisted_runtime_keys(monkeypatch):
     }
 
 
+def test_runtime_env_values_maps_worker_sdk_switch_when_container_env_unavailable(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "WORKER_CLAUDE_AGENT_SDK_ENABLED=true",
+                "CLAUDE_AGENT_MODEL=deepseek-v4-flash",
+                "OPENAI_MODEL=deepseek-v4-flash",
+                "ANTHROPIC_MODEL=deepseek-v4-flash",
+                "CLAUDE_AGENT_SDK_SKILLS=general-chat,qa-file-reviewer,baoyu-translate",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify_poc_gate, "read_container_runtime_env", lambda container: {})
+    monkeypatch.setattr(verify_poc_gate, "container_runtime_env_available", lambda container: False)
+
+    values = verify_poc_gate.runtime_env_values(str(env_path), "ai-platform-worker")
+
+    assert values["CLAUDE_AGENT_SDK_ENABLED"] == "true"
+
+
+def test_runtime_env_values_does_not_promote_env_sdk_switch_over_live_worker_env(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "WORKER_CLAUDE_AGENT_SDK_ENABLED=true",
+                "CLAUDE_AGENT_MODEL=deepseek-v4-flash",
+                "OPENAI_MODEL=deepseek-v4-flash",
+                "ANTHROPIC_MODEL=deepseek-v4-flash",
+                "CLAUDE_AGENT_SDK_SKILLS=general-chat,qa-file-reviewer,baoyu-translate",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "read_container_runtime_env",
+        lambda container: {
+            "CLAUDE_AGENT_MODEL": "deepseek-v4-flash",
+            "OPENAI_MODEL": "deepseek-v4-flash",
+            "ANTHROPIC_MODEL": "deepseek-v4-flash",
+            "CLAUDE_AGENT_SDK_SKILLS": "general-chat,qa-file-reviewer,baoyu-translate",
+        },
+    )
+    monkeypatch.setattr(verify_poc_gate, "container_runtime_env_available", lambda container: True)
+
+    values = verify_poc_gate.runtime_env_values(str(env_path), "ai-platform-worker")
+    gate = verify_poc_gate.check_runtime_config(str(env_path), values)
+
+    assert "CLAUDE_AGENT_SDK_ENABLED" not in values
+    assert gate.ok is False
+    assert gate.evidence["claude_agent_sdk_enabled"] is None
+
+
+def test_runtime_env_values_does_not_fallback_when_live_worker_env_is_readable_but_empty(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "WORKER_CLAUDE_AGENT_SDK_ENABLED=true",
+                "CLAUDE_AGENT_MODEL=deepseek-v4-flash",
+                "OPENAI_MODEL=deepseek-v4-flash",
+                "ANTHROPIC_MODEL=deepseek-v4-flash",
+                "CLAUDE_AGENT_SDK_SKILLS=general-chat,qa-file-reviewer,baoyu-translate",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify_poc_gate, "read_container_runtime_env", lambda container: {})
+    monkeypatch.setattr(verify_poc_gate, "container_runtime_env_available", lambda container: True)
+
+    values = verify_poc_gate.runtime_env_values(str(env_path), "ai-platform-worker")
+    gate = verify_poc_gate.check_runtime_config(str(env_path), values)
+
+    assert values == {}
+    assert gate.ok is False
+    assert gate.evidence["claude_agent_sdk_enabled"] is None
+
+
+def test_runtime_config_main_reads_sdk_capability_from_worker_container(monkeypatch):
+    captured = {}
+
+    def gate(name, evidence=None):
+        return verify_poc_gate.Gate(name, True, evidence or {})
+
+    def fake_runtime_env_values(env_path, container):
+        captured["runtime"] = (env_path, container)
+        return {}
+
+    monkeypatch.setattr(verify_poc_gate, "check_db_evidence", lambda *args: [])
+    monkeypatch.setattr(verify_poc_gate, "runtime_env_values", fake_runtime_env_values)
+    monkeypatch.setattr(verify_poc_gate, "check_runtime_config", lambda env_path, values: gate("runtime_config"))
+    monkeypatch.setattr(
+        verify_poc_gate,
+        "check_word_review_attachment_chat",
+        lambda *args, **kwargs: gate("word_review_attachment_chat", {"context_snapshot_public_projection": {"ok": True}}),
+    )
+    for function_name, gate_name in (
+        ("check_governed_skill_runs", "governed_skill_runs"),
+        ("check_frontend", "frontend"),
+        ("check_frontend_dist_api_boundary", "frontend_dist_api_boundary"),
+        ("check_frontend_origin_api", "frontend_origin_api"),
+        ("check_api_compat", "api_compat"),
+        ("check_company_auth_bridge", "company_auth_bridge"),
+        ("check_artifact_download_isolation", "artifact_download_isolation"),
+        ("check_artifact_preview_isolation", "artifact_preview_isolation"),
+        ("check_upload_attachment_chat", "upload_attachment_chat"),
+        ("check_auth_audit", "auth_audit"),
+    ):
+        monkeypatch.setattr(verify_poc_gate, function_name, lambda *args, _name=gate_name, **kwargs: gate(_name))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "verify_poc_gate.py",
+            "--env-path",
+            "deploy.env",
+            "--api-container",
+            "ai-platform-api",
+            "--worker-container",
+            "ai-platform-worker",
+        ],
+    )
+
+    assert verify_poc_gate.main() == 0
+    assert captured["runtime"] == ("deploy.env", "ai-platform-worker")
+
+
 def test_runtime_env_values_prefers_live_container_over_env_file(tmp_path, monkeypatch):
     env_path = tmp_path / ".env"
     env_path.write_text(
@@ -422,6 +553,7 @@ def test_runtime_env_values_prefers_live_container_over_env_file(tmp_path, monke
             "EXISTING_AUTH_BASE_URL": "",
         },
     )
+    monkeypatch.setattr(verify_poc_gate, "container_runtime_env_available", lambda container: True)
 
     values = verify_poc_gate.runtime_env_values(str(env_path), "ai-platform-api")
 
@@ -434,6 +566,7 @@ def test_runtime_env_values_uses_env_file_only_when_container_env_unavailable(tm
     env_path = tmp_path / ".env"
     env_path.write_text("EXISTING_AUTH_BASE_URL=http://auth.local\n", encoding="utf-8")
     monkeypatch.setattr(verify_poc_gate, "read_container_runtime_env", lambda container: {})
+    monkeypatch.setattr(verify_poc_gate, "container_runtime_env_available", lambda container: False)
 
     values = verify_poc_gate.runtime_env_values(str(env_path), "ai-platform-api")
 
@@ -504,6 +637,7 @@ def test_container_auth_url_source_of_truth_can_fail_gate_despite_valid_env_file
         "read_container_runtime_env",
         lambda container: {"EXISTING_AUTH_BASE_URL": "/api/Login/"},
     )
+    monkeypatch.setattr(verify_poc_gate, "container_runtime_env_available", lambda container: True)
 
     values = verify_poc_gate.runtime_env_values(str(env_path), "ai-platform-api")
     gate = verify_poc_gate.check_company_auth_bridge(values.get("EXISTING_AUTH_BASE_URL", ""))

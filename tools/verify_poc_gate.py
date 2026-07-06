@@ -30,6 +30,7 @@ DEFAULT_API_URL = "http://127.0.0.1:8020"
 DEFAULT_FRONTEND_DIST = "/home/xinlin.jiang/frontend-pr111-smoke/dist"
 DEFAULT_DEPLOY_ENV = "/home/xinlin.jiang/ai-platform-phaseb/services/ai-platform/deploy/ai-platform/.env"
 DEFAULT_API_CONTAINER = "ai-platform-api"
+DEFAULT_WORKER_CONTAINER = "ai-platform-worker"
 DEFAULT_POSTGRES_CONTAINER = "ai-platform-postgres"
 DEFAULT_POSTGRES_USER = "ai_platform"
 DEFAULT_POSTGRES_DB = "ai_platform"
@@ -37,6 +38,7 @@ REQUIRED_UI_PERMISSIONS = {"agent:use", "artifact:download", "agent:admin", "mod
 RUNTIME_ENV_ALLOWLIST = frozenset(
     {
         "CLAUDE_AGENT_SDK_ENABLED",
+        "WORKER_CLAUDE_AGENT_SDK_ENABLED",
         "CLAUDE_AGENT_MODEL",
         "DEFAULT_MODEL_ID",
         "MODEL_CATALOG_JSON",
@@ -269,9 +271,12 @@ def read_env(path: str) -> dict[str, str]:
 
 
 def read_container_runtime_env(container: str) -> dict[str, str]:
-    """Read only non-secret POC runtime keys from a running API container."""
+    """Read only non-secret POC runtime keys from a running container."""
     command = ["sudo", "-n", "docker", "exec", container, "env"]
-    completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=30)
+    try:
+        completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=30)
+    except OSError:
+        return {}
     if completed.returncode != 0:
         return {}
     values: dict[str, str] = {}
@@ -284,15 +289,28 @@ def read_container_runtime_env(container: str) -> dict[str, str]:
     return values
 
 
+def container_runtime_env_available(container: str) -> bool:
+    command = ["sudo", "-n", "docker", "exec", container, "env"]
+    try:
+        completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=30)
+    except OSError:
+        return False
+    return completed.returncode == 0
+
+
+def _normalize_runtime_env_values(values: dict[str, str]) -> dict[str, str]:
+    normalized = dict(values)
+    worker_sdk_enabled = normalized.get("WORKER_CLAUDE_AGENT_SDK_ENABLED")
+    if worker_sdk_enabled is not None and "CLAUDE_AGENT_SDK_ENABLED" not in normalized:
+        normalized["CLAUDE_AGENT_SDK_ENABLED"] = worker_sdk_enabled
+    return normalized
+
+
 def runtime_env_values(env_path: str, container: str) -> dict[str, str]:
     """Prefer allowlisted live container values; use env file only as fallback."""
-    file_values = read_env(env_path)
-    container_values = read_container_runtime_env(container)
-    if not container_values:
-        return file_values
-    values = dict(file_values)
-    values.update(container_values)
-    return values
+    if not container_runtime_env_available(container):
+        return _normalize_runtime_env_values(read_env(env_path))
+    return read_container_runtime_env(container)
 
 
 def text_files(root: Path) -> list[Path]:
@@ -1574,6 +1592,7 @@ def main() -> int:
     parser.add_argument("--frontend-dist", default=DEFAULT_FRONTEND_DIST)
     parser.add_argument("--env-path", default=DEFAULT_DEPLOY_ENV)
     parser.add_argument("--api-container", default=DEFAULT_API_CONTAINER)
+    parser.add_argument("--worker-container", default=DEFAULT_WORKER_CONTAINER)
     parser.add_argument("--postgres-container", default=DEFAULT_POSTGRES_CONTAINER)
     parser.add_argument("--postgres-user", default=DEFAULT_POSTGRES_USER)
     parser.add_argument("--postgres-db", default=DEFAULT_POSTGRES_DB)
@@ -1583,7 +1602,7 @@ def main() -> int:
     args = parser.parse_args()
 
     db_gates = check_db_evidence(args.postgres_container, args.postgres_user, args.postgres_db)
-    env_values = runtime_env_values(args.env_path, args.api_container)
+    env_values = runtime_env_values(args.env_path, args.worker_container)
     runtime_config_gate = check_runtime_config(args.env_path, env_values)
     artifact_rows = [gate.evidence for gate in db_gates if gate.name in {"review_artifact", "translate_artifact"} and gate.ok]
     word_review_gate = check_word_review_attachment_chat(
