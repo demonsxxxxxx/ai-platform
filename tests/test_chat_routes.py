@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import base64
 import hashlib
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -526,6 +527,16 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
     assert queue_payload["skill_version"] == queue_payload["skill_manifests"][0]["content_hash"]
     assert queue_payload["release_decision"]["selected_version"] == queue_payload["skill_version"]
     assert queue_payload["release_decision"]["selected_track"] == "manifest_pin"
+    governance = queue_payload["skill_manifests"][0]["snapshot_governance"]
+    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
+    assert governance["snapshot_source"] == "platform_release_lock"
+    assert governance["does_not_close_b4_or_211"] is True
+    serialized_governance = json.dumps(governance, ensure_ascii=False)
+    assert "release_decision" not in serialized_governance
+    assert "content_base64" not in serialized_governance
+    assert queue_payload["skill_version"] not in serialized_governance
+    assert "track" not in serialized_governance
+    assert "rollout" not in serialized_governance
     assert ("message", "user", "review this document", "run_3") in calls
     assert ("context", "chat_stream", ["msg_3"], ["file_1"], {"message": "review this document"}) in calls
     assert queue_payload["context_snapshot_id"] == "ctx_chat_3"
@@ -600,7 +611,7 @@ async def test_chat_stream_rejects_unavailable_model_id_before_creating_run(monk
     with pytest.raises(HTTPException) as exc_info:
         await chat_stream(
             ChatStreamRequest(message="hello", agent_options={"model_id": "not-allowed"}),
-            principal=principal(),
+            principal=principal(roles=["admin"]),
         )
 
     assert exc_info.value.status_code == 400
@@ -927,7 +938,50 @@ async def test_chat_stream_rejects_release_policy_version_that_differs_from_prim
                 message="review this document",
                 attachments=[{"key": "file_1", "name": "review.docx"}],
             ),
-            principal=principal(),
+            principal=principal(roles=["admin"]),
+        )
+
+    assert getattr(exc_info.value, "status_code", None) == 409
+    assert getattr(exc_info.value, "detail", None) == "skill_version_not_materializable"
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_rejects_invalid_snapshot_governance_manifest_as_materialization_conflict(monkeypatch):
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return {"executor_type": "claude-agent-worker", "skill_version": "hash-pin", "input_modes": ["docx"]}
+
+    async def fail_create_run(*args, **kwargs):
+        raise AssertionError("run must not be created when snapshot governance cannot be materialized")
+
+    def fake_skill_manifest_pins(skill_id, input_payload):
+        return [
+            {
+                "skill_id": skill_id,
+                "version": "hash-pin",
+                "content_hash": "hash-pin",
+                "source": {"kind": "builtin", "asset_dir": skill_id},
+                "files": [{"relative_path": "references/..", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+                "dependency_ids": [],
+                "allowed": True,
+                "staged": False,
+                "used": False,
+            }
+        ]
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+    monkeypatch.setattr("app.routes.chat._skill_manifest_pins", fake_skill_manifest_pins)
+
+    with pytest.raises(Exception) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                agent_id="document-review",
+                skill_id="qa-file-reviewer",
+                message="review this document",
+                attachments=[{"key": "file_1", "name": "review.docx"}],
+            ),
+            principal=principal(roles=["admin"]),
         )
 
     assert getattr(exc_info.value, "status_code", None) == 409

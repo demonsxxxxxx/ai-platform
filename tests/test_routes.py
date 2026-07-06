@@ -3201,6 +3201,17 @@ async def test_create_run_uses_primary_pin_hash_as_locked_skill_version(monkeypa
     assert calls["queue"]["skill_version"] == "hash-pin"
     assert calls["queue"]["release_decision"]["selected_version"] == "hash-pin"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-pin"
+    governance = calls["queue"]["skill_manifests"][0]["snapshot_governance"]
+    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
+    assert governance["snapshot_source"] == "platform_release_lock"
+    assert governance["release_lock"]["mode"] == "manifest_pin"
+    assert governance["does_not_close_b4_or_211"] is True
+    serialized_governance = json.dumps(governance, ensure_ascii=False)
+    assert "release_decision" not in serialized_governance
+    assert "content_base64" not in serialized_governance
+    assert "hash-pin" not in serialized_governance
+    assert "track" not in serialized_governance
+    assert "rollout" not in serialized_governance
     assert any(event["payload"]["skill_version"] == "hash-pin" for event in calls["events"])
 
 
@@ -3285,6 +3296,13 @@ async def test_create_run_uses_rollout_selected_previous_version(monkeypatch):
     assert calls["queue"]["skill_version"] == "hash-old"
     assert calls["queue"]["release_decision"]["selected_track"] == "previous"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-old"
+    governance = calls["queue"]["skill_manifests"][0]["snapshot_governance"]
+    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
+    assert governance["release_lock"]["mode"] == "release_policy"
+    serialized_governance = json.dumps(governance, ensure_ascii=False)
+    assert "hash-old" not in serialized_governance
+    assert "track" not in serialized_governance
+    assert "rollout" not in serialized_governance
     assert any(event["payload"]["skill_version"] == "hash-old" for event in calls["events"])
     assert any(
         event["event_type"] == "skill_release_decision"
@@ -3689,6 +3707,49 @@ async def test_create_run_maps_skill_snapshot_materialization_error_to_conflict(
     )
     monkeypatch.setattr("app.routes.runs.BuiltinSkillRegistry", FakeRegistry)
     monkeypatch.setattr("app.routes.runs.build_skill_manifest_pins", fail_build_skill_manifest_pins)
+
+    with pytest.raises(Exception) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="qa-word-review",
+                capability_id="document_review",
+                input={"message": "审核"},
+            ),
+            principal=principal(),
+        )
+
+    assert getattr(exc_info.value, "status_code", None) == 409
+    assert getattr(exc_info.value, "detail", None) == "skill_version_not_materializable"
+
+
+@pytest.mark.asyncio
+async def test_create_run_rejects_invalid_snapshot_governance_manifest_as_materialization_conflict(monkeypatch):
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return skill(executor_type="claude-agent-worker", skill_version="hash-pin")
+
+    async def fail_create_run(*args, **kwargs):
+        raise AssertionError("run must not be created when snapshot governance cannot be materialized")
+
+    def fake_skill_manifest_pins(skill_id, input_payload):
+        return [
+            {
+                "skill_id": skill_id,
+                "version": "hash-pin",
+                "content_hash": "hash-pin",
+                "source": {"kind": "builtin", "asset_dir": skill_id},
+                "files": [{"relative_path": "../SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+                "dependency_ids": [],
+                "allowed": True,
+                "staged": False,
+                "used": False,
+            }
+        ]
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.runs.repositories.create_run", fail_create_run)
+    monkeypatch.setattr("app.routes.runs._skill_manifest_pins", fake_skill_manifest_pins)
 
     with pytest.raises(Exception) as exc_info:
         await create_run(

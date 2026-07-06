@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,9 @@ from app.skills.registry import BuiltinSkill, iter_skill_files
 
 MAX_SKILL_SNAPSHOT_FILE_BYTES = 8 * 1024 * 1024
 MAX_SKILL_SNAPSHOT_TOTAL_BYTES = 16 * 1024 * 1024
+SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION = (
+    "ai-platform.skill-pinned-snapshot-governance.v1"
+)
 
 
 class SkillVersionMaterializationError(ValueError):
@@ -52,6 +56,106 @@ def _snapshot_files(path: Path) -> list[dict[str, Any]]:
             }
         )
     return files
+
+
+def _safe_manifest_file_summary(item: dict[str, Any]) -> dict[str, Any]:
+    raw_path = str(item.get("relative_path") or item.get("path") or "").replace("\\", "/")
+    relative_path = raw_path.strip("/")
+    path_segments = relative_path.split("/")
+    if (
+        not relative_path
+        or raw_path.startswith("/")
+        or ":" in raw_path
+        or any(segment == ".." for segment in path_segments)
+    ):
+        raise SkillVersionMaterializationError("skill_version_not_materializable")
+    encoded = str(item.get("content_base64") or "")
+    try:
+        content = base64.b64decode(encoded.encode("ascii"), validate=True)
+    except Exception as exc:
+        raise SkillVersionMaterializationError("skill_version_not_materializable") from exc
+    raw_size = item.get("size_bytes")
+    if raw_size is None:
+        size_bytes = len(content)
+    else:
+        try:
+            size_bytes = int(raw_size)
+        except (TypeError, ValueError) as exc:
+            raise SkillVersionMaterializationError("skill_version_not_materializable") from exc
+        if size_bytes < 0 or size_bytes != len(content):
+            raise SkillVersionMaterializationError("skill_version_not_materializable")
+    return {
+        "relative_path": relative_path,
+        "size_bytes": size_bytes,
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+
+
+def _safe_file_summaries(files: object) -> list[dict[str, Any]]:
+    if not isinstance(files, list):
+        return []
+    summaries: list[dict[str, Any]] = []
+    for item in files:
+        if not isinstance(item, dict):
+            raise SkillVersionMaterializationError("skill_version_not_materializable")
+        summaries.append(_safe_manifest_file_summary(item))
+    return summaries
+
+
+def _release_lock_summary(release_decision: dict[str, Any] | None) -> dict[str, Any]:
+    decision = release_decision if isinstance(release_decision, dict) else {}
+    policy_mode = "release_policy" if bool(decision.get("policy_active")) else "manifest_pin"
+    summary: dict[str, Any] = {
+        "schema_version": str(decision.get("schema_version") or ""),
+        "mode": policy_mode,
+    }
+    return summary
+
+
+def build_skill_snapshot_governance(
+    manifest: dict[str, Any],
+    *,
+    release_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the safe governance summary persisted with a pinned run Skill snapshot."""
+
+    source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+    files = _safe_file_summaries(manifest.get("files"))
+    dependency_ids = _string_list(manifest.get("dependency_ids"))
+    return {
+        "schema_version": SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION,
+        "snapshot_source": "platform_release_lock",
+        "release_lock": _release_lock_summary(release_decision),
+        "manifest": {
+            "source_kind": str(source.get("kind") or ""),
+            "selected_file_count": len(files),
+        },
+        "selected_files": files,
+        "dependency_evidence": {
+            "status": "review_required" if dependency_ids else "not_required",
+            "ref": "skill_dependency_policy",
+            "dependency_count": len(dependency_ids),
+        },
+        "does_not_close_b4_or_211": True,
+    }
+
+
+def attach_skill_snapshot_governance(
+    skill_manifests: list[dict[str, Any]],
+    *,
+    release_decision: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Attach safe pinned snapshot governance without mutating existing manifest dicts."""
+
+    attached: list[dict[str, Any]] = []
+    for manifest in skill_manifests:
+        item = dict(manifest)
+        item["snapshot_governance"] = build_skill_snapshot_governance(
+            item,
+            release_decision=release_decision,
+        )
+        attached.append(item)
+    return attached
 
 
 def build_skill_manifest_pins(

@@ -285,6 +285,16 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
     assert queued_payload["run_id"] == "run_new"
     assert queued_payload["skill_version"] == "hash-old"
     assert queued_payload["skill_manifests"][0]["source"]["kind"] == "uploaded"
+    governance = queued_payload["skill_manifests"][0]["snapshot_governance"]
+    assert governance["schema_version"] == "ai-platform.skill-pinned-snapshot-governance.v1"
+    assert governance["snapshot_source"] == "platform_release_lock"
+    assert governance["does_not_close_b4_or_211"] is True
+    serialized_governance = json.dumps(governance, ensure_ascii=False)
+    assert "release_decision" not in serialized_governance
+    assert "content_base64" not in serialized_governance
+    assert "hash-old" not in serialized_governance
+    assert "track" not in serialized_governance
+    assert "rollout" not in serialized_governance
     assert queued_payload["context_snapshot_id"] == "ctx_copy_route"
     assert queued_payload["context_snapshot"]["source"] == "copy_run"
     assert queued_payload["input"]["resume"]["completed_step_outputs"] == {"code": "code output"}

@@ -3990,7 +3990,42 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
                     "skill_id": "qa-file-reviewer",
                     "skill_version": "hash-a",
                     "content_hash": "hash-a",
-                    "source_json": {"kind": "builtin"},
+                    "source_json": {
+                        "kind": "builtin",
+                        "version": "hash-a",
+                        "snapshot_governance": {
+                            "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
+                            "snapshot_source": "platform_release_lock",
+                            "release_lock": {
+                                "mode": "manifest_pin",
+                                "release_decision": {"selected_version": "hash-a"},
+                                "selected_version": "hash-a",
+                                "track": "manifest_pin",
+                                "rollout": 100,
+                            },
+                            "manifest": {
+                                "digest": "hash-a",
+                                "source_kind": "builtin",
+                                "selected_file_count": 1,
+                                "content_hash": "hash-a",
+                            },
+                            "selected_files": [
+                                {
+                                    "relative_path": "SKILL.md",
+                                    "size_bytes": 5,
+                                    "sha256": "9c53c074d7ac6a2728b638ac1f376c5fa9eb8f71603017c3ea638c2fd40548df",
+                                    "content_base64": "c2tpbGw=",
+                                }
+                            ],
+                            "dependency_evidence": {
+                                "status": "review_required",
+                                "ref": "skill_dependency_policy",
+                                "dependency_count": 1,
+                            },
+                            "does_not_close_b4_or_211": True,
+                            "storage_key": "tenants/default/private/package.zip",
+                        },
+                    },
                     "dependency_ids": ["minimax-docx"],
                     "allowed": True,
                     "staged": True,
@@ -4017,9 +4052,31 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
     assert snapshots == [
         {
             "skill_id": "qa-file-reviewer",
-            "skill_version": "hash-a",
-            "content_hash": "hash-a",
-            "source": {"kind": "builtin"},
+            "source": {
+                "kind": "builtin",
+                "snapshot_governance": {
+                    "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
+                    "snapshot_source": "platform_release_lock",
+                    "release_lock": {"mode": "manifest_pin"},
+                    "manifest": {
+                        "source_kind": "builtin",
+                        "selected_file_count": 1,
+                    },
+                    "selected_files": [
+                        {
+                            "relative_path": "SKILL.md",
+                            "size_bytes": 5,
+                            "sha256": "9c53c074d7ac6a2728b638ac1f376c5fa9eb8f71603017c3ea638c2fd40548df",
+                        }
+                    ],
+                    "dependency_evidence": {
+                        "status": "review_required",
+                        "ref": "skill_dependency_policy",
+                        "dependency_count": 1,
+                    },
+                    "does_not_close_b4_or_211": True,
+                },
+            },
             "dependency_ids": ["minimax-docx"],
             "allowed": True,
             "staged": True,
@@ -4032,6 +4089,15 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
             },
         }
     ]
+    serialized = json.dumps(snapshots, ensure_ascii=False)
+    assert "skill_version" not in serialized
+    assert "content_hash" not in serialized
+    assert "content_base64" not in serialized
+    assert "storage_key" not in serialized
+    assert "hash-a" not in serialized
+    assert "version" not in snapshots[0]["source"]
+    assert "track" not in serialized
+    assert "rollout" not in serialized
 
 
 @pytest.mark.asyncio
@@ -4628,7 +4694,42 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots():
                             "skill_id": "qa-file-reviewer",
                             "skill_version": "hash-a",
                             "content_hash": "hash-a",
-                            "source_json": {"kind": "builtin"},
+                                "source_json": {
+                                    "kind": "builtin",
+                                    "version": "hash-a",
+                                    "snapshot_governance": {
+                                    "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
+                                    "snapshot_source": "platform_release_lock",
+                                    "release_lock": {
+                                        "mode": "manifest_pin",
+                                        "release_decision": {"selected_version": "hash-a"},
+                                        "selected_version": "hash-a",
+                                        "track": "manifest_pin",
+                                        "rollout": 100,
+                                    },
+                                    "manifest": {
+                                        "digest": "hash-a",
+                                        "source_kind": "builtin",
+                                        "selected_file_count": 1,
+                                        "content_hash": "hash-a",
+                                    },
+                                    "selected_files": [
+                                        {
+                                            "relative_path": "SKILL.md",
+                                            "size_bytes": 5,
+                                            "sha256": "9c53c074d7ac6a2728b638ac1f376c5fa9eb8f71603017c3ea638c2fd40548df",
+                                            "content_base64": "c2tpbGw=",
+                                        }
+                                    ],
+                                    "dependency_evidence": {
+                                        "status": "review_required",
+                                        "ref": "skill_dependency_policy",
+                                        "dependency_count": 1,
+                                    },
+                                    "does_not_close_b4_or_211": True,
+                                    "storage_key": "tenants/default/private/package.zip",
+                                },
+                            },
                             "dependency_ids": ["minimax-docx"],
                             "allowed": True,
                             "staged": True,
@@ -4653,6 +4754,40 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots():
     assert detail["release_policy"]["previous_version"] == "0.1.0"
     assert detail["recent_snapshots"][0]["run_id"] == "run-a"
     assert detail["recent_snapshots"][0]["dependency_ids"] == ["minimax-docx"]
+    assert detail["recent_snapshots"][0]["source"] == {
+        "kind": "builtin",
+        "snapshot_governance": {
+            "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
+            "snapshot_source": "platform_release_lock",
+            "release_lock": {"mode": "manifest_pin"},
+            "manifest": {
+                "source_kind": "builtin",
+                "selected_file_count": 1,
+            },
+            "selected_files": [
+                {
+                    "relative_path": "SKILL.md",
+                    "size_bytes": 5,
+                    "sha256": "9c53c074d7ac6a2728b638ac1f376c5fa9eb8f71603017c3ea638c2fd40548df",
+                }
+            ],
+            "dependency_evidence": {
+                "status": "review_required",
+                "ref": "skill_dependency_policy",
+                "dependency_count": 1,
+            },
+            "does_not_close_b4_or_211": True,
+        },
+    }
+    serialized_snapshots = json.dumps(detail["recent_snapshots"], ensure_ascii=False)
+    assert "skill_version" not in serialized_snapshots
+    assert "content_hash" not in serialized_snapshots
+    assert "content_base64" not in serialized_snapshots
+    assert "storage_key" not in serialized_snapshots
+    assert "hash-a" not in serialized_snapshots
+    assert "version" not in detail["recent_snapshots"][0]["source"]
+    assert "track" not in serialized_snapshots
+    assert "rollout" not in serialized_snapshots
 
 
 @pytest.mark.asyncio
@@ -4920,8 +5055,6 @@ async def test_admin_run_detail_projects_g2_trace_event_artifact_and_audit_contr
     assert detail["skill_snapshots"] == [
         {
             "skill_id": "qa-file-reviewer",
-            "skill_version": "hash-a",
-            "content_hash": "hash-a",
             "source": {"kind": "builtin"},
             "dependency_ids": ["minimax-docx"],
             "allowed": True,
@@ -4935,6 +5068,9 @@ async def test_admin_run_detail_projects_g2_trace_event_artifact_and_audit_contr
             "created_at": None,
         }
     ]
+    serialized_skill_snapshots = json.dumps(detail["skill_snapshots"], ensure_ascii=False, default=str)
+    assert "skill_version" not in serialized_skill_snapshots
+    assert "content_hash" not in serialized_skill_snapshots
     assert detail["audit"][0]["schema_version"] == "ai-platform.audit-event.v1"
     assert detail["audit"][0]["trace_id"] == "trace_run_a"
 

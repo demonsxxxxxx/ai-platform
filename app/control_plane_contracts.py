@@ -104,6 +104,7 @@ FORBIDDEN_PUBLIC_KEYS = {
     "skill_version",
     "skill_manifest",
     "skill_manifests",
+    "content_base64",
     "content_hash",
     "content_hashes",
     "release_decision",
