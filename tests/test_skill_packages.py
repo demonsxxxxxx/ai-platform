@@ -4,7 +4,11 @@ import zipfile
 
 import pytest
 
-from app.skills.packages import parse_skill_package_zip
+from app.skills.packages import (
+    build_skill_package_contract,
+    parse_skill_package_zip,
+    validate_skill_package_contract,
+)
 
 
 def package_zip(files: dict[str, str | bytes]) -> bytes:
@@ -106,3 +110,72 @@ def test_parse_skill_package_zip_rejects_oversized_file(monkeypatch):
 
     with pytest.raises(ValueError, match="skill_package_file_too_large"):
         parse_skill_package_zip(content, expected_skill_id="qa-file-reviewer")
+
+
+def test_skill_package_contract_round_trips_safe_upload_metadata():
+    parsed = parse_skill_package_zip(
+        package_zip(
+            {
+                "SKILL.md": skill_md(),
+                "references/guide.md": "review guide",
+                "sbom.json": "{}",
+                "third-party-notices.txt": "none",
+                "vulnerability-report.json": "{}",
+            }
+        ),
+        expected_skill_id="qa-file-reviewer",
+    )
+
+    contract = build_skill_package_contract(
+        parsed,
+        package_sha256="zip-sha256",
+        storage_key=f"skills/{parsed.skill_id}/versions/{parsed.content_hash}/package.zip",
+        uploaded_by="dev-admin",
+    )
+
+    assert contract == validate_skill_package_contract(
+        contract,
+        skill_id="qa-file-reviewer",
+        content_hash=parsed.content_hash,
+    )
+    assert contract["schema_version"] == "ai-platform.skill-package-contract.v1"
+    assert contract["skill_id"] == "qa-file-reviewer"
+    assert contract["version"] == parsed.content_hash
+    assert contract["content_hash"] == parsed.content_hash
+    assert contract["package_sha256"] == "zip-sha256"
+    assert contract["storage_key"] == f"skills/{parsed.skill_id}/versions/{parsed.content_hash}/package.zip"
+    assert contract["uploaded_by"] == "dev-admin"
+    assert contract["file_count"] == 5
+    assert contract["size_bytes"] == parsed.size_bytes
+    assert contract["evidence_files"] == {
+        "sbom_or_signed_package": ["sbom.json"],
+        "license_policy": ["third-party-notices.txt"],
+        "vulnerability_scan": ["vulnerability-report.json"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        ({"skill_id": "other-skill"}, "skill_package_contract_skill_mismatch"),
+        ({"content_hash": "other-hash"}, "skill_package_contract_hash_mismatch"),
+        ({"package_sha256": ""}, "skill_package_contract_package_sha256_required"),
+        ({"storage_key": "../package.zip"}, "skill_package_contract_storage_key_invalid"),
+    ],
+)
+def test_validate_skill_package_contract_rejects_mismatched_or_unsafe_metadata(mutation, expected_error):
+    parsed = parse_skill_package_zip(package_zip({"SKILL.md": skill_md()}), expected_skill_id="qa-file-reviewer")
+    contract = build_skill_package_contract(
+        parsed,
+        package_sha256="zip-sha256",
+        storage_key=f"skills/{parsed.skill_id}/versions/{parsed.content_hash}/package.zip",
+        uploaded_by="dev-admin",
+    )
+    contract.update(mutation)
+
+    with pytest.raises(ValueError, match=expected_error):
+        validate_skill_package_contract(
+            contract,
+            skill_id="qa-file-reviewer",
+            content_hash=parsed.content_hash,
+        )

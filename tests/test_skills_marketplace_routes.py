@@ -410,6 +410,62 @@ def test_skills_and_marketplace_read_contracts_project_catalog_and_files(monkeyp
     assert any(name == "list" and payload["tenant_id"] == "default" for name, payload in calls)
 
 
+def test_public_skill_reads_hide_disabled_tenant_availability(monkeypatch):
+    from app.routes import skills_marketplace
+
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    calls = []
+
+    async def fake_list(conn, *, tenant_id, include_disabled=False):
+        calls.append({"tenant_id": tenant_id, "include_disabled": include_disabled})
+        if not include_disabled:
+            return []
+        row = dict(_catalog_rows()[0])
+        row["status"] = "disabled"
+        return [row]
+
+    async def fake_list_overlays(conn, *, tenant_id, user_id, skill_ids, include_content=False):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr(skills_marketplace, "transaction", fake_transaction)
+    monkeypatch.setattr(skills_marketplace.repositories, "list_public_skill_catalog", fake_list)
+    monkeypatch.setattr(skills_marketplace.repositories, "list_user_skill_file_overlays", fake_list_overlays)
+    client = TestClient(create_app())
+
+    list_response = client.get("/api/skills/", headers=headers())
+    assert list_response.status_code == 200
+    assert list_response.json()["skills"] == []
+
+    detail_response = client.get("/api/skills/qa-file-reviewer", headers=headers())
+    assert detail_response.status_code == 404
+    assert detail_response.json()["detail"] == "skill_not_found"
+
+    file_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=headers())
+    assert file_response.status_code == 404
+    assert file_response.json()["detail"] == "skill_not_found"
+
+    marketplace_response = client.get("/api/marketplace/", headers=headers())
+    assert marketplace_response.status_code == 200
+    assert marketplace_response.json()["skills"] == []
+
+    marketplace_file_response = client.get(
+        "/api/marketplace/qa-file-reviewer/files/SKILL.md",
+        headers=headers(),
+    )
+    assert marketplace_file_response.status_code == 404
+    assert marketplace_file_response.json()["detail"] == "skill_not_found"
+
+    assert calls
+    assert all(call["include_disabled"] is False for call in calls)
+
+
 def test_skill_and_marketplace_write_contracts_fail_closed_without_permissions(monkeypatch):
     install_route_fakes(monkeypatch)
     client = TestClient(create_app())

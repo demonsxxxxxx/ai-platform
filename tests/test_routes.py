@@ -2875,6 +2875,42 @@ async def test_create_run_ensures_user_before_session(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_run_maps_unreleased_skill_version_conflict_to_409(monkeypatch):
+    calls = []
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        calls.append(("resolve", tenant_id, agent_id, skill_id))
+        raise RepositoryConflictError("skill_version_not_released")
+
+    async def fail_create_session(*args, **kwargs):
+        calls.append("create_session")
+        raise AssertionError("run creation must not persist a session for unreleased skill version")
+
+    async def fail_enqueue_run(payload):
+        calls.append("enqueue")
+        raise AssertionError("run creation must not enqueue unreleased skill version")
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.runs.repositories.create_session", fail_create_session)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="general-agent",
+                capability_id="general_chat",
+            ),
+            principal=principal(user_id="user-skill-status", tenant_id="default"),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "skill_version_not_released"
+    assert calls == [("resolve", "default", "general-agent", "general-chat")]
+
+
+@pytest.mark.asyncio
 async def test_create_run_strips_user_controlled_server_owned_metadata(monkeypatch):
     calls = {}
 
@@ -3310,6 +3346,60 @@ async def test_create_run_uses_rollout_selected_previous_version(monkeypatch):
         and event["payload"]["visible_to_user"] is False
         for event in calls["events"]
     )
+
+
+@pytest.mark.asyncio
+async def test_create_run_rejects_reviewed_rollout_previous_version(monkeypatch):
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return skill(
+            executor_type="claude-agent-worker",
+            skill_version="hash-new",
+            release_policy_version="hash-new",
+            release_policy_previous_version="hash-old",
+            release_policy_rollout_percent=0,
+        )
+
+    async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
+        assert version == "hash-old"
+        row = uploaded_skill_version_row(skill_id=skill_id, version=version)
+        row["status"] = "reviewed"
+        return row
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def fail_create_run(*args, **kwargs):
+        raise AssertionError("run must not be created for reviewed rollout previous version")
+
+    async def fail_enqueue_run(*args, **kwargs):
+        raise AssertionError("queue must not receive reviewed rollout previous version")
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_effective_skill_version_for_policy",
+        fake_get_effective_skill_version_for_policy,
+    )
+    monkeypatch.setattr("app.routes.runs.repositories.ensure_user", noop)
+    monkeypatch.setattr("app.routes.runs.repositories.create_session", noop)
+    monkeypatch.setattr("app.routes.runs.repositories.create_run", fail_create_run)
+    monkeypatch.setattr("app.routes.runs.repositories.bind_files_to_run", noop)
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="qa-word-review",
+                capability_id="document_review",
+                input={"message": "审核"},
+            ),
+            principal=principal(user_id="user-rollout"),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "skill_version_not_materializable"
 
 
 @pytest.mark.asyncio

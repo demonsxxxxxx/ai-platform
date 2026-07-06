@@ -1567,6 +1567,12 @@ class AdminSkillVersionDiffResponse(BaseModel):
     dependency_removed: list[str] = Field(default_factory=list)
 
 
+class AdminSkillVersionStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["reviewed", "disabled", "deprecated"]
+
+
 class AdminSkillPromoteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

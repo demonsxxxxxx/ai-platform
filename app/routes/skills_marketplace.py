@@ -694,7 +694,7 @@ async def list_skills(
     """List tenant-visible Skills for the authenticated frontend shell."""
 
     _require_permission(principal, "skill:read")
-    rows = await _public_catalog_rows(principal=principal, include_disabled=True)
+    rows = await _public_catalog_rows(principal=principal, include_disabled=False)
     filtered = _filter_rows(rows, query=q, tags=tags)
     page = filtered[skip : skip + limit]
     return PublicSkillsResponse(
@@ -829,7 +829,7 @@ async def get_skill(
 
     _require_permission(principal, "skill:read")
     safe_skill_name = _safe_skill_name(skill_name)
-    rows = await _public_catalog_rows(principal=principal, include_disabled=True)
+    rows = await _public_catalog_rows(principal=principal, include_disabled=False)
     return _skill_detail(_find_row(rows, skill_name=safe_skill_name))
 
 
@@ -845,7 +845,7 @@ async def get_skill_file(
     safe_skill_name = _safe_skill_name(skill_name)
     rows = await _public_catalog_rows(
         principal=principal,
-        include_disabled=True,
+        include_disabled=False,
         include_file_overlay_content=True,
     )
     return _file_response(_find_row(rows, skill_name=safe_skill_name), file_path=file_path)
@@ -1146,7 +1146,7 @@ async def list_marketplace(
     """List active marketplace skills for authenticated users."""
 
     _require_permission(principal, "marketplace:read")
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
+    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=False)
     tag_values = [tag.strip() for tag in (tags or "").split(",") if tag.strip()]
     filtered = _filter_rows(rows, query=search, tags=tag_values)
     page = filtered[skip : skip + limit]
@@ -1187,7 +1187,7 @@ async def list_marketplace_tags(
     """Return marketplace tags for frontend filters."""
 
     _require_permission(principal, "marketplace:read")
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
+    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=False)
     return MarketplaceTagsResponse(tags=_available_tags(rows))
 
 
@@ -1200,7 +1200,7 @@ async def get_marketplace_skill(
 
     _require_permission(principal, "marketplace:read")
     safe_skill_name = _safe_skill_name(skill_name)
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
+    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=False)
     return _marketplace_item(_find_row(rows, skill_name=safe_skill_name), principal)
 
 
@@ -1305,7 +1305,7 @@ async def list_marketplace_files(
 
     _require_permission(principal, "marketplace:read")
     safe_skill_name = _safe_skill_name(skill_name)
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
+    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=False)
     return MarketplaceSkillFilesResponse(files=_file_paths(_find_row(rows, skill_name=safe_skill_name)))
 
 
@@ -1319,7 +1319,7 @@ async def get_marketplace_file(
 
     _require_permission(principal, "marketplace:read")
     safe_skill_name = _safe_skill_name(skill_name)
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
+    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=False)
     return _file_response(_find_row(rows, skill_name=safe_skill_name), file_path=file_path)
 
 

@@ -109,7 +109,31 @@ def materializable_uploaded_qa_version(version: str, *, description: str = "Uplo
 
 
 def reviewed_skill_version_release(version):
-    return {"status": "passed", "blockers": []}
+    return {
+        "schema_version": "ai-platform.skill-version-release-review.v1",
+        "status": "passed",
+        "blockers": [],
+        "package_evidence": {"sbom_files": ["sbom.json"]},
+        "release_review": {
+            "sbom_reviewed": True,
+            "license_policy_reviewed": True,
+            "vulnerability_reviewed": True,
+        },
+    }
+
+
+def blocked_skill_version_release(version):
+    return {
+        "status": "blocked",
+        "blockers": ["dependency_license_policy_review_not_verified"],
+    }
+
+
+async def fake_update_skill_version_status(conn, **kwargs):
+    return {
+        **materializable_uploaded_qa_version(kwargs["version"]),
+        "status": kwargs["status"],
+    }
 
 
 def test_admin_skill_detail_requires_admin(monkeypatch):
@@ -468,11 +492,13 @@ def test_admin_sync_builtin_skills_records_registry_versions_dependencies_and_sn
     assert synced[0]["version"] == "hash-mini"
     assert synced[0]["content_hash"] == "hash-mini"
     assert synced[0]["dependency_ids"] == []
+    assert synced[0]["status"] == "draft"
     assert synced[0]["source_json"]["kind"] == "builtin"
     assert synced[0]["source_json"]["files"][0]["relative_path"] == "SKILL.md"
     assert synced[1]["version"] == "hash-qa"
     assert synced[1]["content_hash"] == "hash-qa"
     assert synced[1]["dependency_ids"] == ["minimax-docx"]
+    assert synced[1]["status"] == "draft"
     assert synced[1]["source_json"]["kind"] == "builtin"
     assert synced[1]["source_json"]["files"][0]["relative_path"] == "SKILL.md"
     assert synced[1]["source_json"]["dependency_manifests"][0]["skill_id"] == "minimax-docx"
@@ -480,8 +506,10 @@ def test_admin_sync_builtin_skills_records_registry_versions_dependencies_and_sn
     assert synced[2]["version"] == "hash-ragflow"
     assert synced[2]["content_hash"] == "hash-ragflow"
     assert synced[2]["dependency_ids"] == []
+    assert synced[2]["status"] == "draft"
     assert synced[2]["source_json"]["kind"] == "builtin"
     assert synced[2]["source_json"]["files"][0]["relative_path"] == "SKILL.md"
+    assert [item["status"] for item in response.json()["synced"]] == ["draft", "draft", "draft"]
     assert [(item["skill_id"], item["version"]) for item in catalog_updates] == [
         ("minimax-docx", "hash-mini"),
         ("qa-file-reviewer", "hash-qa"),
@@ -668,21 +696,41 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     assert response.status_code == 200
     body = response.json()
     uploaded = body["uploaded"]
+    expected_key = (
+        "skills/qa-file-reviewer/versions/"
+        f"{uploaded['content_hash']}/package.zip"
+    )
     assert uploaded["skill_id"] == "qa-file-reviewer"
     assert uploaded["version"] == uploaded["content_hash"]
     assert uploaded["source"]["kind"] == "uploaded"
     assert uploaded["source"]["package_sha256"] == "zip-sha256"
     assert uploaded["source"]["size_bytes"] == len(package_content)
+    assert uploaded["source"]["package_contract"]["schema_version"] == "ai-platform.skill-package-contract.v1"
+    assert uploaded["source"]["package_contract"]["skill_id"] == "qa-file-reviewer"
+    assert uploaded["source"]["package_contract"]["version"] == uploaded["content_hash"]
+    assert uploaded["source"]["package_contract"]["content_hash"] == uploaded["content_hash"]
+    assert uploaded["source"]["package_contract"]["package_sha256"] == "zip-sha256"
+    assert uploaded["source"]["package_contract"]["storage_key"] == expected_key
+    assert uploaded["source"]["package_contract"]["uploaded_by"] == "dev-admin"
+    assert uploaded["source"]["dependency_evidence"] == {
+        "schema_version": "ai-platform.skill-dependency-evidence.v1",
+        "status": "review_required",
+        "dependency_count": 1,
+        "dependency_ids": ["minimax-docx"],
+        "manifest_snapshot_present": True,
+        "package_evidence_present": False,
+        "evidence_files": {
+            "sbom_or_signed_package": [],
+            "license_policy": [],
+            "vulnerability_scan": [],
+        },
+    }
     assert [item["relative_path"] for item in uploaded["source"]["files"]] == ["SKILL.md", "references/guide.md"]
     assert uploaded["source"]["dependency_manifests"][0]["skill_id"] == "minimax-docx"
     dependency_paths = [item["relative_path"] for item in uploaded["source"]["dependency_manifests"][0]["files"]]
     assert "SKILL.md" in dependency_paths
 
     assert len(stored_objects) == 1
-    expected_key = (
-        "skills/qa-file-reviewer/versions/"
-        f"{uploaded['content_hash']}/package.zip"
-    )
     assert stored_objects[0]["storage_key"] == expected_key
 
     assert len(upserts) == 1
@@ -693,7 +741,7 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     assert upsert["description"] == "Review Word documents."
     assert upsert["source_json"] == uploaded["source"]
     assert upsert["dependency_ids"] == ["minimax-docx"]
-    assert upsert["status"] == "active"
+    assert upsert["status"] == "draft"
     assert upsert["created_by"] == "dev-admin"
 
     assert len(audits) == 1
@@ -980,6 +1028,261 @@ def test_admin_skill_version_diff_returns_manifest_changes(monkeypatch):
     }
 
 
+def test_admin_skill_version_status_requires_admin(monkeypatch):
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/hash-a/status",
+        json={"status": "reviewed"},
+        headers=user_headers(),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "not_ai_admin"
+
+
+def test_admin_skill_version_status_reviewed_requires_release_review(monkeypatch):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    async def fake_get_version(conn, *, skill_id, version):
+        return {
+            **materializable_uploaded_qa_version(version),
+            "status": "draft",
+        }
+
+    async def fail_update_status(conn, **kwargs):
+        raise AssertionError("blocked release review must not update status")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fail_update_status, raising=False)
+    monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", blocked_skill_version_release)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/hash-draft/status",
+        json={"status": "reviewed"},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "skill_release_review_not_verified"
+
+
+def test_admin_skill_version_status_marks_reviewed_and_audits(monkeypatch):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    calls = []
+
+    async def fake_get_version(conn, *, skill_id, version):
+        calls.append(("get_version", skill_id, version))
+        return {
+            **materializable_uploaded_qa_version(version),
+            "status": "draft",
+        }
+
+    async def fake_update_status(conn, **kwargs):
+        calls.append(("update_status", kwargs))
+        return {
+            **materializable_uploaded_qa_version(kwargs["version"]),
+            "status": kwargs["status"],
+        }
+
+    async def fake_audit(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-status-reviewed"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status, raising=False)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", reviewed_skill_version_release)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/hash-draft/status",
+        json={"status": "reviewed"},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "reviewed"
+    update_call = [item for item in calls if item[0] == "update_status"][0][1]
+    assert update_call == {
+        "skill_id": "qa-file-reviewer",
+        "version": "hash-draft",
+        "status": "reviewed",
+    }
+    audit_call = [item for item in calls if item[0] == "audit"][0][1]
+    assert audit_call["action"] == "skill_version_status_changed"
+    assert audit_call["target_id"] == "qa-file-reviewer"
+    assert audit_call["payload_json"]["skill_id"] == "qa-file-reviewer"
+    assert audit_call["payload_json"]["version"] == "hash-draft"
+    assert audit_call["payload_json"]["from_status"] == "draft"
+    assert audit_call["payload_json"]["to_status"] == "reviewed"
+    assert audit_call["payload_json"]["review_status"] == "passed"
+
+
+@pytest.mark.parametrize("target_status", ["disabled", "deprecated"])
+def test_admin_skill_version_status_can_disable_or_deprecate_without_release_review(monkeypatch, target_status):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    calls = []
+
+    async def fake_get_version(conn, *, skill_id, version):
+        return materializable_uploaded_qa_version(version)
+
+    async def fake_update_status(conn, **kwargs):
+        calls.append(("update_status", kwargs))
+        return {
+            **materializable_uploaded_qa_version(kwargs["version"]),
+            "status": kwargs["status"],
+        }
+
+    async def fake_audit(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-status"
+
+    async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
+        calls.append(("get_policy", {"tenant_id": tenant_id, "skill_id": skill_id, "channel": channel}))
+        return {"current_version": "hash-current", "previous_version": "hash-a"}
+
+    def fail_review(version):
+        raise AssertionError("disable/deprecate must not require release review")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status, raising=False)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", fail_review)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/hash-a/status",
+        json={"status": target_status},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == target_status
+    update_call = [item for item in calls if item[0] == "update_status"][0][1]
+    assert update_call["status"] == target_status
+    audit_call = [item for item in calls if item[0] == "audit"][0][1]
+    assert audit_call["payload_json"]["to_status"] == target_status
+
+
+@pytest.mark.parametrize("target_status", ["disabled", "deprecated"])
+def test_admin_skill_version_status_rejects_disabling_current_release_policy(monkeypatch, target_status):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    async def fake_get_version(conn, *, skill_id, version):
+        return materializable_uploaded_qa_version(version)
+
+    async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
+        return {"current_version": "hash-current", "previous_version": "hash-a"}
+
+    async def fail_update_status(conn, **kwargs):
+        raise AssertionError("current release policy version must not be disabled or deprecated directly")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fail_update_status, raising=False)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/hash-current/status",
+        json={"status": target_status},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "skill_version_has_active_release_policy"
+
+
+@pytest.mark.parametrize("target_status", ["disabled", "deprecated"])
+@pytest.mark.parametrize("rollout_percent", [0, 50])
+def test_admin_skill_version_status_rejects_disabling_gray_rollout_previous_policy(
+    monkeypatch,
+    target_status,
+    rollout_percent,
+):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    async def fake_get_version(conn, *, skill_id, version):
+        return materializable_uploaded_qa_version(version)
+
+    async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
+        return {
+            "current_version": "hash-current",
+            "previous_version": "hash-a",
+            "rollout_percent": rollout_percent,
+        }
+
+    async def fail_update_status(conn, **kwargs):
+        raise AssertionError("gray rollout previous version must not be disabled or deprecated directly")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fail_update_status, raising=False)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/hash-a/status",
+        json={"status": target_status},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "skill_version_has_active_release_policy"
+
+
+def test_admin_skill_version_status_rejects_invalid_status(monkeypatch):
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/hash-a/status",
+        json={"status": "released"},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 422
+
+
 def test_admin_promote_skill_version_sets_release_policy_and_audit(monkeypatch):
     class FakeConnection:
         pass
@@ -1011,6 +1314,13 @@ def test_admin_promote_skill_version_sets_release_policy_and_audit(monkeypatch):
     async def fake_set_policy(conn, **kwargs):
         calls.append(("set_policy", kwargs))
 
+    async def fake_update_status(conn, **kwargs):
+        calls.append(("update_status", kwargs))
+        return {
+            **materializable_builtin_qa_version(kwargs["version"]),
+            "status": kwargs["status"],
+        }
+
     async def fake_audit(conn, **kwargs):
         calls.append(("audit", kwargs))
         return "aud-a"
@@ -1020,6 +1330,7 @@ def test_admin_promote_skill_version_sets_release_policy_and_audit(monkeypatch):
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", reviewed_skill_version_release)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
@@ -1039,10 +1350,23 @@ def test_admin_promote_skill_version_sets_release_policy_and_audit(monkeypatch):
     assert set_call["skill_id"] == "qa-file-reviewer"
     assert set_call["version"] == "hash-b"
     assert set_call["previous_version"] == "hash-a"
+    assert ("update_status", {"skill_id": "qa-file-reviewer", "version": "hash-b", "status": "released"}) in calls
+    assert ("update_status", {"skill_id": "qa-file-reviewer", "version": "hash-a", "status": "deprecated"}) in calls
     audit_call = [item for item in calls if item[0] == "audit"][0][1]
     assert audit_call["action"] == "skill_version_promoted"
     assert audit_call["target_id"] == "qa-file-reviewer"
     assert audit_call["payload_json"]["to_version"] == "hash-b"
+    assert audit_call["payload_json"]["schema_version"] == "ai-platform.skill-version-release-audit.v1"
+    assert audit_call["payload_json"]["lifecycle"] == {
+        "released_version": "hash-b",
+        "deprecated_version": "hash-a",
+        "target_status": "released",
+    }
+    assert audit_call["payload_json"]["release_review"]["status"] == "passed"
+    assert audit_call["payload_json"]["release_review"]["blocker_count"] == 0
+    assert audit_call["payload_json"]["release_review"]["dependency_evidence_present"] is True
+    assert "storage_key" not in audit_call["payload_json"]
+    assert "content_base64" not in str(audit_call["payload_json"])
 
 
 def test_admin_promote_rejects_unreviewed_release_evidence_before_policy_lookup(monkeypatch):
@@ -1081,6 +1405,43 @@ def test_admin_promote_rejects_unreviewed_release_evidence_before_policy_lookup(
 
     assert response.status_code == 409
     assert response.json()["detail"] == "skill_release_review_not_verified"
+
+
+def test_admin_promote_rejects_draft_skill_version_before_release_review(monkeypatch):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    async def fake_get_version(conn, *, skill_id, version):
+        return {
+            **materializable_uploaded_qa_version(version),
+            "status": "draft",
+        }
+
+    def fail_review(version):
+        raise AssertionError("draft version must reject before release review")
+
+    async def fail_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
+        raise AssertionError("draft version must reject before policy lookup")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fail_get_policy)
+    monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", fail_review)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/promote",
+        json={"version": "hash-draft"},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "skill_version_not_reviewed"
 
 
 def test_admin_promote_accepts_gray_rollout_policy(monkeypatch):
@@ -1122,6 +1483,7 @@ def test_admin_promote_accepts_gray_rollout_policy(monkeypatch):
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_skill_version_status)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", reviewed_skill_version_release)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
@@ -1247,6 +1609,7 @@ def test_admin_promote_gray_without_policy_uses_catalog_version_as_previous(monk
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_skill_version_status)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", reviewed_skill_version_release)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
@@ -1306,6 +1669,13 @@ def test_admin_promote_full_without_policy_allows_unmaterializable_catalog_previ
     async def fake_set_policy(conn, **kwargs):
         calls.append(("set_policy", kwargs))
 
+    async def fake_update_status(conn, **kwargs):
+        calls.append(("update_status", kwargs))
+        return {
+            **materializable_uploaded_qa_version(kwargs["version"]),
+            "status": kwargs["status"],
+        }
+
     async def fake_audit(conn, **kwargs):
         calls.append(("audit", kwargs))
         return "aud-first-full-promote"
@@ -1316,6 +1686,7 @@ def test_admin_promote_full_without_policy_allows_unmaterializable_catalog_previ
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", reviewed_skill_version_release)
     client = TestClient(create_app())
@@ -1329,10 +1700,14 @@ def test_admin_promote_full_without_policy_allows_unmaterializable_catalog_previ
     assert response.status_code == 200
     assert response.json()["current_version"] == "hash-uploaded"
     assert response.json()["previous_version"] == "hash-stale"
-    assert ("get_version", "qa-file-reviewer", "hash-stale") not in calls
+    assert ("get_version", "qa-file-reviewer", "hash-stale") in calls
     set_call = [item for item in calls if item[0] == "set_policy"][0][1]
     assert set_call["version"] == "hash-uploaded"
     assert set_call["previous_version"] == "hash-stale"
+    assert (
+        "update_status",
+        {"skill_id": "qa-file-reviewer", "version": "hash-stale", "status": "deprecated"},
+    ) in calls
     audit_call = [item for item in calls if item[0] == "audit"][0][1]
     assert audit_call["payload_json"]["from_version"] == "hash-stale"
 
@@ -1499,6 +1874,7 @@ def test_admin_promote_accepts_uploaded_version_with_snapshot_files(monkeypatch)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_skill_version_status)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", reviewed_skill_version_release)
     client = TestClient(create_app())
@@ -1765,6 +2141,11 @@ def test_admin_rollback_skill_version_sets_release_policy_and_audit(monkeypatch)
     calls = []
 
     async def fake_get_version(conn, *, skill_id, version):
+        if version == "hash-a":
+            return {
+                **materializable_builtin_qa_version(version),
+                "status": "deprecated",
+            }
         return materializable_builtin_qa_version(version)
 
     async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
@@ -1782,6 +2163,13 @@ def test_admin_rollback_skill_version_sets_release_policy_and_audit(monkeypatch)
     async def fake_set_policy(conn, **kwargs):
         calls.append(("set_policy", kwargs))
 
+    async def fake_update_status(conn, **kwargs):
+        calls.append(("update_status", kwargs))
+        return {
+            **materializable_builtin_qa_version(kwargs["version"]),
+            "status": kwargs["status"],
+        }
+
     async def fake_audit(conn, **kwargs):
         calls.append(("audit", kwargs))
         return "aud-a"
@@ -1791,7 +2179,9 @@ def test_admin_rollback_skill_version_sets_release_policy_and_audit(monkeypatch)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    monkeypatch.setattr("app.routes.admin_skills.build_skill_version_release_review", reviewed_skill_version_release)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
 
@@ -1807,11 +2197,23 @@ def test_admin_rollback_skill_version_sets_release_policy_and_audit(monkeypatch)
     set_call = [item for item in calls if item[0] == "set_policy"][0][1]
     assert set_call["version"] == "hash-a"
     assert set_call["previous_version"] == "hash-b"
+    assert ("update_status", {"skill_id": "qa-file-reviewer", "version": "hash-a", "status": "released"}) in calls
+    assert ("update_status", {"skill_id": "qa-file-reviewer", "version": "hash-b", "status": "deprecated"}) in calls
     audit_call = [item for item in calls if item[0] == "audit"][0][1]
     assert audit_call["action"] == "skill_version_rolled_back"
     assert audit_call["payload_json"]["from_version"] == "hash-b"
     assert audit_call["payload_json"]["to_version"] == "hash-a"
     assert audit_call["payload_json"]["rollout_percent"] == 100
+    assert audit_call["payload_json"]["schema_version"] == "ai-platform.skill-version-release-audit.v1"
+    assert audit_call["payload_json"]["lifecycle"] == {
+        "released_version": "hash-a",
+        "deprecated_version": "hash-b",
+        "target_status": "released",
+    }
+    assert audit_call["payload_json"]["release_review"]["status"] == "passed"
+    assert audit_call["payload_json"]["release_review"]["dependency_evidence_present"] is True
+    assert "storage_key" not in audit_call["payload_json"]
+    assert "content_base64" not in str(audit_call["payload_json"])
 
 
 def test_admin_rollback_missing_version_returns_404(monkeypatch):
@@ -1950,6 +2352,7 @@ def test_admin_rollback_accepts_uploaded_version_with_snapshot_files(monkeypatch
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_skill_version_status)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
     client = TestClient(create_app())
 
@@ -2246,6 +2649,7 @@ def test_admin_rollback_accepts_existing_gray_release_policy(monkeypatch):
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_skill_version_status)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-a")
     client = TestClient(create_app())
@@ -2303,6 +2707,7 @@ def test_admin_rollback_converges_gray_policy_without_previous_version(monkeypat
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_skill_version_status)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
     monkeypatch.setattr("app.routes.admin_skills._current_builtin_skill_version", lambda skill_id: "hash-b")
     client = TestClient(create_app())

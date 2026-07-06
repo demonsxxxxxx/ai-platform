@@ -367,6 +367,57 @@ async def test_list_public_skill_catalog_projects_public_source_without_internal
 
 
 @pytest.mark.asyncio
+async def test_list_public_skill_catalog_hides_unreleased_selected_versions_by_default():
+    def catalog_row(skill_id: str, version_status: str) -> dict[str, object]:
+        return {
+            "skill_id": skill_id,
+            "name": skill_id,
+            "version": f"{skill_id}-version",
+            "description": f"{skill_id} description",
+            "status": "active",
+            "visible_to_user": True,
+            "version_status": version_status,
+            "source_json": {"kind": "builtin", "files": []},
+            "dependency_ids": [],
+            "created_by": "dev-admin",
+            "created_at": None,
+            "updated_at": None,
+        }
+
+    class CatalogCursor:
+        async def fetchall(self):
+            return [
+                catalog_row("general-chat", "active"),
+                catalog_row("qa-file-reviewer", "released"),
+                catalog_row("baoyu-translate", "draft"),
+                catalog_row("ragflow-knowledge-search", "reviewed"),
+                catalog_row("ctd-32s73-stability-template-fill", "disabled"),
+                catalog_row("custom-deprecated-skill", "deprecated"),
+            ]
+
+    class CatalogConnection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return CatalogCursor()
+
+    conn = CatalogConnection()
+
+    rows = await repositories.list_public_skill_catalog(
+        conn,
+        tenant_id="default",
+        include_disabled=False,
+    )
+
+    assert [row["skill_id"] for row in rows] == ["general-chat", "qa-file-reviewer"]
+    assert "coalesce(skill_versions.status, 'active') as version_status" in conn.sql
+
+
+@pytest.mark.asyncio
 async def test_enforce_user_active_run_admission_locks_before_counting():
     class CountCursor:
         async def fetchone(self):
@@ -3916,6 +3967,50 @@ async def test_resolve_agent_skill_uses_tenant_stable_release_policy():
     assert row["release_policy_version"] == "hash-release"
     assert row["release_policy_previous_version"] == "hash-previous"
     assert row["release_policy_rollout_percent"] == 50
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version_status", ["draft", "reviewed", "disabled", "deprecated"])
+async def test_resolve_agent_skill_rejects_unreleased_policy_version(version_status):
+    class ResolveCursor:
+        async def fetchone(self):
+            return {
+                "agent_id": "qa-word-review",
+                "agent_status": "active",
+                "default_skill_id": "qa-file-reviewer",
+                "skill_id": "qa-file-reviewer",
+                "skill_status": "active",
+                "skill_version": "hash-release",
+                "skill_version_status": version_status,
+                "release_policy_version": "hash-release",
+                "release_policy_previous_version": None,
+                "release_policy_rollout_percent": 100,
+                "executor_type": "claude-agent-worker",
+                "mcp_tool_status": None,
+                "input_modes": ["docx"],
+            }
+
+    class ResolveConnection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return ResolveCursor()
+
+    conn = ResolveConnection()
+
+    with pytest.raises(RepositoryConflictError, match="skill_version_not_released"):
+        await repositories.resolve_agent_skill(
+            conn,
+            tenant_id="default",
+            agent_id="qa-word-review",
+            skill_id="qa-file-reviewer",
+        )
+
+    assert "coalesce(skill_versions.status, 'active') as skill_version_status" in conn.sql
 
 
 @pytest.mark.asyncio

@@ -1147,6 +1147,61 @@ async def test_chat_stream_uses_rollout_selected_previous_version(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_rejects_reviewed_rollout_previous_version(monkeypatch):
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return {
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-new",
+            "release_policy_version": "hash-new",
+            "release_policy_previous_version": "hash-old",
+            "release_policy_rollout_percent": 0,
+            "input_modes": ["chat"],
+        }
+
+    async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
+        row = uploaded_skill_version_row(skill_id=skill_id, version=version)
+        row["status"] = "reviewed"
+        return row
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def fail_create_run(*args, **kwargs):
+        raise AssertionError("run must not be created for reviewed rollout previous version")
+
+    async def fail_enqueue_run(*args, **kwargs):
+        raise AssertionError("queue must not receive reviewed rollout previous version")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.BuiltinSkillRegistry", PolicyBuiltinRegistry)
+    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.get_effective_skill_version_for_policy",
+        fake_get_effective_skill_version_for_policy,
+    )
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", fail_enqueue_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                agent_id="document-review",
+                message="review this document",
+                input={"note": "rollout policy"},
+            ),
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "skill_version_not_materializable"
+
+
+@pytest.mark.asyncio
 async def test_chat_stream_appends_canonical_product_events(monkeypatch):
     events = []
 
@@ -2050,3 +2105,30 @@ async def test_chat_stream_rejects_when_user_active_run_limit_is_reached(monkeyp
     assert getattr(exc_info.value, "status_code", None) == 409
     assert getattr(exc_info.value, "detail", None) == "user_active_run_limit_exceeded"
     assert calls == ["resolve", ("admit", "tenant-a", "user-limit", 3)]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_maps_unreleased_skill_version_conflict_to_409(monkeypatch):
+    calls = []
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        calls.append(("resolve", tenant_id, agent_id, skill_id))
+        raise RepositoryConflictError("skill_version_not_released")
+
+    async def fail_create_session(*args, **kwargs):
+        calls.append("create_session")
+        raise AssertionError("chat stream must not create a session for unreleased skill version")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", fail_create_session)
+
+    with pytest.raises(Exception) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(message="hello", confirmed_capability_id="general_chat"),
+            principal=principal(user_id="user-skill-status", tenant_id="tenant-a"),
+        )
+
+    assert getattr(exc_info.value, "status_code", None) == 409
+    assert getattr(exc_info.value, "detail", None) == "skill_version_not_released"
+    assert calls == [("resolve", "tenant-a", "general-agent", "general-chat")]
