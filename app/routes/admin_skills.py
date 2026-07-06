@@ -24,6 +24,7 @@ from app.skills.pinning import (
     build_skill_version_manifest_pin,
     validate_skill_version_dependency_policy,
 )
+from app.skills.release_readiness import build_skill_version_release_review
 from app.skills.registry import BuiltinSkillRegistry
 from app.storage import ObjectStorage
 from app.validation import assert_safe_id
@@ -103,6 +104,12 @@ def _require_materializable_skill_version(skill_id: str, version: dict[str, obje
         build_skill_version_dependency_manifest_pins(version)
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail="skill_version_not_materializable") from exc
+
+
+def _require_reviewed_skill_version_release(version: dict[str, object]) -> None:
+    review = build_skill_version_release_review(version)
+    if review.get("status") != "passed" or review.get("blockers"):
+        raise HTTPException(status_code=409, detail="skill_release_review_not_verified")
 
 
 def _skill_dependency_ids_or_409(skill_id: str, available_skill_ids: set[str]) -> list[str]:
@@ -383,6 +390,7 @@ async def admin_promote_skill_version(
             raise HTTPException(status_code=404, detail="skill_version_not_found")
         _require_active_skill_version(version)
         _require_materializable_skill_version(skill_id, version)
+        _require_reviewed_skill_version_release(version)
         policy = await repositories.get_skill_release_policy(
             conn,
             tenant_id=principal.tenant_id,
