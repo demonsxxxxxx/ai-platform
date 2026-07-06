@@ -1008,6 +1008,107 @@ class RevealedFileSessionResponse(BaseModel):
     file_count: int = 0
 
 
+class AgentWorkspaceAgentResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    capability_id: str | None = None
+    name: str
+    description: str = ""
+    status: str = "active"
+    version: str = "platform-managed"
+
+
+class AgentWorkspaceSessionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    workspace_id: str
+    agent_id: str
+    capability_id: str | None = None
+    title: str = ""
+    created_at: Any | None = None
+    updated_at: Any | None = None
+
+
+class AgentWorkspaceRunSummaryResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    session_id: str
+    agent_id: str | None = None
+    capability_id: str | None = None
+    trace_id: str = ""
+    status: str
+    progress: int = 0
+    result_summary: str = ""
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: Any | None = None
+    queued_at: Any | None = None
+    started_at: Any | None = None
+    finished_at: Any | None = None
+
+
+class AgentWorkspaceToolPermissionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    permission_request_id: str
+    session_id: str
+    run_id: str
+    trace_id: str = ""
+    tool_id: str
+    tool_call_id: str
+    action: str = "execute"
+    risk_level: Literal["low", "medium", "high"] = "low"
+    write_capable: bool = False
+    status: str = "pending"
+    reason: str = ""
+    decision_endpoint: str
+    created_at: Any | None = None
+
+
+class AgentWorkspaceMemoryContextPolicyResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: str
+    agent_id: str | None = None
+    capability_id: str | None = None
+    memory_enabled: bool = True
+    long_term_memory_enabled: bool = False
+    retention_days: int = 90
+    redaction_mode: str = "standard"
+    source: str = "default"
+    reason: str = ""
+    updated_at: Any | None = None
+    latest_context: dict[str, Any] | None = None
+
+
+class AgentWorkspaceConsoleResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str | None = None
+    status: str = "idle"
+    next_after_sequence: int = 0
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    steps: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AgentWorkspaceProjectionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: str = "ai-platform.agent-workspace.v1"
+    workspace_id: str
+    selected_agent: AgentWorkspaceAgentResponse | None = None
+    agents: list[AgentWorkspaceAgentResponse] = Field(default_factory=list)
+    sessions: list[AgentWorkspaceSessionResponse] = Field(default_factory=list)
+    latest_runs: list[AgentWorkspaceRunSummaryResponse] = Field(default_factory=list)
+    run_console: AgentWorkspaceConsoleResponse = Field(default_factory=AgentWorkspaceConsoleResponse)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    pending_tool_permissions: list[AgentWorkspaceToolPermissionResponse] = Field(default_factory=list)
+    memory_context_policy: AgentWorkspaceMemoryContextPolicyResponse
+
+
 class PublicChannelResponse(BaseModel):
     """Secret-safe channel catalog item for governed workbench routes."""
 

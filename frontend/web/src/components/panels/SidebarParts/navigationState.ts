@@ -3,6 +3,7 @@ export type WorkbenchNavItem =
   | "skills"
   | "persona"
   | "files"
+  | "agent-workspace"
   | "mcp"
   | "channels"
   | "agents"
@@ -13,6 +14,7 @@ const routeToNavItem: Array<[RegExp, WorkbenchNavItem]> = [
   [/^\/skills(?:\/|$)/, "skills"],
   [/^\/persona(?:\/|$)/, "persona"],
   [/^\/files(?:\/|$)/, "files"],
+  [/^\/agent-workspace(?:\/|$)/, "agent-workspace"],
   [/^\/mcp(?:\/|$)/, "mcp"],
   [/^\/channels(?:\/|$)/, "channels"],
   [/^\/agents(?:\/|$)/, "agents"],
@@ -24,6 +26,7 @@ const navItemToPath: Record<WorkbenchNavItem, string> = {
   skills: "/skills",
   persona: "/persona",
   files: "/files",
+  "agent-workspace": "/agent-workspace",
   mcp: "/mcp",
   channels: "/channels",
   agents: "/agents",

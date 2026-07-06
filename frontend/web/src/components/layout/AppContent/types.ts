@@ -15,6 +15,7 @@ export type TabType =
   | "models"
   | "persona"
   | "files"
+  | "agent-workspace"
   | "notifications"
   | "memory";
 

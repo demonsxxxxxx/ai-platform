@@ -90,6 +90,8 @@ FORBIDDEN_PUBLIC_KEYS = {
     "runtime_private_payload",
     "private_payload",
     "executor_payload",
+    "source_json",
+    "sandbox_workdir",
     "runner",
     "runner_path",
     "runtime_path",

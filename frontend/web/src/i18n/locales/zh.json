@@ -1589,6 +1589,7 @@
   },
   "nav": {
     "adminMarketplace": "管理员技能商店",
+    "agentWorkspace": "智能体工作台",
     "agents": "助手",
     "apps": "公司导航",
     "channels": "频道导入",
@@ -1611,6 +1612,7 @@
     "users": "用户"
   },
   "navDesc": {
+    "agentWorkspace": "查看会话、运行、产物、审批和记忆上下文",
     "agents": "配置和管理 AI 助手",
     "apps": "打开公司内部系统与常用网站",
     "channels": "管理通信渠道",
@@ -2000,6 +2002,10 @@
     "explainPrompt": "请解释下面这段内容：\n\n{{codeBlock}}"
   },
   "seo": {
+    "agentWorkspace": {
+      "description": "只读智能体工作台，从 ai-platform 受治理投影查看会话、运行 Console、产物、工具审批和记忆上下文。",
+      "title": "智能体工作台"
+    },
     "agents": {
       "description": "配置和管理 AI 智能体。设置系统提示词、选择模型、定义受治理工具，并调整受控任务的运行设置。",
       "title": "AI 智能体"

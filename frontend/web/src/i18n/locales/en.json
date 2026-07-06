@@ -1588,6 +1588,7 @@
   },
   "nav": {
     "adminMarketplace": "Admin Marketplace",
+    "agentWorkspace": "Agent Workspace",
     "agents": "Agents",
     "apps": "Company Apps",
     "channels": "Channels",
@@ -1610,6 +1611,7 @@
     "users": "Users"
   },
   "navDesc": {
+    "agentWorkspace": "Review sessions, runs, artifacts, approvals, and memory context",
     "agents": "Configure and manage AI agents",
     "apps": "Open internal systems and frequently used sites",
     "channels": "Manage communication channels",
@@ -1999,6 +2001,10 @@
     "explainPrompt": "Please explain this text:\n\n{{codeBlock}}"
   },
   "seo": {
+    "agentWorkspace": {
+      "description": "Read-only Agent workspace for sessions, run console, artifacts, tool approvals, and memory context from governed ai-platform projections.",
+      "title": "Agent Workspace"
+    },
     "agents": {
       "description": "Configure and manage AI agents. Set up system prompts, select models, define governed tools, and tune runtime settings for controlled tasks.",
       "title": "AI Agents"

@@ -29,6 +29,7 @@ from app.repositories import (
     get_latest_tool_permission_decision,
     get_tool_permission_request_by_id,
     get_run_identity,
+    list_agent_workspace_tool_permissions,
     list_multi_agent_dispatch_candidate_run_ids,
     list_tool_permission_inbox,
     list_run_events,
@@ -2823,6 +2824,43 @@ async def test_list_tool_permission_inbox_filters_current_user_and_status():
     assert "(%s = 'all' or status = %s)" in sql
     assert "order by created_at desc, id desc" in sql
     assert params == ("tenant-a", "user-a", "pending", "pending", 25)
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_list_agent_workspace_tool_permissions_scopes_with_run_join():
+    conn = RecordingConnection()
+
+    rows = await list_agent_workspace_tool_permissions(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        workspace_id="workspace-a",
+        agent_id="agent-a",
+        session_id="session-a",
+        status="pending",
+        limit=25,
+    )
+
+    sql, params = conn.calls[0]
+    assert "from run_tool_permission_requests join runs" in sql
+    assert "runs.id = run_tool_permission_requests.run_id" in sql
+    assert "run_tool_permission_requests.workspace_id = %s" in sql
+    assert "(%s::text is null or runs.agent_id = %s)" in sql
+    assert "(%s::text is null or run_tool_permission_requests.session_id = %s)" in sql
+    assert "order by run_tool_permission_requests.created_at desc" in sql
+    assert params == (
+        "tenant-a",
+        "user-a",
+        "workspace-a",
+        "pending",
+        "pending",
+        "agent-a",
+        "agent-a",
+        "session-a",
+        "session-a",
+        25,
+    )
     assert rows == []
 
 

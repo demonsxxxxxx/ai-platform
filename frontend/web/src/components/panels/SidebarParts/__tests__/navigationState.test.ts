@@ -8,6 +8,10 @@ test("maps authenticated workbench routes to sidebar navigation items", () => {
   assert.equal(getWorkbenchNavItemFromPathname("/marketplace"), null);
   assert.equal(getWorkbenchNavItemFromPathname("/persona"), "persona");
   assert.equal(getWorkbenchNavItemFromPathname("/files"), "files");
+  assert.equal(
+    getWorkbenchNavItemFromPathname("/agent-workspace"),
+    "agent-workspace",
+  );
   assert.equal(getWorkbenchNavItemFromPathname("/mcp"), "mcp");
   assert.equal(
     getWorkbenchNavItemFromPathname("/channels/slack/demo"),

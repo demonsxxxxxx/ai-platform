@@ -276,6 +276,15 @@ function FilesPage() {
   return <AppContent key="files" activeTab="files" />;
 }
 
+function AgentWorkspacePage() {
+  useSEO({
+    title: "seo.agentWorkspace.title",
+    description: "seo.agentWorkspace.description",
+    path: "/agent-workspace",
+  });
+  return <AppContent key="agent-workspace" activeTab="agent-workspace" />;
+}
+
 function NotificationsPage() {
   useSEO({
     title: "seo.notifications.title",
@@ -496,6 +505,25 @@ function App() {
               element={
                 <ProtectedRoute>
                   <FilesPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/agent-workspace"
+              element={
+                <ProtectedRoute
+                  requireAllPermissions={[
+                    Permission.CHAT_READ,
+                    Permission.SESSION_READ,
+                  ]}
+                  fallbackComponent={
+                    <WorkbenchForbiddenPage
+                      activeTab="agent-workspace"
+                      permissionLabel={`${Permission.CHAT_READ} / ${Permission.SESSION_READ}`}
+                    />
+                  }
+                >
+                  <AgentWorkspacePage />
                 </ProtectedRoute>
               }
             />

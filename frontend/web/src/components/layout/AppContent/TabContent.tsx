@@ -39,6 +39,11 @@ const RevealedFilesWorkbenchPanel = lazy(() =>
     default: m.RevealedFilesWorkbenchPanel,
   })),
 );
+const AgentWorkspacePanel = lazy(() =>
+  import("../../agentWorkspace/AgentWorkspacePanel").then((m) => ({
+    default: m.AgentWorkspacePanel,
+  })),
+);
 const AgentDirectoryPanel = lazy(() =>
   import("../../panels/AgentDirectoryPanel").then((m) => ({
     default: m.AgentDirectoryPanel,
@@ -86,6 +91,7 @@ const panelMap: Record<
   models: ModelCatalogPanel,
   persona: PersonaWorkbenchPanel,
   files: RevealedFilesWorkbenchPanel,
+  "agent-workspace": AgentWorkspacePanel,
   notifications: WorkbenchNotificationsProjectionPanel,
   memory: MemoryPanel,
 };
