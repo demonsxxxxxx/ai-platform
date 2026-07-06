@@ -31,6 +31,7 @@ GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readin
 GATE_STATUS_DOC = ROOT / "docs/operations/ai-platform-gate-status.md"
 FOUNDATION_ALPHA_CLOSURE_DOC = ROOT / "docs/operations/ai-platform-foundation-alpha-closure.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
+README = ROOT / "README.md"
 CURRENT_G7_B3_SANDBOX_DIAGNOSTIC = (
     ROOT
     / "docs/release-evidence/diagnostics/2026-07-04-211-b3-sandbox-observation-61073b1.json"
@@ -1194,12 +1195,21 @@ def test_env_template_satisfies_required_runtime_defaults_without_real_secrets()
     assert "AI_PLATFORM_FRONTEND_PORT=18001" in env_text
     assert "AI_PLATFORM_FRONTEND_IMAGE=ai-platform-frontend:local" in env_text
     assert "AI_PLATFORM_API_UPSTREAM=http://api:8020" in env_text
+    assert "WORKER_CLAUDE_AGENT_SDK_ENABLED=false" in env_text
+    assert "CLAUDE_AGENT_SDK_ENABLED=false" not in set(env_text.splitlines())
     assert "CLAUDE_AGENT_SDK_MAX_TURNS=128" in env_text
     assert "CLAUDE_AGENT_SDK_EFFORT=xhigh" in env_text
     assert "CLAUDE_AGENT_SDK_MAX_THINKING_TOKENS=16384" in env_text
     assert "EXISTING_AUTH_BASE_URL=http://10.56.0.211" not in env_text
     assert "sk-" not in env_text
     assert "Bearer " not in env_text
+
+
+def test_readme_documents_worker_only_claude_agent_sdk_switch():
+    readme_text = read(README)
+
+    assert "WORKER_CLAUDE_AGENT_SDK_ENABLED=true" in readme_text
+    assert "`CLAUDE_AGENT_SDK_ENABLED=true`" not in readme_text
 
 
 def test_docker_build_context_excludes_real_env_files():
@@ -1241,6 +1251,15 @@ def test_compose_forwards_claude_agent_sdk_max_turns_to_api_and_worker():
         )
         == 2
     )
+
+
+def test_compose_keeps_claude_agent_sdk_execution_switch_worker_only():
+    compose = yaml.safe_load(read(COMPOSE))
+    api_env = compose["services"]["api"]["environment"]
+    worker_env = compose["services"]["worker"]["environment"]
+
+    assert "CLAUDE_AGENT_SDK_ENABLED" not in api_env
+    assert worker_env["CLAUDE_AGENT_SDK_ENABLED"] == "${WORKER_CLAUDE_AGENT_SDK_ENABLED:-false}"
 
 
 def test_compose_forwards_public_skill_file_overlay_limit_to_api_and_worker():

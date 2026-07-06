@@ -81,8 +81,10 @@ def test_run_api_with_deploy_env_derives_database_and_s3_settings():
     assert 'S3_ENDPOINT_URL="http://localhost:${MINIO_API_PORT}"' in text
     assert 'S3_ACCESS_KEY_ID="${MINIO_ROOT_USER}"' in text
     assert 'S3_SECRET_ACCESS_KEY="${MINIO_ROOT_PASSWORD}"' in text
+    assert 'CLAUDE_AGENT_SDK_ENABLED=false' in text
     assert "--check-env" in text
     assert "sed -E 's/=.*/=SET/'" in text
+    assert "TRUSTED_PRINCIPAL_SECRET|CLAUDE_AGENT_SDK_ENABLED" not in text
 
 
 def test_compose_forwards_database_pool_settings_to_api_and_worker():
