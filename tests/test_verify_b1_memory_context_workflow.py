@@ -186,6 +186,7 @@ class B1MemoryContextWorkflowHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         parsed = urlparse(self.path)
+        roles = self.headers.get("X-AI-Roles", "")
         if parsed.path == "/api/ai/memory/policy":
             self._send_json(200, {"memory_policy": self._current_policy()})
             return
@@ -203,6 +204,69 @@ class B1MemoryContextWorkflowHandler(BaseHTTPRequestHandler):
                 if record_id not in self.deleted_ids and record.get("user_id") == self._user_id()
             ]
             self._send_json(200, {"memory_records": records})
+            return
+        if parsed.path == f"/api/ai/runs/{self.run_id}":
+            if self._user_id() != "b1-memory-smoke-user":
+                self._send_json(404, {"detail": "run_not_found"})
+                return
+            self._send_json(
+                200,
+                {
+                    "run_id": self.run_id,
+                    "session_id": self.session_id,
+                    "agent_id": "document-review",
+                    "capability_id": "document_review",
+                    "status": "succeeded",
+                    "artifacts": [{"artifact_id": "artifact-1", "kind": "document_review"}],
+                    "events": [{"type": "run_started"}],
+                    "steps": [{"step_id": "worker-step-1"}],
+                    "result": {
+                        "executor": {
+                            "executor_type": "worker",
+                            "schema_version": "ai-platform.executor-result.v1",
+                        }
+                    },
+                },
+            )
+            return
+        if parsed.path == f"/api/ai/admin/runs/{self.run_id}":
+            if "admin" not in roles:
+                self._send_json(403, {"detail": "not_ai_admin"})
+                return
+            self._send_json(
+                200,
+                {
+                    "run": {
+                        "run_id": self.run_id,
+                        "session_id": self.session_id,
+                        "agent_id": "document-review",
+                        "capability_id": "document_review",
+                        "status": "succeeded",
+                    },
+                    "events": [{"event_type": "worker_started"}],
+                    "artifacts": [{"artifact_id": "artifact-1", "kind": "document_review"}],
+                },
+            )
+            return
+        if parsed.path == "/api/ai/admin/runtime/overview":
+            if "admin" not in roles:
+                self._send_json(403, {"detail": "not_ai_admin"})
+                return
+            query = parse_qs(parsed.query)
+            if query.get("include_maintenance_cleanup") != ["false"]:
+                self._send_json(500, {"detail": "sandbox_provider_cleanup_failed"})
+                return
+            self._send_json(
+                200,
+                {
+                    "schema_version": "ai-platform.admin-runtime-overview.v1",
+                    "memory_context": {
+                        "status": "visible",
+                        "redaction": {"private_payloads_removed": True},
+                        "policy": "executor private runtime payloads and sandbox working directories are hidden",
+                    },
+                },
+            )
             return
         if parsed.path == f"/api/ai/runs/{self.run_id}/context/snapshots":
             if self._user_id() != "b1-memory-smoke-user":

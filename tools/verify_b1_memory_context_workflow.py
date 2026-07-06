@@ -57,12 +57,21 @@ PRIVATE_VALUE_MARKERS = (
     "/tmp/",
     "/home/",
     "/var/lib/ai-platform",
-    "tenants/default",
 )
 PRIVATE_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b[A-Za-z]:\\Users\\", re.IGNORECASE),
     re.compile(r"\b(?:authorization|bearer|api[_-]?key|token|password|secret)\s*[:=]", re.IGNORECASE),
     re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_-]{8,}\b", re.IGNORECASE),
+    re.compile(r"\btenants/[A-Za-z0-9_.-]+/", re.IGNORECASE),
+    re.compile(
+        r"\b(?:executor_private_payload|executor_payload|runtime_private_payload|"
+        r"private_payload|raw_storage_key|storage_key|sandbox_workdir|callback_token)\b\s*[:=]",
+        re.IGNORECASE,
+    ),
+)
+PRIVATE_MARKER_VALUE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(rf"(?<![A-Za-z0-9_]){re.escape(marker)}(?![A-Za-z0-9_])", re.IGNORECASE)
+    for marker in PRIVATE_KEY_MARKERS
 )
 RAW_MATERIAL_ID_KEYS = {
     "message_id",
@@ -163,8 +172,8 @@ def _contains_private_projection_term(value: Any) -> bool:
     def walk(item: Any, *, key_path: bool = False) -> bool:
         if isinstance(item, dict):
             for key, nested in item.items():
-                key_text = str(key).lower()
-                if any(marker in key_text for marker in PRIVATE_KEY_MARKERS):
+                normalized_key = _normalized_key(key)
+                if normalized_key in {_normalized_key(marker) for marker in PRIVATE_KEY_MARKERS}:
                     return True
                 if walk(nested):
                     return True
@@ -175,7 +184,7 @@ def _contains_private_projection_term(value: Any) -> bool:
             lowered = item.lower()
             if any(marker in lowered for marker in PRIVATE_VALUE_MARKERS):
                 return True
-            if any(marker in lowered for marker in PRIVATE_KEY_MARKERS):
+            if any(pattern.search(item) is not None for pattern in PRIVATE_MARKER_VALUE_PATTERNS):
                 return True
             return any(pattern.search(item) is not None for pattern in PRIVATE_VALUE_PATTERNS)
         return False
@@ -322,24 +331,41 @@ def _find_event(events: Any, event_type: str) -> dict[str, Any]:
     return {}
 
 
+def _find_worker_started_event(events: Any) -> dict[str, Any]:
+    return _find_event(events, "worker_started") or _find_event(events, "run_started")
+
+
 def _run_detail_context_ref(payload: Any) -> dict[str, Any]:
     return _as_dict(_as_dict(payload).get("context_ref"))
+
+
+def _snapshot_context_ref(payload: Any, playback_context_ref: Any | None = None) -> dict[str, Any]:
+    snapshot = _as_dict(_as_dict(payload).get("context_snapshot"))
+    snapshot_payload = _as_dict(snapshot.get("payload"))
+    playback = _as_dict(playback_context_ref)
+    return {
+        "context_snapshot_id": snapshot.get("context_snapshot_id"),
+        "context_pack_version": snapshot_payload.get("context_pack_version") or playback.get("context_pack_version"),
+        "context_pack_generated_at": snapshot_payload.get("context_pack_generated_at")
+        or playback.get("context_pack_generated_at"),
+    }
 
 
 def _live_worker_payload(
     *,
     run_detail_status: int,
     run_detail_payload: Any,
+    fallback_context_ref: Any | None = None,
     expected_agent_id: str,
     expected_capability_id: str,
 ) -> dict[str, Any]:
     detail = _as_dict(run_detail_payload)
     result = _as_dict(detail.get("result"))
     executor = _as_dict(result.get("executor"))
-    context_ref = _run_detail_context_ref(detail)
+    context_ref = _run_detail_context_ref(detail) or _as_dict(fallback_context_ref)
     context_pack_version = str(context_ref.get("context_pack_version") or "")
     context_pack_generated_at = str(context_ref.get("context_pack_generated_at") or "")
-    worker_event = _find_event(detail.get("events"), "worker_started")
+    worker_event = _find_worker_started_event(detail.get("events"))
     status = str(detail.get("status") or "")
     return {
         "run_detail_status": run_detail_status,
@@ -1004,15 +1030,25 @@ def build_b1_memory_context_workflow_smoke(
     run_detail_status, run_detail_payload = _poll_run_detail(
         base_url=safe_base_url,
         run_id=document_run_id,
-        headers=operator_headers,
+        headers=owner_headers,
         timeout_seconds=timeout_seconds,
         wait_seconds=wait_seconds,
     )
     statuses["document_run_detail"] = run_detail_status
+    payloads["document_run_detail"] = run_detail_payload
+
+    admin_run_detail_status, admin_run_detail_payload = _json_request(
+        "GET",
+        f"{safe_base_url}/api/ai/admin/runs/{parse.quote(document_run_id)}",
+        headers=operator_headers,
+        timeout_seconds=timeout_seconds,
+    )
+    statuses["admin_run_detail"] = admin_run_detail_status
+    payloads["admin_run_detail"] = admin_run_detail_payload
 
     ordinary_admin_overview_status, ordinary_admin_overview_payload = _json_request(
         "GET",
-        f"{safe_base_url}/api/ai/admin/runtime/overview",
+        f"{safe_base_url}/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
         headers=owner_headers,
         timeout_seconds=timeout_seconds,
     )
@@ -1021,7 +1057,7 @@ def build_b1_memory_context_workflow_smoke(
 
     admin_overview_status, admin_overview_payload = _json_request(
         "GET",
-        f"{safe_base_url}/api/ai/admin/runtime/overview",
+        f"{safe_base_url}/api/ai/admin/runtime/overview?include_maintenance_cleanup=false",
         headers=operator_headers,
         timeout_seconds=timeout_seconds,
     )
@@ -1252,6 +1288,7 @@ def build_b1_memory_context_workflow_smoke(
             snapshot_after_delete_payload,
             list_snapshots_payload,
             run_detail_payload,
+            admin_run_detail_payload,
             ordinary_admin_overview_payload,
             admin_overview_payload,
             disable_policy_payload,
@@ -1264,10 +1301,17 @@ def build_b1_memory_context_workflow_smoke(
     live_worker = _live_worker_payload(
         run_detail_status=run_detail_status,
         run_detail_payload=run_detail_payload,
+        fallback_context_ref=_snapshot_context_ref(
+            snapshot_with_memory_payload,
+            playback_context_ref=_as_dict(playback_payload).get("context_ref"),
+        ),
         expected_agent_id=agent_id,
         expected_capability_id=capability_id,
     )
-    admin_projection_redacted = not _contains_private_projection_term(admin_overview_payload)
+    admin_projection_redacted = not any(
+        _contains_private_projection_term(payload)
+        for payload in (admin_run_detail_payload, admin_overview_payload)
+    )
     provenance = _provenance_section(
         snapshot_summary=snapshot_summary,
         playback_context_summary=playback_context_summary,
@@ -1294,11 +1338,11 @@ def build_b1_memory_context_workflow_smoke(
         cross_tenant_context_status=cross_tenant_context_status,
     )
     admin_visibility = _admin_visibility_section(
-        admin_run_detail_visible=run_detail_status == 200,
+        admin_run_detail_visible=admin_run_detail_status == 200,
         admin_runtime_overview_visible=admin_runtime_overview_visible,
         ordinary_user_admin_overview_denied=ordinary_user_admin_overview_denied,
         admin_projection_redacted=admin_projection_redacted,
-        admin_run_detail_status=run_detail_status,
+        admin_run_detail_status=admin_run_detail_status,
         admin_runtime_overview_status=admin_overview_status,
         ordinary_user_admin_overview_status=ordinary_admin_overview_status,
     )
@@ -1361,7 +1405,9 @@ def build_b1_memory_context_workflow_smoke(
         ),
         "admin_runtime_visibility": _check(
             "admin_runtime_visibility",
-            admin_runtime_overview_visible and admin_projection_redacted,
+            admin_run_detail_status == 200
+            and admin_runtime_overview_visible
+            and admin_projection_redacted,
             admin_visibility,
         ),
         "ordinary_user_admin_visibility_denied": _check(

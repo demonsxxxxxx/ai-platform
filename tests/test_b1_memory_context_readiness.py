@@ -354,6 +354,10 @@ def test_structured_runtime_evidence_requires_document_workflow_governance_secti
     wrong_workflow["workflow"]["agent_id"] = "general-agent"
     assert _has_required_structured_runtime_evidence(wrong_workflow) is False
 
+    missing_snapshot_id = _structured_runtime_evidence()
+    missing_snapshot_id["live_worker_payload"]["context_snapshot_id_present"] = False
+    assert _has_required_structured_runtime_evidence(missing_snapshot_id) is False
+
 
 def test_runtime_acceptance_evidence_accepts_structured_document_workflow_artifact(tmp_path):
     evidence_root = (
@@ -529,6 +533,10 @@ def test_verifier_emits_document_workflow_governance_sections(monkeypatch):
                 "schema_version": "ai-platform.admin-runtime-overview.v1",
                 "memory_context": {"status": "visible", "workflow": "document-review"},
             }
+        if method == "GET" and path == "/api/ai/admin/runs/run-doc":
+            if "admin" not in roles:
+                return 403, {"detail": "admin_required"}
+            return 200, {"run": {"run_id": "run-doc", "status": "succeeded"}}
         if method == "POST" and path == "/api/ai/runs":
             observed["run_payloads"].append(payload)
             if payload["agent_id"] == "document-review":
@@ -684,6 +692,10 @@ def test_verifier_redaction_scan_includes_document_and_deny_payloads(monkeypatch
                 "schema_version": "ai-platform.admin-runtime-overview.v1",
                 "memory_context": {"status": "visible", "workflow": "document-review"},
             }
+        if method == "GET" and path == "/api/ai/admin/runs/run-doc":
+            if "admin" not in roles:
+                return 403, {"detail": "admin_required"}
+            return 200, {"run": {"run_id": "run-doc", "status": "succeeded"}}
         if method == "POST" and path == "/api/ai/runs":
             return 200, {"run_id": "run-doc", "session_id": "session-doc"}
         if method == "PUT" and path == "/api/ai/memory/policy":
@@ -712,6 +724,7 @@ def test_verifier_redaction_scan_includes_document_and_deny_payloads(monkeypatch
             included = payload.get("included_memory_record_ids") or []
             return 200, {
                 "context_snapshot": {
+                    "context_snapshot_id": "snapshot-1",
                     "payload": _public_context_payload(
                         memory_record_count=1 if included else 0
                     )
@@ -768,6 +781,155 @@ def test_verifier_redaction_scan_includes_document_and_deny_payloads(monkeypatch
     assert evidence["redaction_scan_status"] == "failed"
     assert evidence["checks"]["no_private_projection_leakage"]["passed"] is False
     assert evidence["delete_redaction"]["private_projection_terms_present"] is True
+
+
+def test_verifier_uses_owner_run_detail_and_skips_admin_cleanup(monkeypatch):
+    state = {"policy_enabled": False, "deleted": False}
+    overview_paths = []
+
+    def fake_json_request(method, url, *, headers, payload=None, timeout_seconds=10.0):
+        parsed = parse.urlsplit(url)
+        path = parsed.path
+        query = parse.parse_qs(parsed.query)
+        user_id = headers.get("X-AI-User-ID")
+        tenant_id = headers.get("X-AI-Tenant-ID")
+        roles = headers.get("X-AI-Roles", "")
+
+        if method == "GET" and path == "/api/ai/admin/runtime/overview":
+            overview_paths.append(url)
+            assert query.get("include_maintenance_cleanup") == ["false"]
+            if "admin" not in roles:
+                return 403, {"detail": "admin_required"}
+            return 200, {
+                "schema_version": "ai-platform.admin-runtime-overview.v1",
+                "memory_context": {
+                    "status": "visible",
+                    "policy": "executor private runtime payloads and sandbox working directories are not exposed",
+                    "redaction": {"private_payloads_removed": True},
+                },
+            }
+        if method == "GET" and path == "/api/ai/admin/runs/run-doc":
+            if "admin" not in roles:
+                return 403, {"detail": "admin_required"}
+            return 200, {"run": {"run_id": "run-doc", "status": "succeeded"}}
+        if method == "POST" and path == "/api/ai/runs":
+            return 200, {"run_id": "run-doc", "session_id": "session-doc"}
+        if method == "PUT" and path == "/api/ai/memory/policy":
+            state["policy_enabled"] = bool(payload["memory_enabled"])
+            return 200, {
+                "memory_policy": {
+                    "workspace_id": payload["workspace_id"],
+                    "agent_id": payload["agent_id"],
+                    "memory_enabled": payload["memory_enabled"],
+                    "long_term_memory_enabled": False,
+                    "source": "user",
+                }
+            }
+        if method == "POST" and path == "/api/ai/memory/records":
+            if not state["policy_enabled"]:
+                return 403, {"detail": "memory_policy_disabled"}
+            return 200, {"memory_record": {"memory_record_id": "memory-1"}}
+        if method == "GET" and path == "/api/ai/memory/records":
+            if not state["policy_enabled"] or state["deleted"]:
+                return 200, {"memory_records": []}
+            return 200, {"memory_records": [{"memory_record_id": "memory-1"}]}
+        if method == "POST" and path.endswith("/context/snapshots"):
+            included = payload.get("included_memory_record_ids") or []
+            return 200, {
+                "context_snapshot": {
+                    "context_snapshot_id": "snapshot-1",
+                    "payload": _public_context_payload(
+                        memory_record_count=1 if included else 0
+                    )
+                }
+            }
+        if method == "GET" and path.endswith("/playback"):
+            return 200, {
+                "contract_version": "ai-platform.run-playback.v1",
+                "context_ref": _public_context_payload(memory_record_count=1),
+            }
+        if method == "GET" and path.endswith("/context/snapshots"):
+            if tenant_id != "tenant-a" or user_id == "same-tenant-cross-user":
+                return 404, {"detail": "context_not_found"}
+            return 200, {
+                "context_snapshots": [
+                    {"payload": _public_context_payload(memory_record_count=0)}
+                ]
+            }
+        if method == "DELETE" and path.startswith("/api/ai/memory/records/"):
+            state["deleted"] = True
+            return 200, {"memory_record": {"memory_record_id": "memory-1", "status": "deleted"}}
+        raise AssertionError(f"unexpected request: {method} {url}")
+
+    def fake_poll_run_detail(*, headers, **_kwargs):
+        assert headers["X-AI-User-ID"] == "owner-user"
+        assert headers["X-AI-Roles"] == "user"
+        payload = _run_detail_payload()
+        payload.pop("context_ref")
+        return 200, payload
+
+    monkeypatch.setattr(verifier, "_json_request", fake_json_request)
+    monkeypatch.setattr(verifier, "_poll_run_detail", fake_poll_run_detail)
+
+    evidence = verifier.build_b1_memory_context_workflow_smoke(
+        base_url="http://127.0.0.1:8020",
+        gateway_secret="",
+        commit_sha="source-sha",
+        runtime_subject_commit_sha="runtime-sha",
+        image="ai-platform:source-sha",
+        tenant_id="tenant-a",
+        other_tenant_id="tenant-b",
+        workspace_id="workspace-a",
+        probe_file_id="file-1",
+        user_id="owner-user",
+        cross_user_id="same-tenant-cross-user",
+        operator_user_id="operator-user",
+        timeout_seconds=0.1,
+        wait_seconds=0.1,
+    )
+
+    assert evidence["ok"] is True
+    assert evidence["live_worker_payload"]["run_detail_status"] == 200
+    assert evidence["live_worker_payload"]["context_snapshot_id_present"] is True
+    assert evidence["admin_visibility"]["admin_runtime_overview_status"] == 200
+    assert len(overview_paths) == 2
+    assert _has_required_structured_runtime_evidence(evidence) is True
+
+
+def test_verifier_redaction_scan_allows_safe_policy_text():
+    safe_projection = {
+        "memory_context": {
+            "status": "visible",
+            "redaction": {
+                "private_payloads_removed": True,
+                "forbidden_classes": [
+                    "executor private runtime payloads",
+                    "sandbox working directories",
+                    "raw storage keys",
+                ],
+            },
+        }
+    }
+
+    assert verifier._contains_private_projection_term(safe_projection) is False
+
+
+def test_verifier_redaction_scan_still_flags_raw_private_material():
+    assert verifier._contains_private_projection_term(
+        {"executor_private_payload": {"summary": "blocked"}}
+    ) is True
+    assert verifier._contains_private_projection_term(
+        {"message": "executor_private_payload leaked into public projection"}
+    ) is True
+    assert verifier._contains_private_projection_term(
+        {"detail": "raw_storage_key present in response"}
+    ) is True
+    assert verifier._contains_private_projection_term(
+        {"message": "callback_token=secret-value"}
+    ) is True
+    assert verifier._contains_private_projection_term(
+        {"path": "/tmp/ai-platform/private"}
+    ) is True
 
 
 def test_b1_verifier_contract_fixture_outputs_local_source_contract():
