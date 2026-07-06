@@ -3337,6 +3337,8 @@ async def list_run_skill_snapshots(conn: AsyncConnection, *, tenant_id: str, run
             usage["inferred_used_skills"] = [str(row["skill_id"])]
         snapshot = {
             "skill_id": row["skill_id"],
+            "skill_version": row["skill_version"],
+            "content_hash": row["content_hash"],
             "source": source,
             "dependency_ids": [str(item) for item in dependency_ids],
             "allowed": bool(row["allowed"]),
@@ -3383,6 +3385,8 @@ def _sanitize_skill_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             sanitized_usage[key] = value
     sanitized = {
         "skill_id": str(snapshot.get("skill_id") or ""),
+        "skill_version": str(snapshot.get("skill_version") or ""),
+        "content_hash": str(snapshot.get("content_hash") or ""),
         "source": source,
         "dependency_ids": [str(item) for item in snapshot.get("dependency_ids") or []],
         "allowed": bool(snapshot.get("allowed")),

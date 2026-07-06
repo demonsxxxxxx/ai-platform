@@ -4147,6 +4147,8 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
     assert snapshots == [
         {
             "skill_id": "qa-file-reviewer",
+            "skill_version": "hash-a",
+            "content_hash": "hash-a",
             "source": {
                 "kind": "builtin",
                 "snapshot_governance": {
@@ -4185,11 +4187,11 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
         }
     ]
     serialized = json.dumps(snapshots, ensure_ascii=False)
-    assert "skill_version" not in serialized
-    assert "content_hash" not in serialized
+    assert snapshots[0]["skill_version"] == "hash-a"
+    assert snapshots[0]["content_hash"] == "hash-a"
     assert "content_base64" not in serialized
     assert "storage_key" not in serialized
-    assert "hash-a" not in serialized
+    assert "hash-a" not in json.dumps(snapshots[0]["source"], ensure_ascii=False)
     assert "version" not in snapshots[0]["source"]
     assert "track" not in serialized
     assert "rollout" not in serialized
@@ -5150,6 +5152,8 @@ async def test_admin_run_detail_projects_g2_trace_event_artifact_and_audit_contr
     assert detail["skill_snapshots"] == [
         {
             "skill_id": "qa-file-reviewer",
+            "skill_version": "hash-a",
+            "content_hash": "hash-a",
             "source": {"kind": "builtin"},
             "dependency_ids": ["minimax-docx"],
             "allowed": True,
@@ -5164,8 +5168,8 @@ async def test_admin_run_detail_projects_g2_trace_event_artifact_and_audit_contr
         }
     ]
     serialized_skill_snapshots = json.dumps(detail["skill_snapshots"], ensure_ascii=False, default=str)
-    assert "skill_version" not in serialized_skill_snapshots
-    assert "content_hash" not in serialized_skill_snapshots
+    assert '"skill_version": "hash-a"' in serialized_skill_snapshots
+    assert '"content_hash": "hash-a"' in serialized_skill_snapshots
     assert detail["audit"][0]["schema_version"] == "ai-platform.audit-event.v1"
     assert detail["audit"][0]["trace_id"] == "trace_run_a"
 
