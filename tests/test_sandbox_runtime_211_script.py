@@ -1372,6 +1372,88 @@ def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(mon
     assert "secret-token" not in serialized
 
 
+def test_run_platform_runtime_probe_uses_configured_sdk_model(monkeypatch, tmp_path):
+    generator = load_generator()
+    observed_models = []
+
+    from app.settings import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "claude_agent_sdk_enabled", True)
+    monkeypatch.setattr(settings, "claude_agent_model", "configured-211-model")
+    monkeypatch.setattr(settings, "anthropic_model", "fallback-anthropic-model")
+    monkeypatch.setattr(settings, "openai_model", "fallback-openai-model")
+
+    class FakeRuntime:
+        def __init__(
+            self,
+            *,
+            workspace_root,
+            callback_token_resolver,
+            record_lease,
+            release_lease,
+        ):
+            pass
+
+        async def submit(self, request):
+            observed_models.append(request.model)
+            assert request.model == "configured-211-model"
+            return type(
+                "SandboxRuntimeResult",
+                (),
+                {
+                    "status": "accepted",
+                    "session_id": request.session_id,
+                    "run_id": request.run_id,
+                    "executor_response": {
+                        "status": "accepted",
+                        "run_id": request.run_id,
+                        "sdk_used": True,
+                        "executor_mode": "claude_agent_sdk",
+                    },
+                    "timings": {
+                        "schema_version": "ai-platform.sandbox-latency-split.v1",
+                        "sandbox_queue_wait_latency_ms": 0,
+                        "sandbox_lease_acquire_latency_ms": 1,
+                        "sandbox_container_start_latency_ms": 2,
+                        "sandbox_container_cold_start_latency_ms": 2,
+                        "sandbox_healthcheck_latency_ms": 3,
+                        "sandbox_executor_dispatch_latency_ms": 4,
+                        "executor_first_token_latency_ms": 0,
+                        "executor_tool_call_latency_ms": 0,
+                        "executor_model_latency_ms": 5,
+                        "document_processing_latency_ms": 0,
+                        "artifact_upload_latency_ms": 0,
+                        "sandbox_cleanup_latency_ms": 6,
+                        "sandbox_total_latency_ms": 21,
+                    },
+                },
+            )()
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        return type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "not a docker container"})()
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
+    recorder = generator.EvidenceRecorder(
+        run_id="run-a",
+        executor_url="http://executor.test",
+        callback_token="secret-token",
+    )
+
+    result = generator.run_platform_runtime_probe(
+        recorder=recorder,
+        sandbox_provider="opensandbox",
+        sandbox_executor_image="ai-platform:local",
+        workspace_root=str(tmp_path),
+        callback_url="http://callback.test/callback",
+        docker_cmd=("docker",),
+        run=fake_run,
+    )
+
+    assert result["status"] == "accepted"
+    assert observed_models == ["configured-211-model"]
+
+
 def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_results(tmp_path):
     generator = load_generator()
 
