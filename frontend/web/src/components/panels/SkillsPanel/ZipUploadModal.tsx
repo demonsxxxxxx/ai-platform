@@ -3,7 +3,7 @@ import { Archive, UploadCloud, FileArchive, Upload } from "lucide-react";
 import { LoadingSpinner } from "../../common/LoadingSpinner";
 import { EditorSidebar } from "../../common/EditorSidebar";
 import { Checkbox } from "../../common/Checkbox";
-import type { ZipSkillPreview } from "./useSkillsActions";
+import { canSelectZipSkill, type ZipSkillPreview } from "./zipSelection";
 
 interface ZipUploadModalProps {
   showZipModal: boolean;
@@ -13,6 +13,7 @@ interface ZipUploadModalProps {
   zipPreviewing: boolean;
   zipSkills: ZipSkillPreview[];
   selectedZipSkills: string[];
+  allowNewSkills: boolean;
   zipInputRef: React.RefObject<HTMLInputElement | null>;
   isDragging: boolean;
   onZipFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -32,6 +33,7 @@ export function ZipUploadModal({
   zipPreviewing,
   zipSkills,
   selectedZipSkills,
+  allowNewSkills,
   zipInputRef,
   isDragging,
   onZipFileChange,
@@ -45,6 +47,12 @@ export function ZipUploadModal({
   const { t } = useTranslation();
 
   const backedCount = zipSkills.filter((s) => s.already_exists).length;
+  const newSkillCount = zipSkills.filter((s) => !s.already_exists).length;
+  const selectableCount = allowNewSkills
+    ? Math.min(newSkillCount, 1)
+    : backedCount;
+  const showNoNewSkillMessage =
+    allowNewSkills && zipSkills.length > 0 && newSkillCount === 0;
 
   return (
     <EditorSidebar
@@ -152,42 +160,56 @@ export function ZipUploadModal({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <label className="text-sm font-medium text-[var(--theme-text)]">
-                  {t("skills.selectBackedZipSkills")}
+                  {allowNewSkills
+                    ? t("skills.selectNewSkillToPublish")
+                    : t("skills.selectBackedZipSkills")}
                 </label>
                 <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--theme-primary)]/10 px-1.5 text-[11px] font-semibold text-[var(--theme-primary)]">
-                  {selectedZipSkills.length}/{backedCount}
+                  {selectedZipSkills.length}/{selectableCount}
                 </span>
               </div>
-              <button
-                onClick={() => {
-                  const allBacked = zipSkills
-                    .filter((s) => s.already_exists)
-                    .map((s) => s.name);
-                  onZipSelectAll(
-                    selectedZipSkills.length === allBacked.length ? [] : allBacked,
-                  );
-                }}
-                className="rounded-md px-2 py-1 text-xs font-medium text-[var(--theme-primary)] transition-colors hover:bg-[var(--theme-primary)]/8"
-              >
-                {selectedZipSkills.length === backedCount
-                  ? t("common.deselectAll")
-                  : t("common.selectAll")}
-              </button>
+              {!allowNewSkills && (
+                <button
+                  onClick={() => {
+                    const selectable = zipSkills
+                      .filter((s) => s.already_exists)
+                      .map((s) => s.name);
+                    onZipSelectAll(
+                      selectedZipSkills.length === selectable.length
+                        ? []
+                        : selectable,
+                    );
+                  }}
+                  className="rounded-md px-2 py-1 text-xs font-medium text-[var(--theme-primary)] transition-colors hover:bg-[var(--theme-primary)]/8"
+                >
+                  {selectedZipSkills.length === selectableCount
+                    ? t("common.deselectAll")
+                    : t("common.selectAll")}
+                </button>
+              )}
             </div>
             <p className="text-xs leading-5 text-[var(--theme-text-secondary)]">
-              {t("skills.zipImportBackedHint")}
+              {allowNewSkills
+                ? t("skills.adminZipImportHint")
+                : t("skills.zipImportBackedHint")}
             </p>
+            {showNoNewSkillMessage && (
+              <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
+                {t("skills.adminZipNoNewSkill")}
+              </p>
+            )}
             <div className="space-y-1.5 max-h-72 overflow-y-auto rounded-lg p-1">
               {zipSkills.map((skill) => {
                 const selected = selectedZipSkills.includes(skill.name);
+                const canSelectSkill = canSelectZipSkill(skill, allowNewSkills);
                 return (
                   <div
                     key={skill.name}
                     onClick={() =>
-                      skill.already_exists && onZipSkillToggle(skill.name)
+                      canSelectSkill && onZipSkillToggle(skill.name)
                     }
                     className={`group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-all duration-150 ${
-                      !skill.already_exists
+                      !canSelectSkill
                         ? "cursor-not-allowed opacity-40"
                         : selected
                           ? "bg-[var(--theme-primary)]/8"
@@ -198,8 +220,9 @@ export function ZipUploadModal({
                       size="sm"
                       checked={selected}
                       onChange={() =>
-                        skill.already_exists && onZipSkillToggle(skill.name)
+                        canSelectSkill && onZipSkillToggle(skill.name)
                       }
+                      disabled={!canSelectSkill}
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
@@ -217,7 +240,12 @@ export function ZipUploadModal({
                             {t("skills.publicCatalogSkill")}
                           </span>
                         )}
-                        {!skill.already_exists && (
+                        {!skill.already_exists && allowNewSkills && (
+                          <span className="shrink-0 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                            {t("skills.newSkillAdminUpload")}
+                          </span>
+                        )}
+                        {!skill.already_exists && !allowNewSkills && (
                           <span className="shrink-0 rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
                             {t("skills.newSkillImportUnsupported")}
                           </span>

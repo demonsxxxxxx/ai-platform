@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from app.auth import AuthPrincipal
 from app.main import create_app
 from app.models import AdminSkillDetailResponse
+from app.repositories import RepositoryConflictError
 from app.routes.admin_skills import admin_upload_skill_package
 from app.skills import dependencies as skill_dependencies
 from app.skills.dependencies import SkillDependencyPolicyError, skill_dependency_ids, skill_dependency_policy
@@ -31,6 +32,15 @@ def user_headers():
         "X-AI-User-ID": "ordinary",
         "X-AI-Roles": "user",
         "X-AI-Tenant-ID": "default",
+    }
+
+
+def skill_admin_headers():
+    return {
+        "X-AI-User-ID": "skill-admin",
+        "X-AI-Roles": "user",
+        "X-AI-Tenant-ID": "default",
+        "X-AI-Permissions": "skill:admin",
     }
 
 
@@ -602,6 +612,49 @@ def test_admin_upload_skill_package_requires_admin(monkeypatch):
     assert response.json()["detail"] == "not_ai_admin"
 
 
+def test_skill_admin_upload_existing_catalog_skill_is_denied_before_storage(monkeypatch):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    async def fake_get_skill(conn, *, skill_id):
+        assert isinstance(conn, FakeConnection)
+        assert skill_id == "shared-research-skill"
+        return {"skill_id": skill_id, "version": "builtin-shared-version", "status": "active"}
+
+    async def fake_list_skill_ids(conn):
+        raise AssertionError("existing-skill denial must happen before dependency lookup")
+
+    class FakeObjectStorage:
+        def put_bytes(self, **kwargs):
+            raise AssertionError("existing-skill denial must happen before package storage")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/shared-research-skill/versions/upload",
+        files={
+            "package": (
+                "shared-research-skill.zip",
+                skill_package_zip(name="shared-research-skill"),
+                "application/zip",
+            )
+        },
+        headers=skill_admin_headers(),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "not_ai_admin"
+
+
 def test_admin_upload_skill_package_rejects_missing_internal_dependency(monkeypatch):
     class FakeConnection:
         pass
@@ -671,6 +724,22 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
         assert isinstance(conn, FakeConnection)
         return None
 
+    async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
+        assert isinstance(conn, FakeConnection)
+        assert tenant_id == "default"
+        assert skill_id == "qa-file-reviewer"
+        assert channel == "stable"
+        return {
+            "skill_id": skill_id,
+            "channel": channel,
+            "current_version": "hash-active",
+            "previous_version": None,
+            "rollout_percent": 100,
+            "status": "active",
+            "promoted_by": "previous-admin",
+            "promoted_at": None,
+        }
+
     async def fake_audit(conn, **kwargs):
         assert isinstance(conn, FakeConnection)
         audits.append(kwargs)
@@ -683,6 +752,7 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
     client = TestClient(create_app())
@@ -757,7 +827,7 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     assert audit["payload_json"]["package_sha256"] == "zip-sha256"
 
 
-def test_admin_upload_skill_package_rejects_unknown_skill_before_storage(monkeypatch):
+def test_skill_admin_upload_new_skill_package_creates_catalog_version_release_and_visibility(monkeypatch):
     class FakeConnection:
         pass
 
@@ -765,32 +835,399 @@ def test_admin_upload_skill_package_rejects_unknown_skill_before_storage(monkeyp
     async def fake_transaction():
         yield FakeConnection()
 
-    class FailingObjectStorage:
-        def put_bytes(self, **kwargs):
-            raise AssertionError("storage must not be called for unknown skill")
+    package_content = skill_package_zip(
+        name="new-research-skill",
+        description="Summarize research briefs.",
+    )
+    stored_objects = []
+    catalog_creates = []
+    version_upserts = []
+    release_policies = []
+    visibility_updates = []
+    audits = []
+
+    class FakeObjectStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            assert content == package_content
+            assert content_type == "application/zip"
+            stored_objects.append({"storage_key": storage_key, "content": content, "content_type": content_type})
+            return StoredObject(storage_key=storage_key, sha256="new-zip-sha256", size_bytes=len(content))
 
     async def fake_get_skill(conn, *, skill_id):
-        assert skill_id == "unknown-skill"
+        assert isinstance(conn, FakeConnection)
+        assert skill_id == "new-research-skill"
         return None
+
+    async def fake_list_skill_ids(conn):
+        assert isinstance(conn, FakeConnection)
+        return ["general-chat", "minimax-docx"]
+
+    async def fake_get_version(conn, *, skill_id, version):
+        assert isinstance(conn, FakeConnection)
+        assert skill_id == "new-research-skill"
+        return None
+
+    async def fake_create_catalog(conn, **kwargs):
+        assert isinstance(conn, FakeConnection)
+        catalog_creates.append(kwargs)
+
+    async def fake_upsert_version(conn, **kwargs):
+        assert isinstance(conn, FakeConnection)
+        version_upserts.append(kwargs)
+
+    async def fake_set_policy(conn, **kwargs):
+        assert isinstance(conn, FakeConnection)
+        release_policies.append(kwargs)
+
+    async def fake_set_uploaded_workbench_status(conn, **kwargs):
+        assert isinstance(conn, FakeConnection)
+        visibility_updates.append(kwargs)
+        return {"skill_id": kwargs["skill_id"], "status": kwargs["status"], "visible_to_user": True}
+
+    async def fake_audit(conn, **kwargs):
+        assert isinstance(conn, FakeConnection)
+        audits.append(kwargs)
+        return "aud-new-upload"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.create_skill_catalog", fake_create_catalog, raising=False)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr(
+        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        fake_set_uploaded_workbench_status,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/new-research-skill/versions/upload",
+        files={"package": ("new-research-skill.zip", package_content, "application/zip")},
+        headers=skill_admin_headers(),
+    )
+
+    assert response.status_code == 200
+    uploaded = response.json()["uploaded"]
+    assert uploaded["skill_id"] == "new-research-skill"
+    assert uploaded["version"] == uploaded["content_hash"]
+    assert uploaded["description"] == "Summarize research briefs."
+    assert uploaded["status"] == "released"
+    assert uploaded["source"]["kind"] == "uploaded"
+    assert uploaded["source"]["storage_key"] == (
+        f"skills/new-research-skill/versions/{uploaded['content_hash']}/package.zip"
+    )
+
+    assert len(stored_objects) == 1
+    assert catalog_creates == [
+        {
+            "skill_id": "new-research-skill",
+            "name": "new-research-skill",
+            "version": uploaded["content_hash"],
+            "description": "Summarize research briefs.",
+            "input_modes": ["chat"],
+            "output_modes": ["answer"],
+            "executor_type": "claude-agent-worker",
+            "status": "active",
+        }
+    ]
+    assert len(version_upserts) == 1
+    assert version_upserts[0]["skill_id"] == "new-research-skill"
+    assert version_upserts[0]["dependency_ids"] == []
+    assert version_upserts[0]["status"] == "released"
+    assert release_policies == [
+        {
+            "tenant_id": "default",
+            "skill_id": "new-research-skill",
+            "version": uploaded["content_hash"],
+            "previous_version": None,
+            "promoted_by": "skill-admin",
+        }
+    ]
+    assert visibility_updates == [
+        {
+            "tenant_id": "default",
+            "skill_id": "new-research-skill",
+            "status": "active",
+        }
+    ]
+    assert [item["action"] for item in audits] == [
+        "skill_catalog_created_from_upload",
+        "skill_version_uploaded",
+        "skill_release_promoted_from_upload",
+    ]
+
+
+def test_admin_upload_new_skill_catalog_conflict_fails_without_global_overwrite(monkeypatch):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    package_content = skill_package_zip(
+        name="raced-research-skill",
+        description="Summarize raced research briefs.",
+    )
+
+    class FakeObjectStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            raise AssertionError("catalog conflict must stop before package object storage")
+
+    async def fake_get_skill(conn, *, skill_id):
+        assert isinstance(conn, FakeConnection)
+        assert skill_id == "raced-research-skill"
+        return None
+
+    async def fake_list_skill_ids(conn):
+        assert isinstance(conn, FakeConnection)
+        return ["general-chat"]
+
+    async def fake_get_version(conn, *, skill_id, version):
+        raise AssertionError("catalog conflict must stop before existing-version reuse")
+
+    async def fake_create_catalog(conn, **kwargs):
+        assert isinstance(conn, FakeConnection)
+        assert kwargs["skill_id"] == "raced-research-skill"
+        raise RepositoryConflictError("skill_catalog_already_exists")
+
+    async def fail_upsert_catalog(conn, **kwargs):
+        raise AssertionError("new skill uploads must use insert-only catalog creation")
+
+    async def fail_after_catalog_conflict(conn, **kwargs):
+        raise AssertionError("catalog conflict must stop before version, policy, or audit writes")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.create_skill_catalog", fake_create_catalog, raising=False)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_catalog", fail_upsert_catalog, raising=False)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fail_after_catalog_conflict)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fail_after_catalog_conflict)
+    monkeypatch.setattr(
+        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        fail_after_catalog_conflict,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fail_after_catalog_conflict)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/raced-research-skill/versions/upload",
+        files={"package": ("raced-research-skill.zip", package_content, "application/zip")},
+        headers=skill_admin_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "skill_catalog_already_exists"
+
+
+def test_admin_preview_skill_package_uses_global_catalog_existence(monkeypatch):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    async def fake_list_skill_ids(conn):
+        assert isinstance(conn, FakeConnection)
+        return ["tenant-invisible-skill", "general-chat"]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/upload/preview",
+        files={
+            "file": (
+                "tenant-invisible-skill.zip",
+                skill_package_zip(name="tenant-invisible-skill", description="Tenant invisible."),
+                "application/zip",
+            )
+        },
+        headers=skill_admin_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "skill_count": 1,
+        "skills": [
+            {
+                "name": "tenant-invisible-skill",
+                "description": "Tenant invisible.",
+                "file_count": 2,
+                "files": ["SKILL.md", "references/guide.md"],
+                "already_exists": True,
+            }
+        ],
+    }
+
+
+def test_admin_upload_existing_catalog_skill_without_tenant_policy_publishes_to_tenant(monkeypatch):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    package_content = skill_package_zip(
+        name="shared-research-skill",
+        description="Summarize shared research briefs.",
+    )
+    version_upserts = []
+    release_policies = []
+    visibility_updates = []
+    audits = []
+
+    class FakeObjectStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            assert content == package_content
+            assert content_type == "application/zip"
+            return StoredObject(storage_key=storage_key, sha256="shared-zip-sha256", size_bytes=len(content))
+
+    async def fake_get_skill(conn, *, skill_id):
+        assert isinstance(conn, FakeConnection)
+        assert skill_id == "shared-research-skill"
+        return {
+            "skill_id": skill_id,
+            "id": skill_id,
+            "name": skill_id,
+            "version": "builtin-shared-version",
+            "status": "active",
+        }
+
+    async def fake_list_skill_ids(conn):
+        assert isinstance(conn, FakeConnection)
+        return ["shared-research-skill", "minimax-docx"]
+
+    async def fake_get_version(conn, *, skill_id, version):
+        assert isinstance(conn, FakeConnection)
+        assert skill_id == "shared-research-skill"
+        return None
+
+    async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
+        assert isinstance(conn, FakeConnection)
+        assert tenant_id == "default"
+        assert skill_id == "shared-research-skill"
+        assert channel == "stable"
+        return None
+
+    async def fail_upsert_catalog(conn, **kwargs):
+        raise AssertionError("existing global skill catalog row must not be recreated")
+
+    async def fake_upsert_version(conn, **kwargs):
+        assert isinstance(conn, FakeConnection)
+        version_upserts.append(kwargs)
+
+    async def fake_set_policy(conn, **kwargs):
+        assert isinstance(conn, FakeConnection)
+        release_policies.append(kwargs)
+
+    async def fake_set_uploaded_workbench_status(conn, **kwargs):
+        assert isinstance(conn, FakeConnection)
+        visibility_updates.append(kwargs)
+        return {"skill_id": kwargs["skill_id"], "status": kwargs["status"], "visible_to_user": True}
+
+    async def fake_audit(conn, **kwargs):
+        assert isinstance(conn, FakeConnection)
+        audits.append(kwargs)
+        return "aud-existing-tenant-upload"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_catalog", fail_upsert_catalog, raising=False)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr(
+        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        fake_set_uploaded_workbench_status,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/shared-research-skill/versions/upload",
+        files={"package": ("shared-research-skill.zip", package_content, "application/zip")},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 200
+    uploaded = response.json()["uploaded"]
+    assert uploaded["skill_id"] == "shared-research-skill"
+    assert uploaded["status"] == "released"
+    assert len(version_upserts) == 1
+    assert version_upserts[0]["status"] == "released"
+    assert release_policies == [
+        {
+            "tenant_id": "default",
+            "skill_id": "shared-research-skill",
+            "version": uploaded["content_hash"],
+            "previous_version": "builtin-shared-version",
+            "promoted_by": "dev-admin",
+        }
+    ]
+    assert visibility_updates == [
+        {
+            "tenant_id": "default",
+            "skill_id": "shared-research-skill",
+            "status": "active",
+        }
+    ]
+    assert [item["action"] for item in audits] == [
+        "skill_version_uploaded",
+        "skill_release_promoted_from_upload",
+    ]
+
+
+def test_admin_upload_skill_package_rejects_name_mismatch_before_storage(monkeypatch):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        raise AssertionError("database must not be called for a package name mismatch")
+        yield FakeConnection()
+
+    class FailingObjectStorage:
+        def put_bytes(self, **kwargs):
+            raise AssertionError("storage must not be called for a package name mismatch")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FailingObjectStorage)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill, raising=False)
     client = TestClient(create_app(), raise_server_exceptions=False)
 
     response = client.post(
         "/api/ai/admin/skills/unknown-skill/versions/upload",
-        files={"package": ("unknown-skill.zip", skill_package_zip(name="unknown-skill"), "application/zip")},
+        files={"package": ("other-skill.zip", skill_package_zip(name="other-skill"), "application/zip")},
         headers=admin_headers(),
     )
 
-    assert response.status_code == 404
-    assert response.json()["detail"] == "skill_not_found"
+    assert response.status_code == 400
+    assert response.json()["detail"] == "skill_package_name_mismatch"
 
 
 @pytest.mark.asyncio
-async def test_admin_upload_skill_package_rejects_unknown_skill_before_read(monkeypatch):
+async def test_admin_upload_skill_package_rejects_unsafe_skill_id_before_read(monkeypatch):
     class FakeConnection:
         pass
 
@@ -800,18 +1237,13 @@ async def test_admin_upload_skill_package_rejects_unknown_skill_before_read(monk
 
     class UnreadableUpload:
         async def read(self, *args, **kwargs):
-            raise AssertionError("upload body must not be read before skill preflight")
-
-    async def fake_get_skill(conn, *, skill_id):
-        assert skill_id == "unknown-skill"
-        return None
+            raise AssertionError("upload body must not be read before skill id validation")
 
     monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill, raising=False)
 
     with pytest.raises(Exception) as exc_info:
         await admin_upload_skill_package(
-            "unknown-skill",
+            "../unknown-skill",
             UnreadableUpload(),
             principal=AuthPrincipal(
                 user_id="dev-admin",
@@ -821,8 +1253,8 @@ async def test_admin_upload_skill_package_rejects_unknown_skill_before_read(monk
             ),
         )
 
-    assert getattr(exc_info.value, "status_code", None) == 404
-    assert getattr(exc_info.value, "detail", None) == "skill_not_found"
+    assert getattr(exc_info.value, "status_code", None) == 400
+    assert getattr(exc_info.value, "detail", None) == "skill_id contains unsupported characters"
 
 
 def test_admin_upload_skill_package_reuses_existing_version_without_storage_overwrite(monkeypatch):
@@ -865,6 +1297,21 @@ def test_admin_upload_skill_package_reuses_existing_version_without_storage_over
             "created_at": None,
         }
 
+    async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
+        assert tenant_id == "default"
+        assert skill_id == "qa-file-reviewer"
+        assert channel == "stable"
+        return {
+            "skill_id": skill_id,
+            "channel": channel,
+            "current_version": "hash-active",
+            "previous_version": None,
+            "rollout_percent": 100,
+            "status": "active",
+            "promoted_by": "first-admin",
+            "promoted_at": None,
+        }
+
     async def fail_upsert(conn, **kwargs):
         raise AssertionError("existing immutable skill version must not be upserted again")
 
@@ -878,6 +1325,7 @@ def test_admin_upload_skill_package_reuses_existing_version_without_storage_over
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
     monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
     monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
     monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fail_upsert)
     monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
     client = TestClient(create_app())
@@ -891,6 +1339,147 @@ def test_admin_upload_skill_package_reuses_existing_version_without_storage_over
     assert response.status_code == 200
     assert response.json()["uploaded"]["source"]["package_sha256"] == "existing-sha"
     assert calls[0]["action"] == "skill_version_upload_reused"
+
+
+def test_admin_upload_existing_version_without_tenant_policy_publishes_reused_version(monkeypatch):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    calls = []
+    policies = []
+    visibility_updates = []
+    status_updates = []
+
+    class FailingObjectStorage:
+        def put_bytes(self, **kwargs):
+            raise AssertionError("existing immutable skill version must not overwrite object storage")
+
+    async def fake_get_skill(conn, *, skill_id):
+        return {"skill_id": skill_id, "version": "0.1.0", "status": "active"}
+
+    async def fake_list_skill_ids(conn):
+        return ["qa-file-reviewer", "minimax-docx"]
+
+    async def fake_get_version(conn, *, skill_id, version):
+        storage_key = f"skills/{skill_id}/versions/{version}/package.zip"
+        return {
+            "skill_id": skill_id,
+            "version": version,
+            "content_hash": version,
+            "description": "Existing upload",
+            "source": {
+                "kind": "uploaded",
+                "storage_key": storage_key,
+                "package_sha256": "existing-sha",
+                "size_bytes": 123,
+                "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+                "dependency_manifests": [minimax_dependency_manifest()],
+                "package_contract": {
+                    "schema_version": "ai-platform.skill-package-contract.v1",
+                    "skill_id": skill_id,
+                    "version": version,
+                    "content_hash": version,
+                    "package_sha256": "existing-sha",
+                    "storage_key": storage_key,
+                    "uploaded_by": "first-admin",
+                    "file_count": 2,
+                    "size_bytes": 123,
+                    "evidence_files": {
+                        "sbom_or_signed_package": [],
+                        "license_policy": [],
+                        "vulnerability_scan": [],
+                    },
+                },
+            },
+            "dependency_ids": ["minimax-docx"],
+            "status": "draft",
+            "created_by": "first-admin",
+            "created_at": None,
+        }
+
+    async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
+        assert tenant_id == "default"
+        assert skill_id == "qa-file-reviewer"
+        assert channel == "stable"
+        return None
+
+    async def fail_upsert(conn, **kwargs):
+        raise AssertionError("existing immutable skill version must not be upserted again")
+
+    async def fake_update_status(conn, **kwargs):
+        status_updates.append(kwargs)
+        return {**(await fake_get_version(conn, skill_id=kwargs["skill_id"], version=kwargs["version"])), "status": kwargs["status"]}
+
+    async def fake_set_policy(conn, **kwargs):
+        policies.append(kwargs)
+
+    async def fake_set_uploaded_workbench_status(conn, **kwargs):
+        visibility_updates.append(kwargs)
+        return {"skill_id": kwargs["skill_id"], "status": kwargs["status"], "visible_to_user": True}
+
+    async def fake_audit(conn, **kwargs):
+        calls.append(kwargs)
+        return "aud-reused"
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FailingObjectStorage)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fail_upsert)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.update_skill_version_status", fake_update_status)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_policy)
+    monkeypatch.setattr(
+        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        fake_set_uploaded_workbench_status,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_audit)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/upload",
+        files={"package": ("qa-file-reviewer.zip", skill_package_zip(), "application/zip")},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 200
+    uploaded = response.json()["uploaded"]
+    assert uploaded["source"]["package_sha256"] == "existing-sha"
+    assert uploaded["status"] == "released"
+    assert status_updates == [
+        {
+            "skill_id": "qa-file-reviewer",
+            "version": uploaded["content_hash"],
+            "status": "released",
+        }
+    ]
+    assert policies == [
+        {
+            "tenant_id": "default",
+            "skill_id": "qa-file-reviewer",
+            "version": uploaded["content_hash"],
+            "previous_version": "0.1.0",
+            "promoted_by": "dev-admin",
+        }
+    ]
+    assert visibility_updates == [
+        {
+            "tenant_id": "default",
+            "skill_id": "qa-file-reviewer",
+            "status": "active",
+        }
+    ]
+    assert [item["action"] for item in calls] == [
+        "skill_version_upload_reused",
+        "skill_release_promoted_from_upload",
+    ]
 
 
 def test_admin_upload_skill_package_reuse_rejects_stale_dependency_policy(monkeypatch):
@@ -954,6 +1543,126 @@ def test_admin_upload_skill_package_reuse_rejects_stale_dependency_policy(monkey
     assert response.status_code == 409
     assert response.json()["detail"] == "skill_version_not_materializable"
     assert calls == []
+
+
+def test_admin_upload_skill_package_reuse_rejects_non_uploaded_existing_version(monkeypatch):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    class FailingObjectStorage:
+        def put_bytes(self, **kwargs):
+            raise AssertionError("non-uploaded existing skill version must reject before object storage")
+
+    async def fake_get_skill(conn, *, skill_id):
+        return {"skill_id": skill_id, "status": "active"}
+
+    async def fake_list_skill_ids(conn):
+        return ["qa-file-reviewer", "minimax-docx"]
+
+    async def fake_get_version(conn, *, skill_id, version):
+        return {
+            "skill_id": skill_id,
+            "version": version,
+            "content_hash": version,
+            "description": "Builtin version with colliding version id",
+            "source": {"kind": "builtin"},
+            "dependency_ids": ["minimax-docx"],
+            "status": "active",
+            "created_by": "system",
+            "created_at": None,
+        }
+
+    async def fail_audit(conn, **kwargs):
+        raise AssertionError("non-uploaded existing skill version must reject before audit")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FailingObjectStorage)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fail_audit)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/upload",
+        files={"package": ("qa-file-reviewer.zip", skill_package_zip(), "application/zip")},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "skill_version_not_materializable"
+
+
+def test_admin_upload_skill_package_rejects_concurrent_version_conflict_before_publish(monkeypatch):
+    class FakeConnection:
+        pass
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield FakeConnection()
+
+    stored_objects = []
+
+    class FakeObjectStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored_objects.append({"storage_key": storage_key, "content_type": content_type})
+            return StoredObject(storage_key=storage_key, sha256="zip-sha256", size_bytes=len(content))
+
+    async def fake_get_skill(conn, *, skill_id):
+        return {"skill_id": skill_id, "status": "active"}
+
+    async def fake_list_skill_ids(conn):
+        return ["qa-file-reviewer", "minimax-docx"]
+
+    async def fake_get_version(conn, *, skill_id, version):
+        return None
+
+    async def fake_get_policy(conn, *, tenant_id, skill_id, channel="stable"):
+        return None
+
+    async def fake_upsert_version(conn, **kwargs):
+        return False
+
+    async def fail_set_policy(conn, **kwargs):
+        raise AssertionError("conflicting skill version must not be published")
+
+    async def fail_set_uploaded_workbench_status(conn, **kwargs):
+        raise AssertionError("conflicting skill version must not become active")
+
+    async def fail_audit(conn, **kwargs):
+        raise AssertionError("conflicting skill version must not write upload audit")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_version", fake_get_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill_release_policy", fake_get_policy)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fail_set_policy)
+    monkeypatch.setattr(
+        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        fail_set_uploaded_workbench_status,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fail_audit)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/upload",
+        files={"package": ("qa-file-reviewer.zip", skill_package_zip(), "application/zip")},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "skill_version_already_exists"
+    assert len(stored_objects) == 1
 
 
 def test_admin_skill_release_routes_require_admin(monkeypatch):
@@ -1040,6 +1749,46 @@ def test_admin_skill_version_status_requires_admin(monkeypatch):
 
     assert response.status_code == 403
     assert response.json()["detail"] == "not_ai_admin"
+
+
+def test_skill_admin_permission_cannot_mutate_global_skill_lifecycle(monkeypatch):
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    client = TestClient(create_app())
+
+    status_response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/hash-a/status",
+        json={"status": "disabled"},
+        headers=skill_admin_headers(),
+    )
+    promote_response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/promote",
+        json={"version": "hash-a"},
+        headers=skill_admin_headers(),
+    )
+    rollback_response = client.post(
+        "/api/ai/admin/skills/qa-file-reviewer/rollback",
+        json={"version": "hash-a"},
+        headers=skill_admin_headers(),
+    )
+    diff_response = client.get(
+        "/api/ai/admin/skills/qa-file-reviewer/versions/diff?from_version=hash-a&to_version=hash-b",
+        headers=skill_admin_headers(),
+    )
+    detail_response = client.get(
+        "/api/ai/admin/skills/qa-file-reviewer",
+        headers=skill_admin_headers(),
+    )
+
+    assert status_response.status_code == 403
+    assert promote_response.status_code == 403
+    assert rollback_response.status_code == 403
+    assert diff_response.status_code == 403
+    assert detail_response.status_code == 403
+    assert status_response.json()["detail"] == "not_ai_admin"
+    assert promote_response.json()["detail"] == "not_ai_admin"
+    assert rollback_response.json()["detail"] == "not_ai_admin"
+    assert diff_response.json()["detail"] == "not_ai_admin"
+    assert detail_response.json()["detail"] == "not_ai_admin"
 
 
 def test_admin_skill_version_status_reviewed_requires_release_review(monkeypatch):

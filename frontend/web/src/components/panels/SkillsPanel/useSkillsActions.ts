@@ -3,9 +3,18 @@ import { useTranslation } from "react-i18next";
 import toast from "react-hot-toast";
 import { useLocation, useNavigate } from "react-router-dom";
 import { exportProjectZip } from "../../../utils/exportProjectZip";
+import { useAuth } from "../../../hooks/useAuth";
 import { useSkills } from "../../../hooks/useSkills";
 import { sanitizeSkillName } from "../../../utils/skillFilters";
-import type { SkillResponse, SkillCreate } from "../../../types";
+import { Permission, type SkillResponse, type SkillCreate } from "../../../types";
+import {
+  coerceZipSkillSelection,
+  initialZipSkillSelection,
+  toggleZipSkillSelection,
+  type ZipSkillPreview,
+} from "./zipSelection";
+
+export type { ZipSkillPreview } from "./zipSelection";
 
 interface GitHubSkill {
   name: string;
@@ -13,16 +22,9 @@ interface GitHubSkill {
   description: string;
 }
 
-export interface ZipSkillPreview {
-  name: string;
-  description: string;
-  file_count: number;
-  files: string[];
-  already_exists: boolean;
-}
-
 export function useSkillsActions(options?: { enabled?: boolean }) {
   const { t } = useTranslation();
+  const { hasAnyPermission } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const enabled = options?.enabled !== false;
@@ -63,13 +65,18 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     batchToggleSkills,
     toggleSkill,
     uploadSkill,
+    adminUploadSkill,
     previewZipSkills,
+    adminPreviewZipSkills,
     previewGitHubSkills,
     installGitHubSkills,
     publishToMarketplace,
     clearError,
   } = useSkills({ enabled, listParams });
   const filteredSkills = skills;
+  const canAdminUploadSkills =
+    hasAnyPermission([Permission.SKILL_ADMIN]) ||
+    effectivePermissions.includes(Permission.SKILL_ADMIN);
 
   useEffect(() => {
     setPage(1);
@@ -373,11 +380,13 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     setZipSkills([]);
     setSelectedZipSkills([]);
     try {
-      const result = await previewZipSkills(file);
+      const result = canAdminUploadSkills
+        ? await adminPreviewZipSkills(file)
+        : await previewZipSkills(file);
       if (result && result.skills) {
         setZipSkills(result.skills);
         setSelectedZipSkills(
-          result.skills.filter((s) => s.already_exists).map((s) => s.name),
+          initialZipSkillSelection(result.skills, canAdminUploadSkills),
         );
       }
     } finally {
@@ -407,18 +416,41 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
 
   const handleZipSkillToggle = (name: string) => {
     setSelectedZipSkills((prev) =>
-      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
+      toggleZipSkillSelection(prev, name, zipSkills, canAdminUploadSkills),
     );
   };
 
   const handleZipSelectAll = (names: string[]) => {
-    setSelectedZipSkills(names);
+    setSelectedZipSkills(
+      coerceZipSkillSelection(names, zipSkills, canAdminUploadSkills),
+    );
   };
 
   const handleZipUpload = async () => {
     if (!zipFile || selectedZipSkills.length === 0) return;
     setZipUploading(true);
     try {
+      if (canAdminUploadSkills) {
+        if (selectedZipSkills.length !== 1) {
+          toast.error(t("skills.adminUploadSelectOne"));
+          return;
+        }
+        const selectedSkill = zipSkills.find(
+          (skill) => skill.name === selectedZipSkills[0],
+        );
+        if (!selectedSkill || selectedSkill.already_exists) {
+          toast.error(t("skills.adminUploadRequiresNewSkill"));
+          return;
+        }
+        const result = await adminUploadSkill(zipFile, selectedZipSkills[0]);
+        if (result?.uploaded) {
+          setShowZipModal(false);
+          setZipFile(null);
+          setZipSkills([]);
+          setSelectedZipSkills([]);
+        }
+        return;
+      }
       const result = await uploadSkill(zipFile, selectedZipSkills);
       if (result && result.created.length > 0) {
         setShowZipModal(false);
@@ -587,6 +619,7 @@ export function useSkillsActions(options?: { enabled?: boolean }) {
     handleZipSkillToggle,
     handleZipSelectAll,
     handleZipUpload,
+    canAdminUploadSkills,
 
     // GitHub import
     showGithubModal,

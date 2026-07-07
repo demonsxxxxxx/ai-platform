@@ -2213,7 +2213,16 @@
     "upload": "업로드",
     "uploadZipTitle": "스킬 ZIP 업로드",
     "uploading": "업로드 중...",
-    "userSkillVisible": "사용자 스킬 (나에게만 표시)"
+    "userSkillVisible": "사용자 스킬 (나에게만 표시)",
+    "adminUploadSelectOne": "관리자 업로드는 한 번에 하나의 Skill ZIP만 게시할 수 있습니다",
+    "adminUploadRequiresNewSkill": "관리자 업로드는 완전히 새로운 Skill만 게시합니다",
+    "adminZipImportHint": "관리자 업로드는 전역 Skill을 만들고 버전 패키지를 저장한 뒤 이 테넌트의 안정 채널에 게시합니다.",
+    "adminZipNoNewSkill": "이 ZIP에는 완전히 새로운 Skill이 없습니다. 기존 카탈로그 Skill은 관리자 업로드로 게시할 수 없습니다.",
+    "newSkillAdminUpload": "새 Skill",
+    "publicCatalogSkill": "공개 카탈로그",
+    "newSkillImportUnsupported": "관리자 업로드 필요",
+    "selectNewSkillToPublish": "게시할 새 Skill 선택",
+    "zipImportBackedHint": "ZIP 가져오기는 사용자 Skill 파일 오버레이에 기록하며 기존 공개 Skill만 대상으로 합니다. 새 Skill은 관리자 업로드가 필요합니다."
   },
   "skillsHub": {
     "featureDisabled": {

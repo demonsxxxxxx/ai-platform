@@ -539,15 +539,13 @@ async def list_skill_ids(conn: AsyncConnection) -> list[str]:
     return [str(row["id"]) for row in list(await cursor.fetchall())]
 
 
-async def set_workbench_skill_status(
+async def _upsert_workbench_skill_status(
     conn: AsyncConnection,
     *,
     tenant_id: str,
     skill_id: str,
     status: str,
 ) -> dict[str, Any]:
-    if not is_workbench_skill_public(skill_id):
-        raise RepositoryNotFoundError("workbench_skill_not_found")
     await conn.execute(
         """
         insert into tenant_workbench_skills(tenant_id, skill_id, status, visible_to_user)
@@ -581,6 +579,56 @@ async def set_workbench_skill_status(
     if row is None:
         raise RepositoryNotFoundError("skill_not_found")
     return row
+
+
+async def _tenant_workbench_skill_exists(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    skill_id: str,
+) -> bool:
+    cursor = await conn.execute(
+        """
+        select 1
+        from tenant_workbench_skills
+        where tenant_id = %s and skill_id = %s
+        """,
+        (tenant_id, skill_id),
+    )
+    return await cursor.fetchone() is not None
+
+
+async def set_workbench_skill_status(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    skill_id: str,
+    status: str,
+) -> dict[str, Any]:
+    if not is_workbench_skill_public(skill_id):
+        raise RepositoryNotFoundError("workbench_skill_not_found")
+    return await _upsert_workbench_skill_status(
+        conn,
+        tenant_id=tenant_id,
+        skill_id=skill_id,
+        status=status,
+    )
+
+
+async def set_uploaded_workbench_skill_status(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    skill_id: str,
+    status: str,
+) -> dict[str, Any]:
+    """Enable a governed uploaded Skill for one tenant after catalog creation."""
+    return await _upsert_workbench_skill_status(
+        conn,
+        tenant_id=tenant_id,
+        skill_id=skill_id,
+        status=status,
+    )
 
 
 async def list_public_skill_catalog(
@@ -618,7 +666,7 @@ async def list_public_skill_catalog(
         left join skill_versions
           on skill_versions.skill_id = skills.id
          and skill_versions.version = coalesce(skill_release_policies.current_version, skills.version)
-        where skills.id = any(%s)
+        where (skills.id = any(%s) or tenant_workbench_skills.skill_id is not null)
           and skills.status = 'active'
           and coalesce(tenant_workbench_skills.visible_to_user, true)
           and (%s or coalesce(tenant_workbench_skills.status, skills.status) = 'active')
@@ -648,7 +696,13 @@ async def set_public_skill_enabled(
 
     if status not in {"active", "disabled"}:
         raise RepositoryConflictError("invalid_skill_status")
-    return await set_workbench_skill_status(
+    if not is_workbench_skill_public(skill_id) and not await _tenant_workbench_skill_exists(
+        conn,
+        tenant_id=tenant_id,
+        skill_id=skill_id,
+    ):
+        raise RepositoryNotFoundError("workbench_skill_not_found")
+    return await _upsert_workbench_skill_status(
         conn,
         tenant_id=tenant_id,
         skill_id=skill_id,
@@ -3493,8 +3547,8 @@ async def upsert_skill_version(
     dependency_ids: list[str],
     status: str = "active",
     created_by: str | None = None,
-) -> None:
-    await conn.execute(
+) -> bool:
+    cursor = await conn.execute(
         """
         insert into skill_versions(
           id, skill_id, version, content_hash, description, source_json,
@@ -3503,6 +3557,7 @@ async def upsert_skill_version(
         values (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
         on conflict (skill_id, version)
         do nothing
+        returning skill_id
         """,
         (
             new_id("skv"),
@@ -3516,6 +3571,43 @@ async def upsert_skill_version(
             created_by,
         ),
     )
+    return await cursor.fetchone() is not None
+
+
+async def create_skill_catalog(
+    conn: AsyncConnection,
+    *,
+    skill_id: str,
+    name: str,
+    version: str,
+    description: str,
+    input_modes: list[str],
+    output_modes: list[str],
+    executor_type: str,
+    status: str = "active",
+) -> None:
+    cursor = await conn.execute(
+        """
+        insert into skills(
+          id, name, version, description, input_modes, output_modes, executor_type, status
+        )
+        values (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+        on conflict (id) do nothing
+        returning id
+        """,
+        (
+            skill_id,
+            name,
+            version,
+            description,
+            json.dumps(input_modes, ensure_ascii=False),
+            json.dumps(output_modes, ensure_ascii=False),
+            executor_type,
+            status,
+        ),
+    )
+    if await cursor.fetchone() is None:
+        raise RepositoryConflictError("skill_catalog_already_exists")
 
 
 async def update_skill_catalog_version(

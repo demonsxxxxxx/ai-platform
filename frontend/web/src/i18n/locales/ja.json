@@ -2213,7 +2213,16 @@
     "upload": "アップロード",
     "uploadZipTitle": "スキルZIPをアップロード",
     "uploading": "アップロード中...",
-    "userSkillVisible": "ユーザースキル（自分のみに表示）"
+    "userSkillVisible": "ユーザースキル（自分のみに表示）",
+    "adminUploadSelectOne": "管理者アップロードでは一度に 1 つの Skill ZIP のみ公開できます",
+    "adminUploadRequiresNewSkill": "管理者アップロードで公開できるのは新規 Skill のみです",
+    "adminZipImportHint": "管理者アップロードはグローバル Skill を作成し、バージョンパッケージを保存して、このテナントの安定チャネルに公開します。",
+    "adminZipNoNewSkill": "この ZIP には新規 Skill が含まれていません。既存のカタログ Skill は管理者アップロードでは公開できません。",
+    "newSkillAdminUpload": "新規 Skill",
+    "publicCatalogSkill": "公開カタログ",
+    "newSkillImportUnsupported": "管理者アップロードが必要",
+    "selectNewSkillToPublish": "公開する新規 Skill を選択",
+    "zipImportBackedHint": "ZIP インポートは自分の Skill ファイル上書きレイヤーに書き込み、既存の公開 Skill のみ対象です。新規 Skill には管理者アップロードが必要です。"
   },
   "skillsHub": {
     "featureDisabled": {

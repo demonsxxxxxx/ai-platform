@@ -23,6 +23,20 @@ import type {
 
 const SKILLS_API = `${API_BASE}/api/skills`;
 
+export interface AdminSkillUploadResponse {
+  uploaded: {
+    skill_id: string;
+    version: string;
+    content_hash: string;
+    description: string;
+    source: Record<string, unknown>;
+    dependency_ids: string[];
+    status: string;
+    created_by?: string | null;
+    created_at?: unknown;
+  };
+}
+
 type SkillListWireResponse =
   | UserSkill[]
   | (Omit<
@@ -48,6 +62,22 @@ export function buildSkillListUrl(params: SkillListParams = {}): string {
   params.tags?.forEach((tag) => searchParams.append("tags", tag));
   const query = searchParams.toString();
   return `${SKILLS_API}/${query ? `?${query}` : ""}`;
+}
+
+/**
+ * Build the governed admin package-upload endpoint for a Skill version.
+ */
+export function buildAdminSkillUploadUrl(skillName: string): string {
+  return `${API_BASE}/api/ai/admin/skills/${encodeURIComponent(
+    skillName,
+  )}/versions/upload`;
+}
+
+/**
+ * Build the governed admin ZIP preview endpoint with global catalog existence.
+ */
+export function buildAdminSkillPreviewUrl(): string {
+  return `${API_BASE}/api/ai/admin/skills/upload/preview`;
 }
 
 export function normalizeSkillListResponse(
@@ -291,6 +321,27 @@ export const skillApi = {
   },
 
   /**
+   * Preview a ZIP file through the admin Skill path with global catalog checks.
+   */
+  async adminPreviewZip(file: File): Promise<{
+    skill_count: number;
+    skills: Array<{
+      name: string;
+      description: string;
+      file_count: number;
+      files: string[];
+      already_exists: boolean;
+    }>;
+  }> {
+    const formData = new FormData();
+    formData.append("file", file);
+    return authFetch(buildAdminSkillPreviewUrl(), {
+      method: "POST",
+      body: formData,
+    });
+  },
+
+  /**
    * Upload skill(s) from ZIP file (optionally filter by skill names)
    */
   async uploadZip(
@@ -308,6 +359,21 @@ export const skillApi = {
       formData.append("skill_names", skillNames.join(","));
     }
     return authFetch(`${SKILLS_API}/upload`, {
+      method: "POST",
+      body: formData,
+    });
+  },
+
+  /**
+   * Upload a governed package version through the admin Skill release path.
+   */
+  async adminUploadZip(
+    skillName: string,
+    file: File,
+  ): Promise<AdminSkillUploadResponse> {
+    const formData = new FormData();
+    formData.append("package", file);
+    return authFetch(buildAdminSkillUploadUrl(skillName), {
       method: "POST",
       body: formData,
     });
