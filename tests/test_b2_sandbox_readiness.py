@@ -591,6 +591,27 @@ def test_b2_runtime_delta_filter_treats_non_b2_readiness_and_evidence_as_neutral
     assert changes == ["app/runtime/sandbox/runtime.py"]
 
 
+def test_b2_sandbox_readiness_uses_source_tree_marker_when_git_metadata_absent(tmp_path, monkeypatch):
+    write_future_reviewed_b2_smoke(tmp_path)
+    write_b2_issue_closure_evidence(tmp_path)
+    (tmp_path / ".ai-platform-source-tree-commit").write_text(
+        FUTURE_RUNTIME_SUBJECT + "\n",
+        encoding="utf-8",
+    )
+
+    def fail_git(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(128, ["git", "rev-parse", "HEAD"])
+
+    monkeypatch.setattr(subprocess, "run", fail_git)
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert "b2_runtime_evidence_review_against_merged_source" not in readiness["open_gaps"]
+    runtime_review = readiness["gate_boundary_evidence"]["b2_runtime_evidence_review_against_merged_source"]
+    assert runtime_review["closed_gap"] == "b2_runtime_evidence_review_against_merged_source"
+    assert runtime_review["current_source_commit_sha"] == FUTURE_RUNTIME_SUBJECT
+
+
 def test_b2_sandbox_readiness_rejects_egress_hardening_without_probe_details(tmp_path):
     write_future_reviewed_b2_smoke(tmp_path)
     evidence_path = (
@@ -867,7 +888,7 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
     ]
     assert runtime_review["status"] == "recorded_local_contract"
     assert runtime_review["closed_gap"] == "b2_runtime_evidence_review_against_merged_source"
-    assert runtime_review["runtime_subject_commit_sha"] == "d4b43ba0e6b450c547faddd5398b6fb9e33e338b"
+    assert runtime_review["runtime_subject_commit_sha"] == "46a1b23cbfafb9facd356583538ed0dce61e3ce5"
     current_head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         check=True,
@@ -893,8 +914,8 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
     assert smoke_evidence["status"] == "recorded_211_runtime_smoke_hardening_open"
     assert smoke_evidence["sandbox_provider"] == "opensandbox"
-    assert smoke_evidence["run_id"] == "opensandbox-d4b43ba-ipcb-smoke-20260707201859"
-    assert smoke_evidence["runtime_subject_commit_sha"] == "d4b43ba0e6b450c547faddd5398b6fb9e33e338b"
+    assert smoke_evidence["run_id"] == "opensandbox-46a1b23-ipcb-smoke-20260707213023"
+    assert smoke_evidence["runtime_subject_commit_sha"] == "46a1b23cbfafb9facd356583538ed0dce61e3ce5"
     assert smoke_evidence["hardening_verifier_status"] == "failed"
     assert smoke_evidence["checks"]["check_platform_hardening_evidence"] is False
     assert smoke_evidence["does_not_close_b2_gate"] is True
