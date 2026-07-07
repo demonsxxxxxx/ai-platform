@@ -723,12 +723,19 @@ def _command_result_exit_code(result: Any) -> int | None:
 
 
 def _command_result_text(result: Any) -> str:
+    saw_output_field = False
     for name in ("text", "stdout", "output"):
         value = getattr(result, name, None)
+        if hasattr(result, name):
+            saw_output_field = True
         if value is None and isinstance(result, dict):
+            if name in result:
+                saw_output_field = True
             value = result.get(name)
         if value:
             return str(value)
+    if saw_output_field:
+        return ""
     return str(result or "")
 
 
@@ -816,7 +823,7 @@ async def _opensandbox_sdk_egress_probe(
     output = _command_result_text(result)
     if exit_code != 42:
         return {}
-    if "egress_denied" not in output.lower() and "egress denied" not in output.lower():
+    if output and "egress_denied" not in output.lower() and "egress denied" not in output.lower():
         return {}
     if _redact(output) != output:
         return {}

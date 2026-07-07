@@ -1598,6 +1598,50 @@ def test_opensandbox_sdk_egress_probe_rejects_generic_network_failures():
     assert result == {}
 
 
+def test_opensandbox_sdk_egress_probe_accepts_explicit_denial_exit_without_stdout():
+    generator = load_generator()
+
+    class FakeOpenSandboxRule:
+        action = "allow"
+        target = "host.docker.internal"
+
+    class FakeOpenSandboxPolicy:
+        default_action = "deny"
+        egress = [FakeOpenSandboxRule()]
+
+    class FakeOpenSandboxCommands:
+        async def run(self, _command):
+            return type(
+                "Execution",
+                (),
+                {
+                    "exit_code": 42,
+                    "text": "",
+                    "stdout": "",
+                    "output": "",
+                },
+            )()
+
+    class FakeOpenSandbox:
+        commands = FakeOpenSandboxCommands()
+
+        async def get_egress_policy(self):
+            return FakeOpenSandboxPolicy()
+
+    result = asyncio.run(
+        generator._opensandbox_sdk_egress_probe(
+            FakeOpenSandbox(),
+            denied_target="https://egress-denied.invalid/",
+            callback_host="host.docker.internal",
+        )
+    )
+
+    assert result["default_deny_outbound"] is True
+    assert result["platform_allowlist_enforced"] is True
+    assert result["denied_egress_redacted"] is True
+    assert result["denied_probe_error_code"] == "egress_denied"
+
+
 def test_opensandbox_security_probe_command_emits_parseable_json(monkeypatch, tmp_path):
     generator = load_generator()
     status = tmp_path / "status"
