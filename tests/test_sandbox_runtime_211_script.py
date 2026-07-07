@@ -1,5 +1,9 @@
+import asyncio
 import importlib.util
+import io
 import json
+import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -1370,6 +1374,260 @@ def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(mon
     serialized = json.dumps(recorder.to_dict())
     assert str(tmp_path) not in serialized
     assert "secret-token" not in serialized
+
+
+def test_run_platform_runtime_probe_derives_opensandbox_sdk_egress_and_security_probe(monkeypatch, tmp_path):
+    generator = load_generator()
+    recorder = generator.EvidenceRecorder(
+        run_id="run-a",
+        executor_url="http://executor.test",
+        callback_token="secret-token",
+    )
+
+    class FakeOpenSandboxCommandResult:
+        def __init__(self, *, exit_code: int, text: str) -> None:
+            self.exit_code = exit_code
+            self.text = text
+
+    class FakeOpenSandboxRule:
+        action = "allow"
+        target = "host.docker.internal"
+
+    class FakeOpenSandboxPolicy:
+        default_action = "deny"
+        egress = [FakeOpenSandboxRule()]
+
+    class FakeOpenSandboxCommands:
+        def __init__(self) -> None:
+            self.runs = []
+
+        async def run(self, command):
+            self.runs.append(command)
+            if "egress-denied.invalid" in command:
+                return FakeOpenSandboxCommandResult(
+                    exit_code=42,
+                    text="egress_denied",
+                )
+            if "/proc/self/status" in command:
+                return FakeOpenSandboxCommandResult(
+                    exit_code=0,
+                    text=json.dumps(
+                        {
+                            "docker_sock_exists": False,
+                            "no_new_privileges": True,
+                            "capabilities_dropped": False,
+                            "workspace_mount_mode": "rw",
+                            "root_filesystem_read_only_or_minimal": False,
+                        }
+                    ),
+                )
+            raise AssertionError(command)
+
+    class FakeOpenSandbox:
+        def __init__(self) -> None:
+            self.commands = FakeOpenSandboxCommands()
+
+        async def get_egress_policy(self):
+            return FakeOpenSandboxPolicy()
+
+    fake_sandbox = FakeOpenSandbox()
+
+    class FakeRuntime:
+        def __init__(
+            self,
+            *,
+            workspace_root,
+            callback_token_resolver,
+            record_lease,
+            release_lease,
+        ):
+            self.record_lease = record_lease
+            self.release_lease = release_lease
+
+        async def submit(self, request):
+            from app.runtime.sandbox import container_provider
+            from app.runtime.sandbox.contracts import ContainerLease, StopResult, WorkspaceLease
+
+            container_provider._PROVIDER_CACHE["opensandbox"] = type(
+                "FakeOpenSandboxProvider",
+                (),
+                {"_sandboxes": {"osb-run-a": fake_sandbox}},
+            )()
+            lease = ContainerLease(
+                container_id="osb-run-a",
+                container_name="opensandbox-run-a",
+                provider="opensandbox",
+                executor_url="http://opensandbox-executor.test:18000",
+                tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=request.run_id,
+                sandbox_mode=request.sandbox_mode,
+                browser_enabled=request.browser_enabled,
+                workspace_host_path=str(tmp_path / "workspace"),
+                workspace_container_path="/workspace",
+                labels={
+                    "ai-platform.provider_backend": "opensandbox",
+                    "ai-platform.egress.policy": "opensandbox-network-policy",
+                    "ai-platform.egress.callback_host": "host.docker.internal",
+                },
+                timings={
+                    "sandbox_container_start_latency_ms": 2,
+                    "sandbox_container_cold_start_latency_ms": 2,
+                    "sandbox_healthcheck_latency_ms": 3,
+                },
+            )
+            workspace = WorkspaceLease(
+                tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=request.run_id,
+                host_root=str(tmp_path),
+                workspace_host_path=str(tmp_path / "workspace"),
+                workspace_container_path="/workspace",
+                inputs_host_path=str(tmp_path / "inputs"),
+                logs_host_path=str(tmp_path / "logs"),
+            )
+            lease_id = await self.record_lease(lease, request, workspace)
+            assert recorder.record_callback({"run_id": request.run_id, "status": "running"}, "secret-token")
+            assert recorder.record_callback({"run_id": request.run_id, "status": "completed"}, "secret-token")
+            await self.release_lease(
+                lease,
+                "dispatch_completed",
+                lease_id,
+                stop_result=StopResult(container_id=lease.container_id, status="stopped", message="dispatch_completed"),
+            )
+            return type(
+                "SandboxRuntimeResult",
+                (),
+                {
+                    "status": "accepted",
+                    "session_id": request.session_id,
+                    "run_id": request.run_id,
+                    "executor_response": {"status": "accepted", "run_id": request.run_id},
+                    "timings": {
+                        "schema_version": "ai-platform.sandbox-latency-split.v1",
+                        "sandbox_queue_wait_latency_ms": 0,
+                        "sandbox_lease_acquire_latency_ms": 1,
+                        "sandbox_container_start_latency_ms": 2,
+                        "sandbox_container_cold_start_latency_ms": 2,
+                        "sandbox_healthcheck_latency_ms": 3,
+                        "sandbox_executor_dispatch_latency_ms": 4,
+                        "executor_first_token_latency_ms": 0,
+                        "executor_tool_call_latency_ms": 0,
+                        "executor_model_latency_ms": 5,
+                        "document_processing_latency_ms": 0,
+                        "artifact_upload_latency_ms": 0,
+                        "sandbox_cleanup_latency_ms": 6,
+                        "sandbox_total_latency_ms": 21,
+                    },
+                },
+            )()
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        return type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "not a docker container"})()
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
+
+    result = generator.run_platform_runtime_probe(
+        recorder=recorder,
+        sandbox_provider="opensandbox",
+        sandbox_executor_image="ai-platform:local",
+        workspace_root=str(tmp_path),
+        callback_url="http://callback.test/callback",
+        docker_cmd=("docker",),
+        run=fake_run,
+        capture_runtime_egress_probe=True,
+    )
+
+    assert result["status"] == "accepted"
+    assert recorder.hardening["egress_policy"]["default_deny_outbound"] is True
+    assert recorder.hardening["egress_policy"]["platform_allowlist_enforced"] is True
+    assert recorder.hardening["egress_policy"]["denied_probe_error_code"] == "egress_denied"
+    assert recorder.hardening["egress_policy"]["allowed_callback_host"] == "host.docker.internal"
+    assert recorder.hardening["egress_policy"]["probe_source"] == "runtime_probe_results"
+    assert recorder.hardening["security_options"]["no_new_privileges"] is True
+    assert recorder.hardening["security_options"]["docker_socket_mounted"] is False
+    assert recorder.hardening["security_options"]["capabilities_dropped"] is False
+    assert recorder.hardening["security_options"]["root_filesystem_read_only_or_minimal"] is False
+    assert any("egress-denied.invalid" in command for command in fake_sandbox.commands.runs)
+    assert any("/proc/self/status" in command for command in fake_sandbox.commands.runs)
+    serialized = json.dumps(recorder.to_dict())
+    assert str(tmp_path) not in serialized
+    assert "secret-token" not in serialized
+
+
+def test_opensandbox_sdk_egress_probe_rejects_generic_network_failures():
+    generator = load_generator()
+
+    class FakeOpenSandboxRule:
+        action = "allow"
+        target = "host.docker.internal"
+
+    class FakeOpenSandboxPolicy:
+        default_action = "deny"
+        egress = [FakeOpenSandboxRule()]
+
+    class FakeOpenSandboxCommands:
+        async def run(self, _command):
+            return type(
+                "Execution",
+                (),
+                {
+                    "exit_code": 43,
+                    "text": "URLError:<urlopen error [Errno -2] Name or service not known>",
+                },
+            )()
+
+    class FakeOpenSandbox:
+        commands = FakeOpenSandboxCommands()
+
+        async def get_egress_policy(self):
+            return FakeOpenSandboxPolicy()
+
+    result = asyncio.run(
+        generator._opensandbox_sdk_egress_probe(
+            FakeOpenSandbox(),
+            denied_target="https://egress-denied.invalid/",
+            callback_host="host.docker.internal",
+        )
+    )
+
+    assert result == {}
+
+
+def test_opensandbox_security_probe_command_emits_parseable_json(monkeypatch, tmp_path):
+    generator = load_generator()
+    status = tmp_path / "status"
+    mountinfo = tmp_path / "mountinfo"
+    status.write_text("NoNewPrivs:\t1\nCapEff:\t0000000000000000\n", encoding="utf-8")
+    mountinfo.write_text(
+        "1 0 8:1 / / rw,relatime - ext4 /dev/root rw\n"
+        "2 1 8:1 /workspace /workspace rw,relatime - ext4 /dev/root rw\n",
+        encoding="utf-8",
+    )
+    command = generator._opensandbox_security_probe_command()
+    code = shlex.split(command)[2]
+    code = code.replace("Path('/proc/self/status')", f"Path({str(status)!r})")
+    code = code.replace("Path('/proc/self/mountinfo')", f"Path({str(mountinfo)!r})")
+    code = code.replace("Path('/var/run/docker.sock')", f"Path({str(tmp_path / 'docker.sock')!r})")
+    monkeypatch.setattr(os, "access", lambda path, mode: path == "/workspace" and mode == os.W_OK)
+
+    namespace = {"Path": Path, "json": json, "os": os}
+    output = io.StringIO()
+    monkeypatch.setattr("sys.stdout", output)
+    exec(code, namespace)
+
+    assert json.loads(output.getvalue()) == {
+        "privileged": False,
+        "no_new_privileges": True,
+        "capabilities_dropped": True,
+        "docker_socket_mounted": False,
+        "workspace_mount_mode": "rw",
+        "root_filesystem_read_only_or_minimal": False,
+    }
 
 
 def test_run_platform_runtime_probe_uses_configured_sdk_model(monkeypatch, tmp_path):
