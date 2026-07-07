@@ -867,7 +867,7 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
     ]
     assert runtime_review["status"] == "recorded_local_contract"
     assert runtime_review["closed_gap"] == "b2_runtime_evidence_review_against_merged_source"
-    assert runtime_review["runtime_subject_commit_sha"] == "4eb80e217b62cb736fca07c5626c4c0e4f3695e3"
+    assert runtime_review["runtime_subject_commit_sha"] == "d4b43ba0e6b450c547faddd5398b6fb9e33e338b"
     current_head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         check=True,
@@ -893,8 +893,8 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
     assert smoke_evidence["status"] == "recorded_211_runtime_smoke_hardening_open"
     assert smoke_evidence["sandbox_provider"] == "opensandbox"
-    assert smoke_evidence["run_id"] == "opensandbox-4eb80e2-smoke-20260708031603"
-    assert smoke_evidence["runtime_subject_commit_sha"] == "4eb80e217b62cb736fca07c5626c4c0e4f3695e3"
+    assert smoke_evidence["run_id"] == "opensandbox-d4b43ba-ipcb-smoke-20260707201859"
+    assert smoke_evidence["runtime_subject_commit_sha"] == "d4b43ba0e6b450c547faddd5398b6fb9e33e338b"
     assert smoke_evidence["hardening_verifier_status"] == "failed"
     assert smoke_evidence["checks"]["check_platform_hardening_evidence"] is False
     assert smoke_evidence["does_not_close_b2_gate"] is True
