@@ -31,6 +31,8 @@ _B2_RUNTIME_NEUTRAL_EXACT_PATHS = {
     "docs/operations/ai-platform-gate-status.md",
     "docs/release-evidence/README.md",
     "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json",
+    "scripts/generate_sandbox_runtime_evidence_211.py",
+    "scripts/verify_sandbox_runtime_211.py",
     "tools/b2_sandbox_readiness.py",
     "tests/test_b1_memory_context_readiness.py",
     "tests/test_b2_sandbox_readiness.py",
