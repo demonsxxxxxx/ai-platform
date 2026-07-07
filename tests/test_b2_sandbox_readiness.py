@@ -591,6 +591,25 @@ def test_b2_runtime_delta_filter_treats_non_b2_readiness_and_evidence_as_neutral
     assert changes == ["app/runtime/sandbox/runtime.py"]
 
 
+def test_b2_runtime_delta_filter_treats_211_evidence_tools_as_neutral(monkeypatch):
+    monkeypatch.setattr(
+        b2_sandbox_readiness,
+        "_resolve_source_runtime_affecting_changes_between",
+        lambda _base, _source: [
+            "scripts/generate_sandbox_runtime_evidence_211.py",
+            "scripts/verify_sandbox_runtime_211.py",
+            "app/runtime/sandbox/runtime.py",
+        ],
+    )
+
+    changes = b2_sandbox_readiness._resolve_b2_runtime_affecting_changes_between(
+        "runtime-subject",
+        "current-source",
+    )
+
+    assert changes == ["app/runtime/sandbox/runtime.py"]
+
+
 def test_b2_sandbox_readiness_uses_source_tree_marker_when_git_metadata_absent(tmp_path, monkeypatch):
     write_future_reviewed_b2_smoke(tmp_path)
     write_b2_issue_closure_evidence(tmp_path)
