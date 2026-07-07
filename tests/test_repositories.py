@@ -3035,7 +3035,7 @@ async def test_cleanup_expired_sandbox_leases_releases_expired_non_runtime_lease
     assert "status = 'released'" in update_sql
     assert "status = 'active'" in update_sql
     assert "expires_at <= now()" in update_sql
-    assert "provider not in ('fake', 'docker')" in update_sql
+    assert "provider not in ('fake', 'docker', 'opensandbox')" in update_sql
     assert update_params == ("expired", "tenant-a", "tenant-a")
     assert calls[1] == (
         "event",

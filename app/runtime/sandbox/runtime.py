@@ -18,7 +18,7 @@ from app.settings import get_settings
 
 
 EventSink = Callable[[AgentEvent], Awaitable[None] | None]
-ExecuteTask = Callable[[str, ExecutorTaskRequest], Awaitable[dict[str, Any]]]
+ExecuteTask = Callable[..., Awaitable[dict[str, Any]]]
 TokenResolver = Callable[[str], str]
 LeaseRecorder = Callable[[ContainerLease, SandboxRuntimeRequest, WorkspaceLease], Awaitable[Any] | Any]
 LeaseReleaser = Callable[..., Awaitable[Any] | Any]
@@ -86,13 +86,46 @@ class SandboxRuntime:
             return result
         return None
 
-    async def _call_release_lease(self, lease: ContainerLease, reason: str, lease_record_id: str | None = None) -> None:
-        if len(inspect.signature(self.release_lease).parameters) >= 3:
-            result = self.release_lease(lease, reason, lease_record_id)
+    async def _call_release_lease(
+        self,
+        lease: ContainerLease,
+        reason: str,
+        lease_record_id: str | None = None,
+        *,
+        stop_result: StopResult | None = None,
+    ) -> None:
+        parameters = inspect.signature(self.release_lease).parameters
+        parameter_values = list(parameters.values())
+        accepts_var_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameter_values)
+        release_args = (lease, reason, lease_record_id) if len(parameter_values) >= 3 else (lease, reason)
+        if stop_result is not None and (accepts_var_kwargs or "stop_result" in parameters):
+            result = self.release_lease(*release_args, stop_result=stop_result)
         else:
-            result = self.release_lease(lease, reason)
+            result = self.release_lease(*release_args)
         if inspect.isawaitable(result):
             await result
+
+    async def _call_execute_task(
+        self,
+        executor_url: str,
+        task_request: ExecutorTaskRequest,
+        executor_headers: dict[str, str],
+    ) -> dict[str, Any]:
+        try:
+            parameters = inspect.signature(self.execute_task).parameters.values()
+        except (TypeError, ValueError):
+            return await self.execute_task(executor_url, task_request)
+        accepts_headers = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD or parameter.name == "executor_headers"
+            for parameter in parameters
+        )
+        if accepts_headers:
+            return await self.execute_task(
+                executor_url,
+                task_request,
+                executor_headers=dict(executor_headers),
+            )
+        return await self.execute_task(executor_url, task_request)
 
     async def _record_runtime_lease(
         self,
@@ -100,6 +133,13 @@ class SandboxRuntime:
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
     ) -> str | None:
+        lease_payload = {
+            "container_id": lease.container_id,
+            "container_name": lease.container_name,
+            "executor_url": lease.executor_url,
+            "workspace_container_path": lease.workspace_container_path,
+            "labels": dict(lease.labels),
+        }
         async with transaction() as conn:
             row = await repositories.create_sandbox_lease(
                 conn,
@@ -115,7 +155,7 @@ class SandboxRuntime:
                 ttl_seconds=1800,
                 resource_limits_json=request.resource_limits,
                 user_visible_payload_json=workspace.user_visible_payload(),
-                lease_payload_json={},
+                lease_payload_json=lease_payload,
             )
         return str(row.get("id")) if isinstance(row, dict) and row.get("id") else None
 
@@ -142,7 +182,7 @@ class SandboxRuntime:
         stop_result = await self.provider.stop(lease, reason=reason)
         if stop_result.status == "failed":
             raise SandboxRuntimeCleanupError(reason=reason, stop_result=stop_result)
-        await self._call_release_lease(lease, reason, lease_record_id)
+        await self._call_release_lease(lease, reason, lease_record_id, stop_result=stop_result)
 
     def _elapsed_ms(self, started_at: float) -> int:
         return max(int(round((time.monotonic() - started_at) * 1000)), 0)
@@ -194,7 +234,7 @@ class SandboxRuntime:
                 },
             )
             dispatch_started_at = time.monotonic()
-            response = await self.execute_task(lease.executor_url, task_request)
+            response = await self._call_execute_task(lease.executor_url, task_request, lease.executor_headers)
             sandbox_executor_dispatch_latency_ms = self._elapsed_ms(dispatch_started_at)
         except BaseException as exc:
             if request.sandbox_mode == "ephemeral":
@@ -229,7 +269,12 @@ class SandboxRuntime:
             executor_response=response,
             timings={
                 "schema_version": "ai-platform.sandbox-latency-split.v1",
+                "sandbox_queue_wait_latency_ms": self._timing_value(request.queue_wait_ms),
                 "sandbox_lease_acquire_latency_ms": lease_acquire_latency_ms,
+                "sandbox_container_start_latency_ms": self._timing_value(
+                    lease.timings.get("sandbox_container_start_latency_ms")
+                    or lease.timings.get("sandbox_container_cold_start_latency_ms")
+                ),
                 "sandbox_container_cold_start_latency_ms": self._timing_value(
                     lease.timings.get("sandbox_container_cold_start_latency_ms")
                 ),
@@ -237,10 +282,17 @@ class SandboxRuntime:
                     lease.timings.get("sandbox_healthcheck_latency_ms")
                 ),
                 "sandbox_executor_dispatch_latency_ms": sandbox_executor_dispatch_latency_ms,
+                "executor_first_token_latency_ms": self._timing_value(
+                    response.get("executor_first_token_latency_ms")
+                ),
+                "executor_tool_call_latency_ms": self._timing_value(
+                    response.get("executor_tool_call_latency_ms")
+                ),
                 "executor_model_latency_ms": self._timing_value(response.get("executor_model_latency_ms")),
                 "document_processing_latency_ms": self._timing_value(
                     response.get("document_processing_latency_ms")
                 ),
+                "artifact_upload_latency_ms": self._timing_value(response.get("artifact_upload_latency_ms")),
                 "sandbox_cleanup_latency_ms": sandbox_cleanup_latency_ms,
                 "sandbox_total_latency_ms": self._elapsed_ms(total_started_at),
             },

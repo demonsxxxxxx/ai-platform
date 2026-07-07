@@ -1,3 +1,5 @@
+import asyncio
+import inspect
 import importlib
 import threading
 import time
@@ -184,6 +186,215 @@ class FakeDockerClient:
             raise self.ping_error
 
 
+class FakeConnectionConfig:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = dict(kwargs)
+
+
+class FakeOpenSandboxFile:
+    def __init__(self, *, path: str, data: str) -> None:
+        self.path = path
+        self.data = data
+
+
+class FakeOpenSandboxHost:
+    def __init__(self, *, path: str) -> None:
+        self.path = path
+
+
+class FakeOpenSandboxVolume:
+    def __init__(
+        self,
+        *,
+        name: str,
+        host: FakeOpenSandboxHost,
+        mountPath: str,
+        readOnly: bool = False,
+    ) -> None:
+        self.name = name
+        self.host = host
+        self.mount_path = mountPath
+        self.read_only = readOnly
+
+
+class FakeOpenSandboxNetworkRule:
+    def __init__(self, *, action: str, target: str) -> None:
+        self.action = action
+        self.target = target
+
+
+class FakeOpenSandboxNetworkPolicy:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = dict(kwargs)
+
+
+class FakeOpenSandboxEndpoint:
+    def __init__(self, endpoint: str, headers: dict[str, str] | None = None) -> None:
+        self.endpoint = endpoint
+        self.headers = headers or {}
+
+
+class FakeOpenSandboxFiles:
+    def __init__(self, sandbox: "FakeOpenSandbox") -> None:
+        self.sandbox = sandbox
+        self.written: list[FakeOpenSandboxFile] = []
+        self.read_returns_bytes = False
+
+    def write_files(self, files: list[FakeOpenSandboxFile]) -> None:
+        self.written.extend(files)
+
+    def read_file(self, path: str) -> str | bytes:
+        for item in self.written:
+            if item.path == path:
+                if self.read_returns_bytes:
+                    return item.data.encode("utf-8")
+                return item.data
+        raise FileNotFoundError(path)
+
+
+class FakeOpenSandboxCommands:
+    def __init__(self, sandbox: "FakeOpenSandbox") -> None:
+        self.sandbox = sandbox
+        self.runs: list[tuple[str, int | None]] = []
+        self.exit_code = 0
+
+    def run(self, command: str, timeout: int | None = None) -> object:
+        self.runs.append((command, timeout))
+        return type("FakeCommandResult", (), {"exit_code": self.exit_code, "stdout": "", "stderr": ""})()
+
+
+class FakeOpenSandbox:
+    created: list[dict[str, Any]] = []
+    instances: dict[str, "FakeOpenSandbox"] = {}
+    create_error: Exception | None = None
+    endpoint_headers: dict[str, str] = {}
+    connect_calls: list[dict[str, Any]] = []
+
+    def __init__(
+        self,
+        *,
+        sandbox_id: str,
+        metadata: dict[str, str] | None = None,
+        state: str = "RUNNING",
+        endpoint: str | None = None,
+    ) -> None:
+        self.id = sandbox_id
+        self.metadata = metadata or {}
+        self.status = type("FakeSandboxStatus", (), {"state": state})()
+        self.endpoint = endpoint or f"http://{sandbox_id}.opensandbox.test:18000"
+        self.files = FakeOpenSandboxFiles(self)
+        self.commands = FakeOpenSandboxCommands(self)
+        self.killed = False
+        self.closed = False
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.created = []
+        cls.instances = {}
+        cls.create_error = None
+        cls.endpoint_headers = {}
+        cls.connect_calls = []
+
+    @classmethod
+    def create(cls, **kwargs) -> "FakeOpenSandbox":
+        if cls.create_error is not None:
+            raise cls.create_error
+        sandbox = cls(
+            sandbox_id=f"osb-{kwargs['metadata']['ai-platform.run_id']}",
+            metadata=kwargs["metadata"],
+        )
+        cls.created.append(kwargs)
+        cls.instances[sandbox.id] = sandbox
+        return sandbox
+
+    @classmethod
+    def connect(cls, sandbox_id: str, **kwargs) -> "FakeOpenSandbox":
+        cls.connect_calls.append({"sandbox_id": sandbox_id, **kwargs})
+        return cls.instances[sandbox_id]
+
+    def get_endpoint(self, *, port: int, protocol: str = "http") -> FakeOpenSandboxEndpoint:
+        return FakeOpenSandboxEndpoint(self.endpoint, headers=self.endpoint_headers)
+
+    def get_info(self) -> object:
+        return {
+            "id": self.id,
+            "metadata": dict(self.metadata),
+            "status": {"state": self.status.state},
+        }
+
+    def kill(self) -> None:
+        self.killed = True
+        self.status.state = "TERMINATED"
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeOpenSandboxManager:
+    sandboxes: list[FakeOpenSandbox] = []
+    killed: list[str] = []
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.sandboxes = []
+        cls.killed = []
+
+    @classmethod
+    def create(cls, **_kwargs) -> "FakeOpenSandboxManager":
+        return cls()
+
+    async def __aenter__(self) -> "FakeOpenSandboxManager":
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    async def list_sandboxes(self, **_kwargs) -> list[FakeOpenSandbox]:
+        return list(self.sandboxes)
+
+    async def kill_sandbox(self, sandbox_id: str) -> None:
+        self.killed.append(sandbox_id)
+        if sandbox_id in FakeOpenSandbox.instances:
+            FakeOpenSandbox.instances[sandbox_id].kill()
+
+
+class OpenSandboxSettings:
+    sandbox_container_provider = "opensandbox"
+    sandbox_container_start_timeout_seconds = 30
+    sandbox_executor_health_timeout_seconds = 60
+    sandbox_executor_image = "ai-platform:local"
+    sandbox_callback_base_url = "http://host.docker.internal:8020"
+    sandbox_egress_policy_enabled = True
+    sandbox_callback_host_gateway = "host.docker.internal"
+    opensandbox_domain = "opensandbox.local:8080"
+    opensandbox_protocol = "http"
+    opensandbox_api_key = "opensandbox-secret"
+    opensandbox_use_server_proxy = False
+    opensandbox_request_timeout_seconds = 30
+    opensandbox_timeout_seconds = 1800
+    opensandbox_executor_image = ""
+    opensandbox_executor_entrypoint = "/app/docker-entrypoint.sh uvicorn"
+    opensandbox_workspace_mount_enabled = True
+    opensandbox_startup_io_probe_enabled = True
+    opensandbox_allowed_egress_hosts = ""
+
+
+def opensandbox_provider(*, health_probe=None):
+    from app.runtime.sandbox.container_provider import OpenSandboxContainerProvider
+
+    return OpenSandboxContainerProvider(
+        sandbox_class=FakeOpenSandbox,
+        sandbox_manager_class=FakeOpenSandboxManager,
+        connection_config_class=FakeConnectionConfig,
+        file_class=FakeOpenSandboxFile,
+        host_class=FakeOpenSandboxHost,
+        volume_class=FakeOpenSandboxVolume,
+        network_policy_class=FakeOpenSandboxNetworkPolicy,
+        network_rule_class=FakeOpenSandboxNetworkRule,
+        health_probe=health_probe or (lambda executor_url, timeout_seconds: True),
+    )
+
+
 @pytest.mark.asyncio
 async def test_fake_provider_create_or_reuse_returns_lease_and_tracks_status():
     from app.runtime.sandbox.container_provider import FakeContainerProvider
@@ -260,6 +471,21 @@ def test_create_container_provider_rejects_unknown_provider(monkeypatch):
 
     with pytest.raises(ValueError, match="Unknown sandbox container provider"):
         container_provider.create_container_provider()
+
+
+def test_create_container_provider_selects_opensandbox_and_still_rejects_unknown_provider(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    container_provider.reset_container_provider_cache()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    provider = container_provider.create_container_provider()
+
+    assert isinstance(provider, container_provider.OpenSandboxContainerProvider)
+    assert container_provider.create_container_provider("opensandbox") is provider
+    with pytest.raises(ValueError, match="Unknown sandbox container provider"):
+        container_provider.create_container_provider("opensandbox://token@internal")
+
+    container_provider.reset_container_provider_cache()
 
 
 def test_default_executor_health_probe_polls_health_endpoint(monkeypatch):
@@ -426,6 +652,69 @@ async def test_docker_provider_creates_container_with_workspace_labels_and_env()
 
 
 @pytest.mark.asyncio
+async def test_docker_provider_forwards_executor_sdk_environment(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+
+    fake = FakeDockerClient()
+    monkeypatch.setattr(
+        container_provider,
+        "get_settings",
+        lambda: type(
+            "StubSettings",
+            (),
+            {
+                "sandbox_container_start_timeout_seconds": 30,
+                "sandbox_executor_health_timeout_seconds": 60,
+                "sandbox_executor_image": "ai-platform-executor:dev",
+                "sandbox_executor_published_host": "127.0.0.1",
+                "sandbox_callback_base_url": "http://host.docker.internal:8020",
+                "sandbox_egress_policy_enabled": False,
+                "sandbox_egress_network_name": "ai-platform-sandbox-egress",
+                "sandbox_callback_host_gateway": "host.docker.internal",
+                "openai_base_url": "http://new-api.test/v1",
+                "openai_api_key": "test-newapi-token",
+                "openai_model": "deepseek-v4-flash",
+                "anthropic_base_url": "http://new-api.test",
+                "anthropic_auth_token": "test-anthropic-token",
+                "anthropic_model": "deepseek-v4-flash",
+                "claude_agent_model": "deepseek-v4-flash",
+                "default_model_id": "deepseek-v4-flash",
+                "model_catalog_json": "[{\"id\":\"deepseek-v4-flash\"}]",
+                "claude_agent_sdk_enabled": True,
+                "claude_agent_sdk_timeout_seconds": 120,
+                "claude_agent_sdk_max_turns": 128,
+                "claude_agent_sdk_effort": "xhigh",
+                "claude_agent_sdk_max_thinking_tokens": 16384,
+                "claude_agent_permission_mode": "bypassPermissions",
+                "claude_agent_allowed_tools": "Read,Glob,LS,Bash",
+                "claude_agent_disallowed_tools": "",
+                "claude_agent_workspace_root": "/tmp/ai-platform-agent-workspaces",
+                "claude_agent_sdk_skills": "general-chat,qa-file-reviewer",
+                "platform_skills_root": "skills",
+                "skill_staging_subdir": ".claude/skills",
+                "public_skill_file_overlay_max_bytes": 262144,
+            },
+        )(),
+    )
+    provider = container_provider.DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    await provider.create_or_reuse(request(), workspace())
+
+    environment = fake.created[0]["environment"]
+    assert environment["CLAUDE_AGENT_SDK_ENABLED"] == "true"
+    assert environment["ANTHROPIC_BASE_URL"] == "http://new-api.test"
+    assert environment["ANTHROPIC_AUTH_TOKEN"] == "test-anthropic-token"
+    assert environment["OPENAI_API_KEY"] == "test-newapi-token"
+    assert environment["CLAUDE_AGENT_PERMISSION_MODE"] == "bypassPermissions"
+    assert environment["CLAUDE_AGENT_ALLOWED_TOOLS"] == "Read,Glob,LS,Bash"
+    assert environment["CLAUDE_AGENT_WORKSPACE_ROOT"] == "/workspace"
+    assert environment["CLAUDE_AGENT_SDK_SKILLS"] == "general-chat,qa-file-reviewer"
+
+
+@pytest.mark.asyncio
 async def test_docker_provider_records_cold_start_and_healthcheck_latency():
     from app.runtime.sandbox.container_provider import DockerContainerProvider
 
@@ -451,9 +740,442 @@ async def test_docker_provider_records_cold_start_and_healthcheck_latency():
     lease = await provider.create_or_reuse(request(), workspace())
 
     assert lease.timings == {
+        "sandbox_container_start_latency_ms": 70,
         "sandbox_container_cold_start_latency_ms": 70,
         "sandbox_healthcheck_latency_ms": 20,
     }
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(
+        request(resource_limits={"memory_mb": 512, "cpu_count": 2, "pids_limit": 64}),
+        workspace(),
+    )
+
+    created = FakeOpenSandbox.created[0]
+    assert created["image"] == "ai-platform:local"
+    assert created["entrypoint"] == ["/app/docker-entrypoint.sh", "uvicorn"]
+    assert created["metadata"]["ai-platform.owner"] == "sandbox-runtime"
+    assert created["metadata"]["ai-platform.tenant_id"] == "tenant-a"
+    assert created["metadata"]["ai-platform.run_id"] == "run-a"
+    assert created["env"]["APP_MODULE"] == "app.runtime.sandbox.executor_app:create_executor_app"
+    assert created["env"]["AI_PLATFORM_RUN_ID"] == "run-a"
+    assert created["resource"] == {"cpu": "2", "memory": "512Mi", "pids": "64"}
+    assert created["volumes"][0].host.path == workspace().workspace_host_path
+    assert created["volumes"][0].mount_path == "/workspace"
+    assert created["network_policy"].kwargs["defaultAction"] == "deny"
+    assert created["network_policy"].kwargs["egress"][0].target == "host.docker.internal"
+
+    sandbox = FakeOpenSandbox.instances["osb-run-a"]
+    assert sandbox.files.written[0].path == "/workspace/.ai-platform-opensandbox-lease.json"
+    assert '"run_id": "run-a"' in sandbox.files.written[0].data
+    assert sandbox.commands.runs[0][0] == "test -f /workspace/.ai-platform-opensandbox-lease.json"
+
+    assert lease.container_id == "osb-run-a"
+    assert lease.container_name == "opensandbox-run-a"
+    assert lease.provider == "opensandbox"
+    assert lease.executor_url == "http://osb-run-a.opensandbox.test:18000"
+    assert lease.workspace_host_path == workspace().workspace_host_path
+    assert lease.workspace_container_path == "/workspace"
+    assert lease.labels["ai-platform.provider_backend"] == "opensandbox"
+    assert lease.labels["ai-platform.egress.policy"] == "opensandbox-network-policy"
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_accepts_byte_readback_from_file_probe(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    original_create = FakeOpenSandbox.create
+
+    def create_with_byte_readback(**kwargs):
+        sandbox = original_create(**kwargs)
+        sandbox.files.read_returns_bytes = True
+        return sandbox
+
+    monkeypatch.setattr(FakeOpenSandbox, "create", create_with_byte_readback)
+    provider = opensandbox_provider()
+
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    assert lease.provider == "opensandbox"
+    assert FakeOpenSandbox.instances["osb-run-a"].files.read_returns_bytes is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_fails_when_startup_command_probe_fails(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    original_create = FakeOpenSandbox.create
+
+    def create_with_failing_command(**kwargs):
+        sandbox = original_create(**kwargs)
+        sandbox.commands.exit_code = 127
+        return sandbox
+
+    monkeypatch.setattr(FakeOpenSandbox, "create", create_with_failing_command)
+    provider = opensandbox_provider()
+
+    with pytest.raises(container_provider.ContainerStartFailedError) as exc_info:
+        await provider.create_or_reuse(request(), workspace())
+
+    assert str(exc_info.value) == "OpenSandbox command execution failed"
+    sandbox = FakeOpenSandbox.instances["osb-run-a"]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_cleans_up_when_endpoint_probe_fails(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    original_create = FakeOpenSandbox.create
+
+    def create_without_endpoint(**kwargs):
+        sandbox = original_create(**kwargs)
+        sandbox.endpoint = ""
+        return sandbox
+
+    monkeypatch.setattr(FakeOpenSandbox, "create", create_without_endpoint)
+    provider = opensandbox_provider()
+
+    with pytest.raises(container_provider.ContainerStartFailedError) as exc_info:
+        await provider.create_or_reuse(request(), workspace())
+
+    assert str(exc_info.value) == "OpenSandbox executor endpoint unavailable"
+    sandbox = FakeOpenSandbox.instances["osb-run-a"]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_cleans_up_when_created_sandbox_has_no_id(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    original_create = FakeOpenSandbox.create
+
+    def create_without_id(**kwargs):
+        sandbox = original_create(**kwargs)
+        sandbox.id = ""
+        return sandbox
+
+    monkeypatch.setattr(FakeOpenSandbox, "create", create_without_id)
+    provider = opensandbox_provider()
+
+    with pytest.raises(container_provider.ContainerStartFailedError) as exc_info:
+        await provider.create_or_reuse(request(), workspace())
+
+    assert str(exc_info.value) == "OpenSandbox sandbox start failed"
+    sandbox = FakeOpenSandbox.instances["osb-run-a"]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_cleans_up_created_sandbox_on_cancel(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    provider = opensandbox_provider()
+
+    async def cancel_after_create(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(provider, "_write_and_verify_sentinel", cancel_after_create)
+
+    with pytest.raises(asyncio.CancelledError):
+        await provider.create_or_reuse(request(), workspace())
+
+    sandbox = FakeOpenSandbox.instances["osb-run-a"]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_stop_and_cleanup_are_scope_bounded(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    stop_result = await provider.stop(lease, reason="dispatch_completed")
+
+    assert stop_result.status == "stopped"
+    assert FakeOpenSandbox.instances["osb-run-a"].killed is True
+    assert FakeOpenSandbox.instances["osb-run-a"].closed is True
+
+    same_tenant_failed = FakeOpenSandbox(
+        sandbox_id="osb-orphan-a",
+        metadata={
+            "ai-platform.owner": "sandbox-runtime",
+            "ai-platform.tenant_id": "tenant-a",
+            "ai-platform.workspace_id": "workspace-a",
+            "ai-platform.user_id": "user-a",
+            "ai-platform.session_id": "session-a",
+            "ai-platform.run_id": "run-orphan-a",
+            "ai-platform.sandbox_mode": "ephemeral",
+            "ai-platform.browser_enabled": "false",
+        },
+        state="FAILED",
+    )
+    same_tenant_running = FakeOpenSandbox(
+        sandbox_id="osb-running-a",
+        metadata={**same_tenant_failed.metadata, "ai-platform.run_id": "run-running-a"},
+        state="RUNNING",
+    )
+    foreign_failed = FakeOpenSandbox(
+        sandbox_id="osb-orphan-b",
+        metadata={**same_tenant_failed.metadata, "ai-platform.tenant_id": "tenant-b", "ai-platform.run_id": "run-orphan-b"},
+        state="FAILED",
+    )
+    FakeOpenSandbox.instances.update(
+        {
+            same_tenant_failed.id: same_tenant_failed,
+            same_tenant_running.id: same_tenant_running,
+            foreign_failed.id: foreign_failed,
+        }
+    )
+    FakeOpenSandboxManager.sandboxes = [same_tenant_failed, same_tenant_running, foreign_failed]
+
+    results = await provider.cleanup_orphan_containers({"tenant_id": "tenant-a"}, reason="admin_runtime")
+
+    assert [item.container_id for item in results] == ["osb-orphan-a"]
+    assert FakeOpenSandboxManager.killed == ["osb-orphan-a"]
+    assert same_tenant_running.killed is False
+    assert foreign_failed.killed is False
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_stop_rejects_scope_mismatch_without_kill(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances["osb-run-a"]
+    sandbox.metadata = {**sandbox.metadata, "ai-platform.tenant_id": "tenant-b"}
+
+    stop_result = await provider.stop(lease, reason="expired")
+
+    assert stop_result.status == "not_found"
+    assert sandbox.killed is False
+    assert sandbox.closed is False
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_stop_reads_scope_from_sdk_get_info(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    class RealShapeOpenSandbox(FakeOpenSandbox):
+        def __getattribute__(self, name):
+            if name == "metadata":
+                raise AttributeError(name)
+            return super().__getattribute__(name)
+
+        def get_info(self) -> object:
+            return {
+                "id": self.id,
+                "metadata": object.__getattribute__(self, "_metadata"),
+                "status": {"state": self.status.state},
+            }
+
+        @classmethod
+        def create(cls, **kwargs) -> "RealShapeOpenSandbox":
+            sandbox = cls(
+                sandbox_id=f"osb-{kwargs['metadata']['ai-platform.run_id']}",
+                metadata=kwargs["metadata"],
+            )
+            object.__setattr__(sandbox, "_metadata", kwargs["metadata"])
+            FakeOpenSandbox.created.append(kwargs)
+            FakeOpenSandbox.instances[sandbox.id] = sandbox
+            return sandbox
+
+        @classmethod
+        def connect(cls, sandbox_id: str, **_kwargs) -> "RealShapeOpenSandbox":
+            return FakeOpenSandbox.instances[sandbox_id]
+
+    provider = opensandbox_provider()
+    provider._sandbox_class = RealShapeOpenSandbox
+
+    lease = await provider.create_or_reuse(request(), workspace())
+    stop_result = await provider.stop(lease, reason="dispatch_completed")
+
+    assert stop_result.status == "stopped"
+    sandbox = FakeOpenSandbox.instances["osb-run-a"]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_stop_reconnects_without_health_check(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    provider._sandboxes.clear()
+
+    stop_result = await provider.stop(lease, reason="expired")
+
+    assert stop_result.status == "stopped"
+    assert FakeOpenSandbox.connect_calls
+    assert FakeOpenSandbox.connect_calls[0]["sandbox_id"] == "osb-run-a"
+    assert FakeOpenSandbox.connect_calls[0]["skip_health_check"] is True
+    assert FakeOpenSandbox.instances["osb-run-a"].killed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_stop_treats_close_failure_as_stopped_after_kill(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances["osb-run-a"]
+
+    def fail_close():
+        sandbox.closed = True
+        raise RuntimeError("local close failed")
+
+    sandbox.close = fail_close
+
+    stop_result = await provider.stop(lease, reason="dispatch_completed")
+
+    assert stop_result.status == "stopped"
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_errors_do_not_leak_secret_or_host_path(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    leaked = f"{workspace().workspace_host_path} opensandbox-secret"
+    FakeOpenSandbox.create_error = RuntimeError(f"cannot mount {leaked}")
+    provider = opensandbox_provider()
+
+    with pytest.raises(container_provider.ContainerStartFailedError) as exc_info:
+        await provider.create_or_reuse(request(), workspace())
+
+    assert str(exc_info.value) == "OpenSandbox sandbox start failed"
+    assert "opensandbox-secret" not in str(exc_info.value)
+    assert workspace().workspace_host_path not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_keeps_endpoint_headers_private_and_uses_them_for_health_probe(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    FakeOpenSandbox.endpoint_headers = {"OPENSANDBOX-EGRESS-AUTH": "opensandbox-secret"}
+    health_calls = []
+
+    def health_probe(executor_url, timeout_seconds, executor_headers=None):
+        health_calls.append((executor_url, timeout_seconds, executor_headers))
+        return True
+
+    provider = opensandbox_provider(health_probe=health_probe)
+
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    assert lease.executor_url == "http://osb-run-a.opensandbox.test:18000"
+    assert lease.executor_headers == {"OPENSANDBOX-EGRESS-AUTH": "opensandbox-secret"}
+    assert health_calls == [
+        (
+            "http://osb-run-a.opensandbox.test:18000",
+            OpenSandboxSettings.sandbox_executor_health_timeout_seconds,
+            {"OPENSANDBOX-EGRESS-AUTH": "opensandbox-secret"},
+        )
+    ]
+    assert "opensandbox-secret" not in str(lease.model_dump())
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_adds_protocol_to_scheme_less_executor_endpoint(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    original_create = FakeOpenSandbox.create
+
+    def create_with_scheme_less_endpoint(**kwargs):
+        sandbox = original_create(**kwargs)
+        sandbox.endpoint = "opensandbox-gateway.test:46471/proxy/18000"
+        return sandbox
+
+    monkeypatch.setattr(FakeOpenSandbox, "create", create_with_scheme_less_endpoint)
+    provider = opensandbox_provider()
+
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    assert lease.executor_url == "http://opensandbox-gateway.test:46471/proxy/18000"
+
+
+def test_opensandbox_sdk_symbols_match_adapter_contract():
+    import opensandbox  # noqa: F401
+
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+
+    symbols = container_provider._load_opensandbox_symbols()
+
+    assert {
+        "sandbox_class",
+        "sandbox_manager_class",
+        "connection_config_class",
+        "file_class",
+        "host_class",
+        "volume_class",
+        "network_policy_class",
+        "network_rule_class",
+        "sandbox_filter_class",
+    } <= symbols.keys()
+    assert "metadata" in inspect.signature(symbols["sandbox_filter_class"]).parameters
+    assert "image" in inspect.signature(symbols["sandbox_class"].create).parameters
+    assert "metadata" in inspect.signature(symbols["sandbox_class"].create).parameters
+    assert "network_policy" in inspect.signature(symbols["sandbox_class"].create).parameters
+    assert "volumes" in inspect.signature(symbols["sandbox_class"].create).parameters
+    assert "port" in inspect.signature(symbols["sandbox_class"].get_endpoint).parameters
+    assert "mountPath" in inspect.signature(symbols["volume_class"]).parameters
+    assert "readOnly" in inspect.signature(symbols["volume_class"]).parameters
+    assert "defaultAction" in inspect.signature(symbols["network_policy_class"]).parameters
+    assert "egress" in inspect.signature(symbols["network_policy_class"]).parameters
+
+    host = symbols["host_class"](path="/tmp/workspace")
+    symbols["volume_class"](name="ai-platform-workspace", host=host, mountPath="/workspace", readOnly=False)
+    rule = symbols["network_rule_class"](action="allow", target="host.docker.internal")
+    symbols["network_policy_class"](defaultAction="deny", egress=[rule])
 
 
 @pytest.mark.asyncio

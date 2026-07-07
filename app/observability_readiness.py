@@ -11,7 +11,7 @@ from app.trace_audit_export_readiness import build_trace_audit_export_readiness
 SCHEMA_VERSION = "ai-platform.observability-readiness.v1"
 GATE_NAME = "G9 Observability / Quality / Ops"
 
-_SANDBOX_PROVIDER_VALUES = {"docker", "fake"}
+_SANDBOX_PROVIDER_VALUES = {"docker", "fake", "opensandbox"}
 _MODEL_GATEWAY_PROVIDER_VALUES = {"new-api", "openai_compatible"}
 
 

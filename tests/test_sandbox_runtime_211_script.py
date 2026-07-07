@@ -245,7 +245,7 @@ def test_cancel_check_requires_stop_evidence(tmp_path):
     assert verifier.check_cancel_stops_container(evidence, run_id="run-a").passed is False
 
 
-def test_platform_runtime_evidence_requires_latency_split_and_docker_provider(tmp_path):
+def test_platform_runtime_evidence_requires_latency_split_and_real_provider(tmp_path):
     verifier = load_verifier()
     evidence = tmp_path / "evidence.json"
     base = {
@@ -256,6 +256,10 @@ def test_platform_runtime_evidence_requires_latency_split_and_docker_provider(tm
         "sandbox_provider": "docker",
         "executed_task": True,
         "callback_auth": "token",
+        "executor": {
+            "sdk_used": True,
+            "executor_mode": "claude_agent_sdk",
+        },
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "callbacks": [
             {"run_id": "run-a", "status": "running"},
@@ -271,17 +275,25 @@ def test_platform_runtime_evidence_requires_latency_split_and_docker_provider(tm
     }
     timings = {
         "schema_version": "ai-platform.sandbox-latency-split.v1",
+        "sandbox_queue_wait_latency_ms": 0,
         "sandbox_lease_acquire_latency_ms": 1,
+        "sandbox_container_start_latency_ms": 1,
         "sandbox_container_cold_start_latency_ms": 2,
         "sandbox_healthcheck_latency_ms": 3,
         "sandbox_executor_dispatch_latency_ms": 4,
+        "executor_first_token_latency_ms": 5,
+        "executor_tool_call_latency_ms": 0,
         "executor_model_latency_ms": 5,
         "document_processing_latency_ms": 6,
+        "artifact_upload_latency_ms": 0,
         "sandbox_cleanup_latency_ms": 7,
-        "sandbox_total_latency_ms": 28,
+        "sandbox_total_latency_ms": 34,
     }
     evidence.write_text(json.dumps({**base, "timings": timings}), encoding="utf-8")
 
+    assert verifier.check_platform_runtime_evidence(evidence, run_id="run-a").passed is True
+
+    evidence.write_text(json.dumps({**base, "sandbox_provider": "opensandbox", "timings": timings}), encoding="utf-8")
     assert verifier.check_platform_runtime_evidence(evidence, run_id="run-a").passed is True
 
     evidence.write_text(json.dumps({**base, "runtime_mode": "executor", "timings": timings}), encoding="utf-8")
@@ -292,7 +304,7 @@ def test_platform_runtime_evidence_requires_latency_split_and_docker_provider(tm
     evidence.write_text(json.dumps({**base, "sandbox_provider": "fake", "timings": timings}), encoding="utf-8")
     failed_provider = verifier.check_platform_runtime_evidence(evidence, run_id="run-a")
     assert failed_provider.passed is False
-    assert "docker" in failed_provider.message
+    assert "real sandbox provider" in failed_provider.message
 
     incomplete = dict(timings)
     incomplete.pop("sandbox_container_cold_start_latency_ms")
@@ -300,6 +312,20 @@ def test_platform_runtime_evidence_requires_latency_split_and_docker_provider(tm
     failed_timing = verifier.check_platform_runtime_evidence(evidence, run_id="run-a")
     assert failed_timing.passed is False
     assert "sandbox_container_cold_start_latency_ms" in failed_timing.message
+
+    missing_stage_timing = dict(timings)
+    missing_stage_timing.pop("sandbox_queue_wait_latency_ms")
+    evidence.write_text(json.dumps({**base, "timings": missing_stage_timing}), encoding="utf-8")
+    failed_stage_timing = verifier.check_platform_runtime_evidence(evidence, run_id="run-a")
+    assert failed_stage_timing.passed is False
+    assert "sandbox_queue_wait_latency_ms" in failed_stage_timing.message
+
+    missing_executor = dict(base)
+    missing_executor.pop("executor")
+    evidence.write_text(json.dumps({**missing_executor, "timings": timings}), encoding="utf-8")
+    failed_executor = verifier.check_platform_runtime_evidence(evidence, run_id="run-a")
+    assert failed_executor.passed is False
+    assert "claude agent sdk" in failed_executor.message.lower()
 
     missing_invariants = dict(base)
     missing_invariants.pop("non_expansion_invariants")
@@ -321,19 +347,108 @@ def test_platform_runtime_evidence_requires_latency_split_and_docker_provider(tm
     assert "ordinary_user_high_risk_sandbox_allowed" in failed_ordinary.message
 
 
+def test_opensandbox_provider_lifecycle_evidence_requires_first_stage_probe_fields(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    lifecycle = {
+        "schema_version": "ai-platform.opensandbox-provider-lifecycle.v1",
+        "provider": "opensandbox",
+        "run_id": "run-a",
+        "lifecycle": {
+            "create_observed": True,
+            "delete_observed": True,
+            "delete_stop_status": "stopped",
+            "container_id_present": True,
+            "executor_endpoint_present": True,
+        },
+        "db_lease": {
+            "recorded": True,
+            "released": True,
+            "release_reason": "dispatch_completed",
+            "recorded_scope_matches_request": True,
+        },
+        "startup_io": {
+            "file_write_read_verified": True,
+            "command_execution_verified": True,
+            "source": "OpenSandboxContainerProvider.startup_io_probe",
+        },
+        "resource_policy": {
+            "resource_limits_requested": True,
+            "memory_mb": 512,
+            "cpu_count": 0.5,
+            "pids_limit": 128,
+            "policy_projection_source": "provider_request",
+        },
+        "egress_policy": {
+            "policy_requested": True,
+            "callback_host_allowlisted": True,
+            "policy_projection_source": "provider_request",
+        },
+        "dispatch": {
+            "executor_response_present": True,
+            "callback_stream_observed": True,
+            "sdk_executor_observed": True,
+        },
+        "redaction": {
+            "host_paths_redacted": True,
+            "secrets_absent": True,
+        },
+    }
+    evidence.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "run_id": "run-a",
+                "runtime_mode": "platform",
+                "sandbox_provider": "opensandbox",
+                "provider_lifecycle": lifecycle,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    passed = verifier.check_opensandbox_provider_lifecycle_evidence(evidence, run_id="run-a")
+
+    assert passed.passed is True
+
+    broken = dict(lifecycle)
+    broken["startup_io"] = {**lifecycle["startup_io"], "command_execution_verified": False}
+    evidence.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "run_id": "run-a",
+                "runtime_mode": "platform",
+                "sandbox_provider": "opensandbox",
+                "provider_lifecycle": broken,
+            }
+        ),
+        encoding="utf-8",
+    )
+    failed = verifier.check_opensandbox_provider_lifecycle_evidence(evidence, run_id="run-a")
+
+    assert failed.passed is False
+    assert "startup_io.command_execution_verified" in failed.message
+
+
 def test_platform_runtime_evidence_rejects_hidden_or_invalid_latency_split(tmp_path):
     verifier = load_verifier()
     evidence = tmp_path / "evidence.json"
     timings = {
         "schema_version": "ai-platform.sandbox-latency-split.v1",
+        "sandbox_queue_wait_latency_ms": 0,
         "sandbox_lease_acquire_latency_ms": 1,
+        "sandbox_container_start_latency_ms": 1,
         "sandbox_container_cold_start_latency_ms": 5,
         "sandbox_healthcheck_latency_ms": 1,
         "sandbox_executor_dispatch_latency_ms": 2,
+        "executor_first_token_latency_ms": 5,
+        "executor_tool_call_latency_ms": 0,
         "executor_model_latency_ms": 5,
         "document_processing_latency_ms": 3,
+        "artifact_upload_latency_ms": 0,
         "sandbox_cleanup_latency_ms": 1,
-        "sandbox_total_latency_ms": 18,
+        "sandbox_total_latency_ms": 24,
     }
     evidence.write_text(
         json.dumps(
@@ -835,6 +950,7 @@ def test_main_json_reports_all_checks_as_structured_output(tmp_path, capsys):
         "check_callback_stream",
         "check_cancel_stops_container",
         "check_platform_runtime_evidence",
+        "check_opensandbox_provider_lifecycle_evidence",
         "check_platform_hardening_evidence",
         "check_no_secret_leakage",
     }
@@ -860,6 +976,14 @@ def test_script_help_bootstraps_current_repo_before_importing_app_modules():
     assert "Verify ai-platform sandbox runtime on 211" in verifier_result.stdout
 
 
+def test_generator_parser_accepts_opensandbox_provider():
+    generator = load_generator()
+
+    args = generator.build_parser().parse_args(["--sandbox-provider", "opensandbox", "--skip-live-submit"])
+
+    assert args.sandbox_provider == "opensandbox"
+
+
 def test_evidence_recorder_writes_sanitized_callback_evidence(tmp_path):
     generator = load_generator()
     evidence_path = tmp_path / "evidence.json"
@@ -875,6 +999,11 @@ def test_evidence_recorder_writes_sanitized_callback_evidence(tmp_path):
         is True
     )
     recorder.executed_task = True
+    recorder.executor = {
+        "sdk_used": True,
+        "executor_mode": "claude_agent_sdk",
+        "sdk_session_id": "sdk-session-a",
+    }
     recorder.cancel_stops_container = True
     recorder.cancelled_container_id = "verifier-run-a"
     recorder.runtime_mode = "platform"
@@ -912,6 +1041,11 @@ def test_evidence_recorder_writes_sanitized_callback_evidence(tmp_path):
     assert data["executor_url"] == "http://127.0.0.1:18000"
     assert data["executed_task"] is True
     assert data["callback_auth"] == "token"
+    assert data["executor"] == {
+        "sdk_used": True,
+        "executor_mode": "claude_agent_sdk",
+        "sdk_session_id": "sdk-session-a",
+    }
     assert data["schema_version"] == "ai-platform.sandbox-runtime-211.v1"
     assert data["runtime_mode"] == "platform"
     assert data["sandbox_provider"] == "docker"
@@ -985,6 +1119,9 @@ def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
                 "executor_response": {
                     "status": "accepted",
                     "run_id": "run-a",
+                    "sdk_used": True,
+                    "executor_mode": "claude_agent_sdk",
+                    "sdk_session_id": "sdk-session-a",
                     "executor_model_latency_ms": 5,
                     "document_processing_latency_ms": 6,
                 },
@@ -1018,6 +1155,11 @@ def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
     assert result["status"] == "accepted"
     assert recorder.runtime_mode == "platform"
     assert recorder.sandbox_provider == "docker"
+    assert recorder.executor == {
+        "sdk_used": True,
+        "executor_mode": "claude_agent_sdk",
+        "sdk_session_id": "sdk-session-a",
+    }
     assert recorder.timings["sandbox_container_cold_start_latency_ms"] == 2
     assert recorder.hardening["workspace_isolation"]["workspace_container_path"] == "/workspace"
     assert recorder.hardening["cleanup"]["ephemeral_container_removed"] is True
@@ -1067,6 +1209,167 @@ def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
     }
     for section_name, allowed_tests in verifier.ALLOWED_SOURCE_REGRESSION_TESTS.items():
         assert set(recorder.hardening[section_name]["source_regression_tests"]) <= allowed_tests
+
+
+def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(monkeypatch, tmp_path):
+    generator = load_generator()
+    recorder = generator.EvidenceRecorder(
+        run_id="run-a",
+        executor_url="http://executor.test",
+        callback_token="secret-token",
+    )
+
+    class FakeRuntime:
+        def __init__(
+            self,
+            *,
+            workspace_root,
+            callback_token_resolver,
+            record_lease,
+            release_lease,
+        ):
+            self.record_lease = record_lease
+            self.release_lease = release_lease
+
+        async def submit(self, request):
+            from app.runtime.sandbox.contracts import ContainerLease, StopResult, WorkspaceLease
+            from app.settings import get_settings
+
+            assert get_settings().sandbox_container_provider == "opensandbox"
+            assert request.resource_limits == {
+                "max_seconds": 60,
+                "memory_mb": 512,
+                "cpu_count": 0.5,
+                "pids_limit": 128,
+            }
+            lease = ContainerLease(
+                container_id="osb-run-a",
+                container_name="opensandbox-run-a",
+                provider="opensandbox",
+                executor_url="http://opensandbox-executor.test:18000",
+                tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=request.run_id,
+                sandbox_mode=request.sandbox_mode,
+                browser_enabled=request.browser_enabled,
+                workspace_host_path=str(tmp_path / "workspace"),
+                workspace_container_path="/workspace",
+                labels={
+                    "ai-platform.provider_backend": "opensandbox",
+                    "ai-platform.egress.policy": "opensandbox-network-policy",
+                    "ai-platform.egress.callback_host": "host.docker.internal",
+                },
+                timings={
+                    "sandbox_container_start_latency_ms": 2,
+                    "sandbox_container_cold_start_latency_ms": 2,
+                    "sandbox_healthcheck_latency_ms": 3,
+                },
+            )
+            workspace = WorkspaceLease(
+                tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=request.run_id,
+                host_root=str(tmp_path),
+                workspace_host_path=str(tmp_path / "workspace"),
+                workspace_container_path="/workspace",
+                inputs_host_path=str(tmp_path / "inputs"),
+                logs_host_path=str(tmp_path / "logs"),
+            )
+            lease_id = await self.record_lease(lease, request, workspace)
+            assert recorder.record_callback(
+                {"run_id": request.run_id, "status": "running", "progress": 10},
+                "secret-token",
+            )
+            assert recorder.record_callback(
+                {"run_id": request.run_id, "status": "completed", "progress": 100},
+                "secret-token",
+            )
+            await self.release_lease(
+                lease,
+                "dispatch_completed",
+                lease_id,
+                stop_result=StopResult(container_id=lease.container_id, status="stopped", message="dispatch_completed"),
+            )
+            return type(
+                "SandboxRuntimeResult",
+                (),
+                {
+                    "status": "accepted",
+                    "session_id": request.session_id,
+                    "run_id": request.run_id,
+                    "executor_response": {
+                        "status": "accepted",
+                        "run_id": request.run_id,
+                        "sdk_used": True,
+                        "executor_mode": "claude_agent_sdk",
+                        "sdk_session_id": "sdk-session-a",
+                    },
+                    "timings": {
+                        "schema_version": "ai-platform.sandbox-latency-split.v1",
+                        "sandbox_queue_wait_latency_ms": 0,
+                        "sandbox_lease_acquire_latency_ms": 1,
+                        "sandbox_container_start_latency_ms": 2,
+                        "sandbox_container_cold_start_latency_ms": 2,
+                        "sandbox_healthcheck_latency_ms": 3,
+                        "sandbox_executor_dispatch_latency_ms": 4,
+                        "executor_first_token_latency_ms": 0,
+                        "executor_tool_call_latency_ms": 0,
+                        "executor_model_latency_ms": 5,
+                        "document_processing_latency_ms": 0,
+                        "artifact_upload_latency_ms": 0,
+                        "sandbox_cleanup_latency_ms": 6,
+                        "sandbox_total_latency_ms": 21,
+                    },
+                },
+            )()
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        return type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "not a docker container"})()
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
+
+    result = generator.run_platform_runtime_probe(
+        recorder=recorder,
+        sandbox_provider="opensandbox",
+        sandbox_executor_image="ai-platform:local",
+        workspace_root=str(tmp_path),
+        callback_url="http://callback.test/callback",
+        docker_cmd=("docker",),
+        run=fake_run,
+    )
+
+    assert result["status"] == "accepted"
+    assert recorder.provider_lifecycle["provider"] == "opensandbox"
+    assert recorder.provider_lifecycle["lifecycle"] == {
+        "create_observed": True,
+        "delete_observed": True,
+        "delete_stop_status": "stopped",
+        "container_id_present": True,
+        "executor_endpoint_present": True,
+    }
+    assert recorder.provider_lifecycle["startup_io"] == {
+        "file_write_read_verified": True,
+        "command_execution_verified": True,
+        "source": "OpenSandboxContainerProvider.startup_io_probe",
+    }
+    assert recorder.provider_lifecycle["resource_policy"]["resource_limits_requested"] is True
+    assert recorder.provider_lifecycle["egress_policy"] == {
+        "policy_requested": True,
+        "callback_host_allowlisted": True,
+        "policy_projection_source": "provider_request",
+    }
+    assert recorder.provider_lifecycle["dispatch"] == {
+        "executor_response_present": True,
+        "callback_stream_observed": True,
+        "sdk_executor_observed": True,
+    }
+    serialized = json.dumps(recorder.to_dict())
+    assert str(tmp_path) not in serialized
+    assert "secret-token" not in serialized
 
 
 def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_results(tmp_path):

@@ -71,6 +71,7 @@ _VERIFIER_REQUIRED_CHECKS = [
     "check_callback_stream",
     "check_cancel_stops_container",
     "check_platform_runtime_evidence",
+    "check_opensandbox_provider_lifecycle_evidence",
     "check_platform_hardening_evidence",
     "check_no_secret_leakage",
 ]
@@ -82,6 +83,7 @@ _VERIFIER_CHECK_ENTRYPOINTS = {
     "check_callback_stream": "check_callback_stream",
     "check_cancel_stops_container": "check_cancel_stops_container",
     "check_platform_runtime_evidence": "check_platform_runtime_evidence",
+    "check_opensandbox_provider_lifecycle_evidence": "check_opensandbox_provider_lifecycle_evidence",
     "check_platform_hardening_evidence": "check_platform_hardening_evidence",
     "check_no_secret_leakage": "check_no_secret_leakage",
 }
@@ -94,22 +96,29 @@ _VERIFIER_EVIDENCE_SHAPE = [
     "sandbox_provider",
     "executed_task",
     "callback_auth",
+    "executor",
     "generated_at",
     "callbacks",
     "cancel_stops_container",
     "cancelled_container_id",
     "timings",
     "hardening",
+    "provider_lifecycle",
     "non_expansion_invariants",
 ]
 
 _VERIFIER_TIMING_FIELDS = [
+    "sandbox_queue_wait_latency_ms",
     "sandbox_lease_acquire_latency_ms",
+    "sandbox_container_start_latency_ms",
     "sandbox_container_cold_start_latency_ms",
     "sandbox_healthcheck_latency_ms",
     "sandbox_executor_dispatch_latency_ms",
+    "executor_first_token_latency_ms",
+    "executor_tool_call_latency_ms",
     "executor_model_latency_ms",
     "document_processing_latency_ms",
+    "artifact_upload_latency_ms",
     "sandbox_cleanup_latency_ms",
     "sandbox_total_latency_ms",
 ]
@@ -149,9 +158,11 @@ _HARDENING_EVIDENCE_CLASS = {
 
 _VERIFIER_REQUIRED_EVIDENCE_SECTIONS = [
     "runtime_mode=platform",
-    "sandbox_provider=docker",
+    "sandbox_provider=docker_or_opensandbox",
     "executed_task=true",
     "callback_auth=token",
+    "executor.sdk_used=true",
+    "executor.executor_mode=claude_agent_sdk",
     "callbacks.running_and_terminal",
     "cancel_stops_container=true",
     "timings",
@@ -544,6 +555,9 @@ def _b2_smoke_evidence_summary(
         return None
     if not isinstance(run_id, str) or not run_id.strip():
         return None
+    executor = evidence.get("executor")
+    if not isinstance(executor, dict):
+        return None
     if not all(field in timings for field in _VERIFIER_TIMING_FIELDS):
         return None
     if not all(section in hardening for section in _VERIFIER_BASE_SMOKE_HARDENING_SECTIONS):
@@ -551,9 +565,11 @@ def _b2_smoke_evidence_summary(
     if (
         evidence.get("schema_version") != RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA
         or evidence.get("runtime_mode") != "platform"
-        or evidence.get("sandbox_provider") != "docker"
+        or evidence.get("sandbox_provider") not in {"docker", "opensandbox"}
         or evidence.get("executed_task") is not True
         or evidence.get("callback_auth") != "token"
+        or executor.get("sdk_used") is not True
+        or executor.get("executor_mode") != "claude_agent_sdk"
         or evidence.get("cancel_stops_container") is not True
         or evidence.get("does_not_close_b2_gate") is not True
         or evidence.get("redaction_scan_status") != "passed"
@@ -577,6 +593,7 @@ def _b2_smoke_evidence_summary(
         "run_id": run_id,
         "runtime_mode": evidence.get("runtime_mode"),
         "sandbox_provider": evidence.get("sandbox_provider"),
+        "executor": dict(executor),
         "callbacks": list(callbacks),
         "timings": dict(timings),
         "checks": {check: True for check in _VERIFIER_REQUIRED_CHECKS},
@@ -849,6 +866,13 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             "provider": "docker",
             "selected_by": "platform_policy",
             "default_stack_provider": "fake",
+            "first_stage_provider_adapters": {
+                "opensandbox": {
+                    "status": "local_partial_211_smoke_required",
+                    "role": "B2 first-stage provider adapter",
+                    "does_not_close_b2": True,
+                },
+            },
             "user_payload_provider_selection_allowed": False,
             "fake_provider_counts_as_production_evidence": False,
             "docker_socket_default_mount_allowed": False,
@@ -892,6 +916,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
                 "platform lease record for tenant/workspace/user/session/run",
                 "Docker/equivalent launch selected by platform policy",
                 "executor command/task dispatch through callback token path",
+                "Claude Agent SDK execution is recorded as sdk_used=true with executor_mode=claude_agent_sdk",
                 "running and terminal callback events",
                 "cancel stops only verifier-owned container",
                 "cleanup releases active lease and removes ephemeral container",
