@@ -137,7 +137,7 @@ def test_callback_typed_events_are_appended_after_compatibility_events():
 async def test_executor_client_posts_task_request():
     calls = []
 
-    async def post_json(url, payload, timeout):
+    async def post_json(url, payload, timeout, headers=None):
         calls.append((url, payload, timeout))
         return {"status": "accepted", "session_id": "session-a"}
 
@@ -160,6 +160,31 @@ async def test_executor_client_posts_task_request():
         (
             "http://executor.test/v1/tasks/execute",
             request.model_dump(),
-            30.0,
+            130.0,
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_executor_client_allows_explicit_timeout_override():
+    calls = []
+
+    async def post_json(url, payload, timeout, headers=None):
+        calls.append(timeout)
+        return {"status": "accepted"}
+
+    client = SandboxExecutorClient(post_json=post_json, timeout_seconds=3.0)
+    request = ExecutorTaskRequest(
+        session_id="session-a",
+        run_id="run-a",
+        prompt="hello",
+        callback_url="http://callback",
+        callback_token_id="cbt_run-a",
+        callback_token="secret",
+        callback_base_url="http://callback-base",
+        config={"model": "deepseek-v4-flash"},
+    )
+
+    await client.execute("http://executor.test", request)
+
+    assert calls == [3.0]
