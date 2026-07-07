@@ -1108,6 +1108,41 @@ def test_submit_executor_task_marks_executed_after_http_success():
     assert body["config"]["resource_limits"]["max_seconds"] == 60
 
 
+def test_submit_executor_task_derives_callback_token_for_api_endpoint():
+    generator = load_generator()
+    requests = []
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def read(self):
+                return b'{"status":"accepted","run_id":"run-a"}'
+
+        return Response()
+
+    generator.submit_executor_task(
+        executor_url="http://executor.test",
+        callback_url="http://platform.test/api/ai/runtime/callbacks/executor",
+        callback_token="secret-token",
+        run_id="run-a",
+        workspace_root="/workspace",
+        urlopen=fake_urlopen,
+    )
+
+    body = json.loads(requests[0][0].data.decode("utf-8"))
+    assert body["callback_token_id"] == "cbt_run-a"
+    assert body["callback_token"] == generator.derive_callback_token("secret-token", "cbt_run-a")
+
+
 def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
     generator = load_generator()
     verifier = load_verifier()
@@ -1754,6 +1789,81 @@ def test_run_platform_runtime_probe_uses_configured_sdk_model(monkeypatch, tmp_p
 
     assert result["status"] == "accepted"
     assert observed_models == ["configured-211-model"]
+
+
+def test_run_platform_runtime_probe_uses_platform_callback_token_for_api_endpoint(monkeypatch, tmp_path):
+    generator = load_generator()
+    observed = {}
+
+    class FakeRuntime:
+        def __init__(
+            self,
+            *,
+            workspace_root,
+            callback_token_resolver,
+            record_lease,
+            release_lease,
+        ):
+            self.callback_token_resolver = callback_token_resolver
+
+        async def submit(self, request):
+            observed["callback_token_id"] = request.callback_token_id
+            observed["callback_token"] = self.callback_token_resolver(request.callback_token_id)
+            return type(
+                "SandboxRuntimeResult",
+                (),
+                {
+                    "status": "accepted",
+                    "session_id": request.session_id,
+                    "run_id": request.run_id,
+                    "executor_response": {
+                        "status": "accepted",
+                        "run_id": request.run_id,
+                        "sdk_used": True,
+                        "executor_mode": "claude_agent_sdk",
+                    },
+                    "timings": {
+                        "schema_version": "ai-platform.sandbox-latency-split.v1",
+                        "sandbox_queue_wait_latency_ms": 0,
+                        "sandbox_lease_acquire_latency_ms": 1,
+                        "sandbox_container_start_latency_ms": 2,
+                        "sandbox_container_cold_start_latency_ms": 2,
+                        "sandbox_healthcheck_latency_ms": 3,
+                        "sandbox_executor_dispatch_latency_ms": 4,
+                        "executor_first_token_latency_ms": 0,
+                        "executor_tool_call_latency_ms": 0,
+                        "executor_model_latency_ms": 5,
+                        "document_processing_latency_ms": 0,
+                        "artifact_upload_latency_ms": 0,
+                        "sandbox_cleanup_latency_ms": 6,
+                        "sandbox_total_latency_ms": 21,
+                    },
+                },
+            )()
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        return type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "not a docker container"})()
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
+    recorder = generator.EvidenceRecorder(
+        run_id="run-a",
+        executor_url="http://executor.test",
+        callback_token="secret-token",
+    )
+
+    result = generator.run_platform_runtime_probe(
+        recorder=recorder,
+        sandbox_provider="opensandbox",
+        sandbox_executor_image="ai-platform:local",
+        workspace_root=str(tmp_path),
+        callback_url="http://platform.test/api/ai/runtime/callbacks/executor",
+        docker_cmd=("docker",),
+        run=fake_run,
+    )
+
+    assert result["status"] == "accepted"
+    assert observed["callback_token_id"] == "cbt_run-a"
+    assert observed["callback_token"] == generator.derive_callback_token("secret-token", "cbt_run-a")
 
 
 def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_results(tmp_path):

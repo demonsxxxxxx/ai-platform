@@ -32,6 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from app.runtime.sandbox.callback_tokens import derive_callback_token
 from app.sandbox_hardening_contract import safe_bounded_error_projection
 
 
@@ -338,6 +339,30 @@ def resolve_callback_public_url(callback_public_url: str, local_callback_url: st
     return callback_public_url.replace("{port}", str(port))
 
 
+def _is_platform_callback_endpoint(callback_url: str) -> bool:
+    return urlparse(callback_url).path.rstrip("/") == "/api/ai/runtime/callbacks/executor"
+
+
+def _platform_callback_token_id(run_id: str) -> str:
+    return f"cbt_{run_id}"
+
+
+def _verifier_callback_token_id(run_id: str) -> str:
+    return f"callback-{_safe_run_id(run_id)}"
+
+
+def _callback_token_id_for_url(callback_url: str, run_id: str) -> str:
+    if _is_platform_callback_endpoint(callback_url):
+        return _platform_callback_token_id(run_id)
+    return _verifier_callback_token_id(run_id)
+
+
+def _callback_token_for_url(callback_url: str, token_id: str, callback_token: str) -> str:
+    if _is_platform_callback_endpoint(callback_url):
+        return derive_callback_token(callback_token, token_id)
+    return callback_token
+
+
 def submit_executor_task(
     *,
     executor_url: str,
@@ -352,8 +377,12 @@ def submit_executor_task(
         "run_id": run_id,
         "prompt": "ai-platform sandbox runtime 211 smoke",
         "callback_url": callback_url,
-        "callback_token_id": f"callback-{_safe_run_id(run_id)}",
-        "callback_token": callback_token,
+        "callback_token_id": _callback_token_id_for_url(callback_url, run_id),
+        "callback_token": _callback_token_for_url(
+            callback_url,
+            _callback_token_id_for_url(callback_url, run_id),
+            callback_token,
+        ),
         "callback_base_url": callback_url.rsplit("/", 1)[0],
         "sdk_session_id": None,
         "permission_mode": "default",
@@ -1282,7 +1311,11 @@ def run_platform_runtime_probe(
 
             runtime = SandboxRuntime(
                 workspace_root=workspace_root,
-                callback_token_resolver=lambda token_id: recorder._callback_token,
+                callback_token_resolver=lambda token_id: _callback_token_for_url(
+                    callback_url,
+                    token_id,
+                    recorder._callback_token,
+                ),
                 record_lease=record_lease,
                 release_lease=release_lease,
             )
@@ -1307,7 +1340,7 @@ def run_platform_runtime_probe(
                 model=_configured_platform_smoke_model(settings),
                 resource_limits=resource_limits,
                 callback_url=callback_url,
-                callback_token_id=f"callback-{_safe_run_id(recorder.run_id)}",
+                callback_token_id=_callback_token_id_for_url(callback_url, recorder.run_id),
             )
             return await runtime.submit(request)
         finally:
