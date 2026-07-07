@@ -412,6 +412,46 @@ def test_b2_sandbox_readiness_accepts_future_reviewed_smoke_run_ids(tmp_path):
     assert "runtime_hardening" not in readiness["closed_runtime_gaps"]
 
 
+def test_b2_sandbox_readiness_accepts_smoke_with_open_hardening_verifier(tmp_path):
+    write_future_reviewed_b2_smoke(tmp_path, sandbox_provider="opensandbox")
+    evidence_path = (
+        tmp_path
+        / "docs/release-evidence/b2-sandbox"
+        / FUTURE_RUNTIME_SUBJECT
+        / "2026-06-20-211-b2-sandbox-runtime-smoke-1234567.json"
+    )
+    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    smoke = payload["evidence_ref"]["runtime_checks"]["b2_211_real_sandbox_smoke"]
+    smoke["checks"]["check_platform_hardening_evidence"] = False
+    for check in payload["evidence_ref"]["runtime_checks"]["verifier_checks"]:
+        if check["name"] == "check_platform_hardening_evidence":
+            check["passed"] = False
+            check["message"] = "hardening evidence missing: resource_limits.over_limit_probe_kind"
+    evidence_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert readiness["status"] == "runtime_acceptance_recorded"
+    assert readiness["runtime_acceptance"]["status"] == "verified_211_runtime_acceptance"
+    assert readiness["closed_runtime_gaps"] == [
+        "b2_211_real_sandbox_smoke",
+        "b2_reviewed_release_evidence",
+    ]
+    assert readiness["open_gaps"] == [
+        "b2_issue_review_and_closure_evidence",
+        "b2_runtime_evidence_review_against_merged_source",
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
+    ]
+    smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
+    assert smoke_evidence["status"] == "recorded_211_runtime_smoke_hardening_open"
+    assert smoke_evidence["checks"]["check_platform_hardening_evidence"] is False
+    assert smoke_evidence["hardening_verifier_status"] == "failed"
+    assert smoke_evidence.get("hardening_runtime_evidence") is None
+    assert smoke_evidence["does_not_close_b2_gate"] is True
+
+
 def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_closure(tmp_path):
     write_future_reviewed_b2_smoke(tmp_path)
     evidence_path = (

@@ -10,11 +10,13 @@ import httpx
 from fastapi import FastAPI
 
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent, ExecutorTaskRequest
+from app.settings import get_settings
 
 
 CallbackPayload = dict[str, Any]
 CallbackResult = dict[str, Any] | None
 CallbackSender = Callable[[str, CallbackPayload, str], Awaitable[CallbackResult] | CallbackResult]
+SdkRunner = Callable[..., Awaitable[Any] | Any]
 
 
 async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
@@ -36,6 +38,18 @@ async def _dispatch_callback(
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+async def _default_sdk_runner(**kwargs: Any) -> Any:
+    from app.executors.claude_agent_sdk_runner import run_claude_agent_sdk
+
+    return await run_claude_agent_sdk(**kwargs)
+
+
+async def _maybe_await(value: Awaitable[Any] | Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 def _write_runtime_marker(workspace_root: Path, request: ExecutorTaskRequest) -> Path:
@@ -86,6 +100,22 @@ def _safe_id_list(value: Any) -> list[str]:
     return safe_values
 
 
+def _primary_skill_id(skill_ids: list[str]) -> str:
+    return skill_ids[0] if skill_ids else "general-chat"
+
+
+def _safe_optional_id(value: Any) -> str | None:
+    if isinstance(value, str) and value and "/" not in value and "\\" not in value:
+        return value
+    return None
+
+
+def _result_value(result: Any, name: str, default: Any = None) -> Any:
+    if isinstance(result, dict):
+        return result.get(name, default)
+    return getattr(result, name, default)
+
+
 def _resource_limit_seconds(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
@@ -98,10 +128,12 @@ def _resource_limit_seconds(value: Any) -> float | None:
 def create_executor_app(
     workspace_root: str | Path = "/workspace",
     callback_sender: CallbackSender | None = None,
+    sdk_runner: SdkRunner | None = None,
 ) -> FastAPI:
     app = FastAPI(title="AI Platform Sandbox Executor", version="0.1.0")
     resolved_workspace_root = Path(workspace_root)
     resolved_callback_sender = callback_sender or _default_callback_sender
+    resolved_sdk_runner = sdk_runner or _default_sdk_runner
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -122,6 +154,15 @@ def create_executor_app(
             progress=5,
             state_patch={"stage": "accepted"},
         )
+        try:
+            await _dispatch_callback(
+                resolved_callback_sender,
+                request.callback_url,
+                running_event.model_dump(),
+                request.callback_token,
+            )
+        except Exception:
+            callback_errors.append(running_event.status)
         resource_limits = request.config.get("resource_limits", {})
         max_seconds = (
             _resource_limit_seconds(resource_limits.get("max_seconds"))
@@ -129,41 +170,99 @@ def create_executor_app(
             else None
         )
         timed_out = max_seconds is not None and max_seconds <= 0
+        sdk_result: Any | None = None
+        if not timed_out and getattr(get_settings(), "claude_agent_sdk_enabled", False) is True:
+            skill_ids = _safe_id_list(request.config.get("skill_ids"))
+            model = _safe_scalar(request.config.get("model"))
+
+            async def on_text(text: str) -> None:
+                return None
+
+            try:
+                sdk_result = await _maybe_await(
+                    resolved_sdk_runner(
+                        prompt=request.prompt,
+                        cwd=resolved_workspace_root,
+                        skill_id=_primary_skill_id(skill_ids),
+                        skills=skill_ids or None,
+                        model_id=model if isinstance(model, str) else None,
+                        session_id=request.sdk_session_id,
+                        on_text=on_text,
+                    )
+                )
+            except Exception:
+                sdk_result = {
+                    "used_sdk": False,
+                    "error": "claude_agent_sdk_unavailable",
+                }
+
+        sdk_error = bool(sdk_result is not None and _result_value(sdk_result, "error"))
+        terminal_status = "failed" if timed_out or sdk_error else "completed"
+        state_patch = (
+            {"error_code": "executor_health_timeout"}
+            if timed_out
+            else {
+                "marker_path": f"/workspace/runtime/{marker_path.name}",
+            }
+        )
+        sdk_session_id = _safe_optional_id(_result_value(sdk_result, "session_id")) if sdk_result is not None else None
+        if sdk_result is not None:
+            state_patch.update(
+                {
+                    "sdk_used": bool(_result_value(sdk_result, "used_sdk", False)),
+                    "executor_mode": "claude_agent_sdk",
+                }
+            )
+            if sdk_session_id:
+                state_patch["sdk_session_id"] = sdk_session_id
         completed_event = ExecutorCallbackEvent(
             session_id=request.session_id,
             run_id=request.run_id,
             callback_token_id=request.callback_token_id,
-            status="failed" if timed_out else "completed",
-            progress=100 if not timed_out else 5,
-            state_patch=(
-                {"error_code": "executor_health_timeout"}
+            status=terminal_status,
+            progress=100 if terminal_status == "completed" else 5,
+            state_patch=state_patch,
+            sdk_session_id=sdk_session_id,
+            error_message=(
+                "Executor health timeout"
                 if timed_out
-                else {"marker_path": f"/workspace/runtime/{marker_path.name}"}
+                else "Claude Agent SDK execution failed"
+                if sdk_error
+                else None
             ),
-            error_message="Executor health timeout" if timed_out else None,
         )
 
-        for event in (running_event, completed_event):
-            try:
-                await _dispatch_callback(
-                    resolved_callback_sender,
-                    request.callback_url,
-                    event.model_dump(),
-                    request.callback_token,
-                )
-            except Exception:
-                callback_errors.append(event.status)
+        try:
+            await _dispatch_callback(
+                resolved_callback_sender,
+                request.callback_url,
+                completed_event.model_dump(),
+                request.callback_token,
+            )
+        except Exception:
+            callback_errors.append(completed_event.status)
 
         executor_model_latency_ms = max(int(round((time.monotonic() - started_at) * 1000)), 0)
         response: dict[str, Any] = {
-            "status": "failed" if timed_out else "accepted",
+            "status": "failed" if terminal_status == "failed" else "accepted",
             "run_id": request.run_id,
             "executor_model_latency_ms": executor_model_latency_ms,
             "document_processing_latency_ms": document_processing_latency_ms,
+            "sdk_used": bool(_result_value(sdk_result, "used_sdk", False)) if sdk_result is not None else False,
+            "executor_mode": "claude_agent_sdk" if sdk_result is not None else "marker_smoke",
         }
+        if sdk_session_id:
+            response["sdk_session_id"] = sdk_session_id
+        if sdk_result is not None:
+            used_skill_ids = _safe_id_list(_result_value(sdk_result, "used_skills", []))
+            if used_skill_ids:
+                response["used_skill_ids"] = used_skill_ids
         if timed_out:
             response["error_code"] = "executor_health_timeout"
             response["error_message"] = "Executor health timeout"
+        elif sdk_error:
+            response["error_code"] = "claude_agent_sdk_runtime_error"
+            response["error_message"] = "Claude Agent SDK execution failed"
         if callback_errors:
             response["callback_errors"] = callback_errors
         return response

@@ -543,7 +543,11 @@ def _b2_smoke_evidence_summary(
     checks = evidence.get("checks")
     if not isinstance(checks, dict):
         return None
-    if not all(checks.get(check) is True for check in _VERIFIER_REQUIRED_CHECKS):
+    hardening_check_passed = checks.get("check_platform_hardening_evidence") is True
+    base_smoke_checks = [
+        check for check in _VERIFIER_REQUIRED_CHECKS if check != "check_platform_hardening_evidence"
+    ]
+    if not all(checks.get(check) is True for check in base_smoke_checks):
         return None
     callbacks = evidence.get("callbacks")
     if callbacks != ["running", "completed"]:
@@ -582,7 +586,11 @@ def _b2_smoke_evidence_summary(
         if non_expansion_invariants.get(key) is not expected:
             return None
     summary = {
-        "status": "verified_211_runtime_acceptance",
+        "status": (
+            "verified_211_runtime_acceptance"
+            if hardening_check_passed
+            else "recorded_211_runtime_smoke_hardening_open"
+        ),
         "artifact_kind": RUNTIME_ACCEPTANCE_ARTIFACT_KIND,
         "captured_at": payload.get("captured_at"),
         "evidence_id": payload.get("evidence_id"),
@@ -596,7 +604,8 @@ def _b2_smoke_evidence_summary(
         "executor": dict(executor),
         "callbacks": list(callbacks),
         "timings": dict(timings),
-        "checks": {check: True for check in _VERIFIER_REQUIRED_CHECKS},
+        "checks": {check: checks.get(check) is True for check in _VERIFIER_REQUIRED_CHECKS},
+        "hardening_verifier_status": "passed" if hardening_check_passed else "failed",
         "redaction_scan_status": evidence.get("redaction_scan_status"),
         "does_not_close_b2_gate": True,
     }

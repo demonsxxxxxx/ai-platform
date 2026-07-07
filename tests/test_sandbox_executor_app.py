@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -80,6 +81,112 @@ def test_executor_execute_posts_running_and_completed_callbacks(tmp_path):
     assert {item[1]["callback_token_id"] for item in callbacks} == {"cbt_run-a"}
     assert callbacks[0][1]["progress"] == 5
     assert callbacks[1][1]["progress"] == 100
+
+
+def test_executor_execute_records_claude_sdk_evidence_when_enabled(tmp_path, monkeypatch):
+    callbacks = []
+    calls = []
+
+    async def sdk_runner(**kwargs):
+        calls.append(kwargs)
+        assert [item[1]["status"] for item in callbacks] == ["running"]
+        await kwargs["on_text"]("sandbox sdk completed")
+        return SimpleNamespace(
+            used_sdk=True,
+            session_id="sdk-session-a",
+            usage={"input_tokens": 1, "output_tokens": 2},
+            error=None,
+            message="sandbox sdk completed",
+            used_skills=["general-chat"],
+            used_skills_source="executor_hook",
+        )
+
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.get_settings",
+        lambda: SimpleNamespace(claude_agent_sdk_enabled=True),
+    )
+
+    def callback_sender(url, payload, token):
+        callbacks.append((url, payload, token))
+        return {"accepted": True}
+
+    client = TestClient(
+        create_executor_app(
+            workspace_root=tmp_path,
+            callback_sender=callback_sender,
+            sdk_runner=sdk_runner,
+        )
+    )
+    payload = task_payload("http://platform/callback")
+    payload["config"]["skill_ids"] = ["general-chat"]
+
+    response = client.post("/v1/tasks/execute", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert body["sdk_used"] is True
+    assert body["executor_mode"] == "claude_agent_sdk"
+    assert body["sdk_session_id"] == "sdk-session-a"
+    assert body["used_skill_ids"] == ["general-chat"]
+    assert calls[0]["prompt"] == "hello executor"
+    assert calls[0]["cwd"] == tmp_path
+    assert calls[0]["skill_id"] == "general-chat"
+    assert calls[0]["skills"] == ["general-chat"]
+    assert calls[0]["model_id"] == "deepseek-v4-flash"
+    assert [item[1]["status"] for item in callbacks] == ["running", "completed"]
+    assert callbacks[-1][1]["sdk_session_id"] == "sdk-session-a"
+    assert callbacks[-1][1]["new_message"] is None
+    assert callbacks[-1][1]["state_patch"]["sdk_used"] is True
+    assert callbacks[-1][1]["state_patch"]["executor_mode"] == "claude_agent_sdk"
+
+
+def test_executor_execute_reports_claude_sdk_error_without_leaking_details(tmp_path, monkeypatch):
+    callbacks = []
+
+    async def sdk_runner(**kwargs):
+        return SimpleNamespace(
+            used_sdk=True,
+            session_id=None,
+            usage={},
+            error="provider token=secret failed at /tmp/workspace",
+            message="",
+            used_skills=[],
+            used_skills_source="",
+        )
+
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.get_settings",
+        lambda: SimpleNamespace(claude_agent_sdk_enabled=True),
+    )
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return {"accepted": True}
+
+    client = TestClient(
+        create_executor_app(
+            workspace_root=tmp_path,
+            callback_sender=callback_sender,
+            sdk_runner=sdk_runner,
+        )
+    )
+
+    response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["sdk_used"] is True
+    assert body["executor_mode"] == "claude_agent_sdk"
+    assert body["error_code"] == "claude_agent_sdk_runtime_error"
+    assert body["error_message"] == "Claude Agent SDK execution failed"
+    assert "secret" not in str(body)
+    assert str(tmp_path) not in str(body)
+    assert [item["status"] for item in callbacks] == ["running", "failed"]
+    assert callbacks[-1]["error_message"] == "Claude Agent SDK execution failed"
+    assert "secret" not in str(callbacks)
+    assert str(tmp_path) not in str(callbacks)
 
 
 def test_executor_execute_reports_platform_timeout_probe_as_failed_callback(tmp_path):
