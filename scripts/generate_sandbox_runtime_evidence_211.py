@@ -405,6 +405,14 @@ def _executor_evidence_from_result(result: object) -> dict[str, object]:
     return _executor_evidence_from_response(getattr(result, "executor_response", {}))
 
 
+def _configured_platform_smoke_model(settings: object) -> str:
+    for field_name in ("claude_agent_model", "anthropic_model", "openai_model", "default_model_id"):
+        value = str(getattr(settings, field_name, "") or "").strip()
+        if value:
+            return value
+    return "deepseek-v4-flash"
+
+
 def _positive_number(value: object) -> bool:
     if isinstance(value, bool):
         return False
@@ -1080,7 +1088,7 @@ def run_platform_runtime_probe(
                 file_ids=[],
                 sandbox_mode="ephemeral",
                 browser_enabled=False,
-                model="smoke",
+                model=_configured_platform_smoke_model(settings),
                 resource_limits=resource_limits,
                 callback_url=callback_url,
                 callback_token_id=f"callback-{_safe_run_id(recorder.run_id)}",
