@@ -359,8 +359,9 @@ def main() -> int:
         result = scan_empty_rows(excel_path)
 
     if args.output_json:
-        _write_json(args.output_json, result)
-        print(f"[OK] JSON written: {args.output_json}")
+        output_json_path = _resolve_output_path(args.output_json, "output_json")
+        _write_json(output_json_path, result)
+        print(f"[OK] JSON written: {_display_path(output_json_path)}")
     else:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

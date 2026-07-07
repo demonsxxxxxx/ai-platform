@@ -138,3 +138,29 @@ def test_audit_finding_rca_rejects_paths_outside_workspace_and_output_dir(tmp_pa
         module.fill_excel(source, {"2": {"rca": "RCA", "capa": "CAPA"}}, "exports")
     with pytest.raises(ValueError, match="must be under output"):
         module._write_json("scan.json", {"ok": True})
+
+
+def test_audit_finding_rca_cli_reports_relative_output_json_path(tmp_path, monkeypatch, capsys):
+    module = load_fill_excel_module()
+    monkeypatch.chdir(tmp_path)
+    source = Path("audit-findings.xlsx")
+    create_workbook(source, [["缺陷描述"], ["输出路径不应暴露绝对目录"]])
+    output_json = (tmp_path / "output" / "scan.json").resolve()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "fill_excel.py",
+            "--scan",
+            "--excel",
+            str(source),
+            "--output-json",
+            str(output_json),
+        ],
+    )
+
+    assert module.main() == 0
+
+    captured = capsys.readouterr()
+    assert "[OK] JSON written: output" in captured.out
+    assert str(tmp_path) not in captured.out
