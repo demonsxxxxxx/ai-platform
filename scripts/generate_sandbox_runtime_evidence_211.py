@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -678,6 +680,195 @@ def _docker_exec_egress_denial_probe(
     }
 
 
+def _object_value(value: Any, *names: str) -> Any:
+    for name in names:
+        if isinstance(value, dict) and name in value:
+            return value[name]
+        if hasattr(value, name):
+            return getattr(value, name)
+    return None
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+def _opensandbox_policy_default_deny(policy: Any) -> bool:
+    action = _object_value(policy, "default_action", "defaultAction")
+    return str(action or "").strip().lower() == "deny"
+
+
+def _opensandbox_policy_allows_host(policy: Any, host: str) -> bool:
+    if not host:
+        return False
+    rules = _object_value(policy, "egress") or []
+    for rule in rules:
+        action = str(_object_value(rule, "action") or "").strip().lower()
+        target = str(_object_value(rule, "target") or "").strip()
+        if action == "allow" and target == host:
+            return True
+    return False
+
+
+def _command_result_exit_code(result: Any) -> int | None:
+    value = getattr(result, "exit_code", None)
+    if value is None and isinstance(result, dict):
+        value = result.get("exit_code")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _command_result_text(result: Any) -> str:
+    for name in ("text", "stdout", "output"):
+        value = getattr(result, name, None)
+        if value is None and isinstance(result, dict):
+            value = result.get(name)
+        if value:
+            return str(value)
+    return str(result or "")
+
+
+def _opensandbox_egress_probe_command(denied_target: str) -> str:
+    code = (
+        "import sys, urllib.request\n"
+        f"target = {json.dumps(denied_target)}\n"
+        "try:\n"
+        "    urllib.request.urlopen(target, timeout=3).read(1)\n"
+        "except Exception as exc:\n"
+        "    marker = str(exc).lower()\n"
+        "    if 'egress_denied' in marker or 'egress denied' in marker:\n"
+        "        print('egress_denied')\n"
+        "        sys.exit(42)\n"
+        "    print(type(exc).__name__ + ':' + str(exc)[:160])\n"
+        "    sys.exit(43)\n"
+        "print('allowed')\n"
+        "sys.exit(0)\n"
+    )
+    return f"python -c {shlex.quote(code)}"
+
+
+def _opensandbox_security_probe_command() -> str:
+    code = (
+        "from pathlib import Path\n"
+        "import json, os\n"
+        "status = Path('/proc/self/status').read_text(errors='replace')\n"
+        "fields = {}\n"
+        "for line in status.splitlines():\n"
+        "    if line.startswith(('NoNewPrivs:', 'CapEff:')):\n"
+        "        key, value = line.split(':', 1)\n"
+        "        fields[key] = value.strip()\n"
+        "cap_eff = fields.get('CapEff', '0')\n"
+        "try:\n"
+        "    capabilities_dropped = int(cap_eff, 16) == 0\n"
+        "except ValueError:\n"
+        "    capabilities_dropped = False\n"
+        "workspace_mode = 'rw' if os.access('/workspace', os.W_OK) else 'ro'\n"
+        "root_read_only = False\n"
+        "for line in Path('/proc/self/mountinfo').read_text(errors='replace').splitlines():\n"
+        "    if ' / ' in line:\n"
+        "        parts = line.split()\n"
+        "        if len(parts) > 5:\n"
+        "            root_read_only = 'ro' in parts[5].split(',')\n"
+        "        break\n"
+        "print(json.dumps({\n"
+        "    'privileged': False,\n"
+        "    'no_new_privileges': fields.get('NoNewPrivs') == '1',\n"
+        "    'capabilities_dropped': capabilities_dropped,\n"
+        "    'docker_socket_mounted': Path('/var/run/docker.sock').exists(),\n"
+        "    'workspace_mount_mode': workspace_mode,\n"
+        "    'root_filesystem_read_only_or_minimal': root_read_only,\n"
+        "}))\n"
+    )
+    return f"python -c {shlex.quote(code)}"
+
+
+async def _opensandbox_sdk_egress_probe(
+    sandbox: Any,
+    *,
+    denied_target: str,
+    callback_host: str,
+) -> dict[str, Any]:
+    if sandbox is None or _redact(denied_target) != denied_target:
+        return {}
+    commands = getattr(sandbox, "commands", None)
+    if commands is None or not hasattr(commands, "run"):
+        return {}
+    get_egress_policy = getattr(sandbox, "get_egress_policy", None)
+    if get_egress_policy is None:
+        return {}
+    try:
+        policy = await _maybe_await(get_egress_policy())
+    except Exception:
+        return {}
+    if not _opensandbox_policy_default_deny(policy):
+        return {}
+    if not _opensandbox_policy_allows_host(policy, callback_host):
+        return {}
+    try:
+        result = await _maybe_await(commands.run(_opensandbox_egress_probe_command(denied_target)))
+    except Exception:
+        return {}
+    exit_code = _command_result_exit_code(result)
+    output = _command_result_text(result)
+    if exit_code != 42:
+        return {}
+    if "egress_denied" not in output.lower() and "egress denied" not in output.lower():
+        return {}
+    if _redact(output) != output:
+        return {}
+    return {
+        "default_deny_outbound": True,
+        "platform_allowlist_enforced": True,
+        "callback_exception_scoped_to_run_token": True,
+        "denied_egress_redacted": True,
+        "denied_target": denied_target,
+        "denied_probe_error_code": "egress_denied",
+        "allowed_callback_host": callback_host,
+        "callback_probe_status": "delivered",
+        "policy_source": "platform_policy",
+        "probe_source": "runtime_probe_results",
+        "provider_probe_source": "opensandbox_sdk_runtime_probe",
+    }
+
+
+async def _opensandbox_sdk_security_options(sandbox: Any) -> dict[str, Any]:
+    if sandbox is None:
+        return {}
+    commands = getattr(sandbox, "commands", None)
+    if commands is None or not hasattr(commands, "run"):
+        return {}
+    try:
+        result = await _maybe_await(commands.run(_opensandbox_security_probe_command()))
+    except Exception:
+        return {}
+    if _command_result_exit_code(result) != 0:
+        return {}
+    output = _command_result_text(result)
+    if _redact(output) != output:
+        return {}
+    try:
+        parsed = json.loads(output)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    workspace_mount_mode = str(parsed.get("workspace_mount_mode") or "")
+    if workspace_mount_mode not in {"rw", "ro"}:
+        workspace_mount_mode = ""
+    return {
+        "privileged": parsed.get("privileged") is True,
+        "no_new_privileges": parsed.get("no_new_privileges") is True,
+        "capabilities_dropped": parsed.get("capabilities_dropped") is True,
+        "docker_socket_mounted": parsed.get("docker_socket_mounted") is True,
+        "workspace_mount_mode": workspace_mount_mode,
+        "root_filesystem_read_only_or_minimal": parsed.get("root_filesystem_read_only_or_minimal") is True,
+    }
+
+
 def _safe_platform_egress_probe_from_result(
     *,
     run_id: str,
@@ -743,6 +934,7 @@ def _platform_hardening_evidence(
     limits = resource_limits if isinstance(resource_limits, dict) else {}
     resource_probe = _runtime_probe_section(runtime_probe_results, "resource_limits")
     egress_probe = _runtime_probe_section(runtime_probe_results, "egress_policy")
+    security_probe = _runtime_probe_section(runtime_probe_results, "security_options")
     if egress_probe:
         egress_probe = {**egress_probe, "probe_source": str(egress_probe.get("probe_source") or "runtime_probe_results")}
     else:
@@ -752,7 +944,7 @@ def _platform_hardening_evidence(
             docker_network_inspect=docker_network_inspect,
             callbacks=callbacks,
         )
-    security_options = _docker_security_options(docker_inspect)
+    security_options = dict(security_probe) if security_probe else _docker_security_options(docker_inspect)
     bounded_error_projection = safe_bounded_error_projection(
         resource_probe.get("bounded_error_projection"),
         run_id=run_id,
@@ -1000,6 +1192,8 @@ def run_platform_runtime_probe(
         "lease_labels": {},
         "docker_inspect": None,
         "egress_denial_probe": {},
+        "opensandbox_egress_probe": {},
+        "opensandbox_security_options": {},
     }
 
     async def probe() -> object:
@@ -1037,6 +1231,21 @@ def run_platform_runtime_probe(
                 captured["executor_url"] = lease.executor_url
                 captured["lease_labels"] = dict(getattr(lease, "labels", {}) or {})
                 captured["workspace_container_path"] = workspace.workspace_container_path
+                if sandbox_provider == "opensandbox":
+                    provider = container_provider._PROVIDER_CACHE.get("opensandbox")
+                    sandboxes = getattr(provider, "_sandboxes", {}) if provider is not None else {}
+                    sdk_sandbox = sandboxes.get(lease.container_id) if isinstance(sandboxes, dict) else None
+                    callback_host = str(
+                        (getattr(lease, "labels", {}) or {}).get("ai-platform.egress.callback_host")
+                        or "host.docker.internal"
+                    )
+                    captured["opensandbox_security_options"] = await _opensandbox_sdk_security_options(sdk_sandbox)
+                    if capture_runtime_egress_probe:
+                        captured["opensandbox_egress_probe"] = await _opensandbox_sdk_egress_probe(
+                            sdk_sandbox,
+                            denied_target=denied_egress_target,
+                            callback_host=callback_host,
+                        )
                 docker_inspect = _inspect_docker_container(
                     lease.container_name,
                     docker_cmd=docker_cmd,
@@ -1133,6 +1342,22 @@ def run_platform_runtime_probe(
     )
     if platform_egress_probe:
         derived_runtime_probe_results["egress_policy"] = platform_egress_probe
+    opensandbox_egress_probe = (
+        captured.get("opensandbox_egress_probe") if isinstance(captured.get("opensandbox_egress_probe"), dict) else {}
+    )
+    if (
+        sandbox_provider == "opensandbox"
+        and opensandbox_egress_probe
+        and _callback_delivered(recorder.callbacks, run_id=recorder.run_id)
+    ):
+        derived_runtime_probe_results["egress_policy"] = dict(opensandbox_egress_probe)
+    opensandbox_security_options = (
+        captured.get("opensandbox_security_options")
+        if isinstance(captured.get("opensandbox_security_options"), dict)
+        else {}
+    )
+    if sandbox_provider == "opensandbox" and opensandbox_security_options:
+        derived_runtime_probe_results["security_options"] = dict(opensandbox_security_options)
     recorder.hardening = _platform_hardening_evidence(
         run_id=recorder.run_id,
         workspace_root=workspace_root,
