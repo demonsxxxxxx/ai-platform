@@ -25,6 +25,7 @@ RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA = "ai-platform.sandbox-runtime-211.v1"
 RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
 _RUNTIME_EVIDENCE_ROOT = "docs/release-evidence/b2-sandbox"
 _B2_RUNTIME_NEUTRAL_EXACT_PATHS = {
+    ".github/workflows/ai-platform-backend.yml",
     "app/b2_sandbox_readiness.py",
     "app/foundation_alpha_readiness.py",
     "docs/operations/ai-platform-gate-status.md",
@@ -949,9 +950,9 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         "runtime_acceptance_evidence": runtime_acceptance_evidence,
         "non_expansion_invariants": dict(_B2_NON_EXPANSION_INVARIANTS),
         "evidence_policy": (
-            "B2 remains `local partial` until the current issue boundary, reviewed release evidence, "
-            "and required 211 smoke/readiness evidence are all complete. Reviewed fake-provider, "
-            "source-regression, or runtime-hardening evidence by itself does not complete gate closure."
+            "B2 remains `local partial` until runtime acceptance, source/issue review boundaries, "
+            "and required hardening evidence are all complete. Reviewed fake-provider, "
+            "source-regression, or partial runtime-hardening evidence by itself does not complete gate closure."
         ),
     }
 
