@@ -561,6 +561,31 @@ export function useSkills(options?: {
     [enabled, fetchSkills],
   );
 
+  // Upload a governed Skill package through the admin release path.
+  const adminUploadSkill = useCallback(
+    async (
+      file: File,
+      skillName: string,
+    ): Promise<Awaited<ReturnType<typeof skillApi.adminUploadZip>> | null> => {
+      if (!enabled) return null;
+      setIsUploading(true);
+      setError(null);
+      try {
+        const result = await skillApi.adminUploadZip(skillName, file);
+        await fetchSkills();
+        return result;
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Failed to upload admin skill",
+        );
+        return null;
+      } finally {
+        setIsUploading(false);
+      }
+    },
+    [enabled, fetchSkills],
+  );
+
   // Preview skills from ZIP file
   const previewZipSkills = useCallback(
     async (
@@ -582,6 +607,37 @@ export function useSkills(options?: {
         return await skillApi.previewZip(file);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to preview ZIP");
+        return null;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [enabled],
+  );
+
+  // Preview skills from ZIP file through the admin path with global catalog checks.
+  const adminPreviewZipSkills = useCallback(
+    async (
+      file: File,
+    ): Promise<{
+      skill_count: number;
+      skills: Array<{
+        name: string;
+        description: string;
+        file_count: number;
+        files: string[];
+        already_exists: boolean;
+      }>;
+    } | null> => {
+      if (!enabled) return null;
+      setIsLoading(true);
+      setError(null);
+      try {
+        return await skillApi.adminPreviewZip(file);
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Failed to preview admin ZIP",
+        );
         return null;
       } finally {
         setIsLoading(false);
@@ -719,7 +775,9 @@ export function useSkills(options?: {
     toggleCategory,
     toggleAll,
     uploadSkill,
+    adminUploadSkill,
     previewZipSkills,
+    adminPreviewZipSkills,
     previewGitHubSkills,
     installGitHubSkills,
     publishToMarketplace,

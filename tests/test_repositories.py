@@ -358,7 +358,7 @@ async def test_list_public_skill_catalog_projects_public_source_without_internal
     assert rows[0]["source"]["tags"] == ["document"]
     assert rows[0]["source"]["files"][0]["relative_path"] == "SKILL.md"
     assert rows[0]["dependency_ids"] == ["minimax-docx"]
-    assert "skills.id = any(%s)" in conn.sql
+    assert "(skills.id = any(%s) or tenant_workbench_skills.skill_id is not null)" in conn.sql
     assert "skills.status = 'active'" in conn.sql
     assert conn.params[0:2] == ("default", "default")
     assert "qa-file-reviewer" in conn.params[2]
@@ -4234,12 +4234,83 @@ async def test_upsert_skill_version_records_immutable_catalog_version():
     assert "insert into skill_versions" in sql
     assert "on conflict (skill_id, version)" in sql
     assert "do nothing" in sql
+    assert "returning skill_id" in sql
     assert "do update set" not in sql
     assert "content_hash = excluded.content_hash" not in sql
     assert params[0].startswith("skv_")
     assert params[1:4] == ("qa-file-reviewer", "hash-a", "hash-a")
     assert '"kind": "builtin"' in str(params)
     assert "minimax-docx" in str(params)
+
+
+@pytest.mark.asyncio
+async def test_upsert_skill_version_reports_conflict_when_insert_skipped():
+    class ConflictCursor:
+        async def fetchone(self):
+            return None
+
+    class ConflictConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return ConflictCursor()
+
+    conn = ConflictConnection()
+
+    inserted = await repositories.upsert_skill_version(
+        conn,
+        skill_id="qa-file-reviewer",
+        version="hash-a",
+        content_hash="hash-a",
+        description="QA review",
+        source_json={"kind": "uploaded"},
+        dependency_ids=["minimax-docx"],
+        status="draft",
+        created_by="admin-a",
+    )
+
+    assert inserted is False
+
+
+@pytest.mark.asyncio
+async def test_create_skill_catalog_is_insert_only_and_reports_conflict():
+    class ConflictCursor:
+        async def fetchone(self):
+            return None
+
+    class ConflictConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return ConflictCursor()
+
+    conn = ConflictConnection()
+
+    with pytest.raises(RepositoryConflictError) as exc_info:
+        await repositories.create_skill_catalog(
+            conn,
+            skill_id="new-research-skill",
+            name="New Research Skill",
+            version="hash-new",
+            description="Summarize research briefs.",
+            input_modes=["chat"],
+            output_modes=["answer"],
+            executor_type="claude-agent-worker",
+            status="active",
+        )
+
+    sql, params = conn.calls[0]
+    assert str(exc_info.value) == "skill_catalog_already_exists"
+    assert "insert into skills" in sql
+    assert "on conflict (id) do nothing" in sql
+    assert "do update" not in sql
+    assert "returning id" in sql
+    assert params[0:5] == (
+        "new-research-skill",
+        "New Research Skill",
+        "hash-new",
+        "Summarize research briefs.",
+        '["chat"]',
+    )
+    assert params[5:8] == ('["answer"]', "claude-agent-worker", "active")
 
 
 @pytest.mark.asyncio
@@ -4898,6 +4969,113 @@ async def test_set_workbench_skill_status_rejects_internal_dependency_skill():
         )
 
     assert conn.calls == []
+
+
+@pytest.mark.asyncio
+async def test_set_uploaded_workbench_skill_status_allows_tenant_uploaded_skill():
+    class UploadedSkillConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            if compact.startswith("select skills.id as skill_id"):
+                return SingleRowCursor(
+                    {
+                        "skill_id": "new-research-skill",
+                        "name": "new-research-skill",
+                        "version": "hash-new",
+                        "description": "Summarize research briefs.",
+                        "input_modes": ["chat"],
+                        "output_modes": ["answer"],
+                        "executor_type": "claude-agent-worker",
+                        "status": "active",
+                        "visible_to_user": True,
+                    }
+                )
+            return FakeCursor()
+
+    conn = UploadedSkillConnection()
+
+    row = await repositories.set_uploaded_workbench_skill_status(
+        conn,
+        tenant_id="default",
+        skill_id="new-research-skill",
+        status="active",
+    )
+
+    assert row["skill_id"] == "new-research-skill"
+    assert conn.calls[0][1] == ("default", "new-research-skill", "active")
+    assert "insert into tenant_workbench_skills" in conn.calls[0][0]
+    assert conn.calls[1][1] == ("default", "new-research-skill")
+
+
+@pytest.mark.asyncio
+async def test_set_public_skill_enabled_allows_existing_tenant_uploaded_skill():
+    class UploadedSkillConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            if compact.startswith("select 1 from tenant_workbench_skills"):
+                return SingleRowCursor({"exists": 1})
+            if compact.startswith("select skills.id as skill_id"):
+                return SingleRowCursor(
+                    {
+                        "skill_id": "new-research-skill",
+                        "name": "new-research-skill",
+                        "version": "hash-new",
+                        "description": "Summarize research briefs.",
+                        "input_modes": ["chat"],
+                        "output_modes": ["answer"],
+                        "executor_type": "claude-agent-worker",
+                        "status": "active",
+                        "visible_to_user": True,
+                    }
+                )
+            return FakeCursor()
+
+    conn = UploadedSkillConnection()
+
+    row = await repositories.set_public_skill_enabled(
+        conn,
+        tenant_id="default",
+        skill_id="new-research-skill",
+        status="active",
+    )
+
+    assert row["skill_id"] == "new-research-skill"
+    assert "select 1 from tenant_workbench_skills" in conn.calls[0][0]
+    assert conn.calls[0][1] == ("default", "new-research-skill")
+    assert "insert into tenant_workbench_skills" in conn.calls[1][0]
+
+
+@pytest.mark.asyncio
+async def test_set_public_skill_enabled_rejects_non_public_skill_without_tenant_row():
+    class MissingUploadedSkillConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            return SingleRowCursor(None)
+
+    conn = MissingUploadedSkillConnection()
+
+    with pytest.raises(RepositoryNotFoundError, match="workbench_skill_not_found"):
+        await repositories.set_public_skill_enabled(
+            conn,
+            tenant_id="default",
+            skill_id="minimax-docx",
+            status="active",
+        )
+
+    assert len(conn.calls) == 1
+    assert "insert into tenant_workbench_skills" not in conn.calls[0][0]
 
 
 @pytest.mark.asyncio
