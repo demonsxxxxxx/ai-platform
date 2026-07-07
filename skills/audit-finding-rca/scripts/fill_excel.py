@@ -17,6 +17,45 @@ from openpyxl.utils import get_column_letter
 
 RCA_HEADER = "原因分析 (RCA)"
 CAPA_HEADER = "整改计划 (CAPA)"
+FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _workspace_root() -> Path:
+    return Path.cwd().resolve()
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.resolve(strict=False).relative_to(_workspace_root()))
+    except ValueError:
+        return path.name
+
+
+def _resolve_workspace_path(path: str | Path, label: str) -> Path:
+    root = _workspace_root()
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve(strict=False)
+    if not _is_relative_to(resolved, root):
+        raise ValueError(f"{label} must stay inside the workspace")
+    return resolved
+
+
+def _resolve_output_path(path: str | Path, label: str) -> Path:
+    resolved = _resolve_workspace_path(path, label)
+    output_root = (_workspace_root() / "output").resolve(strict=False)
+    if resolved != output_root and not _is_relative_to(resolved, output_root):
+        raise ValueError(f"{label} must be under output")
+    return resolved
 
 
 def _is_blank(value: Any) -> bool:
@@ -25,6 +64,13 @@ def _is_blank(value: Any) -> bool:
 
 def _cell_text(value: Any) -> str:
     return "" if value is None else str(value).strip()
+
+
+def _excel_text(value: Any) -> str:
+    text = _cell_text(value)
+    if text.startswith(FORMULA_PREFIXES):
+        return f"'{text}"
+    return text
 
 
 def _header_text(ws, column: int) -> str:
@@ -106,7 +152,7 @@ def detect_columns(ws) -> dict[str, Any]:
 def find_latest_excel(search_root: str | Path = ".") -> Path:
     """Return the newest non-output workbook under the search root."""
 
-    root = Path(search_root)
+    root = _resolve_workspace_path(search_root, "search_root")
     candidates = [
         path
         for path in root.glob("*.xlsx")
@@ -115,7 +161,7 @@ def find_latest_excel(search_root: str | Path = ".") -> Path:
         and "已填写RCA和CAPA" not in path.stem
     ]
     if not candidates:
-        raise FileNotFoundError(f"No input .xlsx file found under {root.resolve()}")
+        raise FileNotFoundError(f"No input .xlsx file found under {_display_path(root)}")
     return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
@@ -135,7 +181,7 @@ def _row_finding_text(ws, row: int, columns: list[int]) -> tuple[str, dict[str, 
 def scan_empty_rows(excel_path: str | Path) -> dict[str, Any]:
     """Describe workbook rows that still need RCA or CAPA content."""
 
-    workbook_path = Path(excel_path)
+    workbook_path = _resolve_workspace_path(excel_path, "excel_path")
     wb = openpyxl.load_workbook(workbook_path)
     ws = wb.active
     cols = detect_columns(ws)
@@ -161,7 +207,7 @@ def scan_empty_rows(excel_path: str | Path) -> dict[str, Any]:
             )
 
     return {
-        "excel_path": str(workbook_path),
+        "excel_path": _display_path(workbook_path),
         "sheet": ws.title,
         "total_rows": ws.max_row,
         "empty_count": len(rows),
@@ -178,7 +224,7 @@ def scan_empty_rows(excel_path: str | Path) -> dict[str, Any]:
 def load_rca_data(data_path: str | Path) -> dict[str, dict[str, str]]:
     """Load row-keyed RCA/CAPA text from a JSON file."""
 
-    path = Path(data_path)
+    path = _resolve_workspace_path(data_path, "data_path")
     with path.open("r", encoding="utf-8-sig") as handle:
         payload = json.load(handle)
     if not isinstance(payload, dict):
@@ -228,7 +274,7 @@ def fill_excel(
 ) -> dict[str, Any]:
     """Write RCA/CAPA text to a copied workbook without overwriting source cells."""
 
-    source_path = Path(excel_path)
+    source_path = _resolve_workspace_path(excel_path, "excel_path")
     wb = openpyxl.load_workbook(source_path)
     ws = wb.active
     cols = detect_columns(ws)
@@ -254,23 +300,23 @@ def fill_excel(
         capa_cell = ws.cell(row=row, column=capa_col)
 
         if _is_blank(rca_cell.value):
-            rca_cell.value = content.get("rca", "")
+            rca_cell.value = _excel_text(content.get("rca", ""))
             rca_filled += 1
         else:
             skipped_existing += 1
         if _is_blank(capa_cell.value):
-            capa_cell.value = content.get("capa", "")
+            capa_cell.value = _excel_text(content.get("capa", ""))
             capa_filled += 1
         else:
             skipped_existing += 1
 
     _apply_column_formatting(ws, rca_col, capa_col)
-    output_path = _unique_output_path(Path(output_dir), source_path)
+    output_path = _unique_output_path(_resolve_output_path(output_dir, "output_dir"), source_path)
     wb.save(output_path)
 
     return {
-        "input_path": str(source_path),
-        "output_path": str(output_path),
+        "input_path": _display_path(source_path),
+        "output_path": _display_path(output_path),
         "sheet": ws.title,
         "total_rows": ws.max_row,
         "rca_col": rca_col,
@@ -287,7 +333,7 @@ def fill_excel(
 
 
 def _write_json(path: str | Path, payload: dict[str, Any]) -> None:
-    target = Path(path)
+    target = _resolve_output_path(path, "output_json")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
