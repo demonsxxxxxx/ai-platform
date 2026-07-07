@@ -82,13 +82,19 @@ SAFE_SECRET_FIELD_NAMES = {
 
 EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
 LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
+REAL_SANDBOX_PROVIDERS = {"docker", "opensandbox"}
 REQUIRED_TIMING_FIELDS = [
+    "sandbox_queue_wait_latency_ms",
     "sandbox_lease_acquire_latency_ms",
+    "sandbox_container_start_latency_ms",
     "sandbox_container_cold_start_latency_ms",
     "sandbox_healthcheck_latency_ms",
     "sandbox_executor_dispatch_latency_ms",
+    "executor_first_token_latency_ms",
+    "executor_tool_call_latency_ms",
     "executor_model_latency_ms",
     "document_processing_latency_ms",
+    "artifact_upload_latency_ms",
     "sandbox_cleanup_latency_ms",
     "sandbox_total_latency_ms",
 ]
@@ -339,8 +345,8 @@ def _platform_executor_health_evidence_error(evidence: dict[str, Any], *, run_id
         return run_error
     if evidence.get("runtime_mode") != "platform":
         return "platform runtime evidence missing"
-    if evidence.get("sandbox_provider") != "docker":
-        return "docker sandbox provider evidence missing"
+    if evidence.get("sandbox_provider") not in REAL_SANDBOX_PROVIDERS:
+        return "real sandbox provider evidence missing"
     if evidence.get("executed_task") is not True:
         return "executed task evidence missing"
     timings = evidence.get("timings")
@@ -456,6 +462,17 @@ def _timing_error(timings: object) -> str | None:
     return None
 
 
+def _executor_sdk_error(evidence: dict[str, Any]) -> str | None:
+    executor = evidence.get("executor")
+    if not isinstance(executor, dict):
+        return "Claude Agent SDK executor evidence missing"
+    if executor.get("sdk_used") is not True:
+        return "Claude Agent SDK executor evidence missing: sdk_used"
+    if executor.get("executor_mode") != "claude_agent_sdk":
+        return "Claude Agent SDK executor evidence missing: executor_mode"
+    return None
+
+
 def _non_expansion_invariants_error(evidence: dict[str, Any]) -> str | None:
     invariants = evidence.get("non_expansion_invariants")
     if not isinstance(invariants, dict):
@@ -479,11 +496,14 @@ def check_platform_runtime_evidence(evidence_path: str | Path, *, run_id: str = 
         return CheckResult("check_platform_runtime_evidence", False, "sandbox runtime evidence schema mismatch")
     if evidence.get("runtime_mode") != "platform":
         return CheckResult("check_platform_runtime_evidence", False, "platform runtime evidence missing")
-    if evidence.get("sandbox_provider") != "docker":
-        return CheckResult("check_platform_runtime_evidence", False, "docker sandbox provider evidence missing")
+    if evidence.get("sandbox_provider") not in REAL_SANDBOX_PROVIDERS:
+        return CheckResult("check_platform_runtime_evidence", False, "real sandbox provider evidence missing")
     timing_error = _timing_error(evidence.get("timings"))
     if timing_error:
         return CheckResult("check_platform_runtime_evidence", False, timing_error)
+    executor_error = _executor_sdk_error(evidence)
+    if executor_error:
+        return CheckResult("check_platform_runtime_evidence", False, executor_error)
     invariants_error = _non_expansion_invariants_error(evidence)
     if invariants_error:
         return CheckResult("check_platform_runtime_evidence", False, invariants_error)
@@ -643,6 +663,108 @@ def _security_options_hardening_error(section: dict[str, Any]) -> str | None:
     return None
 
 
+def _opensandbox_provider_lifecycle_error(evidence: dict[str, Any]) -> str | None:
+    if evidence.get("sandbox_provider") != "opensandbox":
+        return None
+    if evidence.get("runtime_mode") != "platform":
+        return "OpenSandbox provider lifecycle requires platform runtime evidence"
+    lifecycle = evidence.get("provider_lifecycle")
+    if not isinstance(lifecycle, dict):
+        return "OpenSandbox provider lifecycle evidence missing"
+    if lifecycle.get("schema_version") != "ai-platform.opensandbox-provider-lifecycle.v1":
+        return "OpenSandbox provider lifecycle schema mismatch"
+    if lifecycle.get("provider") != "opensandbox":
+        return "OpenSandbox provider lifecycle provider mismatch"
+    if lifecycle.get("run_id") != evidence.get("run_id"):
+        return "OpenSandbox provider lifecycle run_id mismatch"
+
+    required_true_fields = {
+        "lifecycle": (
+            "create_observed",
+            "delete_observed",
+            "container_id_present",
+            "executor_endpoint_present",
+        ),
+        "db_lease": (
+            "recorded",
+            "released",
+            "recorded_scope_matches_request",
+        ),
+        "startup_io": (
+            "file_write_read_verified",
+            "command_execution_verified",
+        ),
+        "resource_policy": (
+            "resource_limits_requested",
+        ),
+        "egress_policy": (
+            "policy_requested",
+            "callback_host_allowlisted",
+        ),
+        "dispatch": (
+            "executor_response_present",
+            "callback_stream_observed",
+            "sdk_executor_observed",
+        ),
+        "redaction": (
+            "host_paths_redacted",
+            "secrets_absent",
+        ),
+    }
+    for section_name, fields in required_true_fields.items():
+        section = lifecycle.get(section_name)
+        if not isinstance(section, dict):
+            return f"OpenSandbox provider lifecycle section missing: {section_name}"
+        for field in fields:
+            if section.get(field) is not True:
+                return f"OpenSandbox provider lifecycle evidence missing: {section_name}.{field}"
+
+    db_lease = lifecycle["db_lease"]
+    lifecycle_section = lifecycle["lifecycle"]
+    if lifecycle_section.get("delete_stop_status") != "stopped":
+        return "OpenSandbox provider lifecycle delete stop status missing or unexpected"
+    if db_lease.get("release_reason") not in {"dispatch_completed", "run_succeeded", "run_cancelled", "run_failed"}:
+        return "OpenSandbox provider lifecycle release reason missing or unexpected"
+    startup_io = lifecycle["startup_io"]
+    if startup_io.get("source") != "OpenSandboxContainerProvider.startup_io_probe":
+        return "OpenSandbox provider lifecycle startup probe source mismatch"
+    resource_policy = lifecycle["resource_policy"]
+    for field in ("memory_mb", "cpu_count", "pids_limit"):
+        if not _positive_number(resource_policy.get(field)):
+            return f"OpenSandbox provider lifecycle evidence missing: resource_policy.{field}"
+    if resource_policy.get("policy_projection_source") != "provider_request":
+        return "OpenSandbox provider lifecycle resource policy source mismatch"
+    egress_policy = lifecycle["egress_policy"]
+    if egress_policy.get("policy_projection_source") != "provider_request":
+        return "OpenSandbox provider lifecycle egress policy source mismatch"
+    return None
+
+
+def check_opensandbox_provider_lifecycle_evidence(evidence_path: str | Path, *, run_id: str = "") -> CheckResult:
+    """Validate first-stage OpenSandbox lifecycle evidence when that provider is selected."""
+
+    evidence, error = _read_evidence(evidence_path)
+    if error:
+        return CheckResult("check_opensandbox_provider_lifecycle_evidence", False, error)
+    run_error = _required_evidence_error(evidence, run_id=run_id)
+    if run_error:
+        return CheckResult("check_opensandbox_provider_lifecycle_evidence", False, run_error)
+    lifecycle_error = _opensandbox_provider_lifecycle_error(evidence)
+    if lifecycle_error:
+        return CheckResult("check_opensandbox_provider_lifecycle_evidence", False, lifecycle_error)
+    if evidence.get("sandbox_provider") != "opensandbox":
+        return CheckResult(
+            "check_opensandbox_provider_lifecycle_evidence",
+            True,
+            "OpenSandbox provider lifecycle not applicable",
+        )
+    return CheckResult(
+        "check_opensandbox_provider_lifecycle_evidence",
+        True,
+        "OpenSandbox provider lifecycle evidence present",
+    )
+
+
 def check_platform_hardening_evidence(evidence_path: str | Path, *, run_id: str = "") -> CheckResult:
     evidence, error = _read_evidence(evidence_path)
     if error:
@@ -758,6 +880,7 @@ def main(argv: list[str] | None = None) -> int:
         lambda: check_callback_stream(args.evidence_file, run_id=args.run_id, executor_url=args.executor_url),
         lambda: check_cancel_stops_container(args.evidence_file, run_id=args.run_id),
         lambda: check_platform_runtime_evidence(args.evidence_file, run_id=args.run_id),
+        lambda: check_opensandbox_provider_lifecycle_evidence(args.evidence_file, run_id=args.run_id),
         lambda: check_platform_hardening_evidence(args.evidence_file, run_id=args.run_id),
         lambda: check_no_secret_leakage(args.evidence_file),
     ]

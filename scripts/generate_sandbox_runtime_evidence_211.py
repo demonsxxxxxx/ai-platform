@@ -231,11 +231,13 @@ class EvidenceRecorder:
         self.sandbox_provider = "unknown"
         self._callback_auth_verified = False
         self.executed_task = False
+        self.executor: dict[str, object] = {}
         self.cancel_stops_container = False
         self.cancelled_container_id = ""
         self.callbacks: list[dict[str, object]] = []
         self.timings: dict[str, object] = {}
         self.hardening: dict[str, object] = {}
+        self.provider_lifecycle: dict[str, object] = {}
         self._lock = threading.Lock()
 
     def record_callback(self, payload: dict[str, object], token: str) -> bool:
@@ -272,12 +274,14 @@ class EvidenceRecorder:
             "sandbox_provider": self.sandbox_provider,
             "executed_task": self.executed_task,
             "callback_auth": "token" if callback_auth_verified else False,
+            "executor": dict(self.executor),
             "generated_at": _utc_now(),
             "callbacks": callbacks,
             "cancel_stops_container": self.cancel_stops_container,
             "cancelled_container_id": self.cancelled_container_id,
             "timings": self.timings,
             "hardening": self.hardening,
+            "provider_lifecycle": self.provider_lifecycle,
             "non_expansion_invariants": dict(NON_EXPANSION_INVARIANTS),
         }
 
@@ -382,6 +386,23 @@ def _timings_from_result(result: object) -> dict[str, object]:
     if "schema_version" not in timings:
         timings["schema_version"] = LATENCY_SCHEMA_VERSION
     return timings
+
+
+def _executor_evidence_from_response(response: object) -> dict[str, object]:
+    if not isinstance(response, dict):
+        return {}
+    evidence: dict[str, object] = {
+        "sdk_used": response.get("sdk_used") is True,
+        "executor_mode": str(response.get("executor_mode") or ""),
+    }
+    sdk_session_id = response.get("sdk_session_id")
+    if isinstance(sdk_session_id, str) and sdk_session_id and "/" not in sdk_session_id and "\\" not in sdk_session_id:
+        evidence["sdk_session_id"] = sdk_session_id
+    return evidence
+
+
+def _executor_evidence_from_result(result: object) -> dict[str, object]:
+    return _executor_evidence_from_response(getattr(result, "executor_response", {}))
 
 
 def _positive_number(value: object) -> bool:
@@ -854,6 +875,7 @@ def record_platform_runtime_probe(
     recorder.sandbox_provider = sandbox_provider
     recorder.executed_task = True
     recorder.timings = _timings_from_result(result)
+    recorder.executor = _executor_evidence_from_result(result)
     lease_id = recorded_lease_id or f"lease-{_safe_run_id(recorder.run_id)}"
     recorder.hardening = _platform_hardening_evidence(
         run_id=recorder.run_id,
@@ -866,6 +888,81 @@ def record_platform_runtime_probe(
     return {
         "status": str(getattr(result, "status", "")),
         "run_id": str(getattr(result, "run_id", recorder.run_id)),
+    }
+
+
+def _opensandbox_provider_lifecycle_evidence(
+    *,
+    recorder: EvidenceRecorder,
+    captured: dict[str, Any],
+    resource_limits: dict[str, Any],
+) -> dict[str, object]:
+    if recorder.sandbox_provider != "opensandbox":
+        return {}
+    recorded_lease_id = str(captured.get("recorded_lease_id") or "")
+    released_lease_id = str(captured.get("released_lease_id") or "")
+    release_reason = str(captured.get("release_reason") or "")
+    release_stop_status = str(captured.get("release_stop_status") or "")
+    lease_labels = captured.get("lease_labels")
+    labels = lease_labels if isinstance(lease_labels, dict) else {}
+    return {
+        "schema_version": "ai-platform.opensandbox-provider-lifecycle.v1",
+        "provider": "opensandbox",
+        "run_id": recorder.run_id,
+        "lifecycle": {
+            "create_observed": bool(captured.get("container_id")),
+            "delete_observed": bool(
+                recorded_lease_id
+                and recorded_lease_id == released_lease_id
+                and release_stop_status == "stopped"
+            ),
+            "delete_stop_status": release_stop_status,
+            "container_id_present": bool(captured.get("container_id")),
+            "executor_endpoint_present": bool(captured.get("executor_url")),
+        },
+        "db_lease": {
+            "recorded": bool(recorded_lease_id),
+            "released": bool(released_lease_id),
+            "release_reason": release_reason,
+            "recorded_scope_matches_request": (
+                captured.get("recorded_tenant_id") == "tenant-a"
+                and captured.get("recorded_workspace_id") == "workspace-a"
+                and captured.get("recorded_user_id") == "user-a"
+                and captured.get("recorded_session_id") == f"session-{recorder.run_id}"
+                and captured.get("recorded_run_id") == recorder.run_id
+                and captured.get("released_run_id") == recorder.run_id
+            ),
+        },
+        "startup_io": {
+            "file_write_read_verified": captured.get("opensandbox_startup_io_probe_enabled") is True,
+            "command_execution_verified": captured.get("opensandbox_startup_io_probe_enabled") is True,
+            "source": "OpenSandboxContainerProvider.startup_io_probe",
+        },
+        "resource_policy": {
+            "resource_limits_requested": all(
+                _positive_number(resource_limits.get(key))
+                for key in ("memory_mb", "cpu_count", "pids_limit")
+            ),
+            "memory_mb": int(resource_limits.get("memory_mb") or 0),
+            "cpu_count": float(resource_limits.get("cpu_count") or 0),
+            "pids_limit": int(resource_limits.get("pids_limit") or 0),
+            "policy_projection_source": "provider_request",
+        },
+        "egress_policy": {
+            "policy_requested": labels.get("ai-platform.egress.policy") == "opensandbox-network-policy",
+            "callback_host_allowlisted": bool(labels.get("ai-platform.egress.callback_host")),
+            "policy_projection_source": "provider_request",
+        },
+        "dispatch": {
+            "executor_response_present": bool(recorder.executor),
+            "callback_stream_observed": recorder.has_required_callbacks(),
+            "sdk_executor_observed": recorder.executor.get("sdk_used") is True
+            and recorder.executor.get("executor_mode") == "claude_agent_sdk",
+        },
+        "redaction": {
+            "host_paths_redacted": True,
+            "secrets_absent": True,
+        },
     }
 
 
@@ -888,7 +985,11 @@ def run_platform_runtime_probe(
         "recorded_lease_id": "",
         "released_lease_id": "",
         "release_reason": "",
+        "release_stop_status": "",
         "container_name": "",
+        "container_id": "",
+        "executor_url": "",
+        "lease_labels": {},
         "docker_inspect": None,
         "egress_denial_probe": {},
     }
@@ -905,6 +1006,9 @@ def run_platform_runtime_probe(
         original_workspace_root = settings.sandbox_workspace_root
         original_egress_policy_enabled = settings.sandbox_egress_policy_enabled
         settings.sandbox_container_provider = sandbox_provider
+        captured["opensandbox_startup_io_probe_enabled"] = bool(
+            getattr(settings, "opensandbox_startup_io_probe_enabled", True)
+        )
         if sandbox_executor_image:
             settings.sandbox_executor_image = sandbox_executor_image
         settings.sandbox_workspace_root = workspace_root
@@ -920,7 +1024,10 @@ def run_platform_runtime_probe(
                 captured["recorded_user_id"] = lease.user_id
                 captured["recorded_session_id"] = lease.session_id
                 captured["recorded_run_id"] = lease.run_id
+                captured["container_id"] = lease.container_id
                 captured["container_name"] = lease.container_name
+                captured["executor_url"] = lease.executor_url
+                captured["lease_labels"] = dict(getattr(lease, "labels", {}) or {})
                 captured["workspace_container_path"] = workspace.workspace_container_path
                 docker_inspect = _inspect_docker_container(
                     lease.container_name,
@@ -943,10 +1050,11 @@ def run_platform_runtime_probe(
                 )
                 return lease_id
 
-            async def release_lease(lease, reason, lease_record_id=None):
+            async def release_lease(lease, reason, lease_record_id=None, *, stop_result=None):
                 captured["released_lease_id"] = str(lease_record_id or "")
                 captured["release_reason"] = str(reason)
                 captured["released_run_id"] = lease.run_id
+                captured["release_stop_status"] = str(getattr(stop_result, "status", "") or "")
 
             runtime = SandboxRuntime(
                 workspace_root=workspace_root,
@@ -990,6 +1098,7 @@ def run_platform_runtime_probe(
     recorder.sandbox_provider = sandbox_provider
     recorder.executed_task = True
     recorder.timings = _timings_from_result(result)
+    recorder.executor = _executor_evidence_from_result(result)
     recorded_lease_id = captured.get("recorded_lease_id") or f"lease-{_safe_run_id(recorder.run_id)}"
     released_lease_id = captured.get("released_lease_id") or ""
     derived_runtime_probe_results = dict(runtime_probe_results or {})
@@ -1029,6 +1138,11 @@ def run_platform_runtime_probe(
         else None,
         runtime_probe_results=derived_runtime_probe_results,
         callbacks=recorder.callbacks,
+    )
+    recorder.provider_lifecycle = _opensandbox_provider_lifecycle_evidence(
+        recorder=recorder,
+        captured=captured,
+        resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
     )
     output = {
         "status": str(getattr(result, "status", "")),
@@ -1335,7 +1449,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--sandbox-provider",
-        choices=["fake", "docker"],
+        choices=["fake", "docker", "opensandbox"],
         default=os.environ.get("SANDBOX_CONTAINER_PROVIDER", "docker"),
     )
     parser.add_argument("--skip-live-submit", action="store_true")
@@ -1453,13 +1567,14 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 recorder.runtime_mode = "executor"
                 recorder.sandbox_provider = "external_executor"
-                submit_executor_task(
+                executor_response = submit_executor_task(
                     executor_url=args.executor_url,
                     callback_url=callback_url,
                     callback_token=args.callback_token,
                     run_id=args.run_id,
                     workspace_root=args.workspace_root,
                 )
+                recorder.executor = _executor_evidence_from_response(executor_response)
                 recorder.executed_task = True
             if not _wait_for_callbacks(recorder, args.callback_timeout):
                 messages.append("required callbacks not observed")

@@ -7,7 +7,7 @@ from app.validation import assert_safe_id, assert_safe_principal_user_id
 
 
 SandboxMode = Literal["ephemeral", "persistent"]
-ContainerProviderName = Literal["fake", "docker"]
+ContainerProviderName = Literal["fake", "docker", "opensandbox"]
 CallbackStatus = Literal["running", "completed", "failed", "cancelled"]
 
 
@@ -30,6 +30,7 @@ class SandboxRuntimeRequest(BaseModel):
     model_gateway: Literal["new-api"] = "new-api"
     permissions: list[str] = Field(default_factory=list)
     resource_limits: dict[str, Any] = Field(default_factory=dict)
+    queue_wait_ms: int = Field(default=0, ge=0)
     callback_url: str
     callback_token_id: str
 
@@ -87,6 +88,7 @@ class ContainerLease(BaseModel):
     container_name: str
     provider: ContainerProviderName
     executor_url: str
+    executor_headers: dict[str, str] = Field(default_factory=dict, exclude=True, repr=False)
     tenant_id: str
     workspace_id: str
     user_id: str

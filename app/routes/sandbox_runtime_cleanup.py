@@ -21,15 +21,24 @@ class SandboxRuntimeCleanupError(RuntimeError):
 
 def _container_lease_from_row(row: dict[str, Any]) -> ContainerLease | None:
     provider = str(row.get("provider") or "fake")
-    if provider not in {"fake", "docker"}:
+    if provider not in {"fake", "docker", "opensandbox"}:
         return None
     run_id = str(row["run_id"])
-    container_id = f"exec-{run_id}"
+    raw_payload = row.get("lease_payload_json")
+    lease_payload = raw_payload if isinstance(raw_payload, dict) else {}
+    container_id = str(lease_payload.get("container_id") or f"exec-{run_id}")
+    if provider == "opensandbox" and not lease_payload.get("container_id"):
+        return None
+    container_name = str(lease_payload.get("container_name") or f"executor-{container_id}")
+    executor_url = str(lease_payload.get("executor_url") or "http://sandbox-runtime.invalid")
+    workspace_container_path = str(lease_payload.get("workspace_container_path") or "/workspace")
+    labels_payload = lease_payload.get("labels")
+    labels = {str(key): str(value) for key, value in labels_payload.items()} if isinstance(labels_payload, dict) else {}
     return ContainerLease(
         container_id=container_id,
-        container_name=f"executor-{container_id}",
+        container_name=container_name,
         provider=provider,
-        executor_url="http://sandbox-runtime.invalid",
+        executor_url=executor_url,
         tenant_id=str(row["tenant_id"]),
         workspace_id=str(row["workspace_id"]),
         user_id=str(row["user_id"]),
@@ -38,8 +47,8 @@ def _container_lease_from_row(row: dict[str, Any]) -> ContainerLease | None:
         sandbox_mode=str(row["sandbox_mode"]),
         browser_enabled=bool(row.get("browser_enabled")),
         workspace_host_path="",
-        workspace_container_path="/workspace",
-        labels={},
+        workspace_container_path=workspace_container_path,
+        labels=labels,
     )
 
 

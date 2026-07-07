@@ -38,7 +38,7 @@ CAPACITY_PROFILE_IDS = [
     "high_capacity_1t",
 ]
 
-_SANDBOX_PROVIDER_VALUES = {"docker", "fake"}
+_SANDBOX_PROVIDER_VALUES = {"docker", "fake", "opensandbox"}
 _MODEL_GATEWAY_PROVIDER_VALUES = {"new-api", "openai_compatible"}
 MODEL_GATEWAY_BACKPRESSURE_POLICY_SCHEMA = "ai-platform.model-gateway-backpressure-policy.v1"
 _MODEL_GATEWAY_BACKPRESSURE_POLICY = {

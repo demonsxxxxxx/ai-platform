@@ -1,0 +1,29 @@
+# OpenSandbox Provider Adapter Phase Status
+
+Status:
+- [x] local provider adapter wired behind `SandboxProvider`/`ContainerProvider`. Evidence: `tests/test_sandbox_container_provider.py` covers `opensandbox` provider selection, lease field mapping, stop/cleanup, startup file/command probes, byte readback compatibility, command exit-code failure, endpoint private headers, scheme-less endpoint URL normalization, and sanitized failure projection.
+- [x] platform source of truth preserved. Evidence: OpenSandbox only implements `ContainerProvider`; `SandboxRuntime` still owns `SandboxRuntimeRequest`, `ContainerLease`, DB lease creation/release, callback token derivation, executor dispatch, and result timing projection. OpenSandbox private endpoint headers are stored only in process-local `ContainerLease.executor_headers` and are excluded from `model_dump()`/DB lease payload/Admin projections.
+- [x] deployment configuration documented. Evidence: `deploy/ai-platform/.env.example` and `deploy/ai-platform/docker-compose.yml` expose `OPENSANDBOX_*` settings without changing the default provider from `fake`.
+- [x] targeted CI added. Evidence: `.github/workflows/ai-platform-backend.yml` runs backend compile and the OpenSandbox sandbox/runtime/readiness targeted pytest set on PRs touching backend sandbox, verifier, deploy, or this status doc.
+- [x] local verification refreshed on the independent PR branch. Evidence: `python -m compileall -q app tools scripts` exited 0; `python -m pytest tests/test_sandbox_container_provider.py tests/test_sandbox_runtime.py tests/test_sandbox_runtime_cleanup.py tests/test_sandbox_runtime_211_script.py tests/test_b2_sandbox_readiness.py tests/test_repositories.py -q --basetemp .pytest-tmp` passed `296 passed in 23.56s`.
+- [x] review substitute fixes applied. Evidence: OpenSandbox create failure/cancel paths now kill and close created sandboxes, stop reads SDK metadata through `get_info()` and validates tenant/workspace/user/session/run scope before kill, stop-only reconnects use `skip_health_check=true`, close is best-effort after a successful kill, persisted DB lease payloads omit host paths and private executor headers, Docker/OpenSandbox executors force `CLAUDE_AGENT_WORKSPACE_ROOT` to the mounted container workspace, lifecycle evidence requires provider stop status `stopped` before `delete_observed=true`, and `tests/test_sandbox_container_provider.py::test_opensandbox_sdk_symbols_match_adapter_contract` validates the installed OpenSandbox SDK import and constructor contract.
+- [x] 211 OpenSandbox first-stage smoke recorded. Evidence: `s211` OpenSandbox server `/openapi.json` returned `200`; remote affected tests passed `269 passed`; remote compile exited 0; smoke image `ai-platform:opensandbox-smoke-20260707-v4` (`sha256:95f9d75761fd...`) ran `SANDBOX_CONTAINER_PROVIDER=opensandbox` through `SandboxRuntime`. Redacted evidence for run `opensandbox-20260707-170359-v4sdk` records `executed_task=true`, `runtime_mode=platform`, `sandbox_provider=opensandbox`, `callbacks=3`, `cancel_stops_container=true`, OpenSandbox create/delete lifecycle, startup file/command probe, executor response, and `sdk_executor_observed=true`.
+- [~] full 211 hardening verifier deferred. Evidence: `scripts/verify_sandbox_runtime_211.py --evidence-file <redacted-211-evidence-path> --run-id opensandbox-20260707-170359-v4sdk --docker-cmd "sudo -n docker" --json` passed Docker/workspace/executor health/callback/cancel/platform runtime/OpenSandbox lifecycle/no-secret checks, but failed `check_platform_hardening_evidence` because `resource_limits.over_limit_probe_kind` evidence is not yet generated.
+- [~] B2 closure deferred. OpenSandbox is a first-stage provider adapter for validation, not the final production hardening conclusion.
+
+Boundary:
+- Do not bypass `SandboxRuntime` or call OpenSandbox directly from the Claude worker.
+- Do not claim B2/G7 closure from adapter source tests or a single smoke.
+- Keep `fake` as the default local/test-only provider. Use `opensandbox` only as an explicitly selected first-stage real provider.
+- CubeSandbox or another MicroVM provider remains the stronger candidate for later hard-isolation, fork/clone/rollback, high-concurrency production data-plane work.
+
+Operator configuration:
+- Self-hosted/local OpenSandbox API: set `SANDBOX_CONTAINER_PROVIDER=opensandbox`, `OPENSANDBOX_DOMAIN=<host>:<port>`, `OPENSANDBOX_PROTOCOL=http`, and leave `OPENSANDBOX_API_KEY` empty unless that server requires auth.
+- Managed/cloud API: set `OPENSANDBOX_DOMAIN=api.opensandbox.io`, `OPENSANDBOX_PROTOCOL=https`, and provide `OPENSANDBOX_API_KEY` only in the target runtime environment.
+- The adapter supports OpenSandbox private endpoint headers internally for executor health checks and dispatch. These headers must not be serialized to DB lease payloads, Admin Runtime projections, events, or evidence.
+- Real sandbox executors receive only server-side configured model/API credentials as container environment variables so the Claude Agent SDK can run inside the isolated executor; user payloads cannot choose this provider or inject these values. The mounted workspace root is forced to the sandbox container path rather than the host workspace path.
+- OpenSandbox may return endpoint strings without a scheme, such as `<host>:<port>/proxy/18000`; the adapter normalizes those to `OPENSANDBOX_PROTOCOL://...` before health checks and executor dispatch.
+- The executor image defaults to `SANDBOX_EXECUTOR_IMAGE`; `OPENSANDBOX_EXECUTOR_IMAGE` can override it when the OpenSandbox data plane needs a different image tag.
+- The 2026-07-07 SDK smoke sourced model/Claude SDK settings from a historical 211 deploy environment path without printing values. The repo-local deploy environment path had no SDK/model variables, so this is valid smoke evidence but stale source-authority evidence.
+
+Current acceptance label: `ready_for_operator_review`.

@@ -3242,7 +3242,7 @@ async def cleanup_expired_sandbox_leases(
           and status = 'active'
           and expires_at is not null
           and expires_at <= now()
-          and provider not in ('fake', 'docker')
+          and provider not in ('fake', 'docker', 'opensandbox')
         returning id, tenant_id, run_id, trace_id, release_reason
         """,
         (reason, tenant_id, tenant_id),
