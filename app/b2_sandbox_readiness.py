@@ -341,6 +341,13 @@ def _resolve_source_tree_revision(repo_root: Path) -> str:
             text=True,
         )
     except (OSError, subprocess.CalledProcessError):
+        for marker_name in (".ai-platform-source-tree-commit", ".ai-platform-source-revision"):
+            try:
+                marker = (repo_root / marker_name).read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if marker:
+                return marker
         return "unknown"
     return result.stdout.strip() or "unknown"
 
