@@ -309,7 +309,9 @@
         "status_label": "local partial",
         "closed_runtime_gaps": [
           "b2_211_real_sandbox_smoke",
-          "b2_reviewed_release_evidence",
+          "b2_reviewed_release_evidence"
+        ],
+        "closed_gate_boundary_gaps": [
           "b2_runtime_evidence_review_against_merged_source"
         ],
         "open_gaps": [

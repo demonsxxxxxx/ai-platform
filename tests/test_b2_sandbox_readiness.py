@@ -1091,6 +1091,15 @@ def test_b2_sandbox_readiness_rejects_smoke_with_expanded_user_sandbox_invariant
 
 def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_closure():
     readiness = build_b2_sandbox_readiness()
+    wrapper_path = Path(
+        "docs/release-evidence/b2-sandbox/"
+        "3120921c82de6ede30fbe8eadcb13f08caf56724/"
+        "2026-07-08-211-b2-opensandbox-runtime-smoke-3120921.json"
+    )
+    wrapper = json.loads(wrapper_path.read_text(encoding="utf-8"))
+    wrapper_readiness = wrapper["evidence_ref"]["runtime_checks"][
+        "b2_readiness_after_recorded_evidence"
+    ]
 
     assert readiness["status"] == "runtime_acceptance_recorded"
     assert readiness["status_label"] == "local partial"
@@ -1110,6 +1119,16 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
         "b2_issue_review_and_closure_evidence",
         "b2_runtime_evidence_review_against_merged_source",
     ]
+    assert wrapper_readiness["status"] == readiness["status"]
+    assert wrapper_readiness["status_label"] == readiness["status_label"]
+    assert wrapper_readiness["closed_runtime_gaps"] == readiness["closed_runtime_gaps"]
+    assert wrapper_readiness["closed_gate_boundary_gaps"] == [
+        "b2_runtime_evidence_review_against_merged_source",
+    ]
+    assert wrapper_readiness["open_gaps"] == readiness["open_gaps"]
+    assert wrapper_readiness["broader_b2_g7_open_requirements"] == (
+        readiness["broader_b2_g7_open_requirements"]
+    )
     runtime_review = readiness["gate_boundary_evidence"][
         "b2_runtime_evidence_review_against_merged_source"
     ]
