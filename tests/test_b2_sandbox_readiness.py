@@ -1154,6 +1154,14 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_with_hardeni
     assert wrapper_readiness["broader_b2_g7_open_requirements"] == (
         readiness["broader_b2_g7_open_requirements"]
     )
+    source_ref = wrapper["source_ref"]
+    assert source_ref["image_labels"]["ai-platform.build_mode"] == (
+        "runtime-only-source-rebase-flat-base"
+    )
+    assert source_ref["source_snapshot"]["snapshot_source"] == (
+        "codex_origin_main_archive_sync_runtime_only_rebase"
+    )
+    assert "flat-base fallback image" in source_ref["source_authority_caveat"]
     runtime_review = readiness["gate_boundary_evidence"][
         "b2_runtime_evidence_review_against_merged_source"
     ]
