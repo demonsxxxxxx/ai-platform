@@ -1,0 +1,348 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-08-211-b2-opensandbox-runtime-smoke-3120921",
+  "artifact_kind": "211_sandbox_runtime_smoke",
+  "gate": "B2 real sandbox usable",
+  "commit_sha": "3120921c82de6ede30fbe8eadcb13f08caf56724",
+  "runtime_subject_commit_sha": "3120921c82de6ede30fbe8eadcb13f08caf56724",
+  "captured_at": "2026-07-08T02:13:00.941622+00:00",
+  "issue_refs": [
+    "#130"
+  ],
+  "pr_refs": [
+    "#358"
+  ],
+  "source_ref": {
+    "branch": "main",
+    "image": "ai-platform:3120921-opensandbox-main-20260708-runtime-only",
+    "image_id": "sha256:bf53bc0817d8e21943b798b65c7e243d69240b3815cc2b4f38b04a775ff5d813",
+    "image_labels": {
+      "ai-platform.source_revision": "3120921c82de6ede30fbe8eadcb13f08caf56724",
+      "ai-platform.source_tree_commit": "3120921c82de6ede30fbe8eadcb13f08caf56724",
+      "org.opencontainers.image.revision": "3120921c82de6ede30fbe8eadcb13f08caf56724",
+      "ai-platform.build_mode": "runtime-only-source-rebase-current-main"
+    },
+    "runtime_source_marker": "3120921c82de6ede30fbe8eadcb13f08caf56724",
+    "source_tree_dirty": false,
+    "source_snapshot": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "runtime_subject_commit_sha": "3120921c82de6ede30fbe8eadcb13f08caf56724",
+      "source_tree_commit_sha": "3120921c82de6ede30fbe8eadcb13f08caf56724",
+      "source_tree_dirty": false,
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "snapshot_source": "codex_origin_main_archive_sync_runtime_only_rebase"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "api_health": "ok",
+    "frontend_status": 200,
+    "opensandbox_openapi_status": 200,
+    "runtime_default_sandbox_provider": "docker",
+    "controlled_smoke_sandbox_provider": "opensandbox",
+    "deployment_cleanup": {
+      "old_unreferenced_backend_images_removed": [
+        "ai-platform:f8e39d8-opensandbox-main-20260708-runtime-only"
+      ],
+      "dangling_image_count": 0,
+      "remaining_ai_platform_images": [
+        "ai-platform:3120921-opensandbox-main-20260708-runtime-only"
+      ],
+      "remaining_frontend_images": [
+        "ai-platform-frontend:4518a05"
+      ]
+    },
+    "source_authority_caveat": "The 211 source path is a source snapshot with ai-platform source markers, not a git checkout. Image source_revision/source_tree_commit/OCI labels and source markers matched 3120921c82de6ede30fbe8eadcb13f08caf56724. This records first-stage OpenSandbox runtime smoke evidence only and does not close B2/G7 hardening."
+  },
+  "evidence_ref": {
+    "verifier": "scripts/verify_sandbox_runtime_211.py",
+    "result": "ok:true",
+    "strict_verifier_exit_code": 1,
+    "strict_verifier_result": "hardening_open",
+    "command": "controlled 211 verifier: generate_sandbox_runtime_evidence_211.py --runtime-mode platform --sandbox-provider opensandbox --callback-public-url http://10.56.0.211:{port}/callback --workspace-root <redacted-workspace-root>; verify_sandbox_runtime_211.py --json --docker-cmd \"sudo -n docker\"",
+    "run_id": "opensandbox-3120921-ipcb-smoke-20260708100939",
+    "artifact_hashes": {
+      "sandbox_evidence_sha256": "61b8c4893fee307a91c400721d3a8fb27fff508b4ae740406b5c319466b49957",
+      "generator_summary_sha256": "73abb607545cf22409c9ec1dd8ae06b39b81e041ef7babfaa62f512775b6bb59",
+      "verifier_summary_sha256": "231ba19ea66b415f055ba5a211237b8c20c5946ca807a8bf41fef73cd7785e3f",
+      "hardening_probe_summary_sha256": "c2d7f7e7e35081b4dfcaf60bddc9cd8a8dc121b14f186bd7fc69c88d089e3a9b"
+    },
+    "runtime_checks": {
+      "b2_211_real_sandbox_smoke": {
+        "schema_version": "ai-platform.sandbox-runtime-211.v1",
+        "run_id": "opensandbox-3120921-ipcb-smoke-20260708100939",
+        "runtime_mode": "platform",
+        "sandbox_provider": "opensandbox",
+        "executed_task": true,
+        "callback_auth": "token",
+        "callbacks": [
+          "running",
+          "completed"
+        ],
+        "cancel_stops_container": true,
+        "checks": {
+          "check_docker_socket": true,
+          "check_workspace_write": true,
+          "check_executor_health": true,
+          "check_callback_stream": true,
+          "check_cancel_stops_container": true,
+          "check_platform_runtime_evidence": true,
+          "check_opensandbox_provider_lifecycle_evidence": true,
+          "check_platform_hardening_evidence": false,
+          "check_no_secret_leakage": true
+        },
+        "timings": {
+          "schema_version": "ai-platform.sandbox-latency-split.v1",
+          "sandbox_queue_wait_latency_ms": 0,
+          "sandbox_lease_acquire_latency_ms": 4605,
+          "sandbox_container_start_latency_ms": 4454,
+          "sandbox_container_cold_start_latency_ms": 4454,
+          "sandbox_healthcheck_latency_ms": 10,
+          "sandbox_executor_dispatch_latency_ms": 29048,
+          "executor_first_token_latency_ms": 0,
+          "executor_tool_call_latency_ms": 0,
+          "executor_model_latency_ms": 29036,
+          "document_processing_latency_ms": 1,
+          "artifact_upload_latency_ms": 0,
+          "sandbox_cleanup_latency_ms": 1645,
+          "sandbox_total_latency_ms": 36356
+        },
+        "executor": {
+          "sdk_used": true,
+          "executor_mode": "claude_agent_sdk"
+        },
+        "provider_lifecycle": {
+          "schema_version": "ai-platform.opensandbox-provider-lifecycle.v1",
+          "provider": "opensandbox",
+          "run_id": "opensandbox-3120921-ipcb-smoke-20260708100939",
+          "lifecycle": {
+            "create_observed": true,
+            "delete_observed": true,
+            "delete_stop_status": "stopped",
+            "container_id_present": true,
+            "executor_endpoint_present": true
+          },
+          "db_lease": {
+            "recorded": true,
+            "released": true,
+            "release_reason": "dispatch_completed",
+            "recorded_scope_matches_request": true
+          },
+          "startup_io": {
+            "file_write_read_verified": true,
+            "command_execution_verified": true,
+            "source": "OpenSandboxContainerProvider.startup_io_probe"
+          },
+          "resource_policy": {
+            "resource_limits_requested": true,
+            "cpu_count": 0.5,
+            "memory_mb": 512,
+            "pids_limit": 128,
+            "policy_projection_source": "provider_request"
+          },
+          "egress_policy": {
+            "policy_requested": true,
+            "callback_host_allowlisted": true,
+            "policy_projection_source": "provider_request"
+          },
+          "dispatch": {
+            "callback_stream_observed": true,
+            "executor_response_present": true,
+            "sdk_executor_observed": true
+          },
+          "redaction": {
+            "host_paths_redacted": true,
+            "secrets_absent": true
+          }
+        },
+        "hardening": {
+          "lease_isolation": {
+            "evidence_class": "live_platform_probe",
+            "status": "passed",
+            "recorded_lease_id": "lease-opensandbox-3120921-ipcb-smoke-20260708100939",
+            "released_lease_id": "lease-opensandbox-3120921-ipcb-smoke-20260708100939",
+            "release_reason": "dispatch_completed",
+            "host_paths_redacted": true
+          },
+          "workspace_isolation": {
+            "evidence_class": "live_platform_probe",
+            "status": "passed",
+            "workspace_container_path": "/workspace",
+            "inputs_container_path": "/workspace/inputs",
+            "host_paths_redacted": true
+          },
+          "cleanup": {
+            "evidence_class": "live_platform_probe",
+            "status": "passed",
+            "active_lease_released": true,
+            "cancel_probe_container_removed": true,
+            "ephemeral_container_removed": true
+          },
+          "resource_timeout": {
+            "evidence_class": "source_regression_guard",
+            "status": "passed",
+            "timeout_error_code": "executor_health_timeout"
+          },
+          "failure_fallback": {
+            "evidence_class": "source_regression_guard",
+            "status": "passed"
+          },
+          "cached_lease_revalidation": {
+            "evidence_class": "source_regression_guard",
+            "status": "passed"
+          },
+          "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "status": "incomplete",
+            "memory_limit_mb": 512,
+            "cpu_limit_count": 0.5,
+            "pids_limit": 128,
+            "process_timeout_seconds": 60,
+            "limit_source": "platform_request",
+            "docker_inspection_verified": false,
+            "over_limit_cleanup_verified": false,
+            "bounded_error_projection_verified": false,
+            "missing_evidence": [
+              "resource_limits.over_limit_probe_kind",
+              "resource_limits.over_limit_timeout_probe_seconds",
+              "resource_limits.over_limit_cleanup_verified",
+              "resource_limits.bounded_error_projection",
+              "resource_limits.docker_inspection_verified"
+            ]
+          },
+          "egress_policy": {
+            "evidence_class": "live_platform_probe",
+            "status": "incomplete",
+            "default_deny_outbound": false,
+            "platform_allowlist_enforced": false,
+            "callback_exception_scoped_to_run_token": true,
+            "denied_egress_redacted": false,
+            "denied_target": "",
+            "denied_probe_error_code": "",
+            "allowed_callback_host": "",
+            "callback_probe_status": "",
+            "policy_source": "not_runtime_verified",
+            "probe_source": "",
+            "network_inspection_verified": false
+          },
+          "security_options": {
+            "evidence_class": "live_platform_probe",
+            "status": "incomplete",
+            "privileged": false,
+            "no_new_privileges": true,
+            "capabilities_dropped": false,
+            "docker_socket_mounted": false,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": false
+          }
+        },
+        "non_expansion_invariants": {
+          "ordinary_user_high_risk_sandbox_allowed": false,
+          "admin_or_allowlist_only": true,
+          "production_concurrency_defaults_raised": false,
+          "docker_sandbox_production_hardening_claimed": false,
+          "ordinary_user_multi_agent_allowed": false
+        },
+        "redaction_scan_status": "passed",
+        "does_not_close_b2_gate": true,
+        "remaining_gate_boundaries": [
+          "resource limits policy evidence",
+          "egress policy evidence",
+          "security options evidence"
+        ]
+      },
+      "verifier_checks": [
+        {
+          "name": "check_docker_socket",
+          "passed": true
+        },
+        {
+          "name": "check_workspace_write",
+          "passed": true
+        },
+        {
+          "name": "check_executor_health",
+          "passed": true
+        },
+        {
+          "name": "check_callback_stream",
+          "passed": true
+        },
+        {
+          "name": "check_cancel_stops_container",
+          "passed": true
+        },
+        {
+          "name": "check_platform_runtime_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_opensandbox_provider_lifecycle_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_platform_hardening_evidence",
+          "passed": false,
+          "message": "hardening evidence missing: resource_limits.over_limit_probe_kind"
+        },
+        {
+          "name": "check_no_secret_leakage",
+          "passed": true
+        }
+      ],
+      "hardening_probe": {
+        "run_id": "opensandbox-3120921-hardening-probe-20260708101108",
+        "runtime_mode": "platform_probe_results",
+        "sandbox_provider": "opensandbox",
+        "callbacks": 4,
+        "result": "failed",
+        "message": "runtime probe results missing: egress_policy.default_deny_outbound"
+      },
+      "b2_readiness_after_recorded_evidence": {
+        "status": "runtime_acceptance_recorded",
+        "status_label": "local partial",
+        "closed_runtime_gaps": [
+          "b2_211_real_sandbox_smoke",
+          "b2_reviewed_release_evidence"
+        ],
+        "closed_gate_boundary_gaps": [
+          "b2_runtime_evidence_review_against_merged_source"
+        ],
+        "open_gaps": [
+          "resource_limits_policy_evidence",
+          "egress_policy_evidence",
+          "security_options_evidence"
+        ],
+        "broader_b2_g7_open_requirements": [
+          "resource_limits_policy_evidence",
+          "egress_policy_evidence",
+          "security_options_evidence"
+        ]
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "211 API and worker ran ai-platform:3120921-opensandbox-main-20260708-runtime-only; image source_revision/source_tree_commit/OCI labels and source markers matched 3120921c82de6ede30fbe8eadcb13f08caf56724.",
+    "Direct API health returned ok, the frontend returned HTTP 200, and OpenSandbox /openapi.json returned HTTP 200.",
+    "The controlled smoke selected SANDBOX_CONTAINER_PROVIDER=opensandbox only in the verifier process; live API and worker defaults remained SANDBOX_CONTAINER_PROVIDER=docker.",
+    "The smoke reached SandboxRuntime, OpenSandbox provider create/delete, Claude Agent SDK executor dispatch, running/completed callbacks, and cancel-stops-container evidence.",
+    "The strict verifier passed Docker/workspace/executor health/callback/cancel/platform runtime/OpenSandbox lifecycle/no-secret checks, but failed check_platform_hardening_evidence.",
+    "The hardening probe observed callbacks but did not write accepted runtime probe results because egress_policy.default_deny_outbound was missing.",
+    "OpenSandbox hardening remains incomplete: resource over-limit proof is not accepted, egress denial is not accepted as default-deny enforcement, and security options still show capabilities/root-filesystem proof gaps.",
+    "Old unreferenced backend images were removed and dangling image count was 0.",
+    "This wrapper intentionally omits callback token values, real runtime environment values, raw host paths, raw OpenSandbox private headers, and raw Docker inspect payloads."
+  ],
+  "open_followups": [
+    "Do not claim B2/G7 hardening closure until OpenSandbox produces accepted resource inspection or equivalent provider enforcement evidence, denied outbound egress with egress_denied, and security options with capabilities dropped plus root filesystem minimal/read-only proof.",
+    "Keep fake as the committed local/test default and keep live API/worker SANDBOX_CONTAINER_PROVIDER=docker until a separate production hardening decision is made.",
+    "Treat this as B2 real-sandbox smoke plus reviewed release evidence only; it is not B2/G7 closure or production untrusted-code isolation closure."
+  ]
+}

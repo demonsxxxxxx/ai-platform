@@ -247,8 +247,8 @@ def write_b2_source_delta_review_evidence(
             "docs/operations/opensandbox-provider-phase-status.md",
             (
                 "docs/release-evidence/b2-sandbox/"
-                "a93753a7cf4756f951dd3f4491996ca574eca8fd/"
-                "2026-07-08-211-b2-opensandbox-runtime-smoke-a93753a.json"
+                "3120921c82de6ede30fbe8eadcb13f08caf56724/"
+                "2026-07-08-211-b2-opensandbox-runtime-smoke-3120921.json"
             ),
             "tests/test_b2_sandbox_readiness.py",
         ],
@@ -263,8 +263,8 @@ def write_b2_source_delta_review_evidence(
                     "docs/operations/opensandbox-provider-phase-status.md",
                     (
                         "docs/release-evidence/b2-sandbox/"
-                        "a93753a7cf4756f951dd3f4491996ca574eca8fd/"
-                        "2026-07-08-211-b2-opensandbox-runtime-smoke-a93753a.json"
+                        "3120921c82de6ede30fbe8eadcb13f08caf56724/"
+                        "2026-07-08-211-b2-opensandbox-runtime-smoke-3120921.json"
                     ),
                     "tests/test_b2_sandbox_readiness.py",
                 ])
@@ -1091,6 +1091,15 @@ def test_b2_sandbox_readiness_rejects_smoke_with_expanded_user_sandbox_invariant
 
 def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_closure():
     readiness = build_b2_sandbox_readiness()
+    wrapper_path = Path(
+        "docs/release-evidence/b2-sandbox/"
+        "3120921c82de6ede30fbe8eadcb13f08caf56724/"
+        "2026-07-08-211-b2-opensandbox-runtime-smoke-3120921.json"
+    )
+    wrapper = json.loads(wrapper_path.read_text(encoding="utf-8"))
+    wrapper_readiness = wrapper["evidence_ref"]["runtime_checks"][
+        "b2_readiness_after_recorded_evidence"
+    ]
 
     assert readiness["status"] == "runtime_acceptance_recorded"
     assert readiness["status_label"] == "local partial"
@@ -1110,12 +1119,22 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
         "b2_issue_review_and_closure_evidence",
         "b2_runtime_evidence_review_against_merged_source",
     ]
+    assert wrapper_readiness["status"] == readiness["status"]
+    assert wrapper_readiness["status_label"] == readiness["status_label"]
+    assert wrapper_readiness["closed_runtime_gaps"] == readiness["closed_runtime_gaps"]
+    assert wrapper_readiness["closed_gate_boundary_gaps"] == [
+        "b2_runtime_evidence_review_against_merged_source",
+    ]
+    assert wrapper_readiness["open_gaps"] == readiness["open_gaps"]
+    assert wrapper_readiness["broader_b2_g7_open_requirements"] == (
+        readiness["broader_b2_g7_open_requirements"]
+    )
     runtime_review = readiness["gate_boundary_evidence"][
         "b2_runtime_evidence_review_against_merged_source"
     ]
     assert runtime_review["status"] == "recorded_local_contract"
     assert runtime_review["closed_gap"] == "b2_runtime_evidence_review_against_merged_source"
-    assert runtime_review["runtime_subject_commit_sha"] == "a93753a7cf4756f951dd3f4491996ca574eca8fd"
+    assert runtime_review["runtime_subject_commit_sha"] == "3120921c82de6ede30fbe8eadcb13f08caf56724"
     current_head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         check=True,
@@ -1141,8 +1160,8 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
     assert smoke_evidence["status"] == "recorded_211_runtime_smoke_hardening_open"
     assert smoke_evidence["sandbox_provider"] == "opensandbox"
-    assert smoke_evidence["run_id"] == "opensandbox-a93753a-ipcb-smoke-20260708000746"
-    assert smoke_evidence["runtime_subject_commit_sha"] == "a93753a7cf4756f951dd3f4491996ca574eca8fd"
+    assert smoke_evidence["run_id"] == "opensandbox-3120921-ipcb-smoke-20260708100939"
+    assert smoke_evidence["runtime_subject_commit_sha"] == "3120921c82de6ede30fbe8eadcb13f08caf56724"
     assert smoke_evidence["hardening_verifier_status"] == "failed"
     assert smoke_evidence["checks"]["check_platform_hardening_evidence"] is False
     assert smoke_evidence["does_not_close_b2_gate"] is True
