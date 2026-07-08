@@ -1089,31 +1089,30 @@ def test_b2_sandbox_readiness_rejects_smoke_with_expanded_user_sandbox_invariant
     assert readiness["runtime_acceptance_evidence"] == {}
 
 
-def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_closure():
+def test_b2_sandbox_readiness_records_current_211_docker_hardening_evidence():
     readiness = build_b2_sandbox_readiness()
     wrapper_path = Path(
         "docs/release-evidence/b2-sandbox/"
-        "3120921c82de6ede30fbe8eadcb13f08caf56724/"
-        "2026-07-08-211-b2-opensandbox-runtime-smoke-3120921.json"
+        "bfbc64dd4bdcf6ab69a8bf3dcb4379de814fb828/"
+        "2026-07-08-211-b2-docker-runtime-hardening-bfbc64d.json"
     )
     wrapper = json.loads(wrapper_path.read_text(encoding="utf-8"))
     wrapper_readiness = wrapper["evidence_ref"]["runtime_checks"][
         "b2_readiness_after_recorded_evidence"
     ]
 
-    assert readiness["status"] == "runtime_acceptance_recorded"
+    assert readiness["status"] == "runtime_hardening_acceptance_recorded"
     assert readiness["status_label"] == "local partial"
     assert readiness["runtime_acceptance"]["status"] == "verified_211_runtime_acceptance"
     assert readiness["runtime_acceptance"]["status_label_after_reviewed_evidence"] == "local partial"
     assert readiness["runtime_acceptance"]["does_not_close_b2_gate_by_itself"] is True
-    assert readiness["open_gaps"] == [
-        "resource_limits_policy_evidence",
-        "egress_policy_evidence",
-        "security_options_evidence",
-    ]
+    assert readiness["open_gaps"] == []
     assert readiness["closed_runtime_gaps"] == [
         "b2_211_real_sandbox_smoke",
         "b2_reviewed_release_evidence",
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
     ]
     assert readiness["closed_gate_boundary_gaps"] == [
         "b2_issue_review_and_closure_evidence",
@@ -1123,6 +1122,7 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
     assert wrapper_readiness["status_label"] == readiness["status_label"]
     assert wrapper_readiness["closed_runtime_gaps"] == readiness["closed_runtime_gaps"]
     assert wrapper_readiness["closed_gate_boundary_gaps"] == [
+        "b2_issue_review_and_closure_evidence",
         "b2_runtime_evidence_review_against_merged_source",
     ]
     assert wrapper_readiness["open_gaps"] == readiness["open_gaps"]
@@ -1134,7 +1134,7 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
     ]
     assert runtime_review["status"] == "recorded_local_contract"
     assert runtime_review["closed_gap"] == "b2_runtime_evidence_review_against_merged_source"
-    assert runtime_review["runtime_subject_commit_sha"] == "3120921c82de6ede30fbe8eadcb13f08caf56724"
+    assert runtime_review["runtime_subject_commit_sha"] == "bfbc64dd4bdcf6ab69a8bf3dcb4379de814fb828"
     current_head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         check=True,
@@ -1158,23 +1158,20 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
     ]
 
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
-    assert smoke_evidence["status"] == "recorded_211_runtime_smoke_hardening_open"
-    assert smoke_evidence["sandbox_provider"] == "opensandbox"
-    assert smoke_evidence["run_id"] == "opensandbox-3120921-ipcb-smoke-20260708100939"
-    assert smoke_evidence["runtime_subject_commit_sha"] == "3120921c82de6ede30fbe8eadcb13f08caf56724"
-    assert smoke_evidence["hardening_verifier_status"] == "failed"
-    assert smoke_evidence["checks"]["check_platform_hardening_evidence"] is False
+    assert smoke_evidence["status"] == "verified_211_runtime_acceptance"
+    assert smoke_evidence["sandbox_provider"] == "docker"
+    assert smoke_evidence["run_id"] == "docker-bfbc64d-hp-030122"
+    assert smoke_evidence["runtime_subject_commit_sha"] == "bfbc64dd4bdcf6ab69a8bf3dcb4379de814fb828"
+    assert smoke_evidence["hardening_verifier_status"] == "passed"
+    assert smoke_evidence["checks"]["check_platform_hardening_evidence"] is True
+    assert smoke_evidence["hardening_runtime_evidence"] == {
+        "resource_limits_policy_evidence": "verified_211_runtime_acceptance",
+        "egress_policy_evidence": "verified_211_runtime_acceptance",
+        "security_options_evidence": "verified_211_runtime_acceptance",
+    }
     assert smoke_evidence["does_not_close_b2_gate"] is True
-    assert readiness["runtime_acceptance"]["prd_b2_g7_requirements_not_yet_verified"] == [
-        "resource_limits_policy_evidence",
-        "egress_policy_evidence",
-        "security_options_evidence",
-    ]
-    assert readiness["broader_b2_g7_open_requirements"] == [
-        "resource_limits_policy_evidence",
-        "egress_policy_evidence",
-        "security_options_evidence",
-    ]
+    assert readiness["runtime_acceptance"]["prd_b2_g7_requirements_not_yet_verified"] == []
+    assert readiness["broader_b2_g7_open_requirements"] == []
     rollback = readiness["rollback_assumptions"]
     assert rollback["status"] == "recorded_source_operator_contract"
     assert rollback["closed_gap"] == "rollback_assumptions_evidence"
@@ -1187,19 +1184,15 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
         "B2 readiness still reports any remaining issue, source, or hardening boundary as open",
         "operator issue comment records source/runtime subject, command result, and residual caveats",
     ]
-    assert rollback["remaining_hardening_gaps"] == [
-        "resource_limits_policy_evidence",
-        "egress_policy_evidence",
-        "security_options_evidence",
-    ]
+    assert rollback["remaining_hardening_gaps"] == []
     assert readiness["hardening_policy_contracts"]["resource_limits_policy_evidence"]["status"] == (
         "recorded_source_policy_contract"
     )
     assert (
         readiness["hardening_policy_contracts"]["egress_policy_evidence"]["remaining_runtime_gap"]
-        == "egress_runtime_hardening_evidence"
+        is None
     )
-    assert readiness["hardening_policy_contracts"]["egress_policy_evidence"]["runtime_evidence_required"]
+    assert readiness["hardening_policy_contracts"]["egress_policy_evidence"]["runtime_evidence_required"] == []
     assert readiness["hardening_policy_contracts"]["security_options_evidence"][
         "does_not_claim_docker_sandbox_production_hardening"
     ] is True
@@ -1339,9 +1332,10 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "Status label: `local partial`" in markdown
     assert "## Open Gaps" in markdown
     open_gap_section = markdown.split("## Closed Gate Boundary Gaps", 1)[0]
-    assert "- resource_limits_policy_evidence" in open_gap_section
-    assert "- egress_policy_evidence" in open_gap_section
-    assert "- security_options_evidence" in open_gap_section
+    assert "- none" in open_gap_section
+    assert "- resource_limits_policy_evidence" not in open_gap_section
+    assert "- egress_policy_evidence" not in open_gap_section
+    assert "- security_options_evidence" not in open_gap_section
     assert "- b2_211_real_sandbox_smoke" not in open_gap_section
     assert "- b2_reviewed_release_evidence" not in open_gap_section
     assert "- b2_issue_review_and_closure_evidence" not in open_gap_section
@@ -1363,7 +1357,7 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "2026-06-24-issue130-b2-closure.json" in markdown
     assert "docs/release-evidence/backend-stage-closures/b2-sandbox" in markdown
     assert "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c.json" not in markdown
-    assert "Status: `runtime_acceptance_recorded`" in markdown
+    assert "Status: `runtime_hardening_acceptance_recorded`" in markdown
     assert "## Runtime Acceptance" in markdown
     assert "scripts/generate_sandbox_runtime_evidence_211.py" in markdown
     assert "scripts/verify_sandbox_runtime_211.py" in markdown
@@ -1379,9 +1373,10 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
         "PRD B2/G7 runtime hardening requirements still open:",
         1,
     )[1].split("## Hardening Policy Contracts", 1)[0]
-    assert "- `resource_limits_policy_evidence`" in remaining_requirement_section
-    assert "- `egress_policy_evidence`" in remaining_requirement_section
-    assert "- `security_options_evidence`" in remaining_requirement_section
+    assert "- none" in remaining_requirement_section
+    assert "- `resource_limits_policy_evidence`" not in remaining_requirement_section
+    assert "- `egress_policy_evidence`" not in remaining_requirement_section
+    assert "- `security_options_evidence`" not in remaining_requirement_section
     assert "hardening.resource_limits" in markdown
     assert "hardening.egress_policy" in markdown
     assert "hardening.security_options" in markdown
@@ -1391,11 +1386,11 @@ def test_b2_sandbox_readiness_markdown_is_gap_first_and_operator_readable():
     assert "resource_limits_policy_evidence" in markdown
     assert "partial runtime-hardening evidence by itself does not complete gate closure" in markdown
     assert "## Hardening Policy Contracts" in markdown
-    assert "resource_limits_runtime_hardening_evidence" in markdown
-    assert "egress_runtime_hardening_evidence" in markdown
-    assert "security_options_runtime_hardening_evidence" in markdown
+    assert "resource_limits_runtime_hardening_evidence" not in markdown
+    assert "egress_runtime_hardening_evidence" not in markdown
+    assert "security_options_runtime_hardening_evidence" not in markdown
     assert "remaining runtime gap: `None`" not in markdown
-    assert "Runtime evidence still required:" in markdown
+    assert "Runtime evidence still required:" not in markdown
     assert "recorded_source_policy_contract" in markdown
     assert "container_memory_limit_defined" in markdown
     assert "default_deny_outbound_network_policy_defined" in markdown
@@ -1421,18 +1416,17 @@ def test_b2_sandbox_readiness_cli_outputs_json_without_secret_markers():
     payload = json.loads(result.stdout)
     assert payload["schema_version"] == "ai-platform.b2-sandbox-readiness.v1"
     assert payload["status_label"] == "local partial"
-    assert payload["status"] == "runtime_acceptance_recorded"
+    assert payload["status"] == "runtime_hardening_acceptance_recorded"
     assert payload["runtime_acceptance"]["status"] == "verified_211_runtime_acceptance"
     assert payload["runtime_acceptance"]["status_label_after_smoke_before_review"] == "local partial"
     assert payload["runtime_acceptance"]["reviewed_evidence_required_for_211_verified"] is True
-    assert payload["open_gaps"] == [
-        "resource_limits_policy_evidence",
-        "egress_policy_evidence",
-        "security_options_evidence",
-    ]
+    assert payload["open_gaps"] == []
     assert payload["closed_runtime_gaps"] == [
         "b2_211_real_sandbox_smoke",
         "b2_reviewed_release_evidence",
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
     ]
     assert payload["closed_gate_boundary_gaps"] == [
         "b2_issue_review_and_closure_evidence",
@@ -1446,38 +1440,31 @@ def test_b2_sandbox_readiness_cli_outputs_json_without_secret_markers():
         == "b2_runtime_evidence_review_against_merged_source"
     )
     smoke_evidence = payload["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
-    assert smoke_evidence["status"] == "recorded_211_runtime_smoke_hardening_open"
-    assert smoke_evidence["sandbox_provider"] == "opensandbox"
-    assert smoke_evidence["hardening_verifier_status"] == "failed"
-    assert smoke_evidence["checks"]["check_platform_hardening_evidence"] is False
+    assert smoke_evidence["status"] == "verified_211_runtime_acceptance"
+    assert smoke_evidence["sandbox_provider"] == "docker"
+    assert smoke_evidence["hardening_verifier_status"] == "passed"
+    assert smoke_evidence["checks"]["check_platform_hardening_evidence"] is True
+    assert smoke_evidence["hardening_runtime_evidence"] == {
+        "resource_limits_policy_evidence": "verified_211_runtime_acceptance",
+        "egress_policy_evidence": "verified_211_runtime_acceptance",
+        "security_options_evidence": "verified_211_runtime_acceptance",
+    }
     assert smoke_evidence["does_not_close_b2_gate"] is True
-    assert payload["runtime_acceptance"]["prd_b2_g7_requirements_not_yet_verified"] == [
-        "resource_limits_policy_evidence",
-        "egress_policy_evidence",
-        "security_options_evidence",
-    ]
-    assert payload["broader_b2_g7_open_requirements"] == [
-        "resource_limits_policy_evidence",
-        "egress_policy_evidence",
-        "security_options_evidence",
-    ]
+    assert payload["runtime_acceptance"]["prd_b2_g7_requirements_not_yet_verified"] == []
+    assert payload["broader_b2_g7_open_requirements"] == []
     assert payload["hardening_policy_contracts"]["resource_limits_policy_evidence"]["evidence_level"] == (
         "source_contract"
     )
     assert (
         payload["hardening_policy_contracts"]["egress_policy_evidence"]["remaining_runtime_gap"]
-        == "egress_runtime_hardening_evidence"
+        is None
     )
-    assert payload["hardening_policy_contracts"]["egress_policy_evidence"]["runtime_evidence_required"]
+    assert payload["hardening_policy_contracts"]["egress_policy_evidence"]["runtime_evidence_required"] == []
     assert payload["hardening_policy_contracts"]["security_options_evidence"][
         "does_not_close_broader_b2_g7_gate"
     ] is True
     assert payload["rollback_assumptions"]["closed_gap"] == "rollback_assumptions_evidence"
-    assert payload["rollback_assumptions"]["remaining_hardening_gaps"] == [
-        "resource_limits_policy_evidence",
-        "egress_policy_evidence",
-        "security_options_evidence",
-    ]
+    assert payload["rollback_assumptions"]["remaining_hardening_gaps"] == []
     assert payload["gate_boundary_evidence"]["b2_issue_review_and_closure_evidence"]["status"] == (
         "recorded_issue_closure_evidence"
     )
