@@ -1,0 +1,361 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-08-211-b2-docker-runtime-hardening-bfbc64d",
+  "artifact_kind": "211_sandbox_runtime_smoke",
+  "gate": "B2 real sandbox usable",
+  "commit_sha": "bfbc64dd4bdcf6ab69a8bf3dcb4379de814fb828",
+  "runtime_subject_commit_sha": "bfbc64dd4bdcf6ab69a8bf3dcb4379de814fb828",
+  "captured_at": "2026-07-08T03:10:33.862570+00:00",
+  "issue_refs": [
+    "#130"
+  ],
+  "pr_refs": [
+    "#359"
+  ],
+  "source_ref": {
+    "branch": "main",
+    "image": "ai-platform:bfbc64d-opensandbox-main-20260708-runtime-only",
+    "image_id": "sha256:7865f7477d9a2d38157a9107c86dd0b568a389d244b3c6f8b6ae556b92adead6",
+    "image_labels": {
+      "ai-platform.source_revision": "bfbc64dd4bdcf6ab69a8bf3dcb4379de814fb828",
+      "ai-platform.source_tree_commit": "bfbc64dd4bdcf6ab69a8bf3dcb4379de814fb828",
+      "org.opencontainers.image.revision": "bfbc64dd4bdcf6ab69a8bf3dcb4379de814fb828",
+      "ai-platform.build_mode": "runtime-only-source-rebase-current-main"
+    },
+    "runtime_source_marker": "bfbc64dd4bdcf6ab69a8bf3dcb4379de814fb828",
+    "source_tree_dirty": false,
+    "source_snapshot": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "runtime_subject_commit_sha": "bfbc64dd4bdcf6ab69a8bf3dcb4379de814fb828",
+      "source_tree_commit_sha": "bfbc64dd4bdcf6ab69a8bf3dcb4379de814fb828",
+      "source_tree_dirty": false,
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "snapshot_source": "codex_origin_main_archive_sync_runtime_only_rebase"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "api_health": "ok",
+    "frontend_status": 200,
+    "opensandbox_openapi_status": 200,
+    "runtime_default_sandbox_provider": "docker",
+    "controlled_hardening_sandbox_provider": "docker",
+    "controlled_opensandbox_probe_status": "egress_default_deny_missing",
+    "deployment_cleanup": {
+      "old_unreferenced_backend_images_removed": [
+        "ai-platform:3120921-opensandbox-main-20260708-runtime-only"
+      ],
+      "dangling_image_count": 0,
+      "remaining_ai_platform_images": [
+        "ai-platform:bfbc64d-opensandbox-main-20260708-runtime-only"
+      ]
+    },
+    "source_authority_caveat": "The 211 source path is a source snapshot with ai-platform source markers, not a git checkout. Image source_revision/source_tree_commit/OCI labels and source markers matched bfbc64dd4bdcf6ab69a8bf3dcb4379de814fb828. This wrapper records Docker-provider runtime hardening evidence and does not prove OpenSandbox data-plane hardening."
+  },
+  "evidence_ref": {
+    "verifier": "scripts/verify_sandbox_runtime_211.py",
+    "result": "ok:true",
+    "strict_verifier_exit_code": 0,
+    "strict_verifier_result": "hardening_passed",
+    "command": "controlled 211 verifier container: generate_sandbox_runtime_evidence_211.py --runtime-mode platform --sandbox-provider docker --runtime-probe-results-file <redacted>; verify_sandbox_runtime_211.py --json --docker-cmd docker; one-shot verifier container mounted only the host Docker CLI/socket and a redacted temp artifact path for verification",
+    "run_id": "docker-bfbc64d-hp-030122",
+    "artifact_hashes": {
+      "runtime_probe_results_sha256": "61372d7e3e01e09cc8fa37b4d99114b01931f5831af59a2014c8fecb8cb29fd9",
+      "sandbox_evidence_sha256": "a0fb71899e90ed8b995a892cf548c15444de5b2fb9dc279eecb98d516992ee04",
+      "generator_summary_sha256": "55c4bf3976ac8e1d3095ebe3c5144bb22ffc8bdf8c5a402876b4243716be53c8",
+      "verifier_summary_sha256": "ef60ea24d4358c95582d9a08a0259ba1e807d08ee192d144a8300ec076fc0cda"
+    },
+    "runtime_checks": {
+      "b2_211_real_sandbox_smoke": {
+        "schema_version": "ai-platform.sandbox-runtime-211.v1",
+        "run_id": "docker-bfbc64d-hp-030122",
+        "runtime_mode": "platform",
+        "sandbox_provider": "docker",
+        "executed_task": true,
+        "callback_auth": "token",
+        "callbacks": [
+          "running",
+          "completed"
+        ],
+        "cancel_stops_container": true,
+        "checks": {
+          "check_docker_socket": true,
+          "check_workspace_write": true,
+          "check_executor_health": true,
+          "check_callback_stream": true,
+          "check_cancel_stops_container": true,
+          "check_platform_runtime_evidence": true,
+          "check_opensandbox_provider_lifecycle_evidence": true,
+          "check_platform_hardening_evidence": true,
+          "check_no_secret_leakage": true
+        },
+        "timings": {
+          "schema_version": "ai-platform.sandbox-latency-split.v1",
+          "sandbox_queue_wait_latency_ms": 0,
+          "sandbox_lease_acquire_latency_ms": 2621,
+          "sandbox_container_start_latency_ms": 1532,
+          "sandbox_container_cold_start_latency_ms": 1532,
+          "sandbox_healthcheck_latency_ms": 1078,
+          "sandbox_executor_dispatch_latency_ms": 61512,
+          "executor_first_token_latency_ms": 0,
+          "executor_tool_call_latency_ms": 0,
+          "executor_model_latency_ms": 61492,
+          "document_processing_latency_ms": 1,
+          "artifact_upload_latency_ms": 0,
+          "sandbox_cleanup_latency_ms": 1966,
+          "sandbox_total_latency_ms": 66129
+        },
+        "executor": {
+          "sdk_used": true,
+          "executor_mode": "claude_agent_sdk"
+        },
+        "provider_lifecycle": {},
+        "hardening": {
+          "lease_isolation": {
+            "evidence_class": "live_platform_probe",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-docker-bfbc64d-hp-030122",
+            "run_id": "docker-bfbc64d-hp-030122",
+            "recorded_lease_id": "lease-docker-bfbc64d-hp-030122",
+            "released_lease_id": "lease-docker-bfbc64d-hp-030122",
+            "release_reason": "dispatch_completed",
+            "host_paths_redacted": true
+          },
+          "workspace_isolation": {
+            "evidence_class": "live_platform_probe",
+            "workspace_container_path": "/workspace",
+            "inputs_container_path": "/workspace/inputs",
+            "host_paths_redacted": true,
+            "marker_path_is_container_path": true
+          },
+          "cleanup": {
+            "evidence_class": "live_platform_probe",
+            "ephemeral_container_removed": true,
+            "cancel_probe_container_removed": true,
+            "active_lease_released": true
+          },
+          "resource_timeout": {
+            "evidence_class": "source_regression_guard",
+            "max_seconds_enforced": true,
+            "timeout_error_code": "executor_health_timeout",
+            "failed_container_removed": true,
+            "source_regression_tests": [
+              "tests/test_sandbox_container_provider.py::test_docker_provider_maps_health_false_to_timeout",
+              "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout"
+            ]
+          },
+          "failure_fallback": {
+            "evidence_class": "source_regression_guard",
+            "dispatch_failure_stops_container": true,
+            "lease_record_failure_stops_container": true,
+            "db_lease_not_released_when_stop_fails": true,
+            "source_regression_tests": [
+              "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_completion_stop_fails",
+              "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fails",
+              "tests/test_sandbox_runtime.py::test_runtime_stops_live_container_when_lease_recording_fails"
+            ]
+          },
+          "cached_lease_revalidation": {
+            "evidence_class": "source_regression_guard",
+            "cached_lease_revalidates_scope_labels": true,
+            "scope_mismatch_fails_closed": true,
+            "tenant_workspace_user_session_checked": true,
+            "source_regression_tests": [
+              "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels"
+            ]
+          },
+          "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "memory_limit_mb": 512,
+            "cpu_limit_count": 0.5,
+            "pids_limit": 128,
+            "process_timeout_seconds": 60,
+            "limit_source": "platform_request",
+            "docker_inspection_verified": true,
+            "over_limit_cleanup_verified": true,
+            "bounded_error_projection_verified": true,
+            "bounded_error_projection": {
+              "source": "admin_runtime_projection",
+              "run_id": "docker-bfbc64d-hp-030122",
+              "status": "failed",
+              "error_code": "executor_health_timeout",
+              "host_paths_redacted": true,
+              "raw_docker_payload_absent": true,
+              "callback_token_absent": true
+            },
+            "over_limit_probe_kind": "platform_resource_timeout",
+            "over_limit_timeout_probe_seconds": 0
+          },
+          "egress_policy": {
+            "evidence_class": "live_platform_probe",
+            "default_deny_outbound": true,
+            "platform_allowlist_enforced": true,
+            "callback_exception_scoped_to_run_token": true,
+            "denied_egress_redacted": true,
+            "denied_target": "https://egress-denied.invalid/",
+            "denied_probe_error_code": "egress_denied",
+            "allowed_callback_host": "host.docker.internal",
+            "callback_probe_status": "delivered",
+            "policy_source": "platform_policy",
+            "probe_source": "runtime_probe_results",
+            "network_inspection_verified": false,
+            "docker_network_masquerade_disabled": false
+          },
+          "security_options": {
+            "evidence_class": "live_platform_probe",
+            "privileged": false,
+            "no_new_privileges": true,
+            "capabilities_dropped": true,
+            "docker_socket_mounted": false,
+            "workspace_mount_mode": "rw",
+            "root_filesystem_read_only_or_minimal": true
+          },
+          "source": {
+            "runtime_submit": "app.runtime.sandbox.runtime.SandboxRuntime.submit",
+            "workspace_root": "[redacted-path]",
+            "resource_timeout_and_failure_fallback": "source_regression_tests_plus_live_platform_runtime_smoke",
+            "cached_lease_revalidation": "source_regression_tests_plus_live_platform_runtime_smoke"
+          }
+        },
+        "non_expansion_invariants": {
+          "ordinary_user_high_risk_sandbox_allowed": false,
+          "admin_or_allowlist_only": true,
+          "production_concurrency_defaults_raised": false,
+          "docker_sandbox_production_hardening_claimed": false,
+          "ordinary_user_multi_agent_allowed": false
+        },
+        "redaction_scan_status": "passed",
+        "does_not_close_b2_gate": true,
+        "remaining_gate_boundaries": []
+      },
+      "runtime_probe_results": {
+        "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
+        "run_id": "docker-bfbc64d-hp-030122",
+        "source": "platform_runtime_probe",
+        "resource_limits": {
+          "over_limit_cleanup_verified": true,
+          "probe_kind": "platform_resource_timeout",
+          "timeout_probe_seconds": 0,
+          "bounded_error_projection": {
+            "source": "admin_runtime_projection",
+            "run_id": "docker-bfbc64d-hp-030122",
+            "status": "failed",
+            "error_code": "executor_health_timeout",
+            "host_paths_redacted": true,
+            "raw_docker_payload_absent": true,
+            "callback_token_absent": true
+          }
+        },
+        "egress_policy": {
+          "default_deny_outbound": true,
+          "platform_allowlist_enforced": true,
+          "callback_exception_scoped_to_run_token": true,
+          "denied_egress_redacted": true,
+          "denied_target": "https://egress-denied.invalid/",
+          "denied_probe_error_code": "egress_denied",
+          "allowed_callback_host": "host.docker.internal",
+          "callback_probe_status": "delivered",
+          "policy_source": "platform_policy",
+          "probe_source": "runtime_probe_results"
+        },
+        "security_options": {
+          "privileged": false,
+          "no_new_privileges": true,
+          "capabilities_dropped": true,
+          "docker_socket_mounted": false,
+          "workspace_mount_mode": "rw",
+          "root_filesystem_read_only_or_minimal": true
+        }
+      },
+      "verifier_checks": [
+        {
+          "name": "check_docker_socket",
+          "passed": true
+        },
+        {
+          "name": "check_workspace_write",
+          "passed": true
+        },
+        {
+          "name": "check_executor_health",
+          "passed": true
+        },
+        {
+          "name": "check_callback_stream",
+          "passed": true
+        },
+        {
+          "name": "check_cancel_stops_container",
+          "passed": true
+        },
+        {
+          "name": "check_platform_runtime_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_opensandbox_provider_lifecycle_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_platform_hardening_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_no_secret_leakage",
+          "passed": true
+        }
+      ],
+      "opensandbox_hardening_probe": {
+        "run_id": "os-bfbc64d-hp-025952",
+        "runtime_mode": "platform_probe_results",
+        "sandbox_provider": "opensandbox",
+        "callbacks": 4,
+        "result": "failed",
+        "message": "runtime probe results missing: egress_policy.default_deny_outbound",
+        "does_not_prove_opensandbox_hardening": true
+      },
+      "b2_readiness_after_recorded_evidence": {
+        "status": "runtime_hardening_acceptance_recorded",
+        "status_label": "local partial",
+        "closed_runtime_gaps": [
+          "b2_211_real_sandbox_smoke",
+          "b2_reviewed_release_evidence",
+          "resource_limits_policy_evidence",
+          "egress_policy_evidence",
+          "security_options_evidence"
+        ],
+        "closed_gate_boundary_gaps": [
+          "b2_issue_review_and_closure_evidence",
+          "b2_runtime_evidence_review_against_merged_source"
+        ],
+        "open_gaps": [],
+        "broader_b2_g7_open_requirements": []
+      }
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "reviewed",
+  "review_notes": [
+    "211 API and worker ran ai-platform:bfbc64d-opensandbox-main-20260708-runtime-only; image source_revision/source_tree_commit/OCI labels and source markers matched bfbc64dd4bdcf6ab69a8bf3dcb4379de814fb828.",
+    "Direct API health returned ok, the frontend returned HTTP 200, and OpenSandbox /openapi.json returned HTTP 200.",
+    "The controlled hardening run selected SANDBOX_CONTAINER_PROVIDER=docker inside a one-shot verifier container; live API and worker defaults remained SANDBOX_CONTAINER_PROVIDER=docker.",
+    "The runtime probe results file recorded resource over-limit cleanup with bounded admin projection, default-deny egress denial with callback delivery, and non-privileged Docker security options.",
+    "The strict verifier passed Docker/workspace/executor health/callback/cancel/platform runtime/OpenSandbox-not-applicable/hardening/no-secret checks.",
+    "The OpenSandbox hardening probe on the same runtime subject still failed to produce accepted runtime probe results because egress_policy.default_deny_outbound was missing.",
+    "Old unreferenced backend image ai-platform:3120921-opensandbox-main-20260708-runtime-only was removed and dangling image count was 0.",
+    "This wrapper intentionally omits callback token values, real runtime environment values, raw host paths, raw Docker inspect payloads, raw OpenSandbox private headers, and raw workspace paths."
+  ],
+  "open_followups": [
+    "Do not treat this Docker-provider hardening evidence as OpenSandbox data-plane hardening evidence.",
+    "Keep fake as the committed local/test default and keep live API/worker SANDBOX_CONTAINER_PROVIDER=docker until a separate production exposure decision is made.",
+    "OpenSandbox remains a first-stage provider adapter until a data plane proves default-deny egress enforcement and the remaining security posture under the strict verifier."
+  ]
+}
