@@ -1282,11 +1282,7 @@ def run_platform_runtime_probe(
                             denied_target=denied_egress_target,
                             callback_host=callback_host,
                         )
-                docker_inspect = _inspect_docker_container(
-                    lease.container_name,
-                    docker_cmd=docker_cmd,
-                    run=run,
-                )
+                docker_inspect = _inspect_runtime_docker_container(lease, docker_cmd=docker_cmd, run=run)
                 captured["docker_inspect"] = docker_inspect
                 if capture_runtime_egress_probe:
                     captured["egress_denial_probe"] = _docker_exec_egress_denial_probe(
@@ -1568,8 +1564,18 @@ def _inspect_docker_container(
     docker_cmd: tuple[str, ...],
     run: Callable[..., Any],
 ) -> dict[str, Any] | None:
+    status, payload = _inspect_docker_container_result(container_name, docker_cmd=docker_cmd, run=run)
+    return payload if status == "ok" else None
+
+
+def _inspect_docker_container_result(
+    container_name: str,
+    *,
+    docker_cmd: tuple[str, ...],
+    run: Callable[..., Any],
+) -> tuple[str, dict[str, Any] | None]:
     if not container_name:
-        return None
+        return "not_found", None
     completed = _run_docker(
         [*docker_cmd, "inspect", container_name],
         run=run,
@@ -1577,14 +1583,48 @@ def _inspect_docker_container(
         check=False,
     )
     if getattr(completed, "returncode", 1) != 0:
-        return None
+        error_text = str(getattr(completed, "stderr", "") or getattr(completed, "stdout", "") or "").lower()
+        if "no such object" in error_text or "not found" in error_text:
+            return "not_found", None
+        return "error", None
     try:
         payload = json.loads(str(getattr(completed, "stdout", "") or "[]"))
     except json.JSONDecodeError:
-        return None
+        return "error", None
     if not isinstance(payload, list) or not payload or not isinstance(payload[0], dict):
-        return None
-    return dict(payload[0])
+        return "error", None
+    return "ok", dict(payload[0])
+
+
+def _docker_inspect_targets_for_lease(lease: Any) -> list[str]:
+    targets: list[str] = []
+
+    def add_target(value: object) -> None:
+        target = str(value or "").strip()
+        if target and target not in targets:
+            targets.append(target)
+
+    if str(getattr(lease, "provider", "") or "") == "opensandbox":
+        sandbox_id = str(getattr(lease, "container_id", "") or "").strip()
+        if sandbox_id:
+            add_target(f"sandbox-{sandbox_id}")
+    add_target(getattr(lease, "container_name", ""))
+    return targets
+
+
+def _inspect_runtime_docker_container(
+    lease: Any,
+    *,
+    docker_cmd: tuple[str, ...],
+    run: Callable[..., Any],
+) -> dict[str, Any] | None:
+    for target in _docker_inspect_targets_for_lease(lease):
+        status, docker_inspect = _inspect_docker_container_result(target, docker_cmd=docker_cmd, run=run)
+        if status == "ok" and docker_inspect is not None:
+            return docker_inspect
+        if status != "not_found":
+            return None
+    return None
 
 
 def _inspect_docker_network(
