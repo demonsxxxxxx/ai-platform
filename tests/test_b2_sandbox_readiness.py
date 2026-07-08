@@ -16,6 +16,7 @@ CURRENT_B2_EVIDENCE_PATH = Path(
     "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c.json"
 )
 FUTURE_RUNTIME_SUBJECT = "1234567890abcdef1234567890abcdef12345678"
+FUTURE_CURRENT_SOURCE = "fedcba0987654321fedcba0987654321fedcba09"
 FUTURE_RUNTIME_TAG = "1234567-b2-runtime-evidence"
 FUTURE_RUN_ID = "b2-1234567-20260620000102"
 
@@ -211,6 +212,72 @@ def write_b2_issue_closure_evidence(
         / f"2026-06-18-issue{issue_number}-b2-closure.json"
     )
     evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def write_b2_source_delta_review_evidence(
+    repo_root: Path,
+    *,
+    runtime_subject_commit_sha: str = FUTURE_RUNTIME_SUBJECT,
+    current_source_commit_sha: str = FUTURE_CURRENT_SOURCE,
+    runtime_neutral_paths: list[str] | None = None,
+) -> None:
+    evidence_dir = (
+        repo_root
+        / "docs/release-evidence/b2-sandbox-source-review"
+        / current_source_commit_sha
+    )
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": "ai-platform.b2-runtime-source-delta-review.v1",
+        "evidence_id": "2026-07-08-b2-source-delta-review-future",
+        "artifact_kind": "b2_runtime_source_delta_review",
+        "gate": "B2 real sandbox usable",
+        "review_status": "reviewed",
+        "reviewed_at": "2026-07-08T01:23:45Z",
+        "reviewer": "codex",
+        "runtime_subject_commit_sha": runtime_subject_commit_sha,
+        "current_source_commit_sha": current_source_commit_sha,
+        "source_tree_dirty": False,
+        "runtime_affecting_changes_since_runtime_subject": [],
+        "runtime_neutral_paths": runtime_neutral_paths or [
+            "docs/operations/opensandbox-provider-phase-status.md",
+            (
+                "docs/release-evidence/b2-sandbox/"
+                "a93753a7cf4756f951dd3f4491996ca574eca8fd/"
+                "2026-07-08-211-b2-opensandbox-runtime-smoke-a93753a.json"
+            ),
+            "tests/test_b2_sandbox_readiness.py",
+        ],
+        "review_basis": {
+            "command": (
+                "git diff --name-status "
+                f"{runtime_subject_commit_sha}..{current_source_commit_sha}"
+            ),
+            "classification": "docs_release_evidence_and_tests_only",
+            "result": [
+                f"M {path}" for path in (runtime_neutral_paths or [
+                    "docs/operations/opensandbox-provider-phase-status.md",
+                    (
+                        "docs/release-evidence/b2-sandbox/"
+                        "a93753a7cf4756f951dd3f4491996ca574eca8fd/"
+                        "2026-07-08-211-b2-opensandbox-runtime-smoke-a93753a.json"
+                    ),
+                    "tests/test_b2_sandbox_readiness.py",
+                ])
+            ],
+        },
+        "does_not_close_b2_gate": True,
+        "remaining_gaps": [
+            "resource_limits_policy_evidence",
+            "egress_policy_evidence",
+            "security_options_evidence",
+        ],
+    }
+    evidence_path = evidence_dir / "2026-07-08-b2-source-delta-review-future.json"
     evidence_path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -629,6 +696,147 @@ def test_b2_sandbox_readiness_uses_source_tree_marker_when_git_metadata_absent(t
     runtime_review = readiness["gate_boundary_evidence"]["b2_runtime_evidence_review_against_merged_source"]
     assert runtime_review["closed_gap"] == "b2_runtime_evidence_review_against_merged_source"
     assert runtime_review["current_source_commit_sha"] == FUTURE_RUNTIME_SUBJECT
+
+
+def test_b2_sandbox_readiness_uses_reviewed_source_delta_evidence_when_git_metadata_absent(
+    tmp_path,
+    monkeypatch,
+):
+    write_future_reviewed_b2_smoke(tmp_path, sandbox_provider="opensandbox")
+    write_b2_issue_closure_evidence(tmp_path)
+    write_b2_source_delta_review_evidence(tmp_path)
+    (tmp_path / ".ai-platform-source-tree-commit").write_text(
+        FUTURE_CURRENT_SOURCE + "\n",
+        encoding="utf-8",
+    )
+
+    def fail_git(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(128, ["git", "diff", "--name-only"])
+
+    monkeypatch.setattr(subprocess, "run", fail_git)
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert "b2_runtime_evidence_review_against_merged_source" not in readiness["open_gaps"]
+    runtime_review = readiness["gate_boundary_evidence"]["b2_runtime_evidence_review_against_merged_source"]
+    assert runtime_review["status"] == "recorded_reviewed_source_delta_evidence"
+    assert runtime_review["closed_gap"] == "b2_runtime_evidence_review_against_merged_source"
+    assert runtime_review["runtime_subject_commit_sha"] == FUTURE_RUNTIME_SUBJECT
+    assert runtime_review["current_source_commit_sha"] == FUTURE_CURRENT_SOURCE
+    assert runtime_review["runtime_affecting_changes_since_runtime_subject"] == []
+    assert runtime_review["source_delta_review_evidence"]["artifact_kind"] == (
+        "b2_runtime_source_delta_review"
+    )
+    assert runtime_review["source_delta_review_evidence"]["does_not_close_b2_gate"] is True
+    assert readiness["open_gaps"] == [
+        "resource_limits_policy_evidence",
+        "egress_policy_evidence",
+        "security_options_evidence",
+    ]
+
+
+def test_b2_sandbox_readiness_rejects_source_delta_evidence_with_runtime_changes(
+    tmp_path,
+    monkeypatch,
+):
+    write_future_reviewed_b2_smoke(tmp_path, sandbox_provider="opensandbox")
+    write_b2_issue_closure_evidence(tmp_path)
+    write_b2_source_delta_review_evidence(tmp_path)
+    evidence_path = (
+        tmp_path
+        / "docs/release-evidence/b2-sandbox-source-review"
+        / FUTURE_CURRENT_SOURCE
+        / "2026-07-08-b2-source-delta-review-future.json"
+    )
+    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    payload["runtime_affecting_changes_since_runtime_subject"] = [
+        "app/runtime/sandbox/runtime.py"
+    ]
+    evidence_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".ai-platform-source-tree-commit").write_text(
+        FUTURE_CURRENT_SOURCE + "\n",
+        encoding="utf-8",
+    )
+
+    def fail_git(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(128, ["git", "diff", "--name-only"])
+
+    monkeypatch.setattr(subprocess, "run", fail_git)
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert "b2_runtime_evidence_review_against_merged_source" in readiness["open_gaps"]
+    runtime_review = readiness["gate_boundary_evidence"]["b2_runtime_evidence_review_against_merged_source"]
+    assert runtime_review["status"] == "open_unable_to_classify_runtime_delta"
+    assert runtime_review["closed_gap"] is None
+
+
+def test_b2_sandbox_readiness_rejects_source_delta_evidence_with_non_neutral_path(
+    tmp_path,
+    monkeypatch,
+):
+    write_future_reviewed_b2_smoke(tmp_path, sandbox_provider="opensandbox")
+    write_b2_issue_closure_evidence(tmp_path)
+    write_b2_source_delta_review_evidence(
+        tmp_path,
+        runtime_neutral_paths=["app/runtime/sandbox/runtime.py"],
+    )
+    (tmp_path / ".ai-platform-source-tree-commit").write_text(
+        FUTURE_CURRENT_SOURCE + "\n",
+        encoding="utf-8",
+    )
+
+    def fail_git(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(128, ["git", "diff", "--name-only"])
+
+    monkeypatch.setattr(subprocess, "run", fail_git)
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert "b2_runtime_evidence_review_against_merged_source" in readiness["open_gaps"]
+    runtime_review = readiness["gate_boundary_evidence"]["b2_runtime_evidence_review_against_merged_source"]
+    assert runtime_review["status"] == "open_unable_to_classify_runtime_delta"
+    assert runtime_review["closed_gap"] is None
+
+
+def test_b2_sandbox_readiness_rejects_source_delta_evidence_with_mismatched_review_result(
+    tmp_path,
+    monkeypatch,
+):
+    write_future_reviewed_b2_smoke(tmp_path, sandbox_provider="opensandbox")
+    write_b2_issue_closure_evidence(tmp_path)
+    write_b2_source_delta_review_evidence(tmp_path)
+    evidence_path = (
+        tmp_path
+        / "docs/release-evidence/b2-sandbox-source-review"
+        / FUTURE_CURRENT_SOURCE
+        / "2026-07-08-b2-source-delta-review-future.json"
+    )
+    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    payload["review_basis"]["result"] = ["M app/runtime/sandbox/runtime.py"]
+    evidence_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".ai-platform-source-tree-commit").write_text(
+        FUTURE_CURRENT_SOURCE + "\n",
+        encoding="utf-8",
+    )
+
+    def fail_git(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(128, ["git", "diff", "--name-only"])
+
+    monkeypatch.setattr(subprocess, "run", fail_git)
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert "b2_runtime_evidence_review_against_merged_source" in readiness["open_gaps"]
+    runtime_review = readiness["gate_boundary_evidence"]["b2_runtime_evidence_review_against_merged_source"]
+    assert runtime_review["status"] == "open_unable_to_classify_runtime_delta"
+    assert runtime_review["closed_gap"] is None
 
 
 def test_b2_sandbox_readiness_rejects_egress_hardening_without_probe_details(tmp_path):

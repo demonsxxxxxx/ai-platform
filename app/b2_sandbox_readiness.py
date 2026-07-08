@@ -21,14 +21,18 @@ RUNTIME_SOURCE_REVIEW_GAP = "b2_runtime_evidence_review_against_merged_source"
 GENERATOR_SCRIPT = "scripts/generate_sandbox_runtime_evidence_211.py"
 VERIFIER_SCRIPT = "scripts/verify_sandbox_runtime_211.py"
 RUNTIME_ACCEPTANCE_ARTIFACT_KIND = "211_sandbox_runtime_smoke"
+RUNTIME_SOURCE_DELTA_REVIEW_ARTIFACT_KIND = "b2_runtime_source_delta_review"
+RUNTIME_SOURCE_DELTA_REVIEW_SCHEMA = "ai-platform.b2-runtime-source-delta-review.v1"
 RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA = "ai-platform.sandbox-runtime-211.v1"
 RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
 _RUNTIME_EVIDENCE_ROOT = "docs/release-evidence/b2-sandbox"
+_RUNTIME_SOURCE_REVIEW_ROOT = "docs/release-evidence/b2-sandbox-source-review"
 _B2_RUNTIME_NEUTRAL_EXACT_PATHS = {
     ".github/workflows/ai-platform-backend.yml",
     "app/b2_sandbox_readiness.py",
     "app/foundation_alpha_readiness.py",
     "docs/operations/ai-platform-gate-status.md",
+    "docs/operations/opensandbox-provider-phase-status.md",
     "docs/release-evidence/README.md",
     "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json",
     "scripts/generate_sandbox_runtime_evidence_211.py",
@@ -40,6 +44,8 @@ _B2_RUNTIME_NEUTRAL_EXACT_PATHS = {
     "tests/test_source_authority_docs.py",
 }
 _B2_RUNTIME_NEUTRAL_PREFIXES = (
+    "docs/release-evidence/b2-sandbox/",
+    "docs/release-evidence/b2-sandbox-source-review/",
     "docs/release-evidence/b1-memory-context/",
     "docs/release-evidence/foundation-alpha-poc/",
     "docs/release-evidence/foundation-runtime-concurrency/",
@@ -690,6 +696,100 @@ def _runtime_subject_commit_from_evidence(
     return value if isinstance(value, str) else ""
 
 
+def _source_delta_review_summary(
+    payload: dict[str, Any],
+    *,
+    path: Path,
+    repo_root: Path,
+    runtime_subject: str,
+    current_source: str,
+) -> dict[str, Any] | None:
+    if (
+        payload.get("schema_version") != RUNTIME_SOURCE_DELTA_REVIEW_SCHEMA
+        or payload.get("artifact_kind") != RUNTIME_SOURCE_DELTA_REVIEW_ARTIFACT_KIND
+        or payload.get("gate") != BACKEND_STAGE
+        or payload.get("review_status") != "reviewed"
+        or payload.get("runtime_subject_commit_sha") != runtime_subject
+        or payload.get("current_source_commit_sha") != current_source
+        or payload.get("source_tree_dirty") is not False
+        or payload.get("runtime_affecting_changes_since_runtime_subject") != []
+        or payload.get("does_not_close_b2_gate") is not True
+        or path.parent.name != current_source
+    ):
+        return None
+    runtime_neutral_paths = payload.get("runtime_neutral_paths")
+    if not isinstance(runtime_neutral_paths, list) or not all(
+        isinstance(item, str) and item for item in runtime_neutral_paths
+    ):
+        return None
+    normalized_runtime_neutral_paths = [
+        item.replace("\\", "/").strip() for item in runtime_neutral_paths
+    ]
+    if not all(_is_b2_runtime_neutral_path(item) for item in normalized_runtime_neutral_paths):
+        return None
+    review_basis = payload.get("review_basis")
+    if not isinstance(review_basis, dict):
+        return None
+    command = str(review_basis.get("command") or "")
+    if runtime_subject not in command or current_source not in command:
+        return None
+    result = review_basis.get("result")
+    if not isinstance(result, list) or not all(isinstance(item, str) and item for item in result):
+        return None
+    result_paths = {_source_delta_result_path(item) for item in result}
+    if None in result_paths:
+        return None
+    if result_paths != set(normalized_runtime_neutral_paths):
+        return None
+    return {
+        "evidence_id": payload.get("evidence_id"),
+        "artifact_kind": RUNTIME_SOURCE_DELTA_REVIEW_ARTIFACT_KIND,
+        "path": _path_for_output(path, repo_root),
+        "runtime_subject_commit_sha": runtime_subject,
+        "current_source_commit_sha": current_source,
+        "runtime_neutral_paths": list(normalized_runtime_neutral_paths),
+        "reviewed_at": payload.get("reviewed_at"),
+        "reviewer": payload.get("reviewer"),
+        "review_basis": dict(review_basis),
+        "does_not_close_b2_gate": True,
+    }
+
+
+def _source_delta_result_path(line: str) -> str | None:
+    normalized = line.strip().replace("\\", "/")
+    if not normalized:
+        return None
+    parts = normalized.split()
+    if len(parts) >= 2 and len(parts[0]) <= 3:
+        return parts[-1]
+    return normalized
+
+
+def _reviewed_source_delta_evidence(
+    repo_root: Path,
+    *,
+    runtime_subject: str,
+    current_source: str,
+) -> dict[str, Any] | None:
+    if not runtime_subject or not current_source or current_source == "unknown":
+        return None
+    evidence_root = repo_root / _RUNTIME_SOURCE_REVIEW_ROOT / current_source
+    for path in sorted(evidence_root.glob("*.json")):
+        payload = _load_json(path)
+        if payload is None:
+            continue
+        summary = _source_delta_review_summary(
+            payload,
+            path=path,
+            repo_root=repo_root,
+            runtime_subject=runtime_subject,
+            current_source=current_source,
+        )
+        if summary is not None:
+            return summary
+    return None
+
+
 def _resolve_b2_runtime_affecting_changes_between(
     base_commit: str,
     source_tree_commit: str,
@@ -735,6 +835,22 @@ def _merged_source_runtime_review(
         current_source,
     )
     if runtime_affecting_changes is None:
+        source_delta_review = _reviewed_source_delta_evidence(
+            repo_root,
+            runtime_subject=runtime_subject,
+            current_source=current_source,
+        )
+        if source_delta_review is not None:
+            return {
+                "status": "recorded_reviewed_source_delta_evidence",
+                "closed_gap": RUNTIME_SOURCE_REVIEW_GAP,
+                "runtime_subject_commit_sha": runtime_subject,
+                "current_source_commit_sha": current_source,
+                "runtime_affecting_changes_since_runtime_subject": [],
+                "source_delta_review_evidence": source_delta_review,
+                "required_next_step": "keep hardening runtime gaps open until live verifier evidence passes",
+                "does_not_close_broader_b2_g7_gate": True,
+            }
         return {
             "status": "open_unable_to_classify_runtime_delta",
             "closed_gap": None,
