@@ -907,7 +907,7 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
     ]
     assert runtime_review["status"] == "recorded_local_contract"
     assert runtime_review["closed_gap"] == "b2_runtime_evidence_review_against_merged_source"
-    assert runtime_review["runtime_subject_commit_sha"] == "475d875c99d8cc3f7174da2958e0036f1e37dbd2"
+    assert runtime_review["runtime_subject_commit_sha"] == "a93753a7cf4756f951dd3f4491996ca574eca8fd"
     current_head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         check=True,
@@ -933,12 +933,11 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
     assert smoke_evidence["status"] == "recorded_211_runtime_smoke_hardening_open"
     assert smoke_evidence["sandbox_provider"] == "opensandbox"
-    assert smoke_evidence["run_id"] == "opensandbox-475d875-ipcb-smoke-20260708062724"
-    assert smoke_evidence["runtime_subject_commit_sha"] == "475d875c99d8cc3f7174da2958e0036f1e37dbd2"
+    assert smoke_evidence["run_id"] == "opensandbox-a93753a-ipcb-smoke-20260708000746"
+    assert smoke_evidence["runtime_subject_commit_sha"] == "a93753a7cf4756f951dd3f4491996ca574eca8fd"
     assert smoke_evidence["hardening_verifier_status"] == "failed"
     assert smoke_evidence["checks"]["check_platform_hardening_evidence"] is False
     assert smoke_evidence["does_not_close_b2_gate"] is True
-
     assert readiness["runtime_acceptance"]["prd_b2_g7_requirements_not_yet_verified"] == [
         "resource_limits_policy_evidence",
         "egress_policy_evidence",
@@ -984,6 +983,18 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
     assert "sandbox_workdir" not in serialized
     assert "callback-secret" not in serialized
     assert "c:\\users" not in serialized
+
+
+def test_b2_release_evidence_redacts_host_workspace_roots():
+    evidence_root = Path("docs/release-evidence/b2-sandbox")
+
+    leaked = [
+        str(path)
+        for path in evidence_root.rglob("*.json")
+        if "/tmp/ai-platform-opensandbox-workspaces" in path.read_text(encoding="utf-8")
+    ]
+
+    assert leaked == []
 
 
 def test_b2_sandbox_readiness_tracks_current_verifier_and_generator_contract():
