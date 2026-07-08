@@ -948,6 +948,18 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         for gap in _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
         if gap not in closed_hardening_runtime_gaps
     ]
+    runtime_acceptance_provider = (
+        runtime_acceptance_evidence[RUNTIME_ACCEPTANCE_GAP].get("sandbox_provider")
+        if b2_smoke_recorded
+        else None
+    )
+    opensandbox_provider_status = "local_partial_211_smoke_required"
+    if runtime_acceptance_provider == "opensandbox":
+        opensandbox_provider_status = (
+            "runtime_hardening_acceptance_recorded"
+            if not open_hardening_runtime_gaps
+            else "first_stage_runtime_smoke_recorded_hardening_open"
+        )
     gate_boundary_evidence = {
         ISSUE_CLOSURE_GAP: _issue_closure_boundary_evidence(root),
         RUNTIME_SOURCE_REVIEW_GAP: _merged_source_runtime_review(
@@ -1003,7 +1015,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             "default_stack_provider": "fake",
             "first_stage_provider_adapters": {
                 "opensandbox": {
-                    "status": "local_partial_211_smoke_required",
+                    "status": opensandbox_provider_status,
                     "role": "B2 first-stage provider adapter",
                     "does_not_close_b2": True,
                 },
