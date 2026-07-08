@@ -247,8 +247,8 @@ def write_b2_source_delta_review_evidence(
             "docs/operations/opensandbox-provider-phase-status.md",
             (
                 "docs/release-evidence/b2-sandbox/"
-                "a93753a7cf4756f951dd3f4491996ca574eca8fd/"
-                "2026-07-08-211-b2-opensandbox-runtime-smoke-a93753a.json"
+                "3120921c82de6ede30fbe8eadcb13f08caf56724/"
+                "2026-07-08-211-b2-opensandbox-runtime-smoke-3120921.json"
             ),
             "tests/test_b2_sandbox_readiness.py",
         ],
@@ -263,8 +263,8 @@ def write_b2_source_delta_review_evidence(
                     "docs/operations/opensandbox-provider-phase-status.md",
                     (
                         "docs/release-evidence/b2-sandbox/"
-                        "a93753a7cf4756f951dd3f4491996ca574eca8fd/"
-                        "2026-07-08-211-b2-opensandbox-runtime-smoke-a93753a.json"
+                        "3120921c82de6ede30fbe8eadcb13f08caf56724/"
+                        "2026-07-08-211-b2-opensandbox-runtime-smoke-3120921.json"
                     ),
                     "tests/test_b2_sandbox_readiness.py",
                 ])
@@ -1115,7 +1115,7 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
     ]
     assert runtime_review["status"] == "recorded_local_contract"
     assert runtime_review["closed_gap"] == "b2_runtime_evidence_review_against_merged_source"
-    assert runtime_review["runtime_subject_commit_sha"] == "a93753a7cf4756f951dd3f4491996ca574eca8fd"
+    assert runtime_review["runtime_subject_commit_sha"] == "3120921c82de6ede30fbe8eadcb13f08caf56724"
     current_head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         check=True,
@@ -1141,8 +1141,8 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_without_b2_c
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
     assert smoke_evidence["status"] == "recorded_211_runtime_smoke_hardening_open"
     assert smoke_evidence["sandbox_provider"] == "opensandbox"
-    assert smoke_evidence["run_id"] == "opensandbox-a93753a-ipcb-smoke-20260708000746"
-    assert smoke_evidence["runtime_subject_commit_sha"] == "a93753a7cf4756f951dd3f4491996ca574eca8fd"
+    assert smoke_evidence["run_id"] == "opensandbox-3120921-ipcb-smoke-20260708100939"
+    assert smoke_evidence["runtime_subject_commit_sha"] == "3120921c82de6ede30fbe8eadcb13f08caf56724"
     assert smoke_evidence["hardening_verifier_status"] == "failed"
     assert smoke_evidence["checks"]["check_platform_hardening_evidence"] is False
     assert smoke_evidence["does_not_close_b2_gate"] is True
