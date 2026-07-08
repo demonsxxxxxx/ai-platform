@@ -1109,10 +1109,11 @@ def test_b2_sandbox_readiness_rejects_smoke_with_expanded_user_sandbox_invariant
 
 def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_with_hardening_open():
     readiness = build_b2_sandbox_readiness()
+    runtime_subject = "6c6c33ffb2bdcae3bb58a0832b7b7d2fc8d3b5ed"
     wrapper_path = Path(
         "docs/release-evidence/b2-sandbox/"
-        "a9285bd05f1a2a6b69618373e9ddef9871b18a62/"
-        "2026-07-08-211-b2-opensandbox-runtime-smoke-a9285bd.json"
+        f"{runtime_subject}/"
+        "2026-07-08-211-b2-opensandbox-runtime-smoke-6c6c33f.json"
     )
     wrapper = json.loads(wrapper_path.read_text(encoding="utf-8"))
     wrapper_readiness = wrapper["evidence_ref"]["runtime_checks"][
@@ -1158,7 +1159,7 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_with_hardeni
     ]
     assert runtime_review["status"] == "recorded_local_contract"
     assert runtime_review["closed_gap"] == "b2_runtime_evidence_review_against_merged_source"
-    assert runtime_review["runtime_subject_commit_sha"] == "a9285bd05f1a2a6b69618373e9ddef9871b18a62"
+    assert runtime_review["runtime_subject_commit_sha"] == runtime_subject
     current_head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         check=True,
@@ -1184,8 +1185,8 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_with_hardeni
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
     assert smoke_evidence["status"] == "recorded_211_runtime_smoke_hardening_open"
     assert smoke_evidence["sandbox_provider"] == "opensandbox"
-    assert smoke_evidence["run_id"] == "opensandbox-a9285bd-ipcb-smoke-20260708051907"
-    assert smoke_evidence["runtime_subject_commit_sha"] == "a9285bd05f1a2a6b69618373e9ddef9871b18a62"
+    assert smoke_evidence["run_id"] == "opensandbox-6c6c33f-ipcb-smoke-20260708060512"
+    assert smoke_evidence["runtime_subject_commit_sha"] == runtime_subject
     assert smoke_evidence["hardening_verifier_status"] == "failed"
     assert smoke_evidence["checks"]["check_platform_hardening_evidence"] is False
     assert smoke_evidence.get("hardening_runtime_evidence") is None
