@@ -1109,11 +1109,11 @@ def test_b2_sandbox_readiness_rejects_smoke_with_expanded_user_sandbox_invariant
 
 def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_with_hardening_open():
     readiness = build_b2_sandbox_readiness()
-    runtime_subject = "6c6c33ffb2bdcae3bb58a0832b7b7d2fc8d3b5ed"
+    runtime_subject = "11ed4e38e95e56be40bc547c804514bae26930af"
     wrapper_path = Path(
         "docs/release-evidence/b2-sandbox/"
         f"{runtime_subject}/"
-        "2026-07-08-211-b2-opensandbox-runtime-smoke-6c6c33f.json"
+        "2026-07-08-211-b2-opensandbox-runtime-smoke-11ed4e3.json"
     )
     wrapper = json.loads(wrapper_path.read_text(encoding="utf-8"))
     wrapper_readiness = wrapper["evidence_ref"]["runtime_checks"][
@@ -1185,7 +1185,7 @@ def test_b2_sandbox_readiness_records_current_211_opensandbox_smoke_with_hardeni
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
     assert smoke_evidence["status"] == "recorded_211_runtime_smoke_hardening_open"
     assert smoke_evidence["sandbox_provider"] == "opensandbox"
-    assert smoke_evidence["run_id"] == "opensandbox-6c6c33f-ipcb-smoke-20260708060512"
+    assert smoke_evidence["run_id"] == "opensandbox-11ed4e3-ipcb-smoke-20260708163257"
     assert smoke_evidence["runtime_subject_commit_sha"] == runtime_subject
     assert smoke_evidence["hardening_verifier_status"] == "failed"
     assert smoke_evidence["checks"]["check_platform_hardening_evidence"] is False
