@@ -11,6 +11,27 @@ ContainerProviderName = Literal["fake", "docker", "opensandbox"]
 CallbackStatus = Literal["running", "completed", "failed", "cancelled"]
 
 
+class ContextRetrievalScope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tenant_id: str
+    workspace_id: str
+    user_id: str
+    session_id: str
+    run_id: str
+    agent_id: str
+
+    @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "agent_id")
+    @classmethod
+    def validate_ids(cls, value: str, info):
+        return assert_safe_id(value, info.field_name)
+
+    @field_validator("user_id")
+    @classmethod
+    def validate_user_id(cls, value: str):
+        return assert_safe_principal_user_id(value)
+
+
 class SandboxRuntimeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -31,8 +52,12 @@ class SandboxRuntimeRequest(BaseModel):
     permissions: list[str] = Field(default_factory=list)
     resource_limits: dict[str, Any] = Field(default_factory=dict)
     queue_wait_ms: int = Field(default=0, ge=0)
+    trace_id: str = ""
     callback_url: str
     callback_token_id: str
+    context_manifest: dict[str, Any] = Field(default_factory=dict)
+    context_retrieval_scope: ContextRetrievalScope | None = None
+    sdk_session_id: str | None = None
 
     @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "agent_id", "callback_token_id")
     @classmethod
@@ -48,6 +73,16 @@ class SandboxRuntimeRequest(BaseModel):
     @classmethod
     def validate_list_ids(cls, values: list[str], info):
         return [assert_safe_id(value, info.field_name) for value in values]
+
+    @field_validator("trace_id")
+    @classmethod
+    def validate_optional_trace_id(cls, value: str):
+        return assert_safe_id(value, "trace_id") if value else value
+
+    @field_validator("sdk_session_id")
+    @classmethod
+    def validate_optional_sdk_session_id(cls, value: str | None):
+        return assert_safe_id(value, "sdk_session_id") if value else value
 
 
 class WorkspaceLease(BaseModel):
@@ -202,6 +237,34 @@ class ExecutorCallbackEvent(BaseModel):
     sdk_session_id: str | None = None
     error_message: str | None = None
     events: list[AgentEvent] = Field(default_factory=list)
+
+    @field_validator("session_id", "run_id", "callback_token_id")
+    @classmethod
+    def validate_ids(cls, value: str, info):
+        return assert_safe_id(value, info.field_name)
+
+    @field_validator("sdk_session_id")
+    @classmethod
+    def validate_optional_sdk_session_id(cls, value: str | None):
+        return assert_safe_id(value, "sdk_session_id") if value else value
+
+
+class ExecutorToolPermissionRequest(BaseModel):
+    """Sandbox executor callback payload for brokered Claude SDK tool permissions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    run_id: str
+    callback_token_id: str
+    sdk_session_id: str | None = None
+    tool_name: str
+    tool_input: dict[str, Any] = Field(default_factory=dict)
+    tool_call_id: str = ""
+    action: str = "execute"
+    risk_level: str = "high"
+    write_capable: bool = True
+    reason: str = "Claude SDK tool permission required"
 
     @field_validator("session_id", "run_id", "callback_token_id")
     @classmethod

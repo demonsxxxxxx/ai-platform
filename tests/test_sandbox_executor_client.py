@@ -134,13 +134,17 @@ def test_callback_typed_events_are_appended_after_compatibility_events():
 
 
 @pytest.mark.asyncio
-async def test_executor_client_posts_task_request():
+async def test_executor_client_posts_task_request(monkeypatch):
     calls = []
 
     async def post_json(url, payload, timeout, headers=None):
         calls.append((url, payload, timeout))
         return {"status": "accepted", "session_id": "session-a"}
 
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_client.get_settings",
+        lambda: type("S", (), {"claude_agent_sdk_timeout_seconds": 120.0})(),
+    )
     client = SandboxExecutorClient(post_json=post_json)
     request = ExecutorTaskRequest(
         session_id="session-a",

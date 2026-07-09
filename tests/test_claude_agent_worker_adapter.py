@@ -14,7 +14,6 @@ from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
 from app.executors.claude_agent_worker import _allowed_skill_names
 from app.executors.claude_agent_worker import _inferred_used_skill_names
-from app.executors.claude_agent_worker import _prepare_run_workspace
 from app.storage import StoredObject
 from app.executors.claude_agent_sdk_runner import build_sdk_env, build_skill_prompt, run_claude_agent_sdk
 from app.executors.registry import AdapterRegistry
@@ -670,6 +669,372 @@ async def test_agent_run_prefers_worker_context_pack_over_snapshot_reparse(monke
 
 
 @pytest.mark.asyncio
+async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeypatch, tmp_path):
+    current_settings = type(
+        "S",
+        (),
+            {
+                "claude_agent_sdk_enabled": True,
+                "claude_agent_workspace_root": str(tmp_path / "a"),
+                "sandbox_workspace_root": str(tmp_path / "s"),
+                "platform_skills_root": str(tmp_path / "k"),
+                "skill_staging_subdir": ".claude/skills",
+                "sandbox_callback_base_url": "http://platform.test",
+                "claude_agent_model": "deepseek-v4-flash",
+            },
+    )()
+    runtime_calls = []
+
+    class FakeRuntime:
+        async def submit(self, request, event_sink=None):
+            runtime_calls.append(request)
+            return types.SimpleNamespace(
+                status="accepted",
+                session_id=request.session_id,
+                run_id=request.run_id,
+                executor_response={
+                    "status": "accepted",
+                    "message": "sandbox completed",
+                    "sdk_session_id": "sdk-session-heavy",
+                    "sdk_usage": {"input_tokens": 3},
+                    "sdk_used": True,
+                    "executor_mode": "claude_agent_sdk",
+                    "used_skills": [],
+                    "used_skills_source": "",
+                    "executor_first_token_latency_ms": 5,
+                    "executor_tool_call_latency_ms": 0,
+                    "executor_model_latency_ms": 8,
+                    "document_processing_latency_ms": 0,
+                    "artifact_upload_latency_ms": 0,
+                },
+                timings={
+                    "schema_version": "ai-platform.sandbox-latency-split.v1",
+                    "sandbox_queue_wait_latency_ms": 0,
+                    "sandbox_lease_acquire_latency_ms": 1,
+                    "sandbox_container_start_latency_ms": 2,
+                    "sandbox_container_cold_start_latency_ms": 2,
+                    "sandbox_healthcheck_latency_ms": 3,
+                    "sandbox_executor_dispatch_latency_ms": 4,
+                    "executor_first_token_latency_ms": 5,
+                    "executor_tool_call_latency_ms": 0,
+                    "executor_model_latency_ms": 8,
+                    "document_processing_latency_ms": 0,
+                    "artifact_upload_latency_ms": 0,
+                    "sandbox_cleanup_latency_ms": 1,
+                    "sandbox_total_latency_ms": 21,
+                },
+            )
+
+    async def fail_try_run_sdk(*args, **kwargs):
+        raise AssertionError("heavy_sandbox ordinary run must not stay on the worker-local SDK path")
+
+    async def no_files(payload, workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.SandboxRuntime",
+        lambda *args, **kwargs: FakeRuntime(),
+        raising=False,
+    )
+    monkeypatch.setattr(adapter, "_try_run_sdk", fail_try_run_sdk)
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+
+    result = await adapter.submit_run(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "run a shell command in sandbox", "sandbox_mode": "ephemeral"},
+            context_snapshot={
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_snapshot_id": "ctx-heavy",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 0,
+                "memory_record_count": 0,
+                "execution_tier": "heavy_sandbox",
+            },
+            context_pack={
+                "schema_version": "ai-platform.executor-context-pack.v1",
+                "source": "runs_api",
+                "referenced_materials": {
+                    "message_count": 0,
+                    "file_count": 0,
+                    "artifact_count": 0,
+                    "memory_record_count": 0,
+                },
+                "used_context_summary": {
+                    "source": "runs_api",
+                    "input_keys": ["message"],
+                    "memory_policy_source": "stored",
+                    "long_term_memory_read": False,
+                },
+                "execution_tier": "heavy_sandbox",
+                "latest_artifact_version": None,
+                "context_pack_version": "v1",
+                "context_pack_generated_at": "2026-07-09T00:00:00Z",
+                "prompt_summary": "Execution tier: heavy_sandbox.",
+            },
+        ),
+    )
+
+    assert result.status == "succeeded"
+    assert runtime_calls
+    assert runtime_calls[0].skill_ids == ["general-chat"]
+    assert runtime_calls[0].callback_token_id == "cbt_run_1"
+    assert runtime_calls[0].sandbox_mode == "ephemeral"
+    assert result.executor_payload["sandbox_provider"] == "docker"
+
+
+@pytest.mark.asyncio
+async def test_general_chat_preserves_cancelled_runtime_terminal_status(monkeypatch, tmp_path):
+    current_settings = type(
+        "S",
+        (),
+        {
+            "claude_agent_sdk_enabled": True,
+            "claude_agent_workspace_root": str(tmp_path / "a"),
+            "sandbox_workspace_root": str(tmp_path / "s"),
+            "platform_skills_root": str(tmp_path / "k"),
+            "skill_staging_subdir": ".claude/skills",
+            "sandbox_callback_base_url": "http://platform.test",
+            "claude_agent_model": "deepseek-v4-flash",
+        },
+    )()
+
+    class FakeRuntime:
+        async def submit(self, request, event_sink=None):
+            return types.SimpleNamespace(
+                status="cancelled",
+                session_id=request.session_id,
+                run_id=request.run_id,
+                executor_response={
+                    "status": "cancelled",
+                    "message": "任务已取消",
+                    "sdk_session_id": "sdk-session-heavy",
+                    "sdk_usage": {},
+                    "sdk_used": True,
+                },
+                timings={
+                    "schema_version": "ai-platform.sandbox-latency-split.v1",
+                    "sandbox_queue_wait_latency_ms": 0,
+                    "sandbox_lease_acquire_latency_ms": 1,
+                    "sandbox_container_start_latency_ms": 2,
+                    "sandbox_container_cold_start_latency_ms": 2,
+                    "sandbox_healthcheck_latency_ms": 3,
+                    "sandbox_executor_dispatch_latency_ms": 4,
+                    "executor_first_token_latency_ms": 0,
+                    "executor_tool_call_latency_ms": 0,
+                    "executor_model_latency_ms": 0,
+                    "document_processing_latency_ms": 0,
+                    "artifact_upload_latency_ms": 0,
+                    "sandbox_cleanup_latency_ms": 1,
+                    "sandbox_total_latency_ms": 13,
+                },
+            )
+
+    async def no_files(payload, workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.SandboxRuntime",
+        lambda *args, **kwargs: FakeRuntime(),
+        raising=False,
+    )
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+
+    result = await adapter.submit_run(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "cancel sandbox run", "sandbox_mode": "ephemeral"},
+            context_snapshot={
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_snapshot_id": "ctx-heavy",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 0,
+                "memory_record_count": 0,
+                "execution_tier": "heavy_sandbox",
+            },
+            context_pack={
+                "schema_version": "ai-platform.executor-context-pack.v1",
+                "source": "runs_api",
+                "referenced_materials": {
+                    "message_count": 0,
+                    "file_count": 0,
+                    "artifact_count": 0,
+                    "memory_record_count": 0,
+                },
+                "used_context_summary": {
+                    "source": "runs_api",
+                    "input_keys": ["message"],
+                    "memory_policy_source": "stored",
+                    "long_term_memory_read": False,
+                },
+                "execution_tier": "heavy_sandbox",
+                "latest_artifact_version": None,
+                "context_pack_version": "v1",
+                "context_pack_generated_at": "2026-07-09T00:00:00Z",
+                "prompt_summary": "Execution tier: heavy_sandbox.",
+            },
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "executor_cancelled"
+    assert result.executor_payload["runtime_terminal_status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_general_chat_heavy_sandbox_request_carries_context_retrieval_scope(monkeypatch, tmp_path):
+    current_settings = type(
+        "S",
+        (),
+        {
+            "claude_agent_sdk_enabled": True,
+            "claude_agent_workspace_root": str(tmp_path / "a"),
+            "sandbox_workspace_root": str(tmp_path / "s"),
+            "platform_skills_root": str(tmp_path / "k"),
+            "skill_staging_subdir": ".claude/skills",
+            "sandbox_callback_base_url": "http://platform.test",
+            "claude_agent_model": "deepseek-v4-flash",
+        },
+    )()
+    runtime_calls = []
+
+    class FakeRuntime:
+        async def submit(self, request, event_sink=None):
+            runtime_calls.append(request)
+            return types.SimpleNamespace(
+                status="accepted",
+                session_id=request.session_id,
+                run_id=request.run_id,
+                executor_response={"status": "accepted", "message": "sandbox completed", "sdk_used": True},
+                timings={"schema_version": "ai-platform.sandbox-latency-split.v1"},
+            )
+
+    async def no_files(payload, workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.SandboxRuntime",
+        lambda *args, **kwargs: FakeRuntime(),
+        raising=False,
+    )
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+
+    await adapter.submit_run(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "review context file in sandbox", "sandbox_mode": "ephemeral"},
+            context_snapshot={
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_snapshot_id": "ctx-heavy",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 0,
+                "memory_record_count": 0,
+                "execution_tier": "heavy_sandbox",
+            },
+            context_pack={
+                "schema_version": "ai-platform.executor-context-pack.v1",
+                "context_manifest": {
+                    "schema_version": "ai-platform.context-manifest.v1",
+                    "available_retrieval_tools": ["read_context_file"],
+                },
+                "execution_tier": "heavy_sandbox",
+            },
+            trace_id="trace-sdk",
+        )
+    )
+
+    assert runtime_calls[0].context_manifest["available_retrieval_tools"] == ["read_context_file"]
+    assert runtime_calls[0].context_retrieval_scope.user_id == "user-a"
+    assert runtime_calls[0].trace_id == "trace-sdk"
+
+
+@pytest.mark.asyncio
+async def test_general_chat_heavy_sandbox_fails_when_runtime_reports_sdk_disabled(monkeypatch, tmp_path):
+    current_settings = type(
+        "S",
+        (),
+        {
+            "claude_agent_sdk_enabled": True,
+            "claude_agent_workspace_root": str(tmp_path / "a"),
+            "sandbox_workspace_root": str(tmp_path / "s"),
+            "platform_skills_root": str(tmp_path / "k"),
+            "skill_staging_subdir": ".claude/skills",
+            "sandbox_callback_base_url": "http://platform.test",
+            "claude_agent_model": "deepseek-v4-flash",
+        },
+    )()
+
+    class FakeRuntime:
+        async def submit(self, request, event_sink=None):
+            return types.SimpleNamespace(
+                status="failed",
+                session_id=request.session_id,
+                run_id=request.run_id,
+                executor_response={
+                    "status": "failed",
+                    "message": "Claude Agent SDK is disabled",
+                    "error_code": "claude_agent_sdk_disabled",
+                    "error_message": "Claude Agent SDK is disabled",
+                    "sdk_used": False,
+                    "executor_mode": "claude_agent_sdk_disabled",
+                },
+                timings={"schema_version": "ai-platform.sandbox-latency-split.v1"},
+            )
+
+    async def no_files(payload, workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.SandboxRuntime",
+        lambda *args, **kwargs: FakeRuntime(),
+        raising=False,
+    )
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+
+    result = await adapter.submit_run(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "run a shell command in sandbox", "sandbox_mode": "ephemeral"},
+            context_snapshot={
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_snapshot_id": "ctx-heavy",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 0,
+                "memory_record_count": 0,
+                "execution_tier": "heavy_sandbox",
+            },
+            context_pack={
+                "schema_version": "ai-platform.executor-context-pack.v1",
+                "execution_tier": "heavy_sandbox",
+            },
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_disabled"
+
+
+@pytest.mark.asyncio
 async def test_file_skill_uses_controlled_runner_when_sdk_tool_schema_loops(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_runner_skill(tmp_path / "skills")
@@ -1088,24 +1453,6 @@ async def test_agent_run_clears_stale_workspace_before_sdk(monkeypatch, tmp_path
 
     assert result.status == "succeeded"
     assert result.result["artifact_count"] == 0
-
-
-def test_prepare_run_workspace_initializes_git_worktree_ready_repo_for_sdk_agent_tool(tmp_path):
-    workspace_root = tmp_path / "workspaces"
-    workspace = workspace_root / "default" / "run_1"
-    child_worktree = tmp_path / "agent-worktree"
-
-    _prepare_run_workspace(workspace_root, workspace)
-
-    assert (workspace / ".git").is_dir()
-    subprocess.run(
-        ["git", "worktree", "add", "-q", str(child_worktree)],
-        cwd=workspace,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert (child_worktree / ".git").exists()
 
 
 @pytest.mark.asyncio

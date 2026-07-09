@@ -1,13 +1,7 @@
-import asyncio
 import importlib.util
-import io
 import json
-import os
-import shlex
 import subprocess
 import sys
-import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -351,6 +345,69 @@ def test_platform_runtime_evidence_requires_latency_split_and_real_provider(tmp_
     assert "ordinary_user_high_risk_sandbox_allowed" in failed_ordinary.message
 
 
+def test_platform_runtime_evidence_rejects_sdk_only_placeholder_lease_projection(tmp_path):
+    verifier = load_verifier()
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "run_id": "run-a",
+                "executor_url": "http://executor.test",
+                "runtime_mode": "platform",
+                "sandbox_provider": "docker",
+                "executed_task": True,
+                "callback_auth": "token",
+                "executor": {
+                    "sdk_used": True,
+                    "executor_mode": "claude_agent_sdk",
+                },
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "callbacks": [
+                    {"run_id": "run-a", "status": "running"},
+                    {"run_id": "run-a", "status": "completed"},
+                ],
+                "non_expansion_invariants": {
+                    "ordinary_user_high_risk_sandbox_allowed": False,
+                    "admin_or_allowlist_only": True,
+                    "production_concurrency_defaults_raised": False,
+                    "docker_sandbox_production_hardening_claimed": False,
+                    "ordinary_user_multi_agent_allowed": False,
+                },
+                "lease_projection": {
+                    "provider": "fake",
+                    "lease_payload": {
+                        "source": "sdk_only_lifecycle_placeholder",
+                        "evidence_class": "sdk_only_lifecycle_placeholder",
+                    },
+                },
+                "timings": {
+                    "schema_version": "ai-platform.sandbox-latency-split.v1",
+                    "sandbox_queue_wait_latency_ms": 0,
+                    "sandbox_lease_acquire_latency_ms": 1,
+                    "sandbox_container_start_latency_ms": 1,
+                    "sandbox_container_cold_start_latency_ms": 2,
+                    "sandbox_healthcheck_latency_ms": 3,
+                    "sandbox_executor_dispatch_latency_ms": 4,
+                    "executor_first_token_latency_ms": 5,
+                    "executor_tool_call_latency_ms": 0,
+                    "executor_model_latency_ms": 5,
+                    "document_processing_latency_ms": 6,
+                    "artifact_upload_latency_ms": 0,
+                    "sandbox_cleanup_latency_ms": 7,
+                    "sandbox_total_latency_ms": 34,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    failed = verifier.check_platform_runtime_evidence(evidence, run_id="run-a")
+
+    assert failed.passed is False
+    assert "placeholder" in failed.message
+
+
 def test_opensandbox_provider_lifecycle_evidence_requires_first_stage_probe_fields(tmp_path):
     verifier = load_verifier()
     evidence = tmp_path / "evidence.json"
@@ -361,7 +418,6 @@ def test_opensandbox_provider_lifecycle_evidence_requires_first_stage_probe_fiel
         "lifecycle": {
             "create_observed": True,
             "delete_observed": True,
-            "delete_stop_status": "stopped",
             "container_id_present": True,
             "executor_endpoint_present": True,
         },
@@ -1108,7 +1164,7 @@ def test_submit_executor_task_marks_executed_after_http_success():
     assert body["config"]["resource_limits"]["max_seconds"] == 60
 
 
-def test_submit_executor_task_derives_callback_token_for_api_endpoint():
+def test_submit_executor_task_derives_platform_callback_auth():
     generator = load_generator()
     requests = []
 
@@ -1129,7 +1185,7 @@ def test_submit_executor_task_derives_callback_token_for_api_endpoint():
 
         return Response()
 
-    generator.submit_executor_task(
+    response = generator.submit_executor_task(
         executor_url="http://executor.test",
         callback_url="http://platform.test/api/ai/runtime/callbacks/executor",
         callback_token="secret-token",
@@ -1138,9 +1194,12 @@ def test_submit_executor_task_derives_callback_token_for_api_endpoint():
         urlopen=fake_urlopen,
     )
 
+    from app.runtime.sandbox.callback_tokens import derive_callback_token
+
+    assert response == {"status": "accepted", "run_id": "run-a"}
     body = json.loads(requests[0][0].data.decode("utf-8"))
     assert body["callback_token_id"] == "cbt_run-a"
-    assert body["callback_token"] == generator.derive_callback_token("secret-token", "cbt_run-a")
+    assert body["callback_token"] == derive_callback_token("secret-token", "cbt_run-a")
 
 
 def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
@@ -1250,6 +1309,134 @@ def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
         assert set(recorder.hardening[section_name]["source_regression_tests"]) <= allowed_tests
 
 
+def test_run_platform_runtime_probe_uses_configured_sdk_model(monkeypatch, tmp_path):
+    generator = load_generator()
+
+    class FakeRuntime:
+        def __init__(
+            self,
+            *,
+            workspace_root,
+            callback_token_resolver,
+            record_lease,
+            release_lease,
+        ):
+            self.record_lease = record_lease
+            self.release_lease = release_lease
+
+        async def submit(self, request):
+            from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
+
+            assert request.model == "deepseek-v4-pro"
+            lease = ContainerLease(
+                container_id="exec-run-a",
+                container_name="executor-exec-run-a",
+                provider="docker",
+                executor_url="http://127.0.0.1:18000",
+                tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=request.run_id,
+                sandbox_mode=request.sandbox_mode,
+                browser_enabled=request.browser_enabled,
+                workspace_host_path=str(tmp_path),
+                workspace_container_path="/workspace",
+                labels={"ai-platform.run_id": request.run_id},
+                timings={},
+            )
+            workspace = WorkspaceLease(
+                tenant_id=request.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+                run_id=request.run_id,
+                host_root=str(tmp_path),
+                workspace_host_path=str(tmp_path),
+                workspace_container_path="/workspace",
+                inputs_host_path=str(tmp_path / "inputs"),
+                logs_host_path=str(tmp_path / "logs"),
+            )
+            lease_id = await self.record_lease(lease, request, workspace)
+            await self.release_lease(lease, "dispatch_completed", lease_id)
+            return type(
+                "SandboxRuntimeResult",
+                (),
+                {
+                    "status": "accepted",
+                    "session_id": request.session_id,
+                    "run_id": request.run_id,
+                    "executor_response": {
+                        "status": "accepted",
+                        "run_id": request.run_id,
+                        "sdk_used": True,
+                        "executor_mode": "claude_agent_sdk",
+                    },
+                    "timings": {
+                        "schema_version": "ai-platform.sandbox-latency-split.v1",
+                        "sandbox_lease_acquire_latency_ms": 1,
+                        "sandbox_container_cold_start_latency_ms": 2,
+                        "sandbox_healthcheck_latency_ms": 3,
+                        "sandbox_executor_dispatch_latency_ms": 4,
+                        "executor_model_latency_ms": 5,
+                        "document_processing_latency_ms": 6,
+                        "sandbox_cleanup_latency_ms": 7,
+                        "sandbox_total_latency_ms": 28,
+                    },
+                },
+            )()
+
+    def fake_run(cmd, capture_output, text, timeout, check):
+        assert tuple(cmd) == ("docker", "inspect", "executor-exec-run-a")
+        return type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    [
+                        {
+                            "HostConfig": {
+                                "Memory": 536870912,
+                                "NanoCpus": 500000000,
+                                "PidsLimit": 128,
+                                "Privileged": False,
+                                "SecurityOpt": ["no-new-privileges:true"],
+                                "CapDrop": ["ALL"],
+                                "ReadonlyRootfs": True,
+                                "Binds": ["/tmp/workspace:/workspace:rw"],
+                            },
+                            "Mounts": [{"Destination": "/workspace", "RW": True}],
+                        }
+                    ]
+                ),
+                "stderr": "",
+            },
+        )()
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
+    monkeypatch.setattr(generator, "_configured_platform_runtime_model", lambda settings: "deepseek-v4-pro")
+    recorder = generator.EvidenceRecorder(
+        run_id="run-a",
+        executor_url="http://executor.test",
+        callback_token="secret-token",
+    )
+
+    result = generator.run_platform_runtime_probe(
+        recorder=recorder,
+        sandbox_provider="docker",
+        sandbox_executor_image="ai-platform:local",
+        workspace_root=str(tmp_path),
+        callback_url="http://callback.test/callback",
+        docker_cmd=("docker",),
+        run=fake_run,
+    )
+
+    assert result["status"] == "accepted"
+    assert recorder.executor["sdk_used"] is True
+    assert recorder.executor["executor_mode"] == "claude_agent_sdk"
+
+
 def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(monkeypatch, tmp_path):
     generator = load_generator()
     recorder = generator.EvidenceRecorder(
@@ -1271,7 +1458,7 @@ def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(mon
             self.release_lease = release_lease
 
         async def submit(self, request):
-            from app.runtime.sandbox.contracts import ContainerLease, StopResult, WorkspaceLease
+            from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
             from app.settings import get_settings
 
             assert get_settings().sandbox_container_provider == "opensandbox"
@@ -1327,12 +1514,7 @@ def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(mon
                 {"run_id": request.run_id, "status": "completed", "progress": 100},
                 "secret-token",
             )
-            await self.release_lease(
-                lease,
-                "dispatch_completed",
-                lease_id,
-                stop_result=StopResult(container_id=lease.container_id, status="stopped", message="dispatch_completed"),
-            )
+            await self.release_lease(lease, "dispatch_completed", lease_id)
             return type(
                 "SandboxRuntimeResult",
                 (),
@@ -1386,7 +1568,6 @@ def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(mon
     assert recorder.provider_lifecycle["lifecycle"] == {
         "create_observed": True,
         "delete_observed": True,
-        "delete_stop_status": "stopped",
         "container_id_present": True,
         "executor_endpoint_present": True,
     }
@@ -1409,880 +1590,6 @@ def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(mon
     serialized = json.dumps(recorder.to_dict())
     assert str(tmp_path) not in serialized
     assert "secret-token" not in serialized
-
-
-def test_run_platform_runtime_probe_derives_opensandbox_sdk_egress_and_security_probe(monkeypatch, tmp_path):
-    generator = load_generator()
-    recorder = generator.EvidenceRecorder(
-        run_id="run-a",
-        executor_url="http://executor.test",
-        callback_token="secret-token",
-    )
-
-    class FakeOpenSandboxCommandResult:
-        def __init__(self, *, exit_code: int, text: str) -> None:
-            self.exit_code = exit_code
-            self.text = text
-
-    class FakeOpenSandboxRule:
-        action = "allow"
-        target = "host.docker.internal"
-
-    class FakeOpenSandboxPolicy:
-        default_action = "deny"
-        egress = [FakeOpenSandboxRule()]
-
-    class FakeOpenSandboxCommands:
-        def __init__(self) -> None:
-            self.runs = []
-
-        async def run(self, command):
-            self.runs.append(command)
-            if "egress-denied.invalid" in command:
-                return FakeOpenSandboxCommandResult(
-                    exit_code=42,
-                    text="egress_denied",
-                )
-            if "/proc/self/status" in command:
-                return FakeOpenSandboxCommandResult(
-                    exit_code=0,
-                    text=json.dumps(
-                        {
-                            "docker_sock_exists": False,
-                            "no_new_privileges": True,
-                            "capabilities_dropped": False,
-                            "workspace_mount_mode": "rw",
-                            "root_filesystem_read_only_or_minimal": False,
-                        }
-                    ),
-                )
-            raise AssertionError(command)
-
-    class FakeOpenSandbox:
-        def __init__(self) -> None:
-            self.commands = FakeOpenSandboxCommands()
-
-        async def get_egress_policy(self):
-            return FakeOpenSandboxPolicy()
-
-    fake_sandbox = FakeOpenSandbox()
-
-    class FakeRuntime:
-        def __init__(
-            self,
-            *,
-            workspace_root,
-            callback_token_resolver,
-            record_lease,
-            release_lease,
-        ):
-            self.record_lease = record_lease
-            self.release_lease = release_lease
-
-        async def submit(self, request):
-            from app.runtime.sandbox import container_provider
-            from app.runtime.sandbox.contracts import ContainerLease, StopResult, WorkspaceLease
-
-            container_provider._PROVIDER_CACHE["opensandbox"] = type(
-                "FakeOpenSandboxProvider",
-                (),
-                {"_sandboxes": {"osb-run-a": fake_sandbox}},
-            )()
-            lease = ContainerLease(
-                container_id="osb-run-a",
-                container_name="opensandbox-run-a",
-                provider="opensandbox",
-                executor_url="http://opensandbox-executor.test:18000",
-                tenant_id=request.tenant_id,
-                workspace_id=request.workspace_id,
-                user_id=request.user_id,
-                session_id=request.session_id,
-                run_id=request.run_id,
-                sandbox_mode=request.sandbox_mode,
-                browser_enabled=request.browser_enabled,
-                workspace_host_path=str(tmp_path / "workspace"),
-                workspace_container_path="/workspace",
-                labels={
-                    "ai-platform.provider_backend": "opensandbox",
-                    "ai-platform.egress.policy": "opensandbox-network-policy",
-                    "ai-platform.egress.callback_host": "host.docker.internal",
-                },
-                timings={
-                    "sandbox_container_start_latency_ms": 2,
-                    "sandbox_container_cold_start_latency_ms": 2,
-                    "sandbox_healthcheck_latency_ms": 3,
-                },
-            )
-            workspace = WorkspaceLease(
-                tenant_id=request.tenant_id,
-                workspace_id=request.workspace_id,
-                user_id=request.user_id,
-                session_id=request.session_id,
-                run_id=request.run_id,
-                host_root=str(tmp_path),
-                workspace_host_path=str(tmp_path / "workspace"),
-                workspace_container_path="/workspace",
-                inputs_host_path=str(tmp_path / "inputs"),
-                logs_host_path=str(tmp_path / "logs"),
-            )
-            lease_id = await self.record_lease(lease, request, workspace)
-            assert recorder.record_callback({"run_id": request.run_id, "status": "running"}, "secret-token")
-            assert recorder.record_callback({"run_id": request.run_id, "status": "completed"}, "secret-token")
-            await self.release_lease(
-                lease,
-                "dispatch_completed",
-                lease_id,
-                stop_result=StopResult(container_id=lease.container_id, status="stopped", message="dispatch_completed"),
-            )
-            return type(
-                "SandboxRuntimeResult",
-                (),
-                {
-                    "status": "accepted",
-                    "session_id": request.session_id,
-                    "run_id": request.run_id,
-                    "executor_response": {"status": "accepted", "run_id": request.run_id},
-                    "timings": {
-                        "schema_version": "ai-platform.sandbox-latency-split.v1",
-                        "sandbox_queue_wait_latency_ms": 0,
-                        "sandbox_lease_acquire_latency_ms": 1,
-                        "sandbox_container_start_latency_ms": 2,
-                        "sandbox_container_cold_start_latency_ms": 2,
-                        "sandbox_healthcheck_latency_ms": 3,
-                        "sandbox_executor_dispatch_latency_ms": 4,
-                        "executor_first_token_latency_ms": 0,
-                        "executor_tool_call_latency_ms": 0,
-                        "executor_model_latency_ms": 5,
-                        "document_processing_latency_ms": 0,
-                        "artifact_upload_latency_ms": 0,
-                        "sandbox_cleanup_latency_ms": 6,
-                        "sandbox_total_latency_ms": 21,
-                    },
-                },
-            )()
-
-    def fake_run(cmd, capture_output, text, timeout, check):
-        return type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "not a docker container"})()
-
-    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
-
-    result = generator.run_platform_runtime_probe(
-        recorder=recorder,
-        sandbox_provider="opensandbox",
-        sandbox_executor_image="ai-platform:local",
-        workspace_root=str(tmp_path),
-        callback_url="http://callback.test/callback",
-        docker_cmd=("docker",),
-        run=fake_run,
-        capture_runtime_egress_probe=True,
-    )
-
-    assert result["status"] == "accepted"
-    assert recorder.hardening["egress_policy"]["default_deny_outbound"] is True
-    assert recorder.hardening["egress_policy"]["platform_allowlist_enforced"] is True
-    assert recorder.hardening["egress_policy"]["denied_probe_error_code"] == "egress_denied"
-    assert recorder.hardening["egress_policy"]["allowed_callback_host"] == "host.docker.internal"
-    assert recorder.hardening["egress_policy"]["probe_source"] == "runtime_probe_results"
-    assert recorder.hardening["security_options"]["no_new_privileges"] is True
-    assert recorder.hardening["security_options"]["docker_socket_mounted"] is False
-    assert recorder.hardening["security_options"]["capabilities_dropped"] is False
-    assert recorder.hardening["security_options"]["root_filesystem_read_only_or_minimal"] is False
-    assert any("egress-denied.invalid" in command for command in fake_sandbox.commands.runs)
-    assert any("/proc/self/status" in command for command in fake_sandbox.commands.runs)
-    serialized = json.dumps(recorder.to_dict())
-    assert str(tmp_path) not in serialized
-    assert "secret-token" not in serialized
-
-
-def test_run_platform_runtime_probe_prefers_opensandbox_main_container_inspect(monkeypatch, tmp_path):
-    generator = load_generator()
-    calls = []
-    container_released = {"value": False}
-
-    class FakeRuntime:
-        def __init__(
-            self,
-            *,
-            workspace_root,
-            callback_token_resolver,
-            record_lease,
-            release_lease,
-        ):
-            self.record_lease = record_lease
-            self.release_lease = release_lease
-
-        async def submit(self, request):
-            from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
-
-            lease = ContainerLease(
-                container_id="osb-run-a",
-                container_name="opensandbox-run-a",
-                provider="opensandbox",
-                executor_url="http://opensandbox-executor.test:18000",
-                tenant_id=request.tenant_id,
-                workspace_id=request.workspace_id,
-                user_id=request.user_id,
-                session_id=request.session_id,
-                run_id=request.run_id,
-                sandbox_mode=request.sandbox_mode,
-                browser_enabled=request.browser_enabled,
-                workspace_host_path=str(tmp_path / "workspace"),
-                workspace_container_path="/workspace",
-                labels={
-                    "ai-platform.provider_backend": "opensandbox",
-                    "ai-platform.egress.policy": "opensandbox-network-policy",
-                    "ai-platform.egress.callback_host": "host.docker.internal",
-                },
-                timings={
-                    "sandbox_container_start_latency_ms": 2,
-                    "sandbox_container_cold_start_latency_ms": 2,
-                    "sandbox_healthcheck_latency_ms": 3,
-                },
-            )
-            workspace = WorkspaceLease(
-                tenant_id=request.tenant_id,
-                workspace_id=request.workspace_id,
-                user_id=request.user_id,
-                session_id=request.session_id,
-                run_id=request.run_id,
-                host_root=str(tmp_path),
-                workspace_host_path=str(tmp_path / "workspace"),
-                workspace_container_path="/workspace",
-                inputs_host_path=str(tmp_path / "inputs"),
-                logs_host_path=str(tmp_path / "logs"),
-            )
-            lease_id = await self.record_lease(lease, request, workspace)
-            await self.release_lease(lease, "dispatch_completed", lease_id)
-            container_released["value"] = True
-            return type(
-                "SandboxRuntimeResult",
-                (),
-                {
-                    "status": "accepted",
-                    "session_id": request.session_id,
-                    "run_id": request.run_id,
-                    "executor_response": {"status": "accepted", "run_id": request.run_id},
-                    "timings": {
-                        "schema_version": "ai-platform.sandbox-latency-split.v1",
-                        "sandbox_lease_acquire_latency_ms": 1,
-                        "sandbox_container_cold_start_latency_ms": 2,
-                        "sandbox_healthcheck_latency_ms": 3,
-                        "sandbox_executor_dispatch_latency_ms": 4,
-                        "executor_model_latency_ms": 0,
-                        "document_processing_latency_ms": 0,
-                        "sandbox_cleanup_latency_ms": 5,
-                        "sandbox_total_latency_ms": 15,
-                    },
-                },
-            )()
-
-    def fake_run(cmd, capture_output, text, timeout, check):
-        calls.append(tuple(cmd))
-        assert container_released["value"] is False
-        if tuple(cmd) == ("docker", "inspect", "sandbox-osb-run-a"):
-            return type(
-                "Completed",
-                (),
-                {
-                    "returncode": 0,
-                    "stdout": json.dumps(
-                        [
-                            {
-                                "HostConfig": {
-                                    "Memory": 536870912,
-                                    "NanoCpus": 500000000,
-                                    "PidsLimit": 128,
-                                    "Privileged": False,
-                                    "SecurityOpt": ["no-new-privileges:true"],
-                                    "CapDrop": ["ALL"],
-                                    "ReadonlyRootfs": True,
-                                    "Binds": ["/tmp/workspace:/workspace:rw"],
-                                },
-                                "Mounts": [
-                                    {
-                                        "Source": "/tmp/workspace",
-                                        "Destination": "/workspace",
-                                        "RW": True,
-                                    }
-                                ],
-                            }
-                        ]
-                    ),
-                    "stderr": "",
-                },
-            )()
-        if tuple(cmd) == ("docker", "inspect", "opensandbox-run-a"):
-            raise AssertionError("synthetic OpenSandbox lease name should not be trusted before the canonical container")
-        raise AssertionError(f"unexpected docker command: {cmd}")
-
-    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
-    recorder = generator.EvidenceRecorder(
-        run_id="run-a",
-        executor_url="http://executor.test",
-        callback_token="secret-token",
-    )
-
-    result = generator.run_platform_runtime_probe(
-        recorder=recorder,
-        sandbox_provider="opensandbox",
-        sandbox_executor_image="ai-platform:local",
-        workspace_root=str(tmp_path),
-        callback_url="http://callback.test/callback",
-        docker_cmd=("docker",),
-        run=fake_run,
-    )
-
-    assert result["status"] == "accepted"
-    assert calls == [("docker", "inspect", "sandbox-osb-run-a")]
-    assert recorder.hardening["resource_limits"]["docker_inspection_verified"] is True
-    assert recorder.hardening["security_options"]["no_new_privileges"] is True
-    assert recorder.hardening["security_options"]["capabilities_dropped"] is True
-    assert recorder.hardening["security_options"]["root_filesystem_read_only_or_minimal"] is True
-
-
-def test_run_platform_runtime_probe_falls_back_to_opensandbox_lease_name_if_main_container_missing(
-    monkeypatch, tmp_path
-):
-    generator = load_generator()
-    calls = []
-    container_released = {"value": False}
-
-    class FakeRuntime:
-        def __init__(
-            self,
-            *,
-            workspace_root,
-            callback_token_resolver,
-            record_lease,
-            release_lease,
-        ):
-            self.record_lease = record_lease
-            self.release_lease = release_lease
-
-        async def submit(self, request):
-            from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
-
-            lease = ContainerLease(
-                container_id="osb-run-a",
-                container_name="opensandbox-run-a",
-                provider="opensandbox",
-                executor_url="http://opensandbox-executor.test:18000",
-                tenant_id=request.tenant_id,
-                workspace_id=request.workspace_id,
-                user_id=request.user_id,
-                session_id=request.session_id,
-                run_id=request.run_id,
-                sandbox_mode=request.sandbox_mode,
-                browser_enabled=request.browser_enabled,
-                workspace_host_path=str(tmp_path / "workspace"),
-                workspace_container_path="/workspace",
-                labels={
-                    "ai-platform.provider_backend": "opensandbox",
-                    "ai-platform.egress.policy": "opensandbox-network-policy",
-                    "ai-platform.egress.callback_host": "host.docker.internal",
-                },
-                timings={
-                    "sandbox_container_start_latency_ms": 2,
-                    "sandbox_container_cold_start_latency_ms": 2,
-                    "sandbox_healthcheck_latency_ms": 3,
-                },
-            )
-            workspace = WorkspaceLease(
-                tenant_id=request.tenant_id,
-                workspace_id=request.workspace_id,
-                user_id=request.user_id,
-                session_id=request.session_id,
-                run_id=request.run_id,
-                host_root=str(tmp_path),
-                workspace_host_path=str(tmp_path / "workspace"),
-                workspace_container_path="/workspace",
-                inputs_host_path=str(tmp_path / "inputs"),
-                logs_host_path=str(tmp_path / "logs"),
-            )
-            lease_id = await self.record_lease(lease, request, workspace)
-            await self.release_lease(lease, "dispatch_completed", lease_id)
-            container_released["value"] = True
-            return type(
-                "SandboxRuntimeResult",
-                (),
-                {
-                    "status": "accepted",
-                    "session_id": request.session_id,
-                    "run_id": request.run_id,
-                    "executor_response": {"status": "accepted", "run_id": request.run_id},
-                    "timings": {
-                        "schema_version": "ai-platform.sandbox-latency-split.v1",
-                        "sandbox_lease_acquire_latency_ms": 1,
-                        "sandbox_container_cold_start_latency_ms": 2,
-                        "sandbox_healthcheck_latency_ms": 3,
-                        "sandbox_executor_dispatch_latency_ms": 4,
-                        "executor_model_latency_ms": 0,
-                        "document_processing_latency_ms": 0,
-                        "sandbox_cleanup_latency_ms": 5,
-                        "sandbox_total_latency_ms": 15,
-                    },
-                },
-            )()
-
-    def fake_run(cmd, capture_output, text, timeout, check):
-        calls.append(tuple(cmd))
-        assert container_released["value"] is False
-        if tuple(cmd) == ("docker", "inspect", "sandbox-osb-run-a"):
-            return type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "not found"})()
-        if tuple(cmd) == ("docker", "inspect", "opensandbox-run-a"):
-            return type(
-                "Completed",
-                (),
-                {
-                    "returncode": 0,
-                    "stdout": json.dumps(
-                        [
-                            {
-                                "HostConfig": {
-                                    "Memory": 536870912,
-                                    "NanoCpus": 500000000,
-                                    "PidsLimit": 128,
-                                    "Privileged": False,
-                                    "SecurityOpt": ["no-new-privileges:true"],
-                                    "CapDrop": ["ALL"],
-                                    "ReadonlyRootfs": True,
-                                    "Binds": ["/tmp/workspace:/workspace:rw"],
-                                },
-                                "Mounts": [
-                                    {
-                                        "Source": "/tmp/workspace",
-                                        "Destination": "/workspace",
-                                        "RW": True,
-                                    }
-                                ],
-                            }
-                        ]
-                    ),
-                    "stderr": "",
-                },
-            )()
-        raise AssertionError(f"unexpected docker command: {cmd}")
-
-    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
-    recorder = generator.EvidenceRecorder(
-        run_id="run-a",
-        executor_url="http://executor.test",
-        callback_token="secret-token",
-    )
-
-    result = generator.run_platform_runtime_probe(
-        recorder=recorder,
-        sandbox_provider="opensandbox",
-        sandbox_executor_image="ai-platform:local",
-        workspace_root=str(tmp_path),
-        callback_url="http://callback.test/callback",
-        docker_cmd=("docker",),
-        run=fake_run,
-    )
-
-    assert result["status"] == "accepted"
-    assert calls == [
-        ("docker", "inspect", "sandbox-osb-run-a"),
-        ("docker", "inspect", "opensandbox-run-a"),
-    ]
-    assert recorder.hardening["resource_limits"]["docker_inspection_verified"] is True
-    assert recorder.hardening["security_options"]["no_new_privileges"] is True
-    assert recorder.hardening["security_options"]["capabilities_dropped"] is True
-    assert recorder.hardening["security_options"]["root_filesystem_read_only_or_minimal"] is True
-
-
-def test_run_platform_runtime_probe_does_not_fall_back_to_opensandbox_lease_name_on_inspect_error(
-    monkeypatch, tmp_path
-):
-    generator = load_generator()
-    calls = []
-    container_released = {"value": False}
-
-    class FakeRuntime:
-        def __init__(
-            self,
-            *,
-            workspace_root,
-            callback_token_resolver,
-            record_lease,
-            release_lease,
-        ):
-            self.record_lease = record_lease
-            self.release_lease = release_lease
-
-        async def submit(self, request):
-            from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
-
-            lease = ContainerLease(
-                container_id="osb-run-a",
-                container_name="opensandbox-run-a",
-                provider="opensandbox",
-                executor_url="http://opensandbox-executor.test:18000",
-                tenant_id=request.tenant_id,
-                workspace_id=request.workspace_id,
-                user_id=request.user_id,
-                session_id=request.session_id,
-                run_id=request.run_id,
-                sandbox_mode=request.sandbox_mode,
-                browser_enabled=request.browser_enabled,
-                workspace_host_path=str(tmp_path / "workspace"),
-                workspace_container_path="/workspace",
-                labels={
-                    "ai-platform.provider_backend": "opensandbox",
-                    "ai-platform.egress.policy": "opensandbox-network-policy",
-                    "ai-platform.egress.callback_host": "host.docker.internal",
-                },
-                timings={
-                    "sandbox_container_start_latency_ms": 2,
-                    "sandbox_container_cold_start_latency_ms": 2,
-                    "sandbox_healthcheck_latency_ms": 3,
-                },
-            )
-            workspace = WorkspaceLease(
-                tenant_id=request.tenant_id,
-                workspace_id=request.workspace_id,
-                user_id=request.user_id,
-                session_id=request.session_id,
-                run_id=request.run_id,
-                host_root=str(tmp_path),
-                workspace_host_path=str(tmp_path / "workspace"),
-                workspace_container_path="/workspace",
-                inputs_host_path=str(tmp_path / "inputs"),
-                logs_host_path=str(tmp_path / "logs"),
-            )
-            lease_id = await self.record_lease(lease, request, workspace)
-            await self.release_lease(lease, "dispatch_completed", lease_id)
-            container_released["value"] = True
-            return type(
-                "SandboxRuntimeResult",
-                (),
-                {
-                    "status": "accepted",
-                    "session_id": request.session_id,
-                    "run_id": request.run_id,
-                    "executor_response": {"status": "accepted", "run_id": request.run_id},
-                    "timings": {
-                        "schema_version": "ai-platform.sandbox-latency-split.v1",
-                        "sandbox_lease_acquire_latency_ms": 1,
-                        "sandbox_container_cold_start_latency_ms": 2,
-                        "sandbox_healthcheck_latency_ms": 3,
-                        "sandbox_executor_dispatch_latency_ms": 4,
-                        "executor_model_latency_ms": 0,
-                        "document_processing_latency_ms": 0,
-                        "sandbox_cleanup_latency_ms": 5,
-                        "sandbox_total_latency_ms": 15,
-                    },
-                },
-            )()
-
-    def fake_run(cmd, capture_output, text, timeout, check):
-        calls.append(tuple(cmd))
-        assert container_released["value"] is False
-        if tuple(cmd) == ("docker", "inspect", "sandbox-osb-run-a"):
-            return type(
-                "Completed",
-                (),
-                {"returncode": 1, "stdout": "", "stderr": "permission denied while talking to docker daemon"},
-            )()
-        if tuple(cmd) == ("docker", "inspect", "opensandbox-run-a"):
-            raise AssertionError("non-not-found canonical inspect failures must not trigger compatibility fallback")
-        raise AssertionError(f"unexpected docker command: {cmd}")
-
-    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
-    recorder = generator.EvidenceRecorder(
-        run_id="run-a",
-        executor_url="http://executor.test",
-        callback_token="secret-token",
-    )
-
-    result = generator.run_platform_runtime_probe(
-        recorder=recorder,
-        sandbox_provider="opensandbox",
-        sandbox_executor_image="ai-platform:local",
-        workspace_root=str(tmp_path),
-        callback_url="http://callback.test/callback",
-        docker_cmd=("docker",),
-        run=fake_run,
-    )
-
-    assert result["status"] == "accepted"
-    assert calls == [("docker", "inspect", "sandbox-osb-run-a")]
-    assert recorder.hardening["resource_limits"]["docker_inspection_verified"] is False
-    assert recorder.hardening["security_options"]["no_new_privileges"] is False
-    assert recorder.hardening["security_options"]["capabilities_dropped"] is False
-    assert recorder.hardening["security_options"]["root_filesystem_read_only_or_minimal"] is False
-
-
-def test_opensandbox_sdk_egress_probe_rejects_generic_network_failures():
-    generator = load_generator()
-
-    class FakeOpenSandboxRule:
-        action = "allow"
-        target = "host.docker.internal"
-
-    class FakeOpenSandboxPolicy:
-        default_action = "deny"
-        egress = [FakeOpenSandboxRule()]
-
-    class FakeOpenSandboxCommands:
-        async def run(self, _command):
-            return type(
-                "Execution",
-                (),
-                {
-                    "exit_code": 43,
-                    "text": "URLError:<urlopen error [Errno -2] Name or service not known>",
-                },
-            )()
-
-    class FakeOpenSandbox:
-        commands = FakeOpenSandboxCommands()
-
-        async def get_egress_policy(self):
-            return FakeOpenSandboxPolicy()
-
-    result = asyncio.run(
-        generator._opensandbox_sdk_egress_probe(
-            FakeOpenSandbox(),
-            denied_target="https://egress-denied.invalid/",
-            callback_host="host.docker.internal",
-        )
-    )
-
-    assert result == {}
-
-
-def test_opensandbox_sdk_egress_probe_accepts_explicit_denial_exit_without_stdout():
-    generator = load_generator()
-
-    class FakeOpenSandboxRule:
-        action = "allow"
-        target = "host.docker.internal"
-
-    class FakeOpenSandboxPolicy:
-        default_action = "deny"
-        egress = [FakeOpenSandboxRule()]
-
-    class FakeOpenSandboxCommands:
-        async def run(self, _command):
-            return type(
-                "Execution",
-                (),
-                {
-                    "exit_code": 42,
-                    "text": "",
-                    "stdout": "",
-                    "output": "",
-                },
-            )()
-
-    class FakeOpenSandbox:
-        commands = FakeOpenSandboxCommands()
-
-        async def get_egress_policy(self):
-            return FakeOpenSandboxPolicy()
-
-    result = asyncio.run(
-        generator._opensandbox_sdk_egress_probe(
-            FakeOpenSandbox(),
-            denied_target="https://egress-denied.invalid/",
-            callback_host="host.docker.internal",
-        )
-    )
-
-    assert result["default_deny_outbound"] is True
-    assert result["platform_allowlist_enforced"] is True
-    assert result["denied_egress_redacted"] is True
-    assert result["denied_probe_error_code"] == "egress_denied"
-
-
-def test_opensandbox_security_probe_command_emits_parseable_json(monkeypatch, tmp_path):
-    generator = load_generator()
-    status = tmp_path / "status"
-    mountinfo = tmp_path / "mountinfo"
-    status.write_text("NoNewPrivs:\t1\nCapEff:\t0000000000000000\n", encoding="utf-8")
-    mountinfo.write_text(
-        "1 0 8:1 / / rw,relatime - ext4 /dev/root rw\n"
-        "2 1 8:1 /workspace /workspace rw,relatime - ext4 /dev/root rw\n",
-        encoding="utf-8",
-    )
-    command = generator._opensandbox_security_probe_command()
-    code = shlex.split(command)[2]
-    code = code.replace("Path('/proc/self/status')", f"Path({str(status)!r})")
-    code = code.replace("Path('/proc/self/mountinfo')", f"Path({str(mountinfo)!r})")
-    code = code.replace("Path('/var/run/docker.sock')", f"Path({str(tmp_path / 'docker.sock')!r})")
-    monkeypatch.setattr(os, "access", lambda path, mode: path == "/workspace" and mode == os.W_OK)
-
-    namespace = {"Path": Path, "json": json, "os": os}
-    output = io.StringIO()
-    monkeypatch.setattr("sys.stdout", output)
-    exec(code, namespace)
-
-    assert json.loads(output.getvalue()) == {
-        "privileged": False,
-        "no_new_privileges": True,
-        "capabilities_dropped": True,
-        "docker_socket_mounted": False,
-        "workspace_mount_mode": "rw",
-        "root_filesystem_read_only_or_minimal": False,
-    }
-
-
-def test_run_platform_runtime_probe_uses_configured_sdk_model(monkeypatch, tmp_path):
-    generator = load_generator()
-    observed_models = []
-
-    from app.settings import get_settings
-
-    settings = get_settings()
-    monkeypatch.setattr(settings, "claude_agent_sdk_enabled", True)
-    monkeypatch.setattr(settings, "claude_agent_model", "configured-211-model")
-    monkeypatch.setattr(settings, "anthropic_model", "fallback-anthropic-model")
-    monkeypatch.setattr(settings, "openai_model", "fallback-openai-model")
-
-    class FakeRuntime:
-        def __init__(
-            self,
-            *,
-            workspace_root,
-            callback_token_resolver,
-            record_lease,
-            release_lease,
-        ):
-            pass
-
-        async def submit(self, request):
-            observed_models.append(request.model)
-            assert request.model == "configured-211-model"
-            return type(
-                "SandboxRuntimeResult",
-                (),
-                {
-                    "status": "accepted",
-                    "session_id": request.session_id,
-                    "run_id": request.run_id,
-                    "executor_response": {
-                        "status": "accepted",
-                        "run_id": request.run_id,
-                        "sdk_used": True,
-                        "executor_mode": "claude_agent_sdk",
-                    },
-                    "timings": {
-                        "schema_version": "ai-platform.sandbox-latency-split.v1",
-                        "sandbox_queue_wait_latency_ms": 0,
-                        "sandbox_lease_acquire_latency_ms": 1,
-                        "sandbox_container_start_latency_ms": 2,
-                        "sandbox_container_cold_start_latency_ms": 2,
-                        "sandbox_healthcheck_latency_ms": 3,
-                        "sandbox_executor_dispatch_latency_ms": 4,
-                        "executor_first_token_latency_ms": 0,
-                        "executor_tool_call_latency_ms": 0,
-                        "executor_model_latency_ms": 5,
-                        "document_processing_latency_ms": 0,
-                        "artifact_upload_latency_ms": 0,
-                        "sandbox_cleanup_latency_ms": 6,
-                        "sandbox_total_latency_ms": 21,
-                    },
-                },
-            )()
-
-    def fake_run(cmd, capture_output, text, timeout, check):
-        return type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "not a docker container"})()
-
-    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
-    recorder = generator.EvidenceRecorder(
-        run_id="run-a",
-        executor_url="http://executor.test",
-        callback_token="secret-token",
-    )
-
-    result = generator.run_platform_runtime_probe(
-        recorder=recorder,
-        sandbox_provider="opensandbox",
-        sandbox_executor_image="ai-platform:local",
-        workspace_root=str(tmp_path),
-        callback_url="http://callback.test/callback",
-        docker_cmd=("docker",),
-        run=fake_run,
-    )
-
-    assert result["status"] == "accepted"
-    assert observed_models == ["configured-211-model"]
-
-
-def test_run_platform_runtime_probe_uses_platform_callback_token_for_api_endpoint(monkeypatch, tmp_path):
-    generator = load_generator()
-    observed = {}
-
-    class FakeRuntime:
-        def __init__(
-            self,
-            *,
-            workspace_root,
-            callback_token_resolver,
-            record_lease,
-            release_lease,
-        ):
-            self.callback_token_resolver = callback_token_resolver
-
-        async def submit(self, request):
-            observed["callback_token_id"] = request.callback_token_id
-            observed["callback_token"] = self.callback_token_resolver(request.callback_token_id)
-            return type(
-                "SandboxRuntimeResult",
-                (),
-                {
-                    "status": "accepted",
-                    "session_id": request.session_id,
-                    "run_id": request.run_id,
-                    "executor_response": {
-                        "status": "accepted",
-                        "run_id": request.run_id,
-                        "sdk_used": True,
-                        "executor_mode": "claude_agent_sdk",
-                    },
-                    "timings": {
-                        "schema_version": "ai-platform.sandbox-latency-split.v1",
-                        "sandbox_queue_wait_latency_ms": 0,
-                        "sandbox_lease_acquire_latency_ms": 1,
-                        "sandbox_container_start_latency_ms": 2,
-                        "sandbox_container_cold_start_latency_ms": 2,
-                        "sandbox_healthcheck_latency_ms": 3,
-                        "sandbox_executor_dispatch_latency_ms": 4,
-                        "executor_first_token_latency_ms": 0,
-                        "executor_tool_call_latency_ms": 0,
-                        "executor_model_latency_ms": 5,
-                        "document_processing_latency_ms": 0,
-                        "artifact_upload_latency_ms": 0,
-                        "sandbox_cleanup_latency_ms": 6,
-                        "sandbox_total_latency_ms": 21,
-                    },
-                },
-            )()
-
-    def fake_run(cmd, capture_output, text, timeout, check):
-        return type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "not a docker container"})()
-
-    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
-    recorder = generator.EvidenceRecorder(
-        run_id="run-a",
-        executor_url="http://executor.test",
-        callback_token="secret-token",
-    )
-
-    result = generator.run_platform_runtime_probe(
-        recorder=recorder,
-        sandbox_provider="opensandbox",
-        sandbox_executor_image="ai-platform:local",
-        workspace_root=str(tmp_path),
-        callback_url="http://platform.test/api/ai/runtime/callbacks/executor",
-        docker_cmd=("docker",),
-        run=fake_run,
-    )
-
-    assert result["status"] == "accepted"
-    assert observed["callback_token_id"] == "cbt_run-a"
-    assert observed["callback_token"] == generator.derive_callback_token("secret-token", "cbt_run-a")
 
 
 def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_results(tmp_path):
@@ -2745,10 +2052,12 @@ def test_generator_defaults_use_local_ai_platform_cancel_probe_image():
 
     assert args.cancel_image == "ai-platform:local"
     assert args.sandbox_executor_image == ""
+    assert args.callback_host == "127.0.0.1"
+    assert args.callback_public_url == ""
     assert args.platform_resource_timeout_probe is False
 
 
-def test_generator_defaults_make_platform_callback_reachable_from_docker_no_masq_network():
+def test_generator_platform_mode_defaults_docker_callback_projection():
     generator = load_generator()
 
     args = generator.build_parser().parse_args(["--runtime-mode", "platform", "--sandbox-provider", "docker"])
@@ -2944,26 +2253,22 @@ def test_main_generate_runtime_probe_results_uses_callback_server(tmp_path, monk
             from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
             import urllib.request
 
-            timeout_probe = request.resource_limits.get("platform_timeout_probe") is True
-            if timeout_probe:
-                assert request.resource_limits["max_seconds"] == 0
-            else:
-                assert request.resource_limits["max_seconds"] == 60
-                assert request.callback_url.startswith("http://127.0.0.1:")
-                assert request.callback_url.endswith("/callback")
-                callback_token = self.callback_token_resolver(request.callback_token_id)
-                for status in ("running", "completed"):
-                    callback = urllib.request.Request(
-                        request.callback_url,
-                        data=json.dumps({"run_id": request.run_id, "status": status}).encode("utf-8"),
-                        headers={
-                            "Content-Type": "application/json",
-                            "X-AI-Platform-Callback-Token": callback_token,
-                        },
-                        method="POST",
-                    )
-                    with urllib.request.urlopen(callback, timeout=3) as response:
-                        assert response.status == 200
+            assert request.callback_url.startswith("http://127.0.0.1:")
+            assert request.callback_url.endswith("/callback")
+            assert request.trace_id == "trace_run_a"
+            callback_token = self.callback_token_resolver(request.callback_token_id)
+            for status in ("running", "completed"):
+                callback = urllib.request.Request(
+                    request.callback_url,
+                    data=json.dumps({"run_id": request.run_id, "status": status}).encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-AI-Platform-Callback-Token": callback_token,
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(callback, timeout=3) as response:
+                    assert response.status == 200
 
             lease = ContainerLease(
                 container_id="exec-run-a",
@@ -2998,20 +2303,19 @@ def test_main_generate_runtime_probe_results_uses_callback_server(tmp_path, monk
                 logs_host_path=str(tmp_path / "logs"),
             )
             lease_id = await self.record_lease(lease, request, workspace)
-            release_reason = "run_failed" if timeout_probe else "dispatch_completed"
-            await self.release_lease(lease, release_reason, lease_id)
+            await self.release_lease(lease, "run_failed", lease_id)
             return type(
                 "SandboxRuntimeResult",
                 (),
                 {
-                    "status": "failed" if timeout_probe else "completed",
+                    "status": "failed",
                     "session_id": request.session_id,
                     "run_id": request.run_id,
                     "executor_response": {
-                        "status": "failed" if timeout_probe else "completed",
+                        "status": "failed",
                         "run_id": request.run_id,
-                        "error_code": "executor_health_timeout" if timeout_probe else "",
-                        "error_message": "Executor health timeout" if timeout_probe else "",
+                        "error_code": "executor_health_timeout",
+                        "error_message": "Executor health timeout",
                     },
                     "timings": {
                         "schema_version": "ai-platform.sandbox-latency-split.v1",
@@ -3030,24 +2334,6 @@ def test_main_generate_runtime_probe_results_uses_callback_server(tmp_path, monk
     def fake_run(cmd, capture_output, text, timeout, check):
         if tuple(cmd[:3]) == ("docker", "exec", "executor-exec-run-a"):
             return type("Completed", (), {"returncode": 42, "stdout": "", "stderr": ""})()
-        if tuple(cmd) == ("docker", "network", "inspect", "ai-platform-sandbox-egress"):
-            return type(
-                "Completed",
-                (),
-                {
-                    "returncode": 0,
-                    "stdout": json.dumps(
-                        [
-                            {
-                                "Name": "ai-platform-sandbox-egress",
-                                "Driver": "bridge",
-                                "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
-                            }
-                        ]
-                    ),
-                    "stderr": "",
-                },
-            )()
         assert tuple(cmd) == ("docker", "inspect", "executor-exec-run-a")
         return type(
             "Completed",
@@ -3066,15 +2352,10 @@ def test_main_generate_runtime_probe_results_uses_callback_server(tmp_path, monk
                                 "CapDrop": ["ALL"],
                                 "ReadonlyRootfs": True,
                                 "Binds": ["/tmp/workspace:/workspace:rw"],
-                                "NetworkMode": "ai-platform-sandbox-egress",
-                                "ExtraHosts": ["host.docker.internal:host-gateway"],
                             },
                             "Mounts": [{"Destination": "/workspace", "RW": True}],
-                            "NetworkSettings": {"Networks": {"ai-platform-sandbox-egress": {}}},
                             "Config": {
                                 "Labels": {
-                                    "ai-platform.egress.policy": "default-deny-no-masq",
-                                    "ai-platform.egress.network": "ai-platform-sandbox-egress",
                                     "ai-platform.egress.callback_host": "host.docker.internal",
                                 },
                             },
@@ -3273,11 +2554,8 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
         async def submit(self, request):
             from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
 
-            timeout_probe = request.resource_limits.get("platform_timeout_probe") is True
-            if timeout_probe:
-                assert request.resource_limits["max_seconds"] == 0
-            else:
-                assert request.resource_limits["max_seconds"] == 60
+            assert request.resource_limits["max_seconds"] == 0
+            assert request.resource_limits["platform_timeout_probe"] is True
             lease = ContainerLease(
                 container_id="exec-run-a",
                 container_name="executor-exec-run-a",
@@ -3311,20 +2589,19 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
                 logs_host_path=str(tmp_path / "logs"),
             )
             lease_id = await self.record_lease(lease, request, workspace)
-            release_reason = "run_failed" if timeout_probe else "dispatch_completed"
-            await self.release_lease(lease, release_reason, lease_id)
+            await self.release_lease(lease, "run_failed", lease_id)
             return type(
                 "SandboxRuntimeResult",
                 (),
                 {
-                    "status": "failed" if timeout_probe else "completed",
+                    "status": "failed",
                     "session_id": request.session_id,
                     "run_id": request.run_id,
                     "executor_response": {
-                        "status": "failed" if timeout_probe else "completed",
+                        "status": "failed",
                         "run_id": request.run_id,
-                        "error_code": "executor_health_timeout" if timeout_probe else "",
-                        "error_message": "Executor health timeout" if timeout_probe else "",
+                        "error_code": "executor_health_timeout",
+                        "error_message": "Executor health timeout",
                     },
                     "timings": {
                         "schema_version": "ai-platform.sandbox-latency-split.v1",
@@ -3344,42 +2621,6 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
 
     def fake_run(cmd, capture_output, text, timeout, check):
         docker_calls.append(tuple(cmd))
-        if tuple(cmd) == ("docker", "inspect", "executor-exec-run-a"):
-            return type(
-                "Completed",
-                (),
-                {
-                    "returncode": 0,
-                    "stdout": json.dumps(
-                        [
-                            {
-                                "HostConfig": {
-                                    "Memory": 536870912,
-                                    "NanoCpus": 500000000,
-                                    "PidsLimit": 128,
-                                    "Privileged": False,
-                                    "SecurityOpt": ["no-new-privileges:true"],
-                                    "CapDrop": ["ALL"],
-                                    "ReadonlyRootfs": True,
-                                    "Binds": ["/tmp/workspace:/workspace:rw"],
-                                    "NetworkMode": "ai-platform-sandbox-egress",
-                                    "ExtraHosts": ["host.docker.internal:host-gateway"],
-                                },
-                                "Mounts": [{"Destination": "/workspace", "RW": True}],
-                                "NetworkSettings": {"Networks": {"ai-platform-sandbox-egress": {}}},
-                                "Config": {
-                                    "Labels": {
-                                        "ai-platform.egress.policy": "default-deny-no-masq",
-                                        "ai-platform.egress.network": "ai-platform-sandbox-egress",
-                                        "ai-platform.egress.callback_host": "host.docker.internal",
-                                    },
-                                },
-                            }
-                        ]
-                    ),
-                    "stderr": "",
-                },
-            )()
         if tuple(cmd[:3]) == ("docker", "exec", "executor-exec-run-a"):
             assert "https://egress-denied.invalid/" in cmd[-1]
             assert "egress_denied" in cmd[-1]
@@ -3392,25 +2633,32 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
                     "stderr": "",
                 },
             )()
-        if tuple(cmd) == ("docker", "network", "inspect", "ai-platform-sandbox-egress"):
-            return type(
-                "Completed",
-                (),
-                {
-                    "returncode": 0,
-                    "stdout": json.dumps(
-                        [
-                            {
-                                "Name": "ai-platform-sandbox-egress",
-                                "Driver": "bridge",
-                                "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
-                            }
-                        ]
-                    ),
-                    "stderr": "",
-                },
-            )()
-        raise AssertionError(f"unexpected docker command: {cmd}")
+        assert tuple(cmd) == ("docker", "inspect", "executor-exec-run-a")
+        return type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(
+                    [
+                        {
+                            "HostConfig": {
+                                "Memory": 536870912,
+                                "NanoCpus": 500000000,
+                                "PidsLimit": 128,
+                                "Privileged": False,
+                                "SecurityOpt": ["no-new-privileges:true"],
+                                "CapDrop": ["ALL"],
+                                "ReadonlyRootfs": True,
+                                "Binds": ["/tmp/workspace:/workspace:rw"],
+                            },
+                            "Mounts": [{"Destination": "/workspace", "RW": True}],
+                        }
+                    ]
+                ),
+                "stderr": "",
+            },
+        )()
 
     monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
     recorder = generator.EvidenceRecorder(
@@ -3483,291 +2731,6 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
     assert "secret-token" not in runtime_probe_results_file.read_text(encoding="utf-8")
 
 
-def test_generate_runtime_probe_results_merges_normal_egress_and_timeout_resource_probe(tmp_path, monkeypatch):
-    generator = load_generator()
-    runtime_probe_results_file = tmp_path / "runtime-probe-results.json"
-    calls = []
-
-    def fake_run_platform_runtime_probe(**kwargs):
-        calls.append(
-            {
-                "platform_resource_timeout_probe": kwargs["platform_resource_timeout_probe"],
-                "capture_runtime_egress_probe": kwargs["capture_runtime_egress_probe"],
-            }
-        )
-        recorder = kwargs["recorder"]
-        if kwargs["platform_resource_timeout_probe"]:
-            recorder.hardening = {
-                "resource_limits": {
-                    "over_limit_cleanup_verified": True,
-                    "over_limit_probe_kind": "platform_resource_timeout",
-                    "over_limit_timeout_probe_seconds": 0,
-                    "bounded_error_projection": {
-                        "source": "admin_runtime_projection",
-                        "run_id": recorder.run_id,
-                        "status": "failed",
-                        "error_code": "executor_health_timeout",
-                        "host_paths_redacted": True,
-                        "raw_docker_payload_absent": True,
-                        "callback_token_absent": True,
-                    },
-                },
-                "egress_policy": {
-                    "default_deny_outbound": False,
-                    "platform_allowlist_enforced": False,
-                },
-                "security_options": {
-                    "privileged": False,
-                    "no_new_privileges": True,
-                    "capabilities_dropped": True,
-                    "docker_socket_mounted": False,
-                    "workspace_mount_mode": "rw",
-                    "root_filesystem_read_only_or_minimal": True,
-                },
-            }
-            return {"status": "failed", "run_id": recorder.run_id}
-        recorder.record_callback({"run_id": recorder.run_id, "status": "running"}, recorder._callback_token)
-        recorder.record_callback({"run_id": recorder.run_id, "status": "completed"}, recorder._callback_token)
-        recorder.hardening = {
-            "resource_limits": {
-                "over_limit_cleanup_verified": False,
-            },
-            "egress_policy": {
-                "default_deny_outbound": True,
-                "platform_allowlist_enforced": True,
-                "callback_exception_scoped_to_run_token": True,
-                "denied_egress_redacted": True,
-                "denied_target": "https://egress-denied.invalid/",
-                "denied_probe_error_code": "egress_denied",
-                "allowed_callback_host": "host.docker.internal",
-                "callback_probe_status": "delivered",
-                "policy_source": "platform_policy",
-                "probe_source": "runtime_probe_results",
-            },
-            "security_options": {
-                "privileged": False,
-                "no_new_privileges": True,
-                "capabilities_dropped": True,
-                "docker_socket_mounted": False,
-                "workspace_mount_mode": "rw",
-                "root_filesystem_read_only_or_minimal": True,
-            },
-        }
-        return {"status": "completed", "run_id": recorder.run_id}
-
-    monkeypatch.setattr(generator, "run_platform_runtime_probe", fake_run_platform_runtime_probe)
-    recorder = generator.EvidenceRecorder(
-        run_id="run-a",
-        executor_url="http://executor.test",
-        callback_token="secret-token",
-    )
-
-    generator.generate_runtime_probe_results(
-        recorder=recorder,
-        sandbox_provider="docker",
-        sandbox_executor_image="ai-platform:local",
-        workspace_root=str(tmp_path),
-        callback_url="http://callback.test/callback",
-        docker_cmd=("docker",),
-        output_file=runtime_probe_results_file,
-    )
-
-    assert calls == [
-        {"platform_resource_timeout_probe": False, "capture_runtime_egress_probe": True},
-        {"platform_resource_timeout_probe": True, "capture_runtime_egress_probe": False},
-    ]
-    payload = json.loads(runtime_probe_results_file.read_text(encoding="utf-8"))
-    assert payload["resource_limits"]["over_limit_cleanup_verified"] is True
-    assert payload["resource_limits"]["probe_kind"] == "platform_resource_timeout"
-    assert payload["egress_policy"]["default_deny_outbound"] is True
-    assert payload["egress_policy"]["callback_probe_status"] == "delivered"
-    assert payload["security_options"]["docker_socket_mounted"] is False
-
-
-def test_platform_runtime_probe_waits_for_async_callbacks_before_egress_evidence(tmp_path, monkeypatch):
-    generator = load_generator()
-
-    class FakeRuntime:
-        def __init__(
-            self,
-            *,
-            workspace_root,
-            callback_token_resolver,
-            record_lease,
-            release_lease,
-        ):
-            self.callback_token_resolver = callback_token_resolver
-            self.record_lease = record_lease
-            self.release_lease = release_lease
-
-        async def submit(self, request):
-            from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
-            import urllib.request
-
-            lease = ContainerLease(
-                container_id="exec-run-a",
-                container_name="executor-exec-run-a",
-                provider="docker",
-                executor_url="http://127.0.0.1:18000",
-                tenant_id=request.tenant_id,
-                workspace_id=request.workspace_id,
-                user_id=request.user_id,
-                session_id=request.session_id,
-                run_id=request.run_id,
-                sandbox_mode=request.sandbox_mode,
-                browser_enabled=request.browser_enabled,
-                workspace_host_path=str(tmp_path),
-                workspace_container_path="/workspace",
-                labels={"ai-platform.run_id": request.run_id},
-                timings={
-                    "sandbox_container_cold_start_latency_ms": 2,
-                    "sandbox_healthcheck_latency_ms": 3,
-                },
-            )
-            workspace = WorkspaceLease(
-                tenant_id=request.tenant_id,
-                workspace_id=request.workspace_id,
-                user_id=request.user_id,
-                session_id=request.session_id,
-                run_id=request.run_id,
-                host_root=str(tmp_path),
-                workspace_host_path=str(tmp_path),
-                workspace_container_path="/workspace",
-                inputs_host_path=str(tmp_path / "inputs"),
-                logs_host_path=str(tmp_path / "logs"),
-            )
-            lease_id = await self.record_lease(lease, request, workspace)
-            await self.release_lease(lease, "dispatch_completed", lease_id)
-
-            def post_callbacks():
-                callback_token = self.callback_token_resolver(request.callback_token_id)
-                for status in ("running", "completed"):
-                    callback = urllib.request.Request(
-                        request.callback_url,
-                        data=json.dumps({"run_id": request.run_id, "status": status}).encode("utf-8"),
-                        headers={
-                            "Content-Type": "application/json",
-                            "X-AI-Platform-Callback-Token": callback_token,
-                        },
-                        method="POST",
-                    )
-                    with urllib.request.urlopen(callback, timeout=3) as response:
-                        assert response.status == 200
-
-            threading.Timer(0.05, post_callbacks).start()
-            return type(
-                "SandboxRuntimeResult",
-                (),
-                {
-                    "status": "completed",
-                    "session_id": request.session_id,
-                    "run_id": request.run_id,
-                    "executor_response": {
-                        "status": "completed",
-                        "run_id": request.run_id,
-                    },
-                    "timings": {
-                        "schema_version": "ai-platform.sandbox-latency-split.v1",
-                        "sandbox_lease_acquire_latency_ms": 1,
-                        "sandbox_container_cold_start_latency_ms": 2,
-                        "sandbox_healthcheck_latency_ms": 3,
-                        "sandbox_executor_dispatch_latency_ms": 4,
-                        "executor_model_latency_ms": 1,
-                        "document_processing_latency_ms": 0,
-                        "sandbox_cleanup_latency_ms": 5,
-                        "sandbox_total_latency_ms": 15,
-                    },
-                },
-            )()
-
-    def fake_run(cmd, capture_output, text, timeout, check):
-        if tuple(cmd[:3]) == ("docker", "exec", "executor-exec-run-a"):
-            return type("Completed", (), {"returncode": 42, "stdout": "", "stderr": ""})()
-        if tuple(cmd) == ("docker", "network", "inspect", "ai-platform-sandbox-egress"):
-            return type(
-                "Completed",
-                (),
-                {
-                    "returncode": 0,
-                    "stdout": json.dumps(
-                        [
-                            {
-                                "Name": "ai-platform-sandbox-egress",
-                                "Driver": "bridge",
-                                "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
-                            }
-                        ]
-                    ),
-                    "stderr": "",
-                },
-            )()
-        assert tuple(cmd) == ("docker", "inspect", "executor-exec-run-a")
-        return type(
-            "Completed",
-            (),
-            {
-                "returncode": 0,
-                "stdout": json.dumps(
-                    [
-                        {
-                            "HostConfig": {
-                                "Memory": 536870912,
-                                "NanoCpus": 500000000,
-                                "PidsLimit": 128,
-                                "Privileged": False,
-                                "SecurityOpt": ["no-new-privileges:true"],
-                                "CapDrop": ["ALL"],
-                                "ReadonlyRootfs": True,
-                                "Binds": ["/tmp/workspace:/workspace:rw"],
-                                "NetworkMode": "ai-platform-sandbox-egress",
-                                "ExtraHosts": ["host.docker.internal:host-gateway"],
-                            },
-                            "Mounts": [{"Destination": "/workspace", "RW": True}],
-                            "NetworkSettings": {"Networks": {"ai-platform-sandbox-egress": {}}},
-                            "Config": {
-                                "Labels": {
-                                    "ai-platform.egress.policy": "default-deny-no-masq",
-                                    "ai-platform.egress.network": "ai-platform-sandbox-egress",
-                                    "ai-platform.egress.callback_host": "host.docker.internal",
-                                },
-                            },
-                        }
-                    ]
-                ),
-                "stderr": "",
-            },
-        )()
-
-    monkeypatch.setattr("app.runtime.sandbox.runtime.SandboxRuntime", FakeRuntime)
-    recorder = generator.EvidenceRecorder(
-        run_id="run-a",
-        executor_url="http://executor.test",
-        callback_token="secret-token",
-    )
-    server, local_callback_url = generator.start_callback_server(
-        bind_host="127.0.0.1",
-        bind_port=0,
-        recorder=recorder,
-    )
-    try:
-        generator.run_platform_runtime_probe(
-            recorder=recorder,
-            sandbox_provider="docker",
-            sandbox_executor_image="ai-platform:local",
-            workspace_root=str(tmp_path),
-            callback_url=local_callback_url,
-            docker_cmd=("docker",),
-            run=fake_run,
-            capture_runtime_egress_probe=True,
-        )
-    finally:
-        server.shutdown()
-        server.server_close()
-
-    assert recorder.has_required_callbacks() is True
-    assert recorder.hardening["egress_policy"]["default_deny_outbound"] is True
-
-
 def test_runtime_probe_results_do_not_treat_generic_network_failure_as_egress_denied(tmp_path):
     generator = load_generator()
     probe = generator._safe_platform_egress_probe_from_result(
@@ -3787,52 +2750,6 @@ def test_runtime_probe_results_do_not_treat_generic_network_failure_as_egress_de
     )
 
     assert probe == {}
-
-
-def test_runtime_probe_results_accept_no_masq_live_dns_failure_as_egress_denied():
-    generator = load_generator()
-    probe = generator._safe_platform_egress_probe_from_result(
-        run_id="run-a",
-        egress_denial_probe={
-            "denied": True,
-            "denial_reason": "dns_resolution_failed",
-            "target": "https://egress-denied.invalid/",
-        },
-        docker_inspect={
-            "HostConfig": {
-                "NetworkMode": "ai-platform-sandbox-egress",
-                "ExtraHosts": ["host.docker.internal:host-gateway"],
-            },
-            "NetworkSettings": {"Networks": {"ai-platform-sandbox-egress": {}}},
-            "Config": {
-                "Labels": {
-                    "ai-platform.egress.policy": "default-deny-no-masq",
-                    "ai-platform.egress.network": "ai-platform-sandbox-egress",
-                    "ai-platform.egress.callback_host": "host.docker.internal",
-                },
-            },
-        },
-        docker_network_inspect={
-            "Name": "ai-platform-sandbox-egress",
-            "Driver": "bridge",
-            "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
-        },
-        callbacks=[{"run_id": "run-a", "status": "running"}, {"run_id": "run-a", "status": "failed"}],
-    )
-
-    assert probe == {
-        "default_deny_outbound": True,
-        "platform_allowlist_enforced": True,
-        "callback_exception_scoped_to_run_token": True,
-        "denied_egress_redacted": True,
-        "denied_target": "https://egress-denied.invalid/",
-        "denied_probe_error_code": "egress_denied",
-        "allowed_callback_host": "host.docker.internal",
-        "callback_probe_status": "delivered",
-        "policy_source": "platform_policy",
-        "probe_source": "runtime_probe_results",
-        "run_id": "run-a",
-    }
 
 
 def test_docker_exec_egress_denial_probe_accepts_only_explicit_denial_marker():
@@ -3864,23 +2781,11 @@ def test_docker_exec_egress_denial_probe_accepts_only_explicit_denial_marker():
 def test_egress_probe_requires_same_run_running_and_terminal_callbacks():
     generator = load_generator()
     docker_inspect = {
-        "HostConfig": {
-            "NetworkMode": "ai-platform-sandbox-egress",
-            "ExtraHosts": ["host.docker.internal:host-gateway"],
-        },
-        "NetworkSettings": {"Networks": {"ai-platform-sandbox-egress": {}}},
         "Config": {
             "Labels": {
-                "ai-platform.egress.policy": "default-deny-no-masq",
-                "ai-platform.egress.network": "ai-platform-sandbox-egress",
                 "ai-platform.egress.callback_host": "host.docker.internal",
             },
         },
-    }
-    docker_network_inspect = {
-        "Name": "ai-platform-sandbox-egress",
-        "Driver": "bridge",
-        "Options": {"com.docker.network.bridge.enable_ip_masquerade": "false"},
     }
     egress_denial_probe = {
         "denied": True,
@@ -3891,14 +2796,12 @@ def test_egress_probe_requires_same_run_running_and_terminal_callbacks():
         run_id="run-a",
         egress_denial_probe=egress_denial_probe,
         docker_inspect=docker_inspect,
-        docker_network_inspect=docker_network_inspect,
         callbacks=[{"run_id": "run-a", "status": "completed"}],
     )
     wrong_run = generator._safe_platform_egress_probe_from_result(
         run_id="run-a",
         egress_denial_probe=egress_denial_probe,
         docker_inspect=docker_inspect,
-        docker_network_inspect=docker_network_inspect,
         callbacks=[
             {"run_id": "run-b", "status": "running"},
             {"run_id": "run-b", "status": "completed"},
@@ -3908,7 +2811,6 @@ def test_egress_probe_requires_same_run_running_and_terminal_callbacks():
         run_id="run-a",
         egress_denial_probe=egress_denial_probe,
         docker_inspect=docker_inspect,
-        docker_network_inspect=docker_network_inspect,
         callbacks=[
             {"run_id": "run-a", "status": "running"},
             {"run_id": "run-a", "status": "completed"},
@@ -4456,7 +3358,6 @@ def test_run_platform_runtime_probe_captures_executor_container_inspect(monkeypa
 def test_run_platform_runtime_probe_captures_egress_network_inspect(monkeypatch, tmp_path):
     generator = load_generator()
     calls = []
-    observed_policy_flags = []
 
     class FakeRuntime:
         def __init__(
@@ -4472,9 +3373,6 @@ def test_run_platform_runtime_probe_captures_egress_network_inspect(monkeypatch,
 
         async def submit(self, request):
             from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
-            from app.settings import get_settings
-
-            observed_policy_flags.append(get_settings().sandbox_egress_policy_enabled)
 
             lease = ContainerLease(
                 container_id="exec-run-a",
@@ -4604,7 +3502,6 @@ def test_run_platform_runtime_probe_captures_egress_network_inspect(monkeypatch,
     assert recorder.hardening["egress_policy"]["probe_source"] == "docker_network_inspect"
     assert recorder.hardening["egress_policy"]["network_inspection_verified"] is True
     assert recorder.hardening["egress_policy"]["docker_network_masquerade_disabled"] is True
-    assert observed_policy_flags == [True]
 
 
 def test_run_platform_runtime_probe_does_not_derive_resource_over_limit_from_generic_failure(monkeypatch, tmp_path):

@@ -16,7 +16,7 @@ CURRENT_B2_EVIDENCE_PATH = Path(
     "2026-06-19-211-b2-sandbox-runtime-smoke-f8a0f3c.json"
 )
 FUTURE_RUNTIME_SUBJECT = "1234567890abcdef1234567890abcdef12345678"
-FUTURE_CURRENT_SOURCE = "fedcba0987654321fedcba0987654321fedcba09"
+FUTURE_CURRENT_SOURCE = "fedcba098765"
 FUTURE_RUNTIME_TAG = "1234567-b2-runtime-evidence"
 FUTURE_RUN_ID = "b2-1234567-20260620000102"
 EXPECTED_REMAINING_HARDENING_GAPS = [
@@ -499,6 +499,32 @@ def test_b2_sandbox_readiness_accepts_future_reviewed_smoke_run_ids(tmp_path):
     assert smoke_evidence["status"] == "verified_211_runtime_acceptance"
     assert smoke_evidence["does_not_close_b2_gate"] is True
     assert "runtime_hardening" not in readiness["closed_runtime_gaps"]
+
+
+def test_b2_sandbox_readiness_rejects_placeholder_lease_projection_runtime_evidence(tmp_path):
+    write_future_reviewed_b2_smoke(tmp_path)
+    evidence_path = (
+        tmp_path
+        / "docs/release-evidence/b2-sandbox"
+        / FUTURE_RUNTIME_SUBJECT
+        / "2026-06-20-211-b2-sandbox-runtime-smoke-1234567.json"
+    )
+    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    smoke = payload["evidence_ref"]["runtime_checks"]["b2_211_real_sandbox_smoke"]
+    smoke["lease_projection"] = {
+        "provider": "fake",
+        "lease_payload": {
+            "source": "sdk_only_lifecycle_placeholder",
+            "evidence_class": "sdk_only_lifecycle_placeholder",
+        },
+    }
+    evidence_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
+
+    assert readiness["status"] == "local_contract_ready_runtime_smoke_required"
+    assert readiness["runtime_acceptance"]["status"] == "missing_211_real_sandbox_smoke"
+    assert readiness["runtime_acceptance_evidence"] == {}
 
 
 def test_b2_sandbox_readiness_accepts_smoke_with_open_hardening_verifier(tmp_path):

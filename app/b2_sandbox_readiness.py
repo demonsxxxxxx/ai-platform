@@ -545,6 +545,27 @@ def _hardening_runtime_evidence_status(hardening: dict[str, Any], *, run_id: str
     }
 
 
+def _runtime_lease_projection_is_real(evidence: dict[str, Any]) -> bool:
+    lease_projection = evidence.get("lease_projection")
+    if lease_projection is None:
+        return True
+    if not isinstance(lease_projection, dict):
+        return False
+    provider = str(lease_projection.get("provider") or "")
+    if provider == "fake":
+        return False
+    if provider and provider not in {"docker", "opensandbox"}:
+        return False
+    if provider and provider != evidence.get("sandbox_provider"):
+        return False
+    lease_payload = lease_projection.get("lease_payload")
+    if not isinstance(lease_payload, dict):
+        return True
+    source = str(lease_payload.get("source") or "")
+    evidence_class = str(lease_payload.get("evidence_class") or "")
+    return source != "sdk_only_lifecycle_placeholder" and evidence_class != "sdk_only_lifecycle_placeholder"
+
+
 def _b2_smoke_evidence_summary(
     payload: dict[str, Any],
     *,
@@ -594,6 +615,8 @@ def _b2_smoke_evidence_summary(
         or evidence.get("does_not_close_b2_gate") is not True
         or evidence.get("redaction_scan_status") != "passed"
     ):
+        return None
+    if not _runtime_lease_projection_is_real(evidence):
         return None
     non_expansion_invariants = evidence.get("non_expansion_invariants")
     if not isinstance(non_expansion_invariants, dict):

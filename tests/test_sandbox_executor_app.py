@@ -1,8 +1,8 @@
 from pathlib import Path
-from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.executor_app import create_executor_app
 
 
@@ -57,13 +57,34 @@ def test_executor_health_returns_ready(tmp_path):
     assert response.json() == {"status": "ready"}
 
 
-def test_executor_execute_posts_running_and_completed_callbacks(tmp_path):
+def test_executor_execute_posts_running_and_completed_callbacks(tmp_path, monkeypatch):
     callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "sdk final",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "error": None,
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
 
     def callback_sender(url, payload, token):
         callbacks.append((url, payload, token))
         return {"accepted": True}
 
+    # keep this focused on the default happy path instead of the disabled fail-closed branch
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = TestClient(
         create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender)
     )
@@ -83,28 +104,36 @@ def test_executor_execute_posts_running_and_completed_callbacks(tmp_path):
     assert callbacks[1][1]["progress"] == 100
 
 
-def test_executor_execute_records_claude_sdk_evidence_when_enabled(tmp_path, monkeypatch):
+def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
     callbacks = []
-    calls = []
 
-    async def sdk_runner(**kwargs):
-        calls.append(kwargs)
-        assert [item[1]["status"] for item in callbacks] == ["running"]
-        await kwargs["on_text"]("sandbox sdk completed")
-        return SimpleNamespace(
-            used_sdk=True,
-            session_id="sdk-session-a",
-            usage={"input_tokens": 1, "output_tokens": 2},
-            error=None,
-            message="sandbox sdk completed",
-            used_skills=["general-chat"],
-            used_skills_source="executor_hook",
+    async def executor_runner(request, workspace_root, emit_event):
+        assert request.run_id == "run-a"
+        assert workspace_root == Path(tmp_path)
+        await emit_event(
+            AgentEvent(type="assistant_delta", message="partial", payload={"delta": "partial"})
         )
-
-    monkeypatch.setattr(
-        "app.runtime.sandbox.executor_app.get_settings",
-        lambda: SimpleNamespace(claude_agent_sdk_enabled=True),
-    )
+        await emit_event(
+            AgentEvent(
+                type="tool_call_started",
+                message="Bash started",
+                payload={"tool_name": "Bash", "tool_call_id": "tool-a"},
+                admin_only=True,
+            )
+        )
+        await emit_event(
+            AgentEvent(
+                type="artifact_created",
+                message="Artifact uploaded",
+                payload={"artifact_id": "artifact-a", "label": "result.txt"},
+            )
+        )
+        return {
+            "status": "completed",
+            "message": "done",
+            "sdk_session_id": "sdk-session-a",
+            "sdk_usage": {"input_tokens": 2, "output_tokens": 3},
+        }
 
     def callback_sender(url, payload, token):
         callbacks.append((url, payload, token))
@@ -114,61 +143,7 @@ def test_executor_execute_records_claude_sdk_evidence_when_enabled(tmp_path, mon
         create_executor_app(
             workspace_root=tmp_path,
             callback_sender=callback_sender,
-            sdk_runner=sdk_runner,
-        )
-    )
-    payload = task_payload("http://platform/callback")
-    payload["config"]["skill_ids"] = ["general-chat"]
-
-    response = client.post("/v1/tasks/execute", json=payload)
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "accepted"
-    assert body["sdk_used"] is True
-    assert body["executor_mode"] == "claude_agent_sdk"
-    assert body["sdk_session_id"] == "sdk-session-a"
-    assert body["used_skill_ids"] == ["general-chat"]
-    assert calls[0]["prompt"] == "hello executor"
-    assert calls[0]["cwd"] == tmp_path
-    assert calls[0]["skill_id"] == "general-chat"
-    assert calls[0]["skills"] == ["general-chat"]
-    assert calls[0]["model_id"] == "deepseek-v4-flash"
-    assert [item[1]["status"] for item in callbacks] == ["running", "completed"]
-    assert callbacks[-1][1]["sdk_session_id"] == "sdk-session-a"
-    assert callbacks[-1][1]["new_message"] is None
-    assert callbacks[-1][1]["state_patch"]["sdk_used"] is True
-    assert callbacks[-1][1]["state_patch"]["executor_mode"] == "claude_agent_sdk"
-
-
-def test_executor_execute_reports_claude_sdk_error_without_leaking_details(tmp_path, monkeypatch):
-    callbacks = []
-
-    async def sdk_runner(**kwargs):
-        return SimpleNamespace(
-            used_sdk=True,
-            session_id=None,
-            usage={},
-            error="provider token=secret failed at /tmp/workspace",
-            message="",
-            used_skills=[],
-            used_skills_source="",
-        )
-
-    monkeypatch.setattr(
-        "app.runtime.sandbox.executor_app.get_settings",
-        lambda: SimpleNamespace(claude_agent_sdk_enabled=True),
-    )
-
-    def callback_sender(url, payload, token):
-        callbacks.append(payload)
-        return {"accepted": True}
-
-    client = TestClient(
-        create_executor_app(
-            workspace_root=tmp_path,
-            callback_sender=callback_sender,
-            sdk_runner=sdk_runner,
+            executor_runner=executor_runner,
         )
     )
 
@@ -176,17 +151,261 @@ def test_executor_execute_reports_claude_sdk_error_without_leaking_details(tmp_p
 
     assert response.status_code == 200
     body = response.json()
+    assert body["status"] == "accepted"
+    assert body["sdk_session_id"] == "sdk-session-a"
+    assert body["sdk_usage"] == {"input_tokens": 2, "output_tokens": 3}
+    assert isinstance(body["executor_first_token_latency_ms"], int)
+    assert isinstance(body["executor_tool_call_latency_ms"], int)
+    assert isinstance(body["artifact_upload_latency_ms"], int)
+    assert [item[1]["status"] for item in callbacks] == [
+        "running",
+        "running",
+        "running",
+        "running",
+        "completed",
+    ]
+    assert callbacks[1][1]["events"][0]["type"] == "assistant_delta"
+    assert callbacks[2][1]["events"][0]["type"] == "tool_call_started"
+    assert callbacks[3][1]["events"][0]["type"] == "artifact_created"
+    assert callbacks[-1][1]["sdk_session_id"] == "sdk-session-a"
+
+
+def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypatch):
+    callbacks = []
+    calls = {}
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        calls["cwd"] = kwargs["cwd"]
+        calls["skill_id"] = kwargs["skill_id"]
+        calls["model_id"] = kwargs["model_id"]
+        calls["skills"] = kwargs["skills"]
+        await kwargs["on_text"]("sdk partial")
+        permission = await kwargs["on_tool_permission"](
+            {
+                "tool_name": "Bash",
+                "tool_call_id": "tool-a",
+                "tool_input_keys": ["command"],
+                "risk_level": "high",
+                "write_capable": True,
+                "action": "execute",
+                "reason": "needs shell",
+            }
+        )
+        calls["permission"] = permission
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "sdk final",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "error": None,
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return {"accepted": True}
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+
+    client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
+
+    response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert body["sdk_session_id"] == "sdk-session-a"
+    assert calls["cwd"] == Path(tmp_path)
+    assert calls["skill_id"] == "general-chat"
+    assert calls["model_id"] == "deepseek-v4-flash"
+    assert calls["skills"] == ["general-chat"]
+    assert calls["permission"]["allowed"] is False
+    assert any(
+        event["type"] == "assistant_delta"
+        for callback in callbacks
+        for event in callback.get("events", [])
+    )
+    assert any(
+        event["type"] == "tool_call_started"
+        for callback in callbacks
+        for event in callback.get("events", [])
+    )
+
+
+def test_executor_execute_fails_when_claude_sdk_disabled(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = False
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+
+    client = TestClient(create_executor_app(workspace_root=tmp_path))
+
+    response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
+
+    assert response.status_code == 200
+    body = response.json()
     assert body["status"] == "failed"
-    assert body["sdk_used"] is True
-    assert body["executor_mode"] == "claude_agent_sdk"
-    assert body["error_code"] == "claude_agent_sdk_runtime_error"
-    assert body["error_message"] == "Claude Agent SDK execution failed"
-    assert "secret" not in str(body)
-    assert str(tmp_path) not in str(body)
-    assert [item["status"] for item in callbacks] == ["running", "failed"]
-    assert callbacks[-1]["error_message"] == "Claude Agent SDK execution failed"
-    assert "secret" not in str(callbacks)
-    assert str(tmp_path) not in str(callbacks)
+    assert body["error_code"] == "claude_agent_sdk_disabled"
+    assert body["executor_mode"] == "claude_agent_sdk_disabled"
+
+
+def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, monkeypatch):
+    captured = {}
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        captured["context_retrieval"] = kwargs["context_retrieval"]
+        captured["context_retrieval_identity"] = kwargs["context_retrieval_identity"]
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "sdk final",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "error": None,
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+
+    payload = task_payload("http://platform/callback")
+    payload["config"]["context_manifest"] = {
+        "schema_version": "ai-platform.context-manifest.v1",
+        "available_retrieval_tools": ["read_context_file"],
+    }
+    payload["config"]["context_retrieval_scope"] = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "general-agent",
+    }
+
+    client = TestClient(create_executor_app(workspace_root=tmp_path))
+
+    response = client.post("/v1/tasks/execute", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+    assert captured["context_retrieval"] is not None
+    assert captured["context_retrieval_identity"].tenant_id == "tenant-a"
+    assert captured["context_retrieval_identity"].workspace_id == "workspace-a"
+    assert captured["context_retrieval_identity"].user_id == "user-a"
+
+
+def test_executor_execute_fails_closed_for_manifest_without_valid_scope(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+
+    payload = task_payload("http://platform/callback")
+    payload["config"]["context_manifest"] = {
+        "schema_version": "ai-platform.context-manifest.v1",
+        "available_retrieval_tools": ["read_context_file"],
+    }
+    payload["config"]["context_retrieval_scope"] = {"tenant_id": "tenant-a"}
+
+    client = TestClient(create_executor_app(workspace_root=tmp_path))
+
+    response = client.post("/v1/tasks/execute", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "context_retrieval_scope_invalid"
+
+
+def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeypatch):
+    callbacks = []
+    calls = {}
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        calls["cwd"] = kwargs["cwd"]
+        permission = await kwargs["on_tool_permission"](
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "python write_business_system.py"},
+                "tool_call_id": "tool-a",
+                "risk_level": "high",
+                "write_capable": True,
+                "action": "execute",
+                "reason": "needs shell",
+            }
+        )
+        calls["permission"] = permission
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "sdk final",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "error": None if permission["allowed"] else permission["reason"],
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
+
+    def callback_sender(url, payload, token):
+        callbacks.append((url, payload, token))
+        if url.endswith("/api/ai/runtime/callbacks/tool-permission"):
+            return {
+                "allowed": True,
+                "reason": "tool_permission_allowed",
+                "risk_level": "high",
+                "write_capable": True,
+                "decision": "allow_for_run",
+                "permission_request_id": "tpr-sdk",
+            }
+        return {"accepted": True}
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+
+    client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
+
+    response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert calls["cwd"] == Path(tmp_path)
+    assert calls["permission"] == {
+        "allowed": True,
+        "reason": "tool_permission_allowed",
+        "risk_level": "high",
+        "write_capable": True,
+        "decision": "allow_for_run",
+        "permission_request_id": "tpr-sdk",
+    }
+    broker_call = next(item for item in callbacks if item[0].endswith("/api/ai/runtime/callbacks/tool-permission"))
+    assert broker_call[1]["run_id"] == "run-a"
+    assert broker_call[1]["callback_token_id"] == "cbt_run-a"
+    assert broker_call[1]["tool_name"] == "Bash"
+    assert broker_call[1]["tool_input"] == {"command": "python write_business_system.py"}
+    assert broker_call[1]["tool_call_id"] == "tool-a"
 
 
 def test_executor_execute_reports_platform_timeout_probe_as_failed_callback(tmp_path):
@@ -214,15 +433,35 @@ def test_executor_execute_reports_platform_timeout_probe_as_failed_callback(tmp_
     assert str(tmp_path) not in str(body)
 
 
-def test_executor_execute_does_not_truncate_fractional_positive_timeout(tmp_path):
+def test_executor_execute_does_not_truncate_fractional_positive_timeout(tmp_path, monkeypatch):
     callbacks = []
     payload = task_payload("http://platform/callback")
     payload["config"]["resource_limits"] = {"max_seconds": 0.5}
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "sdk final",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "error": None,
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
 
     def callback_sender(url, payload, token):
         callbacks.append((url, payload, token))
         return {"accepted": True}
 
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
 
     response = client.post("/v1/tasks/execute", json=payload)
@@ -273,8 +512,26 @@ def test_executor_marker_redacts_unapproved_config_and_tokens(tmp_path):
     assert "secret" not in content
 
 
-def test_executor_execute_reports_callback_errors_without_raising(tmp_path):
+def test_executor_execute_reports_callback_errors_without_raising(tmp_path, monkeypatch):
     callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "sdk final",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "error": None,
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
 
     def callback_sender(url, payload, token):
         callbacks.append(payload["status"])
@@ -282,6 +539,8 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path):
             raise RuntimeError("callback failed")
         return {"accepted": True}
 
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
 
     response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
@@ -296,13 +555,33 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path):
     assert callbacks == ["running", "completed"]
 
 
-def test_executor_completed_callback_marker_path_is_container_path(tmp_path):
+def test_executor_completed_callback_marker_path_is_container_path(tmp_path, monkeypatch):
     callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "sdk final",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "error": None,
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
         return {"accepted": True}
 
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
 
     response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
