@@ -1,3 +1,4 @@
+import { type ReactNode } from "react";
 import {
   FileText,
   ToggleLeft,
@@ -31,6 +32,7 @@ interface SkillCardProps {
   selected?: boolean;
   onSelect?: (name: string) => void;
   selectionMode?: boolean;
+  detailSection?: ReactNode;
 }
 
 const SOURCE_ICONS: Record<string, React.ReactNode> = {
@@ -52,6 +54,7 @@ export function SkillCard({
   selected = false,
   onSelect,
   selectionMode = false,
+  detailSection,
 }: SkillCardProps) {
   const { t } = useTranslation();
   const primaryTag = skill.tags[0];
@@ -133,6 +136,7 @@ export function SkillCard({
             )}
         </div>
       }
+      extraContent={detailSection}
       footer={
         hasWriteActions ? (
           <div className="flex items-center gap-1">

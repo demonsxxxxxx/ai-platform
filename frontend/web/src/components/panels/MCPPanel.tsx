@@ -21,17 +21,13 @@ import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { useAuth } from "../../hooks/useAuth";
+import { useCapabilityDistributions } from "../../hooks/useCapabilityDistributions";
 import { useMCP } from "../../hooks/useMcp";
 import { Permission } from "../../types";
 import type { MCPServerResponse } from "../../types";
+import { CapabilityDistributionAdminCard } from "./CapabilityDistributionAdminCard";
+import { canManageMcpLifecycle, isAiAdminUser } from "./capabilityAdmin";
 import { resolveMcpGovernanceState } from "./mcpGovernanceState";
-
-const MCP_ADMIN_ROLE_ALIASES = new Set([
-  "admin",
-  "developer",
-  "platform_admin",
-  "break_glass_admin",
-]);
 
 function roleQuotaCount(server: MCPServerResponse): number {
   return Object.values(server.role_quotas ?? {}).filter(Boolean).length;
@@ -79,20 +75,21 @@ export function MCPPanel() {
       setPermissionDenied(true);
     }
   }, [error]);
-  const canManageMcp =
-    hasAnyPermission([
+  const isAiAdmin = isAiAdminUser(user);
+  const mcpDistributions = useCapabilityDistributions({
+    capabilityKind: "mcp_server",
+    enabled: isAiAdmin && !permissionDenied,
+  });
+  const canManageMcp = canManageMcpLifecycle({
+    hasExplicitMcpPermission: hasAnyPermission([
       Permission.MCP_ADMIN,
       Permission.MCP_WRITE_SSE,
       Permission.MCP_WRITE_HTTP,
       Permission.MCP_WRITE_SANDBOX,
       Permission.MCP_DELETE,
-    ]) ||
-    Boolean(
-      user?.roles?.some((role) =>
-        MCP_ADMIN_ROLE_ALIASES.has(role.trim().toLowerCase()),
-      ),
-    ) ||
-    servers.some((server) => server.can_edit);
+    ]),
+    isAiAdmin,
+  });
   const mcpGovernance = resolveMcpGovernanceState({
     isAuthenticated,
     isLoading: authLoading || isLoading,
@@ -201,6 +198,11 @@ export function MCPPanel() {
           <span>{error}</span>
         </div>
       )}
+      {isAiAdmin && mcpDistributions.error ? (
+        <div className="mx-4 mt-4 rounded-lg border border-[var(--theme-danger-ring)] bg-[var(--theme-danger-soft)] px-3 py-2 text-sm text-[var(--theme-danger)]">
+          {mcpDistributions.error}
+        </div>
+      ) : null}
 
       <div className={workbenchSurface.catalog.summaryGridFour}>
         <section className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}>
@@ -390,6 +392,31 @@ export function MCPPanel() {
                   <div className="mt-3 rounded-md border border-dashed border-[var(--theme-border)] p-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
                     {t("mcp.lifecycleGovernance.description")}
                   </div>
+
+                  {isAiAdmin ? (
+                    <CapabilityDistributionAdminCard
+                      capabilityKind="mcp_server"
+                      capabilityId={server.name}
+                      distribution={mcpDistributions.getDistribution(server.name)}
+                      fallbackStatus={server.enabled ? "active" : "disabled"}
+                      fallbackVisibleToUser={server.enabled}
+                      fallbackDepartmentIds={server.allowed_departments ?? []}
+                      fallbackAllowedRoles={server.allowed_roles ?? []}
+                      isBusy={mcpDistributions.pendingCapabilityIds.includes(
+                        server.name,
+                      )}
+                      onSave={(payload) =>
+                        mcpDistributions.saveDistribution(server.name, payload)
+                      }
+                      onToggle={(enabled, payload) =>
+                        mcpDistributions.toggleDistribution(
+                          server.name,
+                          enabled,
+                          payload,
+                        )
+                      }
+                    />
+                  ) : null}
                 </article>
               );
             })}

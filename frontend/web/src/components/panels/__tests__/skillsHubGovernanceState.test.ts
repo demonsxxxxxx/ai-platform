@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { resolveSkillsHubGovernance } from "../SkillsHubPanel/state.ts";
 
@@ -125,4 +127,16 @@ test("skills hub recognizes admin permissions as read permission", () => {
 
   assert.equal(skills.pageState, "ready");
   assert.equal(marketplace.pageState, "ready");
+});
+
+test("marketplace panel derives shared-management affordances from ai-admin gating instead of owner fallback", () => {
+  const source = readFileSync(
+    join(import.meta.dirname, "..", "MarketplacePanel.tsx"),
+    "utf8",
+  );
+
+  assert.doesNotMatch(source, /userEffectivePermissions/);
+  assert.doesNotMatch(source, /\(skill\.is_owner \|\| canAdmin\)/);
+  assert.match(source, /canManageSharedMarketplace\(\{/);
+  assert.match(source, /isAiAdminUser\(user\)/);
 });

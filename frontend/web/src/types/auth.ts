@@ -88,6 +88,7 @@ export interface User {
   avatar_url?: string;
   roles: string[];
   permissions?: string[];
+  is_admin?: boolean;
   is_active: boolean;
   metadata?: {
     language?: string;
