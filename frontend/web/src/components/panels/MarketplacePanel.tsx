@@ -22,6 +22,10 @@ import type { SkillResponse, SkillCreate } from "../../types";
 import { SkillCard } from "./MarketplacePanel/SkillCard";
 import { SkillPreviewModal } from "./MarketplacePanel/SkillPreviewModal";
 import {
+  canManageSharedMarketplace,
+  isAiAdminUser,
+} from "./capabilityAdmin";
+import {
   buildFrontendGovernanceSmokeAttributes,
   isPermissionError,
   resolveFrontendGovernanceState,
@@ -47,6 +51,7 @@ export function MarketplacePanel({
 }: MarketplacePanelProps) {
   const { t } = useTranslation();
   const {
+    user,
     hasAnyPermission,
     isAuthenticated,
     isLoading: authLoading,
@@ -101,15 +106,11 @@ export function MarketplacePanel({
     fetchSkills: fetchUserSkills,
     isLoading: userSkillsLoading,
     getSkill,
-    effectivePermissions: userEffectivePermissions,
   } = useSkills({ enabled: !effectiveGovernedUnavailable });
   const marketplaceDirectWriteBacked = true;
   const catalogEffectivePermissions = useMemo(
-    () =>
-      marketplaceEffectivePermissions.length > 0
-        ? marketplaceEffectivePermissions
-        : userEffectivePermissions,
-    [marketplaceEffectivePermissions, userEffectivePermissions],
+    () => marketplaceEffectivePermissions,
+    [marketplaceEffectivePermissions],
   );
   const effectivePermissions = new Set(catalogEffectivePermissions);
   const hasEffectiveSkillWrite =
@@ -121,26 +122,26 @@ export function MarketplacePanel({
   const hasEffectiveMarketplaceAdmin =
     hasAnyPermission([Permission.MARKETPLACE_ADMIN]) ||
     effectivePermissions.has(Permission.MARKETPLACE_ADMIN);
+  const isAiAdmin = isAiAdminUser(user);
   const canInstall =
     hasEffectiveSkillWrite &&
     hasEffectiveMarketplaceRead &&
     !effectiveGovernedUnavailable;
-  const canCreateInMarketplace =
+  const sharedMarketplaceAdminVisible =
     marketplaceDirectWriteBacked &&
-    hasEffectiveMarketplaceAdmin &&
+    isAiAdmin &&
     !effectiveGovernedUnavailable;
-  const canAdmin =
-    marketplaceDirectWriteBacked &&
-    hasEffectiveMarketplaceAdmin;
+  const canCreateInMarketplace =
+    sharedMarketplaceAdminVisible;
+  const canAdmin = sharedMarketplaceAdminVisible;
+  void hasEffectiveMarketplaceAdmin;
 
   useEffect(() => {
     onCatalogStateChange?.({
       permissionDenied,
       projectionError: permissionDenied ? null : listError,
       effectivePermissions: catalogEffectivePermissions,
-      effectivePermissionsKnown:
-        marketplaceEffectivePermissionsKnown ||
-        userEffectivePermissions.length > 0,
+      effectivePermissionsKnown: marketplaceEffectivePermissionsKnown,
       readResolved: marketplaceCatalogReadResolved,
     });
   }, [
@@ -150,7 +151,6 @@ export function MarketplacePanel({
     marketplaceEffectivePermissionsKnown,
     onCatalogStateChange,
     permissionDenied,
-    userEffectivePermissions.length,
   ]);
 
   const installedMarketplaceNames = new Set(
@@ -556,11 +556,14 @@ export function MarketplacePanel({
                   skill.skill_name,
                 )}
                 isOwner={skill.is_owner}
-                canManage={
-                  marketplaceDirectWriteBacked &&
-                  !effectiveGovernedUnavailable &&
-                  (skill.is_owner || canAdmin)
-                }
+                canManage={canManageSharedMarketplace({
+                  isOwner: skill.is_owner,
+                  hasMarketplaceAdminPermission:
+                    marketplaceDirectWriteBacked &&
+                    !effectiveGovernedUnavailable &&
+                    canAdmin,
+                  isAiAdmin,
+                })}
                 canInstall={canInstall}
                 installingSkill={installingSkill}
                 userSkillsLoading={userSkillsLoading}

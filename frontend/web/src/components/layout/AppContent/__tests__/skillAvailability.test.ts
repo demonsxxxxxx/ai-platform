@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   buildEffectiveSkills,
@@ -63,6 +65,20 @@ test("limits persona skills by whitelist and then applies disabled skills", () =
     ],
   );
   assert.equal(countEnabledSkills(result), 1);
+});
+
+test("composer skill availability never re-adds hidden skills via session toggles", () => {
+  const result = buildEffectiveSkills({
+    skills: [skill("planner"), skill("writer")],
+    skillsLoading: false,
+    personaSkillNames: ["planner", "hidden-skill"],
+    disabledSkillNames: ["hidden-skill"],
+  });
+
+  assert.deepEqual(
+    result.map((item) => item.name),
+    ["planner"],
+  );
 });
 
 test("falls back to disabled-skills mode without a persona whitelist", () => {
@@ -345,4 +361,14 @@ test("exposes skill permissions only after the current catalog fetch resolves", 
       effectivePermissionsKnown: true,
     },
   );
+});
+
+test("chat composer only applies session-disabled skill subtraction to the backend catalog", () => {
+  const source = readFileSync(
+    join(import.meta.dirname, "..", "ChatAppContent.tsx"),
+    "utf8",
+  );
+
+  assert.match(source, /disabledSkillNames:\s*sessionConfig\.disabledSkills/);
+  assert.doesNotMatch(source, /enabledSkillNames:/);
 });

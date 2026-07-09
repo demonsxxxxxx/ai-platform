@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { resolveMcpGovernanceState } from "../mcpGovernanceState.ts";
 
@@ -148,4 +150,17 @@ test("MCP directory degrades non-permission failures without opening lifecycle c
   assert.equal(failed.governedUnavailable, false);
   assert.equal(failed.lifecycleAvailability.state, "unavailable");
   assert.equal(failed.credentialsAvailability.state, "unavailable");
+});
+
+test("mcp panel keeps lifecycle admin-only and does not wire unsupported distribution controls", () => {
+  const source = readFileSync(
+    join(import.meta.dirname, "..", "MCPPanel.tsx"),
+    "utf8",
+  );
+
+  assert.match(source, /isAiAdminUser\(user\)/);
+  assert.match(source, /canManageMcpLifecycle\(\{/);
+  assert.doesNotMatch(source, /CapabilityDistributionAdminCard/);
+  assert.doesNotMatch(source, /useCapabilityDistributions/);
+  assert.doesNotMatch(source, /server\.can_edit/);
 });
