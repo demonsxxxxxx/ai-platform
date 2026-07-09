@@ -789,6 +789,109 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_general_chat_preserves_cancelled_runtime_terminal_status(monkeypatch, tmp_path):
+    current_settings = type(
+        "S",
+        (),
+        {
+            "claude_agent_sdk_enabled": True,
+            "claude_agent_workspace_root": str(tmp_path / "a"),
+            "sandbox_workspace_root": str(tmp_path / "s"),
+            "platform_skills_root": str(tmp_path / "k"),
+            "skill_staging_subdir": ".claude/skills",
+            "sandbox_callback_base_url": "http://platform.test",
+            "claude_agent_model": "deepseek-v4-flash",
+        },
+    )()
+
+    class FakeRuntime:
+        async def submit(self, request, event_sink=None):
+            return types.SimpleNamespace(
+                status="cancelled",
+                session_id=request.session_id,
+                run_id=request.run_id,
+                executor_response={
+                    "status": "cancelled",
+                    "message": "任务已取消",
+                    "sdk_session_id": "sdk-session-heavy",
+                    "sdk_usage": {},
+                    "sdk_used": True,
+                },
+                timings={
+                    "schema_version": "ai-platform.sandbox-latency-split.v1",
+                    "sandbox_queue_wait_latency_ms": 0,
+                    "sandbox_lease_acquire_latency_ms": 1,
+                    "sandbox_container_start_latency_ms": 2,
+                    "sandbox_container_cold_start_latency_ms": 2,
+                    "sandbox_healthcheck_latency_ms": 3,
+                    "sandbox_executor_dispatch_latency_ms": 4,
+                    "executor_first_token_latency_ms": 0,
+                    "executor_tool_call_latency_ms": 0,
+                    "executor_model_latency_ms": 0,
+                    "document_processing_latency_ms": 0,
+                    "artifact_upload_latency_ms": 0,
+                    "sandbox_cleanup_latency_ms": 1,
+                    "sandbox_total_latency_ms": 13,
+                },
+            )
+
+    async def no_files(payload, workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.SandboxRuntime",
+        lambda *args, **kwargs: FakeRuntime(),
+        raising=False,
+    )
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+
+    result = await adapter.submit_run(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "cancel sandbox run", "sandbox_mode": "ephemeral"},
+            context_snapshot={
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_snapshot_id": "ctx-heavy",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 0,
+                "memory_record_count": 0,
+                "execution_tier": "heavy_sandbox",
+            },
+            context_pack={
+                "schema_version": "ai-platform.executor-context-pack.v1",
+                "source": "runs_api",
+                "referenced_materials": {
+                    "message_count": 0,
+                    "file_count": 0,
+                    "artifact_count": 0,
+                    "memory_record_count": 0,
+                },
+                "used_context_summary": {
+                    "source": "runs_api",
+                    "input_keys": ["message"],
+                    "memory_policy_source": "stored",
+                    "long_term_memory_read": False,
+                },
+                "execution_tier": "heavy_sandbox",
+                "latest_artifact_version": None,
+                "context_pack_version": "v1",
+                "context_pack_generated_at": "2026-07-09T00:00:00Z",
+                "prompt_summary": "Execution tier: heavy_sandbox.",
+            },
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "executor_cancelled"
+    assert result.executor_payload["runtime_terminal_status"] == "cancelled"
+
+
+@pytest.mark.asyncio
 async def test_file_skill_uses_controlled_runner_when_sdk_tool_schema_loops(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_runner_skill(tmp_path / "skills")

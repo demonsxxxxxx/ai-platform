@@ -2014,7 +2014,18 @@ def test_generator_defaults_use_local_ai_platform_cancel_probe_image():
 
     assert args.cancel_image == "ai-platform:local"
     assert args.sandbox_executor_image == ""
+    assert args.callback_host == "127.0.0.1"
+    assert args.callback_public_url == ""
     assert args.platform_resource_timeout_probe is False
+
+
+def test_generator_platform_mode_defaults_docker_callback_projection():
+    generator = load_generator()
+
+    args = generator.build_parser().parse_args(["--runtime-mode", "platform", "--sandbox-provider", "docker"])
+
+    assert args.callback_host == "0.0.0.0"
+    assert args.callback_public_url == "http://host.docker.internal:{port}/callback"
 
 
 def test_sandbox_runtime_211_help_names_211_docker_command_and_local_cancel_image():

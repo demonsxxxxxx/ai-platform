@@ -904,7 +904,8 @@ def _ordinary_run_uses_runtime_sandbox(
 
 def _result_prefers_cancelled_after_failure(result: ExecutorResult) -> bool:
     sandbox_provider = str(result.executor_payload.get("sandbox_provider") or "").strip()
-    return sandbox_provider in {"docker", "opensandbox"}
+    runtime_terminal_status = str(result.executor_payload.get("runtime_terminal_status") or "").strip().lower()
+    return sandbox_provider in {"docker", "opensandbox"} and runtime_terminal_status in {"cancelled", "canceled"}
 
 
 async def _create_worker_runtime_sandbox_lease(
