@@ -53,9 +53,9 @@ test("shared marketplace and mcp management stay ai-admin only", () => {
   );
 });
 
-test("skills and mcp panels wire unified capability distribution admin sections behind ai-admin checks", () => {
-  const skillsPanelSource = readFileSync(
-    join(import.meta.dirname, "..", "SkillsPanel", "index.tsx"),
+test("marketplace and mcp panels gate shared admin actions on ai-admin projection without unsupported distribution ui", () => {
+  const marketplacePanelSource = readFileSync(
+    join(import.meta.dirname, "..", "MarketplacePanel.tsx"),
     "utf8",
   );
   const mcpPanelSource = readFileSync(
@@ -63,9 +63,10 @@ test("skills and mcp panels wire unified capability distribution admin sections 
     "utf8",
   );
 
-  assert.match(skillsPanelSource, /CapabilityDistributionAdminCard/);
-  assert.match(skillsPanelSource, /isAiAdminUser\(user\)/);
-  assert.match(skillsPanelSource, /renderAdminSection=\{renderDistributionAdmin\}/);
-  assert.match(mcpPanelSource, /CapabilityDistributionAdminCard/);
+  assert.match(marketplacePanelSource, /canManageSharedMarketplace\(\{/);
+  assert.match(marketplacePanelSource, /isAiAdminUser\(user\)/);
   assert.match(mcpPanelSource, /isAiAdminUser\(user\)/);
+  assert.match(mcpPanelSource, /canManageMcpLifecycle\(\{/);
+  assert.doesNotMatch(mcpPanelSource, /CapabilityDistributionAdminCard/);
+  assert.doesNotMatch(mcpPanelSource, /useCapabilityDistributions/);
 });

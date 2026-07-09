@@ -57,7 +57,6 @@ interface SkillsListProps {
   onCreate: () => void;
   onGithubClick: () => void;
   onZipClick: () => void;
-  renderAdminSection?: (skill: SkillResponse) => React.ReactNode;
 }
 
 export function SkillsList({
@@ -98,7 +97,6 @@ export function SkillsList({
   onCreate,
   onGithubClick,
   onZipClick,
-  renderAdminSection,
 }: SkillsListProps) {
   const { t } = useTranslation();
   const filterRef = useRef<HTMLDivElement>(null);
@@ -359,7 +357,6 @@ export function SkillsList({
                 selected={selectedNames.has(skill.name)}
                 onSelect={canBatchSkills ? onSelectSkill : undefined}
                 selectionMode={canBatchSkills}
-                detailSection={renderAdminSection?.(skill)}
               />
             ))}
           </div>

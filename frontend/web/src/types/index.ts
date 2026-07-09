@@ -167,18 +167,6 @@ export type {
 } from "./mcp";
 
 // ============================================
-// Capability Distribution Types
-// ============================================
-export type {
-  CapabilityKind,
-  CapabilityDistributionStatus,
-  CapabilityDistribution,
-  CapabilityDistributionListResponse,
-  CapabilityDistributionUpdateRequest,
-  CapabilityDistributionWriteResponse,
-} from "./capabilityDistribution";
-
-// ============================================
 // Tool Types
 // ============================================
 export type {

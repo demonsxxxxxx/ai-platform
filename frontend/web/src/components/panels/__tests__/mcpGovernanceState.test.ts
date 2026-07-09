@@ -152,14 +152,15 @@ test("MCP directory degrades non-permission failures without opening lifecycle c
   assert.equal(failed.credentialsAvailability.state, "unavailable");
 });
 
-test("mcp panel keeps department distribution controls behind the ai-admin projection", () => {
+test("mcp panel keeps lifecycle admin-only and does not wire unsupported distribution controls", () => {
   const source = readFileSync(
     join(import.meta.dirname, "..", "MCPPanel.tsx"),
     "utf8",
   );
 
-  assert.match(source, /CapabilityDistributionAdminCard/);
   assert.match(source, /isAiAdminUser\(user\)/);
-  assert.match(source, /useCapabilityDistributions/);
+  assert.match(source, /canManageMcpLifecycle\(\{/);
+  assert.doesNotMatch(source, /CapabilityDistributionAdminCard/);
+  assert.doesNotMatch(source, /useCapabilityDistributions/);
   assert.doesNotMatch(source, /server\.can_edit/);
 });

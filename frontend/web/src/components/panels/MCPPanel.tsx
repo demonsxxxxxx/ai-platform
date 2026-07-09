@@ -21,11 +21,9 @@ import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { useAuth } from "../../hooks/useAuth";
-import { useCapabilityDistributions } from "../../hooks/useCapabilityDistributions";
 import { useMCP } from "../../hooks/useMcp";
 import { Permission } from "../../types";
 import type { MCPServerResponse } from "../../types";
-import { CapabilityDistributionAdminCard } from "./CapabilityDistributionAdminCard";
 import { canManageMcpLifecycle, isAiAdminUser } from "./capabilityAdmin";
 import { resolveMcpGovernanceState } from "./mcpGovernanceState";
 
@@ -76,10 +74,6 @@ export function MCPPanel() {
     }
   }, [error]);
   const isAiAdmin = isAiAdminUser(user);
-  const mcpDistributions = useCapabilityDistributions({
-    capabilityKind: "mcp_server",
-    enabled: isAiAdmin && !permissionDenied,
-  });
   const canManageMcp = canManageMcpLifecycle({
     hasExplicitMcpPermission: hasAnyPermission([
       Permission.MCP_ADMIN,
@@ -198,12 +192,6 @@ export function MCPPanel() {
           <span>{error}</span>
         </div>
       )}
-      {isAiAdmin && mcpDistributions.error ? (
-        <div className="mx-4 mt-4 rounded-lg border border-[var(--theme-danger-ring)] bg-[var(--theme-danger-soft)] px-3 py-2 text-sm text-[var(--theme-danger)]">
-          {mcpDistributions.error}
-        </div>
-      ) : null}
-
       <div className={workbenchSurface.catalog.summaryGridFour}>
         <section className={`${workbenchSurface.catalog.summaryCard} flex items-start justify-between gap-3`}>
           <div className="flex min-w-0 items-start gap-3">
@@ -393,30 +381,6 @@ export function MCPPanel() {
                     {t("mcp.lifecycleGovernance.description")}
                   </div>
 
-                  {isAiAdmin ? (
-                    <CapabilityDistributionAdminCard
-                      capabilityKind="mcp_server"
-                      capabilityId={server.name}
-                      distribution={mcpDistributions.getDistribution(server.name)}
-                      fallbackStatus={server.enabled ? "active" : "disabled"}
-                      fallbackVisibleToUser={server.enabled}
-                      fallbackDepartmentIds={server.allowed_departments ?? []}
-                      fallbackAllowedRoles={server.allowed_roles ?? []}
-                      isBusy={mcpDistributions.pendingCapabilityIds.includes(
-                        server.name,
-                      )}
-                      onSave={(payload) =>
-                        mcpDistributions.saveDistribution(server.name, payload)
-                      }
-                      onToggle={(enabled, payload) =>
-                        mcpDistributions.toggleDistribution(
-                          server.name,
-                          enabled,
-                          payload,
-                        )
-                      }
-                    />
-                  ) : null}
                 </article>
               );
             })}

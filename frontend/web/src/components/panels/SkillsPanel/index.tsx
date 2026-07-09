@@ -1,13 +1,9 @@
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../../hooks/useAuth";
-import { useCapabilityDistributions } from "../../../hooks/useCapabilityDistributions";
 import { Permission } from "../../../types";
-import type { SkillResponse } from "../../../types";
 import { isPermissionError } from "../../governance/frontendGovernanceState";
 import { ConfirmDialog } from "../../common/ConfirmDialog";
-import { CapabilityDistributionAdminCard } from "../CapabilityDistributionAdminCard";
-import { isAiAdminUser } from "../capabilityAdmin";
 import { useSkillsActions } from "./useSkillsActions";
 import { SkillsList } from "./SkillsList";
 import { SkillFormSidebar } from "./SkillFormSidebar";
@@ -37,7 +33,7 @@ export function SkillsPanel({
   onCatalogStateChange,
 }: SkillsPanelProps) {
   const { t } = useTranslation();
-  const { hasAnyPermission, user } = useAuth();
+  const { hasAnyPermission } = useAuth();
 
   const canDelete = hasAnyPermission([Permission.SKILL_DELETE]);
   const canPublishByAuth = hasAnyPermission([Permission.MARKETPLACE_PUBLISH]);
@@ -49,11 +45,6 @@ export function SkillsPanel({
   const permissionDenied = isPermissionError(actions.listError);
   const isGovernedUnavailable = governedUnavailable || permissionDenied;
   const effectivePermissions = new Set(actions.effectivePermissions);
-  const isAiAdmin = isAiAdminUser(user);
-  const skillDistributions = useCapabilityDistributions({
-    capabilityKind: "skill",
-    enabled: isAiAdmin && !isGovernedUnavailable,
-  });
   const canWrite =
     !isGovernedUnavailable &&
     (hasAnyPermission([Permission.SKILL_WRITE]) ||
@@ -70,24 +61,6 @@ export function SkillsPanel({
     skillImportBacked && (canWrite || actions.canAdminUploadSkills);
   const canBatchSkills =
     skillBatchWriteBacked && (canWrite || canDeleteSkill);
-  const renderDistributionAdmin = isAiAdmin
-    ? (skill: SkillResponse) => (
-        <CapabilityDistributionAdminCard
-          capabilityKind="skill"
-          capabilityId={skill.name}
-          distribution={skillDistributions.getDistribution(skill.name)}
-          fallbackStatus={skill.enabled ? "active" : "disabled"}
-          fallbackVisibleToUser={skill.enabled}
-          isBusy={skillDistributions.pendingCapabilityIds.includes(skill.name)}
-          onSave={(payload) =>
-            skillDistributions.saveDistribution(skill.name, payload)
-          }
-          onToggle={(enabled, payload) =>
-            skillDistributions.toggleDistribution(skill.name, enabled, payload)
-          }
-        />
-      )
-    : undefined;
 
   useEffect(() => {
     onCatalogStateChange?.({
@@ -162,14 +135,7 @@ export function SkillsPanel({
         onCreate={actions.handleCreate}
         onGithubClick={actions.handleGithubClick}
         onZipClick={actions.handleZipClick}
-        renderAdminSection={renderDistributionAdmin}
       />
-
-      {isAiAdmin && skillDistributions.error ? (
-        <div className="mx-4 mt-4 rounded-lg border border-[var(--theme-danger-ring)] bg-[var(--theme-danger-soft)] px-3 py-2 text-sm text-[var(--theme-danger)]">
-          {skillDistributions.error}
-        </div>
-      ) : null}
 
       <SkillFormSidebar
         showModal={actions.showModal}
