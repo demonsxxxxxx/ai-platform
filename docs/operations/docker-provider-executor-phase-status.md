@@ -1,0 +1,27 @@
+# Docker Provider Executor Phase Status
+
+Current status: local ordinary-run routing complete; 211 live hardening gate still blocked.
+
+Status:
+- [x] Docker provider executor dispatch wired locally. Evidence: `tests/test_sandbox_container_provider.py`, `tests/test_sandbox_runtime.py`, and `tests/test_sandbox_executor_app.py` pass in the 2026-07-06 local target run.
+- [x] Executor callback event stream covers running, terminal, assistant delta, tool call, and artifact-created events. Evidence: `tests/test_sandbox_executor_app.py` target run passed.
+- [x] Latency split includes queue wait, lease acquire, provider-level container start/cold start, healthcheck, executor dispatch, first token, tool call, artifact upload, cleanup, and total timings. Evidence: `tests/test_sandbox_container_provider.py` and `tests/test_sandbox_runtime.py` target run passed.
+- [x] 211 evidence generator records Claude Agent SDK executor evidence, and verifier/readiness require the full latency split plus that SDK evidence before accepting runtime evidence. Evidence: `tests/test_sandbox_runtime_211_script.py` and `tests/test_b2_sandbox_readiness.py` passed in the 2026-07-06 local verification run.
+- [x] Docker executor container receives an explicit Claude SDK/model gateway environment allowlist. Evidence: `tests/test_sandbox_container_provider.py::test_docker_provider_forwards_executor_sdk_environment` passed.
+- [x] Worker queue wait propagation keeps legacy bool lock-result paths compatible and only injects positive queue wait values into executor input. Evidence: `tests/test_worker.py` target run passed.
+- [x] 211 live ordinary-run Docker routing smoke captured on 2026-07-09. Evidence: inside `ai-platform-worker`, a live `ClaudeAgentWorkerAdapter.submit_run()` smoke for `general-chat` with `execution_tier=heavy_sandbox` returned `adapter_status=succeeded`, `message=OK`, `sandbox_runtime_used=true`, `sandbox_provider=docker`, and `sdk_used=true`; the same run's sandbox lease count moved `2 -> 3`, and the new lease recorded `provider=docker`, `lease_payload.source=sandbox_runtime`, `lease_payload.evidence_class=runtime_lease_projection`, `status=released`, and `release_reason=dispatch_completed`. The live event sink also observed `skills_staged` and `runtime_container_started`. This is worker/adaptor smoke, not public `POST /api/ai/runs` proof.
+- [~] 211 live Claude SDK permission posture drifted after the sandbox overlay refresh. Evidence: the current worker environment on 2026-07-09 shows `CLAUDE_AGENT_PERMISSION_MODE=bypassPermissions`, `CLAUDE_AGENT_ALLOWED_TOOLS=Read,Glob,LS,Bash`, and an empty `CLAUDE_AGENT_DISALLOWED_TOOLS`. Fresh Docker sandbox routing evidence must therefore be kept separate from earlier read-only tool-permission-gate evidence.
+- [~] 211 public run-creation/API smoke is blocked by live schema drift outside this routing change. Evidence: `POST /api/ai/runs` returned HTTP 500 because `tenant_capability_distributions` is missing on the live database, and the current repository `create_run()` helper also failed against the same database because `runs.principal_department_id` does not exist there.
+- [ ] 211 Docker-capable sandbox hardening smoke remains blocked. Evidence: on 2026-07-09, a live executor-image probe on `ai-platform-sandbox-egress` returned generic DNS failure (`URLError` / `Temporary failure in name resolution`) for `https://egress-denied.invalid/` while the callback host still returned HTTP 200, so `generate_sandbox_runtime_evidence_211.py` continues to fail `runtime probe results missing: egress_policy.default_deny_outbound`. This status must remain below `211 verified`.
+
+Fresh local verification on 2026-07-09:
+- `python -m compileall -q app tools scripts`
+- `python -m pytest tests/test_claude_agent_worker_adapter.py tests/test_worker.py tests/test_sandbox_runtime.py tests/test_sandbox_executor_app.py tests/test_runtime_callbacks.py tests/test_sandbox_runtime_211_script.py tests/test_b2_sandbox_readiness.py -q --basetemp .pytest-tmp\ordinary-sandbox-focused-2`
+- `git diff --check`
+
+Notes:
+- The first broad pytest attempt with `--basetemp .pytest-tmp` hit stale unreadable children under `.pytest-tmp`; follow-up verification used fresh child paths under `.pytest-tmp` as required by repo rules.
+- Historical 211 release evidence that lacks `sandbox_queue_wait_latency_ms`, `sandbox_container_start_latency_ms`, `executor_first_token_latency_ms`, `executor_tool_call_latency_ms`, `artifact_upload_latency_ms`, or `executor.sdk_used=true` / `executor.executor_mode=claude_agent_sdk` is stale for this phase and must not be used as fresh runtime closure evidence.
+- The 2026-07-09 ordinary Docker routing smoke must not be summarized as `boundary smoke pass`, `211 verified`, or sandbox hardening closure. It only proves that the ordinary `heavy_sandbox` route can reach a real Docker-backed `SandboxRuntime` path on 211 and persist a real runtime lease instead of fake worker placeholder evidence.
+- The 2026-07-09 public API smoke and hardening smoke are blocked for different reasons and must stay separate in reporting: the API path is blocked by live database schema drift, while the hardening verifier path is blocked by the current `default-deny-no-masq` egress evidence semantics.
+- This phase does not claim G7 production hardening closure and does not claim default-stack Docker socket safety changes.

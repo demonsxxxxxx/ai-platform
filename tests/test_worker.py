@@ -508,7 +508,8 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
         "inputs": "/workspace/inputs",
     }
     assert create_call["lease_payload_json"] == {
-        "source": "worker_run_lifecycle",
+        "source": "sdk_only_lifecycle_placeholder",
+        "evidence_class": "sdk_only_lifecycle_placeholder",
         "executor_type": "fake",
         "worker_id": "worker-a",
     }
@@ -528,6 +529,91 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
     assert next(index for index, item in enumerate(calls) if item[0] == "complete") < next(
         index for index, item in enumerate(calls) if item[0] == "lease_release"
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ordinary_run(monkeypatch):
+    calls = []
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            calls.append(("adapter", payload.run_id, payload.context_snapshot.get("execution_tier")))
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture-adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="capture/1",
+                capabilities={},
+                result={"message": "done"},
+                executor_payload={"sandbox_provider": "docker"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-heavy"
+
+    async def get_context_snapshot_for_worker(conn, **kwargs):
+        return {
+            "id": "ctx-heavy",
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "session_id": kwargs["session_id"],
+            "run_id": kwargs["run_id"],
+            "trace_id": "trace-run-a",
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": "executor",
+            "included_message_ids": [],
+            "included_file_ids": [],
+            "included_artifact_ids": [],
+            "included_memory_record_ids": [],
+            "redaction_summary_json": {},
+            "payload_json": {
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 0,
+                "memory_record_count": 0,
+                "execution_tier": "heavy_sandbox",
+            },
+            "created_at": None,
+        }
+
+    async def create_artifact(conn, **kwargs):
+        return None
+
+    async def complete_run(conn, **kwargs):
+        calls.append(("complete", kwargs["run_id"]))
+
+    async def fail_create_sandbox_lease(*args, **kwargs):
+        raise AssertionError("sandbox-required ordinary runs must rely on SandboxRuntime leases, not worker placeholders")
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+
+    outcome = await process_run_payload(
+        base_payload(
+            executor_type="claude-agent-worker",
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "run code in sandbox", "sandbox_mode": "ephemeral"},
+            context_snapshot_id="ctx-heavy",
+        ),
+        AdapterRegistry({"claude-agent-worker": CaptureAdapter()}),
+    )
+
+    assert outcome.status == "succeeded"
+    assert ("adapter", "run-a", "heavy_sandbox") in calls
 
 
 @pytest.mark.asyncio
@@ -734,6 +820,97 @@ async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_bou
     assert next(index for index, item in enumerate(calls) if item[0] == "cancel") < next(
         index for index, item in enumerate(calls) if item[0] == "lease_release"
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_requested(monkeypatch):
+    calls = []
+    cancel_checks = 0
+
+    class CancelAwareFailureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="failed",
+                adapter_version="adapter/1",
+                executor_type="claude-agent-worker",
+                executor_version="sandbox-runtime/1",
+                capabilities={},
+                result={"message": "executor cancelled after runtime cleanup", "error_code": "executor_failure"},
+                executor_payload={"sandbox_provider": "docker"},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def is_cancel_requested(conn, *, tenant_id, run_id):
+        nonlocal cancel_checks
+        cancel_checks += 1
+        return cancel_checks >= 2
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-cancel"
+
+    async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
+        calls.append(("cancel", run_id, result_json))
+
+    async def fail_run(conn, **kwargs):
+        raise AssertionError("cancel-requested runtime failures must prefer cancelled over failed")
+
+    async def get_context_snapshot_for_worker(conn, **kwargs):
+        return {
+            "id": "ctx-heavy",
+            "tenant_id": kwargs["tenant_id"],
+            "workspace_id": kwargs["workspace_id"],
+            "user_id": kwargs["user_id"],
+            "session_id": kwargs["session_id"],
+            "run_id": kwargs["run_id"],
+            "trace_id": "trace-run-a",
+            "schema_version": "ai-platform.context-snapshot.v1",
+            "context_kind": "executor",
+            "included_message_ids": [],
+            "included_file_ids": [],
+            "included_artifact_ids": [],
+            "included_memory_record_ids": [],
+            "redaction_summary_json": {},
+            "payload_json": {
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 0,
+                "memory_record_count": 0,
+                "execution_tier": "heavy_sandbox",
+            },
+            "created_at": None,
+        }
+
+    async def fail_create_sandbox_lease(*args, **kwargs):
+        raise AssertionError("heavy_sandbox runtime path must not record worker placeholder leases")
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", fail_create_sandbox_lease)
+
+    outcome = await process_run_payload(
+        base_payload(
+            executor_type="claude-agent-worker",
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "run code in sandbox", "sandbox_mode": "ephemeral"},
+            context_snapshot_id="ctx-heavy",
+        ),
+        AdapterRegistry({"claude-agent-worker": CancelAwareFailureAdapter()}),
+    )
+
+    assert outcome.status == "cancelled"
+    assert any(item[0] == "cancel" for item in calls)
+    assert ("event", "run_cancelled", "control") in calls
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,6 @@ from typing import Any, Awaitable, Callable
 import httpx
 
 from app.runtime.sandbox.contracts import ExecutorTaskRequest
-from app.settings import get_settings
 
 
 PostJson = Callable[..., Awaitable[dict[str, Any]]]
@@ -27,9 +26,9 @@ async def _default_post_json(
 
 
 class SandboxExecutorClient:
-    def __init__(self, post_json: PostJson | None = None, timeout_seconds: float | None = None) -> None:
+    def __init__(self, post_json: PostJson | None = None, timeout_seconds: float = 30.0) -> None:
         self._post_json = post_json or _default_post_json
-        self._timeout_seconds = timeout_seconds if timeout_seconds is not None else _default_timeout_seconds()
+        self._timeout_seconds = timeout_seconds
 
     async def execute(
         self,
@@ -40,9 +39,3 @@ class SandboxExecutorClient:
     ) -> dict[str, Any]:
         url = f"{executor_url.rstrip('/')}/v1/tasks/execute"
         return await self._post_json(url, request.model_dump(), self._timeout_seconds, executor_headers)
-
-
-def _default_timeout_seconds() -> float:
-    settings = get_settings()
-    sdk_timeout = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0) or 120.0)
-    return max(30.0, sdk_timeout + 10.0)

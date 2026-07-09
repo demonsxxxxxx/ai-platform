@@ -884,6 +884,29 @@ def _runtime_sandbox_workspace_payload() -> dict[str, str]:
     }
 
 
+def _context_execution_tier(context_snapshot: dict[str, Any]) -> str:
+    value = context_snapshot.get("execution_tier")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _ordinary_run_uses_runtime_sandbox(
+    payload: QueueRunPayload,
+    *,
+    context_snapshot: dict[str, Any],
+) -> bool:
+    return (
+        payload.executor_type == "claude-agent-worker"
+        and payload.agent_id == "general-agent"
+        and payload.skill_id == "general-chat"
+        and _context_execution_tier(context_snapshot) == "heavy_sandbox"
+    )
+
+
+def _result_prefers_cancelled_after_failure(result: ExecutorResult) -> bool:
+    sandbox_provider = str(result.executor_payload.get("sandbox_provider") or "").strip()
+    return sandbox_provider in {"docker", "opensandbox"}
+
+
 async def _create_worker_runtime_sandbox_lease(
     conn,
     *,
@@ -893,7 +916,8 @@ async def _create_worker_runtime_sandbox_lease(
     worker_id: str | None,
 ) -> _WorkerRuntimeSandboxLease:
     lease_payload = {
-        "source": "worker_run_lifecycle",
+        "source": "sdk_only_lifecycle_placeholder",
+        "evidence_class": "sdk_only_lifecycle_placeholder",
         "executor_type": payload.executor_type,
     }
     if worker_id:
@@ -1519,13 +1543,17 @@ async def process_run_payload(
                 )
                 return terminal_after_transaction.outcome
             context_ref = await _ensure_worker_context_snapshot(conn, payload, trace_id=trace_id, run_identity=run_identity)
-            runtime_sandbox_lease = await _create_worker_runtime_sandbox_lease(
-                conn,
-                payload=payload,
-                run_identity=run_identity,
-                trace_id=trace_id,
-                worker_id=worker_id,
-            )
+            if not _ordinary_run_uses_runtime_sandbox(
+                payload,
+                context_snapshot=context_ref["context_snapshot"],
+            ):
+                runtime_sandbox_lease = await _create_worker_runtime_sandbox_lease(
+                    conn,
+                    payload=payload,
+                    run_identity=run_identity,
+                    trace_id=trace_id,
+                    worker_id=worker_id,
+                )
     finally:
         if terminal_after_transaction is not None:
             await _finalize_multi_agent_parent_after_child_commit(
@@ -1907,36 +1935,62 @@ async def process_run_payload(
                     result_capabilities=result.capabilities,
                     result_payload=result_payload,
                 )
-                reconciled_parent = await _fail_run_and_reconcile(
-                    conn,
-                    payload=payload,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    error_code=reported_error_code,
-                    error_message=reported_error_message,
-                    result_json=result_payload,
-                )
-                await append_user_event(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    event_type="run_failed",
-                    stage="worker",
-                    message="Run failed",
-                    payload={"artifact_count": len(result.artifacts), "severity": "error"},
-                    **terminal_event_kwargs,
-                )
-                await repositories.append_event(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    event_type="error",
-                    stage="worker",
-                    message="Run failed",
-                    payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
-                )
-                await release_runtime_sandbox_lease(conn, reason="run_failed")
-                terminal_outcome = WorkerOutcome("failed", payload.run_id, reported_error_code, reported_error_message)
+                if cancel_requested and _result_prefers_cancelled_after_failure(result):
+                    cancel_result = {"message": "任务已取消"}
+                    await repositories.cancel_run(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        result_json=cancel_result,
+                    )
+                    reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
+                        conn,
+                        payload=payload,
+                        child_status="cancelled",
+                        result_json=cancel_result,
+                    )
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="run_cancelled",
+                        stage="control",
+                        message="任务已取消",
+                        payload={"severity": "warning"},
+                    )
+                    await release_runtime_sandbox_lease(conn, reason="run_cancelled")
+                    terminal_outcome = WorkerOutcome("cancelled", payload.run_id)
+                else:
+                    reconciled_parent = await _fail_run_and_reconcile(
+                        conn,
+                        payload=payload,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        error_code=reported_error_code,
+                        error_message=reported_error_message,
+                        result_json=result_payload,
+                    )
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="run_failed",
+                        stage="worker",
+                        message="Run failed",
+                        payload={"artifact_count": len(result.artifacts), "severity": "error"},
+                        **terminal_event_kwargs,
+                    )
+                    await repositories.append_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="error",
+                        stage="worker",
+                        message="Run failed",
+                        payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
+                    )
+                    await release_runtime_sandbox_lease(conn, reason="run_failed")
+                    terminal_outcome = WorkerOutcome("failed", payload.run_id, reported_error_code, reported_error_message)
     finally:
         await cleanup_runtime_sandbox_lease_after_interruption()
     await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)

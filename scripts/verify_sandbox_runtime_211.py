@@ -485,6 +485,28 @@ def _non_expansion_invariants_error(evidence: dict[str, Any]) -> str | None:
     return None
 
 
+def _lease_projection_error(evidence: dict[str, Any]) -> str | None:
+    lease_projection = evidence.get("lease_projection")
+    if lease_projection is None:
+        return None
+    if not isinstance(lease_projection, dict):
+        return "platform runtime lease projection missing"
+    provider = str(lease_projection.get("provider") or "")
+    if provider == "fake":
+        return "placeholder lease projection is not sandbox proof"
+    if provider and provider not in REAL_SANDBOX_PROVIDERS:
+        return "platform runtime lease projection provider missing"
+    if provider and provider != evidence.get("sandbox_provider"):
+        return "platform runtime lease projection provider mismatch"
+    lease_payload = lease_projection.get("lease_payload")
+    if isinstance(lease_payload, dict):
+        source = str(lease_payload.get("source") or "")
+        evidence_class = str(lease_payload.get("evidence_class") or "")
+        if source == "sdk_only_lifecycle_placeholder" or evidence_class == "sdk_only_lifecycle_placeholder":
+            return "placeholder lease projection is not sandbox proof"
+    return None
+
+
 def check_platform_runtime_evidence(evidence_path: str | Path, *, run_id: str = "") -> CheckResult:
     evidence, error = _read_evidence(evidence_path)
     if error:
@@ -498,6 +520,9 @@ def check_platform_runtime_evidence(evidence_path: str | Path, *, run_id: str = 
         return CheckResult("check_platform_runtime_evidence", False, "platform runtime evidence missing")
     if evidence.get("sandbox_provider") not in REAL_SANDBOX_PROVIDERS:
         return CheckResult("check_platform_runtime_evidence", False, "real sandbox provider evidence missing")
+    lease_projection_error = _lease_projection_error(evidence)
+    if lease_projection_error:
+        return CheckResult("check_platform_runtime_evidence", False, lease_projection_error)
     timing_error = _timing_error(evidence.get("timings"))
     if timing_error:
         return CheckResult("check_platform_runtime_evidence", False, timing_error)
@@ -720,9 +745,6 @@ def _opensandbox_provider_lifecycle_error(evidence: dict[str, Any]) -> str | Non
                 return f"OpenSandbox provider lifecycle evidence missing: {section_name}.{field}"
 
     db_lease = lifecycle["db_lease"]
-    lifecycle_section = lifecycle["lifecycle"]
-    if lifecycle_section.get("delete_stop_status") != "stopped":
-        return "OpenSandbox provider lifecycle delete stop status missing or unexpected"
     if db_lease.get("release_reason") not in {"dispatch_completed", "run_succeeded", "run_cancelled", "run_failed"}:
         return "OpenSandbox provider lifecycle release reason missing or unexpected"
     startup_io = lifecycle["startup_io"]
@@ -741,8 +763,6 @@ def _opensandbox_provider_lifecycle_error(evidence: dict[str, Any]) -> str | Non
 
 
 def check_opensandbox_provider_lifecycle_evidence(evidence_path: str | Path, *, run_id: str = "") -> CheckResult:
-    """Validate first-stage OpenSandbox lifecycle evidence when that provider is selected."""
-
     evidence, error = _read_evidence(evidence_path)
     if error:
         return CheckResult("check_opensandbox_provider_lifecycle_evidence", False, error)

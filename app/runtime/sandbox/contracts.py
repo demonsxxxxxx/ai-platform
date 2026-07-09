@@ -3,7 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.runtime.kernel_contracts import AgentEvent
-from app.validation import assert_safe_id, assert_safe_principal_user_id
+from app.validation import assert_safe_id
 
 
 SandboxMode = Literal["ephemeral", "persistent"]
@@ -33,21 +33,22 @@ class SandboxRuntimeRequest(BaseModel):
     queue_wait_ms: int = Field(default=0, ge=0)
     callback_url: str
     callback_token_id: str
+    sdk_session_id: str | None = None
 
-    @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "agent_id", "callback_token_id")
+    @field_validator("tenant_id", "workspace_id", "user_id", "session_id", "run_id", "agent_id", "callback_token_id")
     @classmethod
     def validate_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)
-
-    @field_validator("user_id")
-    @classmethod
-    def validate_user_id(cls, value: str):
-        return assert_safe_principal_user_id(value)
 
     @field_validator("skill_ids", "mcp_tool_ids", "file_ids")
     @classmethod
     def validate_list_ids(cls, values: list[str], info):
         return [assert_safe_id(value, info.field_name) for value in values]
+
+    @field_validator("sdk_session_id")
+    @classmethod
+    def validate_optional_sdk_session_id(cls, value: str | None):
+        return assert_safe_id(value, "sdk_session_id") if value else value
 
 
 class WorkspaceLease(BaseModel):
@@ -64,15 +65,10 @@ class WorkspaceLease(BaseModel):
     inputs_host_path: str
     logs_host_path: str
 
-    @field_validator("tenant_id", "workspace_id", "session_id", "run_id")
+    @field_validator("tenant_id", "workspace_id", "user_id", "session_id", "run_id")
     @classmethod
     def validate_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)
-
-    @field_validator("user_id")
-    @classmethod
-    def validate_user_id(cls, value: str):
-        return assert_safe_principal_user_id(value)
 
     def user_visible_payload(self) -> dict[str, str]:
         return {
@@ -101,15 +97,10 @@ class ContainerLease(BaseModel):
     labels: dict[str, str] = Field(default_factory=dict)
     timings: dict[str, int] = Field(default_factory=dict)
 
-    @field_validator("tenant_id", "workspace_id", "session_id", "run_id")
+    @field_validator("tenant_id", "workspace_id", "user_id", "session_id", "run_id")
     @classmethod
     def validate_ids(cls, value: str, info):
         return assert_safe_id(value, info.field_name)
-
-    @field_validator("user_id")
-    @classmethod
-    def validate_user_id(cls, value: str):
-        return assert_safe_principal_user_id(value)
 
     def platform_labels(self) -> dict[str, str]:
         labels = dict(self.labels)
@@ -145,15 +136,10 @@ class ContainerStatus(BaseModel):
     executor_url: str | None = None
     detail: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("tenant_id", "workspace_id", "session_id", "run_id")
+    @field_validator("tenant_id", "workspace_id", "user_id", "session_id", "run_id")
     @classmethod
     def validate_optional_ids(cls, value: str | None, info):
         return assert_safe_id(value, info.field_name) if value else value
-
-    @field_validator("user_id")
-    @classmethod
-    def validate_optional_user_id(cls, value: str | None):
-        return assert_safe_principal_user_id(value) if value else value
 
 
 class StopResult(BaseModel):
@@ -202,6 +188,34 @@ class ExecutorCallbackEvent(BaseModel):
     sdk_session_id: str | None = None
     error_message: str | None = None
     events: list[AgentEvent] = Field(default_factory=list)
+
+    @field_validator("session_id", "run_id", "callback_token_id")
+    @classmethod
+    def validate_ids(cls, value: str, info):
+        return assert_safe_id(value, info.field_name)
+
+    @field_validator("sdk_session_id")
+    @classmethod
+    def validate_optional_sdk_session_id(cls, value: str | None):
+        return assert_safe_id(value, "sdk_session_id") if value else value
+
+
+class ExecutorToolPermissionRequest(BaseModel):
+    """Sandbox executor callback payload for brokered Claude SDK tool permissions."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    run_id: str
+    callback_token_id: str
+    sdk_session_id: str | None = None
+    tool_name: str
+    tool_input: dict[str, Any] = Field(default_factory=dict)
+    tool_call_id: str = ""
+    action: str = "execute"
+    risk_level: str = "high"
+    write_capable: bool = True
+    reason: str = "Claude SDK tool permission required"
 
     @field_validator("session_id", "run_id", "callback_token_id")
     @classmethod

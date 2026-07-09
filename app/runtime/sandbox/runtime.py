@@ -29,6 +29,7 @@ class SandboxRuntimeResult:
     status: str
     session_id: str
     run_id: str
+    provider: str
     executor_response: dict[str, Any]
     timings: dict[str, Any]
 
@@ -86,22 +87,11 @@ class SandboxRuntime:
             return result
         return None
 
-    async def _call_release_lease(
-        self,
-        lease: ContainerLease,
-        reason: str,
-        lease_record_id: str | None = None,
-        *,
-        stop_result: StopResult | None = None,
-    ) -> None:
-        parameters = inspect.signature(self.release_lease).parameters
-        parameter_values = list(parameters.values())
-        accepts_var_kwargs = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameter_values)
-        release_args = (lease, reason, lease_record_id) if len(parameter_values) >= 3 else (lease, reason)
-        if stop_result is not None and (accepts_var_kwargs or "stop_result" in parameters):
-            result = self.release_lease(*release_args, stop_result=stop_result)
+    async def _call_release_lease(self, lease: ContainerLease, reason: str, lease_record_id: str | None = None) -> None:
+        if len(inspect.signature(self.release_lease).parameters) >= 3:
+            result = self.release_lease(lease, reason, lease_record_id)
         else:
-            result = self.release_lease(*release_args)
+            result = self.release_lease(lease, reason)
         if inspect.isawaitable(result):
             await result
 
@@ -134,9 +124,12 @@ class SandboxRuntime:
         workspace: WorkspaceLease,
     ) -> str | None:
         lease_payload = {
+            "source": "sandbox_runtime",
+            "evidence_class": "runtime_lease_projection",
             "container_id": lease.container_id,
             "container_name": lease.container_name,
             "executor_url": lease.executor_url,
+            "workspace_host_path": lease.workspace_host_path,
             "workspace_container_path": lease.workspace_container_path,
             "labels": dict(lease.labels),
         }
@@ -182,7 +175,7 @@ class SandboxRuntime:
         stop_result = await self.provider.stop(lease, reason=reason)
         if stop_result.status == "failed":
             raise SandboxRuntimeCleanupError(reason=reason, stop_result=stop_result)
-        await self._call_release_lease(lease, reason, lease_record_id, stop_result=stop_result)
+        await self._call_release_lease(lease, reason, lease_record_id)
 
     def _elapsed_ms(self, started_at: float) -> int:
         return max(int(round((time.monotonic() - started_at) * 1000)), 0)
@@ -223,6 +216,7 @@ class SandboxRuntime:
                 callback_token_id=request.callback_token_id,
                 callback_token=self.callback_token_resolver(request.callback_token_id),
                 callback_base_url=self.settings.sandbox_callback_base_url,
+                sdk_session_id=request.sdk_session_id,
                 permission_mode="default",
                 config={
                     "model": request.model,
@@ -266,6 +260,7 @@ class SandboxRuntime:
             status=str(response.get("status") or "accepted"),
             session_id=request.session_id,
             run_id=request.run_id,
+            provider=lease.provider,
             executor_response=response,
             timings={
                 "schema_version": "ai-platform.sandbox-latency-split.v1",

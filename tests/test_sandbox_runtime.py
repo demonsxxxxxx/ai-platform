@@ -283,15 +283,31 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
 
     assert calls == [
         (
-            "create",
-            "run-a",
-            {
-                "container_id": "exec-run-a",
-                "container_name": "executor-exec-run-a",
-                "executor_url": "http://executor.test",
-                "workspace_container_path": "/workspace",
-                "labels": {"ai-platform.run_id": "run-a"},
-            },
+                "create",
+                "run-a",
+                    {
+                        "source": "sandbox_runtime",
+                        "evidence_class": "runtime_lease_projection",
+                        "container_id": "exec-run-a",
+                        "container_name": "executor-exec-run-a",
+                        "executor_url": "http://executor.test",
+                        "workspace_host_path": str(
+                        tmp_path
+                        / "tenants"
+                        / "tenant-a"
+                        / "workspaces"
+                        / "workspace-a"
+                        / "users"
+                        / "user-a"
+                        / "sessions"
+                        / "session-a"
+                        / "runs"
+                        / "run-a"
+                        / "workspace"
+                    ),
+                    "workspace_container_path": "/workspace",
+                    "labels": {"ai-platform.run_id": "run-a"},
+                },
         ),
         ("release_one", "lease-created-a", "dispatch_completed"),
     ]
@@ -413,7 +429,6 @@ async def test_runtime_passes_private_executor_headers_to_dispatch_without_db_le
     )
     assert calls[2] == ("release", "lease-created-a", "dispatch_completed")
     assert "executor_headers" not in create_payload
-    assert "workspace_host_path" not in create_payload
     assert "opensandbox-secret" not in str(create_payload)
 
 
