@@ -2255,6 +2255,7 @@ def test_main_generate_runtime_probe_results_uses_callback_server(tmp_path, monk
 
             assert request.callback_url.startswith("http://127.0.0.1:")
             assert request.callback_url.endswith("/callback")
+            assert request.trace_id == "trace_run_a"
             callback_token = self.callback_token_resolver(request.callback_token_id)
             for status in ("running", "completed"):
                 callback = urllib.request.Request(

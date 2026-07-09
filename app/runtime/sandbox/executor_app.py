@@ -152,17 +152,17 @@ def _normalize_tool_permission_response(result: CallbackResult, *, default_reaso
 
 def _context_retrieval_for_request(
     request: ExecutorTaskRequest,
-) -> tuple[ContextRetrieval | None, ScopedContextRetrievalIdentity | None]:
+) -> tuple[ContextRetrieval | None, ScopedContextRetrievalIdentity | None, str | None]:
     manifest = request.config.get("context_manifest")
     if not isinstance(manifest, dict) or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
-        return None, None
+        return None, None, None
     raw_scope = request.config.get("context_retrieval_scope")
     if not isinstance(raw_scope, dict):
-        return None, None
+        return None, None, "context_retrieval_scope_invalid"
     try:
         scope = ContextRetrievalScope.model_validate(raw_scope)
     except Exception:
-        return None, None
+        return None, None, "context_retrieval_scope_invalid"
     repository = TransactionalContextRetrievalRepository(transaction, storage=ObjectStorage())
     identity = ScopedContextRetrievalIdentity(
         tenant_id=scope.tenant_id,
@@ -172,7 +172,7 @@ def _context_retrieval_for_request(
         run_id=scope.run_id,
         agent_id=scope.agent_id,
     )
-    return ContextRetrieval(repository), identity
+    return ContextRetrieval(repository), identity, None
 
 
 async def _default_executor_runner(
@@ -194,7 +194,16 @@ async def _default_executor_runner(
 
     skill_ids = _task_skill_ids(request)
     model_id = str(request.config.get("model") or "") or None
-    context_retrieval, context_retrieval_identity = _context_retrieval_for_request(request)
+    context_retrieval, context_retrieval_identity, context_retrieval_error = _context_retrieval_for_request(request)
+    if context_retrieval_error:
+        return {
+            "status": "failed",
+            "message": "Context retrieval scope is invalid",
+            "error_code": context_retrieval_error,
+            "error_message": "Context retrieval scope is invalid",
+            "sdk_used": False,
+            "executor_mode": "context_retrieval_invalid",
+        }
 
     async def on_text(delta: str) -> None:
         if not delta:

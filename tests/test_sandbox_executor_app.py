@@ -310,6 +310,29 @@ def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, mo
     assert captured["context_retrieval_identity"].user_id == "user-a"
 
 
+def test_executor_execute_fails_closed_for_manifest_without_valid_scope(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+
+    payload = task_payload("http://platform/callback")
+    payload["config"]["context_manifest"] = {
+        "schema_version": "ai-platform.context-manifest.v1",
+        "available_retrieval_tools": ["read_context_file"],
+    }
+    payload["config"]["context_retrieval_scope"] = {"tenant_id": "tenant-a"}
+
+    client = TestClient(create_executor_app(workspace_root=tmp_path))
+
+    response = client.post("/v1/tasks/execute", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "context_retrieval_scope_invalid"
+
+
 def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeypatch):
     callbacks = []
     calls = {}

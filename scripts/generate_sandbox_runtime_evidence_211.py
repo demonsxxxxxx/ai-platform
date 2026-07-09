@@ -31,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.model_catalog import build_model_catalog, resolve_model_selection
+from app.control_plane_contracts import standard_trace_id
 from app.runtime.sandbox.callback_tokens import derive_callback_token
 from app.sandbox_hardening_contract import safe_bounded_error_projection
 
@@ -1117,6 +1118,7 @@ def run_platform_runtime_probe(
                 browser_enabled=False,
                 model=_configured_platform_runtime_model(settings),
                 resource_limits=resource_limits,
+                trace_id=standard_trace_id(recorder.run_id),
                 callback_url=callback_url,
                 callback_token_id=_callback_token_id_for_url(callback_url, recorder.run_id),
             )
