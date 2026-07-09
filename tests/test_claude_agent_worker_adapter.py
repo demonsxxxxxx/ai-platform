@@ -892,6 +892,149 @@ async def test_general_chat_preserves_cancelled_runtime_terminal_status(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_general_chat_heavy_sandbox_request_carries_context_retrieval_scope(monkeypatch, tmp_path):
+    current_settings = type(
+        "S",
+        (),
+        {
+            "claude_agent_sdk_enabled": True,
+            "claude_agent_workspace_root": str(tmp_path / "a"),
+            "sandbox_workspace_root": str(tmp_path / "s"),
+            "platform_skills_root": str(tmp_path / "k"),
+            "skill_staging_subdir": ".claude/skills",
+            "sandbox_callback_base_url": "http://platform.test",
+            "claude_agent_model": "deepseek-v4-flash",
+        },
+    )()
+    runtime_calls = []
+
+    class FakeRuntime:
+        async def submit(self, request, event_sink=None):
+            runtime_calls.append(request)
+            return types.SimpleNamespace(
+                status="accepted",
+                session_id=request.session_id,
+                run_id=request.run_id,
+                executor_response={"status": "accepted", "message": "sandbox completed", "sdk_used": True},
+                timings={"schema_version": "ai-platform.sandbox-latency-split.v1"},
+            )
+
+    async def no_files(payload, workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.SandboxRuntime",
+        lambda *args, **kwargs: FakeRuntime(),
+        raising=False,
+    )
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+
+    await adapter.submit_run(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "review context file in sandbox", "sandbox_mode": "ephemeral"},
+            context_snapshot={
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_snapshot_id": "ctx-heavy",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 0,
+                "memory_record_count": 0,
+                "execution_tier": "heavy_sandbox",
+            },
+            context_pack={
+                "schema_version": "ai-platform.executor-context-pack.v1",
+                "context_manifest": {
+                    "schema_version": "ai-platform.context-manifest.v1",
+                    "available_retrieval_tools": ["read_context_file"],
+                },
+                "execution_tier": "heavy_sandbox",
+            },
+            trace_id="trace-sdk",
+        )
+    )
+
+    assert runtime_calls[0].context_manifest["available_retrieval_tools"] == ["read_context_file"]
+    assert runtime_calls[0].context_retrieval_scope.user_id == "user-a"
+    assert runtime_calls[0].trace_id == "trace-sdk"
+
+
+@pytest.mark.asyncio
+async def test_general_chat_heavy_sandbox_fails_when_runtime_reports_sdk_disabled(monkeypatch, tmp_path):
+    current_settings = type(
+        "S",
+        (),
+        {
+            "claude_agent_sdk_enabled": True,
+            "claude_agent_workspace_root": str(tmp_path / "a"),
+            "sandbox_workspace_root": str(tmp_path / "s"),
+            "platform_skills_root": str(tmp_path / "k"),
+            "skill_staging_subdir": ".claude/skills",
+            "sandbox_callback_base_url": "http://platform.test",
+            "claude_agent_model": "deepseek-v4-flash",
+        },
+    )()
+
+    class FakeRuntime:
+        async def submit(self, request, event_sink=None):
+            return types.SimpleNamespace(
+                status="failed",
+                session_id=request.session_id,
+                run_id=request.run_id,
+                executor_response={
+                    "status": "failed",
+                    "message": "Claude Agent SDK is disabled",
+                    "error_code": "claude_agent_sdk_disabled",
+                    "error_message": "Claude Agent SDK is disabled",
+                    "sdk_used": False,
+                    "executor_mode": "claude_agent_sdk_disabled",
+                },
+                timings={"schema_version": "ai-platform.sandbox-latency-split.v1"},
+            )
+
+    async def no_files(payload, workspace):
+        return []
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.SandboxRuntime",
+        lambda *args, **kwargs: FakeRuntime(),
+        raising=False,
+    )
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+
+    result = await adapter.submit_run(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "run a shell command in sandbox", "sandbox_mode": "ephemeral"},
+            context_snapshot={
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_snapshot_id": "ctx-heavy",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 0,
+                "memory_record_count": 0,
+                "execution_tier": "heavy_sandbox",
+            },
+            context_pack={
+                "schema_version": "ai-platform.executor-context-pack.v1",
+                "execution_tier": "heavy_sandbox",
+            },
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_disabled"
+
+
+@pytest.mark.asyncio
 async def test_file_skill_uses_controlled_runner_when_sdk_tool_schema_loops(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_runner_skill(tmp_path / "skills")

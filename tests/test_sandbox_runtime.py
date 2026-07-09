@@ -122,6 +122,50 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
 
 
 @pytest.mark.asyncio
+async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp_path, monkeypatch):
+    sent = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    async def execute(executor_url, task_request):
+        sent.append(task_request)
+        return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+        record_lease=noop_lease,
+        release_lease=noop_lease,
+    )
+
+    await runtime.submit(
+        request(
+            context_manifest={
+                "schema_version": "ai-platform.context-manifest.v1",
+                "available_retrieval_tools": ["read_context_file"],
+            },
+            context_retrieval_scope={
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "agent_id": "general-agent",
+            },
+        )
+    )
+
+    assert sent[0].config["context_manifest"]["available_retrieval_tools"] == ["read_context_file"]
+    assert sent[0].config["context_retrieval_scope"]["user_id"] == "user-a"
+
+
+@pytest.mark.asyncio
 async def test_runtime_result_splits_sandbox_cold_start_from_executor_latency(tmp_path, monkeypatch):
     class StubSettings:
         sandbox_callback_base_url = "http://platform.test"
@@ -253,7 +297,7 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
         return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
 
     async def create_sandbox_lease(conn, **kwargs):
-        calls.append(("create", kwargs["run_id"], kwargs["lease_payload_json"]))
+        calls.append(("create", kwargs["run_id"], kwargs["trace_id"], kwargs["lease_payload_json"]))
         return {"id": "lease-created-a"}
 
     async def release_sandbox_lease(conn, **kwargs):
@@ -279,12 +323,13 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
         callback_token_resolver=lambda token_id: "secret-token",
     )
 
-    await runtime.submit(request(sandbox_mode="ephemeral"))
+    await runtime.submit(request(sandbox_mode="ephemeral", trace_id="trace-run-a"))
 
     assert calls == [
         (
                 "create",
                 "run-a",
+                "trace-run-a",
                     {
                         "source": "sandbox_runtime",
                         "evidence_class": "runtime_lease_projection",

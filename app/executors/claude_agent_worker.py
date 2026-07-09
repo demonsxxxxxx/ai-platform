@@ -24,7 +24,7 @@ from app.executors.claude_agent_sdk_runner import (
     run_claude_agent_sdk,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
-from app.runtime.sandbox.contracts import SandboxRuntimeRequest
+from app.runtime.sandbox.contracts import ContextRetrievalScope, SandboxRuntimeRequest
 from app.runtime.sandbox.runtime import SandboxRuntime
 from app.settings import get_settings
 from app.session_continuity import SessionContinuity
@@ -323,6 +323,13 @@ def _runtime_provider(result: object, settings: object) -> str:
         return provider
     configured = str(getattr(settings, "sandbox_container_provider", "") or "").strip()
     return configured or "docker"
+
+
+def _context_manifest_from_pack(context_pack: dict[str, Any]) -> dict[str, Any] | None:
+    manifest = context_pack.get("context_manifest")
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
+        return None
+    return manifest
 
 
 def _runtime_request_skill_ids(payload: RunPayload, prepared: PreparedSdkRun) -> list[str]:
@@ -803,8 +810,8 @@ class ClaudeAgentWorkerAdapter:
         payload: RunPayload,
         context_pack: dict[str, Any],
     ) -> tuple[ContextRetrieval | None, ScopedContextRetrievalIdentity | None]:
-        manifest = context_pack.get("context_manifest")
-        if not isinstance(manifest, dict) or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
+        manifest = _context_manifest_from_pack(context_pack)
+        if manifest is None:
             return None, None
         repository = TransactionalContextRetrievalRepository(transaction, storage=ObjectStorage())
         identity = ScopedContextRetrievalIdentity(
@@ -816,6 +823,22 @@ class ClaudeAgentWorkerAdapter:
             agent_id=payload.agent_id,
         )
         return ContextRetrieval(repository), identity
+
+    def _context_retrieval_scope_for_payload(
+        self,
+        payload: RunPayload,
+        context_pack: dict[str, Any],
+    ) -> ContextRetrievalScope | None:
+        if _context_manifest_from_pack(context_pack) is None:
+            return None
+        return ContextRetrievalScope(
+            tenant_id=payload.tenant_id,
+            workspace_id=payload.workspace_id,
+            user_id=payload.user_id,
+            session_id=payload.session_id,
+            run_id=payload.run_id,
+            agent_id=payload.agent_id,
+        )
 
     async def _prepare_sdk_run(
         self,
@@ -928,6 +951,8 @@ class ClaudeAgentWorkerAdapter:
         event_sink: ExecutorEventSink | None = None,
     ) -> ExecutorResult:
         settings = get_settings()
+        context_pack = self._executor_context_pack(payload)
+        context_manifest = _context_manifest_from_pack(context_pack)
         continuity = await self._session_continuity.resolve(
             tenant_id=payload.tenant_id,
             workspace_id=payload.workspace_id,
@@ -956,8 +981,11 @@ class ClaudeAgentWorkerAdapter:
             model=payload.model_value or payload.model_id or getattr(settings, "claude_agent_model", ""),
             resource_limits=_payload_resource_limits(payload),
             queue_wait_ms=_payload_queue_wait_ms(payload),
+            trace_id=payload.trace_id or standard_trace_id(payload.run_id),
             callback_url=_sandbox_callback_url(settings),
             callback_token_id=f"cbt_{payload.run_id}",
+            context_manifest=dict(context_manifest or {}),
+            context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             sdk_session_id=continuity.sdk_session_id,
         )
         runtime = SandboxRuntime(workspace_root=settings.sandbox_workspace_root)

@@ -57,13 +57,34 @@ def test_executor_health_returns_ready(tmp_path):
     assert response.json() == {"status": "ready"}
 
 
-def test_executor_execute_posts_running_and_completed_callbacks(tmp_path):
+def test_executor_execute_posts_running_and_completed_callbacks(tmp_path, monkeypatch):
     callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "sdk final",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "error": None,
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
 
     def callback_sender(url, payload, token):
         callbacks.append((url, payload, token))
         return {"accepted": True}
 
+    # keep this focused on the default happy path instead of the disabled fail-closed branch
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = TestClient(
         create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender)
     )
@@ -220,6 +241,75 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     )
 
 
+def test_executor_execute_fails_when_claude_sdk_disabled(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = False
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+
+    client = TestClient(create_executor_app(workspace_root=tmp_path))
+
+    response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "claude_agent_sdk_disabled"
+    assert body["executor_mode"] == "claude_agent_sdk_disabled"
+
+
+def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, monkeypatch):
+    captured = {}
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        captured["context_retrieval"] = kwargs["context_retrieval"]
+        captured["context_retrieval_identity"] = kwargs["context_retrieval_identity"]
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "sdk final",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "error": None,
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+
+    payload = task_payload("http://platform/callback")
+    payload["config"]["context_manifest"] = {
+        "schema_version": "ai-platform.context-manifest.v1",
+        "available_retrieval_tools": ["read_context_file"],
+    }
+    payload["config"]["context_retrieval_scope"] = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "agent_id": "general-agent",
+    }
+
+    client = TestClient(create_executor_app(workspace_root=tmp_path))
+
+    response = client.post("/v1/tasks/execute", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+    assert captured["context_retrieval"] is not None
+    assert captured["context_retrieval_identity"].tenant_id == "tenant-a"
+    assert captured["context_retrieval_identity"].workspace_id == "workspace-a"
+    assert captured["context_retrieval_identity"].user_id == "user-a"
+
+
 def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeypatch):
     callbacks = []
     calls = {}
@@ -320,15 +410,35 @@ def test_executor_execute_reports_platform_timeout_probe_as_failed_callback(tmp_
     assert str(tmp_path) not in str(body)
 
 
-def test_executor_execute_does_not_truncate_fractional_positive_timeout(tmp_path):
+def test_executor_execute_does_not_truncate_fractional_positive_timeout(tmp_path, monkeypatch):
     callbacks = []
     payload = task_payload("http://platform/callback")
     payload["config"]["resource_limits"] = {"max_seconds": 0.5}
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "sdk final",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "error": None,
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
 
     def callback_sender(url, payload, token):
         callbacks.append((url, payload, token))
         return {"accepted": True}
 
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
 
     response = client.post("/v1/tasks/execute", json=payload)
@@ -379,8 +489,26 @@ def test_executor_marker_redacts_unapproved_config_and_tokens(tmp_path):
     assert "secret" not in content
 
 
-def test_executor_execute_reports_callback_errors_without_raising(tmp_path):
+def test_executor_execute_reports_callback_errors_without_raising(tmp_path, monkeypatch):
     callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "sdk final",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "error": None,
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
 
     def callback_sender(url, payload, token):
         callbacks.append(payload["status"])
@@ -388,6 +516,8 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path):
             raise RuntimeError("callback failed")
         return {"accepted": True}
 
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
 
     response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
@@ -402,13 +532,33 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path):
     assert callbacks == ["running", "completed"]
 
 
-def test_executor_completed_callback_marker_path_is_container_path(tmp_path):
+def test_executor_completed_callback_marker_path_is_container_path(tmp_path, monkeypatch):
     callbacks = []
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "sdk final",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "error": None,
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
 
     def callback_sender(url, payload, token):
         callbacks.append(payload)
         return {"accepted": True}
 
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
 
     response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))

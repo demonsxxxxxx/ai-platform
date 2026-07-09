@@ -141,7 +141,7 @@ class SandboxRuntime:
                 user_id=lease.user_id,
                 session_id=lease.session_id,
                 run_id=lease.run_id,
-                trace_id="",
+                trace_id=request.trace_id,
                 sandbox_mode=lease.sandbox_mode,
                 provider=lease.provider,
                 browser_enabled=lease.browser_enabled,
@@ -208,6 +208,19 @@ class SandboxRuntime:
         try:
             await self._emit(event_sink, container_started_event(lease))
 
+            task_config = {
+                "model": request.model,
+                "browser_enabled": request.browser_enabled,
+                "resource_limits": request.resource_limits,
+                "skill_ids": request.skill_ids,
+                "mcp_tool_ids": request.mcp_tool_ids,
+                "input_files": request.file_ids,
+            }
+            if request.context_manifest:
+                task_config["context_manifest"] = dict(request.context_manifest)
+            if request.context_retrieval_scope is not None:
+                task_config["context_retrieval_scope"] = request.context_retrieval_scope.model_dump()
+
             task_request = ExecutorTaskRequest(
                 session_id=request.session_id,
                 run_id=request.run_id,
@@ -218,14 +231,7 @@ class SandboxRuntime:
                 callback_base_url=self.settings.sandbox_callback_base_url,
                 sdk_session_id=request.sdk_session_id,
                 permission_mode="default",
-                config={
-                    "model": request.model,
-                    "browser_enabled": request.browser_enabled,
-                    "resource_limits": request.resource_limits,
-                    "skill_ids": request.skill_ids,
-                    "mcp_tool_ids": request.mcp_tool_ids,
-                    "input_files": request.file_ids,
-                },
+                config=task_config,
             )
             dispatch_started_at = time.monotonic()
             response = await self._call_execute_task(lease.executor_url, task_request, lease.executor_headers)

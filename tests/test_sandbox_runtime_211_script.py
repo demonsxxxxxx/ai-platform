@@ -1164,6 +1164,44 @@ def test_submit_executor_task_marks_executed_after_http_success():
     assert body["config"]["resource_limits"]["max_seconds"] == 60
 
 
+def test_submit_executor_task_derives_platform_callback_auth():
+    generator = load_generator()
+    requests = []
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+
+        class Response:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def read(self):
+                return b'{"status":"accepted","run_id":"run-a"}'
+
+        return Response()
+
+    response = generator.submit_executor_task(
+        executor_url="http://executor.test",
+        callback_url="http://platform.test/api/ai/runtime/callbacks/executor",
+        callback_token="secret-token",
+        run_id="run-a",
+        workspace_root="/workspace",
+        urlopen=fake_urlopen,
+    )
+
+    from app.runtime.sandbox.callback_tokens import derive_callback_token
+
+    assert response == {"status": "accepted", "run_id": "run-a"}
+    body = json.loads(requests[0][0].data.decode("utf-8"))
+    assert body["callback_token_id"] == "cbt_run-a"
+    assert body["callback_token"] == derive_callback_token("secret-token", "cbt_run-a")
+
+
 def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
     generator = load_generator()
     verifier = load_verifier()

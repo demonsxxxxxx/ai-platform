@@ -9,10 +9,23 @@ from typing import Any, Awaitable, Callable
 import httpx
 from fastapi import FastAPI
 
-from app.executors.claude_agent_sdk_runner import ClaudeAgentSdkNotAvailable, run_claude_agent_sdk
+from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
+from app.context_retrieval import ContextRetrieval, TransactionalContextRetrievalRepository
+from app.db import transaction
+from app.executors.claude_agent_sdk_runner import (
+    ClaudeAgentSdkNotAvailable,
+    ScopedContextRetrievalIdentity,
+    run_claude_agent_sdk,
+)
 from app.runtime.kernel_contracts import AgentEvent
-from app.runtime.sandbox.contracts import ExecutorCallbackEvent, ExecutorTaskRequest, ExecutorToolPermissionRequest
+from app.runtime.sandbox.contracts import (
+    ContextRetrievalScope,
+    ExecutorCallbackEvent,
+    ExecutorTaskRequest,
+    ExecutorToolPermissionRequest,
+)
 from app.settings import get_settings
+from app.storage import ObjectStorage
 
 
 CallbackPayload = dict[str, Any]
@@ -137,6 +150,31 @@ def _normalize_tool_permission_response(result: CallbackResult, *, default_reaso
     }
 
 
+def _context_retrieval_for_request(
+    request: ExecutorTaskRequest,
+) -> tuple[ContextRetrieval | None, ScopedContextRetrievalIdentity | None]:
+    manifest = request.config.get("context_manifest")
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
+        return None, None
+    raw_scope = request.config.get("context_retrieval_scope")
+    if not isinstance(raw_scope, dict):
+        return None, None
+    try:
+        scope = ContextRetrievalScope.model_validate(raw_scope)
+    except Exception:
+        return None, None
+    repository = TransactionalContextRetrievalRepository(transaction, storage=ObjectStorage())
+    identity = ScopedContextRetrievalIdentity(
+        tenant_id=scope.tenant_id,
+        workspace_id=scope.workspace_id,
+        user_id=scope.user_id,
+        session_id=scope.session_id,
+        run_id=scope.run_id,
+        agent_id=scope.agent_id,
+    )
+    return ContextRetrieval(repository), identity
+
+
 async def _default_executor_runner(
     request: ExecutorTaskRequest,
     workspace_root: Path,
@@ -146,14 +184,17 @@ async def _default_executor_runner(
 ) -> dict[str, Any]:
     if getattr(get_settings(), "claude_agent_sdk_enabled", False) is not True:
         return {
-            "status": "completed",
-            "message": "Sandbox marker completed",
+            "status": "failed",
+            "message": "Claude Agent SDK is disabled",
+            "error_code": "claude_agent_sdk_disabled",
+            "error_message": "Claude Agent SDK is disabled",
             "sdk_used": False,
-            "executor_mode": "marker_fallback",
+            "executor_mode": "claude_agent_sdk_disabled",
         }
 
     skill_ids = _task_skill_ids(request)
     model_id = str(request.config.get("model") or "") or None
+    context_retrieval, context_retrieval_identity = _context_retrieval_for_request(request)
 
     async def on_text(delta: str) -> None:
         if not delta:
@@ -232,6 +273,8 @@ async def _default_executor_runner(
             session_id=request.sdk_session_id,
             model_id=model_id,
             skills=skill_ids,
+            context_retrieval=context_retrieval,
+            context_retrieval_identity=context_retrieval_identity,
             on_text=on_text,
             on_skill_use=on_skill_use,
             on_tool_permission=on_tool_permission,
