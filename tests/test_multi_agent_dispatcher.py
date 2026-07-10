@@ -489,7 +489,120 @@ async def test_worker_dispatcher_skips_conflicted_candidate_without_enqueue(monk
     )
 
     assert result == [{"run_id": "run-parent", "status": "skipped", "reason": "dispatch_step_not_pending"}]
-    assert calls == [("tx_enter",), ("tx_exit", True), ("tx_enter",), ("tx_exit", True)]
+    assert calls == [("tx_enter",), ("tx_exit", True), ("tx_enter",), ("tx_exit", False)]
+
+
+@pytest.mark.asyncio
+async def test_worker_dispatcher_rolls_back_claim_and_child_when_queue_preparation_conflicts(monkeypatch):
+    from app import multi_agent_dispatcher
+
+    calls = []
+
+    class Settings:
+        multi_agent_dispatch_worker_enabled = True
+        multi_agent_dispatch_worker_interval_seconds = 30.0
+        multi_agent_dispatch_worker_limit = 1
+        multi_agent_dispatch_worker_user_id = "system:multi-agent-dispatcher"
+        default_tenant_id = "default"
+        multi_agent_dispatch_lease_ttl_seconds = 300
+        max_active_runs_per_user = 3
+
+    class Transaction:
+        async def __aenter__(self):
+            calls.append(("tx_enter",))
+            return "conn"
+
+        async def __aexit__(self, exc_type, exc, tb):
+            calls.append(("tx_exit", exc_type.__name__ if exc_type else None))
+            return False
+
+    async def list_candidates(conn, *, tenant_id, limit):
+        return ["run-parent"]
+
+    async def get_run(conn, *, tenant_id, run_id, for_update=False):
+        return {
+            "id": "run-parent",
+            "tenant_id": "default",
+            "trace_id": "trace-parent",
+            "status": "running",
+            "input_json": {
+                "input": {
+                    "execution_mode": "multi_agent",
+                    "multi_agent_steps": [{"step_key": "code", "depends_on": []}],
+                }
+            },
+        }
+
+    async def list_steps(conn, *, tenant_id, run_id):
+        return []
+
+    async def claim(conn, **kwargs):
+        calls.append(("claim", kwargs["step_key"]))
+        return {
+            "dispatch_id": "dispatch-code",
+            "event_id": "evt-claim",
+            "audit_id": "aud-claim",
+            "step": {"id": "step-code", "step_key": "code"},
+        }
+
+    async def handoff(conn, **kwargs):
+        calls.append(("handoff", kwargs["dispatch_id"]))
+        return {
+            "child_run_id": "run-child",
+            "run_id": "run-child",
+            "parent_step_id": "step-code",
+            "step_key": "code",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "workspace_id": "default",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "principal_roles": ["user"],
+            "principal_department_id": "qa",
+            "auth_source": "session-token",
+        }
+
+    async def reject_prepare(*args, **kwargs):
+        calls.append(("prepare", kwargs["copied"]["run_id"]))
+        raise RepositoryConflictError("skill_version_not_released")
+
+    async def fail_enqueue(*args, **kwargs):
+        raise AssertionError("rolled-back dispatch must not enqueue")
+
+    monkeypatch.setattr(multi_agent_dispatcher, "_next_multi_agent_dispatch_at", 0.0, raising=False)
+    monkeypatch.setattr(multi_agent_dispatcher, "transaction", lambda: Transaction())
+    monkeypatch.setattr(
+        multi_agent_dispatcher.repositories,
+        "list_multi_agent_dispatch_candidate_run_ids",
+        list_candidates,
+        raising=False,
+    )
+    monkeypatch.setattr(multi_agent_dispatcher.repositories, "get_run", get_run, raising=False)
+    monkeypatch.setattr(multi_agent_dispatcher.repositories, "list_run_steps", list_steps, raising=False)
+    monkeypatch.setattr(multi_agent_dispatcher.repositories, "claim_multi_agent_dispatch_step", claim, raising=False)
+    monkeypatch.setattr(
+        multi_agent_dispatcher.repositories,
+        "create_multi_agent_dispatch_child_run",
+        handoff,
+        raising=False,
+    )
+    monkeypatch.setattr(multi_agent_dispatcher, "prepare_copied_run_for_queue", reject_prepare)
+    monkeypatch.setattr(multi_agent_dispatcher, "enqueue_run", fail_enqueue)
+
+    result = await multi_agent_dispatcher.dispatch_multi_agent_ready_steps_for_worker(Settings(), now=10.0)
+
+    assert result == [
+        {"run_id": "run-parent", "status": "skipped", "reason": "skill_version_not_released"}
+    ]
+    assert calls == [
+        ("tx_enter",),
+        ("tx_exit", None),
+        ("tx_enter",),
+        ("claim", "code"),
+        ("handoff", "dispatch-code"),
+        ("prepare", "run-child"),
+        ("tx_exit", "RepositoryConflictError"),
+    ]
 
 
 @pytest.mark.asyncio

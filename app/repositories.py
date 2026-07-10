@@ -6,7 +6,7 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
-from app.auth import normalize_roles
+from app.auth import ADMIN_ROLE_ALIASES, normalize_roles
 from app.capability_distribution import (
     CapabilityAccessDecision,
     CapabilityAccessContext,
@@ -479,11 +479,20 @@ async def list_lambchat_agents(conn: AsyncConnection, *, tenant_id: str) -> list
           agents.agent_type,
           agents.default_skill_id,
           agents.status,
-          skills.version as skill_version,
+          coalesce(skill_release_policies.current_version, skills.version) as skill_version,
+          coalesce(skill_versions.status, 'active') as skill_version_status,
           skills.input_modes,
           skills.output_modes
         from agents
         join skills on skills.id = agents.default_skill_id
+        left join skill_release_policies
+          on skill_release_policies.tenant_id = agents.tenant_id
+         and skill_release_policies.skill_id = skills.id
+         and skill_release_policies.channel = 'stable'
+         and skill_release_policies.status = 'active'
+        left join skill_versions
+          on skill_versions.skill_id = skills.id
+         and skill_versions.version = coalesce(skill_release_policies.current_version, skills.version)
         where agents.tenant_id = %s
           and agents.id in ('general-agent', 'baoyu-translate', 'qa-word-review')
           and agents.status = 'active'
@@ -533,12 +542,15 @@ async def list_principal_lambchat_agents(
     authorized_rows: list[dict[str, Any]] = []
     for row in rows:
         skill_id = str(row.get("default_skill_id") or "")
+        lifecycle_status = str(row.get("status") or "disabled")
+        if not is_user_runnable_status(row.get("skill_version_status", "active")):
+            lifecycle_status = "disabled"
         decision = resolve_capability_access(
             context,
             CapabilityDistributionSubject(
                 capability_kind="skill",
                 capability_id=skill_id,
-                lifecycle_status=str(row.get("status") or "disabled"),
+                lifecycle_status=lifecycle_status,
                 distribution=distribution_by_skill.get(skill_id),
             ),
             intent="discover",
@@ -1006,7 +1018,7 @@ def _capability_distribution_string_list(value: Any) -> list[str]:
         except json.JSONDecodeError:
             raise RepositoryConflictError("capability_distribution_scope_invalid")
     if isinstance(value, (list, tuple)):
-        if any(not isinstance(item, str) or not item for item in value):
+        if any(not isinstance(item, str) or not item.strip() for item in value):
             raise RepositoryConflictError("capability_distribution_scope_invalid")
         return list(value)
     raise RepositoryConflictError("capability_distribution_scope_invalid")
@@ -7052,11 +7064,25 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         return None
     source_input = source["input_json"] if isinstance(source.get("input_json"), dict) else {}
     sanitized_source_input = strip_caller_run_auth_snapshot_fields(sanitize_user_control_input(source_input))
-    skill = await resolve_agent_skill(
+    inherited_roles = normalize_roles(source.get("principal_roles") or [])
+    inherited_department_id = str(source.get("principal_department_id") or "")
+    inherited_auth_source = source.get("auth_source")
+    source_execution_input = source_input.get("input") if isinstance(source_input.get("input"), dict) else source_input
+    if isinstance(source_execution_input, dict):
+        source_execution_input = normalize_run_input_for_enqueue(source_execution_input, redact_public=True)
+        source_execution_input.pop("resume", None)
+    else:
+        source_execution_input = {}
+    skill = await authorize_run_capabilities(
         conn,
         tenant_id=tenant_id,
         agent_id=source["agent_id"],
         skill_id=source["skill_id"],
+        normalized_input=source_execution_input,
+        principal_department_id=inherited_department_id,
+        principal_roles=inherited_roles,
+        is_admin=bool(set(inherited_roles).intersection(ADMIN_ROLE_ALIASES)),
+        permissions=[],
     )
     executor_type = str(skill["executor_type"])
     release_decision = resolve_rollout_skill_decision(
@@ -7068,16 +7094,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     skill_version = release_decision.selected_version
     release_decision_payload = release_decision.to_payload()
     release_policy_version = skill_version if release_decision.policy_active else ""
-    inherited_roles = normalize_roles(source.get("principal_roles") or [])
-    inherited_department_id = str(source.get("principal_department_id") or "")
-    inherited_auth_source = source.get("auth_source")
     new_run_id = new_id("run")
-    source_execution_input = source_input.get("input") if isinstance(source_input.get("input"), dict) else source_input
-    if isinstance(source_execution_input, dict):
-        source_execution_input = normalize_run_input_for_enqueue(source_execution_input, redact_public=True)
-        source_execution_input.pop("resume", None)
-    else:
-        source_execution_input = {}
     copied_execution_input = {**source_execution_input, "copied_from_run_id": run_id}
     completed_step_outputs, completed_step_checkpoints = await _completed_steps_for_resume(
         conn,

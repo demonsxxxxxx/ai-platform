@@ -6371,6 +6371,61 @@ async def test_worker_locked_snapshot_invalid_never_falls_back_to_queue_mcp_inpu
 
 
 @pytest.mark.asyncio
+async def test_worker_invalid_locked_child_snapshot_reconciles_parent_after_commit(monkeypatch):
+    dispatch_input = {
+        "mode": "file",
+        "multi_agent_dispatch": {
+            "parent_run_id": "run-parent",
+            "parent_step_id": "step-code",
+            "dispatch_id": "dispatch-code",
+            "step_key": "code",
+        },
+    }
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input=dispatch_input,
+        queue_input=dispatch_input,
+    )
+    state["locked_run"]["input_json"]["skill_manifests"] = []
+
+    async def reconcile(conn, **kwargs):
+        calls.append(("reconcile", kwargs))
+        return {"parent_run_id": "run-parent"}
+
+    async def finalize(conn, **kwargs):
+        calls.append(("finalize", kwargs))
+        return {"parent_run_id": "run-parent", "status": "failed"}
+
+    monkeypatch.setattr(
+        "app.worker.repositories.reconcile_multi_agent_child_run_terminal_state",
+        reconcile,
+    )
+    monkeypatch.setattr(
+        "app.worker.repositories.finalize_multi_agent_parent_run_if_ready",
+        finalize,
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    reconcile_call = next(call[1] for call in calls if call[0] == "reconcile")
+    assert reconcile_call["child_run_id"] == "run-a"
+    assert reconcile_call["child_status"] == "failed"
+    assert reconcile_call["error_code"] == "capability_not_authorized"
+    assert [call[1] for call in calls if call[0] == "finalize"] == [
+        {
+            "tenant_id": "tenant-a",
+            "parent_run_id": "run-parent",
+            "triggered_by_child_run_id": "run-a",
+        }
+    ]
+    assert next(index for index, call in enumerate(calls) if call[0] == "fail") < next(
+        index for index, call in enumerate(calls) if call[0] == "reconcile"
+    )
+
+
+@pytest.mark.asyncio
 async def test_worker_allow_once_is_not_consumed_when_later_mcp_distribution_denies(monkeypatch):
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,

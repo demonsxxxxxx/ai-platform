@@ -40,6 +40,7 @@ from app.models import (
     PublishToMarketplaceRequest,
 )
 from app.settings import get_settings
+from app.skills.lifecycle import is_user_runnable_status
 from app.skills.packages import MAX_SKILL_PACKAGE_TOTAL_BYTES, ParsedSkillPackage, parse_skill_package_zip
 from app.skills.github_import import (
     GitHubImportError,
@@ -342,7 +343,12 @@ def _attach_user_file_overlays(
 
 
 def _skill_lifecycle_status(row: dict[str, Any]) -> str:
-    return str(row.get("lifecycle_status") or row.get("status") or "disabled")
+    lifecycle_status = str(row.get("lifecycle_status") or row.get("status") or "disabled")
+    if lifecycle_status != "active":
+        return lifecycle_status
+    if not is_user_runnable_status(row.get("version_status", "active")):
+        return "disabled"
+    return lifecycle_status
 
 
 async def _audit_skill_admin_bypass(
@@ -383,7 +389,7 @@ async def _public_catalog_rows(
         rows = await repositories.list_public_skill_catalog(
             conn,
             tenant_id=principal.tenant_id,
-            include_disabled=True,
+            include_disabled=include_disabled,
         )
         distributions = await repositories.list_capability_distribution_rows(
             conn,
@@ -449,7 +455,7 @@ async def _public_skill_access(
         rows = await repositories.list_public_skill_catalog(
             conn,
             tenant_id=principal.tenant_id,
-            include_disabled=True,
+            include_disabled=False,
         )
         row = _find_row(rows, skill_name=skill_name)
         distribution = await repositories.get_capability_distribution_row(

@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 import io
 import zipfile
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -616,7 +617,64 @@ def test_public_skill_reads_hide_disabled_tenant_availability(monkeypatch):
     assert marketplace_file_response.json()["detail"] == "skill_not_found"
 
     assert calls
-    assert all(call["include_disabled"] is True for call in calls)
+    assert all(call["include_disabled"] is False for call in calls)
+
+
+@pytest.mark.parametrize("version_status", ["draft", "reviewed", "disabled", "deprecated"])
+def test_public_skill_reads_hide_non_runnable_versions(monkeypatch, version_status):
+    from app.routes import skills_marketplace
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    calls = []
+    row = dict(_catalog_rows()[0])
+    row.update(lifecycle_status="active", version_status=version_status)
+
+    async def fake_list(conn, *, tenant_id, include_disabled=False):
+        calls.append(include_disabled)
+        return [dict(row)]
+
+    async def fake_list_overlays(conn, *, tenant_id, user_id, skill_ids, include_content=False):
+        return []
+
+    async def fake_list_distributions(conn, *, tenant_id, capability_kind=None, include_disabled=True):
+        return [
+            {
+                "capability_kind": "skill",
+                "capability_id": "qa-file-reviewer",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+                "metadata_json": {},
+            }
+        ]
+
+    async def fake_get_distribution(conn, *, tenant_id, capability_kind, capability_id):
+        return (await fake_list_distributions(conn, tenant_id=tenant_id))[0]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr(skills_marketplace, "transaction", fake_transaction)
+    monkeypatch.setattr(skills_marketplace.repositories, "list_public_skill_catalog", fake_list)
+    monkeypatch.setattr(skills_marketplace.repositories, "list_user_skill_file_overlays", fake_list_overlays)
+    monkeypatch.setattr(skills_marketplace.repositories, "list_capability_distribution_rows", fake_list_distributions)
+    monkeypatch.setattr(skills_marketplace.repositories, "get_capability_distribution_row", fake_get_distribution)
+    client = TestClient(create_app())
+
+    assert client.get("/api/skills/", headers=headers()).json()["skills"] == []
+    assert client.get("/api/skills/qa-file-reviewer", headers=headers()).status_code == 404
+    assert client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=headers()).status_code == 404
+    assert client.get("/api/marketplace/", headers=headers()).json()["skills"] == []
+    assert client.get("/api/marketplace/qa-file-reviewer", headers=headers()).status_code == 404
+    assert client.get("/api/marketplace/qa-file-reviewer/files", headers=headers()).status_code == 404
+    assert client.get(
+        "/api/marketplace/qa-file-reviewer/files/SKILL.md",
+        headers=headers(),
+    ).status_code == 404
+    assert calls and all(include_disabled is False for include_disabled in calls)
 
 
 def test_skill_and_marketplace_write_contracts_fail_closed_without_permissions(monkeypatch):

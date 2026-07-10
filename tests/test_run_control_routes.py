@@ -3912,6 +3912,15 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
         return {"executor_type": "claude-agent-worker", "skill_version": "2.0.0"}
 
     monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(
+        "app.repositories.authorize_run_capabilities",
+        lambda conn, **kwargs: fake_resolve_agent_skill(
+            conn,
+            tenant_id=kwargs["tenant_id"],
+            agent_id=kwargs["agent_id"],
+            skill_id=kwargs["skill_id"],
+        ),
+    )
 
     conn = RecordingConnection()
     copied = await repositories.copy_run_as_new_task(
@@ -3999,6 +4008,15 @@ async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monke
 
     monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
     monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_rollout_agent_skill)
+    monkeypatch.setattr(
+        "app.repositories.authorize_run_capabilities",
+        lambda conn, **kwargs: fake_resolve_rollout_agent_skill(
+            conn,
+            tenant_id=kwargs["tenant_id"],
+            agent_id=kwargs["agent_id"],
+            skill_id=kwargs["skill_id"],
+        ),
+    )
     conn = RecordingConnection()
 
     copied = await repositories.copy_run_as_new_task(

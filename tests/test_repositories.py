@@ -281,7 +281,7 @@ async def test_capability_distribution_list_and_get_normalize_array_and_json_pro
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "allowed_roles",
-    ['{"unexpected":"object"}', '[1,"qa"]', '[""]'],
+    ['{"unexpected":"object"}', '[1,"qa"]', '[""]', '["   "]'],
 )
 async def test_capability_distribution_projection_rejects_malformed_allowed_roles(allowed_roles):
     row = {

@@ -1401,10 +1401,11 @@ async def _append_worker_capability_denial_evidence(
 async def _fail_locked_run_snapshot(
     conn,
     *,
+    payload: QueueRunPayload,
     locked_run: object,
     run_identity: dict[str, str],
     trace_id: str,
-) -> WorkerOutcome:
+) -> _WorkerTerminalAfterTransaction:
     error_code = "capability_not_authorized"
     error_message = "Capability is not authorized for this run"
     principal = _locked_run_principal(locked_run, run_identity)
@@ -1413,8 +1414,9 @@ async def _fail_locked_run_snapshot(
         run_identity["skill_id"],
         _denied_capability_decision("locked_snapshot_invalid"),
     )
-    await repositories.fail_run(
+    reconciled_parent = await _fail_run_and_reconcile(
         conn,
+        payload=payload,
         tenant_id=run_identity["tenant_id"],
         run_id=run_identity["run_id"],
         error_code=error_code,
@@ -1429,7 +1431,11 @@ async def _fail_locked_run_snapshot(
         policy="locked_run_snapshot",
         error_message=error_message,
     )
-    return WorkerOutcome("failed", run_identity["run_id"], error_code, error_message)
+    return _WorkerTerminalAfterTransaction(
+        WorkerOutcome("failed", run_identity["run_id"], error_code, error_message),
+        payload,
+        reconciled_parent,
+    )
 
 
 async def _fail_worker_capability_authorization(
@@ -1795,12 +1801,14 @@ async def process_run_payload(
                 run_identity=run_identity,
             )
             if locked_payload is None:
-                return await _fail_locked_run_snapshot(
+                terminal_after_transaction = await _fail_locked_run_snapshot(
                     conn,
+                    payload=payload,
                     locked_run=locked,
                     run_identity=run_identity,
                     trace_id=trace_id,
                 )
+                return terminal_after_transaction.outcome
             payload = locked_payload
             capability_authorization = await _reauthorize_worker_capabilities(
                 conn,

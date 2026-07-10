@@ -3364,6 +3364,102 @@ async def test_copy_retry_resume_capability_lifecycle_denial_returns_403_without
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("route", [runs_module.copy_run, runs_module.retry_run, runs_module.resume_run])
+@pytest.mark.parametrize(
+    "resolver_error",
+    [
+        "agent_inactive",
+        "skill_inactive",
+        "skill_version_not_released",
+        "executor_type_not_allowed",
+        "agent_skill_mismatch",
+    ],
+)
+async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits(
+    monkeypatch,
+    route,
+    resolver_error,
+):
+    audits = []
+    source_run = {
+        "id": "run-original",
+        "tenant_id": "tenant-a",
+        "workspace_id": "default",
+        "session_id": "ses-original",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "failed",
+        "input_json": {"input": {"message": "retry"}},
+        "principal_roles": ["user"],
+        "principal_department_id": "qa",
+        "auth_source": "session-token",
+    }
+
+    async def get_authorized_run(conn, **kwargs):
+        return dict(source_run)
+
+    async def reject_selector(*args, **kwargs):
+        raise RepositoryConflictError(resolver_error)
+
+    async def no_active_run(*args, **kwargs):
+        return None
+
+    async def completed_steps(*args, **kwargs):
+        return {"step-a": "done"}, {}
+
+    async def allow_admission(*args, **kwargs):
+        return 0
+
+    async def record_audit(conn, **kwargs):
+        audits.append(
+            (
+                kwargs["source"],
+                kwargs["error"].denial.capability_id,
+                kwargs["error"].denial.decision_reason,
+            )
+        )
+        return "aud-denied"
+
+    async def fail_prepare(*args, **kwargs):
+        raise AssertionError("selector denial must precede copied-run queue preparation")
+
+    async def fail_enqueue(*args, **kwargs):
+        raise AssertionError("selector denial must not enqueue")
+
+    monkeypatch.setattr(runs_module, "transaction", fake_transaction)
+    monkeypatch.setattr(runs_module, "enforce_user_active_run_limit", allow_admission)
+    monkeypatch.setattr(runs_module, "prepare_copied_run_for_queue", fail_prepare)
+    monkeypatch.setattr(runs_module, "enqueue_run", fail_enqueue)
+    monkeypatch.setattr(repository_module, "get_authorized_run", get_authorized_run)
+    monkeypatch.setattr(repository_module, "get_active_retry_for_source_run", no_active_run)
+    monkeypatch.setattr(repository_module, "get_active_resume_for_source_run", no_active_run)
+    monkeypatch.setattr(repository_module, "_completed_steps_for_resume", completed_steps)
+    monkeypatch.setattr(repository_module, "resolve_agent_skill", reject_selector)
+    monkeypatch.setattr(
+        repository_module,
+        "authorize_run_capabilities",
+        _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES,
+    )
+    monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route(
+            "run-original",
+            principal=principal(
+                user_id="user-a",
+                tenant_id="tenant-a",
+                department_id="qa",
+                roles=["user"],
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert audits == [(route.__name__, "general-chat", "capability_not_authorized")]
+
+
+@pytest.mark.asyncio
 async def test_persisted_owner_capability_authorization_uses_run_snapshot(monkeypatch):
     calls = []
     run = {

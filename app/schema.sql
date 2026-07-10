@@ -151,6 +151,10 @@ create table if not exists tenant_capability_distributions (
     check (
       not jsonb_path_exists(allowed_roles, '$[*] ? (@.type() != "string")')
       and not jsonb_path_exists(allowed_roles, '$[*] ? (@ == "")')
+      and not jsonb_path_exists(
+        allowed_roles,
+        '$[*] ? (@.type() == "string" && @ like_regex "^\\s*$")'
+      )
     )
 );
 
@@ -185,6 +189,10 @@ begin
       check (
         not jsonb_path_exists(allowed_roles, '$[*] ? (@.type() != "string")')
         and not jsonb_path_exists(allowed_roles, '$[*] ? (@ == "")')
+        and not jsonb_path_exists(
+          allowed_roles,
+          '$[*] ? (@.type() == "string" && @ like_regex "^\\s*$")'
+        )
       ) not valid;
   end if;
 end

@@ -1,3 +1,4 @@
+import asyncio
 import os
 from pathlib import Path
 import uuid
@@ -92,6 +93,15 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
                 """,
                 ("capdist-empty-role", "default", "empty-role-authority"),
             )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await admin_conn.execute(
+                """
+                insert into tenant_capability_distributions(
+                  id, tenant_id, capability_kind, capability_id, allowed_roles
+                ) values (%s, %s, 'mcp_server', %s, '["   "]'::jsonb)
+                """,
+                ("capdist-blank-role", "default", "blank-role-authority"),
+            )
 
         tenant_id = f"tenant-{uuid.uuid4().hex}"
         await admin_conn.execute(
@@ -178,21 +188,79 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
         )
         assert await count_cursor.fetchone() == {"count": 1}
 
+        concurrent_tenant_id = f"tenant-concurrent-{uuid.uuid4().hex}"
+        await admin_conn.execute(
+            "insert into tenants(id, name) values (%s, %s)",
+            (concurrent_tenant_id, "Capability Distribution Concurrency Test"),
+        )
+        await admin_conn.execute(
+            """
+            insert into mcp_servers(
+              tenant_id, name, status, allowed_roles, department_ids
+            ) values (%s, %s, 'active', '["Reviewer"]'::jsonb, array['QA']::text[])
+            """,
+            (concurrent_tenant_id, "concurrent-legacy-mcp"),
+        )
+        await admin_conn.execute(
+            """
+            insert into tenant_capability_distribution_backfills(tenant_id, completed_at)
+            values (%s, null)
+            """,
+            (concurrent_tenant_id,),
+        )
+
         first_conn = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
         second_conn = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        second_task = None
         try:
             await _set_search_path(first_conn, schema_name)
+            await first_conn.execute("set local statement_timeout = '5s'")
             await repositories.ensure_tenant_capability_distribution_backfill(
                 first_conn,
-                tenant_id=tenant_id,
+                tenant_id=concurrent_tenant_id,
             )
             await _set_search_path(second_conn, schema_name)
-            await second_conn.execute("set local statement_timeout = '500ms'")
-            await repositories.ensure_tenant_capability_distribution_backfill(
-                second_conn,
-                tenant_id=tenant_id,
+            await second_conn.execute("set local statement_timeout = '5s'")
+            second_task = asyncio.create_task(
+                repositories.ensure_tenant_capability_distribution_backfill(
+                    second_conn,
+                    tenant_id=concurrent_tenant_id,
+                )
             )
+            await asyncio.sleep(0.1)
+            assert not second_task.done(), "second backfill must wait on the incomplete marker row lock"
+
+            await first_conn.commit()
+            await asyncio.wait_for(second_task, timeout=2.0)
+            await second_conn.commit()
+
+            concurrent_distribution_cursor = await admin_conn.execute(
+                """
+                select count(*) as count
+                from tenant_capability_distributions
+                where tenant_id = %s
+                  and capability_kind = 'mcp_server'
+                  and capability_id = 'concurrent-legacy-mcp'
+                """,
+                (concurrent_tenant_id,),
+            )
+            assert await concurrent_distribution_cursor.fetchone() == {"count": 1}
+            concurrent_marker_cursor = await admin_conn.execute(
+                """
+                select completed_at is not null as completed
+                from tenant_capability_distribution_backfills
+                where tenant_id = %s
+                """,
+                (concurrent_tenant_id,),
+            )
+            assert await concurrent_marker_cursor.fetchone() == {"completed": True}
         finally:
+            if second_task is not None and not second_task.done():
+                second_task.cancel()
+                try:
+                    await second_task
+                except asyncio.CancelledError:
+                    pass
             await first_conn.rollback()
             await second_conn.rollback()
             await first_conn.close()
