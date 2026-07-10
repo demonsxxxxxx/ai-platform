@@ -486,6 +486,9 @@ export const SessionSidebar = forwardRef<
               onOpenModels={() => navigateWorkbenchItem("models")}
               onOpenPersona={() => navigateWorkbenchItem("persona")}
               onOpenFiles={() => navigateWorkbenchItem("files")}
+              onOpenAgentWorkspace={() =>
+                navigateWorkbenchItem("agent-workspace")
+              }
               recentChatsBtnRef={desktopRecentChatsBtnRef}
               onShowProfile={onShowProfile!}
             />
@@ -528,6 +531,7 @@ export const SessionSidebar = forwardRef<
           onOpenModels={() => navigateWorkbenchItem("models")}
           onOpenPersona={() => navigateWorkbenchItem("persona")}
           onOpenFiles={() => navigateWorkbenchItem("files")}
+          onOpenAgentWorkspace={() => navigateWorkbenchItem("agent-workspace")}
           recentChatsBtnRef={mobileRecentChatsBtnRef}
           onShowProfile={onShowProfile!}
         />

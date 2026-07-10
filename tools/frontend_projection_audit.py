@@ -80,6 +80,7 @@ _FORBIDDEN_TERM_SCAN = re.compile(
 REDACTION_GUARD_PATHS = {
     "frontend/web/src/components/documents/documentUrlSafety.ts",
     "frontend/web/src/hooks/useAgent/eventProcessor.ts",
+    "frontend/web/src/services/api/agent.ts",
     "frontend/web/src/services/api/memory.ts",
     "frontend/web/src/services/api/runPlayback.ts",
 }
@@ -99,6 +100,7 @@ AI_PLATFORM_ROUTE_PREFIXES = [
     "/api/ai/runs/",
 ]
 SAFE_PUBLIC_ROUTE_PREFIXES = [
+    "/api/agent-workspace",
     "/api/agent/models/available",
     "/api/channels",
     "/api/github",
@@ -704,6 +706,21 @@ def _merge_route_hit(existing: dict[str, dict[str, object]], root: Path, path: P
         references.append({"path": _relative_path(root, path), "line": line_number})
 
 
+def _symbol_body_start_index(line: str, *, allow_assignment_body: bool) -> int | None:
+    patterns = [
+        r"\)\s*(?::[^{]+)?\s*\{",
+        r"=>\s*\{",
+    ]
+    if allow_assignment_body:
+        patterns.append(r"=\s*\{")
+    starts: list[int] = []
+    for pattern in patterns:
+        match = re.search(pattern, line)
+        if match:
+            starts.append(line.find("{", match.start()))
+    return min(starts) if starts else None
+
+
 def _requested_lines(lines: list[str], requested: set[str] | None) -> set[int] | None:
     if requested is None:
         return None
@@ -712,14 +729,27 @@ def _requested_lines(lines: list[str], requested: set[str] | None) -> set[int] |
     for index, line in enumerate(lines, start=1):
         for symbol in requested:
             if re.search(rf"""\b(?:export\s+)?(?:async\s+)?(?:function|const|let|var)\s+{re.escape(symbol)}\b""", line):
-                balance = line.count("{") - line.count("}")
-                spans.add(index)
+                balance = 0
+                saw_body = False
                 start = index
-                cursor = index + 1
+                cursor = index
                 while cursor <= len(lines):
+                    current_line = lines[cursor - 1]
                     spans.add(cursor)
-                    balance += lines[cursor - 1].count("{") - lines[cursor - 1].count("}")
-                    if balance <= 0:
+                    if not saw_body:
+                        body_start = _symbol_body_start_index(
+                            current_line,
+                            allow_assignment_body=cursor == start,
+                        )
+                        if body_start is not None:
+                            saw_body = True
+                            body_segment = current_line[body_start:]
+                            balance += body_segment.count("{") - body_segment.count("}")
+                        elif ";" in current_line:
+                            break
+                    else:
+                        balance += current_line.count("{") - current_line.count("}")
+                    if saw_body and balance <= 0:
                         break
                     cursor += 1
                 requested_spans.append((start, cursor))

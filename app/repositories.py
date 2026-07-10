@@ -2751,6 +2751,53 @@ async def list_tool_permission_inbox(
     return list(await cursor.fetchall())
 
 
+async def list_agent_workspace_tool_permissions(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    workspace_id: str,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+    status: str = "pending",
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """List current-user permission requests scoped for Agent Workspace."""
+    cursor = await conn.execute(
+        """
+        select run_tool_permission_requests.*
+        from run_tool_permission_requests
+        join runs
+          on runs.tenant_id = run_tool_permission_requests.tenant_id
+         and runs.id = run_tool_permission_requests.run_id
+         and runs.workspace_id = run_tool_permission_requests.workspace_id
+         and runs.session_id = run_tool_permission_requests.session_id
+         and runs.user_id = run_tool_permission_requests.user_id
+        where run_tool_permission_requests.tenant_id = %s
+          and run_tool_permission_requests.user_id = %s
+          and run_tool_permission_requests.workspace_id = %s
+          and (%s = 'all' or run_tool_permission_requests.status = %s)
+          and (%s::text is null or runs.agent_id = %s)
+          and (%s::text is null or run_tool_permission_requests.session_id = %s)
+        order by run_tool_permission_requests.created_at desc, run_tool_permission_requests.id desc
+        limit %s
+        """,
+        (
+            tenant_id,
+            user_id,
+            workspace_id,
+            status,
+            status,
+            agent_id,
+            agent_id,
+            session_id,
+            session_id,
+            max(1, min(int(limit), 200)),
+        ),
+    )
+    return list(await cursor.fetchall())
+
+
 async def decide_tool_permission_request(
     conn: AsyncConnection,
     *,
@@ -6964,6 +7011,74 @@ async def list_authorized_session_runs(
         limit %s
         """,
         (tenant_id, user_id, session_id, limit),
+    )
+    return list(await cursor.fetchall())
+
+
+async def list_agent_workspace_sessions(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    agent_id: str | None = None,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Return active current-user sessions scoped to one workspace and optional agent."""
+    cursor = await conn.execute(
+        """
+        select id, workspace_id, agent_id, title, created_at, updated_at
+        from sessions
+        where tenant_id = %s
+          and workspace_id = %s
+          and user_id = %s
+          and status = 'active'
+          and (%s::text is null or agent_id = %s)
+        order by updated_at desc, created_at desc
+        limit %s
+        """,
+        (tenant_id, workspace_id, user_id, agent_id, agent_id, max(1, min(int(limit), 100))),
+    )
+    return list(await cursor.fetchall())
+
+
+async def list_agent_workspace_runs(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Return current-user runs scoped to one workspace and optional agent/session."""
+    cursor = await conn.execute(
+        """
+        select id, trace_id, schema_version, executor_schema_version,
+               workspace_id, session_id, agent_id, skill_id, status,
+               result_json, error_code, error_message,
+               created_at, queued_at, started_at, finished_at,
+               cancel_requested_at, cancel_requested_by
+        from runs
+        where tenant_id = %s
+          and workspace_id = %s
+          and user_id = %s
+          and (%s::text is null or agent_id = %s)
+          and (%s::text is null or session_id = %s)
+        order by created_at desc
+        limit %s
+        """,
+        (
+            tenant_id,
+            workspace_id,
+            user_id,
+            agent_id,
+            agent_id,
+            session_id,
+            session_id,
+            max(1, min(int(limit), 50)),
+        ),
     )
     return list(await cursor.fetchall())
 

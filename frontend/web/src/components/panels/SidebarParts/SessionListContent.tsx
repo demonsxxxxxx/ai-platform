@@ -11,6 +11,7 @@ import {
   MessageCircle,
   UserRound,
   FileStack,
+  SquareTerminal,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -126,6 +127,12 @@ export function SessionListContent({
       icon: FileStack,
       label: t("nav.files"),
       onClick: () => navigate("/files"),
+    },
+    {
+      key: "agent-workspace",
+      icon: SquareTerminal,
+      label: t("nav.agentWorkspace"),
+      onClick: () => navigate("/agent-workspace"),
     },
   ];
   const governanceNavItems: Array<{

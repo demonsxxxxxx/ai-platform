@@ -104,6 +104,21 @@ export type {
   RoleModelAssignment,
   UserAgentPreference,
   UserAgentPreferenceResponse,
+  AgentWorkspaceAgent,
+  AgentWorkspaceArtifact,
+  AgentWorkspaceConsole,
+  AgentWorkspaceConsoleEvent,
+  AgentWorkspaceConsoleStep,
+  AgentWorkspaceJsonValue,
+  AgentWorkspaceLatestContext,
+  AgentWorkspaceMemoryContextPolicy,
+  AgentWorkspaceParams,
+  AgentWorkspaceProjection,
+  AgentWorkspaceReferencedMaterials,
+  AgentWorkspaceRunSummary,
+  AgentWorkspaceSession,
+  AgentWorkspaceToolPermission,
+  AgentWorkspaceUsedContextSummary,
 } from "./agent";
 
 // ============================================

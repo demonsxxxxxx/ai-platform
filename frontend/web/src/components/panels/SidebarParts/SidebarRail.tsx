@@ -10,6 +10,7 @@ import {
   MessageCircle,
   UserRound,
   FileStack,
+  SquareTerminal,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router-dom";
@@ -39,6 +40,7 @@ interface SidebarRailProps {
   onOpenModels: () => void;
   onOpenPersona: () => void;
   onOpenFiles: () => void;
+  onOpenAgentWorkspace: () => void;
   recentChatsBtnRef: React.RefObject<HTMLButtonElement | null>;
   onShowProfile: () => void;
 }
@@ -61,6 +63,7 @@ export function SidebarRail({
   onOpenModels,
   onOpenPersona,
   onOpenFiles,
+  onOpenAgentWorkspace,
   recentChatsBtnRef,
   onShowProfile,
 }: SidebarRailProps) {
@@ -241,6 +244,20 @@ export function SidebarRail({
           active={isRailItemActive("files")}
         >
           <FileStack size={20} />
+        </LibreChatRailButton>
+        <LibreChatRailButton
+          type="button"
+          onClick={onOpenAgentWorkspace}
+          className={railBtn}
+          aria-current={
+            isRailItemActive("agent-workspace") ? "page" : undefined
+          }
+          title={t("nav.agentWorkspace")}
+          aria-label={t("nav.agentWorkspace")}
+          itemKey="agent-workspace"
+          active={isRailItemActive("agent-workspace")}
+        >
+          <SquareTerminal size={20} />
         </LibreChatRailButton>
         <LibreChatRailButton
           type="button"

@@ -8,9 +8,16 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
-from app.control_plane_contracts import standard_trace_id
+from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.db import transaction
 from app.models import (
+    AgentWorkspaceAgentResponse,
+    AgentWorkspaceConsoleResponse,
+    AgentWorkspaceMemoryContextPolicyResponse,
+    AgentWorkspaceProjectionResponse,
+    AgentWorkspaceRunSummaryResponse,
+    AgentWorkspaceSessionResponse,
+    AgentWorkspaceToolPermissionResponse,
     PersonaPresetListResponse,
     PersonaPresetPreferenceRequest,
     PersonaPresetResponse,
@@ -21,6 +28,10 @@ from app.models import (
     RevealedFileSessionGroupResponse,
     RevealedFileSessionResponse,
 )
+from app.projection_redaction import capability_id_from_skill, internal_agent_id_for_request, public_agent_id_for_projection
+from app.public_context_keys import safe_public_context_input_keys
+from app.run_projection import artifact_card, progress_for_status, run_event_response, run_step_response
+from app.tool_permission_projection import tool_permission_decision_endpoint
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -28,6 +39,8 @@ router = APIRouter()
 PERSONA_READ = "persona_preset:read"
 PERSONA_WRITE = "persona_preset:write"
 PERSONA_ADMIN = "persona_preset:admin"
+CHAT_READ = "chat:read"
+SESSION_READ = "session:read"
 ARTIFACT_READ = "artifact:download"
 
 REVEALED_FILE_STATS_KEYS = ("total", "image", "video", "document", "code", "project", "other")
@@ -95,7 +108,7 @@ DEFAULT_PERSONA_PRESETS = [
 def _effective_permission_set(principal: AuthPrincipal) -> set[str]:
     granted = {item.strip() for item in principal.permissions if item.strip()}
     if is_ai_admin(principal):
-        granted.update({PERSONA_READ, PERSONA_WRITE, PERSONA_ADMIN, ARTIFACT_READ})
+        granted.update({PERSONA_READ, PERSONA_WRITE, PERSONA_ADMIN, CHAT_READ, SESSION_READ, ARTIFACT_READ})
     if PERSONA_ADMIN in granted:
         granted.update({PERSONA_READ, PERSONA_WRITE})
     if PERSONA_WRITE in granted:
@@ -106,6 +119,10 @@ def _effective_permission_set(principal: AuthPrincipal) -> set[str]:
 def _require_permission(principal: AuthPrincipal, permission: str) -> None:
     if permission not in _effective_permission_set(principal):
         raise HTTPException(status_code=403, detail=f"missing_permission:{permission}")
+
+
+def _has_permission(principal: AuthPrincipal, permission: str) -> bool:
+    return permission in _effective_permission_set(principal)
 
 
 def _safe_optional_id(value: str | None, field_name: str) -> str | None:
@@ -321,6 +338,309 @@ async def delete_persona_preset(
     _safe_optional_id(preset_id, "preset_id")
     _require_permission(principal, PERSONA_WRITE)
     raise HTTPException(status_code=409, detail="persona_preset_write_contract_not_backed")
+
+
+def _public_projection_principal(principal: AuthPrincipal) -> AuthPrincipal:
+    return AuthPrincipal(
+        user_id=principal.user_id,
+        display_name=principal.display_name,
+        tenant_id=principal.tenant_id,
+        department_id=principal.department_id,
+        roles=[],
+        permissions=principal.permissions,
+        source=principal.source,
+    )
+
+
+def _workspace_agent_projection(row: dict[str, Any]) -> AgentWorkspaceAgentResponse | None:
+    raw_agent_id = str(row.get("id") or "")
+    if not raw_agent_id:
+        return None
+    raw_skill_id = row.get("default_skill_id")
+    public_agent_id = public_agent_id_for_projection(raw_agent_id, raw_skill_id) or raw_agent_id
+    capability_id = capability_id_from_skill(raw_skill_id, raw_agent_id)
+    return AgentWorkspaceAgentResponse(
+        agent_id=public_agent_id,
+        capability_id=capability_id,
+        name=sanitize_public_text(row.get("name")) or public_agent_id,
+        description=sanitize_public_text(row.get("description")),
+        status=sanitize_public_text(row.get("status")) or "active",
+        version=sanitize_public_text(row.get("skill_version")) or "platform-managed",
+    )
+
+
+def _workspace_session_projection(row: dict[str, Any]) -> AgentWorkspaceSessionResponse:
+    raw_agent_id = str(row.get("agent_id") or "")
+    public_agent_id = public_agent_id_for_projection(raw_agent_id) or raw_agent_id
+    return AgentWorkspaceSessionResponse(
+        session_id=str(row.get("id") or ""),
+        workspace_id=str(row.get("workspace_id") or ""),
+        agent_id=public_agent_id,
+        capability_id=capability_id_from_skill(None, raw_agent_id),
+        title=sanitize_public_text(row.get("title")),
+        created_at=row.get("created_at"),
+        updated_at=row.get("updated_at"),
+    )
+
+
+def _workspace_run_result_summary(row: dict[str, Any]) -> str:
+    result = row.get("result_json") if isinstance(row.get("result_json"), dict) else {}
+    for key in ("final_report", "safe_summary", "summary", "message", "output"):
+        text = sanitize_public_text(result.get(key))
+        if text:
+            return text
+    return ""
+
+
+def _workspace_run_projection(row: dict[str, Any]) -> AgentWorkspaceRunSummaryResponse:
+    raw_agent_id = str(row.get("agent_id") or "")
+    raw_skill_id = str(row.get("skill_id") or "")
+    public_agent_id = public_agent_id_for_projection(raw_agent_id, raw_skill_id)
+    return AgentWorkspaceRunSummaryResponse(
+        run_id=str(row.get("id") or ""),
+        session_id=str(row.get("session_id") or ""),
+        agent_id=public_agent_id,
+        capability_id=capability_id_from_skill(raw_skill_id, raw_agent_id),
+        trace_id=str(row.get("trace_id") or standard_trace_id(str(row.get("id") or ""))),
+        status=str(row.get("status") or ""),
+        progress=progress_for_status(str(row.get("status") or "")),
+        result_summary=_workspace_run_result_summary(row),
+        error_code="run_failed" if row.get("error_code") else None,
+        error_message=sanitize_public_text(row.get("error_message")),
+        created_at=row.get("created_at"),
+        queued_at=row.get("queued_at"),
+        started_at=row.get("started_at"),
+        finished_at=row.get("finished_at"),
+    )
+
+
+def _event_visible_to_workspace(row: dict[str, Any]) -> bool:
+    if row.get("visible_to_user") is not None:
+        return bool(row.get("visible_to_user"))
+    payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+    return bool(payload.get("visible_to_user", True))
+
+
+def _workspace_permission_projection(row: dict[str, Any]) -> AgentWorkspaceToolPermissionResponse:
+    run_id = str(row.get("run_id") or "")
+    request_id = str(row.get("id") or "")
+    risk_level = sanitize_public_text(row.get("risk_level")) or "low"
+    if risk_level not in {"low", "medium", "high"}:
+        risk_level = "low"
+    return AgentWorkspaceToolPermissionResponse(
+        permission_request_id=request_id,
+        session_id=str(row.get("session_id") or ""),
+        run_id=run_id,
+        trace_id=str(row.get("trace_id") or standard_trace_id(run_id)),
+        tool_id=sanitize_public_text(row.get("tool_id")) or "tool",
+        tool_call_id=sanitize_public_text(row.get("tool_call_id")),
+        action=sanitize_public_text(row.get("action")) or "execute",
+        risk_level=risk_level,  # type: ignore[arg-type]
+        write_capable=bool(row.get("write_capable")),
+        status=sanitize_public_text(row.get("status")) or "pending",
+        reason=sanitize_public_text(row.get("reason")),
+        decision_endpoint=tool_permission_decision_endpoint(run_id, request_id),
+        created_at=row.get("created_at"),
+    )
+
+
+def _workspace_memory_policy_projection(
+    policy: dict[str, Any],
+    *,
+    public_agent_id: str | None,
+    capability_id: str | None,
+    latest_context: dict[str, Any] | None,
+) -> AgentWorkspaceMemoryContextPolicyResponse:
+    return AgentWorkspaceMemoryContextPolicyResponse(
+        workspace_id=str(policy.get("workspace_id") or ""),
+        agent_id=public_agent_id,
+        capability_id=capability_id,
+        memory_enabled=bool(policy.get("memory_enabled", True)),
+        long_term_memory_enabled=bool(policy.get("long_term_memory_enabled", False)),
+        retention_days=int(policy.get("retention_days") or 90),
+        redaction_mode=sanitize_public_text(policy.get("redaction_mode")) or "standard",
+        source=sanitize_public_text(policy.get("source")) or "default",
+        reason=sanitize_public_text(policy.get("reason")),
+        updated_at=policy.get("updated_at"),
+        latest_context=latest_context,
+    )
+
+
+def _safe_count(value: object) -> int:
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _safe_context_label(value: object, default: str) -> str:
+    label = sanitize_public_text(value)
+    if not label:
+        return default
+    safe_labels = safe_public_context_input_keys([label])
+    return safe_labels[0] if safe_labels else default
+
+
+def _workspace_context_summary(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    payload = row.get("payload_json") if isinstance(row.get("payload_json"), dict) else {}
+    used_context = payload.get("used_context_summary") if isinstance(payload.get("used_context_summary"), dict) else {}
+    materials = payload.get("referenced_materials") if isinstance(payload.get("referenced_materials"), dict) else {}
+    input_keys = used_context.get("input_keys") if isinstance(used_context.get("input_keys"), list) else []
+    return {
+        "source": _safe_context_label(used_context.get("source"), "not_recorded"),
+        "referenced_materials": {
+            "message_count": len(row.get("included_message_ids") or []) or _safe_count(materials.get("message_count")),
+            "file_count": len(row.get("included_file_ids") or []) or _safe_count(materials.get("file_count")),
+            "artifact_count": len(row.get("included_artifact_ids") or []) or _safe_count(materials.get("artifact_count")),
+            "memory_record_count": len(row.get("included_memory_record_ids") or []) or _safe_count(materials.get("memory_record_count")),
+        },
+        "used_context_summary": {
+            "source": _safe_context_label(used_context.get("source"), "not_recorded"),
+            "input_keys": safe_public_context_input_keys(input_keys),
+            "memory_policy_source": _safe_context_label(
+                used_context.get("memory_policy_source"),
+                "not_recorded",
+            ),
+            "long_term_memory_read": bool(used_context.get("long_term_memory_read")),
+        },
+    }
+
+
+def _select_workspace_agent(
+    agents: list[AgentWorkspaceAgentResponse],
+    requested_agent_id: str | None,
+) -> AgentWorkspaceAgentResponse | None:
+    target_agent_id = requested_agent_id or "general-agent"
+    for agent in agents:
+        if agent.agent_id == target_agent_id:
+            return agent
+    if requested_agent_id:
+        raise HTTPException(status_code=404, detail="agent_not_found")
+    return agents[0] if agents else None
+
+
+@router.get("/agent-workspace", response_model=AgentWorkspaceProjectionResponse)
+async def get_agent_workspace_projection(
+    workspace_id: str = Query(default="default"),
+    agent_id: str | None = Query(default=None),
+    session_id: str | None = Query(default=None),
+    principal: AuthPrincipal = Depends(require_principal),
+) -> AgentWorkspaceProjectionResponse:
+    """Return the read-only Agent Workspace V1 projection for the current user."""
+
+    _require_permission(principal, CHAT_READ)
+    _require_permission(principal, SESSION_READ)
+    safe_workspace_id = _safe_optional_id(workspace_id, "workspace_id") or "default"
+    safe_agent_id = _safe_optional_id(agent_id, "agent_id")
+    safe_session_id = _safe_optional_id(session_id, "session_id")
+    projection_principal = _public_projection_principal(principal)
+    artifact_read_allowed = _has_permission(principal, ARTIFACT_READ)
+
+    async with transaction() as conn:
+        agent_rows = await repositories.list_lambchat_agents(conn, tenant_id=principal.tenant_id)
+        agents = [item for item in (_workspace_agent_projection(row) for row in agent_rows) if item is not None]
+        selected_agent = _select_workspace_agent(agents, safe_agent_id)
+        internal_agent_id = (
+            internal_agent_id_for_request(selected_agent.agent_id)
+            if selected_agent is not None
+            else None
+        )
+        selected_capability_id = selected_agent.capability_id if selected_agent else None
+
+        session_rows = await repositories.list_agent_workspace_sessions(
+            conn,
+            tenant_id=principal.tenant_id,
+            workspace_id=safe_workspace_id,
+            user_id=principal.user_id,
+            agent_id=internal_agent_id,
+            limit=20,
+        )
+        run_rows = await repositories.list_agent_workspace_runs(
+            conn,
+            tenant_id=principal.tenant_id,
+            workspace_id=safe_workspace_id,
+            user_id=principal.user_id,
+            agent_id=internal_agent_id,
+            session_id=safe_session_id,
+            limit=10,
+        )
+        console_run = run_rows[0] if run_rows else None
+        console_events: list[dict[str, Any]] = []
+        console_steps: list[dict[str, Any]] = []
+        artifacts: list[dict[str, Any]] = []
+        latest_context: dict[str, Any] | None = None
+        if console_run is not None:
+            run_id = str(console_run.get("id") or "")
+            event_rows = await repositories.list_run_events(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=run_id,
+                limit=100,
+            )
+            step_rows = await repositories.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
+            artifact_rows = (
+                await repositories.list_run_artifacts(conn, tenant_id=principal.tenant_id, run_id=run_id)
+                if artifact_read_allowed
+                else []
+            )
+            context_row = await repositories.get_latest_authorized_executor_context_snapshot(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                run_id=run_id,
+            )
+            console_events = [
+                run_event_response(run_id, row, principal=projection_principal)
+                for row in event_rows
+                if _event_visible_to_workspace(row)
+            ]
+            console_steps = [run_step_response(row, principal=projection_principal) for row in step_rows]
+            artifacts = [artifact_card(row, principal=projection_principal) for row in artifact_rows]
+            latest_context = _workspace_context_summary(context_row)
+
+        permission_rows = await repositories.list_agent_workspace_tool_permissions(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            workspace_id=safe_workspace_id,
+            agent_id=internal_agent_id,
+            session_id=safe_session_id,
+            status="pending",
+            limit=50,
+        )
+        pending_permissions = [_workspace_permission_projection(row) for row in permission_rows]
+        policy = await repositories.get_effective_memory_policy(
+            conn,
+            tenant_id=principal.tenant_id,
+            workspace_id=safe_workspace_id,
+            user_id=principal.user_id,
+            agent_id=internal_agent_id,
+        )
+
+    latest_runs = [_workspace_run_projection(row) for row in run_rows]
+    console_status = latest_runs[0].status if latest_runs else "idle"
+    next_after_sequence = max((int(event.get("sequence") or 0) for event in console_events), default=0)
+    return AgentWorkspaceProjectionResponse(
+        workspace_id=safe_workspace_id,
+        selected_agent=selected_agent,
+        agents=agents,
+        sessions=[_workspace_session_projection(row) for row in session_rows],
+        latest_runs=latest_runs,
+        run_console=AgentWorkspaceConsoleResponse(
+            run_id=latest_runs[0].run_id if latest_runs else None,
+            status=console_status,
+            next_after_sequence=next_after_sequence,
+            events=console_events,
+            steps=console_steps,
+        ),
+        artifacts=artifacts,
+        pending_tool_permissions=pending_permissions,
+        memory_context_policy=_workspace_memory_policy_projection(
+            policy,
+            public_agent_id=selected_agent.agent_id if selected_agent else None,
+            capability_id=selected_capability_id,
+            latest_context=latest_context,
+        ),
+    )
 
 
 def _file_type_for(row: dict[str, Any]) -> str:
