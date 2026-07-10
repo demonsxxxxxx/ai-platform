@@ -1,6 +1,6 @@
 # Release Authority Phase Status
 
-Status: `current implementation baseline`
+Status: `implementation / PR review gate open / 211 candidate preflight complete`
 
 This document tracks only Release Authority recovery. It does not authorize or
 record B1, B2, or B3 runtime acceptance.
@@ -12,11 +12,13 @@ record B1, B2, or B3 runtime acceptance.
 | Baseline GitHub source | `d189877fde72ccffef4db3d237dba402b6029a08` | `current` |
 | Recovery worktree | `C:/aiwt/release-authority-d189877-20260710` | `current`, clean at creation |
 | Recovery branch | `codex/release-authority-d189877-20260710` | `current` |
+| Recovery branch head | `4fedd2389730a66bd219cb665affe85ea54d0463` | `current`; PR #371 head |
 | Historical local lane | dirty `6a77c3795d5880a628fa11300a2e450e493023fb` | `historical`; untouched |
 | 211 source | dirty `12d626203ba37ce724d20e579bac2ac763e1341a` | `stale`; preserved, not deployment source |
 | 211 API/worker | historical ordinary-sandbox image | `stale` |
 | 211 frontend | manually managed main-derived image | `stale ownership` |
-| GitHub protection | no branch protection; no Ruleset | `blocked` |
+| GitHub protection | Ruleset `18750869`, `main release authority` | `current`; active, no bypass |
+| 211 candidate checkout | clean `4fedd2389730a66bd219cb665affe85ea54d0463` | `current preflight`; not deployed |
 
 ## Phase Matrix
 
@@ -28,8 +30,9 @@ record B1, B2, or B3 runtime acceptance.
   assertions that treated historical B1/B2 evidence as current. The corrected
   fail-closed suites now pass `306` backend tests and `129` frontend/release
   tests; frontend projection, source smoke, lint, typecheck, and build also exit 0.
-- [x] Phase 3: Stable workflow contexts implemented locally as `backend required`
-  and `frontend required`; GitHub PR observation and Ruleset enforcement remain pending.
+- [x] Phase 3: Stable workflow contexts implemented as `backend required` and
+  `frontend required`. Fresh PR #371 head checks for
+  `4fedd2389730a66bd219cb665affe85ea54d0463` both completed successfully.
 - [x] Phase 4: `tools/release_authority.py` implements clean-source rejection,
   immutable image tags, image-label validation, preservation, repo-local compose
   deployment, manual frontend rejection, and strict parity reporting. Local CLI
@@ -45,7 +48,9 @@ record B1, B2, or B3 runtime acceptance.
   `9b8fc2b9742252fe33f0d701ac88dfc9405465be747acda7860a22378c99ce72`.
   Post-preservation readback showed the same HEAD and the same dirty path list;
   no source file was cleaned, reset, deleted, or overwritten.
-- [ ] Phase 7: GitHub Ruleset active with exact required checks.
+- [x] Phase 7: GitHub Ruleset `18750869` is active with no bypass, requires a
+  pull request, strict up-to-date branches, `backend required`, and
+  `frontend required`, and forbids deletion and non-fast-forward updates.
 - [ ] Phase 8: One merged commit deployed across source, API, worker, frontend, and image labels.
 - [ ] Phase 9: Strict parity evidence reports `verified: true`.
 
@@ -58,8 +63,9 @@ Observed paths are evidence of dirty state, not permission to alter or delete:
 - Binary assets under `assets/ai-platform-architecture-illustrations/`, `frontend/web/public/`, and two observed skill `.docx` files.
 - Untracked marker: `.ai-platform-source-tree-commit`.
 
-The authoritative manifest, hashes, patch, and archive remain pending. Until
-they verify, 211 source transition is blocked.
+The authoritative preservation manifest, hashes, patch, and archive are stored
+under the Phase 6 evidence directory and verified. The original dirty checkout
+remains unchanged and is not an authorized deployment source.
 
 ## Prohibited Claims And Actions
 
@@ -81,6 +87,17 @@ they verify, 211 source transition is blocked.
 - 211 candidate preflight found the host Git does not support
   `git status --porcelain=v1`; the release tool now uses the compatible
   `--porcelain` flag and has a regression test for that exact command shape.
+- 211 runtime compose labels identify the current environment file path as
+  `/home/xinlin.jiang/ai-platform-phaseb/deploy/ai-platform/.env`; its contents
+  were not read, copied, exported, or quoted.
+- The clean 211 candidate checkout at branch head passed `python3 -m compileall
+  -q app tools scripts` and repo-local `docker compose config --quiet` with the
+  runtime environment file and immutable candidate image variables. Compose
+  emitted only the existing obsolete `version` warning. No image build,
+  `compose up`, container replacement, source cleanup, or deployment occurred.
+- PR #371 remains unmerged because the independent sub-agent review gate is
+  still open. Final deployment and parity must use the eventual merged `main`
+  commit, not this PR head.
 
 ## Pre-Commit Self-Review
 
