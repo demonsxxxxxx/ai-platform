@@ -688,6 +688,7 @@ async def prepare_copied_run_for_queue(
     authorized_source_run_id: str | None = None,
 ) -> dict[str, Any]:
     effective_principal = queue_principal or principal
+    snapshot_auth_source = copied.get("auth_source") if queue_principal is not None else principal.source
     copied_input = copied["input"] if isinstance(copied.get("input"), dict) else {}
     source_run_id = _copied_run_source_run_id(authorized_source_run_id)
     copied_skill_version = str(copied.get("skill_version") or "")
@@ -711,6 +712,14 @@ async def prepare_copied_run_for_queue(
     skill_manifests = attach_skill_snapshot_governance(
         skill_manifests,
         release_decision=copied.get("release_decision") if isinstance(copied.get("release_decision"), dict) else {},
+    )
+    await repositories.update_run_auth_snapshot(
+        conn,
+        tenant_id=effective_principal.tenant_id,
+        run_id=copied["run_id"],
+        principal_roles=effective_principal.roles,
+        principal_department_id=effective_principal.department_id,
+        auth_source=snapshot_auth_source,
     )
     await repositories.update_run_input_skill_version(
         conn,
@@ -821,11 +830,16 @@ async def create_run(
     run_input = _strip_server_owned_control_metadata(run_input)
     try:
         async with transaction() as conn:
-            skill = await repositories.resolve_agent_skill(
+            skill = await repositories.authorize_run_capabilities(
                 conn,
                 tenant_id=tenant_id,
                 agent_id=resolved_agent_id,
                 skill_id=resolved_skill_id,
+                normalized_input=run_input,
+                principal_department_id=principal.department_id,
+                principal_roles=principal.roles,
+                is_admin=is_ai_admin(principal),
+                permissions=principal.permissions,
             )
             input_modes = skill.get("input_modes") or []
             if "docx" in input_modes and not request.file_ids:
@@ -908,6 +922,9 @@ async def create_run(
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
                 },
+                principal_roles=principal.roles,
+                principal_department_id=principal.department_id,
+                auth_source=principal.source,
                 run_id=run_id,
             )
             await repositories.bind_files_to_run(
@@ -969,6 +986,8 @@ async def create_run(
                 message="已锁定 Skill 发布决策",
                 payload=_release_decision_event_payload(release_decision_payload, skill_id=resolved_skill_id),
             )
+    except repositories.RepositoryAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except SkillVersionMaterializationError as exc:
@@ -1230,8 +1249,9 @@ async def handoff_multi_agent_dispatch(
                     user_id=str(copied["user_id"]),
                     display_name=str(copied.get("user_id") or ""),
                     tenant_id=principal.tenant_id,
-                    roles=["user"],
-                    source="multi_agent_dispatch_handoff",
+                    department_id=str(copied.get("principal_department_id") or ""),
+                    roles=[str(role) for role in copied.get("principal_roles") or []],
+                    source=str(copied.get("auth_source") or ""),
                 )
                 queue_payload = await prepare_copied_run_for_queue(
                     conn,
@@ -1313,8 +1333,9 @@ async def tick_multi_agent_dispatch(
                     user_id=str(copied["user_id"]),
                     display_name=str(copied.get("user_id") or ""),
                     tenant_id=principal.tenant_id,
-                    roles=["user"],
-                    source="multi_agent_dispatch_tick",
+                    department_id=str(copied.get("principal_department_id") or ""),
+                    roles=[str(role) for role in copied.get("principal_roles") or []],
+                    source=str(copied.get("auth_source") or ""),
                 )
                 queue_payload = await prepare_copied_run_for_queue(
                     conn,

@@ -6,6 +6,12 @@ from typing import Any
 
 from psycopg import AsyncConnection
 
+from app.capability_distribution import (
+    CapabilityAccessContext,
+    CapabilityDistributionSubject,
+    normalize_capability_roles,
+    resolve_capability_access,
+)
 from app.control_plane_contracts import (
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
     AUDIT_EVENT_SCHEMA_VERSION,
@@ -50,6 +56,12 @@ class RepositoryConflictError(ValueError):
 
 
 class RepositoryNotFoundError(ValueError):
+    pass
+
+
+class RepositoryAuthorizationError(ValueError):
+    """Signal a fail-closed enqueue capability authorization denial."""
+
     pass
 
 
@@ -1191,6 +1203,112 @@ async def toggle_capability_distribution_row(
     return _capability_distribution_projection(dict(row))
 
 
+def _capability_not_authorized() -> RepositoryAuthorizationError:
+    return RepositoryAuthorizationError("capability_not_authorized")
+
+
+async def authorize_run_capabilities(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    skill_id: str,
+    normalized_input: dict[str, Any],
+    principal_department_id: str,
+    principal_roles: list[str] | None,
+    is_admin: bool,
+    permissions: list[str] | None,
+) -> dict[str, Any]:
+    """Authorize the selected Skill and explicit MCP tools before run creation."""
+
+    try:
+        skill = await resolve_agent_skill(
+            conn,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            skill_id=skill_id,
+        )
+    except RepositoryNotFoundError as exc:
+        raise _capability_not_authorized() from exc
+    except RepositoryConflictError as exc:
+        if str(exc) in {"skill_inactive", "mcp_tool_disabled"}:
+            raise _capability_not_authorized() from exc
+        raise
+
+    context = CapabilityAccessContext(
+        tenant_id=tenant_id,
+        department_id=str(principal_department_id or ""),
+        roles=normalize_capability_roles(principal_roles or []),
+        is_admin=bool(is_admin),
+        permissions=[str(item) for item in permissions or [] if str(item)],
+    )
+    skill_distribution = await get_capability_distribution_row(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind="skill",
+        capability_id=skill_id,
+    )
+    skill_decision = resolve_capability_access(
+        context,
+        CapabilityDistributionSubject(
+            capability_kind="skill",
+            capability_id=skill_id,
+            lifecycle_status=str(skill.get("skill_status") or "disabled"),
+            distribution=skill_distribution,
+        ),
+        intent="use",
+    )
+    if not skill_decision.usable:
+        raise _capability_not_authorized()
+
+    requested_tool_ids: list[str] = []
+    raw_tool_ids = normalized_input.get("mcp_tool_ids")
+    if isinstance(raw_tool_ids, list):
+        for raw_tool_id in raw_tool_ids:
+            tool_id = str(raw_tool_id).strip()
+            if tool_id and tool_id not in requested_tool_ids:
+                requested_tool_ids.append(tool_id)
+
+    for tool_id in requested_tool_ids:
+        tool = await get_mcp_tool_registry_entry(
+            conn,
+            tenant_id=tenant_id,
+            tool_id=tool_id,
+        )
+        if tool is None:
+            raise _capability_not_authorized()
+        server_id = str(tool.get("server_id") or "").strip()
+        if not server_id:
+            raise _capability_not_authorized()
+        server_distribution = await get_capability_distribution_row(
+            conn,
+            tenant_id=tenant_id,
+            capability_kind="mcp_server",
+            capability_id=server_id,
+        )
+        tool_lifecycle_status = (
+            "active"
+            if str(tool.get("effective_status") or "disabled") == "active"
+            and str(tool.get("server_status") or "disabled") == "active"
+            and bool(tool.get("visible_to_user", True))
+            else "disabled"
+        )
+        tool_decision = resolve_capability_access(
+            context,
+            CapabilityDistributionSubject(
+                capability_kind="mcp_tool",
+                capability_id=tool_id,
+                lifecycle_status=tool_lifecycle_status,
+                distribution=server_distribution,
+                inherited_distribution_source=f"mcp_server:{server_id}",
+            ),
+            intent="use",
+        )
+        if not tool_decision.usable:
+            raise _capability_not_authorized()
+    return skill
+
+
 async def list_mcp_server_registry(
     conn: AsyncConnection,
     *,
@@ -1880,6 +1998,7 @@ async def create_run(
     skill_id: str,
     input_json: dict[str, Any],
     principal_roles: list[str] | None = None,
+    principal_department_id: str = "",
     auth_source: str | None = None,
     run_id: str | None = None,
 ) -> str:
@@ -1889,11 +2008,12 @@ async def create_run(
         """
         insert into runs(
           id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
-          trace_id, schema_version, executor_schema_version, principal_roles, auth_source,
+          trace_id, schema_version, executor_schema_version,
+          principal_roles, principal_department_id, auth_source,
           status, input_json, queued_at,
           input_token_count, output_token_count, total_token_count, estimated_cost_minor
         )
-        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, 'queued', %s::jsonb, now(), 0, 0, 0, 0
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), 0, 0, 0, 0
         from sessions
         where sessions.tenant_id = %s
           and sessions.workspace_id = %s
@@ -1913,7 +2033,8 @@ async def create_run(
             trace_id,
             RUN_CONTRACT_VERSION,
             EXECUTOR_RESULT_SCHEMA_VERSION,
-            dumps_json(principal_roles or []),
+            dumps_json(normalize_capability_roles(principal_roles or [])),
+            str(principal_department_id or ""),
             auth_source,
             dumps_json(input_json),
             tenant_id,
@@ -1927,6 +2048,35 @@ async def create_run(
     if row is None:
         raise RepositoryNotFoundError("session_not_found")
     return resolved_run_id
+
+
+async def update_run_auth_snapshot(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    principal_roles: list[str] | None,
+    principal_department_id: str,
+    auth_source: str | None,
+) -> None:
+    """Refresh the server-owned authorization snapshot for one tenant run."""
+
+    await conn.execute(
+        """
+        update runs
+        set principal_roles = %s::jsonb,
+            principal_department_id = %s,
+            auth_source = %s
+        where tenant_id = %s and id = %s
+        """,
+        (
+            dumps_json(normalize_capability_roles(principal_roles or [])),
+            str(principal_department_id or ""),
+            auth_source,
+            tenant_id,
+            run_id,
+        ),
+    )
 
 
 async def count_active_runs_for_user(conn: AsyncConnection, *, tenant_id: str, user_id: str) -> int:
@@ -4843,7 +4993,8 @@ async def create_multi_agent_dispatch_child_run(
     parent_cursor = await conn.execute(
         """
         select id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
-               trace_id, status, input_json
+               trace_id, principal_roles, principal_department_id, auth_source,
+               status, input_json
         from runs
         where tenant_id = %s and id = %s
         for update
@@ -4958,14 +5109,18 @@ async def create_multi_agent_dispatch_child_run(
         child_input_json["release_decision"] = release_decision_payload
 
     child_run_id = new_id("run")
+    inherited_roles = normalize_capability_roles(parent.get("principal_roles") or [])
+    inherited_department_id = str(parent.get("principal_department_id") or "")
+    inherited_auth_source = parent.get("auth_source")
     await conn.execute(
         """
         insert into runs(
           id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
           trace_id, schema_version, executor_schema_version,
+          principal_roles, principal_department_id, auth_source,
           status, input_json, queued_at, copied_from_run_id
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), %s)
         """,
         (
             child_run_id,
@@ -4978,6 +5133,9 @@ async def create_multi_agent_dispatch_child_run(
             standard_trace_id(child_run_id),
             RUN_CONTRACT_VERSION,
             EXECUTOR_RESULT_SCHEMA_VERSION,
+            dumps_json(inherited_roles),
+            inherited_department_id,
+            inherited_auth_source,
             dumps_json(child_input_json),
             parent_run_id,
         ),
@@ -5068,6 +5226,9 @@ async def create_multi_agent_dispatch_child_run(
         "user_id": parent["user_id"],
         "agent_id": parent["agent_id"],
         "skill_id": parent["skill_id"],
+        "principal_roles": inherited_roles,
+        "principal_department_id": inherited_department_id,
+        "auth_source": inherited_auth_source,
         "file_ids": file_ids,
         "input": child_execution_input,
         "executor_type": executor_type,
@@ -6515,6 +6676,9 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     release_decision_payload = release_decision.to_payload()
     release_policy_version = skill_version if release_decision.policy_active else ""
     file_ids = list(source_input.get("file_ids") or [])
+    inherited_roles = normalize_capability_roles(source.get("principal_roles") or [])
+    inherited_department_id = str(source.get("principal_department_id") or "")
+    inherited_auth_source = source.get("auth_source")
     new_run_id = new_id("run")
     source_execution_input = source_input.get("input") if isinstance(source_input.get("input"), dict) else source_input
     if isinstance(source_execution_input, dict):
@@ -6550,9 +6714,10 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         insert into runs(
           id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
           trace_id, schema_version, executor_schema_version,
+          principal_roles, principal_department_id, auth_source,
           status, input_json, queued_at, copied_from_run_id
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'queued', %s::jsonb, now(), %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), %s)
         """,
         (
             new_run_id,
@@ -6565,6 +6730,9 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
             standard_trace_id(new_run_id),
             RUN_CONTRACT_VERSION,
             EXECUTOR_RESULT_SCHEMA_VERSION,
+            dumps_json(inherited_roles),
+            inherited_department_id,
+            inherited_auth_source,
             dumps_json(copied_input_json),
             run_id,
         ),
@@ -6598,6 +6766,9 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         "agent_id": source["agent_id"],
         "skill_id": source["skill_id"],
         "workspace_id": source["workspace_id"],
+        "principal_roles": inherited_roles,
+        "principal_department_id": inherited_department_id,
+        "auth_source": inherited_auth_source,
         "file_ids": file_ids,
         "input": copied_execution_input,
         "executor_type": executor_type,
@@ -6937,6 +7108,7 @@ async def mark_run_running(conn: AsyncConnection, *, tenant_id: str, run_id: str
           and sessions.agent_id = runs.agent_id
         returning runs.id, runs.tenant_id, runs.workspace_id, runs.user_id,
                   runs.session_id, runs.agent_id, runs.skill_id, runs.trace_id,
+                  runs.principal_roles, runs.principal_department_id, runs.auth_source,
                   runs.input_json
         """,
         (tenant_id, run_id),

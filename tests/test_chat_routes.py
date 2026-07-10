@@ -6,6 +6,7 @@ import json
 import pytest
 from fastapi import HTTPException
 
+from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.models import ChatSessionRequest, ChatStreamRequest
 from app.queue_payload_validation import queue_payload_invalid_detail
@@ -28,6 +29,19 @@ def principal(**overrides):
     values = {"user_id": "user-a", "display_name": "User A", "tenant_id": "tenant-a"}
     values.update(overrides)
     return AuthPrincipal(**values)
+
+
+@pytest.fixture(autouse=True)
+def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
+    async def allow(conn, *, tenant_id, agent_id, skill_id, **_kwargs):
+        return await repository_module.resolve_agent_skill(
+            conn,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            skill_id=skill_id,
+        )
+
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", allow, raising=False)
 
 
 def snapshot_manifest(skill_id, *, description="Pinned skill"):
@@ -416,7 +430,7 @@ async def test_list_messages_redacts_raw_skill_metadata_for_ordinary_user(monkey
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
+async def test_chat_stream_capability_distribution_creates_run_with_auth_snapshot(monkeypatch):
     calls = []
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -431,6 +445,14 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
 
     async def fake_create_run(conn, **kwargs):
         calls.append(("run", kwargs["user_id"], kwargs["skill_id"], kwargs["input_json"]["file_ids"]))
+        calls.append(
+            (
+                "auth_snapshot",
+                kwargs["principal_roles"],
+                kwargs["principal_department_id"],
+                kwargs["auth_source"],
+            )
+        )
         return "run_3"
 
     async def fake_append_message(conn, **kwargs):
@@ -501,7 +523,7 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
             agent_options={"model_id": "deepseek-v4-pro"},
             attachments=[{"key": "file_1", "name": "review.docx"}],
         ),
-        principal=principal(),
+        principal=principal(department_id="qa", roles=["qa_operator"], source="session-token"),
     )
 
     assert response.run_id == "run_3"
@@ -515,6 +537,7 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
         "capacity": {"available_worker_slots": 0},
     }
     assert ("run", "user-a", "qa-file-reviewer", ["file_1"]) in calls
+    assert ("auth_snapshot", ["qa_operator"], "qa", "session-token") in calls
     assert ("files", ["file_1"]) in calls
     queue_payload = next(item[1] for item in calls if item[0] == "queue_payload")
     assert queue_payload["executor_type"] == "claude-agent-worker"
@@ -555,6 +578,37 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
             "queue_probe_source": "redis_metadata",
         },
     ) in calls
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_capability_distribution_denial_precedes_create_run(monkeypatch):
+    calls = []
+
+    async def deny(*args, **kwargs):
+        calls.append(("authorize", kwargs["skill_id"]))
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_create_run(*args, **kwargs):
+        calls.append(("create_run", kwargs))
+        raise AssertionError("authorization denial must precede create_run")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                agent_id="document-review",
+                message="review this document",
+                file_ids=["file_1"],
+            ),
+            principal=principal(department_id="finance", roles=["user"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert calls == [("authorize", "qa-file-reviewer")]
 
 
 @pytest.mark.asyncio

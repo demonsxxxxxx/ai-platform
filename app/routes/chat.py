@@ -489,11 +489,16 @@ async def chat_stream(
                 decision_payload = explicit_payload
                 resolved_agent_id = str(decision_payload["agent_id"])
                 resolved_skill_id = str(decision_payload["skill_id"])
-            skill = await repositories.resolve_agent_skill(
+            skill = await repositories.authorize_run_capabilities(
                 conn,
                 tenant_id=principal.tenant_id,
                 agent_id=resolved_agent_id,
                 skill_id=resolved_skill_id,
+                normalized_input=run_input,
+                principal_department_id=principal.department_id,
+                principal_roles=principal.roles,
+                is_admin=is_ai_admin(principal),
+                permissions=principal.permissions,
             )
             if "docx" in (skill.get("input_modes") or []) and not resolved_file_ids:
                 raise RepositoryConflictError("file_required_for_skill")
@@ -581,6 +586,9 @@ async def chat_stream(
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
                 },
+                principal_roles=principal.roles,
+                principal_department_id=principal.department_id,
+                auth_source=principal.source,
             )
             message_id = await repositories.append_message(
                 conn,
@@ -665,6 +673,8 @@ async def chat_stream(
                 message="已锁定 Skill 发布决策",
                 payload=_release_decision_event_payload(release_decision_payload, skill_id=resolved_skill_id),
             )
+    except repositories.RepositoryAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except SkillVersionMaterializationError as exc:

@@ -224,6 +224,154 @@ async def test_capability_distribution_upsert_and_toggle_raise_controlled_not_fo
 
 
 @pytest.mark.asyncio
+async def test_capability_distribution_authorization_allows_same_department_skill_and_mcp_tool(monkeypatch):
+    calls = []
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        calls.append(("skill", tenant_id, agent_id, skill_id))
+        return {"skill_id": skill_id, "skill_status": "active", "executor_type": "claude-agent-worker"}
+
+    async def fake_get_distribution(conn, *, tenant_id, capability_kind, capability_id):
+        calls.append(("distribution", capability_kind, capability_id))
+        return {
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["qa"],
+            "allowed_roles": ["qa_operator"],
+        }
+
+    async def fake_get_tool(conn, *, tenant_id, tool_id):
+        calls.append(("tool", tenant_id, tool_id))
+        return {
+            "tool_id": tool_id,
+            "server_id": "qa-mcp",
+            "effective_status": "active",
+            "server_status": "active",
+            "visible_to_user": True,
+        }
+
+    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", fake_get_tool)
+
+    skill = await repositories.authorize_run_capabilities(
+        object(),
+        tenant_id="tenant-a",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        normalized_input={"mcp_tool_ids": ["qa-search"]},
+        principal_department_id="qa",
+        principal_roles=[" QA-Operator "],
+        is_admin=False,
+        permissions=[],
+    )
+
+    assert skill["skill_id"] == "general-chat"
+    assert calls == [
+        ("skill", "tenant-a", "general-agent", "general-chat"),
+        ("distribution", "skill", "general-chat"),
+        ("tool", "tenant-a", "qa-search"),
+        ("distribution", "mcp_server", "qa-mcp"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denial", ["missing", "hidden", "disabled", "department", "role"])
+async def test_capability_distribution_authorization_denies_skill_before_enqueue(monkeypatch, denial):
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        if denial == "missing":
+            raise RepositoryNotFoundError("agent_or_skill_not_found")
+        return {"skill_id": skill_id, "skill_status": "active", "executor_type": "claude-agent-worker"}
+
+    async def fake_get_distribution(conn, *, tenant_id, capability_kind, capability_id):
+        row = {
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["qa"],
+            "allowed_roles": ["qa_operator"],
+        }
+        if denial == "hidden":
+            row["visible_to_user"] = False
+        elif denial == "disabled":
+            row["status"] = "disabled"
+        elif denial == "department":
+            row["department_ids"] = ["finance"]
+        elif denial == "role":
+            row["allowed_roles"] = ["reviewer"]
+        return row
+
+    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.authorize_run_capabilities(
+            object(),
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            skill_id="general-chat",
+            normalized_input={},
+            principal_department_id="qa",
+            principal_roles=["qa_operator"],
+            is_admin=False,
+            permissions=[],
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("denial", ["missing", "disabled", "server_disabled", "department"])
+async def test_capability_distribution_authorization_denies_explicit_mcp_tool_before_enqueue(monkeypatch, denial):
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return {"skill_id": skill_id, "skill_status": "active", "executor_type": "claude-agent-worker"}
+
+    async def fake_get_distribution(conn, *, tenant_id, capability_kind, capability_id):
+        if capability_kind == "skill":
+            return {
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": ["qa"],
+                "allowed_roles": [],
+            }
+        return {
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["finance"] if denial == "department" else ["qa"],
+            "allowed_roles": [],
+        }
+
+    async def fake_get_tool(conn, *, tenant_id, tool_id):
+        if denial == "missing":
+            return None
+        return {
+            "tool_id": tool_id,
+            "server_id": "qa-mcp",
+            "effective_status": "disabled" if denial == "disabled" else "active",
+            "server_status": "disabled" if denial == "server_disabled" else "active",
+            "visible_to_user": True,
+        }
+
+    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", fake_get_tool)
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.authorize_run_capabilities(
+            object(),
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            skill_id="general-chat",
+            normalized_input={"mcp_tool_ids": ["qa-search"]},
+            principal_department_id="qa",
+            principal_roles=["qa_operator"],
+            is_admin=False,
+            permissions=[],
+        )
+
+
+@pytest.mark.asyncio
 async def test_create_context_snapshot_preserves_private_context_manifest_refs_without_storage_keys():
     conn = SingleRowConnection({"id": "ctx-row"})
 
@@ -692,6 +840,64 @@ async def test_create_run_persists_g2_contract_fields():
     assert any(str(item).startswith("trace_") for item in params)
     assert "ai-platform.run.v1" in params
     assert "ai-platform.executor-result.v1" in params
+
+
+@pytest.mark.asyncio
+async def test_create_run_binds_normalized_auth_snapshot():
+    conn = RecordingConnection()
+
+    await create_run(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        user_id="user-a",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input_json={},
+        principal_roles=[" QA-Operator ", "qa operator", "User"],
+        principal_department_id="qa",
+        auth_source="trusted-header",
+    )
+
+    sql, params = conn.calls[0]
+    assert "principal_roles, principal_department_id, auth_source" in sql
+    assert json.dumps(["qa_operator", "user"], ensure_ascii=False) in params
+    assert "qa" in params
+    assert "trusted-header" in params
+
+
+@pytest.mark.asyncio
+async def test_update_run_auth_snapshot_normalizes_roles_and_scopes_update():
+    conn = RecordingConnection()
+
+    await repositories.update_run_auth_snapshot(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        principal_roles=[" QA-Operator ", "qa operator", "User"],
+        principal_department_id="qa",
+        auth_source="trusted-header",
+    )
+
+    sql, params = conn.calls[0]
+    assert "update runs" in sql
+    assert "principal_roles = %s::jsonb" in sql
+    assert "principal_department_id = %s" in sql
+    assert "auth_source = %s" in sql
+    assert params == (json.dumps(["qa_operator", "user"], ensure_ascii=False), "qa", "trusted-header", "tenant-a", "run-a")
+
+
+@pytest.mark.asyncio
+async def test_locked_run_query_projects_complete_auth_snapshot():
+    conn = RecordingConnection()
+
+    await repositories.mark_run_running(conn, tenant_id="tenant-a", run_id="run-a")
+
+    sql, _params = conn.calls[0]
+    assert "runs.principal_roles" in sql
+    assert "runs.principal_department_id" in sql
+    assert "runs.auth_source" in sql
 
 
 @pytest.mark.asyncio

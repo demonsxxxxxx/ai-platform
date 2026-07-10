@@ -226,6 +226,7 @@ create table if not exists runs (
   schema_version text not null default 'ai-platform.run.v1',
   executor_schema_version text not null default 'ai-platform.executor-result.v1',
   principal_roles jsonb not null default '[]'::jsonb,
+  principal_department_id text not null default '',
   auth_source text,
   status text not null,
   input_json jsonb not null default '{}'::jsonb,
@@ -254,6 +255,7 @@ alter table runs add column if not exists trace_id text not null default '';
 alter table runs add column if not exists schema_version text not null default 'ai-platform.run.v1';
 alter table runs add column if not exists executor_schema_version text not null default 'ai-platform.executor-result.v1';
 alter table runs add column if not exists principal_roles jsonb not null default '[]'::jsonb;
+alter table runs add column if not exists principal_department_id text not null default '';
 alter table runs add column if not exists auth_source text;
 alter table runs add column if not exists copied_from_run_id text references runs(id);
 alter table runs add column if not exists cancel_requested_at timestamptz;

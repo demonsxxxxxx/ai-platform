@@ -6,8 +6,9 @@ import json
 import pytest
 from fastapi import HTTPException
 
+from app import repositories as repository_module
 from app.auth import AuthPrincipal
-from app.models import CreateRunRequest
+from app.models import CreateRunRequest, QueueRunPayload
 from app.repositories import RepositoryConflictError
 from app.routes.health import admin_status
 from app.routes.files import download_artifact, upload_file
@@ -50,6 +51,23 @@ def principal(**overrides):
     }
     values.update(overrides)
     return AuthPrincipal(**values)
+
+
+@pytest.fixture(autouse=True)
+def allow_existing_run_route_tests_through_enqueue_authorization(monkeypatch):
+    async def allow(conn, *, tenant_id, agent_id, skill_id, **_kwargs):
+        return await repository_module.resolve_agent_skill(
+            conn,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            skill_id=skill_id,
+        )
+
+    async def update_auth_snapshot(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", allow, raising=False)
+    monkeypatch.setattr(repository_module, "update_run_auth_snapshot", update_auth_snapshot, raising=False)
 
 
 def snapshot_manifest(skill_id, *, description="Pinned skill", source=None):
@@ -2819,7 +2837,7 @@ def test_resolve_run_selector_accepts_public_agent_ids_for_public_capabilities()
 
 
 @pytest.mark.asyncio
-async def test_create_run_ensures_user_before_session(monkeypatch):
+async def test_create_run_capability_distribution_ensures_user_and_binds_auth_snapshot(monkeypatch):
     calls = []
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -2833,6 +2851,14 @@ async def test_create_run_ensures_user_before_session(monkeypatch):
         return "ses_1"
 
     async def fake_create_run(conn, **kwargs):
+        calls.append(
+            (
+                "auth_snapshot",
+                kwargs["principal_roles"],
+                kwargs["principal_department_id"],
+                kwargs["auth_source"],
+            )
+        )
         return kwargs["run_id"]
 
     async def fake_bind_files_to_run(conn, **kwargs):
@@ -2862,7 +2888,14 @@ async def test_create_run_ensures_user_before_session(monkeypatch):
             agent_id="qa-word-review",
             capability_id="document_review",
         ),
-        principal=principal(user_id="phaseb-smoke", display_name="Phase B Smoke", tenant_id="default"),
+        principal=principal(
+            user_id="phaseb-smoke",
+            display_name="Phase B Smoke",
+            tenant_id="default",
+            department_id="qa",
+            roles=["qa_operator"],
+            source="session-token",
+        ),
     )
 
     assert response.run_id.startswith("run_")
@@ -2871,7 +2904,63 @@ async def test_create_run_ensures_user_before_session(monkeypatch):
         ("create_session", "phaseb-smoke"),
     ]
     assert ("bind_files_to_run", "phaseb-smoke") in calls
+    assert ("auth_snapshot", ["qa_operator"], "qa", "session-token") in calls
     assert any(item[0:3] == ("enqueue", "phaseb-smoke", "default") and item[3].startswith("run_") for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_create_run_capability_distribution_denial_precedes_create_run(monkeypatch):
+    calls = []
+
+    async def deny(*args, **kwargs):
+        calls.append(("authorize", kwargs["skill_id"]))
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_create_run(*args, **kwargs):
+        calls.append(("create_run", kwargs))
+        raise AssertionError("authorization denial must precede create_run")
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr("app.routes.runs.repositories.create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="document-review",
+                capability_id="document_review",
+            ),
+            principal=principal(department_id="finance", roles=["user"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert calls == [("authorize", "qa-file-reviewer")]
+
+
+def test_queue_run_payload_auth_snapshot_schema_remains_server_owned():
+    payload = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "default",
+        "user_id": "user-a",
+        "session_id": "ses-a",
+        "run_id": "run-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "executor_type": "claude-agent-worker",
+    }
+
+    assert "principal_roles" not in QueueRunPayload.model_fields
+    assert "principal_department_id" not in QueueRunPayload.model_fields
+    assert "auth_source" not in QueueRunPayload.model_fields
+    with pytest.raises(Exception, match="Extra inputs are not permitted"):
+        QueueRunPayload(
+            **payload,
+            principal_roles=["admin"],
+            principal_department_id="forged",
+            auth_source="forged",
+        )
 
 
 @pytest.mark.asyncio

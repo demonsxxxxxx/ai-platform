@@ -35,6 +35,18 @@ async def fake_transaction():
     yield EmptyPropagationConnection()
 
 
+@pytest.fixture(autouse=True)
+def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypatch):
+    async def update_auth_snapshot(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_auth_snapshot",
+        update_auth_snapshot,
+        raising=False,
+    )
+
+
 def headers():
     return {
         "x-ai-user-id": "user-a",
@@ -1950,7 +1962,7 @@ def test_multi_agent_dispatch_tick_rejects_when_only_ready_step_is_unsafe(monkey
     assert response.json()["detail"] == "no_safe_ready_steps"
 
 
-def test_multi_agent_dispatch_tick_claims_handoffs_and_enqueues_next_ready_step(monkeypatch):
+def test_multi_agent_dispatch_tick_auth_snapshot_claims_handoffs_and_enqueues_next_ready_step(monkeypatch):
     calls = []
 
     @asynccontextmanager
@@ -2052,6 +2064,9 @@ def test_multi_agent_dispatch_tick_claims_handoffs_and_enqueues_next_ready_step(
             "workspace_id": "default",
             "agent_id": "general-agent",
             "skill_id": "general-chat",
+            "principal_roles": ["qa_operator", "user"],
+            "principal_department_id": "qa",
+            "auth_source": "session-token",
             "file_ids": [],
             "input": {"message": "build feature"},
             "executor_type": "claude-agent-worker",
@@ -2069,6 +2084,9 @@ def test_multi_agent_dispatch_tick_claims_handoffs_and_enqueues_next_ready_step(
                 copied["run_id"],
                 principal.user_id,
                 queue_principal.user_id,
+                queue_principal.roles,
+                queue_principal.department_id,
+                queue_principal.source,
                 source,
                 authorized_source_run_id,
             )
@@ -2129,6 +2147,8 @@ def test_multi_agent_dispatch_tick_claims_handoffs_and_enqueues_next_ready_step(
         "enqueue",
         "queue_insight",
     ]
+    prepare = next(item for item in calls if item[0] == "prepare")
+    assert prepare[3:7] == ("user-a", ["qa_operator", "user"], "qa", "session-token")
 
 
 def test_admin_multi_agent_dispatch_claim_maps_repository_conflict_to_409(monkeypatch):
@@ -2283,7 +2303,7 @@ def test_multi_agent_dispatch_handoff_requires_admin(monkeypatch):
 
 
 def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues(monkeypatch):
-    calls = {"handoff": [], "context": [], "queue": [], "step": []}
+    calls = {"handoff": [], "context": [], "queue": [], "step": [], "auth_snapshot": []}
 
     async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by, active_run_admission_limit):
         calls["handoff"].append((tenant_id, parent_run_id, dispatch_id, handed_off_by, active_run_admission_limit))
@@ -2298,6 +2318,9 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
             "user_id": "user-a",
             "agent_id": "general-agent",
             "skill_id": "general-chat",
+            "principal_roles": ["qa_operator", "user"],
+            "principal_department_id": "qa",
+            "auth_source": "session-token",
             "file_ids": ["file-a"],
             "input": {
                 "message": "build feature",
@@ -2348,6 +2371,9 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
     async def fake_update_run_input_skill_version(conn, **kwargs):
         calls["skill_version"] = kwargs
 
+    async def fake_update_run_auth_snapshot(conn, **kwargs):
+        calls["auth_snapshot"].append(kwargs)
+
     async def fake_append_event(conn, **kwargs):
         calls.setdefault("events", []).append(kwargs)
 
@@ -2367,6 +2393,11 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
     monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_initial_context_snapshot)
     monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_auth_snapshot",
+        fake_update_run_auth_snapshot,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
@@ -2405,6 +2436,15 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
     assert calls["queue"][0]["context_snapshot_id"] == "ctx-child"
     assert calls["queue"][0]["context_snapshot"]["source"] == "multi_agent_dispatch_handoff"
     assert calls["step"][0]["source"] == "multi_agent_dispatch_handoff"
+    assert calls["auth_snapshot"] == [
+        {
+            "tenant_id": "default",
+            "run_id": "run-child",
+            "principal_roles": ["qa_operator", "user"],
+            "principal_department_id": "qa",
+            "auth_source": "session-token",
+        }
+    ]
 
 
 def test_admin_multi_agent_dispatch_handoff_rejects_duplicate_without_enqueue(monkeypatch):
@@ -3647,7 +3687,13 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     assert "skill_ids" not in copied["input"]["multi_agent_steps"][0]
     assert "skillIds" not in copied["input"]["multi_agent_steps"][0]
     assert "workerPath" not in copied["input"]["multi_agent_steps"][0]
-    persisted_json = next(params[10] for sql, params in conn.executed if sql.startswith("insert into runs"))
+    persisted_json = next(
+        item
+        for sql, params in conn.executed
+        if sql.startswith("insert into runs")
+        for item in params
+        if isinstance(item, str) and item.startswith("{")
+    )
     assert "skillIds" not in persisted_json
     assert "allowedSkills" not in persisted_json
     assert "workerPath" not in persisted_json
@@ -3712,13 +3758,19 @@ async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monke
     assert copied["release_policy_version"] == "hash-old"
     assert copied["release_decision"]["selected_version"] == "hash-old"
     assert copied["release_decision"]["selected_track"] == "previous"
-    persisted_json = next(params[10] for sql, params in conn.executed if sql.startswith("insert into runs"))
+    persisted_json = next(
+        item
+        for sql, params in conn.executed
+        if sql.startswith("insert into runs")
+        for item in params
+        if isinstance(item, str) and item.startswith("{")
+    )
     assert json.loads(persisted_json)["skill_version"] == "hash-old"
     assert json.loads(persisted_json)["release_decision"]["selected_track"] == "previous"
 
 
 @pytest.mark.asyncio
-async def test_copy_run_as_new_task_persists_g2_trace_and_contract_columns(monkeypatch):
+async def test_copy_run_as_new_task_auth_snapshot_persists_trace_contract_and_principal(monkeypatch):
     from app import repositories
 
     class RecordingConnection:
@@ -3744,6 +3796,9 @@ async def test_copy_run_as_new_task_persists_g2_trace_and_contract_columns(monke
             "session_id": "ses_old",
             "agent_id": "general-agent",
             "skill_id": "general-chat",
+            "principal_roles": ["qa_operator", "user"],
+            "principal_department_id": "qa",
+            "auth_source": "session-token",
             "input_json": {"input": {"message": "retry"}, "executor_type": "embedded-poco-kernel"},
         }
 
@@ -3764,10 +3819,17 @@ async def test_copy_run_as_new_task_persists_g2_trace_and_contract_columns(monke
     assert "trace_id" in sql
     assert "schema_version" in sql
     assert "executor_schema_version" in sql
+    assert "principal_roles, principal_department_id, auth_source" in sql
     assert copied["run_id"] in params
     assert any(str(item).startswith("trace_") for item in params)
     assert "ai-platform.run.v1" in params
     assert "ai-platform.executor-result.v1" in params
+    assert json.dumps(["qa_operator", "user"], ensure_ascii=False) in params
+    assert "qa" in params
+    assert "session-token" in params
+    assert copied["principal_roles"] == ["qa_operator", "user"]
+    assert copied["principal_department_id"] == "qa"
+    assert copied["auth_source"] == "session-token"
 
 
 @pytest.mark.asyncio
@@ -4374,7 +4436,7 @@ async def test_retry_run_as_new_task_rejects_when_retry_is_already_active(monkey
 
 
 @pytest.mark.asyncio
-async def test_retry_run_as_new_task_records_retry_events_and_audit(monkeypatch):
+async def test_retry_run_as_new_task_auth_snapshot_records_retry_events_and_audit(monkeypatch):
     from app import repositories
 
     calls = []
@@ -4405,6 +4467,9 @@ async def test_retry_run_as_new_task_records_retry_events_and_audit(monkeypatch)
             "skill_version": "hash-a",
             "release_policy_version": "",
             "release_decision": {},
+            "principal_roles": ["qa_operator", "user"],
+            "principal_department_id": "qa",
+            "auth_source": "session-token",
         }
 
     async def fake_append_event(conn, **kwargs):
@@ -4435,6 +4500,9 @@ async def test_retry_run_as_new_task_records_retry_events_and_audit(monkeypatch)
     )
 
     assert copied["run_id"] == "run-new"
+    assert copied["principal_roles"] == ["qa_operator", "user"]
+    assert copied["principal_department_id"] == "qa"
+    assert copied["auth_source"] == "session-token"
     assert calls[0] == ("source_lock", "default", "user-a", "run-failed", True)
     assert calls[1] == ("active_retry", "default", "user-a", "run-failed")
     event_types = [call[1]["event_type"] for call in calls if call[0] == "event"]
@@ -4460,6 +4528,9 @@ async def test_create_multi_agent_dispatch_child_run_records_parent_child_events
         "user_id": "user-a",
         "agent_id": "general-agent",
         "skill_id": "general-chat",
+        "principal_roles": ["qa_operator", "user"],
+        "principal_department_id": "qa",
+        "auth_source": "session-token",
         "trace_id": "trace-parent",
         "status": "running",
         "input_json": {
@@ -4576,7 +4647,11 @@ async def test_create_multi_agent_dispatch_child_run_records_parent_child_events
     assert ("admission", "default", ("user-a", 0)) in calls
     insert_sql, insert_params = next((sql, params) for kind, sql, params in calls if kind == "sql" and sql.startswith("insert into runs"))
     assert "copied_from_run_id" in insert_sql
-    persisted_input = json.loads(insert_params[10])
+    assert "principal_roles, principal_department_id, auth_source" in insert_sql
+    assert json.dumps(["qa_operator", "user"], ensure_ascii=False) in insert_params
+    assert "qa" in insert_params
+    assert "session-token" in insert_params
+    persisted_input = json.loads(next(item for item in insert_params if isinstance(item, str) and item.startswith("{")))
     assert persisted_input["copied_from_run_id"] == "run-parent"
     assert persisted_input["input"]["multi_agent_dispatch"]["dispatch_id"] == "dispatch-code"
     assert persisted_input["input"]["resume"]["completed_step_outputs"] == {"plan": "plan output"}
@@ -4587,6 +4662,9 @@ async def test_create_multi_agent_dispatch_child_run_records_parent_child_events
     persisted_dump = json.dumps(persisted_input, ensure_ascii=False)
     assert "forged" not in persisted_dump
     assert "private-worker" not in persisted_dump
+    assert copied["principal_roles"] == ["qa_operator", "user"]
+    assert copied["principal_department_id"] == "qa"
+    assert copied["auth_source"] == "session-token"
     update_sql, update_params = next((sql, params) for kind, sql, params in calls if kind == "sql" and sql.startswith("update run_steps"))
     assert "payload_json = payload_json || %s::jsonb" in update_sql
     update_payload = json.loads(update_params[0])

@@ -39,6 +39,13 @@ def test_schema_declares_capability_distribution_authority_constraints():
     assert "check (scope_mode in ('allowlist'))" in schema
 
 
+def test_schema_declares_principal_department_auth_snapshot():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "principal_department_id text not null default ''" in schema
+    assert "alter table runs add column if not exists principal_department_id text not null default '';" in schema
+
+
 def test_schema_seeds_first_agent_apps():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 
