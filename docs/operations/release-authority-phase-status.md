@@ -1,6 +1,6 @@
 # Release Authority Phase Status
 
-Status: `implementation / PR review gate open / 211 candidate preflight complete`
+Status: `implementation / independent re-review pending / 211 candidate preflight complete`
 
 This document tracks only Release Authority recovery. It does not authorize or
 record B1, B2, or B3 runtime acceptance.
@@ -35,8 +35,14 @@ record B1, B2, or B3 runtime acceptance.
   `4fedd2389730a66bd219cb665affe85ea54d0463` both completed successfully.
 - [x] Phase 4: `tools/release_authority.py` implements clean-source rejection,
   immutable image tags, image-label validation, preservation, repo-local compose
-  deployment, manual frontend rejection, and strict parity reporting. Local CLI
-  and contract tests pass; Docker execution remains pending on 211.
+  deployment, exact manual frontend identity replacement, and strict parity
+  reporting. The verifier derives repo-local compose and published API/frontend
+  endpoints from current source and Docker inspection, requires running
+  containers, live API health, worker running state, canonical served frontend
+  provenance, and matching OCI/repository labels. Existing full-commit image
+  tags are reused only when all provenance labels match; mismatches fail closed
+  instead of rebuilding over the tag. Local CLI and contract tests pass; Docker
+  deployment execution remains pending on 211.
 - [x] Phase 5: Frontend is defined only in repo-local
   `deploy/ai-platform/docker-compose.yml`; the standalone frontend compose file
   is removed in the recovery branch. Runtime ownership transition remains pending.
@@ -77,13 +83,19 @@ remains unchanged and is not an authorized deployment source.
 
 ## Local Verification Evidence
 
-- Backend required scope: `315 passed`.
-- Frontend/release required scope: `129 passed`.
+- Backend required workflow scope: `324 passed`.
+- Frontend required Python scope: `138 passed`.
 - Cross-cutting pre-commit scope: `136 passed`.
 - `python -m compileall -q app tools scripts`: exit `0`.
 - `corepack pnpm run ci:verify`: exit `0`; projection audit, source smoke,
   ESLint, TypeScript build, Vite/PWA build, and provenance generation completed.
 - `git diff --check`: exit `0`.
+- Strengthened Release Authority contracts: `16 passed`.
+- Workflow/frontend traceability and B2 readiness regression scope: `65 passed`.
+- Foundation Alpha readiness fresh short-basetemp rerun: `83 passed`. An earlier
+  long-basetemp run produced `12` Windows path-length fixture errors after `71`
+  passes; the short workspace-local basetemp eliminated those environmental
+  failures without source changes.
 - 211 candidate preflight found the host Git does not support
   `git status --porcelain=v1`; the release tool now uses the compatible
   `--porcelain` flag and has a regression test for that exact command shape.
@@ -95,9 +107,13 @@ remains unchanged and is not an authorized deployment source.
   runtime environment file and immutable candidate image variables. Compose
   emitted only the existing obsolete `version` warning. No image build,
   `compose up`, container replacement, source cleanup, or deployment occurred.
-- PR #371 remains unmerged because the independent sub-agent review gate is
-  still open. Final deployment and parity must use the eventual merged `main`
-  commit, not this PR head.
+- PR #371 received an independent inherited/default-model review. The first
+  review found no Critical issues and five Important verifier gaps: caller-
+  controlled compose/frontend subjects, static-only API/worker evidence,
+  mutable commit tags, and incomplete OCI/repository validation. Those findings
+  are now addressed test-first; an independent follow-up review remains pending.
+  Final deployment and parity must use the eventual merged `main` commit, not
+  this PR head.
 
 ## Pre-Commit Self-Review
 

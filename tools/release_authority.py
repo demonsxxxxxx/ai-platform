@@ -14,6 +14,7 @@ import shlex
 import subprocess
 import tarfile
 from typing import Any, Sequence
+from urllib.request import urlopen
 
 
 SCHEMA_VERSION = "ai-platform.release-authority.v1"
@@ -184,6 +185,7 @@ def build_parity_report(
     containers: dict[str, dict[str, Any]],
     runtime: dict[str, Any],
     expected_compose_dir: str,
+    expected_repository: str,
 ) -> dict[str, Any]:
     """Build a strict same-commit report for source, images, and runtime subjects."""
     commit = _normalize_commit(expected_commit)
@@ -198,6 +200,10 @@ def build_parity_report(
         labels = image.get("labels") if isinstance(image.get("labels"), dict) else {}
         if labels.get("ai-platform.source-commit") != commit:
             mismatches.append(f"{role}_image_commit_mismatch")
+        if labels.get("org.opencontainers.image.revision") != commit:
+            mismatches.append(f"{role}_image_oci_revision_mismatch")
+        if labels.get("ai-platform.source-repository") != expected_repository:
+            mismatches.append(f"{role}_image_repository_mismatch")
         if labels.get("ai-platform.build-dirty") != "false":
             mismatches.append(f"{role}_image_dirty_label_mismatch")
         if labels.get("ai-platform.release-role") != role:
@@ -207,6 +213,8 @@ def build_parity_report(
     for role, image_role in expected_image_roles.items():
         container = containers.get(role, {})
         labels = container.get("labels") if isinstance(container.get("labels"), dict) else {}
+        if container.get("running") is not True:
+            mismatches.append(f"{role}_container_not_running")
         if labels.get("ai-platform.release-owner") != "repo-local-compose":
             mismatches.append(f"{role}_container_not_repo_local_compose_owned")
         if labels.get("ai-platform.release-role") != role:
@@ -227,6 +235,10 @@ def build_parity_report(
     for role in ("api", "worker", "frontend"):
         if runtime.get(f"{role}_commit") != commit:
             mismatches.append(f"{role}_runtime_commit_mismatch")
+    if runtime.get("api_health_status") != "ok":
+        mismatches.append("api_health_not_ok")
+    if runtime.get("worker_running") is not True:
+        mismatches.append("worker_not_running")
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -257,9 +269,47 @@ def _image_record(docker: list[str], image: str) -> dict[str, Any]:
     return {"reference": image, "id": payload.get("Id"), "labels": payload.get("Config", {}).get("Labels") or {}}
 
 
+def _validate_release_image(image: dict[str, Any], *, commit: str, repository: str, role: str) -> None:
+    labels = image.get("labels") if isinstance(image.get("labels"), dict) else {}
+    expected = {
+        "ai-platform.source-commit": commit,
+        "org.opencontainers.image.revision": commit,
+        "ai-platform.source-repository": repository,
+        "ai-platform.build-dirty": "false",
+        "ai-platform.release-role": role,
+    }
+    for label, value in expected.items():
+        if labels.get(label) != value:
+            raise ReleaseAuthorityError(f"{role} image label mismatch: {label}")
+
+
+def _existing_release_image(
+    docker: list[str],
+    reference: str,
+    *,
+    commit: str,
+    repository: str,
+    role: str,
+) -> dict[str, Any] | None:
+    try:
+        image = _image_record(docker, reference)
+    except subprocess.CalledProcessError:
+        return None
+    _validate_release_image(image, commit=commit, repository=repository, role=role)
+    return image
+
+
 def _container_record(docker: list[str], name: str) -> dict[str, Any]:
     payload = _docker_json(docker, "container", "inspect", name)[0]
-    return {"name": name, "image_id": payload.get("Image"), "labels": payload.get("Config", {}).get("Labels") or {}}
+    state = payload.get("State") or {}
+    return {
+        "name": name,
+        "image_id": payload.get("Image"),
+        "labels": payload.get("Config", {}).get("Labels") or {},
+        "running": state.get("Running") is True,
+        "health": (state.get("Health") or {}).get("Status") or "",
+        "ports": (payload.get("NetworkSettings") or {}).get("Ports") or {},
+    }
 
 
 def _container_file_commit(docker: list[str], name: str, path: str) -> str:
@@ -272,12 +322,29 @@ def _container_file_commit(docker: list[str], name: str, path: str) -> str:
     return result.stdout.strip()
 
 
+def _http_json(url: str) -> dict[str, Any]:
+    with urlopen(url, timeout=15) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _published_loopback_url(container: dict[str, Any], container_port: str, path: str) -> str:
+    bindings = container.get("ports", {}).get(container_port)
+    if not isinstance(bindings, list) or not bindings:
+        raise ReleaseAuthorityError(f"expected published bindings for {container_port}")
+    host_ports = {str(binding.get("HostPort") or "").strip() for binding in bindings}
+    if len(host_ports) != 1:
+        raise ReleaseAuthorityError(f"ambiguous published host ports for {container_port}")
+    host_port = host_ports.pop()
+    if not host_port.isdigit():
+        raise ReleaseAuthorityError(f"invalid published host port for {container_port}")
+    return f"http://127.0.0.1:{host_port}/{path.lstrip('/')}"
+
+
 def collect_live_parity(
     repo_root: Path,
     commit: str,
     *,
     docker_cmd: str,
-    compose_dir: str,
 ) -> dict[str, Any]:
     """Collect live Docker and embedded provenance for the strict parity report."""
     normalized = assert_clean_commit(repo_root, commit)
@@ -292,15 +359,29 @@ def collect_live_parity(
         "worker": _container_record(docker, "ai-platform-worker"),
         "frontend": _container_record(docker, "ai-platform-frontend"),
     }
+    api_health = _http_json(_published_loopback_url(containers["api"], "8020/tcp", "/api/ai/health"))
+    frontend_provenance = _http_json(
+        _published_loopback_url(
+            containers["frontend"],
+            "8080/tcp",
+            "/ai-platform-build-provenance.json",
+        )
+    )
+    if frontend_provenance.get("schema_version") != "ai-platform.frontend-build-provenance.v1":
+        raise ReleaseAuthorityError("frontend provenance schema mismatch")
+    if frontend_provenance.get("frontend_path") != "frontend/web":
+        raise ReleaseAuthorityError("frontend provenance path mismatch")
+    if frontend_provenance.get("git", {}).get("dirty") is not False:
+        raise ReleaseAuthorityError("frontend provenance is dirty")
     runtime = {
         "api_commit": _container_file_commit(docker, "ai-platform-api", "/app/.ai-platform-source-revision"),
+        "api_health_status": api_health.get("status"),
         "worker_commit": _container_file_commit(docker, "ai-platform-worker", "/app/.ai-platform-source-revision"),
-        "frontend_commit": _container_file_commit(
-            docker,
-            "ai-platform-frontend",
-            "/usr/share/nginx/html/ai-platform-build-provenance.json",
-        ),
+        "worker_running": containers["worker"].get("running") is True,
+        "frontend_commit": str(frontend_provenance.get("git", {}).get("commit") or ""),
     }
+    compose_dir = (repo_root.resolve() / DEFAULT_COMPOSE_RELATIVE_PATH).parent.as_posix()
+    repository = str(_git(repo_root, "config", "--get", "remote.origin.url")).strip()
     return build_parity_report(
         expected_commit=normalized,
         source={"commit": normalized, "dirty": False, "path": str(repo_root.resolve())},
@@ -308,6 +389,7 @@ def collect_live_parity(
         containers=containers,
         runtime=runtime,
         expected_compose_dir=compose_dir.rstrip("/"),
+        expected_repository=repository,
     )
 
 
@@ -318,6 +400,8 @@ def deploy_clean_commit(
     docker_cmd: str,
     env_file: Path,
     replace_known_manual_frontend: bool,
+    expected_manual_frontend_image: str | None = None,
+    expected_manual_frontend_image_id: str | None = None,
 ) -> dict[str, Any]:
     """Build immutable images and recreate the repo-local compose release."""
     normalized = assert_clean_commit(repo_root, commit)
@@ -329,26 +413,51 @@ def deploy_clean_commit(
         "--build-arg", "AI_PLATFORM_BUILD_DIRTY=false",
         "--build-arg", f"AI_PLATFORM_BUILD_REPOSITORY={repository}",
     ]
-    _run([*docker, "build", *common_args, "-t", refs["backend"], "-f", "Dockerfile", "."], cwd=repo_root)
-    _run([*docker, "build", *common_args, "-t", refs["frontend"], "-f", "frontend/web/Dockerfile", "."], cwd=repo_root)
-
-    images = {role: _image_record(docker, image) for role, image in refs.items()}
-    for role, image in images.items():
-        labels = image["labels"]
-        if labels.get("ai-platform.source-commit") != normalized:
-            raise ReleaseAuthorityError(f"{role} image commit label mismatch")
-        if labels.get("ai-platform.build-dirty") != "false":
-            raise ReleaseAuthorityError(f"{role} image dirty label mismatch")
-        if labels.get("ai-platform.release-role") != role:
-            raise ReleaseAuthorityError(f"{role} image role label mismatch")
+    images: dict[str, dict[str, Any]] = {}
+    dockerfiles = {"backend": "Dockerfile", "frontend": "frontend/web/Dockerfile"}
+    for role, reference in refs.items():
+        image = _existing_release_image(
+            docker,
+            reference,
+            commit=normalized,
+            repository=repository,
+            role=role,
+        )
+        if image is None:
+            _run(
+                [*docker, "build", *common_args, "-t", reference, "-f", dockerfiles[role], "."],
+                cwd=repo_root,
+            )
+            image = _image_record(docker, reference)
+            _validate_release_image(
+                image,
+                commit=normalized,
+                repository=repository,
+                role=role,
+            )
+        images[role] = image
 
     existing = _run([*docker, "container", "inspect", "ai-platform-frontend"], check=False)
     if existing.returncode == 0:
         payload = json.loads(existing.stdout)[0]
         labels = payload.get("Config", {}).get("Labels") or {}
-        if labels.get("ai-platform.release-owner") != "repo-local-compose":
+        compose_dir = (repo_root.resolve() / DEFAULT_COMPOSE_RELATIVE_PATH).parent.as_posix()
+        expected_config = f"{compose_dir}/docker-compose.yml"
+        if labels.get("ai-platform.release-owner") == "repo-local-compose":
+            if (
+                labels.get("com.docker.compose.project.working_dir") != compose_dir
+                or labels.get("com.docker.compose.project.config_files") != expected_config
+            ):
+                raise ReleaseAuthorityError("frontend compose ownership mismatch")
+        else:
             if not replace_known_manual_frontend:
                 raise ReleaseAuthorityError("manual frontend container is forbidden; rerun with explicit replacement")
+            observed_image = str(payload.get("Config", {}).get("Image") or "")
+            observed_image_id = str(payload.get("Image") or "")
+            if not expected_manual_frontend_image or not expected_manual_frontend_image_id:
+                raise ReleaseAuthorityError("manual frontend replacement requires expected image and image ID")
+            if observed_image != expected_manual_frontend_image or observed_image_id != expected_manual_frontend_image_id:
+                raise ReleaseAuthorityError("manual frontend identity mismatch; refusing container removal")
             _run([*docker, "container", "rm", "-f", "ai-platform-frontend"])
 
     compose_file = repo_root / DEFAULT_COMPOSE_RELATIVE_PATH
@@ -403,12 +512,13 @@ def main() -> int:
     deploy.add_argument("--docker-cmd", default="docker")
     deploy.add_argument("--env-file", type=Path, required=True)
     deploy.add_argument("--replace-known-manual-frontend", action="store_true")
+    deploy.add_argument("--expected-manual-frontend-image")
+    deploy.add_argument("--expected-manual-frontend-image-id")
 
     verify = subparsers.add_parser("verify", help="Verify source/image/runtime commit parity")
     verify.add_argument("--repo-root", type=Path, required=True)
     verify.add_argument("--commit", required=True)
     verify.add_argument("--docker-cmd", default="docker")
-    verify.add_argument("--compose-dir", required=True)
     verify.add_argument("--output", type=Path)
 
     args = parser.parse_args()
@@ -424,6 +534,8 @@ def main() -> int:
                     docker_cmd=args.docker_cmd,
                     env_file=args.env_file,
                     replace_known_manual_frontend=args.replace_known_manual_frontend,
+                    expected_manual_frontend_image=args.expected_manual_frontend_image,
+                    expected_manual_frontend_image_id=args.expected_manual_frontend_image_id,
                 ),
                 None,
             )
@@ -432,7 +544,6 @@ def main() -> int:
                 args.repo_root,
                 args.commit,
                 docker_cmd=args.docker_cmd,
-                compose_dir=args.compose_dir,
             )
             _write_json(report, args.output)
             return 0 if report["verified"] else 1
