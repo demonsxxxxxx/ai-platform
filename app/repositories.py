@@ -28,7 +28,7 @@ from app.control_plane_contracts import (
 )
 from app.error_taxonomy import summarize_error_categories
 from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_metadata, redact_memory_text
-from app.projection_redaction import sanitize_user_control_input
+from app.projection_redaction import sanitize_user_control_input, strip_server_owned_control_metadata
 from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, is_workbench_skill_public
 from app.skills.lifecycle import is_user_runnable_status
 from app.skills.release_policy import resolve_rollout_skill_decision
@@ -1207,6 +1207,88 @@ def _capability_not_authorized() -> RepositoryAuthorizationError:
     return RepositoryAuthorizationError("capability_not_authorized")
 
 
+_MCP_TOOL_ID_KEYS = ("mcp_tool_ids", "mcpToolIds")
+_CALLER_AUTH_SNAPSHOT_KEY_ALIASES = {
+    "principalroles",
+    "principaldepartmentid",
+    "authsource",
+}
+
+
+def _append_explicit_mcp_tool_ids(target: list[str], container: dict[str, Any]) -> None:
+    for key in _MCP_TOOL_ID_KEYS:
+        if key not in container:
+            continue
+        raw_tool_ids = container[key]
+        if not isinstance(raw_tool_ids, list):
+            raise _capability_not_authorized()
+        for raw_tool_id in raw_tool_ids:
+            if not isinstance(raw_tool_id, str) or not raw_tool_id.strip():
+                raise _capability_not_authorized()
+            tool_id = raw_tool_id.strip()
+            if tool_id not in target:
+                target.append(tool_id)
+
+
+def extract_run_mcp_tool_ids(normalized_input: dict[str, Any]) -> list[str]:
+    """Extract explicit MCP IDs from accepted run and multi-agent step fields."""
+
+    requested_tool_ids: list[str] = []
+    _append_explicit_mcp_tool_ids(requested_tool_ids, normalized_input)
+    raw_steps = normalized_input.get("multi_agent_steps")
+    if isinstance(raw_steps, list):
+        for raw_step in raw_steps:
+            if isinstance(raw_step, dict):
+                _append_explicit_mcp_tool_ids(requested_tool_ids, raw_step)
+    return requested_tool_ids
+
+
+def strip_caller_run_auth_snapshot_fields(value: Any) -> Any:
+    """Remove caller-controlled run authorization snapshot fields recursively."""
+
+    if isinstance(value, list):
+        return [strip_caller_run_auth_snapshot_fields(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    cleaned: dict[str, Any] = {}
+    for key, item in value.items():
+        normalized_key = "".join(character for character in str(key) if character.isalnum()).lower()
+        if normalized_key in _CALLER_AUTH_SNAPSHOT_KEY_ALIASES:
+            continue
+        cleaned[key] = strip_caller_run_auth_snapshot_fields(item)
+    return cleaned
+
+
+def normalize_run_input_for_enqueue(input_payload: object, *, redact_public: bool) -> dict[str, Any]:
+    """Sanitize run input while preserving validated explicit MCP selectors."""
+
+    if not isinstance(input_payload, dict):
+        return {}
+    requested_tool_ids = extract_run_mcp_tool_ids(input_payload)
+    if redact_public:
+        cleaned = sanitize_user_control_input(input_payload)
+    else:
+        stripped = strip_server_owned_control_metadata(input_payload)
+        cleaned = stripped if isinstance(stripped, dict) else {}
+    normalized = strip_caller_run_auth_snapshot_fields(cleaned)
+    if not isinstance(normalized, dict):
+        normalized = {}
+    if requested_tool_ids:
+        normalized["mcp_tool_ids"] = requested_tool_ids
+
+    original_steps = input_payload.get("multi_agent_steps")
+    normalized_steps = normalized.get("multi_agent_steps")
+    if isinstance(original_steps, list) and isinstance(normalized_steps, list):
+        for original_step, normalized_step in zip(original_steps, normalized_steps):
+            if not isinstance(original_step, dict) or not isinstance(normalized_step, dict):
+                continue
+            step_tool_ids: list[str] = []
+            _append_explicit_mcp_tool_ids(step_tool_ids, original_step)
+            if step_tool_ids:
+                normalized_step["mcp_tool_ids"] = step_tool_ids
+    return normalized
+
+
 async def authorize_run_capabilities(
     conn: AsyncConnection,
     *,
@@ -1261,15 +1343,7 @@ async def authorize_run_capabilities(
     if not skill_decision.usable:
         raise _capability_not_authorized()
 
-    requested_tool_ids: list[str] = []
-    raw_tool_ids = normalized_input.get("mcp_tool_ids")
-    if isinstance(raw_tool_ids, list):
-        for raw_tool_id in raw_tool_ids:
-            tool_id = str(raw_tool_id).strip()
-            if tool_id and tool_id not in requested_tool_ids:
-                requested_tool_ids.append(tool_id)
-
-    for tool_id in requested_tool_ids:
+    for tool_id in extract_run_mcp_tool_ids(normalized_input):
         tool = await get_mcp_tool_registry_entry(
             conn,
             tenant_id=tenant_id,
@@ -4853,7 +4927,7 @@ def _run_execution_input_from_row(run: dict[str, Any]) -> dict[str, Any]:
 
 
 def _clean_child_execution_input(source_execution_input: dict[str, Any]) -> dict[str, Any]:
-    cleaned = sanitize_user_control_input(source_execution_input)
+    cleaned = normalize_run_input_for_enqueue(source_execution_input, redact_public=True)
     cleaned.pop("resume", None)
     cleaned.pop("multi_agent_dispatch", None)
     return cleaned
@@ -5077,7 +5151,7 @@ async def create_multi_agent_dispatch_child_run(
     if resume_payload:
         child_execution_input["resume"] = resume_payload
 
-    sanitized_source_input = sanitize_user_control_input(source_input)
+    sanitized_source_input = strip_caller_run_auth_snapshot_fields(sanitize_user_control_input(source_input))
     if isinstance(source_input.get("input"), dict):
         child_input_json = {
             **sanitized_source_input,
@@ -6658,7 +6732,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     if source is None:
         return None
     source_input = source["input_json"] if isinstance(source.get("input_json"), dict) else {}
-    sanitized_source_input = sanitize_user_control_input(source_input)
+    sanitized_source_input = strip_caller_run_auth_snapshot_fields(sanitize_user_control_input(source_input))
     skill = await resolve_agent_skill(
         conn,
         tenant_id=tenant_id,
@@ -6682,7 +6756,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     new_run_id = new_id("run")
     source_execution_input = source_input.get("input") if isinstance(source_input.get("input"), dict) else source_input
     if isinstance(source_execution_input, dict):
-        source_execution_input = sanitize_user_control_input(source_execution_input)
+        source_execution_input = normalize_run_input_for_enqueue(source_execution_input, redact_public=True)
         source_execution_input.pop("resume", None)
     else:
         source_execution_input = {}

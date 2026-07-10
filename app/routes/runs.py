@@ -37,7 +37,6 @@ from app.projection_redaction import (
     public_agent_id_for_projection,
     redact_raw_skill_references,
     sanitize_user_control_input,
-    strip_server_owned_control_metadata,
 )
 from app.queue import enqueue_run, get_queue_insight, get_run_queue_position, remove_queued_run
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
@@ -606,11 +605,8 @@ def _resume_checkpoint_lineage(
     return result
 
 
-def _strip_server_owned_control_metadata(input_payload: object) -> object:
-    if not isinstance(input_payload, dict):
-        return input_payload
-    cleaned = strip_server_owned_control_metadata(input_payload)
-    return cleaned if isinstance(cleaned, dict) else {}
+def _strip_server_owned_control_metadata(input_payload: object, *, redact_public: bool = False) -> dict[str, Any]:
+    return repositories.normalize_run_input_for_enqueue(input_payload, redact_public=redact_public)
 
 
 async def seed_copied_run_steps(conn, *, tenant_id: str, run_id: str, copied_input: dict[str, Any], source: str) -> None:
@@ -678,6 +674,53 @@ def _copied_run_source_run_id(authorized_source_run_id: str | None) -> str | Non
     return safe_provenance_graph_id("source_run_id", authorized_source_run_id)
 
 
+def _run_execution_input(run: dict[str, Any]) -> dict[str, Any]:
+    input_json = run.get("input_json") if isinstance(run.get("input_json"), dict) else {}
+    execution_input = input_json.get("input") if isinstance(input_json.get("input"), dict) else input_json
+    return execution_input if isinstance(execution_input, dict) else {}
+
+
+def _persisted_owner_principal(run: dict[str, Any], *, tenant_id: str) -> AuthPrincipal:
+    return AuthPrincipal(
+        user_id=str(run.get("user_id") or ""),
+        display_name=str(run.get("user_id") or ""),
+        tenant_id=tenant_id,
+        department_id=str(run.get("principal_department_id") or ""),
+        roles=[str(role) for role in run.get("principal_roles") or []],
+        source=str(run.get("auth_source") or ""),
+    )
+
+
+async def _authorize_persisted_run_for_queue(
+    conn,
+    *,
+    tenant_id: str,
+    run_id: str,
+    run: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], AuthPrincipal]:
+    persisted_run = run or await repositories.get_run(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        for_update=True,
+    )
+    if persisted_run is None:
+        raise RepositoryNotFoundError("run_not_found")
+    owner_principal = _persisted_owner_principal(persisted_run, tenant_id=tenant_id)
+    await repositories.authorize_run_capabilities(
+        conn,
+        tenant_id=tenant_id,
+        agent_id=str(persisted_run.get("agent_id") or ""),
+        skill_id=str(persisted_run.get("skill_id") or ""),
+        normalized_input=_run_execution_input(persisted_run),
+        principal_department_id=owner_principal.department_id,
+        principal_roles=owner_principal.roles,
+        is_admin=is_ai_admin(owner_principal),
+        permissions=owner_principal.permissions,
+    )
+    return persisted_run, owner_principal
+
+
 async def prepare_copied_run_for_queue(
     conn,
     *,
@@ -692,6 +735,17 @@ async def prepare_copied_run_for_queue(
     copied_input = copied["input"] if isinstance(copied.get("input"), dict) else {}
     source_run_id = _copied_run_source_run_id(authorized_source_run_id)
     copied_skill_version = str(copied.get("skill_version") or "")
+    await repositories.authorize_run_capabilities(
+        conn,
+        tenant_id=effective_principal.tenant_id,
+        agent_id=str(copied["agent_id"]),
+        skill_id=str(copied["skill_id"]),
+        normalized_input=copied_input,
+        principal_department_id=effective_principal.department_id,
+        principal_roles=effective_principal.roles,
+        is_admin=is_ai_admin(effective_principal),
+        permissions=effective_principal.permissions,
+    )
     skill_manifests = await _governed_skill_manifest_pins(
         conn,
         skill_id=str(copied["skill_id"]),
@@ -826,8 +880,13 @@ async def create_run(
     tenant_id = principal.tenant_id
     user_id = principal.user_id
     resolved_agent_id, resolved_skill_id = resolve_run_selector(request, principal)
-    run_input = request.input if is_ai_admin(principal) else sanitize_user_control_input(request.input)
-    run_input = _strip_server_owned_control_metadata(run_input)
+    try:
+        run_input = _strip_server_owned_control_metadata(
+            request.input,
+            redact_public=not is_ai_admin(principal),
+        )
+    except repositories.RepositoryAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     try:
         async with transaction() as conn:
             skill = await repositories.authorize_run_capabilities(
@@ -1021,6 +1080,8 @@ async def copy_run(
                     source="copy_run",
                     authorized_source_run_id=run_id,
                 )
+    except repositories.RepositoryAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
@@ -1060,6 +1121,8 @@ async def retry_run(
                     source="retry_run",
                     authorized_source_run_id=run_id,
                 )
+    except repositories.RepositoryAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryNotFoundError as exc:
@@ -1102,6 +1165,8 @@ async def resume_run(
                     source="resume_run",
                     authorized_source_run_id=run_id,
                 )
+    except repositories.RepositoryAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryNotFoundError as exc:
@@ -1233,6 +1298,11 @@ async def handoff_multi_agent_dispatch(
     conflict_detail: str | None = None
     try:
         async with transaction() as conn:
+            await _authorize_persisted_run_for_queue(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=run_id,
+            )
             try:
                 copied = await repositories.create_multi_agent_dispatch_child_run(
                     conn,
@@ -1261,6 +1331,8 @@ async def handoff_multi_agent_dispatch(
                     source="multi_agent_dispatch_handoff",
                     authorized_source_run_id=run_id,
                 )
+    except repositories.RepositoryAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryNotFoundError as exc:
@@ -1305,6 +1377,12 @@ async def tick_multi_agent_dispatch(
             run = await repositories.get_run(conn, tenant_id=principal.tenant_id, run_id=run_id, for_update=True)
             if run is None:
                 raise HTTPException(status_code=404, detail="run_not_found")
+            await _authorize_persisted_run_for_queue(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=run_id,
+                run=run,
+            )
             steps = await repositories.list_run_steps(conn, tenant_id=principal.tenant_id, run_id=run_id)
             candidate = _dispatch_tick_candidate(run=run, steps=steps, principal=principal)
             claimed_step_key = str(candidate["step_key"])
@@ -1345,6 +1423,8 @@ async def tick_multi_agent_dispatch(
                     source="multi_agent_dispatch_tick",
                     authorized_source_run_id=run_id,
                 )
+    except repositories.RepositoryAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryNotFoundError as exc:

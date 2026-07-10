@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.repositories import RepositoryConflictError
+from app.repositories import RepositoryAuthorizationError, RepositoryConflictError
 
 
 def auth_settings():
@@ -40,9 +40,25 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     async def update_auth_snapshot(*_args, **_kwargs):
         return None
 
+    async def authorize_capabilities(*_args, **kwargs):
+        return {"skill_id": kwargs["skill_id"], "executor_type": "claude-agent-worker"}
+
+    async def authorize_persisted_run(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(
         "app.routes.runs.repositories.update_run_auth_snapshot",
         update_auth_snapshot,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.authorize_run_capabilities",
+        authorize_capabilities,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs._authorize_persisted_run_for_queue",
+        authorize_persisted_run,
         raising=False,
     )
 
@@ -1869,6 +1885,63 @@ def test_multi_agent_dispatch_tick_requires_admin(monkeypatch):
     assert response.json()["detail"] == "admin_required"
 
 
+def test_multi_agent_dispatch_tick_revocation_denies_before_claim_child_or_enqueue(monkeypatch):
+    calls = []
+    run = {
+        "id": "run-parent",
+        "tenant_id": "default",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "principal_roles": ["qa_operator", "user"],
+        "principal_department_id": "qa",
+        "auth_source": "session-token",
+        "status": "running",
+        "input_json": {
+            "input": {
+                "multi_agent_steps": [
+                    {"step_key": "inspect", "mcpToolIds": ["revoked-tool"]},
+                ]
+            }
+        },
+    }
+
+    @asynccontextmanager
+    async def tick_transaction():
+        yield object()
+
+    async def fake_get_run(conn, *, tenant_id, run_id, for_update=False):
+        calls.append(("get_run", tenant_id, run_id, for_update))
+        return run
+
+    async def deny_persisted(conn, *, tenant_id, run_id, run=None):
+        calls.append(("authorize", tenant_id, run_id, run))
+        raise RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_dispatch(*args, **kwargs):
+        calls.append(("dispatch", kwargs))
+        raise AssertionError("revoked parent must not dispatch")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", tick_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.get_run", fake_get_run, raising=False)
+    monkeypatch.setattr("app.routes.runs._authorize_persisted_run_for_queue", deny_persisted, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fail_dispatch, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.claim_multi_agent_dispatch_step", fail_dispatch, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fail_dispatch, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fail_dispatch, raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run-parent/multi-agent/dispatch/tick", headers=admin_headers())
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "capability_not_authorized"
+    assert calls == [
+        ("get_run", "default", "run-parent", True),
+        ("authorize", "default", "run-parent", run),
+    ]
+
+
 def test_multi_agent_dispatch_tick_rejects_when_no_ready_step(monkeypatch):
     @asynccontextmanager
     async def tick_transaction():
@@ -2300,6 +2373,38 @@ def test_multi_agent_dispatch_handoff_requires_admin(monkeypatch):
 
     assert response.status_code == 403
     assert response.json()["detail"] == "admin_required"
+
+
+def test_multi_agent_dispatch_handoff_revocation_denies_before_child_or_enqueue(monkeypatch):
+    calls = []
+
+    async def deny_persisted(conn, *, tenant_id, run_id, run=None):
+        calls.append(("authorize", tenant_id, run_id, run))
+        raise RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_child(*args, **kwargs):
+        calls.append(("child", kwargs))
+        raise AssertionError("revoked parent must not create a dispatch child")
+
+    async def fail_enqueue(*args, **kwargs):
+        calls.append(("enqueue", kwargs))
+        raise AssertionError("revoked parent must not enqueue")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs._authorize_persisted_run_for_queue", deny_persisted, raising=False)
+    monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fail_child, raising=False)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-parent/multi-agent/dispatch/claims/dispatch-code/handoff",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "capability_not_authorized"
+    assert calls == [("authorize", "default", "run-parent", None)]
 
 
 def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues(monkeypatch):

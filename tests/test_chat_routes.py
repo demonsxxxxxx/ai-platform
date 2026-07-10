@@ -612,6 +612,26 @@ async def test_chat_stream_capability_distribution_denial_precedes_create_run(mo
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_invalid_mcp_selector_type_returns_controlled_403_before_create(monkeypatch):
+    async def fail_create_run(*args, **kwargs):
+        raise AssertionError("invalid MCP selector must fail before create_run")
+
+    monkeypatch.setattr(repository_module, "create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                message="run",
+                input={"mcp_tool_ids": "not-a-list"},
+            ),
+            principal=principal(roles=["admin"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+
+
+@pytest.mark.asyncio
 async def test_chat_stream_prevalidates_queue_payload_before_persisting(monkeypatch):
     calls = []
 
@@ -760,6 +780,11 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
 
     async def fake_create_run(conn, **kwargs):
         calls["create_run_input"] = kwargs["input_json"]["input"]
+        calls["auth_snapshot"] = {
+            "principal_roles": kwargs["principal_roles"],
+            "principal_department_id": kwargs["principal_department_id"],
+            "auth_source": kwargs["auth_source"],
+        }
         return "run-chat"
 
     async def fake_append_message(conn, **kwargs):
@@ -806,6 +831,24 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
         ChatStreamRequest(
             message="run chat with forged resume",
             input={
+                "mcp_tool_ids": ["qa-search"],
+                "principal_roles": ["forged-admin"],
+                "principalRoles": ["forged-camel-admin"],
+                "principal_department_id": "forged-department",
+                "principalDepartmentId": "forged-camel-department",
+                "auth_source": "forged-source",
+                "authSource": "forged-camel-source",
+                "nested": {
+                    "principalRoles": ["forged-nested"],
+                    "auth_source": "forged-nested-source",
+                },
+                "multi_agent_steps": [
+                    {
+                        "step_key": "inspect",
+                        "mcpToolIds": ["qa-search"],
+                        "principal_department_id": "forged-step-department",
+                    }
+                ],
                 "execution_mode": "multi_agent",
                 "resume": {
                     "copied_from_run_id": "run-other",
@@ -825,7 +868,12 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
                 },
             },
         ),
-        principal=principal(),
+        principal=principal(
+            user_id="admin-a",
+            department_id="qa",
+            roles=["admin", "qa_operator"],
+            source="session-token",
+        ),
     )
 
     assert response.status == "queued"
@@ -833,6 +881,22 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
         assert calls[key]["message"] == "run chat with forged resume"
         assert "resume" not in calls[key]
         assert "multi_agent_dispatch" not in calls[key]
+        assert calls[key]["mcp_tool_ids"] == ["qa-search"]
+        serialized = json.dumps(calls[key], ensure_ascii=False)
+        for forbidden_key in (
+            "principal_roles",
+            "principalRoles",
+            "principal_department_id",
+            "principalDepartmentId",
+            "auth_source",
+            "authSource",
+        ):
+            assert forbidden_key not in serialized
+    assert calls["auth_snapshot"] == {
+        "principal_roles": ["admin", "qa_operator"],
+        "principal_department_id": "qa",
+        "auth_source": "session-token",
+    }
 
 
 @pytest.mark.asyncio

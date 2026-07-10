@@ -29,7 +29,6 @@ from app.projection_redaction import (
     public_agent_id_for_projection,
     redact_raw_skill_references,
     sanitize_user_control_input,
-    strip_server_owned_control_metadata,
 )
 from app.queue import QueueAdmissionMetadata, enqueue_run, enqueue_run_with_metadata, get_queue_insight
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
@@ -127,11 +126,8 @@ async def _enqueue_chat_run(queue_payload: dict[str, Any]):
     return await enqueue_run_with_metadata(queue_payload)
 
 
-def _strip_server_owned_control_metadata(input_payload: object) -> object:
-    if not isinstance(input_payload, dict):
-        return input_payload
-    cleaned = strip_server_owned_control_metadata(input_payload)
-    return cleaned if isinstance(cleaned, dict) else {}
+def _strip_server_owned_control_metadata(input_payload: object, *, redact_public: bool = False) -> dict[str, Any]:
+    return repositories.normalize_run_input_for_enqueue(input_payload, redact_public=redact_public)
 
 
 def _file_ids_from_request(request: ChatStreamRequest) -> list[str]:
@@ -463,8 +459,13 @@ async def chat_stream(
     requested_model_value = requested_model_selection["value"] if requested_model_selection is not None else None
     explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
     resolved_file_ids = _file_ids_from_request(request)
-    request_input = request.input if is_ai_admin(principal) else sanitize_user_control_input(request.input)
-    run_input = _strip_server_owned_control_metadata({"message": request.message, **request_input})
+    try:
+        run_input = _strip_server_owned_control_metadata(
+            {"message": request.message, **request.input},
+            redact_public=not is_ai_admin(principal),
+        )
+    except repositories.RepositoryAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     try:
         async with transaction() as conn:
             if explicit_payload is None:

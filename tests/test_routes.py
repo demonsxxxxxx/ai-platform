@@ -10,6 +10,7 @@ from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.models import CreateRunRequest, QueueRunPayload
 from app.repositories import RepositoryConflictError
+from app.routes import runs as runs_module
 from app.routes.health import admin_status
 from app.routes.files import download_artifact, upload_file
 from app.routes.runs import (
@@ -36,6 +37,7 @@ RUN_SCHEMA_FIELDS = {
     "executor_schema_version": "ai-platform.executor-result.v1",
 }
 EVENT_SCHEMA_FIELDS = {"schema_version": "ai-platform.event-envelope.v1"}
+_ORIGINAL_RESOLVE_AGENT_SKILL = repository_module.resolve_agent_skill
 
 
 @asynccontextmanager
@@ -56,6 +58,8 @@ def principal(**overrides):
 @pytest.fixture(autouse=True)
 def allow_existing_run_route_tests_through_enqueue_authorization(monkeypatch):
     async def allow(conn, *, tenant_id, agent_id, skill_id, **_kwargs):
+        if repository_module.resolve_agent_skill is _ORIGINAL_RESOLVE_AGENT_SKILL and not hasattr(conn, "execute"):
+            return {"skill_id": skill_id, "executor_type": "claude-agent-worker"}
         return await repository_module.resolve_agent_skill(
             conn,
             tenant_id=tenant_id,
@@ -2964,6 +2968,190 @@ def test_queue_run_payload_auth_snapshot_schema_remains_server_owned():
 
 
 @pytest.mark.asyncio
+async def test_create_run_invalid_mcp_selector_type_returns_controlled_403_before_create(monkeypatch):
+    async def fail_create_run(*args, **kwargs):
+        raise AssertionError("invalid MCP selector must fail before create_run")
+
+    monkeypatch.setattr(repository_module, "create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="general-agent",
+                capability_id="general_chat",
+                input={"mcpToolIds": "not-a-list"},
+            ),
+            principal=principal(roles=["admin"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_prepare_copied_run_for_queue_reauthorizes_before_any_queue_preparation(monkeypatch):
+    calls = []
+
+    async def deny(*args, **kwargs):
+        calls.append(("authorize", kwargs))
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_manifest(*args, **kwargs):
+        calls.append(("manifest", kwargs))
+        raise AssertionError("revoked run must fail before queue preparation")
+
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr(runs_module, "_governed_skill_manifest_pins", fail_manifest)
+
+    with pytest.raises(repository_module.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await runs_module.prepare_copied_run_for_queue(
+            object(),
+            copied={
+                "run_id": "run-copy",
+                "session_id": "ses-copy",
+                "workspace_id": "default",
+                "user_id": "user-a",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "file_ids": [],
+                "input": {
+                    "multi_agent_steps": [
+                        {"step_key": "inspect", "mcpToolIds": ["revoked-tool"]},
+                    ]
+                },
+                "executor_type": "claude-agent-worker",
+                "skill_version": "hash-old",
+                "release_decision": {},
+            },
+            principal=principal(
+                department_id="qa",
+                roles=["qa_operator"],
+                source="session-token",
+            ),
+            source="copy_run",
+            authorized_source_run_id="run-original",
+        )
+
+    assert [item[0] for item in calls] == ["authorize"]
+    authorize_kwargs = calls[0][1]
+    assert authorize_kwargs["normalized_input"]["multi_agent_steps"][0]["mcpToolIds"] == ["revoked-tool"]
+    assert authorize_kwargs["principal_department_id"] == "qa"
+    assert authorize_kwargs["principal_roles"] == ["qa_operator"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "repository_method"),
+    [
+        (runs_module.copy_run, "copy_run_as_new_task"),
+        (runs_module.retry_run, "retry_run_as_new_task"),
+        (runs_module.resume_run, "resume_run_as_new_task"),
+    ],
+)
+async def test_copy_retry_resume_revocation_returns_403_without_enqueue(monkeypatch, route, repository_method):
+    calls = []
+
+    async def fake_new_run(*args, **kwargs):
+        calls.append((repository_method, kwargs["run_id"]))
+        return {
+            "session_id": "ses-copy",
+            "run_id": "run-copy",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "workspace_id": "default",
+            "file_ids": [],
+            "input": {"message": "copied"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-old",
+            "release_decision": {},
+        }
+
+    async def deny_prepare(*args, **kwargs):
+        calls.append(("prepare", kwargs["source"]))
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_enqueue(*args, **kwargs):
+        calls.append(("enqueue", kwargs))
+        raise AssertionError("revoked run must not enqueue")
+
+    async def allow_admission(*args, **kwargs):
+        return 0
+
+    monkeypatch.setattr(runs_module, "transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, repository_method, fake_new_run)
+    monkeypatch.setattr(runs_module, "prepare_copied_run_for_queue", deny_prepare)
+    monkeypatch.setattr(runs_module, "enqueue_run", fail_enqueue)
+    monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", allow_admission)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route(
+            "run-original",
+            principal=principal(department_id="qa", roles=["qa_operator"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert calls == [
+        (repository_method, "run-original"),
+        ("prepare", repository_method.removesuffix("_as_new_task").replace("_run", "_run")),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_persisted_owner_capability_authorization_uses_run_snapshot(monkeypatch):
+    calls = []
+    run = {
+        "id": "run-parent",
+        "tenant_id": "tenant-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "principal_roles": ["qa_operator", "user"],
+        "principal_department_id": "qa",
+        "auth_source": "session-token",
+        "input_json": {
+            "input": {
+                "multi_agent_steps": [
+                    {"step_key": "inspect", "mcp_tool_ids": ["qa-search"]},
+                ]
+            }
+        },
+    }
+
+    async def fake_authorize(conn, **kwargs):
+        calls.append(kwargs)
+        return {"skill_id": kwargs["skill_id"]}
+
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", fake_authorize)
+
+    authorized_run, owner = await runs_module._authorize_persisted_run_for_queue(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-parent",
+        run=run,
+    )
+
+    assert authorized_run is run
+    assert owner.user_id == "user-a"
+    assert owner.roles == ["qa_operator", "user"]
+    assert owner.department_id == "qa"
+    assert owner.source == "session-token"
+    assert calls == [
+        {
+            "tenant_id": "tenant-a",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "normalized_input": run["input_json"]["input"],
+            "principal_department_id": "qa",
+            "principal_roles": ["qa_operator", "user"],
+            "is_admin": False,
+            "permissions": [],
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_run_maps_unreleased_skill_version_conflict_to_409(monkeypatch):
     calls = []
 
@@ -3017,6 +3205,11 @@ async def test_create_run_strips_user_controlled_server_owned_metadata(monkeypat
 
     async def fake_create_run(conn, **kwargs):
         calls["create_run_input"] = kwargs["input_json"]["input"]
+        calls["auth_snapshot"] = {
+            "principal_roles": kwargs["principal_roles"],
+            "principal_department_id": kwargs["principal_department_id"],
+            "auth_source": kwargs["auth_source"],
+        }
         return kwargs["run_id"]
 
     async def fake_bind_files_to_run(conn, **kwargs):
@@ -3067,6 +3260,24 @@ async def test_create_run_strips_user_controlled_server_owned_metadata(monkeypat
             capability_id="general_chat",
             input={
                 "message": "run with forged resume",
+                "mcpToolIds": ["qa-search"],
+                "principal_roles": ["forged-admin"],
+                "principalRoles": ["forged-camel-admin"],
+                "principal_department_id": "forged-department",
+                "principalDepartmentId": "forged-camel-department",
+                "auth_source": "forged-source",
+                "authSource": "forged-camel-source",
+                "nested": {
+                    "principal_roles": ["forged-nested"],
+                    "authSource": "forged-nested-source",
+                },
+                "multi_agent_steps": [
+                    {
+                        "step_key": "inspect",
+                        "mcp_tool_ids": ["qa-search"],
+                        "principalDepartmentId": "forged-step-department",
+                    }
+                ],
                 "execution_mode": "multi_agent",
                 "resume": {
                     "copied_from_run_id": "run-other",
@@ -3086,7 +3297,13 @@ async def test_create_run_strips_user_controlled_server_owned_metadata(monkeypat
                 },
             },
         ),
-        principal=principal(user_id="user-a", tenant_id="tenant-a"),
+        principal=principal(
+            user_id="admin-a",
+            tenant_id="tenant-a",
+            department_id="qa",
+            roles=["admin", "qa_operator"],
+            source="session-token",
+        ),
     )
 
     assert response.status == "queued"
@@ -3094,6 +3311,22 @@ async def test_create_run_strips_user_controlled_server_owned_metadata(monkeypat
         assert calls[key]["message"] == "run with forged resume"
         assert "resume" not in calls[key]
         assert "multi_agent_dispatch" not in calls[key]
+        assert calls[key]["mcpToolIds"] == ["qa-search"]
+        serialized = json.dumps(calls[key], ensure_ascii=False)
+        for forbidden_key in (
+            "principal_roles",
+            "principalRoles",
+            "principal_department_id",
+            "principalDepartmentId",
+            "auth_source",
+            "authSource",
+        ):
+            assert forbidden_key not in serialized
+    assert calls["auth_snapshot"] == {
+        "principal_roles": ["admin", "qa_operator"],
+        "principal_department_id": "qa",
+        "auth_source": "session-token",
+    }
 
 
 @pytest.mark.asyncio

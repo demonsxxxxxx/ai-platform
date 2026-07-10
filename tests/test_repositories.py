@@ -371,6 +371,129 @@ async def test_capability_distribution_authorization_denies_explicit_mcp_tool_be
         )
 
 
+def test_extract_run_mcp_tool_ids_covers_top_level_aliases_and_canonical_multi_agent_steps():
+    extracted = repositories.extract_run_mcp_tool_ids(
+        {
+            "mcp_tool_ids": ["tool-a", "tool-shared"],
+            "mcpToolIds": ["tool-b", "tool-shared"],
+            "multi_agent_steps": [
+                {"step_key": "inspect", "mcp_tool_ids": ["tool-c"]},
+                {"stepKey": "execute", "mcpToolIds": ["tool-d"]},
+            ],
+            "metadata": {"mcp_tool_ids": ["unrelated-tool"]},
+            "message": "do not parse mcp_tool_ids=unrelated-string",
+        }
+    )
+
+    assert extracted == ["tool-a", "tool-shared", "tool-b", "tool-c", "tool-d"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"mcp_tool_ids": "tool-a"},
+        {"mcpToolIds": {"tool": "tool-a"}},
+        {"multi_agent_steps": [{"step_key": "inspect", "mcp_tool_ids": "tool-a"}]},
+        {"multi_agent_steps": [{"step_key": "inspect", "mcpToolIds": 7}]},
+        {"multi_agent_steps": [{"step_key": "inspect", "mcp_tool_ids": ["tool-a", None]}]},
+    ],
+)
+def test_extract_run_mcp_tool_ids_rejects_invalid_typed_forms_fail_closed(payload):
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        repositories.extract_run_mcp_tool_ids(payload)
+
+
+@pytest.mark.asyncio
+async def test_capability_distribution_skill_revocation_after_original_run_denies_requeue(monkeypatch):
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return {"skill_id": skill_id, "skill_status": "active", "executor_type": "claude-agent-worker"}
+
+    async def revoked_skill_distribution(conn, *, tenant_id, capability_kind, capability_id):
+        assert (capability_kind, capability_id) == ("skill", "general-chat")
+        return {
+            "status": "disabled",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["qa"],
+            "allowed_roles": ["qa_operator"],
+        }
+
+    async def fail_tool_lookup(*args, **kwargs):
+        raise AssertionError("revoked Skill must deny before MCP lookup")
+
+    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", revoked_skill_distribution)
+    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", fail_tool_lookup)
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.authorize_run_capabilities(
+            object(),
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            skill_id="general-chat",
+            normalized_input={"mcp_tool_ids": ["tool-a"]},
+            principal_department_id="qa",
+            principal_roles=["qa_operator"],
+            is_admin=False,
+            permissions=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_capability_distribution_nested_mcp_revocation_after_original_run_denies_requeue(monkeypatch):
+    calls = []
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return {"skill_id": skill_id, "skill_status": "active", "executor_type": "claude-agent-worker"}
+
+    async def fake_get_distribution(conn, *, tenant_id, capability_kind, capability_id):
+        calls.append((capability_kind, capability_id))
+        return {
+            "status": "active" if capability_kind == "skill" else "disabled",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["qa"],
+            "allowed_roles": ["qa_operator"],
+        }
+
+    async def fake_get_tool(conn, *, tenant_id, tool_id):
+        calls.append(("tool", tool_id))
+        return {
+            "tool_id": tool_id,
+            "server_id": "qa-mcp",
+            "effective_status": "active",
+            "server_status": "active",
+            "visible_to_user": True,
+        }
+
+    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", fake_get_tool)
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.authorize_run_capabilities(
+            object(),
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            skill_id="general-chat",
+            normalized_input={
+                "multi_agent_steps": [
+                    {"step_key": "inspect", "mcpToolIds": ["revoked-tool"]},
+                ]
+            },
+            principal_department_id="qa",
+            principal_roles=["qa_operator"],
+            is_admin=False,
+            permissions=[],
+        )
+
+    assert calls == [
+        ("skill", "general-chat"),
+        ("tool", "revoked-tool"),
+        ("mcp_server", "qa-mcp"),
+    ]
+
+
 @pytest.mark.asyncio
 async def test_create_context_snapshot_preserves_private_context_manifest_refs_without_storage_keys():
     conn = SingleRowConnection({"id": "ctx-row"})
