@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import binascii
+from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
@@ -23,6 +24,8 @@ from app.executors.claude_agent_sdk_runner import (
     run_claude_agent_sdk,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
+from app.runtime.sandbox.contracts import ContextRetrievalScope, SandboxRuntimeRequest
+from app.runtime.sandbox.runtime import SandboxRuntime
 from app.settings import get_settings
 from app.session_continuity import SessionContinuity
 from app.skills.pinning import MAX_SKILL_SNAPSHOT_FILE_BYTES, MAX_SKILL_SNAPSHOT_TOTAL_BYTES
@@ -34,7 +37,19 @@ from app.tool_policy import evaluate_tool_policy
 
 NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
 _CONTROLLED_RUNNER_SKILLS = {"qa-file-reviewer", "baoyu-translate"}
-_GIT_RUN = subprocess.run
+
+
+@dataclass(frozen=True)
+class PreparedSdkRun:
+    """Resolved SDK staging inputs that can run locally or via SandboxRuntime."""
+
+    workspace: Path
+    file_names: list[str]
+    selected_skills: list[BuiltinSkill]
+    pinned_manifests: dict[str, dict[str, Any]]
+    allowed_skill_names: list[str]
+    staged_skill_names: list[str]
+    prompt: str
 
 
 def _claude_sdk_tool_id(tool_name: str) -> str:
@@ -58,6 +73,287 @@ def _claude_sdk_tool_request_payload(request: dict[str, Any]) -> dict[str, Any]:
         "command_length": len(command),
         "command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest() if command else "",
     }
+
+
+async def broker_claude_sdk_tool_permission(
+    conn,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+    agent_id: str,
+    skill_id: str,
+    trace_id: str,
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply platform tool policy to a Claude Agent SDK tool-permission callback."""
+
+    tool_name = str(request.get("tool_name") or "")
+    tool_id = _claude_sdk_tool_id(tool_name)
+    tool_call_id = str(request.get("tool_call_id") or "")
+    action = str(request.get("action") or "execute")
+    requested_risk_level = str(request.get("risk_level") or "high")
+    requested_write_capable = bool(request.get("write_capable", True))
+    reason = str(request.get("reason") or "Claude SDK tool permission required")
+    request_payload = _claude_sdk_tool_request_payload(request)
+    tool = {
+        "id": tool_id,
+        "risk_level": requested_risk_level,
+        "write_capable": requested_write_capable,
+    }
+
+    permission_decision = await repositories.get_exact_tool_permission_decision(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        run_id=run_id,
+        tool_id=tool_id,
+        action=action,
+        tool_call_id=tool_call_id,
+        request_payload_json=request_payload,
+    )
+    if tool_id == "claude-sdk:Bash" and permission_decision is not None:
+        decision = str(permission_decision.get("decision") or "")
+        decision_tool_call_id = str(permission_decision.get("tool_call_id") or "")
+        decision_payload = permission_decision.get("request_payload_json")
+        if not isinstance(decision_payload, dict):
+            decision_payload = {}
+        decision_command_hash = str(decision_payload.get("command_sha256") or "")
+        request_command_hash = str(request_payload.get("command_sha256") or "")
+        if decision == "allow_once" and (not tool_call_id or decision_tool_call_id != tool_call_id):
+            permission_decision = None
+        elif decision == "allow_for_run" and (not request_command_hash or decision_command_hash != request_command_hash):
+            permission_decision = None
+        elif decision == "deny" and (not tool_call_id or decision_tool_call_id != tool_call_id):
+            permission_decision = None
+
+    tool_gate = evaluate_tool_policy(
+        tool=tool,
+        permission_decision=permission_decision,
+        requested_risk_level=requested_risk_level,
+        requested_write_capable=requested_write_capable,
+    )
+    if tool_gate.allowed:
+        if tool_gate.decision == "allow_once":
+            consumed_decision = await repositories.consume_tool_permission_decision(
+                conn,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                run_id=run_id,
+                request_id=tool_gate.permission_request_id,
+            )
+            if consumed_decision is None:
+                await repositories.append_audit_log(
+                    conn,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    action="claude_sdk_tool_policy_denied",
+                    target_type="tool",
+                    target_id=tool_id,
+                    trace_id=trace_id,
+                    payload_json={
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "agent_id": agent_id,
+                        "skill_id": skill_id,
+                        "tool_call_id": tool_call_id,
+                        "reason": "tool_permission_consumed_or_expired",
+                        "risk_level": tool_gate.risk_level,
+                        "write_capable": tool_gate.write_capable,
+                        "decision": tool_gate.decision,
+                        "permission_request_id": tool_gate.permission_request_id,
+                    },
+                )
+                return {
+                    "allowed": False,
+                    "reason": "tool_permission_consumed_or_expired",
+                    "risk_level": tool_gate.risk_level,
+                    "write_capable": tool_gate.write_capable,
+                    "decision": tool_gate.decision,
+                    "permission_request_id": tool_gate.permission_request_id,
+                }
+        await repositories.append_audit_log(
+            conn,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action="claude_sdk_tool_policy_allowed",
+            target_type="tool",
+            target_id=tool_id,
+            trace_id=trace_id,
+            payload_json={
+                "run_id": run_id,
+                "session_id": session_id,
+                "agent_id": agent_id,
+                "skill_id": skill_id,
+                "tool_call_id": tool_call_id,
+                "reason": tool_gate.reason,
+                "risk_level": tool_gate.risk_level,
+                "write_capable": tool_gate.write_capable,
+                "decision": tool_gate.decision,
+                "permission_request_id": tool_gate.permission_request_id,
+            },
+        )
+        return {
+            "allowed": True,
+            "reason": tool_gate.reason,
+            "risk_level": tool_gate.risk_level,
+            "write_capable": tool_gate.write_capable,
+            "decision": tool_gate.decision,
+            "permission_request_id": tool_gate.permission_request_id,
+        }
+
+    permission_request_id = tool_gate.permission_request_id
+    if tool_gate.reason == "tool_permission_required":
+        row = await repositories.create_tool_permission_request(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+            trace_id=trace_id,
+            tool_id=tool_id,
+            tool_call_id=tool_call_id,
+            action=action,
+            risk_level=tool_gate.risk_level,
+            write_capable=tool_gate.write_capable,
+            reason=reason,
+            request_payload_json=request_payload,
+        )
+        permission_request_id = str(row["id"])
+        await repositories.append_event(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            trace_id=trace_id,
+            event_type="tool_permission_requested",
+            stage="tool_policy",
+            message="工具调用需要权限决策",
+            payload={
+                "visible_to_user": True,
+                "permission_request_id": permission_request_id,
+                "tool_id": tool_id,
+                "tool_call_id": tool_call_id,
+                "action": action,
+                "risk_level": tool_gate.risk_level,
+                "write_capable": tool_gate.write_capable,
+                "reason": reason,
+                "status": "pending",
+            },
+        )
+    await repositories.append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="claude_sdk_tool_policy_denied",
+        target_type="tool",
+        target_id=tool_id,
+        trace_id=trace_id,
+        payload_json={
+            "run_id": run_id,
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "skill_id": skill_id,
+            "tool_call_id": tool_call_id,
+            "reason": tool_gate.reason,
+            "risk_level": tool_gate.risk_level,
+            "write_capable": tool_gate.write_capable,
+            "decision": tool_gate.decision,
+            "permission_request_id": permission_request_id,
+        },
+    )
+    return {
+        "allowed": False,
+        "reason": tool_gate.reason,
+        "risk_level": tool_gate.risk_level,
+        "write_capable": tool_gate.write_capable,
+        "decision": tool_gate.decision,
+        "permission_request_id": permission_request_id,
+    }
+
+
+def _execution_tier(payload: RunPayload) -> str:
+    for source in (payload.context_pack, payload.context_snapshot, payload.input):
+        if not isinstance(source, dict):
+            continue
+        value = source.get("execution_tier")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _ordinary_run_requires_sandbox(payload: RunPayload) -> bool:
+    return (
+        payload.agent_id == "general-agent"
+        and payload.skill_id == "general-chat"
+        and _execution_tier(payload) == "heavy_sandbox"
+    )
+
+
+def _sandbox_workspace(settings: object, payload: RunPayload) -> Path:
+    return (
+        Path(settings.sandbox_workspace_root)
+        / "tenants"
+        / payload.tenant_id
+        / "workspaces"
+        / payload.workspace_id
+        / "users"
+        / payload.user_id
+        / "sessions"
+        / payload.session_id
+        / "runs"
+        / payload.run_id
+        / "workspace"
+    )
+
+
+def _sandbox_callback_url(settings: object) -> str:
+    return f"{str(settings.sandbox_callback_base_url).rstrip('/')}/api/ai/runtime/callbacks/executor"
+
+
+def _pinned_snapshot_root(workspace: Path) -> Path:
+    return workspace / ".pins"
+
+
+def _runtime_provider(result: object, settings: object) -> str:
+    provider = str(getattr(result, "provider", "") or "").strip()
+    if provider:
+        return provider
+    configured = str(getattr(settings, "sandbox_container_provider", "") or "").strip()
+    return configured or "docker"
+
+
+def _context_manifest_from_pack(context_pack: dict[str, Any]) -> dict[str, Any] | None:
+    manifest = context_pack.get("context_manifest")
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
+        return None
+    return manifest
+
+
+def _runtime_request_skill_ids(payload: RunPayload, prepared: PreparedSdkRun) -> list[str]:
+    return list(prepared.staged_skill_names) or [payload.skill_id]
+
+
+def _payload_sandbox_mode(payload: RunPayload) -> str:
+    return "persistent" if payload.input.get("sandbox_mode") == "persistent" else "ephemeral"
+
+
+def _payload_resource_limits(payload: RunPayload) -> dict[str, Any]:
+    resource_limits = payload.input.get("resource_limits")
+    return dict(resource_limits) if isinstance(resource_limits, dict) else {}
+
+
+def _payload_queue_wait_ms(payload: RunPayload) -> int:
+    value = payload.input.get("queue_wait_ms")
+    if isinstance(value, bool):
+        return 0
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(parsed, 0)
 
 
 class PinnedSkillMismatch(ValueError):
@@ -356,7 +652,7 @@ class ClaudeAgentWorkerAdapter:
             skills,
             allowed_skill_names,
             pinned_manifests,
-            workspace / ".ai-platform" / "pinned-skills",
+            _pinned_snapshot_root(workspace),
         )
         if not pin_mismatches:
             return None
@@ -514,8 +810,8 @@ class ClaudeAgentWorkerAdapter:
         payload: RunPayload,
         context_pack: dict[str, Any],
     ) -> tuple[ContextRetrieval | None, ScopedContextRetrievalIdentity | None]:
-        manifest = context_pack.get("context_manifest")
-        if not isinstance(manifest, dict) or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
+        manifest = _context_manifest_from_pack(context_pack)
+        if manifest is None:
             return None, None
         repository = TransactionalContextRetrievalRepository(transaction, storage=ObjectStorage())
         identity = ScopedContextRetrievalIdentity(
@@ -528,17 +824,35 @@ class ClaudeAgentWorkerAdapter:
         )
         return ContextRetrieval(repository), identity
 
-    async def _run_with_staged_skills(
+    def _context_retrieval_scope_for_payload(
+        self,
+        payload: RunPayload,
+        context_pack: dict[str, Any],
+    ) -> ContextRetrievalScope | None:
+        if _context_manifest_from_pack(context_pack) is None:
+            return None
+        return ContextRetrievalScope(
+            tenant_id=payload.tenant_id,
+            workspace_id=payload.workspace_id,
+            user_id=payload.user_id,
+            session_id=payload.session_id,
+            run_id=payload.run_id,
+            agent_id=payload.agent_id,
+        )
+
+    async def _prepare_sdk_run(
         self,
         payload: RunPayload,
         event_sink: ExecutorEventSink | None = None,
-    ) -> ExecutorResult | None:
+        *,
+        workspace: Path | None = None,
+        workspace_root: str | Path | None = None,
+    ) -> tuple[PreparedSdkRun | None, ExecutorResult | None]:
         settings = get_settings()
-        if not settings.claude_agent_sdk_enabled:
-            return None
-        workspace = _run_workspace(settings, payload)
-        _prepare_run_workspace(settings.claude_agent_workspace_root, workspace)
-        file_names = await self._materialize_files(payload, workspace)
+        resolved_workspace = workspace or _run_workspace(settings, payload)
+        resolved_workspace_root = workspace_root or settings.claude_agent_workspace_root
+        _prepare_run_workspace(resolved_workspace_root, resolved_workspace)
+        file_names = await self._materialize_files(payload, resolved_workspace)
 
         skills = BuiltinSkillRegistry(settings.platform_skills_root).list_builtin_skills()
         pinned_manifests = _pinned_skill_manifests(payload)
@@ -548,7 +862,7 @@ class ClaudeAgentWorkerAdapter:
             skills,
             allowed_skill_names,
             pinned_manifests,
-            workspace / ".ai-platform" / "pinned-skills",
+            _pinned_snapshot_root(resolved_workspace),
         )
         if pin_mismatches:
             if event_sink is not None:
@@ -563,7 +877,7 @@ class ClaudeAgentWorkerAdapter:
                         "severity": "error",
                     },
                 )
-            return ExecutorResult(
+            return None, ExecutorResult(
                 status="failed",
                 adapter_version=self.adapter_version,
                 executor_type=self.executor_type,
@@ -594,7 +908,7 @@ class ClaudeAgentWorkerAdapter:
                 },
             )
         staged_skill_names = SkillStager(settings.skill_staging_subdir).stage_skills(
-            workspace=workspace,
+            workspace=resolved_workspace,
             skills=selected_skills,
         )
         if event_sink is not None:
@@ -616,23 +930,226 @@ class ClaudeAgentWorkerAdapter:
             file_names=file_names,
             context_pack=self._executor_context_pack(payload),
         )
+        return (
+            PreparedSdkRun(
+                workspace=resolved_workspace,
+                file_names=file_names,
+                selected_skills=selected_skills,
+                pinned_manifests=pinned_manifests,
+                allowed_skill_names=allowed_skill_names,
+                staged_skill_names=staged_skill_names,
+                prompt=prompt,
+            ),
+            None,
+        )
+
+    async def _submit_prepared_run_to_sandbox_runtime(
+        self,
+        payload: RunPayload,
+        prepared: PreparedSdkRun,
+        *,
+        event_sink: ExecutorEventSink | None = None,
+    ) -> ExecutorResult:
+        settings = get_settings()
+        context_pack = self._executor_context_pack(payload)
+        context_manifest = _context_manifest_from_pack(context_pack)
+        continuity = await self._session_continuity.resolve(
+            tenant_id=payload.tenant_id,
+            workspace_id=payload.workspace_id,
+            user_id=payload.user_id,
+            session_id=payload.session_id,
+            agent_id=payload.agent_id,
+            skill_id=payload.skill_id,
+            model_key=payload.model_value or payload.model_id or getattr(settings, "claude_agent_model", "") or "default-model",
+            fork_reason=str(payload.input.get("context_fork_reason") or "")
+            if payload.input.get("context_fork_reason")
+            else None,
+        )
+        request = SandboxRuntimeRequest(
+            tenant_id=payload.tenant_id,
+            workspace_id=payload.workspace_id,
+            user_id=payload.user_id,
+            session_id=payload.session_id,
+            run_id=payload.run_id,
+            agent_id=payload.agent_id,
+            skill_ids=_runtime_request_skill_ids(payload, prepared),
+            mcp_tool_ids=_string_list(payload.input.get("mcp_tool_ids")),
+            input_message=prepared.prompt,
+            file_ids=payload.file_ids,
+            sandbox_mode=_payload_sandbox_mode(payload),
+            browser_enabled=bool(payload.input.get("browser_enabled")),
+            model=payload.model_value or payload.model_id or getattr(settings, "claude_agent_model", ""),
+            resource_limits=_payload_resource_limits(payload),
+            queue_wait_ms=_payload_queue_wait_ms(payload),
+            trace_id=payload.trace_id or standard_trace_id(payload.run_id),
+            callback_url=_sandbox_callback_url(settings),
+            callback_token_id=f"cbt_{payload.run_id}",
+            context_manifest=dict(context_manifest or {}),
+            context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
+            sdk_session_id=continuity.sdk_session_id,
+        )
+        runtime = SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
+        async with self._session_continuity.sdk_session_lock(continuity.lock_key):
+            runtime_result = await runtime.submit(request, event_sink=event_sink)
+        return self._executor_result_from_sandbox_runtime(payload, prepared, runtime_result)
+
+    def _executor_result_from_sandbox_runtime(
+        self,
+        payload: RunPayload,
+        prepared: PreparedSdkRun,
+        runtime_result: object,
+    ) -> ExecutorResult:
+        settings = get_settings()
+        executor_response = (
+            dict(getattr(runtime_result, "executor_response", {}))
+            if isinstance(getattr(runtime_result, "executor_response", {}), dict)
+            else {}
+        )
+        runtime_status = str(executor_response.get("status") or getattr(runtime_result, "status", "") or "accepted")
+        sandbox_provider = _runtime_provider(runtime_result, settings)
+        runtime_sdk_result = type(
+            "RuntimeSdkResult",
+            (),
+            {
+                "used_skills": executor_response.get("used_skills"),
+                "used_skills_source": executor_response.get("used_skills_source", ""),
+            },
+        )()
+        used_skill_names = _sdk_used_skill_names(runtime_sdk_result, prepared.staged_skill_names)
+        used_skills_source = _sdk_used_skills_source(runtime_sdk_result, used_skill_names)
+        inferred_used_skill_names = _inferred_used_skill_names(payload, prepared.staged_skill_names)
+        skill_manifests = _skill_manifests(
+            prepared.selected_skills,
+            used_skill_names=used_skill_names,
+            pins=prepared.pinned_manifests,
+        )
+        sandbox_timings = getattr(runtime_result, "timings", {})
+        if not isinstance(sandbox_timings, dict):
+            sandbox_timings = {}
+        common_payload = {
+            "sdk_used": bool(executor_response.get("sdk_used")),
+            "sdk_session_id": executor_response.get("sdk_session_id"),
+            "sdk_usage": executor_response.get("sdk_usage", {}) or {},
+            "runtime_terminal_status": runtime_status,
+            "delegate_used": False,
+            "worker_boundary": self.executor_type,
+            "allowed_skills": prepared.allowed_skill_names,
+            "staged_skills": prepared.staged_skill_names,
+            "used_skills": used_skill_names,
+            "used_skills_source": used_skills_source,
+            "inferred_used_skills": inferred_used_skill_names,
+            "skill_manifests": skill_manifests,
+            "sandbox_provider": sandbox_provider,
+            "sandbox_runtime_used": True,
+            "sandbox_timings": sandbox_timings,
+        }
+        if runtime_status in {"failed", "cancelled", "canceled"}:
+            error_code = str(executor_response.get("error_code") or "")
+            if not error_code and runtime_status in {"cancelled", "canceled"}:
+                error_code = "executor_cancelled"
+            if not error_code:
+                error_code = "executor_reported_failure"
+            message = str(
+                executor_response.get("error_message")
+                or executor_response.get("message")
+                or ("任务已取消" if runtime_status in {"cancelled", "canceled"} else "Claude Agent SDK execution failed")
+            )
+            sdk_error = str(
+                executor_response.get("error_message")
+                or executor_response.get("error_code")
+                or message
+            )
+            return ExecutorResult(
+                status="failed",
+                adapter_version=self.adapter_version,
+                executor_type=self.executor_type,
+                executor_version=self.executor_version,
+                capabilities={**self.capabilities, "platform_skills": True},
+                result={
+                    "message": message,
+                    "error_code": error_code,
+                    "sdk_used": bool(executor_response.get("sdk_used")),
+                    "sdk_session_id": executor_response.get("sdk_session_id"),
+                    "sdk_error": sdk_error,
+                    "delegate_used": False,
+                    "worker_boundary": self.executor_type,
+                    "allowed_skills": prepared.allowed_skill_names,
+                    "staged_skills": prepared.staged_skill_names,
+                    "used_skills": used_skill_names,
+                },
+                artifacts=[],
+                executor_payload={
+                    **common_payload,
+                    "sdk_error": sdk_error,
+                },
+            )
+
+        artifacts = self._collect_workspace_artifacts(payload, prepared.workspace)
+        return ExecutorResult(
+            status="succeeded",
+            adapter_version=self.adapter_version,
+            executor_type=self.executor_type,
+            executor_version=self.executor_version,
+            capabilities={**self.capabilities, "platform_skills": True},
+            result={
+                "message": str(executor_response.get("message") or "任务完成"),
+                "artifact_count": len(artifacts),
+                "sdk_used": bool(executor_response.get("sdk_used")),
+                "sdk_session_id": executor_response.get("sdk_session_id"),
+                "sdk_error": None,
+                "delegate_used": False,
+                "worker_boundary": self.executor_type,
+                "allowed_skills": prepared.allowed_skill_names,
+                "staged_skills": prepared.staged_skill_names,
+                "used_skills": used_skill_names,
+            },
+            artifacts=artifacts,
+            executor_payload=common_payload,
+        )
+
+    async def _run_with_staged_skills(
+        self,
+        payload: RunPayload,
+        event_sink: ExecutorEventSink | None = None,
+    ) -> ExecutorResult | None:
+        settings = get_settings()
+        if not settings.claude_agent_sdk_enabled:
+            return None
+        sandbox_required = _ordinary_run_requires_sandbox(payload)
+        prepared, preflight_failure = await self._prepare_sdk_run(
+            payload,
+            event_sink=event_sink,
+            workspace=_sandbox_workspace(settings, payload) if sandbox_required else None,
+            workspace_root=settings.sandbox_workspace_root if sandbox_required else None,
+        )
+        if preflight_failure is not None:
+            return preflight_failure
+        if prepared is None:
+            return None
+        if sandbox_required:
+            return await self._submit_prepared_run_to_sandbox_runtime(
+                payload,
+                prepared,
+                event_sink=event_sink,
+            )
+
         sdk_result = await self._try_run_sdk(
             payload,
             event_sink=event_sink,
-            workspace=workspace,
-            file_names=file_names,
-            prompt=prompt,
-            staged_skill_names=staged_skill_names,
+            workspace=prepared.workspace,
+            file_names=prepared.file_names,
+            prompt=prepared.prompt,
+            staged_skill_names=prepared.staged_skill_names,
         )
         if sdk_result and sdk_result.used_sdk and not sdk_result.error:
-            artifacts = self._collect_workspace_artifacts(payload, workspace)
-            used_skill_names = _sdk_used_skill_names(sdk_result, staged_skill_names)
+            artifacts = self._collect_workspace_artifacts(payload, prepared.workspace)
+            used_skill_names = _sdk_used_skill_names(sdk_result, prepared.staged_skill_names)
             used_skills_source = _sdk_used_skills_source(sdk_result, used_skill_names)
-            inferred_used_skill_names = _inferred_used_skill_names(payload, staged_skill_names)
+            inferred_used_skill_names = _inferred_used_skill_names(payload, prepared.staged_skill_names)
             skill_manifests = _skill_manifests(
-                selected_skills,
+                prepared.selected_skills,
                 used_skill_names=used_skill_names,
-                pins=pinned_manifests,
+                pins=prepared.pinned_manifests,
             )
             return ExecutorResult(
                 status="succeeded",
@@ -648,8 +1165,8 @@ class ClaudeAgentWorkerAdapter:
                     "sdk_error": None,
                     "delegate_used": False,
                     "worker_boundary": self.executor_type,
-                    "allowed_skills": allowed_skill_names,
-                    "staged_skills": staged_skill_names,
+                    "allowed_skills": prepared.allowed_skill_names,
+                    "staged_skills": prepared.staged_skill_names,
                     "used_skills": used_skill_names,
                 },
                 artifacts=artifacts,
@@ -659,8 +1176,8 @@ class ClaudeAgentWorkerAdapter:
                     "sdk_usage": sdk_result.usage,
                     "delegate_used": False,
                     "worker_boundary": self.executor_type,
-                    "allowed_skills": allowed_skill_names,
-                    "staged_skills": staged_skill_names,
+                    "allowed_skills": prepared.allowed_skill_names,
+                    "staged_skills": prepared.staged_skill_names,
                     "used_skills": used_skill_names,
                     "used_skills_source": used_skills_source,
                     "inferred_used_skills": inferred_used_skill_names,
@@ -670,22 +1187,22 @@ class ClaudeAgentWorkerAdapter:
         controlled_result = await self._try_controlled_runner(
             payload,
             event_sink=event_sink,
-            workspace=workspace,
-            file_names=file_names,
-            staged_skill_names=staged_skill_names,
-            selected_skills=selected_skills,
-            pinned_manifests=pinned_manifests,
+            workspace=prepared.workspace,
+            file_names=prepared.file_names,
+            staged_skill_names=prepared.staged_skill_names,
+            selected_skills=prepared.selected_skills,
+            pinned_manifests=prepared.pinned_manifests,
             sdk_result=sdk_result,
         )
         if controlled_result is not None:
             return controlled_result
-        used_skill_names = _sdk_used_skill_names(sdk_result, staged_skill_names) if sdk_result else []
+        used_skill_names = _sdk_used_skill_names(sdk_result, prepared.staged_skill_names) if sdk_result else []
         used_skills_source = _sdk_used_skills_source(sdk_result, used_skill_names)
-        inferred_used_skill_names = _inferred_used_skill_names(payload, staged_skill_names)
+        inferred_used_skill_names = _inferred_used_skill_names(payload, prepared.staged_skill_names)
         skill_manifests = _skill_manifests(
-            selected_skills,
+            prepared.selected_skills,
             used_skill_names=used_skill_names,
-            pins=pinned_manifests,
+            pins=prepared.pinned_manifests,
         )
         return ExecutorResult(
             status="failed",
@@ -700,8 +1217,8 @@ class ClaudeAgentWorkerAdapter:
                 "sdk_error": sdk_result.error if sdk_result else "claude_agent_sdk_required",
                 "delegate_used": False,
                 "worker_boundary": self.executor_type,
-                "allowed_skills": allowed_skill_names,
-                "staged_skills": staged_skill_names,
+                "allowed_skills": prepared.allowed_skill_names,
+                "staged_skills": prepared.staged_skill_names,
                 "used_skills": used_skill_names,
             },
             artifacts=[],
@@ -710,8 +1227,8 @@ class ClaudeAgentWorkerAdapter:
                 "sdk_error": sdk_result.error if sdk_result else "claude_agent_sdk_required",
                 "delegate_used": False,
                 "worker_boundary": self.executor_type,
-                "allowed_skills": allowed_skill_names,
-                "staged_skills": staged_skill_names,
+                "allowed_skills": prepared.allowed_skill_names,
+                "staged_skills": prepared.staged_skill_names,
                 "used_skills": used_skill_names,
                 "used_skills_source": used_skills_source,
                 "inferred_used_skills": inferred_used_skill_names,
@@ -935,191 +1452,20 @@ class ClaudeAgentWorkerAdapter:
                 )
 
         async def on_tool_permission(request: dict[str, Any]) -> dict[str, Any]:
-            tool_name = str(request.get("tool_name") or "")
-            tool_id = _claude_sdk_tool_id(tool_name)
-            tool_call_id = str(request.get("tool_call_id") or "")
-            action = str(request.get("action") or "execute")
-            requested_risk_level = str(request.get("risk_level") or "high")
-            requested_write_capable = bool(request.get("write_capable", True))
-            reason = str(request.get("reason") or "Claude SDK tool permission required")
             trace_id = payload.trace_id or standard_trace_id(payload.run_id)
-            request_payload = _claude_sdk_tool_request_payload(request)
-            tool = {
-                "id": tool_id,
-                "risk_level": requested_risk_level,
-                "write_capable": requested_write_capable,
-            }
-
             async with transaction() as conn:
-                permission_decision = await repositories.get_exact_tool_permission_decision(
+                return await broker_claude_sdk_tool_permission(
                     conn,
                     tenant_id=payload.tenant_id,
+                    workspace_id=payload.workspace_id,
                     user_id=payload.user_id,
+                    session_id=payload.session_id,
                     run_id=payload.run_id,
-                    tool_id=tool_id,
-                    action=action,
-                    tool_call_id=tool_call_id,
-                    request_payload_json=request_payload,
-                )
-                if tool_id == "claude-sdk:Bash" and permission_decision is not None:
-                    decision = str(permission_decision.get("decision") or "")
-                    decision_tool_call_id = str(permission_decision.get("tool_call_id") or "")
-                    decision_payload = permission_decision.get("request_payload_json")
-                    if not isinstance(decision_payload, dict):
-                        decision_payload = {}
-                    decision_command_hash = str(decision_payload.get("command_sha256") or "")
-                    request_command_hash = str(request_payload.get("command_sha256") or "")
-                    if decision == "allow_once" and (not tool_call_id or decision_tool_call_id != tool_call_id):
-                        permission_decision = None
-                    elif decision == "allow_for_run" and (
-                        not request_command_hash or decision_command_hash != request_command_hash
-                    ):
-                        permission_decision = None
-                    elif decision == "deny" and (not tool_call_id or decision_tool_call_id != tool_call_id):
-                        permission_decision = None
-                tool_gate = evaluate_tool_policy(
-                    tool=tool,
-                    permission_decision=permission_decision,
-                    requested_risk_level=requested_risk_level,
-                    requested_write_capable=requested_write_capable,
-                )
-                if tool_gate.allowed:
-                    if tool_gate.decision == "allow_once":
-                        consumed_decision = await repositories.consume_tool_permission_decision(
-                            conn,
-                            tenant_id=payload.tenant_id,
-                            user_id=payload.user_id,
-                            run_id=payload.run_id,
-                            request_id=tool_gate.permission_request_id,
-                        )
-                        if consumed_decision is None:
-                            await repositories.append_audit_log(
-                                conn,
-                                tenant_id=payload.tenant_id,
-                                user_id=payload.user_id,
-                                action="claude_sdk_tool_policy_denied",
-                                target_type="tool",
-                                target_id=tool_id,
-                                trace_id=trace_id,
-                                payload_json={
-                                    "run_id": payload.run_id,
-                                    "session_id": payload.session_id,
-                                    "agent_id": payload.agent_id,
-                                    "skill_id": payload.skill_id,
-                                    "tool_call_id": tool_call_id,
-                                    "reason": "tool_permission_consumed_or_expired",
-                                    "risk_level": tool_gate.risk_level,
-                                    "write_capable": tool_gate.write_capable,
-                                    "decision": tool_gate.decision,
-                                    "permission_request_id": tool_gate.permission_request_id,
-                                },
-                            )
-                            return {
-                                "allowed": False,
-                                "reason": "tool_permission_consumed_or_expired",
-                                "risk_level": tool_gate.risk_level,
-                                "write_capable": tool_gate.write_capable,
-                                "decision": tool_gate.decision,
-                                "permission_request_id": tool_gate.permission_request_id,
-                            }
-                    await repositories.append_audit_log(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        user_id=payload.user_id,
-                        action="claude_sdk_tool_policy_allowed",
-                        target_type="tool",
-                        target_id=tool_id,
-                        trace_id=trace_id,
-                        payload_json={
-                            "run_id": payload.run_id,
-                            "session_id": payload.session_id,
-                            "agent_id": payload.agent_id,
-                            "skill_id": payload.skill_id,
-                            "tool_call_id": tool_call_id,
-                            "reason": tool_gate.reason,
-                            "risk_level": tool_gate.risk_level,
-                            "write_capable": tool_gate.write_capable,
-                            "decision": tool_gate.decision,
-                            "permission_request_id": tool_gate.permission_request_id,
-                        },
-                    )
-                    return {
-                        "allowed": True,
-                        "reason": tool_gate.reason,
-                        "risk_level": tool_gate.risk_level,
-                        "write_capable": tool_gate.write_capable,
-                        "decision": tool_gate.decision,
-                        "permission_request_id": tool_gate.permission_request_id,
-                    }
-
-                permission_request_id = tool_gate.permission_request_id
-                if tool_gate.reason == "tool_permission_required":
-                    row = await repositories.create_tool_permission_request(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        workspace_id=payload.workspace_id,
-                        user_id=payload.user_id,
-                        session_id=payload.session_id,
-                        run_id=payload.run_id,
-                        trace_id=trace_id,
-                        tool_id=tool_id,
-                        tool_call_id=tool_call_id,
-                        action=action,
-                        risk_level=tool_gate.risk_level,
-                        write_capable=tool_gate.write_capable,
-                        reason=reason,
-                        request_payload_json=request_payload,
-                    )
-                    permission_request_id = str(row["id"])
-                    await repositories.append_event(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        trace_id=trace_id,
-                        event_type="tool_permission_requested",
-                        stage="tool_policy",
-                        message="工具调用需要权限决策",
-                        payload={
-                            "visible_to_user": True,
-                            "permission_request_id": permission_request_id,
-                            "tool_id": tool_id,
-                            "tool_call_id": tool_call_id,
-                            "action": action,
-                            "risk_level": tool_gate.risk_level,
-                            "write_capable": tool_gate.write_capable,
-                            "reason": reason,
-                            "status": "pending",
-                        },
-                    )
-                await repositories.append_audit_log(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    user_id=payload.user_id,
-                    action="claude_sdk_tool_policy_denied",
-                    target_type="tool",
-                    target_id=tool_id,
                     trace_id=trace_id,
-                    payload_json={
-                        "run_id": payload.run_id,
-                        "session_id": payload.session_id,
-                        "agent_id": payload.agent_id,
-                        "skill_id": payload.skill_id,
-                        "tool_call_id": tool_call_id,
-                        "reason": tool_gate.reason,
-                        "risk_level": tool_gate.risk_level,
-                        "write_capable": tool_gate.write_capable,
-                        "decision": tool_gate.decision,
-                        "permission_request_id": permission_request_id,
-                    },
+                    agent_id=payload.agent_id,
+                    skill_id=payload.skill_id,
+                    request=request,
                 )
-                return {
-                    "allowed": False,
-                    "reason": tool_gate.reason,
-                    "risk_level": tool_gate.risk_level,
-                    "write_capable": tool_gate.write_capable,
-                    "decision": tool_gate.decision,
-                    "permission_request_id": permission_request_id,
-                }
 
         try:
             continuity = await self._session_continuity.resolve(
@@ -1361,38 +1707,6 @@ def _prepare_run_workspace(workspace_root: str | Path, workspace: Path) -> None:
             raise ValueError("run workspace must stay inside the configured workspace root")
         shutil.rmtree(workspace)
     workspace.mkdir(parents=True, exist_ok=False)
-    try:
-        _GIT_RUN(
-            ["git", "init", "-q"],
-            cwd=str(workspace),
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=10,
-        )
-        _GIT_RUN(
-            [
-                "git",
-                "-c",
-                "user.name=ai-platform",
-                "-c",
-                "user.email=ai-platform@example.invalid",
-                "commit",
-                "--allow-empty",
-                "-q",
-                "-m",
-                "Initialize run workspace",
-            ],
-            cwd=str(workspace),
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError("run_workspace_git_init_failed") from exc
     ensure_creatable_inside(
         workspace_root,
         workspace,

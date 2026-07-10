@@ -1,0 +1,199 @@
+{
+  "schema_version": "ai-platform.release-evidence-entry.v1",
+  "evidence_id": "2026-07-08-211-opensandbox-first-stage-smoke-2667a15",
+  "artifact_kind": "211_opensandbox_first_stage_smoke",
+  "gate": "B2 real sandbox usable",
+  "commit_sha": "2667a156e3ab5a3244edd0e34bdf3b2859de8bce",
+  "runtime_subject_commit_sha": "2667a156e3ab5a3244edd0e34bdf3b2859de8bce",
+  "captured_at": "2026-07-07T17:25:50+00:00",
+  "issue_refs": [],
+  "pr_refs": [
+    "#338",
+    "#341",
+    "#342",
+    "#343",
+    "#344"
+  ],
+  "source_ref": {
+    "branch": "main",
+    "image": "ai-platform:2667a15-opensandbox-main-20260708-runtime-only",
+    "image_id": "sha256:f23570d0f729aa61b145a14c29460541f5c20b45a41c75ae6cf4e5240b44a3a5",
+    "image_labels": {
+      "ai-platform.source_revision": "2667a156e3ab5a3244edd0e34bdf3b2859de8bce",
+      "ai-platform.source_tree_commit": "2667a156e3ab5a3244edd0e34bdf3b2859de8bce",
+      "org.opencontainers.image.revision": "2667a156e3ab5a3244edd0e34bdf3b2859de8bce",
+      "ai-platform.build_mode": "runtime-only-source-rebase-flat-base"
+    },
+    "runtime_source_marker": "2667a156e3ab5a3244edd0e34bdf3b2859de8bce",
+    "source_tree_dirty": false,
+    "source_snapshot": {
+      "schema_version": "ai-platform.source-snapshot.v1",
+      "runtime_subject_commit_sha": "2667a156e3ab5a3244edd0e34bdf3b2859de8bce",
+      "source_tree_commit_sha": "2667a156e3ab5a3244edd0e34bdf3b2859de8bce",
+      "source_tree_dirty": false,
+      "runtime_affecting_changes_since_runtime_subject": [],
+      "runtime_affecting_dirty_paths": [],
+      "snapshot_source": "codex_origin_main_archive_sync_runtime_only_rebase"
+    },
+    "containers": [
+      "ai-platform-api",
+      "ai-platform-worker"
+    ],
+    "runtime_boundary": {
+      "api_container": "ai-platform-api",
+      "worker_container": "ai-platform-worker"
+    },
+    "api_health": "ok",
+    "frontend_status": 200,
+    "runtime_default_sandbox_provider": "docker",
+    "controlled_smoke_sandbox_provider": "opensandbox",
+    "opensandbox_openapi_status": 200,
+    "compose_config_source": "repo_local_deploy_ai_platform_compose_after_source_sync",
+    "compose_env_source": "existing_211_runtime_env_not_copied_or_recorded",
+    "deployment_cleanup": {
+      "old_unreferenced_backend_images_removed": [
+        "ai-platform:a2efea2-opensandbox-main-20260708-label-clean",
+        "ai-platform:2667a15-flat-base"
+      ],
+      "dangling_prune_reclaimed": "0B",
+      "remaining_ai_platform_images": [
+        "ai-platform:2667a15-opensandbox-main-20260708-runtime-only",
+        "ai-platform-frontend:4518a05"
+      ]
+    },
+    "source_authority_caveat": "runtime-only image was built from a flat base after full dependency build network slowness; this record is OpenSandbox first-stage smoke evidence, not G0 source-authority or B2 hardening closure"
+  },
+  "evidence_ref": {
+    "verifier": "scripts/verify_sandbox_runtime_211.py",
+    "result": "ready_for_operator_review",
+    "command": "controlled 211 verifier: generate_sandbox_runtime_evidence_211.py --runtime-mode platform --sandbox-provider opensandbox; verify_sandbox_runtime_211.py --json --docker-cmd \"sudo -n docker\"",
+    "run_id": "opensandbox-2667a15-smoke-20260708012550",
+    "artifact_hashes": {
+      "sandbox_evidence_sha256": "7b6cc2c907ac851ec7f27ee718c924edfee7ff10c3792d9174290ce221948265",
+      "generator_summary_sha256": "61432d149cae6a93fd06076ca14cca60630a654565c8f03214e632a2fd335026",
+      "verifier_summary_sha256": "231ba19ea66b415f055ba5a211237b8c20c5946ca807a8bf41fef73cd7785e3f",
+      "failed_hardening_probe_summary_sha256": "e0399edb0a212afa83c1835a4bd492f188153f75d2a1a2fe210855c917d72877"
+    },
+    "runtime_checks": {
+      "opensandbox_211_first_stage_smoke": {
+        "schema_version": "ai-platform.sandbox-runtime-211.summary.v1",
+        "summary_source_schema_version": "ai-platform.sandbox-runtime-211.v1",
+        "run_id": "opensandbox-2667a15-smoke-20260708012550",
+        "runtime_mode": "platform",
+        "sandbox_provider": "opensandbox",
+        "executed_task": true,
+        "callback_auth": "token",
+        "callbacks": [
+          "running",
+          "completed"
+        ],
+        "cancel_stops_container": true,
+        "executor": {
+          "sdk_used": true,
+          "executor_mode": "claude_agent_sdk"
+        },
+        "provider_lifecycle": {
+          "create_observed": true,
+          "delete_observed": true,
+          "delete_stop_status": "stopped",
+          "container_id_present": true,
+          "executor_endpoint_present": true,
+          "db_lease_recorded": true,
+          "db_lease_released": true,
+          "recorded_scope_matches_request": true,
+          "startup_file_write_read_verified": true,
+          "startup_command_execution_verified": true,
+          "callback_stream_observed": true,
+          "sdk_executor_observed": true,
+          "host_paths_redacted": true,
+          "secrets_absent": true
+        },
+        "policy_projection": {
+          "resource_limits_requested": true,
+          "cpu_count": 0.5,
+          "memory_mb": 512,
+          "pids_limit": 128,
+          "egress_policy_requested": true,
+          "callback_host_allowlisted": true
+        },
+        "hardening": {
+          "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "status": "incomplete",
+            "missing_evidence": [
+              "resource_limits.over_limit_probe_kind"
+            ]
+          },
+          "egress_policy": {
+            "evidence_class": "live_platform_probe",
+            "status": "incomplete",
+            "failed_probe_message": "runtime probe results missing: egress_policy.default_deny_outbound"
+          },
+          "security_options": {
+            "evidence_class": "live_platform_probe",
+            "status": "incomplete",
+            "runtime_proof_recorded": false
+          }
+        },
+        "redaction_scan_status": "passed",
+        "does_not_close_b2_gate": true,
+        "does_not_close_g7_gate": true,
+        "current_acceptance_label": "ready_for_operator_review"
+      },
+      "verifier_checks": [
+        {
+          "name": "check_docker_socket",
+          "passed": true
+        },
+        {
+          "name": "check_workspace_write",
+          "passed": true
+        },
+        {
+          "name": "check_executor_health",
+          "passed": true
+        },
+        {
+          "name": "check_callback_stream",
+          "passed": true
+        },
+        {
+          "name": "check_cancel_stops_container",
+          "passed": true
+        },
+        {
+          "name": "check_platform_runtime_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_opensandbox_provider_lifecycle_evidence",
+          "passed": true
+        },
+        {
+          "name": "check_platform_hardening_evidence",
+          "passed": false,
+          "message": "hardening evidence missing: resource_limits.over_limit_probe_kind"
+        },
+        {
+          "name": "check_no_secret_leakage",
+          "passed": true
+        }
+      ]
+    }
+  },
+  "redaction_scan_status": "passed",
+  "review_status": "ready_for_operator_review",
+  "review_notes": [
+    "211 API and worker ran the current main merge commit 2667a15 with image labels and source marker bound to 2667a156e3ab5a3244edd0e34bdf3b2859de8bce.",
+    "Old unreferenced backend images were removed after deployment; only the current runtime-only backend image and frontend image remained among ai-platform images.",
+    "The controlled platform smoke selected SANDBOX_CONTAINER_PROVIDER=opensandbox only for the verifier run; the live API and worker defaults remained SANDBOX_CONTAINER_PROVIDER=docker.",
+    "The smoke reached SandboxRuntime, OpenSandbox provider create/delete, Claude Agent SDK executor dispatch, running/completed callbacks, and cancel-stops-container evidence.",
+    "The reviewed wrapper intentionally omits callback token values, real runtime environment values, raw host paths, raw OpenSandbox private headers, and raw Docker inspect payloads.",
+    "Verifier hardening remains incomplete because resource over-limit probe evidence and denied-egress/security-option runtime proof are not recorded for this OpenSandbox run."
+  ],
+  "open_followups": [
+    "Generate accepted OpenSandbox runtime probe results for resource_limits.over_limit_probe_kind, denied outbound egress, and security options before any B2 hardening closure claim.",
+    "Keep fake as the committed local/test default and do not turn OpenSandbox into the default API/worker provider without a separate hardening decision.",
+    "Treat this as first-stage provider adapter evidence only; it is not B2/G7 closure, 211 verified closure, or production untrusted-code isolation closure."
+  ]
+}

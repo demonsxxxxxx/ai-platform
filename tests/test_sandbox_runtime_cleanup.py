@@ -66,6 +66,80 @@ async def test_cleanup_expired_sandbox_runtime_leases_stops_runtime_before_relea
 
 
 @pytest.mark.asyncio
+async def test_cleanup_expired_sandbox_runtime_leases_reconstructs_opensandbox_from_lease_payload(monkeypatch):
+    from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
+
+    calls = []
+    row = expired_lease_row(
+        provider="opensandbox",
+        lease_payload_json={
+            "container_id": "osb-run-a",
+            "container_name": "opensandbox-run-a",
+            "executor_url": "http://opensandbox-executor.test:18000",
+            "workspace_host_path": "/tmp/private/workspace",
+            "workspace_container_path": "/workspace",
+            "labels": {
+                "ai-platform.provider_backend": "opensandbox",
+                "ai-platform.egress.policy": "opensandbox-network-policy",
+            },
+        },
+    )
+
+    async def fake_list_expired_active_sandbox_leases(conn, *, tenant_id=None, limit=100):
+        return [row]
+
+    async def fake_release_stopped_sandbox_leases(conn, *, tenant_id, reason, lease_ids, trace_id=None):
+        calls.append(("release", tenant_id, reason, lease_ids, trace_id))
+        return [row]
+
+    class FakeProvider:
+        async def stop(self, lease, *, reason):
+            calls.append(
+                (
+                    "stop",
+                    lease.provider,
+                    lease.container_id,
+                    lease.container_name,
+                    lease.executor_url,
+                    lease.workspace_host_path,
+                    lease.labels["ai-platform.provider_backend"],
+                    reason,
+                )
+            )
+            return StopResult(container_id=lease.container_id, status="stopped", message=reason)
+
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.list_expired_active_sandbox_leases",
+        fake_list_expired_active_sandbox_leases,
+    )
+    monkeypatch.setattr(
+        "app.routes.sandbox_runtime_cleanup.repositories.release_stopped_sandbox_leases",
+        fake_release_stopped_sandbox_leases,
+    )
+
+    cleaned = await cleanup_expired_sandbox_runtime_leases(
+        object(),
+        tenant_id="tenant-a",
+        provider_factory=lambda provider_name: FakeProvider(),
+    )
+
+    assert cleaned == [row]
+    assert calls == [
+        (
+            "stop",
+            "opensandbox",
+            "osb-run-a",
+            "opensandbox-run-a",
+            "http://opensandbox-executor.test:18000",
+            "",
+            "opensandbox",
+            "expired",
+        ),
+        ("release", "tenant-a", "expired", ["lease-a"], None),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_cleanup_expired_sandbox_runtime_leases_releases_only_stopped_leases_on_partial_failure(monkeypatch):
     from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, cleanup_expired_sandbox_runtime_leases
 

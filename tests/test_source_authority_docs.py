@@ -31,6 +31,7 @@ GOVERNANCE_READINESS_DOC = ROOT / "docs/operations/ai-platform-governance-readin
 GATE_STATUS_DOC = ROOT / "docs/operations/ai-platform-gate-status.md"
 FOUNDATION_ALPHA_CLOSURE_DOC = ROOT / "docs/operations/ai-platform-foundation-alpha-closure.md"
 RELEASE_EVIDENCE_INDEX = ROOT / "docs/release-evidence/README.md"
+README = ROOT / "README.md"
 CURRENT_G7_B3_SANDBOX_DIAGNOSTIC = (
     ROOT
     / "docs/release-evidence/diagnostics/2026-07-04-211-b3-sandbox-observation-61073b1.json"
@@ -1149,9 +1150,10 @@ def test_source_authority_docs_keep_current_repo_and_211_deploy_boundary():
 
 def test_default_compose_uses_current_repo_context_and_no_docker_socket():
     compose_text = read(COMPOSE)
-    assert compose_text.count("context: ../..") == 3
+    assert "context: ../.." not in compose_text
     assert "container_name: ai-platform-frontend" in compose_text
-    assert "dockerfile: frontend/web/Dockerfile" in compose_text
+    assert "${AI_PLATFORM_FRONTEND_IMAGE:?set AI_PLATFORM_FRONTEND_IMAGE}" in compose_text
+    assert "${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}" in compose_text
     assert "${AI_PLATFORM_FRONTEND_PORT:-18001}:8080" in compose_text
     assert "/var/run/docker.sock:/var/run/docker.sock" not in compose_text
 
@@ -1175,14 +1177,13 @@ def test_backend_dockerfile_defines_source_authority_label_contract():
         'ai-platform.build-dirty="$AI_PLATFORM_BUILD_DIRTY"',
     ):
         assert label in dockerfile
-    expected_backend_args = {
-        "AI_PLATFORM_BUILD_COMMIT": "${AI_PLATFORM_BUILD_COMMIT:-unknown}",
-        "AI_PLATFORM_BUILD_DIRTY": "${AI_PLATFORM_BUILD_DIRTY:-unknown}",
-    }
-    assert compose["services"]["api"]["build"]["args"] == expected_backend_args
-    assert compose["services"]["worker"]["build"]["args"] == expected_backend_args
-    assert "AI_PLATFORM_BUILD_COMMIT=unknown" in env_text
-    assert "AI_PLATFORM_BUILD_DIRTY=unknown" in env_text
+    assert compose["services"]["api"]["image"] == "${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}"
+    assert compose["services"]["worker"]["image"] == "${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}"
+    assert compose["services"]["api"]["labels"]["ai-platform.source-dirty"] == "false"
+    assert compose["services"]["worker"]["labels"]["ai-platform.source-dirty"] == "false"
+    assert "AI_PLATFORM_SOURCE_COMMIT=" in env_text
+    assert "AI_PLATFORM_BUILD_COMMIT=" in env_text
+    assert "AI_PLATFORM_BUILD_DIRTY=false" in env_text
 
 
 def test_env_template_satisfies_required_runtime_defaults_without_real_secrets():
@@ -1192,14 +1193,23 @@ def test_env_template_satisfies_required_runtime_defaults_without_real_secrets()
     assert "EXISTING_USER_INFO_BASE_URL=http://10.56.0.25:5166" in env_text
     assert "PUBLIC_SKILL_FILE_OVERLAY_MAX_BYTES=262144" in env_text
     assert "AI_PLATFORM_FRONTEND_PORT=18001" in env_text
-    assert "AI_PLATFORM_FRONTEND_IMAGE=ai-platform-frontend:local" in env_text
+    assert "AI_PLATFORM_FRONTEND_IMAGE=" in env_text
     assert "AI_PLATFORM_API_UPSTREAM=http://api:8020" in env_text
+    assert "WORKER_CLAUDE_AGENT_SDK_ENABLED=false" in env_text
+    assert "CLAUDE_AGENT_SDK_ENABLED=false" not in set(env_text.splitlines())
     assert "CLAUDE_AGENT_SDK_MAX_TURNS=128" in env_text
     assert "CLAUDE_AGENT_SDK_EFFORT=xhigh" in env_text
     assert "CLAUDE_AGENT_SDK_MAX_THINKING_TOKENS=16384" in env_text
     assert "EXISTING_AUTH_BASE_URL=http://10.56.0.211" not in env_text
     assert "sk-" not in env_text
     assert "Bearer " not in env_text
+
+
+def test_readme_documents_worker_only_claude_agent_sdk_switch():
+    readme_text = read(README)
+
+    assert "WORKER_CLAUDE_AGENT_SDK_ENABLED=true" in readme_text
+    assert "`CLAUDE_AGENT_SDK_ENABLED=true`" not in readme_text
 
 
 def test_docker_build_context_excludes_real_env_files():
@@ -1241,6 +1251,15 @@ def test_compose_forwards_claude_agent_sdk_max_turns_to_api_and_worker():
         )
         == 2
     )
+
+
+def test_compose_keeps_claude_agent_sdk_execution_switch_worker_only():
+    compose = yaml.safe_load(read(COMPOSE))
+    api_env = compose["services"]["api"]["environment"]
+    worker_env = compose["services"]["worker"]["environment"]
+
+    assert "CLAUDE_AGENT_SDK_ENABLED" not in api_env
+    assert worker_env["CLAUDE_AGENT_SDK_ENABLED"] == "${WORKER_CLAUDE_AGENT_SDK_ENABLED:-false}"
 
 
 def test_compose_forwards_public_skill_file_overlay_limit_to_api_and_worker():

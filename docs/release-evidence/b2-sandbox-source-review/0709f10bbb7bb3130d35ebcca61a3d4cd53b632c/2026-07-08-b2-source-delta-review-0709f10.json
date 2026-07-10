@@ -1,0 +1,33 @@
+{
+  "artifact_kind": "b2_runtime_source_delta_review",
+  "current_source_commit_sha": "0709f10bbb7bb3130d35ebcca61a3d4cd53b632c",
+  "does_not_close_b2_gate": true,
+  "evidence_id": "2026-07-08-b2-source-delta-review-0709f10",
+  "gate": "B2 real sandbox usable",
+  "remaining_gaps": [
+    "resource_limits_policy_evidence",
+    "egress_policy_evidence",
+    "security_options_evidence"
+  ],
+  "review_basis": {
+    "classification": "docs_release_evidence_and_tests_only",
+    "command": "git diff --name-status a93753a7cf4756f951dd3f4491996ca574eca8fd..0709f10bbb7bb3130d35ebcca61a3d4cd53b632c",
+    "result": [
+      "M docs/operations/opensandbox-provider-phase-status.md",
+      "A docs/release-evidence/b2-sandbox/a93753a7cf4756f951dd3f4491996ca574eca8fd/2026-07-08-211-b2-opensandbox-runtime-smoke-a93753a.json",
+      "M tests/test_b2_sandbox_readiness.py"
+    ]
+  },
+  "review_status": "reviewed",
+  "reviewed_at": "2026-07-08T01:20:00Z",
+  "reviewer": "codex",
+  "runtime_affecting_changes_since_runtime_subject": [],
+  "runtime_neutral_paths": [
+    "docs/operations/opensandbox-provider-phase-status.md",
+    "docs/release-evidence/b2-sandbox/a93753a7cf4756f951dd3f4491996ca574eca8fd/2026-07-08-211-b2-opensandbox-runtime-smoke-a93753a.json",
+    "tests/test_b2_sandbox_readiness.py"
+  ],
+  "runtime_subject_commit_sha": "a93753a7cf4756f951dd3f4491996ca574eca8fd",
+  "schema_version": "ai-platform.b2-runtime-source-delta-review.v1",
+  "source_tree_dirty": false
+}

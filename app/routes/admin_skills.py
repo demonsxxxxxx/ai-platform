@@ -15,6 +15,7 @@ from app.models import (
     AdminSkillVersionDiffResponse,
     AdminSkillVersionResponse,
     AdminSkillVersionStatusRequest,
+    PublicSkillImportPreviewResponse,
 )
 from app.settings import get_settings
 from app.skills.dependencies import SkillDependencyPolicyError, skill_dependency_ids, skill_dependency_policy
@@ -51,6 +52,12 @@ UPLOAD_READ_CHUNK_BYTES = 1024 * 1024
 
 def _require_admin(principal: AuthPrincipal) -> None:
     if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
+
+
+def _require_skill_upload_admin(principal: AuthPrincipal) -> None:
+    permissions = {item.strip().lower() for item in principal.permissions if item.strip()}
+    if not is_ai_admin(principal) and "skill:admin" not in permissions:
         raise HTTPException(status_code=403, detail="not_ai_admin")
 
 
@@ -149,7 +156,7 @@ def _require_rollback_materializable_skill_version(skill_id: str, version: dict[
 
 def _require_reusable_uploaded_skill_version(skill_id: str, version: dict[str, object]) -> None:
     source = version.get("source")
-    if not isinstance(source, dict):
+    if not isinstance(source, dict) or source.get("kind") != "uploaded":
         raise HTTPException(status_code=409, detail="skill_version_not_materializable")
     package_contract = source.get("package_contract")
     if not isinstance(package_contract, dict):
@@ -220,6 +227,44 @@ async def _mark_skill_version_released(
         skill_id=skill_id,
         version=version,
         status=SKILL_VERSION_RELEASED,
+    )
+
+
+async def _publish_uploaded_skill_to_tenant(
+    conn,
+    *,
+    principal: AuthPrincipal,
+    skill_id: str,
+    version: str,
+    previous_version: str | None,
+) -> None:
+    await repositories.set_skill_release_policy(
+        conn,
+        tenant_id=principal.tenant_id,
+        skill_id=skill_id,
+        version=version,
+        previous_version=previous_version,
+        promoted_by=principal.user_id,
+    )
+    await repositories.set_uploaded_workbench_skill_status(
+        conn,
+        tenant_id=principal.tenant_id,
+        skill_id=skill_id,
+        status="active",
+    )
+    await repositories.append_audit_log(
+        conn,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        action="skill_release_promoted_from_upload",
+        target_type="skill",
+        target_id=skill_id,
+        payload_json={
+            "skill_id": skill_id,
+            "version": version,
+            "channel": "stable",
+            "rollout_percent": 100,
+        },
     )
 
 
@@ -390,17 +435,9 @@ async def admin_upload_skill_package(
     package: UploadFile = File(...),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> AdminSkillUploadResponse:
-    _require_admin(principal)
+    _require_skill_upload_admin(principal)
+    can_upload_existing_skill = is_ai_admin(principal)
     skill_id = _safe_skill_id(skill_id)
-
-    async with transaction() as conn:
-        skill = await repositories.get_skill(conn, skill_id=skill_id)
-        if skill is None:
-            raise HTTPException(status_code=404, detail="skill_not_found")
-        if str(skill.get("status") or "") != "active":
-            raise HTTPException(status_code=409, detail="skill_inactive")
-        available_skill_ids = set(await repositories.list_skill_ids(conn))
-        dependency_ids = _skill_dependency_ids_or_409(skill_id, available_skill_ids)
 
     package_content = await _read_skill_package_upload(package)
     try:
@@ -409,67 +446,146 @@ async def admin_upload_skill_package(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     async with transaction() as conn:
-        existing = await repositories.get_skill_version(conn, skill_id=skill_id, version=parsed.content_hash)
-        if existing is not None:
-            _require_reusable_uploaded_skill_version(skill_id, existing)
+        skill = await repositories.get_skill(conn, skill_id=skill_id)
+        is_new_skill = skill is None
+        if skill is not None:
+            if not can_upload_existing_skill:
+                raise HTTPException(status_code=403, detail="not_ai_admin")
+            if str(skill.get("status") or "") != "active":
+                raise HTTPException(status_code=409, detail="skill_inactive")
+        available_skill_ids = set(await repositories.list_skill_ids(conn))
+        dependency_ids = _skill_dependency_ids_or_409(skill_id, available_skill_ids)
+
+        if is_new_skill:
+            try:
+                await repositories.create_skill_catalog(
+                    conn,
+                    skill_id=skill_id,
+                    name=skill_id,
+                    version=parsed.content_hash,
+                    description=parsed.description,
+                    input_modes=["chat"],
+                    output_modes=["answer"],
+                    executor_type="claude-agent-worker",
+                    status="active",
+                )
+            except repositories.RepositoryConflictError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            release_policy = None
+        else:
+            existing = await repositories.get_skill_version(conn, skill_id=skill_id, version=parsed.content_hash)
+            if existing is not None:
+                _require_reusable_uploaded_skill_version(skill_id, existing)
+                release_policy = await repositories.get_skill_release_policy(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    skill_id=skill_id,
+                )
+                should_publish_existing_to_tenant = release_policy is None
+                previous_version = None
+                if should_publish_existing_to_tenant:
+                    previous_version = str(skill.get("version") or "") or None
+                uploaded = existing
+                if should_publish_existing_to_tenant:
+                    uploaded = await repositories.update_skill_version_status(
+                        conn,
+                        skill_id=skill_id,
+                        version=parsed.content_hash,
+                        status=SKILL_VERSION_RELEASED,
+                    )
+                await repositories.append_audit_log(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    action="skill_version_upload_reused",
+                    target_type="skill",
+                    target_id=skill_id,
+                    payload_json={
+                        "skill_id": skill_id,
+                        "version": parsed.content_hash,
+                        "storage_key": (existing.get("source") or {}).get("storage_key")
+                        if isinstance(existing.get("source"), dict)
+                        else None,
+                    },
+                )
+                if should_publish_existing_to_tenant:
+                    await _publish_uploaded_skill_to_tenant(
+                        conn,
+                        principal=principal,
+                        skill_id=skill_id,
+                        version=parsed.content_hash,
+                        previous_version=previous_version,
+                    )
+                return AdminSkillUploadResponse(uploaded=uploaded)
+            release_policy = await repositories.get_skill_release_policy(
+                conn,
+                tenant_id=principal.tenant_id,
+                skill_id=skill_id,
+            )
+
+        should_publish_to_tenant = is_new_skill or release_policy is None
+        previous_version = None
+        if should_publish_to_tenant and skill is not None:
+            previous_version = str(skill.get("version") or "") or None
+
+        dependency_manifests = _builtin_dependency_manifest_snapshots(dependency_ids)
+        storage_key = f"skills/{skill_id}/versions/{parsed.content_hash}/package.zip"
+        stored = ObjectStorage().put_bytes(
+            storage_key=storage_key,
+            content=package_content,
+            content_type="application/zip",
+        )
+        source_json = {
+            "kind": "uploaded",
+            "storage_key": stored.storage_key,
+            "package_sha256": stored.sha256,
+            "size_bytes": stored.size_bytes,
+            "files": parsed.files,
+        }
+        if dependency_manifests:
+            source_json["dependency_manifests"] = dependency_manifests
+        package_contract = build_skill_package_contract(
+            parsed,
+            package_sha256=stored.sha256,
+            storage_key=stored.storage_key,
+            uploaded_by=principal.user_id,
+        )
+        source_json["package_contract"] = package_contract
+        source_json["dependency_evidence"] = build_skill_dependency_evidence(
+            dependency_ids=dependency_ids,
+            dependency_manifests=dependency_manifests,
+            package_contract=package_contract,
+        )
+        upload_status = SKILL_VERSION_RELEASED if should_publish_to_tenant else SKILL_VERSION_DRAFT
+        uploaded = {
+            "skill_id": skill_id,
+            "version": parsed.content_hash,
+            "content_hash": parsed.content_hash,
+            "description": parsed.description,
+            "source": source_json,
+            "dependency_ids": dependency_ids,
+            "status": upload_status,
+            "created_by": principal.user_id,
+            "created_at": None,
+        }
+        if is_new_skill:
             await repositories.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
-                action="skill_version_upload_reused",
+                action="skill_catalog_created_from_upload",
                 target_type="skill",
                 target_id=skill_id,
                 payload_json={
                     "skill_id": skill_id,
                     "version": parsed.content_hash,
-                    "storage_key": (existing.get("source") or {}).get("storage_key")
-                    if isinstance(existing.get("source"), dict)
-                    else None,
+                    "description": parsed.description,
+                    "input_modes": ["chat"],
+                    "output_modes": ["answer"],
+                    "executor_type": "claude-agent-worker",
                 },
             )
-            return AdminSkillUploadResponse(uploaded=existing)
-
-    dependency_manifests = _builtin_dependency_manifest_snapshots(dependency_ids)
-    storage_key = f"skills/{skill_id}/versions/{parsed.content_hash}/package.zip"
-    stored = ObjectStorage().put_bytes(
-        storage_key=storage_key,
-        content=package_content,
-        content_type="application/zip",
-    )
-    source_json = {
-        "kind": "uploaded",
-        "storage_key": stored.storage_key,
-        "package_sha256": stored.sha256,
-        "size_bytes": stored.size_bytes,
-        "files": parsed.files,
-    }
-    if dependency_manifests:
-        source_json["dependency_manifests"] = dependency_manifests
-    package_contract = build_skill_package_contract(
-        parsed,
-        package_sha256=stored.sha256,
-        storage_key=stored.storage_key,
-        uploaded_by=principal.user_id,
-    )
-    source_json["package_contract"] = package_contract
-    source_json["dependency_evidence"] = build_skill_dependency_evidence(
-        dependency_ids=dependency_ids,
-        dependency_manifests=dependency_manifests,
-        package_contract=package_contract,
-    )
-    uploaded = {
-        "skill_id": skill_id,
-        "version": parsed.content_hash,
-        "content_hash": parsed.content_hash,
-        "description": parsed.description,
-        "source": source_json,
-        "dependency_ids": dependency_ids,
-        "status": SKILL_VERSION_DRAFT,
-        "created_by": principal.user_id,
-        "created_at": None,
-    }
-    async with transaction() as conn:
-        await repositories.upsert_skill_version(
+        inserted_version = await repositories.upsert_skill_version(
             conn,
             skill_id=skill_id,
             version=parsed.content_hash,
@@ -477,9 +593,11 @@ async def admin_upload_skill_package(
             description=parsed.description,
             source_json=source_json,
             dependency_ids=dependency_ids,
-            status=SKILL_VERSION_DRAFT,
+            status=upload_status,
             created_by=principal.user_id,
         )
+        if inserted_version is False:
+            raise HTTPException(status_code=409, detail="skill_version_already_exists")
         await repositories.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
@@ -495,7 +613,45 @@ async def admin_upload_skill_package(
                 "size_bytes": stored.size_bytes,
             },
         )
+        if should_publish_to_tenant:
+            await _publish_uploaded_skill_to_tenant(
+                conn,
+                principal=principal,
+                skill_id=skill_id,
+                version=parsed.content_hash,
+                previous_version=previous_version,
+            )
     return AdminSkillUploadResponse(uploaded=uploaded)
+
+
+@router.post("/admin/skills/upload/preview", response_model=PublicSkillImportPreviewResponse)
+async def admin_preview_skill_package(
+    file: UploadFile | None = File(default=None),
+    principal: AuthPrincipal = Depends(require_principal),
+) -> PublicSkillImportPreviewResponse:
+    _require_skill_upload_admin(principal)
+    if file is None:
+        raise HTTPException(status_code=400, detail="skill_package_required")
+    package_content = await _read_skill_package_upload(file)
+    try:
+        parsed = parse_skill_package_zip(package_content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async with transaction() as conn:
+        global_skill_ids = set(await repositories.list_skill_ids(conn))
+    return PublicSkillImportPreviewResponse(
+        skill_count=1,
+        skills=[
+            {
+                "name": parsed.skill_id,
+                "description": parsed.description,
+                "file_count": len(parsed.files),
+                "files": [str(item.get("relative_path") or "") for item in parsed.files],
+                "already_exists": parsed.skill_id in global_skill_ids,
+            }
+        ],
+    )
 
 
 @router.get("/admin/skills/{skill_id}/versions/diff", response_model=AdminSkillVersionDiffResponse)

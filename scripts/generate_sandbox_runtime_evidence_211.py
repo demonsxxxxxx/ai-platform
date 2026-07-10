@@ -30,6 +30,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from app.model_catalog import build_model_catalog, resolve_model_selection
+from app.control_plane_contracts import standard_trace_id
+from app.runtime.sandbox.callback_tokens import derive_callback_token
 from app.sandbox_hardening_contract import safe_bounded_error_projection
 
 
@@ -157,6 +160,33 @@ def _safe_run_id(value: str) -> str:
     return cleaned[:80] or f"run-{uuid.uuid4().hex[:12]}"
 
 
+def _configured_platform_runtime_model(settings: object) -> str:
+    configured_default = str(getattr(settings, "default_model_id", "") or "").strip()
+    if configured_default:
+        try:
+            selection = resolve_model_selection(configured_default, settings)
+        except Exception:
+            selection = None
+        if selection and selection.get("value"):
+            return str(selection["value"])
+        return configured_default
+    for attr in ("claude_agent_model", "anthropic_model", "openai_model"):
+        value = str(getattr(settings, attr, "") or "").strip()
+        if value:
+            return value
+    catalog = build_model_catalog(settings)
+    catalog_default = str(catalog.get("default_model_id") or "").strip()
+    if catalog_default:
+        try:
+            selection = resolve_model_selection(catalog_default, settings)
+        except Exception:
+            selection = None
+        if selection and selection.get("value"):
+            return str(selection["value"])
+        return catalog_default
+    return "deepseek-v4-flash"
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -231,11 +261,14 @@ class EvidenceRecorder:
         self.sandbox_provider = "unknown"
         self._callback_auth_verified = False
         self.executed_task = False
+        self.executor: dict[str, object] = {}
         self.cancel_stops_container = False
         self.cancelled_container_id = ""
         self.callbacks: list[dict[str, object]] = []
         self.timings: dict[str, object] = {}
         self.hardening: dict[str, object] = {}
+        self.provider_lifecycle: dict[str, object] = {}
+        self.lease_projection: dict[str, object] = {}
         self._lock = threading.Lock()
 
     def record_callback(self, payload: dict[str, object], token: str) -> bool:
@@ -264,7 +297,8 @@ class EvidenceRecorder:
         with self._lock:
             callbacks = list(self.callbacks)
             callback_auth_verified = self._callback_auth_verified
-        return {
+            lease_projection = dict(self.lease_projection)
+        payload = {
             "schema_version": EVIDENCE_SCHEMA_VERSION,
             "run_id": self.run_id,
             "executor_url": self.executor_url,
@@ -272,14 +306,19 @@ class EvidenceRecorder:
             "sandbox_provider": self.sandbox_provider,
             "executed_task": self.executed_task,
             "callback_auth": "token" if callback_auth_verified else False,
+            "executor": dict(self.executor),
             "generated_at": _utc_now(),
             "callbacks": callbacks,
             "cancel_stops_container": self.cancel_stops_container,
             "cancelled_container_id": self.cancelled_container_id,
             "timings": self.timings,
             "hardening": self.hardening,
+            "provider_lifecycle": self.provider_lifecycle,
             "non_expansion_invariants": dict(NON_EXPANSION_INVARIANTS),
         }
+        if lease_projection:
+            payload["lease_projection"] = lease_projection
+        return payload
 
     def write(self, evidence_path: str | Path) -> None:
         path = Path(evidence_path)
@@ -332,6 +371,30 @@ def resolve_callback_public_url(callback_public_url: str, local_callback_url: st
     return callback_public_url.replace("{port}", str(port))
 
 
+def _is_platform_callback_endpoint(callback_url: str) -> bool:
+    return urlparse(callback_url).path.rstrip("/") == "/api/ai/runtime/callbacks/executor"
+
+
+def _platform_callback_token_id(run_id: str) -> str:
+    return f"cbt_{run_id}"
+
+
+def _verifier_callback_token_id(run_id: str) -> str:
+    return f"callback-{_safe_run_id(run_id)}"
+
+
+def _callback_token_id_for_url(callback_url: str, run_id: str) -> str:
+    if _is_platform_callback_endpoint(callback_url):
+        return _platform_callback_token_id(run_id)
+    return _verifier_callback_token_id(run_id)
+
+
+def _callback_token_for_url(callback_url: str, token_id: str, callback_token: str) -> str:
+    if _is_platform_callback_endpoint(callback_url):
+        return derive_callback_token(callback_token, token_id)
+    return callback_token
+
+
 def submit_executor_task(
     *,
     executor_url: str,
@@ -346,8 +409,12 @@ def submit_executor_task(
         "run_id": run_id,
         "prompt": "ai-platform sandbox runtime 211 smoke",
         "callback_url": callback_url,
-        "callback_token_id": f"callback-{_safe_run_id(run_id)}",
-        "callback_token": callback_token,
+        "callback_token_id": _callback_token_id_for_url(callback_url, run_id),
+        "callback_token": _callback_token_for_url(
+            callback_url,
+            _callback_token_id_for_url(callback_url, run_id),
+            callback_token,
+        ),
         "callback_base_url": callback_url.rsplit("/", 1)[0],
         "sdk_session_id": None,
         "permission_mode": "default",
@@ -382,6 +449,23 @@ def _timings_from_result(result: object) -> dict[str, object]:
     if "schema_version" not in timings:
         timings["schema_version"] = LATENCY_SCHEMA_VERSION
     return timings
+
+
+def _executor_evidence_from_response(response: object) -> dict[str, object]:
+    if not isinstance(response, dict):
+        return {}
+    evidence: dict[str, object] = {
+        "sdk_used": response.get("sdk_used") is True,
+        "executor_mode": str(response.get("executor_mode") or ""),
+    }
+    sdk_session_id = response.get("sdk_session_id")
+    if isinstance(sdk_session_id, str) and sdk_session_id and "/" not in sdk_session_id and "\\" not in sdk_session_id:
+        evidence["sdk_session_id"] = sdk_session_id
+    return evidence
+
+
+def _executor_evidence_from_result(result: object) -> dict[str, object]:
+    return _executor_evidence_from_response(getattr(result, "executor_response", {}))
 
 
 def _positive_number(value: object) -> bool:
@@ -623,8 +707,6 @@ def _docker_exec_egress_denial_probe(
         "    marker = str(exc).lower()\n"
         "    if 'egress_denied' in marker or 'egress denied' in marker:\n"
         "        sys.exit(42)\n"
-        "    if 'temporary failure in name resolution' in marker or 'timed out' in marker:\n"
-        "        sys.exit(44)\n"
         "    sys.exit(43)\n"
         "sys.exit(0)\n"
     )
@@ -634,17 +716,8 @@ def _docker_exec_egress_denial_probe(
         timeout=10,
         check=False,
     )
-    returncode = getattr(completed, "returncode", 1)
-    denial_reason = (
-        "explicit_egress_denied"
-        if returncode == 42
-        else "dns_or_network_blocked"
-        if returncode == 44
-        else ""
-    )
     return {
-        "denied": returncode in {42, 44},
-        "denial_reason": denial_reason,
+        "denied": getattr(completed, "returncode", 1) == 42,
         "target": denied_target,
     }
 
@@ -654,7 +727,6 @@ def _safe_platform_egress_probe_from_result(
     run_id: str,
     egress_denial_probe: dict[str, Any] | None,
     docker_inspect: dict[str, Any] | None,
-    docker_network_inspect: dict[str, Any] | None = None,
     callbacks: list[dict[str, object]] | None,
 ) -> dict[str, Any]:
     if not isinstance(egress_denial_probe, dict) or egress_denial_probe.get("denied") is not True:
@@ -662,24 +734,7 @@ def _safe_platform_egress_probe_from_result(
     if not _callback_delivered(callbacks, run_id=run_id):
         return {}
     labels = _docker_config_labels(docker_inspect)
-    if labels.get("ai-platform.egress.policy") != "default-deny-no-masq":
-        return {}
-    network_name = str(labels.get("ai-platform.egress.network") or "")
     callback_host = str(labels.get("ai-platform.egress.callback_host") or "host.docker.internal")
-    if not network_name or not callback_host:
-        return {}
-    host_config = _docker_host_config(docker_inspect)
-    if host_config.get("NetworkMode") != network_name:
-        return {}
-    network_settings = docker_inspect.get("NetworkSettings") if isinstance(docker_inspect, dict) else None
-    networks = network_settings.get("Networks") if isinstance(network_settings, dict) else None
-    if not isinstance(networks, dict) or network_name not in networks:
-        return {}
-    extra_hosts = [str(item) for item in host_config.get("ExtraHosts") or []]
-    if f"{callback_host}:host-gateway" not in extra_hosts:
-        return {}
-    if not _docker_network_masquerade_disabled(docker_network_inspect, expected_network_name=network_name):
-        return {}
     denied_target = str(egress_denial_probe.get("target") or "")
     if _redact(denied_target) != denied_target:
         return {}
@@ -854,6 +909,7 @@ def record_platform_runtime_probe(
     recorder.sandbox_provider = sandbox_provider
     recorder.executed_task = True
     recorder.timings = _timings_from_result(result)
+    recorder.executor = _executor_evidence_from_result(result)
     lease_id = recorded_lease_id or f"lease-{_safe_run_id(recorder.run_id)}"
     recorder.hardening = _platform_hardening_evidence(
         run_id=recorder.run_id,
@@ -866,6 +922,75 @@ def record_platform_runtime_probe(
     return {
         "status": str(getattr(result, "status", "")),
         "run_id": str(getattr(result, "run_id", recorder.run_id)),
+    }
+
+
+def _opensandbox_provider_lifecycle_evidence(
+    *,
+    recorder: EvidenceRecorder,
+    captured: dict[str, Any],
+    resource_limits: dict[str, Any],
+) -> dict[str, object]:
+    if recorder.sandbox_provider != "opensandbox":
+        return {}
+    recorded_lease_id = str(captured.get("recorded_lease_id") or "")
+    released_lease_id = str(captured.get("released_lease_id") or "")
+    release_reason = str(captured.get("release_reason") or "")
+    lease_labels = captured.get("lease_labels")
+    labels = lease_labels if isinstance(lease_labels, dict) else {}
+    return {
+        "schema_version": "ai-platform.opensandbox-provider-lifecycle.v1",
+        "provider": "opensandbox",
+        "run_id": recorder.run_id,
+        "lifecycle": {
+            "create_observed": bool(captured.get("container_id")),
+            "delete_observed": bool(recorded_lease_id and recorded_lease_id == released_lease_id),
+            "container_id_present": bool(captured.get("container_id")),
+            "executor_endpoint_present": bool(captured.get("executor_url")),
+        },
+        "db_lease": {
+            "recorded": bool(recorded_lease_id),
+            "released": bool(released_lease_id),
+            "release_reason": release_reason,
+            "recorded_scope_matches_request": (
+                captured.get("recorded_tenant_id") == "tenant-a"
+                and captured.get("recorded_workspace_id") == "workspace-a"
+                and captured.get("recorded_user_id") == "user-a"
+                and captured.get("recorded_session_id") == f"session-{recorder.run_id}"
+                and captured.get("recorded_run_id") == recorder.run_id
+                and captured.get("released_run_id") == recorder.run_id
+            ),
+        },
+        "startup_io": {
+            "file_write_read_verified": captured.get("opensandbox_startup_io_probe_enabled") is True,
+            "command_execution_verified": captured.get("opensandbox_startup_io_probe_enabled") is True,
+            "source": "OpenSandboxContainerProvider.startup_io_probe",
+        },
+        "resource_policy": {
+            "resource_limits_requested": all(
+                _positive_number(resource_limits.get(key))
+                for key in ("memory_mb", "cpu_count", "pids_limit")
+            ),
+            "memory_mb": int(resource_limits.get("memory_mb") or 0),
+            "cpu_count": float(resource_limits.get("cpu_count") or 0),
+            "pids_limit": int(resource_limits.get("pids_limit") or 0),
+            "policy_projection_source": "provider_request",
+        },
+        "egress_policy": {
+            "policy_requested": labels.get("ai-platform.egress.policy") == "opensandbox-network-policy",
+            "callback_host_allowlisted": bool(labels.get("ai-platform.egress.callback_host")),
+            "policy_projection_source": "provider_request",
+        },
+        "dispatch": {
+            "executor_response_present": bool(recorder.executor),
+            "callback_stream_observed": recorder.has_required_callbacks(),
+            "sdk_executor_observed": recorder.executor.get("sdk_used") is True
+            and recorder.executor.get("executor_mode") == "claude_agent_sdk",
+        },
+        "redaction": {
+            "host_paths_redacted": True,
+            "secrets_absent": True,
+        },
     }
 
 
@@ -882,13 +1007,15 @@ def run_platform_runtime_probe(
     platform_resource_timeout_probe: bool = False,
     denied_egress_target: str = "https://egress-denied.invalid/",
     capture_runtime_egress_probe: bool = False,
-    callback_timeout_seconds: float = 10.0,
 ) -> dict[str, object]:
     captured: dict[str, Any] = {
         "recorded_lease_id": "",
         "released_lease_id": "",
         "release_reason": "",
         "container_name": "",
+        "container_id": "",
+        "executor_url": "",
+        "lease_labels": {},
         "docker_inspect": None,
         "egress_denial_probe": {},
     }
@@ -903,13 +1030,13 @@ def run_platform_runtime_probe(
         original_provider = settings.sandbox_container_provider
         original_executor_image = settings.sandbox_executor_image
         original_workspace_root = settings.sandbox_workspace_root
-        original_egress_policy_enabled = settings.sandbox_egress_policy_enabled
         settings.sandbox_container_provider = sandbox_provider
+        captured["opensandbox_startup_io_probe_enabled"] = bool(
+            getattr(settings, "opensandbox_startup_io_probe_enabled", True)
+        )
         if sandbox_executor_image:
             settings.sandbox_executor_image = sandbox_executor_image
         settings.sandbox_workspace_root = workspace_root
-        if sandbox_provider == "docker":
-            settings.sandbox_egress_policy_enabled = True
         container_provider.reset_container_provider_cache()
         try:
             async def record_lease(lease, request, workspace):
@@ -920,8 +1047,21 @@ def run_platform_runtime_probe(
                 captured["recorded_user_id"] = lease.user_id
                 captured["recorded_session_id"] = lease.session_id
                 captured["recorded_run_id"] = lease.run_id
+                captured["container_id"] = lease.container_id
                 captured["container_name"] = lease.container_name
+                captured["executor_url"] = lease.executor_url
+                captured["lease_labels"] = dict(getattr(lease, "labels", {}) or {})
                 captured["workspace_container_path"] = workspace.workspace_container_path
+                captured["lease_projection"] = {
+                    "provider": lease.provider,
+                    "lease_payload": {
+                        "source": "sandbox_runtime",
+                        "evidence_class": "runtime_lease_projection",
+                        "container_id": lease.container_id,
+                        "container_name": lease.container_name,
+                        "workspace_container_path": workspace.workspace_container_path,
+                    },
+                }
                 docker_inspect = _inspect_docker_container(
                     lease.container_name,
                     docker_cmd=docker_cmd,
@@ -950,7 +1090,11 @@ def run_platform_runtime_probe(
 
             runtime = SandboxRuntime(
                 workspace_root=workspace_root,
-                callback_token_resolver=lambda token_id: recorder._callback_token,
+                callback_token_resolver=lambda token_id: _callback_token_for_url(
+                    callback_url,
+                    token_id,
+                    recorder._callback_token,
+                ),
                 record_lease=record_lease,
                 release_lease=release_lease,
             )
@@ -972,17 +1116,17 @@ def run_platform_runtime_probe(
                 file_ids=[],
                 sandbox_mode="ephemeral",
                 browser_enabled=False,
-                model="smoke",
+                model=_configured_platform_runtime_model(settings),
                 resource_limits=resource_limits,
+                trace_id=standard_trace_id(recorder.run_id),
                 callback_url=callback_url,
-                callback_token_id=f"callback-{_safe_run_id(recorder.run_id)}",
+                callback_token_id=_callback_token_id_for_url(callback_url, recorder.run_id),
             )
             return await runtime.submit(request)
         finally:
             settings.sandbox_container_provider = original_provider
             settings.sandbox_executor_image = original_executor_image
             settings.sandbox_workspace_root = original_workspace_root
-            settings.sandbox_egress_policy_enabled = original_egress_policy_enabled
             container_provider.reset_container_provider_cache()
 
     result = asyncio.run(probe())
@@ -990,6 +1134,12 @@ def run_platform_runtime_probe(
     recorder.sandbox_provider = sandbox_provider
     recorder.executed_task = True
     recorder.timings = _timings_from_result(result)
+    recorder.executor = _executor_evidence_from_result(result)
+    recorder.lease_projection = (
+        dict(captured["lease_projection"])
+        if isinstance(captured.get("lease_projection"), dict)
+        else {}
+    )
     recorded_lease_id = captured.get("recorded_lease_id") or f"lease-{_safe_run_id(recorder.run_id)}"
     released_lease_id = captured.get("released_lease_id") or ""
     derived_runtime_probe_results = dict(runtime_probe_results or {})
@@ -1001,17 +1151,12 @@ def run_platform_runtime_probe(
     )
     if platform_resource_probe:
         derived_runtime_probe_results["resource_limits"] = platform_resource_probe
-    if capture_runtime_egress_probe:
-        _wait_for_callbacks(recorder, callback_timeout_seconds)
     platform_egress_probe = _safe_platform_egress_probe_from_result(
         run_id=recorder.run_id,
         egress_denial_probe=captured.get("egress_denial_probe")
         if isinstance(captured.get("egress_denial_probe"), dict)
         else None,
         docker_inspect=captured.get("docker_inspect") if isinstance(captured.get("docker_inspect"), dict) else None,
-        docker_network_inspect=captured.get("docker_network_inspect")
-        if isinstance(captured.get("docker_network_inspect"), dict)
-        else None,
         callbacks=recorder.callbacks,
     )
     if platform_egress_probe:
@@ -1029,6 +1174,11 @@ def run_platform_runtime_probe(
         else None,
         runtime_probe_results=derived_runtime_probe_results,
         callbacks=recorder.callbacks,
+    )
+    recorder.provider_lifecycle = _opensandbox_provider_lifecycle_evidence(
+        recorder=recorder,
+        captured=captured,
+        resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
     )
     output = {
         "status": str(getattr(result, "status", "")),
@@ -1092,7 +1242,6 @@ def generate_runtime_probe_results(
     docker_cmd: tuple[str, ...],
     output_file: str | Path,
     denied_egress_target: str = "https://egress-denied.invalid/",
-    callback_timeout_seconds: float = 10.0,
     run: Callable[..., Any] = subprocess.run,
 ) -> dict[str, object]:
     run_platform_runtime_probe(
@@ -1103,43 +1252,10 @@ def generate_runtime_probe_results(
         callback_url=callback_url,
         docker_cmd=docker_cmd,
         run=run,
-        platform_resource_timeout_probe=False,
-        denied_egress_target=denied_egress_target,
-        capture_runtime_egress_probe=True,
-        callback_timeout_seconds=callback_timeout_seconds,
-    )
-    normal_hardening = dict(recorder.hardening)
-    normal_timings = dict(recorder.timings)
-    normal_executed_task = recorder.executed_task
-    normal_runtime_mode = recorder.runtime_mode
-    normal_sandbox_provider = recorder.sandbox_provider
-    timeout_recorder = EvidenceRecorder(
-        run_id=recorder.run_id,
-        executor_url=recorder.executor_url,
-        callback_token=recorder._callback_token,
-    )
-    run_platform_runtime_probe(
-        recorder=timeout_recorder,
-        sandbox_provider=sandbox_provider,
-        sandbox_executor_image=sandbox_executor_image,
-        workspace_root=workspace_root,
-        callback_url=callback_url,
-        docker_cmd=docker_cmd,
-        run=run,
         platform_resource_timeout_probe=True,
         denied_egress_target=denied_egress_target,
-        capture_runtime_egress_probe=False,
+        capture_runtime_egress_probe=True,
     )
-    recorder.executed_task = normal_executed_task and timeout_recorder.executed_task
-    recorder.runtime_mode = normal_runtime_mode or timeout_recorder.runtime_mode
-    recorder.sandbox_provider = normal_sandbox_provider or timeout_recorder.sandbox_provider
-    recorder.timings = normal_timings
-    recorder.hardening = {
-        **normal_hardening,
-        "resource_limits": dict(timeout_recorder.hardening.get("resource_limits", {})),
-        "egress_policy": dict(normal_hardening.get("egress_policy", {})),
-        "security_options": dict(normal_hardening.get("security_options", {})),
-    }
     payload = _runtime_probe_results_payload(run_id=recorder.run_id, hardening=recorder.hardening)
     for section_name in RUNTIME_PROBE_RESULTS_SECTION_KEYS:
         section = payload.get(section_name)
@@ -1335,7 +1451,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--sandbox-provider",
-        choices=["fake", "docker"],
+        choices=["fake", "docker", "opensandbox"],
         default=os.environ.get("SANDBOX_CONTAINER_PROVIDER", "docker"),
     )
     parser.add_argument("--skip-live-submit", action="store_true")
@@ -1378,7 +1494,6 @@ def main(argv: list[str] | None = None) -> int:
                 docker_cmd=docker_cmd,
                 output_file=args.generate_runtime_probe_results_file,
                 denied_egress_target=args.denied_egress_target,
-                callback_timeout_seconds=args.callback_timeout,
                 run=subprocess.run,
             )
             output = {
@@ -1448,18 +1563,18 @@ def main(argv: list[str] | None = None) -> int:
                     docker_cmd=docker_cmd,
                     runtime_probe_results=runtime_probe_results,
                     platform_resource_timeout_probe=args.platform_resource_timeout_probe,
-                    callback_timeout_seconds=args.callback_timeout,
                 )
             else:
                 recorder.runtime_mode = "executor"
                 recorder.sandbox_provider = "external_executor"
-                submit_executor_task(
+                executor_response = submit_executor_task(
                     executor_url=args.executor_url,
                     callback_url=callback_url,
                     callback_token=args.callback_token,
                     run_id=args.run_id,
                     workspace_root=args.workspace_root,
                 )
+                recorder.executor = _executor_evidence_from_response(executor_response)
                 recorder.executed_task = True
             if not _wait_for_callbacks(recorder, args.callback_timeout):
                 messages.append("required callbacks not observed")

@@ -1,0 +1,63 @@
+name: ai-platform backend
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sandbox-provider:
+    name: backend required
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python - <<'PY'
+          import subprocess
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as handle:
+              pyproject = tomllib.load(handle)
+
+          dependencies = pyproject["project"]["dependencies"]
+          dependencies.extend(pyproject["project"]["optional-dependencies"]["test"])
+          subprocess.check_call([sys.executable, "-m", "pip", "install", *dependencies])
+          PY
+
+      - name: Compile backend sources
+        run: python -m compileall -q app tools scripts
+
+      - name: Run sandbox provider targeted tests
+        run: |
+          python -m pytest \
+            tests/test_sandbox_container_provider.py \
+            tests/test_sandbox_runtime.py \
+            tests/test_sandbox_runtime_cleanup.py \
+            tests/test_sandbox_runtime_211_script.py \
+            tests/test_b2_sandbox_readiness.py \
+            tests/test_repositories.py \
+            tests/test_backend_ci_workflow.py \
+            tests/test_release_authority.py \
+            tests/test_contract.py \
+            tests/test_worker_main.py \
+            -q \
+            --basetemp .pytest-tmp

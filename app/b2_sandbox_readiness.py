@@ -21,15 +21,22 @@ RUNTIME_SOURCE_REVIEW_GAP = "b2_runtime_evidence_review_against_merged_source"
 GENERATOR_SCRIPT = "scripts/generate_sandbox_runtime_evidence_211.py"
 VERIFIER_SCRIPT = "scripts/verify_sandbox_runtime_211.py"
 RUNTIME_ACCEPTANCE_ARTIFACT_KIND = "211_sandbox_runtime_smoke"
+RUNTIME_SOURCE_DELTA_REVIEW_ARTIFACT_KIND = "b2_runtime_source_delta_review"
+RUNTIME_SOURCE_DELTA_REVIEW_SCHEMA = "ai-platform.b2-runtime-source-delta-review.v1"
 RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA = "ai-platform.sandbox-runtime-211.v1"
 RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
 _RUNTIME_EVIDENCE_ROOT = "docs/release-evidence/b2-sandbox"
+_RUNTIME_SOURCE_REVIEW_ROOT = "docs/release-evidence/b2-sandbox-source-review"
 _B2_RUNTIME_NEUTRAL_EXACT_PATHS = {
+    ".github/workflows/ai-platform-backend.yml",
     "app/b2_sandbox_readiness.py",
     "app/foundation_alpha_readiness.py",
     "docs/operations/ai-platform-gate-status.md",
+    "docs/operations/opensandbox-provider-phase-status.md",
     "docs/release-evidence/README.md",
     "docs/release-evidence/foundation-alpha-poc/source-runtime-relation-manifest.json",
+    "scripts/generate_sandbox_runtime_evidence_211.py",
+    "scripts/verify_sandbox_runtime_211.py",
     "tools/b2_sandbox_readiness.py",
     "tests/test_b1_memory_context_readiness.py",
     "tests/test_b2_sandbox_readiness.py",
@@ -37,6 +44,8 @@ _B2_RUNTIME_NEUTRAL_EXACT_PATHS = {
     "tests/test_source_authority_docs.py",
 }
 _B2_RUNTIME_NEUTRAL_PREFIXES = (
+    "docs/release-evidence/b2-sandbox/",
+    "docs/release-evidence/b2-sandbox-source-review/",
     "docs/release-evidence/b1-memory-context/",
     "docs/release-evidence/foundation-alpha-poc/",
     "docs/release-evidence/foundation-runtime-concurrency/",
@@ -71,6 +80,7 @@ _VERIFIER_REQUIRED_CHECKS = [
     "check_callback_stream",
     "check_cancel_stops_container",
     "check_platform_runtime_evidence",
+    "check_opensandbox_provider_lifecycle_evidence",
     "check_platform_hardening_evidence",
     "check_no_secret_leakage",
 ]
@@ -82,6 +92,7 @@ _VERIFIER_CHECK_ENTRYPOINTS = {
     "check_callback_stream": "check_callback_stream",
     "check_cancel_stops_container": "check_cancel_stops_container",
     "check_platform_runtime_evidence": "check_platform_runtime_evidence",
+    "check_opensandbox_provider_lifecycle_evidence": "check_opensandbox_provider_lifecycle_evidence",
     "check_platform_hardening_evidence": "check_platform_hardening_evidence",
     "check_no_secret_leakage": "check_no_secret_leakage",
 }
@@ -94,22 +105,29 @@ _VERIFIER_EVIDENCE_SHAPE = [
     "sandbox_provider",
     "executed_task",
     "callback_auth",
+    "executor",
     "generated_at",
     "callbacks",
     "cancel_stops_container",
     "cancelled_container_id",
     "timings",
     "hardening",
+    "provider_lifecycle",
     "non_expansion_invariants",
 ]
 
 _VERIFIER_TIMING_FIELDS = [
+    "sandbox_queue_wait_latency_ms",
     "sandbox_lease_acquire_latency_ms",
+    "sandbox_container_start_latency_ms",
     "sandbox_container_cold_start_latency_ms",
     "sandbox_healthcheck_latency_ms",
     "sandbox_executor_dispatch_latency_ms",
+    "executor_first_token_latency_ms",
+    "executor_tool_call_latency_ms",
     "executor_model_latency_ms",
     "document_processing_latency_ms",
+    "artifact_upload_latency_ms",
     "sandbox_cleanup_latency_ms",
     "sandbox_total_latency_ms",
 ]
@@ -149,9 +167,11 @@ _HARDENING_EVIDENCE_CLASS = {
 
 _VERIFIER_REQUIRED_EVIDENCE_SECTIONS = [
     "runtime_mode=platform",
-    "sandbox_provider=docker",
+    "sandbox_provider=docker_or_opensandbox",
     "executed_task=true",
     "callback_auth=token",
+    "executor.sdk_used=true",
+    "executor.executor_mode=claude_agent_sdk",
     "callbacks.running_and_terminal",
     "cancel_stops_container=true",
     "timings",
@@ -329,6 +349,13 @@ def _resolve_source_tree_revision(repo_root: Path) -> str:
             text=True,
         )
     except (OSError, subprocess.CalledProcessError):
+        for marker_name in (".ai-platform-source-tree-commit", ".ai-platform-source-revision"):
+            try:
+                marker = (repo_root / marker_name).read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if marker:
+                return marker
         return "unknown"
     return result.stdout.strip() or "unknown"
 
@@ -518,6 +545,27 @@ def _hardening_runtime_evidence_status(hardening: dict[str, Any], *, run_id: str
     }
 
 
+def _runtime_lease_projection_is_real(evidence: dict[str, Any]) -> bool:
+    lease_projection = evidence.get("lease_projection")
+    if lease_projection is None:
+        return True
+    if not isinstance(lease_projection, dict):
+        return False
+    provider = str(lease_projection.get("provider") or "")
+    if provider == "fake":
+        return False
+    if provider and provider not in {"docker", "opensandbox"}:
+        return False
+    if provider and provider != evidence.get("sandbox_provider"):
+        return False
+    lease_payload = lease_projection.get("lease_payload")
+    if not isinstance(lease_payload, dict):
+        return True
+    source = str(lease_payload.get("source") or "")
+    evidence_class = str(lease_payload.get("evidence_class") or "")
+    return source != "sdk_only_lifecycle_placeholder" and evidence_class != "sdk_only_lifecycle_placeholder"
+
+
 def _b2_smoke_evidence_summary(
     payload: dict[str, Any],
     *,
@@ -532,7 +580,11 @@ def _b2_smoke_evidence_summary(
     checks = evidence.get("checks")
     if not isinstance(checks, dict):
         return None
-    if not all(checks.get(check) is True for check in _VERIFIER_REQUIRED_CHECKS):
+    hardening_check_passed = checks.get("check_platform_hardening_evidence") is True
+    base_smoke_checks = [
+        check for check in _VERIFIER_REQUIRED_CHECKS if check != "check_platform_hardening_evidence"
+    ]
+    if not all(checks.get(check) is True for check in base_smoke_checks):
         return None
     callbacks = evidence.get("callbacks")
     if callbacks != ["running", "completed"]:
@@ -544,6 +596,9 @@ def _b2_smoke_evidence_summary(
         return None
     if not isinstance(run_id, str) or not run_id.strip():
         return None
+    executor = evidence.get("executor")
+    if not isinstance(executor, dict):
+        return None
     if not all(field in timings for field in _VERIFIER_TIMING_FIELDS):
         return None
     if not all(section in hardening for section in _VERIFIER_BASE_SMOKE_HARDENING_SECTIONS):
@@ -551,13 +606,17 @@ def _b2_smoke_evidence_summary(
     if (
         evidence.get("schema_version") != RUNTIME_ACCEPTANCE_VERIFIER_SCHEMA
         or evidence.get("runtime_mode") != "platform"
-        or evidence.get("sandbox_provider") != "docker"
+        or evidence.get("sandbox_provider") not in {"docker", "opensandbox"}
         or evidence.get("executed_task") is not True
         or evidence.get("callback_auth") != "token"
+        or executor.get("sdk_used") is not True
+        or executor.get("executor_mode") != "claude_agent_sdk"
         or evidence.get("cancel_stops_container") is not True
         or evidence.get("does_not_close_b2_gate") is not True
         or evidence.get("redaction_scan_status") != "passed"
     ):
+        return None
+    if not _runtime_lease_projection_is_real(evidence):
         return None
     non_expansion_invariants = evidence.get("non_expansion_invariants")
     if not isinstance(non_expansion_invariants, dict):
@@ -566,7 +625,11 @@ def _b2_smoke_evidence_summary(
         if non_expansion_invariants.get(key) is not expected:
             return None
     summary = {
-        "status": "verified_211_runtime_acceptance",
+        "status": (
+            "verified_211_runtime_acceptance"
+            if hardening_check_passed
+            else "recorded_211_runtime_smoke_hardening_open"
+        ),
         "artifact_kind": RUNTIME_ACCEPTANCE_ARTIFACT_KIND,
         "captured_at": payload.get("captured_at"),
         "evidence_id": payload.get("evidence_id"),
@@ -577,9 +640,11 @@ def _b2_smoke_evidence_summary(
         "run_id": run_id,
         "runtime_mode": evidence.get("runtime_mode"),
         "sandbox_provider": evidence.get("sandbox_provider"),
+        "executor": dict(executor),
         "callbacks": list(callbacks),
         "timings": dict(timings),
-        "checks": {check: True for check in _VERIFIER_REQUIRED_CHECKS},
+        "checks": {check: checks.get(check) is True for check in _VERIFIER_REQUIRED_CHECKS},
+        "hardening_verifier_status": "passed" if hardening_check_passed else "failed",
         "redaction_scan_status": evidence.get("redaction_scan_status"),
         "does_not_close_b2_gate": True,
     }
@@ -654,6 +719,100 @@ def _runtime_subject_commit_from_evidence(
     return value if isinstance(value, str) else ""
 
 
+def _source_delta_review_summary(
+    payload: dict[str, Any],
+    *,
+    path: Path,
+    repo_root: Path,
+    runtime_subject: str,
+    current_source: str,
+) -> dict[str, Any] | None:
+    if (
+        payload.get("schema_version") != RUNTIME_SOURCE_DELTA_REVIEW_SCHEMA
+        or payload.get("artifact_kind") != RUNTIME_SOURCE_DELTA_REVIEW_ARTIFACT_KIND
+        or payload.get("gate") != BACKEND_STAGE
+        or payload.get("review_status") != "reviewed"
+        or payload.get("runtime_subject_commit_sha") != runtime_subject
+        or payload.get("current_source_commit_sha") != current_source
+        or payload.get("source_tree_dirty") is not False
+        or payload.get("runtime_affecting_changes_since_runtime_subject") != []
+        or payload.get("does_not_close_b2_gate") is not True
+        or path.parent.name != current_source
+    ):
+        return None
+    runtime_neutral_paths = payload.get("runtime_neutral_paths")
+    if not isinstance(runtime_neutral_paths, list) or not all(
+        isinstance(item, str) and item for item in runtime_neutral_paths
+    ):
+        return None
+    normalized_runtime_neutral_paths = [
+        item.replace("\\", "/").strip() for item in runtime_neutral_paths
+    ]
+    if not all(_is_b2_runtime_neutral_path(item) for item in normalized_runtime_neutral_paths):
+        return None
+    review_basis = payload.get("review_basis")
+    if not isinstance(review_basis, dict):
+        return None
+    command = str(review_basis.get("command") or "")
+    if runtime_subject not in command or current_source not in command:
+        return None
+    result = review_basis.get("result")
+    if not isinstance(result, list) or not all(isinstance(item, str) and item for item in result):
+        return None
+    result_paths = {_source_delta_result_path(item) for item in result}
+    if None in result_paths:
+        return None
+    if result_paths != set(normalized_runtime_neutral_paths):
+        return None
+    return {
+        "evidence_id": payload.get("evidence_id"),
+        "artifact_kind": RUNTIME_SOURCE_DELTA_REVIEW_ARTIFACT_KIND,
+        "path": _path_for_output(path, repo_root),
+        "runtime_subject_commit_sha": runtime_subject,
+        "current_source_commit_sha": current_source,
+        "runtime_neutral_paths": list(normalized_runtime_neutral_paths),
+        "reviewed_at": payload.get("reviewed_at"),
+        "reviewer": payload.get("reviewer"),
+        "review_basis": dict(review_basis),
+        "does_not_close_b2_gate": True,
+    }
+
+
+def _source_delta_result_path(line: str) -> str | None:
+    normalized = line.strip().replace("\\", "/")
+    if not normalized:
+        return None
+    parts = normalized.split()
+    if len(parts) >= 2 and len(parts[0]) <= 3:
+        return parts[-1]
+    return normalized
+
+
+def _reviewed_source_delta_evidence(
+    repo_root: Path,
+    *,
+    runtime_subject: str,
+    current_source: str,
+) -> dict[str, Any] | None:
+    if not runtime_subject or not current_source or current_source == "unknown":
+        return None
+    evidence_root = repo_root / _RUNTIME_SOURCE_REVIEW_ROOT / current_source
+    for path in sorted(evidence_root.glob("*.json")):
+        payload = _load_json(path)
+        if payload is None:
+            continue
+        summary = _source_delta_review_summary(
+            payload,
+            path=path,
+            repo_root=repo_root,
+            runtime_subject=runtime_subject,
+            current_source=current_source,
+        )
+        if summary is not None:
+            return summary
+    return None
+
+
 def _resolve_b2_runtime_affecting_changes_between(
     base_commit: str,
     source_tree_commit: str,
@@ -699,6 +858,22 @@ def _merged_source_runtime_review(
         current_source,
     )
     if runtime_affecting_changes is None:
+        source_delta_review = _reviewed_source_delta_evidence(
+            repo_root,
+            runtime_subject=runtime_subject,
+            current_source=current_source,
+        )
+        if source_delta_review is not None:
+            return {
+                "status": "recorded_reviewed_source_delta_evidence",
+                "closed_gap": RUNTIME_SOURCE_REVIEW_GAP,
+                "runtime_subject_commit_sha": runtime_subject,
+                "current_source_commit_sha": current_source,
+                "runtime_affecting_changes_since_runtime_subject": [],
+                "source_delta_review_evidence": source_delta_review,
+                "required_next_step": "keep hardening runtime gaps open until live verifier evidence passes",
+                "does_not_close_broader_b2_g7_gate": True,
+            }
         return {
             "status": "open_unable_to_classify_runtime_delta",
             "closed_gap": None,
@@ -796,6 +971,18 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         for gap in _PRD_B2_G7_REQUIREMENTS_NOT_YET_VERIFIED
         if gap not in closed_hardening_runtime_gaps
     ]
+    runtime_acceptance_provider = (
+        runtime_acceptance_evidence[RUNTIME_ACCEPTANCE_GAP].get("sandbox_provider")
+        if b2_smoke_recorded
+        else None
+    )
+    opensandbox_provider_status = "local_partial_211_smoke_required"
+    if runtime_acceptance_provider == "opensandbox":
+        opensandbox_provider_status = (
+            "runtime_hardening_acceptance_recorded"
+            if not open_hardening_runtime_gaps
+            else "first_stage_runtime_smoke_recorded_hardening_open"
+        )
     gate_boundary_evidence = {
         ISSUE_CLOSURE_GAP: _issue_closure_boundary_evidence(root),
         RUNTIME_SOURCE_REVIEW_GAP: _merged_source_runtime_review(
@@ -849,6 +1036,13 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
             "provider": "docker",
             "selected_by": "platform_policy",
             "default_stack_provider": "fake",
+            "first_stage_provider_adapters": {
+                "opensandbox": {
+                    "status": opensandbox_provider_status,
+                    "role": "B2 first-stage provider adapter",
+                    "does_not_close_b2": True,
+                },
+            },
             "user_payload_provider_selection_allowed": False,
             "fake_provider_counts_as_production_evidence": False,
             "docker_socket_default_mount_allowed": False,
@@ -892,6 +1086,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
                 "platform lease record for tenant/workspace/user/session/run",
                 "Docker/equivalent launch selected by platform policy",
                 "executor command/task dispatch through callback token path",
+                "Claude Agent SDK execution is recorded as sdk_used=true with executor_mode=claude_agent_sdk",
                 "running and terminal callback events",
                 "cancel stops only verifier-owned container",
                 "cleanup releases active lease and removes ephemeral container",
@@ -915,9 +1110,9 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
         "runtime_acceptance_evidence": runtime_acceptance_evidence,
         "non_expansion_invariants": dict(_B2_NON_EXPANSION_INVARIANTS),
         "evidence_policy": (
-            "B2 remains `local partial` until the current issue boundary, reviewed release evidence, "
-            "and required 211 smoke/readiness evidence are all complete. Reviewed fake-provider, "
-            "source-regression, or runtime-hardening evidence by itself does not complete gate closure."
+            "B2 remains `local partial` until runtime acceptance, source/issue review boundaries, "
+            "and required hardening evidence are all complete. Reviewed fake-provider, "
+            "source-regression, or partial runtime-hardening evidence by itself does not complete gate closure."
         ),
     }
 

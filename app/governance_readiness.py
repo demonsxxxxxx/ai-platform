@@ -10,7 +10,7 @@ from app.tool_policy_readiness import build_tool_policy_readiness
 SCHEMA_VERSION = "ai-platform.governance-readiness.v1"
 GATE_NAME = "G6 Tool / Skill / Memory Governance"
 
-_SANDBOX_PROVIDER_VALUES = {"docker", "fake"}
+_SANDBOX_PROVIDER_VALUES = {"docker", "fake", "opensandbox"}
 _RAW_FRONTEND_GAP_DETAIL_KEYS = {
     "sample_violations",
     "ci_verify_script",

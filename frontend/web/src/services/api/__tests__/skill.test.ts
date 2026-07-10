@@ -1,12 +1,31 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildSkillListUrl, normalizeSkillListResponse } from "../skill.ts";
+import {
+  buildAdminSkillPreviewUrl,
+  buildAdminSkillUploadUrl,
+  buildSkillListUrl,
+  normalizeSkillListResponse,
+} from "../skill.ts";
 
 test("buildSkillListUrl includes pagination and search params", () => {
   assert.equal(
     buildSkillListUrl({ skip: 20, limit: 10, q: "planner", tags: ["coding"] }),
     "/api/skills/?skip=20&limit=10&q=planner&tags=coding",
+  );
+});
+
+test("buildAdminSkillUploadUrl targets governed admin package upload", () => {
+  assert.equal(
+    buildAdminSkillUploadUrl("new research/skill"),
+    "/api/ai/admin/skills/new%20research%2Fskill/versions/upload",
+  );
+});
+
+test("buildAdminSkillPreviewUrl targets global-catalog admin ZIP preview", () => {
+  assert.equal(
+    buildAdminSkillPreviewUrl(),
+    "/api/ai/admin/skills/upload/preview",
   );
 });
 

@@ -54,15 +54,16 @@ services:
       retries: 10
 
   api:
-    image: ${AI_PLATFORM_IMAGE:-ai-platform:local}
-    build:
-      context: ../..
-      args:
-        AI_PLATFORM_BUILD_COMMIT: ${AI_PLATFORM_BUILD_COMMIT:-unknown}
-        AI_PLATFORM_BUILD_DIRTY: ${AI_PLATFORM_BUILD_DIRTY:-unknown}
+    image: ${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}
     container_name: ai-platform-api
+    labels:
+      ai-platform.source-commit: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
+      ai-platform.source-dirty: "false"
+      ai-platform.release-owner: repo-local-compose
+      ai-platform.release-role: api
     restart: unless-stopped
     environment:
+      AI_PLATFORM_RUNTIME_COMMIT: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
       DATABASE_URL: postgresql://${POSTGRES_USER:-ai_platform}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_platform}
       DATABASE_POOL_MIN_SIZE: ${DATABASE_POOL_MIN_SIZE:-1}
       DATABASE_POOL_MAX_SIZE: ${DATABASE_POOL_MAX_SIZE:-10}
@@ -103,7 +104,6 @@ services:
       CLAUDE_AGENT_MODEL: ${CLAUDE_AGENT_MODEL:-deepseek-v4-flash}
       DEFAULT_MODEL_ID: ${DEFAULT_MODEL_ID:-deepseek-v4-flash}
       MODEL_CATALOG_JSON: ${MODEL_CATALOG_JSON:-}
-      CLAUDE_AGENT_SDK_ENABLED: ${CLAUDE_AGENT_SDK_ENABLED:-false}
       CLAUDE_AGENT_SDK_TIMEOUT_SECONDS: ${CLAUDE_AGENT_SDK_TIMEOUT_SECONDS:-120}
       CLAUDE_AGENT_SDK_MAX_TURNS: ${CLAUDE_AGENT_SDK_MAX_TURNS:-128}
       CLAUDE_AGENT_SDK_EFFORT: ${CLAUDE_AGENT_SDK_EFFORT:-xhigh}
@@ -130,6 +130,17 @@ services:
       SANDBOX_EGRESS_POLICY_ENABLED: ${SANDBOX_EGRESS_POLICY_ENABLED:-false}
       SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress}
       SANDBOX_CALLBACK_HOST_GATEWAY: ${SANDBOX_CALLBACK_HOST_GATEWAY:-host.docker.internal}
+      OPENSANDBOX_DOMAIN: ${OPENSANDBOX_DOMAIN:-localhost:8080}
+      OPENSANDBOX_PROTOCOL: ${OPENSANDBOX_PROTOCOL:-http}
+      OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:-}
+      OPENSANDBOX_USE_SERVER_PROXY: ${OPENSANDBOX_USE_SERVER_PROXY:-false}
+      OPENSANDBOX_REQUEST_TIMEOUT_SECONDS: ${OPENSANDBOX_REQUEST_TIMEOUT_SECONDS:-30}
+      OPENSANDBOX_TIMEOUT_SECONDS: ${OPENSANDBOX_TIMEOUT_SECONDS:-1800}
+      OPENSANDBOX_EXECUTOR_IMAGE: ${OPENSANDBOX_EXECUTOR_IMAGE:-}
+      OPENSANDBOX_EXECUTOR_ENTRYPOINT: ${OPENSANDBOX_EXECUTOR_ENTRYPOINT:-/app/docker-entrypoint.sh uvicorn}
+      OPENSANDBOX_WORKSPACE_MOUNT_ENABLED: ${OPENSANDBOX_WORKSPACE_MOUNT_ENABLED:-true}
+      OPENSANDBOX_STARTUP_IO_PROBE_ENABLED: ${OPENSANDBOX_STARTUP_IO_PROBE_ENABLED:-true}
+      OPENSANDBOX_ALLOWED_EGRESS_HOSTS: ${OPENSANDBOX_ALLOWED_EGRESS_HOSTS:-}
     ports:
       - "${AI_PLATFORM_API_PORT:-8020}:8020"
     extra_hosts:
@@ -145,16 +156,17 @@ services:
         condition: service_healthy
 
   worker:
-    image: ${AI_PLATFORM_IMAGE:-ai-platform:local}
-    build:
-      context: ../..
-      args:
-        AI_PLATFORM_BUILD_COMMIT: ${AI_PLATFORM_BUILD_COMMIT:-unknown}
-        AI_PLATFORM_BUILD_DIRTY: ${AI_PLATFORM_BUILD_DIRTY:-unknown}
+    image: ${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}
     container_name: ai-platform-worker
+    labels:
+      ai-platform.source-commit: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
+      ai-platform.source-dirty: "false"
+      ai-platform.release-owner: repo-local-compose
+      ai-platform.release-role: worker
     restart: unless-stopped
     command: ["python", "-m", "app.worker_main"]
     environment:
+      AI_PLATFORM_RUNTIME_COMMIT: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
       DATABASE_URL: postgresql://${POSTGRES_USER:-ai_platform}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_platform}
       DATABASE_POOL_MIN_SIZE: ${DATABASE_POOL_MIN_SIZE:-1}
       DATABASE_POOL_MAX_SIZE: ${DATABASE_POOL_MAX_SIZE:-10}
@@ -204,7 +216,7 @@ services:
       CLAUDE_AGENT_MODEL: ${CLAUDE_AGENT_MODEL:-deepseek-v4-flash}
       DEFAULT_MODEL_ID: ${DEFAULT_MODEL_ID:-deepseek-v4-flash}
       MODEL_CATALOG_JSON: ${MODEL_CATALOG_JSON:-}
-      CLAUDE_AGENT_SDK_ENABLED: ${CLAUDE_AGENT_SDK_ENABLED:-false}
+      CLAUDE_AGENT_SDK_ENABLED: ${WORKER_CLAUDE_AGENT_SDK_ENABLED:-false}
       CLAUDE_AGENT_SDK_TIMEOUT_SECONDS: ${CLAUDE_AGENT_SDK_TIMEOUT_SECONDS:-120}
       CLAUDE_AGENT_SDK_MAX_TURNS: ${CLAUDE_AGENT_SDK_MAX_TURNS:-128}
       CLAUDE_AGENT_SDK_EFFORT: ${CLAUDE_AGENT_SDK_EFFORT:-xhigh}
@@ -231,6 +243,17 @@ services:
       SANDBOX_EGRESS_POLICY_ENABLED: ${SANDBOX_EGRESS_POLICY_ENABLED:-false}
       SANDBOX_EGRESS_NETWORK_NAME: ${SANDBOX_EGRESS_NETWORK_NAME:-ai-platform-sandbox-egress}
       SANDBOX_CALLBACK_HOST_GATEWAY: ${SANDBOX_CALLBACK_HOST_GATEWAY:-host.docker.internal}
+      OPENSANDBOX_DOMAIN: ${OPENSANDBOX_DOMAIN:-localhost:8080}
+      OPENSANDBOX_PROTOCOL: ${OPENSANDBOX_PROTOCOL:-http}
+      OPENSANDBOX_API_KEY: ${OPENSANDBOX_API_KEY:-}
+      OPENSANDBOX_USE_SERVER_PROXY: ${OPENSANDBOX_USE_SERVER_PROXY:-false}
+      OPENSANDBOX_REQUEST_TIMEOUT_SECONDS: ${OPENSANDBOX_REQUEST_TIMEOUT_SECONDS:-30}
+      OPENSANDBOX_TIMEOUT_SECONDS: ${OPENSANDBOX_TIMEOUT_SECONDS:-1800}
+      OPENSANDBOX_EXECUTOR_IMAGE: ${OPENSANDBOX_EXECUTOR_IMAGE:-}
+      OPENSANDBOX_EXECUTOR_ENTRYPOINT: ${OPENSANDBOX_EXECUTOR_ENTRYPOINT:-/app/docker-entrypoint.sh uvicorn}
+      OPENSANDBOX_WORKSPACE_MOUNT_ENABLED: ${OPENSANDBOX_WORKSPACE_MOUNT_ENABLED:-true}
+      OPENSANDBOX_STARTUP_IO_PROBE_ENABLED: ${OPENSANDBOX_STARTUP_IO_PROBE_ENABLED:-true}
+      OPENSANDBOX_ALLOWED_EGRESS_HOSTS: ${OPENSANDBOX_ALLOWED_EGRESS_HOSTS:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -244,14 +267,13 @@ services:
         condition: service_healthy
 
   frontend:
-    image: ${AI_PLATFORM_FRONTEND_IMAGE:-ai-platform-frontend:local}
-    build:
-      context: ../..
-      dockerfile: frontend/web/Dockerfile
-      args:
-        AI_PLATFORM_BUILD_COMMIT: ${AI_PLATFORM_BUILD_COMMIT:-unknown}
-        AI_PLATFORM_BUILD_DIRTY: ${AI_PLATFORM_BUILD_DIRTY:-unknown}
+    image: ${AI_PLATFORM_FRONTEND_IMAGE:?set AI_PLATFORM_FRONTEND_IMAGE}
     container_name: ai-platform-frontend
+    labels:
+      ai-platform.source-commit: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
+      ai-platform.source-dirty: "false"
+      ai-platform.release-owner: repo-local-compose
+      ai-platform.release-role: frontend
     restart: unless-stopped
     environment:
       AI_PLATFORM_API_UPSTREAM: ${AI_PLATFORM_API_UPSTREAM:-http://api:8020}

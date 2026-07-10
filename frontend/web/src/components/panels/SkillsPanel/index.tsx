@@ -57,7 +57,8 @@ export function SkillsPanel({
     (canPublishByAuth || effectivePermissions.has(Permission.MARKETPLACE_PUBLISH));
   const canEditSkills = skillFileWriteBacked && canWrite;
   const canCreateSkills = false;
-  const canImportSkills = skillImportBacked && canWrite;
+  const canImportSkills =
+    skillImportBacked && (canWrite || actions.canAdminUploadSkills);
   const canBatchSkills =
     skillBatchWriteBacked && (canWrite || canDeleteSkill);
 
@@ -153,6 +154,7 @@ export function SkillsPanel({
         zipPreviewing={actions.zipPreviewing}
         zipSkills={actions.zipSkills}
         selectedZipSkills={actions.selectedZipSkills}
+        allowNewSkills={actions.canAdminUploadSkills}
         zipInputRef={actions.zipInputRef}
         isDragging={actions.isDragging}
         onZipFileChange={actions.handleZipFileChange}

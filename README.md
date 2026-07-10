@@ -81,6 +81,8 @@ gate. See `frontend/web/README.md` and
 `docs/frontend/ai-platform-frontend-migration.md`.
 
 General chat uses the `general-agent` / `general-chat` seed and requires
-`CLAUDE_AGENT_SDK_ENABLED=true` plus server-side new-api credentials. Word
-review/translation still use the controlled migration delegate for artifact
-generation while the SDK skill files are being ported into the worker image.
+`WORKER_CLAUDE_AGENT_SDK_ENABLED=true` plus server-side new-api credentials.
+API containers intentionally do not receive the SDK execution switch; workers
+execute SDK Skill runs. Word review/translation still use the controlled
+migration delegate for artifact generation while the SDK skill files are being
+ported into the worker image.
