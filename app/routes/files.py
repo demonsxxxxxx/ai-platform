@@ -180,6 +180,14 @@ async def upload_file(
         workspace_id = assert_safe_id(workspace_id, "workspace_id")
         if session_id:
             session_id = assert_safe_id(session_id, "session_id")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    safe_name = SAFE_FILENAME_PATTERN.sub("_", file.filename or "upload.bin").strip(" .") or "upload.bin"
+    content_type = file.content_type or "application/octet-stream"
+    content = await _read_bounded_upload(file)
+    _validate_upload_content(filename=safe_name, declared_content_type=content_type, content=content)
+    try:
         async with transaction() as conn:
             await ensure_workspace(conn, tenant_id=tenant_id, workspace_id=workspace_id)
             await ensure_user(
@@ -199,14 +207,8 @@ async def upload_file(
                     raise RepositoryNotFoundError("session_not_found")
     except RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     file_id = new_id("file")
-    safe_name = SAFE_FILENAME_PATTERN.sub("_", file.filename or "upload.bin").strip(" .") or "upload.bin"
-    content_type = file.content_type or "application/octet-stream"
-    content = await _read_bounded_upload(file)
-    _validate_upload_content(filename=safe_name, declared_content_type=content_type, content=content)
     storage_key = f"tenants/{tenant_id}/workspaces/{workspace_id}/sessions/{session_id or 'unbound'}/files/{file_id}/{safe_name}"
     stored = ObjectStorage().put_bytes(
         storage_key=storage_key,

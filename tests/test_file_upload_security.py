@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 from contextlib import asynccontextmanager
 import io
 import zipfile
@@ -56,6 +57,19 @@ async def fake_create_file(conn, **kwargs):
 
 def install_basic_upload_fakes(monkeypatch):
     monkeypatch.setattr(files_routes, "transaction", fake_transaction)
+    monkeypatch.setattr(files_routes, "ensure_workspace", fake_ensure_workspace)
+    monkeypatch.setattr(files_routes, "ensure_user", fake_ensure_user)
+    monkeypatch.setattr(files_routes, "create_file", fake_create_file)
+    monkeypatch.setattr(files_routes, "new_id", lambda prefix: "file_upload_1")
+
+
+def install_forbidden_repository_side_effects(monkeypatch):
+    @asynccontextmanager
+    async def forbidden_transaction():
+        raise AssertionError("unsupported upload must reject before repository access")
+        yield object()
+
+    monkeypatch.setattr(files_routes, "transaction", forbidden_transaction)
     monkeypatch.setattr(files_routes, "ensure_workspace", fake_ensure_workspace)
     monkeypatch.setattr(files_routes, "ensure_user", fake_ensure_user)
     monkeypatch.setattr(files_routes, "create_file", fake_create_file)
@@ -168,6 +182,43 @@ async def test_upload_rejects_active_content_by_extension_mime_or_sniff(
     class ForbiddenStorage:
         def put_bytes(self, *, storage_key, content, content_type):
             raise AssertionError("active content must not write storage")
+
+    monkeypatch.setattr(files_routes, "ObjectStorage", ForbiddenStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await files_routes.upload_file(
+            file=upload,
+            workspace_id="default",
+            session_id=None,
+            principal=upload_principal(),
+        )
+
+    assert exc_info.value.status_code == 415
+    assert exc_info.value.detail == "unsupported_file_type"
+    assert upload.read_calls == [files_routes.MAX_UPLOAD_BYTES + 1]
+
+
+@pytest.mark.parametrize(
+    ("payload", "label"),
+    [
+        (codecs.BOM_UTF16_LE + "<!DOCTYPE html><html><body>utf16le</body></html>".encode("utf-16-le"), "utf16le-html"),
+        (codecs.BOM_UTF16_BE + "<svg xmlns='http://www.w3.org/2000/svg'></svg>".encode("utf-16-be"), "utf16be-svg"),
+        (codecs.BOM_UTF32_LE + "<?xml version='1.0'?><root>utf32le</root>".encode("utf-32-le"), "utf32le-xml"),
+        (codecs.BOM_UTF32_BE + "<!DOCTYPE html><html><body>utf32be</body></html>".encode("utf-32-be"), "utf32be-html"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_upload_rejects_bom_wrapped_active_content_before_repository_or_storage_side_effects(
+    monkeypatch,
+    payload: bytes,
+    label: str,
+):
+    install_forbidden_repository_side_effects(monkeypatch)
+    upload = FakeUploadFile(f"{label}.txt", "text/plain", payload)
+
+    class ForbiddenStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            raise AssertionError("unsupported upload must not write storage")
 
     monkeypatch.setattr(files_routes, "ObjectStorage", ForbiddenStorage)
 
