@@ -71,6 +71,65 @@ def admin_headers():
     }
 
 
+def user_headers(user_id: str, permissions: str = "artifact:download"):
+    return {
+        "x-ai-user-id": user_id,
+        "x-ai-user-name": user_id,
+        "x-ai-tenant-id": "default",
+        "x-ai-roles": "user",
+        "x-ai-permissions": permissions,
+        "x-ai-gateway-secret": "test-secret",
+    }
+
+
+def test_revoked_owner_download_direct_url_returns_403_before_repository_lookup(monkeypatch):
+    async def fake_get_authorized_artifact(conn, *, tenant_id, user_id, artifact_id):
+        raise AssertionError("missing permission must reject before artifact lookup")
+
+    async def fake_get_admin_artifact(conn, *, tenant_id, artifact_id):
+        raise AssertionError("ordinary user missing permission must reject before admin fallback")
+
+    class ForbiddenStorage:
+        def get_bytes(self, *, storage_key):
+            raise AssertionError("missing permission must not read storage")
+
+    monkeypatch.setattr("app.auth.get_settings", route_auth_settings)
+    monkeypatch.setattr("app.routes.files.transaction", fake_route_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_artifact", fake_get_authorized_artifact)
+    monkeypatch.setattr("app.routes.files.get_admin_artifact", fake_get_admin_artifact)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/artifacts/art-a/download", headers=user_headers("user-a", permissions=""))
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "missing_permission:artifact:download"
+
+
+def test_revoked_owner_preview_direct_url_returns_403_before_repository_lookup(monkeypatch):
+    async def fake_get_authorized_artifact(conn, *, tenant_id, user_id, artifact_id):
+        raise AssertionError("missing permission must reject before artifact lookup")
+
+    async def fake_get_admin_artifact(conn, *, tenant_id, artifact_id):
+        raise AssertionError("ordinary user missing permission must reject before admin fallback")
+
+    class ForbiddenStorage:
+        def get_bytes(self, *, storage_key):
+            raise AssertionError("missing permission must not read storage")
+
+    monkeypatch.setattr("app.auth.get_settings", route_auth_settings)
+    monkeypatch.setattr("app.routes.files.transaction", fake_route_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_artifact", fake_get_authorized_artifact)
+    monkeypatch.setattr("app.routes.files.get_admin_artifact", fake_get_admin_artifact)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/artifacts/art-a/preview", headers=user_headers("user-a", permissions=""))
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "missing_permission:artifact:download"
+
+
 def test_admin_download_uses_artifact_and_writes_audit(monkeypatch):
     calls = []
 
@@ -138,13 +197,7 @@ def test_owner_preview_uses_authorized_artifact_and_inline_response(monkeypatch)
 
     response = client.get(
         "/api/ai/artifacts/art-a/preview",
-        headers={
-            "x-ai-user-id": "user-a",
-            "x-ai-user-name": "User A",
-            "x-ai-tenant-id": "default",
-            "x-ai-roles": "user",
-            "x-ai-gateway-secret": "test-secret",
-        },
+        headers=user_headers("user-a"),
     )
 
     assert response.status_code == 200
@@ -176,13 +229,7 @@ def test_preview_denied_for_non_owner_does_not_read_storage_or_admin_fallback(mo
 
     response = client.get(
         "/api/ai/artifacts/art-a/preview",
-        headers={
-            "x-ai-user-id": "user-b",
-            "x-ai-user-name": "User B",
-            "x-ai-tenant-id": "default",
-            "x-ai-roles": "user",
-            "x-ai-gateway-secret": "test-secret",
-        },
+        headers=user_headers("user-b"),
     )
 
     assert response.status_code == 404
@@ -212,13 +259,7 @@ def test_preview_rejects_non_allowlisted_content_type(monkeypatch):
 
     response = client.get(
         "/api/ai/artifacts/art-a/preview",
-        headers={
-            "x-ai-user-id": "user-a",
-            "x-ai-user-name": "User A",
-            "x-ai-tenant-id": "default",
-            "x-ai-roles": "user",
-            "x-ai-gateway-secret": "test-secret",
-        },
+        headers=user_headers("user-a"),
     )
 
     assert response.status_code == 415
