@@ -1,7 +1,26 @@
+/* eslint-disable react-refresh/only-export-components */
+import JSZip from "jszip";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoadingSpinner } from "../../common/LoadingSpinner";
-import { worksheetToDisplayRows } from "./excelPreviewData";
-import "../../../styles/excel-preview.css";
+
+const excelPreviewStylesPromise =
+  typeof document === "undefined"
+    ? null
+    : import("../../../styles/excel-preview.css");
+
+if (excelPreviewStylesPromise) {
+  void excelPreviewStylesPromise;
+}
+
+export const EXCEL_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
+export const EXCEL_PREVIEW_TIMEOUT_MS = 1_500;
+const EXCEL_PREVIEW_MAX_ENTRY_BYTES = 2 * 1024 * 1024;
+const EXCEL_PREVIEW_MAX_TOTAL_UNCOMPRESSED_BYTES = 4 * 1024 * 1024;
+const EXCEL_PREVIEW_MAX_SHEETS = 8;
+const EXCEL_PREVIEW_MAX_ROWS = 200;
+const EXCEL_PREVIEW_MAX_COLS = 50;
+const EXCEL_PREVIEW_MAX_CELLS =
+  EXCEL_PREVIEW_MAX_ROWS * EXCEL_PREVIEW_MAX_COLS;
 
 function useScrollIndicator(
   containerRef: React.RefObject<HTMLDivElement | null>,
@@ -47,6 +66,419 @@ interface SheetData {
   data: string[][];
 }
 
+interface WorkbookZipFile {
+  async(type: "string"): Promise<string>;
+  _data?: {
+    compressedSize?: number;
+    uncompressedSize?: number;
+  };
+}
+
+interface WorkbookZipLike {
+  file(path: string): WorkbookZipFile | null;
+}
+
+interface WorkbookSheetRef {
+  name: string;
+  relationshipId: string;
+}
+
+function getFileExtension(value?: string | null): string {
+  if (!value) {
+    return "";
+  }
+  const normalized = value.replace(/\\/g, "/");
+  const segment = normalized.split("/").pop() ?? "";
+  const lastDot = segment.lastIndexOf(".");
+  return lastDot <= 0 ? "" : segment.slice(lastDot + 1).toLowerCase();
+}
+
+function isSupportedBrowserWorkbook(fileName?: string | null): boolean {
+  const extension = getFileExtension(fileName);
+  return extension === "xlsx" || extension === "xlsm";
+}
+
+function getNow(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function assertPreviewBudget(
+  startMs: number,
+  timeoutMs: number,
+  now: () => number,
+): void {
+  if (now() - startMs > timeoutMs) {
+    throw new Error("excel_preview_timeout");
+  }
+}
+
+async function loadWorkbookZip(arrayBuffer: ArrayBuffer): Promise<WorkbookZipLike> {
+  return JSZip.loadAsync(arrayBuffer);
+}
+
+async function readWorkbookText(
+  zip: WorkbookZipLike,
+  path: string,
+  maxEntryBytes = EXCEL_PREVIEW_MAX_ENTRY_BYTES,
+): Promise<string | null> {
+  const file = zip.file(path);
+  if (!file) {
+    return null;
+  }
+  if ((file._data?.uncompressedSize ?? 0) > maxEntryBytes) {
+    throw new Error("excel_preview_entry_too_large");
+  }
+  return file.async("string");
+}
+
+function decodeXmlEntities(value: string): string {
+  return value.replace(
+    /&(#x?[0-9a-fA-F]+|amp|apos|gt|lt|quot);/g,
+    (entity, token: string) => {
+      switch (token) {
+        case "amp":
+          return "&";
+        case "apos":
+          return "'";
+        case "gt":
+          return ">";
+        case "lt":
+          return "<";
+        case "quot":
+          return '"';
+        default: {
+          const isHex = token.startsWith("#x");
+          const isNumeric = token.startsWith("#");
+          if (!isNumeric) {
+            return entity;
+          }
+          const codePoint = Number.parseInt(
+            token.slice(isHex ? 2 : 1),
+            isHex ? 16 : 10,
+          );
+          return Number.isFinite(codePoint)
+            ? String.fromCodePoint(codePoint)
+            : entity;
+        }
+      }
+    },
+  );
+}
+
+function extractTagText(xml: string, tagName: string): string {
+  const match = new RegExp(
+    `<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`,
+    "i",
+  ).exec(xml);
+  return match ? decodeXmlEntities(match[1]) : "";
+}
+
+function extractInlineText(xml: string): string {
+  const matches = Array.from(xml.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/gi));
+  if (matches.length === 0) {
+    return "";
+  }
+  return matches.map((match) => decodeXmlEntities(match[1])).join("");
+}
+
+function extractAttribute(tag: string, attributeName: string): string | null {
+  const escapedName = attributeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`${escapedName}="([^"]+)"`, "i").exec(tag);
+  return match ? decodeXmlEntities(match[1]) : null;
+}
+
+function parseWorkbookSheetRefs(xml: string): WorkbookSheetRef[] {
+  return Array.from(xml.matchAll(/<sheet\b[^>]*\/?>/gi))
+    .map((match) => {
+      const tag = match[0];
+      const name = extractAttribute(tag, "name");
+      const relationshipId = extractAttribute(tag, "r:id");
+      return name && relationshipId ? { name, relationshipId } : null;
+    })
+    .filter((value): value is WorkbookSheetRef => value != null);
+}
+
+function parseWorkbookRelationships(xml: string): Map<string, string> {
+  return new Map(
+    Array.from(xml.matchAll(/<Relationship\b[^>]*\/?>/gi))
+      .map((match) => {
+        const tag = match[0];
+        const id = extractAttribute(tag, "Id");
+        const target = extractAttribute(tag, "Target");
+        return id && target ? ([id, target] as const) : null;
+      })
+      .filter((value): value is readonly [string, string] => value != null),
+  );
+}
+
+function resolveWorkbookTargetPath(target: string): string {
+  const normalized = target.replace(/\\/g, "/").replace(/^\.?\//, "");
+  return normalized.startsWith("xl/") ? normalized : `xl/${normalized}`;
+}
+
+function decodeColumnReference(columnRef: string): number {
+  let value = 0;
+  for (const char of columnRef) {
+    value = value * 26 + (char.charCodeAt(0) - 64);
+  }
+  return Math.max(0, value - 1);
+}
+
+function parseCellValue(
+  cellType: string | null,
+  cellBody: string,
+  sharedStrings: string[],
+): string {
+  if (cellType === "inlineStr") {
+    return extractInlineText(cellBody);
+  }
+  if (cellType === "s") {
+    const index = Number.parseInt(extractTagText(cellBody, "v"), 10);
+    return Number.isFinite(index) ? (sharedStrings[index] ?? "") : "";
+  }
+  if (cellType === "b") {
+    const raw = extractTagText(cellBody, "v");
+    if (raw === "1") return "TRUE";
+    if (raw === "0") return "FALSE";
+    return raw;
+  }
+  return extractTagText(cellBody, "v") || extractInlineText(cellBody);
+}
+
+function parseSharedStrings(xml: string | null): string[] {
+  if (!xml) {
+    return [];
+  }
+
+  return Array.from(xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/gi)).map(
+    (match) => extractInlineText(match[1]),
+  );
+}
+
+function parseWorksheetRows(
+  xml: string,
+  sharedStrings: string[],
+  options: {
+    startMs: number;
+    now: () => number;
+    timeoutMs: number;
+    maxRows: number;
+    maxCols: number;
+    maxCells: number;
+  },
+): string[][] {
+  const rowMap = new Map<number, string[]>();
+  let highestRowIndex = -1;
+  let highestColIndex = -1;
+  let cellCount = 0;
+  let fallbackRowIndex = 0;
+
+  const rowMatches = xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>/gi);
+  for (const rowMatch of rowMatches) {
+    assertPreviewBudget(options.startMs, options.timeoutMs, options.now);
+    const rowAttrs = rowMatch[1] ?? "";
+    const rowBody = rowMatch[2] ?? "";
+    const explicitRowNumber = Number.parseInt(
+      rowAttrs.match(/\br="(\d+)"/i)?.[1] ?? "",
+      10,
+    );
+    const rowIndex = Number.isFinite(explicitRowNumber)
+      ? explicitRowNumber - 1
+      : fallbackRowIndex;
+    if (rowIndex >= options.maxRows) {
+      throw new Error("excel_preview_limits_exceeded");
+    }
+
+    const values = rowMap.get(rowIndex) ?? [];
+    let fallbackColIndex = 0;
+    const cellMatches = rowBody.matchAll(/<c\b([^>]*)(?:>([\s\S]*?)<\/c>|\/>)/gi);
+
+    for (const cellMatch of cellMatches) {
+      assertPreviewBudget(options.startMs, options.timeoutMs, options.now);
+      const cellAttrs = cellMatch[1] ?? "";
+      const cellBody = cellMatch[2] ?? "";
+      const refMatch = cellAttrs.match(/\br="([A-Z]+)(\d+)"/i);
+      const colIndex = refMatch
+        ? decodeColumnReference(refMatch[1].toUpperCase())
+        : fallbackColIndex;
+      if (colIndex >= options.maxCols) {
+        throw new Error("excel_preview_limits_exceeded");
+      }
+
+      const cellType = cellAttrs.match(/\bt="([^"]+)"/i)?.[1] ?? null;
+      values[colIndex] = parseCellValue(cellType, cellBody, sharedStrings);
+      fallbackColIndex = colIndex + 1;
+      highestColIndex = Math.max(highestColIndex, colIndex);
+      cellCount += 1;
+      if (cellCount > options.maxCells) {
+        throw new Error("excel_preview_limits_exceeded");
+      }
+    }
+
+    rowMap.set(rowIndex, values);
+    highestRowIndex = Math.max(highestRowIndex, rowIndex);
+    fallbackRowIndex = rowIndex + 1;
+  }
+
+  if (highestRowIndex < 0 || highestColIndex < 0) {
+    return [];
+  }
+
+  const rows: string[][] = [];
+  for (let rowIndex = 0; rowIndex <= highestRowIndex; rowIndex += 1) {
+    assertPreviewBudget(options.startMs, options.timeoutMs, options.now);
+    const source = rowMap.get(rowIndex) ?? [];
+    rows.push(
+      Array.from(
+        { length: highestColIndex + 1 },
+        (_, colIndex) => source[colIndex] ?? "",
+      ),
+    );
+  }
+  return rows;
+}
+
+function mapExcelPreviewError(
+  error: unknown,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): string {
+  if (!(error instanceof Error)) {
+    return t("documents.excelParseError");
+  }
+
+  switch (error.message) {
+    case "excel_preview_file_too_large":
+      return t("documents.excelPreviewTooLarge", {
+        defaultValue:
+          "Workbook preview is unavailable because the file exceeds the browser safety size limit.",
+      });
+    case "excel_preview_limits_exceeded":
+      return t("documents.excelPreviewLimitsExceeded", {
+        defaultValue:
+          "Workbook preview is unavailable because the sheet exceeds the browser safety limits.",
+      });
+    case "excel_preview_timeout":
+      return t("documents.excelPreviewTimeout", {
+        defaultValue:
+          "Workbook preview timed out before a safe browser preview could be produced.",
+      });
+    case "excel_preview_entry_too_large":
+      return t("documents.excelPreviewEntryTooLarge", {
+        defaultValue:
+          "Workbook preview is unavailable because the unpacked sheet data exceeds the browser safety limits.",
+      });
+    case "excel_preview_missing_workbook_xml":
+      return t("documents.excelPreviewInvalidWorkbook", {
+        defaultValue:
+          "Workbook preview is unavailable because the file structure is invalid.",
+      });
+    case "excel_preview_unsupported_format":
+      return t("documents.excelPreviewUnsupportedFormat", {
+        defaultValue:
+          "This workbook format is not available for in-browser preview. Download the file to inspect it safely.",
+      });
+    default:
+      return error.message || t("documents.excelParseError");
+  }
+}
+
+/**
+ * Build a bounded browser preview for supported OOXML workbooks.
+ */
+export async function parseExcelWorkbookPreview(
+  arrayBuffer: ArrayBuffer,
+  options?: {
+    loadZip?: (arrayBuffer: ArrayBuffer) => Promise<WorkbookZipLike>;
+    fileName?: string;
+    now?: () => number;
+    timeoutMs?: number;
+    maxBytes?: number;
+    maxEntryBytes?: number;
+    maxTotalUncompressedBytes?: number;
+    maxSheets?: number;
+    maxRows?: number;
+    maxCols?: number;
+    maxCells?: number;
+  },
+): Promise<SheetData[]> {
+  if (options?.fileName && !isSupportedBrowserWorkbook(options.fileName)) {
+    throw new Error("excel_preview_unsupported_format");
+  }
+
+  const maxBytes = options?.maxBytes ?? EXCEL_PREVIEW_MAX_BYTES;
+  if (arrayBuffer.byteLength > maxBytes) {
+    throw new Error("excel_preview_file_too_large");
+  }
+
+  const maxEntryBytes = options?.maxEntryBytes ?? EXCEL_PREVIEW_MAX_ENTRY_BYTES;
+  const maxTotalUncompressedBytes =
+    options?.maxTotalUncompressedBytes ??
+    EXCEL_PREVIEW_MAX_TOTAL_UNCOMPRESSED_BYTES;
+  const now = options?.now ?? getNow;
+  const timeoutMs = options?.timeoutMs ?? EXCEL_PREVIEW_TIMEOUT_MS;
+  const startMs = now();
+  const zip = await (options?.loadZip ?? loadWorkbookZip)(arrayBuffer);
+  assertPreviewBudget(startMs, timeoutMs, now);
+
+  let totalUncompressedBytes = 0;
+  const readBoundedWorkbookText = async (path: string): Promise<string | null> => {
+    const file = zip.file(path);
+    const entryBytes = file?._data?.uncompressedSize ?? 0;
+    if (entryBytes > maxEntryBytes) {
+      throw new Error("excel_preview_entry_too_large");
+    }
+    totalUncompressedBytes += entryBytes;
+    if (totalUncompressedBytes > maxTotalUncompressedBytes) {
+      throw new Error("excel_preview_entry_too_large");
+    }
+    return readWorkbookText(zip, path, maxEntryBytes);
+  };
+
+  const workbookXml = await readBoundedWorkbookText("xl/workbook.xml");
+  if (!workbookXml) {
+    throw new Error("excel_preview_missing_workbook_xml");
+  }
+
+  const relationshipsXml =
+    (await readBoundedWorkbookText("xl/_rels/workbook.xml.rels")) ?? "";
+  const relationshipMap = parseWorkbookRelationships(relationshipsXml);
+  const sharedStrings = parseSharedStrings(
+    await readBoundedWorkbookText("xl/sharedStrings.xml"),
+  );
+  const sheets = parseWorkbookSheetRefs(workbookXml).slice(
+    0,
+    options?.maxSheets ?? EXCEL_PREVIEW_MAX_SHEETS,
+  );
+
+  const parsedSheets: SheetData[] = [];
+  for (const sheet of sheets) {
+    assertPreviewBudget(startMs, timeoutMs, now);
+    const target = relationshipMap.get(sheet.relationshipId);
+    if (!target) {
+      throw new Error("excel_preview_missing_workbook_xml");
+    }
+    const sheetXml = await readBoundedWorkbookText(
+      resolveWorkbookTargetPath(target),
+    );
+    if (!sheetXml) {
+      throw new Error("excel_preview_missing_workbook_xml");
+    }
+    parsedSheets.push({
+      name: sheet.name,
+      data: parseWorksheetRows(sheetXml, sharedStrings, {
+        startMs,
+        now,
+        timeoutMs,
+        maxRows: options?.maxRows ?? EXCEL_PREVIEW_MAX_ROWS,
+        maxCols: options?.maxCols ?? EXCEL_PREVIEW_MAX_COLS,
+        maxCells: options?.maxCells ?? EXCEL_PREVIEW_MAX_CELLS,
+      }),
+    });
+  }
+
+  return parsedSheets;
+}
+
 function colLabel(index: number): string {
   let label = "";
   let n = index;
@@ -79,27 +511,36 @@ const ExcelPreview = memo(function ExcelPreview({
   const { progress, hasOverflow } = useScrollIndicator(scrollContainerRef);
 
   useEffect(() => {
+    let cancelled = false;
+
     const parseExcel = async () => {
       try {
-        const XLSX = await import("xlsx");
-        const workbook = XLSX.read(arrayBuffer, { type: "array" });
-        const sheetData = workbook.SheetNames.map((name) => {
-          const sheet = workbook.Sheets[name];
-          return { name, data: worksheetToDisplayRows(sheet, XLSX.utils) };
+        const sheetData = await parseExcelWorkbookPreview(arrayBuffer, {
+          fileName: _fileName,
         });
+        if (cancelled) {
+          return;
+        }
         setSheets(sheetData);
+        setActiveSheet(0);
         setError(null);
       } catch (err) {
         console.error("Excel parse error:", err);
-        setError(
-          err instanceof Error ? err.message : t("documents.excelParseError"),
-        );
+        if (!cancelled) {
+          setError(mapExcelPreviewError(err, t));
+        }
       } finally {
-        setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     };
-    parseExcel();
-  }, [arrayBuffer, t]);
+
+    void parseExcel();
+    return () => {
+      cancelled = true;
+    };
+  }, [arrayBuffer, _fileName, t]);
 
   const currentSheet = sheets[activeSheet];
 
@@ -113,7 +554,6 @@ const ExcelPreview = memo(function ExcelPreview({
     return currentSheet.data[0].length;
   }, [currentSheet]);
 
-  // First row is header, rest is data
   const headerRow = useMemo(() => {
     if (!currentSheet || currentSheet.data.length === 0) return [];
     return currentSheet.data[0];
@@ -153,7 +593,6 @@ const ExcelPreview = memo(function ExcelPreview({
     );
   }
 
-  // Get value from all rows (header is row -1 conceptually)
   function getCellValue(rowIndex: number, colIndex: number): string {
     if (rowIndex === -1) {
       return headerRow[colIndex] != null ? String(headerRow[colIndex]) : "";
@@ -165,11 +604,10 @@ const ExcelPreview = memo(function ExcelPreview({
     return "";
   }
 
-  const displayRows = totalRows; // includes header
+  const displayRows = totalRows;
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-stone-950">
-      {/* Formula bar */}
       <div className="flex items-center gap-2 px-3 py-1.5 bg-stone-50 dark:bg-stone-900 border-b border-stone-200 dark:border-stone-700 shrink-0">
         <span className="text-[11px] font-bold text-stone-600 dark:text-stone-400 w-8 text-center shrink-0 italic">
           fx
@@ -189,7 +627,6 @@ const ExcelPreview = memo(function ExcelPreview({
         </span>
       </div>
 
-      {/* Sheet tabs */}
       <div className="flex items-center gap-0.5 px-1 py-0 bg-stone-100 dark:bg-stone-900 border-b border-stone-300 dark:border-stone-700 shrink-0">
         <button
           type="button"
@@ -248,18 +685,14 @@ const ExcelPreview = memo(function ExcelPreview({
         </button>
       </div>
 
-      {/* Spreadsheet grid */}
       <div
         ref={scrollContainerRef}
         className="flex-1 overflow-auto relative overscroll-x-contain [-webkit-overflow-scrolling:touch] excel-preview-scroll border-x border-stone-300 dark:border-stone-600"
       >
         <table className="border-collapse w-max min-w-full text-[13px]">
-          {/* Column headers row */}
           <thead>
             <tr className="sticky top-0 z-10">
-              {/* Top-left corner */}
               <th className="sticky left-0 z-20 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border-r border-b border-stone-300 dark:border-stone-600 select-none" />
-              {/* Column letters */}
               {Array.from({ length: totalCols }, (_, i) => (
                 <th
                   key={i}
@@ -277,13 +710,12 @@ const ExcelPreview = memo(function ExcelPreview({
           <tbody>
             {Array.from({ length: displayRows }, (_, rawRowIndex) => {
               const isHeader = rawRowIndex === 0;
-              const rowIndex = isHeader ? -1 : rawRowIndex - 1; // -1 for header in getCellValue
+              const rowIndex = isHeader ? -1 : rawRowIndex - 1;
               const isRowHovered =
                 hoveredCell && !isHeader && hoveredCell.row === rawRowIndex - 1;
 
               return (
                 <tr key={rawRowIndex}>
-                  {/* Row number */}
                   <td
                     className={`sticky left-0 z-10 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] bg-stone-100 dark:bg-stone-800 border-r border-b border-stone-300 dark:border-stone-600 select-none tabular-nums leading-6 touch-none [box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.06)] dark:[box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.3)] ${
                       isHeader
@@ -295,7 +727,6 @@ const ExcelPreview = memo(function ExcelPreview({
                   >
                     {isHeader ? "" : rawRowIndex}
                   </td>
-                  {/* Cells */}
                   {Array.from({ length: totalCols }, (_, colIndex) => {
                     const value = getCellValue(rowIndex, colIndex);
                     const num = isNumeric(value);
@@ -305,7 +736,6 @@ const ExcelPreview = memo(function ExcelPreview({
                       hoveredCell.row === rawRowIndex - 1 &&
                       hoveredCell.col === colIndex;
 
-                    // Header cells use th-style, data cells use td-style
                     if (isHeader) {
                       return (
                         <th
@@ -352,14 +782,12 @@ const ExcelPreview = memo(function ExcelPreview({
           </tbody>
         </table>
 
-        {/* Empty state */}
         {totalRows === 0 && (
           <div className="flex flex-col items-center justify-center py-20 text-stone-400 dark:text-stone-500">
             <p className="text-sm">{t("documents.noData") || "No data"}</p>
           </div>
         )}
 
-        {/* Scroll progress indicator */}
         {hasOverflow && (
           <div className="absolute bottom-0 left-0 right-0 h-1 z-30 pointer-events-none">
             <div className="h-full bg-stone-300/40 dark:bg-stone-600/40" />
@@ -374,7 +802,6 @@ const ExcelPreview = memo(function ExcelPreview({
         )}
       </div>
 
-      {/* Status bar */}
       <div className="flex items-center justify-between px-3 py-1 text-[11px] text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border-t border-stone-300 dark:border-stone-600 shrink-0">
         <span className="tabular-nums">
           {sheets.length > 1 && (

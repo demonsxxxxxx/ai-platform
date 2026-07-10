@@ -112,6 +112,102 @@ test("openPreviewUrl opens protected platform URLs through authenticated blob UR
   assert.deepEqual(revoked, ["blob:protected-preview"]);
 });
 
+test("openPreviewUrl renders active html artifacts as plain text blobs", async () => {
+  const requested: string[] = [];
+  const opened: string[] = [];
+  const revoked: string[] = [];
+
+  await openPreviewUrl({
+    url: "/api/ai/artifacts/protected-preview/preview",
+    fileName: "payload.html",
+    mimeType: "application/octet-stream",
+    fetchOptions: {
+      authenticatedRequest: async (url) => {
+        requested.push(String(url));
+        return new Response("<script>alert('xss')</script>", { status: 200 });
+      },
+    },
+    createObjectURL: (blob) => {
+      assert.equal(blob.type, "text/plain;charset=utf-8");
+      return "blob:protected-active";
+    },
+    revokeObjectURL: (url) => {
+      revoked.push(url);
+    },
+    openWindow: (url) => {
+      opened.push(url);
+      return null;
+    },
+    revokeDelayMs: 0,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(requested, ["/api/ai/artifacts/protected-preview/preview"]);
+  assert.deepEqual(opened, ["blob:protected-active"]);
+  assert.deepEqual(revoked, ["blob:protected-active"]);
+});
+
+test("openPreviewUrl treats active svg uploads as text even when mime metadata is spoofed", async () => {
+  const requested: string[] = [];
+  const opened: string[] = [];
+
+  await openPreviewUrl({
+    url: "/api/upload/file/diagram.svg",
+    mimeType: "text/plain",
+    fetchOptions: {
+      authenticatedRequest: async (url) => {
+        requested.push(String(url));
+        return new Response("<svg><script>alert(1)</script></svg>", {
+          status: 200,
+        });
+      },
+    },
+    createObjectURL: (blob) => {
+      assert.equal(blob.type, "text/plain;charset=utf-8");
+      return "blob:svg-active";
+    },
+    openWindow: (url) => {
+      opened.push(url);
+      return null;
+    },
+    revokeObjectURL: () => {},
+    revokeDelayMs: 0,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(requested, ["/api/upload/file/diagram.svg"]);
+  assert.deepEqual(opened, ["blob:svg-active"]);
+});
+
+test("openPreviewUrl fails closed for opaque authenticated preview URLs without safe metadata", async () => {
+  const requested: string[] = [];
+  const opened: string[] = [];
+
+  await openPreviewUrl({
+    url: "/api/ai/artifacts/protected-preview/preview",
+    fetchOptions: {
+      authenticatedRequest: async (url) => {
+        requested.push(String(url));
+        return new Response("safe fallback", { status: 200 });
+      },
+    },
+    createObjectURL: (blob) => {
+      assert.equal(blob.type, "text/plain;charset=utf-8");
+      return "blob:opaque-auth";
+    },
+    openWindow: (url) => {
+      opened.push(url);
+      return null;
+    },
+    revokeObjectURL: () => {},
+    revokeDelayMs: 0,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(requested, ["/api/ai/artifacts/protected-preview/preview"]);
+  assert.deepEqual(opened, ["blob:opaque-auth"]);
+});
+
 test("downloadPreviewUrl rejects external signed URL responses", async () => {
   const objectUrls: string[] = [];
   const clicks: string[] = [];

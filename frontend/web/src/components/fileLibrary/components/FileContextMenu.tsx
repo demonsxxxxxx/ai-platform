@@ -70,6 +70,7 @@ export function FileContextMenu({
             action: () => {
               void openPreviewUrl({
                 url: safeFileUrl,
+                fileName: file.file_name,
                 mimeType: file.mime_type,
               });
             },
