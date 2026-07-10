@@ -3112,9 +3112,10 @@ async def test_copy_retry_resume_revocation_returns_403_without_enqueue(monkeypa
     [
         (repository_module.RepositoryNotFoundError, "agent_or_skill_not_found"),
         (repository_module.RepositoryConflictError, "skill_inactive"),
+        (repository_module.RepositoryConflictError, "mcp_tool_disabled"),
     ],
 )
-async def test_copy_retry_resume_missing_or_inactive_skill_returns_403_without_enqueue(
+async def test_copy_retry_resume_capability_lifecycle_denial_returns_403_without_enqueue(
     monkeypatch,
     route,
     repository_method,
