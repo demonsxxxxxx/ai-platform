@@ -947,6 +947,7 @@ async def ensure_tenant_capability_distribution_backfill(
           from tenant_workbench_skills
           join skills on skills.id = tenant_workbench_skills.skill_id
           where tenant_workbench_skills.tenant_id = %s
+            and skills.status = 'active'
           union all
           select
             'capdist_' || substr(md5(%s || ':skill:' || skills.id), 1, 24),
@@ -964,6 +965,7 @@ async def ensure_tenant_capability_distribution_backfill(
             on tenant_workbench_skills.tenant_id = %s
            and tenant_workbench_skills.skill_id = skills.id
           where skills.id = any(%s)
+            and skills.status = 'active'
             and tenant_workbench_skills.skill_id is null
         ) as source_rows(
           id, tenant_id, capability_kind, capability_id, status, visible_to_user,

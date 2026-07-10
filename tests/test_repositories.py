@@ -123,6 +123,7 @@ async def test_capability_distribution_backfill_is_insert_only_idempotent_and_bi
     assert conn.calls[2:] == conn.calls[:2]
     assert "from tenant_workbench_skills" in skill_sql
     assert "from skills" in skill_sql
+    assert skill_sql.count("skills.status = 'active'") == 2
     assert "on conflict (tenant_id, capability_kind, capability_id) do nothing" in skill_sql
     assert "do update" not in skill_sql
     assert "from mcp_servers" in mcp_sql
@@ -132,6 +133,13 @@ async def test_capability_distribution_backfill_is_insert_only_idempotent_and_bi
     assert "do update" not in mcp_sql
     assert skill_sql.count("%s") == len(skill_params)
     assert mcp_sql.count("%s") == len(mcp_params)
+    assert skill_params == (
+        "tenant-a",
+        "tenant-a",
+        "tenant-a",
+        "tenant-a",
+        sorted(repositories.PUBLIC_WORKBENCH_SKILL_IDS),
+    )
 
 
 @pytest.mark.asyncio

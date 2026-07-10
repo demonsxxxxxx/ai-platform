@@ -134,3 +134,19 @@ def test_mcp_tool_uses_its_inherited_mcp_server_distribution():
 
     assert subject.inherited_distribution_source == "mcp_server:qa-mcp"
     assert decision.decision_reason == "allowed"
+
+
+@pytest.mark.parametrize("inherited_source", [None, "", "  ", "skill:qa-mcp"])
+def test_mcp_tool_fails_closed_without_explicit_parent_server_distribution(inherited_source):
+    module = _module()
+    subject = _subject(
+        module,
+        capability_kind="mcp_tool",
+        capability_id="qa-mcp:search",
+        inherited_distribution_source=inherited_source,
+    )
+
+    decision = module.resolve_capability_access(_context(module), subject, intent="use")
+
+    assert decision.decision_reason == "distribution_inheritance_missing"
+    assert (decision.visible, decision.usable, decision.manageable) == (False, False, False)

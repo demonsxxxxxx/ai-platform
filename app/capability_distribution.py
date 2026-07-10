@@ -97,6 +97,10 @@ def resolve_capability_access(
 
     if subject.distribution is None:
         return _decision(subject, allowed=False, reason="distribution_missing")
+    if subject.capability_kind == "mcp_tool":
+        source_kind, separator, parent_id = str(subject.inherited_distribution_source or "").strip().partition(":")
+        if source_kind != "mcp_server" or not separator or not parent_id.strip():
+            return _decision(subject, allowed=False, reason="distribution_inheritance_missing")
     if subject.lifecycle_status != "active":
         return _decision(subject, allowed=False, reason="lifecycle_denied")
     if context.is_admin:
