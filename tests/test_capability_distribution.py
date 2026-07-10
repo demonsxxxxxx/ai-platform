@@ -113,12 +113,14 @@ def test_resolver_admin_bypass_precedes_distribution_checks_and_audit_payload_is
     assert module.capability_distribution_audit_payload(
         decision=decision,
         actor_department_id="rd",
+        actor_roles=[" Employee ", "QA-Lead", "employee"],
         capability_kind="mcp_server",
         capability_id="qa-mcp",
     ) == {
         "capability_kind": "mcp_server",
         "capability_id": "qa-mcp",
         "actor_department_id": "rd",
+        "actor_roles": ["employee", "qa-lead"],
         "department_scope_ids": ["qa"],
         "role_scope_ids": ["qa_operator"],
         "scope_mode": "allowlist",

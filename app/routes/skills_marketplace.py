@@ -365,6 +365,7 @@ async def _audit_skill_admin_bypass(
         payload_json=capability_distribution_audit_payload(
             decision=decision,
             actor_department_id=principal.department_id,
+            actor_roles=principal.roles,
             capability_kind="skill",
             capability_id=skill_name,
         ),
@@ -523,6 +524,7 @@ def _skill_distribution_audit_payload(
         capability_distribution_audit_payload(
             decision=decision,
             actor_department_id=principal.department_id,
+            actor_roles=principal.roles,
             capability_kind="skill",
             capability_id=skill_name,
         )

@@ -131,16 +131,17 @@ async def test_capability_distribution_backfill_marks_completion_and_never_recre
     await backfill(conn, tenant_id="tenant-a")
 
     assert len(conn.calls) == 7
-    marker_insert, marker_lock, skill_call, mcp_call, completion_update, rerun_insert, rerun_lock = conn.calls
+    initial_check, marker_insert, marker_lock, skill_call, mcp_call, completion_update, rerun_check = conn.calls
     skill_sql, skill_params = skill_call
     mcp_sql, mcp_params = mcp_call
+    assert "for update" not in initial_check[0]
+    assert initial_check[1] == ("tenant-a",)
     assert "insert into tenant_capability_distribution_backfills" in marker_insert[0]
     assert marker_insert[1] == ("tenant-a",)
     assert "for update" in marker_lock[0]
     assert marker_lock[1] == ("tenant-a",)
     assert completion_update[1] == ("tenant-a",)
-    assert rerun_insert == marker_insert
-    assert rerun_lock == marker_lock
+    assert rerun_check == initial_check
     assert "from tenant_workbench_skills" in skill_sql
     assert "from skills" in skill_sql
     assert skill_sql.count("skills.status = 'active'") == 2
@@ -149,6 +150,8 @@ async def test_capability_distribution_backfill_marks_completion_and_never_recre
     assert "from mcp_servers" in mcp_sql
     assert "department_ids" in mcp_sql
     assert "allowed_roles" in mcp_sql
+    assert "jsonb_typeof(mcp_servers.allowed_roles) = 'array'" in mcp_sql
+    assert "else 'disabled'" in mcp_sql
     assert "on conflict (tenant_id, capability_kind, capability_id) do nothing" in mcp_sql
     assert "do update" not in mcp_sql
     assert skill_sql.count("%s") == len(skill_params)
@@ -162,6 +165,41 @@ async def test_capability_distribution_backfill_marks_completion_and_never_recre
     )
     assert sum("from tenant_workbench_skills" in sql for sql, _ in conn.calls) == 1
     assert sum("from mcp_servers" in sql for sql, _ in conn.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_capability_distribution_backfill_lock_recheck_observes_concurrent_completion():
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params=()):
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            if compact.startswith("select completed_at from tenant_capability_distribution_backfills"):
+                if "for update" in compact:
+                    return Cursor({"completed_at": "completed-by-concurrent-transaction"})
+                return Cursor({"completed_at": None})
+            return Cursor()
+
+    conn = Connection()
+    await repositories.ensure_tenant_capability_distribution_backfill(conn, tenant_id="tenant-a")
+
+    assert len(conn.calls) == 3
+    initial_check, marker_insert, locked_recheck = conn.calls
+    assert "for update" not in initial_check[0]
+    assert "insert into tenant_capability_distribution_backfills" in marker_insert[0]
+    assert "for update" in locked_recheck[0]
+    assert not any("from tenant_workbench_skills" in sql for sql, _ in conn.calls)
+    assert not any("from mcp_servers" in sql for sql, _ in conn.calls)
+    assert not any("set completed_at = now()" in sql for sql, _ in conn.calls)
 
 
 @pytest.mark.asyncio
@@ -235,6 +273,145 @@ async def test_capability_distribution_list_and_get_normalize_array_and_json_pro
     assert fetched["department_ids"] == ["qa"]
     assert fetched["allowed_roles"] == ["qa_operator"]
     assert fetched["metadata_json"] == {"legacy_source": "mcp_servers"}
+
+
+@pytest.mark.asyncio
+async def test_capability_distribution_projection_rejects_malformed_allowed_roles():
+    row = {
+        "id": "capdist-malformed",
+        "tenant_id": "tenant-a",
+        "capability_kind": "mcp_server",
+        "capability_id": "unsafe-mcp",
+        "status": "active",
+        "visible_to_user": True,
+        "scope_mode": "allowlist",
+        "department_ids": ("QA",),
+        "allowed_roles": '{"unexpected":"object"}',
+        "metadata_json": '{}',
+        "updated_by": "admin-a",
+        "created_at": None,
+        "updated_at": None,
+    }
+
+    class Cursor:
+        async def fetchone(self):
+            return row
+
+    class Connection:
+        async def execute(self, sql, params=()):
+            return Cursor()
+
+    with pytest.raises(repositories.RepositoryConflictError, match="capability_distribution_scope_invalid"):
+        await repositories.get_capability_distribution_row(
+            Connection(),
+            tenant_id="tenant-a",
+            capability_kind="mcp_server",
+            capability_id="unsafe-mcp",
+        )
+
+
+@pytest.mark.asyncio
+async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_bypass(monkeypatch):
+    rows = [
+        {
+            "id": "general-agent",
+            "default_skill_id": "general-chat",
+            "status": "active",
+        },
+        {
+            "id": "qa-word-review",
+            "default_skill_id": "qa-file-reviewer",
+            "status": "active",
+        },
+        {
+            "id": "baoyu-translate",
+            "default_skill_id": "baoyu-translate",
+            "status": "active",
+        },
+    ]
+    distributions = [
+        {
+            "capability_kind": "skill",
+            "capability_id": "general-chat",
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["QA"],
+            "allowed_roles": ["qa-operator"],
+        },
+        {
+            "capability_kind": "skill",
+            "capability_id": "qa-file-reviewer",
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["qa"],
+            "allowed_roles": ["qa-operator"],
+        },
+        {
+            "capability_kind": "skill",
+            "capability_id": "baoyu-translate",
+            "status": "disabled",
+            "visible_to_user": False,
+            "scope_mode": "allowlist",
+            "department_ids": ["translation"],
+            "allowed_roles": ["translator"],
+        },
+    ]
+    audits = []
+
+    async def fake_list_agents(conn, *, tenant_id):
+        assert tenant_id == "tenant-a"
+        return rows
+
+    async def fake_list_distributions(conn, *, tenant_id, capability_kind, include_disabled):
+        assert (tenant_id, capability_kind, include_disabled) == ("tenant-a", "skill", True)
+        return distributions
+
+    async def fake_append_audit(conn, **kwargs):
+        audits.append(kwargs)
+        return f"audit-{len(audits)}"
+
+    monkeypatch.setattr(repositories, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(repositories, "list_capability_distribution_rows", fake_list_distributions)
+    monkeypatch.setattr(repositories, "append_audit_log", fake_append_audit)
+
+    authorized = await repositories.list_principal_lambchat_agents(
+        object(),
+        tenant_id="tenant-a",
+        actor_user_id="qa-user",
+        department_id="QA",
+        roles=[" QA-OPERATOR "],
+        is_admin=False,
+        permissions=["chat:read"],
+    )
+    admin_rows = await repositories.list_principal_lambchat_agents(
+        object(),
+        tenant_id="tenant-a",
+        actor_user_id="admin-a",
+        department_id="platform",
+        roles=["admin"],
+        is_admin=True,
+        permissions=["chat:read"],
+    )
+
+    assert [row["id"] for row in authorized] == ["general-agent"]
+    assert [row["id"] for row in admin_rows] == [
+        "general-agent",
+        "qa-word-review",
+        "baoyu-translate",
+    ]
+    assert len(audits) == 3
+    assert {audit["target_id"] for audit in audits} == {
+        "general-chat",
+        "qa-file-reviewer",
+        "baoyu-translate",
+    }
+    for audit in audits:
+        assert audit["action"] == "capability_distribution.admin_bypass"
+        assert audit["target_type"] == "skill"
+        assert audit["payload_json"]["admin_bypass"] is True
+        assert audit["payload_json"]["decision_reason"] == "admin_bypass"
 
 
 @pytest.mark.asyncio
@@ -482,6 +659,93 @@ async def test_capability_distribution_authorization_denies_skill_before_enqueue
             normalized_input={},
             principal_department_id="qa",
             principal_roles=["qa_operator"],
+            is_admin=False,
+            permissions=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_capability_distribution_denial_carries_sanitized_immutable_audit_record(monkeypatch):
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return {
+            "skill_id": skill_id,
+            "skill_status": "active",
+            "executor_type": "claude-agent-worker",
+        }
+
+    async def fake_get_distribution(conn, *, tenant_id, capability_kind, capability_id):
+        return {
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["finance"],
+            "allowed_roles": ["reviewer"],
+            "metadata_json": {"secret": "must-not-be-audited"},
+        }
+
+    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
+
+    with pytest.raises(repositories.RepositoryAuthorizationError) as exc_info:
+        await repositories.authorize_run_capabilities(
+            object(),
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            skill_id="general-chat",
+            normalized_input={},
+            principal_department_id="QA",
+            principal_roles=[" QA-Operator ", "qa-operator"],
+            is_admin=False,
+            permissions=[],
+        )
+
+    denial = exc_info.value.denial
+    assert denial is not None
+    assert denial.audit_payload() == {
+        "capability_kind": "skill",
+        "capability_id": "general-chat",
+        "actor_department_id": "QA",
+        "actor_roles": ["qa-operator"],
+        "department_scope_ids": ["finance"],
+        "role_scope_ids": ["reviewer"],
+        "scope_mode": "allowlist",
+        "decision_reason": "department_not_allowed",
+        "admin_bypass": False,
+    }
+    with pytest.raises((AttributeError, TypeError)):
+        denial.actor_roles += ("admin",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "selector_state",
+    [
+        "agent_inactive",
+        "skill_inactive",
+        "skill_version_not_released",
+        "executor_type_not_allowed",
+        "agent_skill_mismatch",
+        "mcp_tool_disabled",
+    ],
+)
+async def test_capability_distribution_authorization_hides_pre_authorization_selector_state(
+    monkeypatch,
+    selector_state,
+):
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        raise repositories.RepositoryConflictError(selector_state)
+
+    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.authorize_run_capabilities(
+            object(),
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            skill_id="general-chat",
+            normalized_input={},
+            principal_department_id="QA",
+            principal_roles=["qa-operator"],
             is_admin=False,
             permissions=[],
         )

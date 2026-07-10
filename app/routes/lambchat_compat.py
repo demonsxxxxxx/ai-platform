@@ -377,7 +377,15 @@ async def roles(skip: int = 0, limit: int = 100, q: str | None = None) -> dict[s
 @router.get("/agents")
 async def agents(principal: AuthPrincipal = Depends(require_principal)) -> dict[str, object]:
     async with transaction() as conn:
-        rows = await repositories.list_lambchat_agents(conn, tenant_id=principal.tenant_id)
+        rows = await repositories.list_principal_lambchat_agents(
+            conn,
+            tenant_id=principal.tenant_id,
+            actor_user_id=principal.user_id,
+            department_id=principal.department_id,
+            roles=principal.roles,
+            is_admin=is_ai_admin(principal),
+            permissions=principal.permissions,
+        )
     items = [
         {
             "id": public_agent_id_for_projection(row.get("id"), row.get("default_skill_id")),
@@ -393,7 +401,7 @@ async def agents(principal: AuthPrincipal = Depends(require_principal)) -> dict[
     return {
         "agents": items,
         "count": len(items),
-        "default_agent": "general-agent",
+        "default_agent": items[0]["id"] if items else None,
         "allowed_model_ids": None,
     }
 

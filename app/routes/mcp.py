@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app import repositories
-from app.auth import AuthPrincipal, is_ai_admin, require_principal
+from app.auth import AuthPrincipal, is_ai_admin, normalize_roles, require_principal
 from app.capability_distribution import (
     CapabilityAccessContext,
     CapabilityAccessDecision,
@@ -63,10 +63,20 @@ class McpServerLifecycleRequest(BaseModel):
             raise ValueError("mcp_transport unsupported")
         return value
 
-    @field_validator("allowed_roles", "department_ids", "env_keys")
+    @field_validator("allowed_roles")
     @classmethod
-    def validate_safe_lists(cls, value: list[str], info):
-        return [assert_safe_id(str(item), info.field_name) for item in value]
+    def normalize_allowed_roles(cls, value: list[str], info):
+        return [assert_safe_id(item, info.field_name) for item in normalize_roles(value)]
+
+    @field_validator("department_ids", "env_keys")
+    @classmethod
+    def validate_exact_safe_lists(cls, value: list[str], info):
+        normalized: list[str] = []
+        for item in value:
+            candidate = assert_safe_id(str(item).strip(), info.field_name)
+            if candidate not in normalized:
+                normalized.append(candidate)
+        return normalized
 
 
 class McpServerToggleRequest(BaseModel):
@@ -361,6 +371,7 @@ async def _audit_mcp_admin_bypass(
         payload_json=capability_distribution_audit_payload(
             decision=decision,
             actor_department_id=principal.department_id,
+            actor_roles=principal.roles,
             capability_kind="mcp_server",
             capability_id=name,
         ),

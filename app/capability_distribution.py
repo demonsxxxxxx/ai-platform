@@ -65,6 +65,60 @@ class CapabilityAccessDecision:
     scope_mode: str = "allowlist"
 
 
+@dataclass(frozen=True, slots=True)
+class CapabilityAuthorizationDenial:
+    """Immutable, allowlisted authorization denial data suitable for audit."""
+
+    capability_kind: str
+    capability_id: str
+    actor_department_id: str
+    actor_roles: tuple[str, ...]
+    department_scope_ids: tuple[str, ...]
+    role_scope_ids: tuple[str, ...]
+    scope_mode: str
+    decision_reason: str
+    admin_bypass: bool = False
+
+    @classmethod
+    def from_decision(
+        cls,
+        *,
+        decision: CapabilityAccessDecision,
+        actor_department_id: str,
+        actor_roles: Iterable[str],
+        capability_kind: str,
+        capability_id: str,
+    ) -> "CapabilityAuthorizationDenial":
+        """Freeze one resolver denial without retaining source metadata."""
+
+        return cls(
+            capability_kind=capability_kind,
+            capability_id=capability_id,
+            actor_department_id=actor_department_id,
+            actor_roles=tuple(normalize_capability_roles(actor_roles)),
+            department_scope_ids=tuple(decision.department_scope_ids),
+            role_scope_ids=tuple(decision.role_scope_ids),
+            scope_mode=decision.scope_mode,
+            decision_reason=decision.decision_reason,
+            admin_bypass=decision.admin_bypass,
+        )
+
+    def audit_payload(self) -> dict[str, Any]:
+        """Return a mutable serialization of the frozen audit record."""
+
+        return {
+            "capability_kind": self.capability_kind,
+            "capability_id": self.capability_id,
+            "actor_department_id": self.actor_department_id,
+            "actor_roles": list(self.actor_roles),
+            "department_scope_ids": list(self.department_scope_ids),
+            "role_scope_ids": list(self.role_scope_ids),
+            "scope_mode": self.scope_mode,
+            "decision_reason": self.decision_reason,
+            "admin_bypass": self.admin_bypass,
+        }
+
+
 def normalize_capability_roles(roles: Iterable[str]) -> list[str]:
     """Canonicalize role labels for distribution comparisons."""
 
@@ -121,6 +175,7 @@ def capability_distribution_audit_payload(
     *,
     decision: CapabilityAccessDecision,
     actor_department_id: str,
+    actor_roles: Iterable[str],
     capability_kind: str,
     capability_id: str,
 ) -> dict[str, Any]:
@@ -130,6 +185,7 @@ def capability_distribution_audit_payload(
         "capability_kind": capability_kind,
         "capability_id": capability_id,
         "actor_department_id": actor_department_id,
+        "actor_roles": normalize_capability_roles(actor_roles),
         "department_scope_ids": list(decision.department_scope_ids),
         "role_scope_ids": list(decision.role_scope_ids),
         "scope_mode": decision.scope_mode,

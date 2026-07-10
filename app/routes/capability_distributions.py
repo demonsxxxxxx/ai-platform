@@ -82,6 +82,7 @@ def _audit_payload(principal: AuthPrincipal, row: dict[str, object]) -> dict[str
     payload = capability_distribution_audit_payload(
         decision=decision,
         actor_department_id=principal.department_id,
+        actor_roles=principal.roles,
         capability_kind=capability_kind,
         capability_id=capability_id,
     )

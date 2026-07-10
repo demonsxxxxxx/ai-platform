@@ -200,16 +200,18 @@ def test_admin_updates_skill_distribution_normalizes_scopes_and_audits(monkeypat
     body = response.json()
     assert body["audit_id"] == "aud-capdist-updated"
     assert body["audit_action"] == "capability_distribution.updated"
-    assert body["capability_distribution"]["department_ids"] == ["qa", "rd"]
+    assert body["capability_distribution"]["department_ids"] == ["QA", "qa", "RD"]
     assert body["capability_distribution"]["allowed_roles"] == ["qa_reviewer", "rd-lead"]
     assert body["capability_distribution"]["metadata_json"] == metadata
+    assert calls[0][1]["department_ids"] == ["QA", "qa", "RD"]
     assert calls[0][1]["metadata_json"] == metadata
     assert calls[1][1]["action"] == "capability_distribution.updated"
     assert calls[1][1]["payload_json"] == {
         "capability_kind": "skill",
         "capability_id": "qa-file-reviewer",
         "actor_department_id": "platform",
-        "department_scope_ids": ["qa", "rd"],
+        "actor_roles": ["admin"],
+        "department_scope_ids": ["QA", "qa", "RD"],
         "role_scope_ids": ["qa_reviewer", "rd-lead"],
         "scope_mode": "allowlist",
         "decision_reason": "admin_bypass",

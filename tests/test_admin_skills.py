@@ -5,6 +5,7 @@ from pathlib import Path
 import zipfile
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -827,7 +828,7 @@ def test_admin_upload_skill_package_stores_object_and_upserts_skill_version(monk
     assert audit["payload_json"]["package_sha256"] == "zip-sha256"
 
 
-def test_skill_admin_upload_new_skill_package_creates_catalog_version_release_and_visibility(monkeypatch):
+def test_skill_admin_upload_new_skill_package_creates_draft_without_release_or_visibility(monkeypatch):
     class FakeConnection:
         pass
 
@@ -917,7 +918,7 @@ def test_skill_admin_upload_new_skill_package_creates_catalog_version_release_an
     assert uploaded["skill_id"] == "new-research-skill"
     assert uploaded["version"] == uploaded["content_hash"]
     assert uploaded["description"] == "Summarize research briefs."
-    assert uploaded["status"] == "released"
+    assert uploaded["status"] == "draft"
     assert uploaded["source"]["kind"] == "uploaded"
     assert uploaded["source"]["storage_key"] == (
         f"skills/new-research-skill/versions/{uploaded['content_hash']}/package.zip"
@@ -939,28 +940,52 @@ def test_skill_admin_upload_new_skill_package_creates_catalog_version_release_an
     assert len(version_upserts) == 1
     assert version_upserts[0]["skill_id"] == "new-research-skill"
     assert version_upserts[0]["dependency_ids"] == []
-    assert version_upserts[0]["status"] == "released"
-    assert release_policies == [
-        {
-            "tenant_id": "default",
-            "skill_id": "new-research-skill",
-            "version": uploaded["content_hash"],
-            "previous_version": None,
-            "promoted_by": "skill-admin",
-        }
-    ]
-    assert visibility_updates == [
-        {
-            "tenant_id": "default",
-            "skill_id": "new-research-skill",
-            "status": "active",
-        }
-    ]
+    assert version_upserts[0]["status"] == "draft"
+    assert release_policies == []
+    assert visibility_updates == []
     assert [item["action"] for item in audits] == [
         "skill_catalog_created_from_upload",
         "skill_version_uploaded",
-        "skill_release_promoted_from_upload",
     ]
+
+
+@pytest.mark.asyncio
+async def test_publish_uploaded_skill_to_tenant_rejects_delegated_skill_admin_before_writes(monkeypatch):
+    from app.routes import admin_skills as route_module
+
+    calls = []
+
+    async def record_policy(*args, **kwargs):
+        calls.append(("policy", kwargs))
+
+    async def record_visibility(*args, **kwargs):
+        calls.append(("visibility", kwargs))
+
+    async def record_audit(*args, **kwargs):
+        calls.append(("audit", kwargs))
+
+    monkeypatch.setattr(route_module.repositories, "set_skill_release_policy", record_policy)
+    monkeypatch.setattr(route_module.repositories, "set_uploaded_workbench_skill_status", record_visibility)
+    monkeypatch.setattr(route_module.repositories, "append_audit_log", record_audit)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route_module._publish_uploaded_skill_to_tenant(
+            object(),
+            principal=AuthPrincipal(
+                user_id="skill-admin",
+                display_name="Skill Admin",
+                tenant_id="default",
+                roles=["user"],
+                permissions=["skill:admin"],
+            ),
+            skill_id="new-research-skill",
+            version="hash-draft",
+            previous_version=None,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "not_ai_admin"
+    assert calls == []
 
 
 def test_admin_upload_new_skill_catalog_conflict_fails_without_global_overwrite(monkeypatch):

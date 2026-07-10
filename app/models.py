@@ -8,10 +8,19 @@ from app.skills.release_policy import validate_release_decision_lock, validate_r
 from app.validation import assert_safe_id, assert_safe_principal_user_id
 
 
-def _normalize_capability_scope(values: list[str], field_name: str) -> list[str]:
+def _normalize_capability_department_ids(values: list[str], field_name: str) -> list[str]:
     normalized: list[str] = []
     for value in values:
-        candidate = assert_safe_id(value.strip().lower(), field_name)
+        candidate = assert_safe_id(value.strip(), field_name)
+        if candidate not in normalized:
+            normalized.append(candidate)
+    return normalized
+
+
+def _normalize_capability_roles(values: list[str], field_name: str) -> list[str]:
+    normalized: list[str] = []
+    for value in values:
+        candidate = assert_safe_id(value.strip().casefold(), field_name)
         if candidate not in normalized:
             normalized.append(candidate)
     return normalized
@@ -49,10 +58,15 @@ class CapabilityDistributionUpdateRequest(BaseModel):
     allowed_roles: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("department_ids", "allowed_roles")
+    @field_validator("department_ids")
     @classmethod
-    def normalize_scope_lists(cls, value: list[str], info):
-        return _normalize_capability_scope(value, info.field_name)
+    def normalize_department_ids(cls, value: list[str], info):
+        return _normalize_capability_department_ids(value, info.field_name)
+
+    @field_validator("allowed_roles")
+    @classmethod
+    def normalize_allowed_roles(cls, value: list[str], info):
+        return _normalize_capability_roles(value, info.field_name)
 
 
 class CapabilityDistributionToggleRequest(BaseModel):

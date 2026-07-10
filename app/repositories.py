@@ -8,8 +8,11 @@ from psycopg import AsyncConnection
 
 from app.auth import normalize_roles
 from app.capability_distribution import (
+    CapabilityAccessDecision,
     CapabilityAccessContext,
+    CapabilityAuthorizationDenial,
     CapabilityDistributionSubject,
+    capability_distribution_audit_payload,
     resolve_capability_access,
 )
 from app.control_plane_contracts import (
@@ -63,7 +66,14 @@ class RepositoryNotFoundError(ValueError):
 class RepositoryAuthorizationError(ValueError):
     """Signal a fail-closed enqueue capability authorization denial."""
 
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        denial: CapabilityAuthorizationDenial | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.denial = denial
 
 
 async def tenant_exists(conn: AsyncConnection, *, tenant_id: str) -> bool:
@@ -488,6 +498,72 @@ async def list_lambchat_agents(conn: AsyncConnection, *, tenant_id: str) -> list
         (tenant_id,),
     )
     return list(await cursor.fetchall())
+
+
+async def list_principal_lambchat_agents(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    actor_user_id: str,
+    department_id: str,
+    roles: list[str] | None,
+    is_admin: bool,
+    permissions: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Return canonical Agent rows whose default Skills are discoverable by the principal."""
+
+    rows = await list_lambchat_agents(conn, tenant_id=tenant_id)
+    distributions = await list_capability_distribution_rows(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind="skill",
+        include_disabled=True,
+    )
+    distribution_by_skill = {
+        str(distribution.get("capability_id") or ""): distribution
+        for distribution in distributions
+    }
+    context = CapabilityAccessContext(
+        tenant_id=tenant_id,
+        department_id=str(department_id or ""),
+        roles=normalize_roles(roles or []),
+        is_admin=bool(is_admin),
+        permissions=[str(item) for item in permissions or [] if str(item)],
+    )
+    authorized_rows: list[dict[str, Any]] = []
+    for row in rows:
+        skill_id = str(row.get("default_skill_id") or "")
+        decision = resolve_capability_access(
+            context,
+            CapabilityDistributionSubject(
+                capability_kind="skill",
+                capability_id=skill_id,
+                lifecycle_status=str(row.get("status") or "disabled"),
+                distribution=distribution_by_skill.get(skill_id),
+            ),
+            intent="discover",
+        )
+        if not decision.visible:
+            continue
+        if decision.admin_bypass:
+            await append_audit_log(
+                conn,
+                tenant_id=tenant_id,
+                user_id=actor_user_id,
+                action="capability_distribution.admin_bypass",
+                target_type="skill",
+                target_id=skill_id,
+                trace_id=standard_trace_id(skill_id),
+                payload_json=capability_distribution_audit_payload(
+                    decision=decision,
+                    actor_department_id=context.department_id,
+                    actor_roles=context.roles,
+                    capability_kind="skill",
+                    capability_id=skill_id,
+                ),
+            )
+        authorized_rows.append(row)
+    return authorized_rows
 
 
 async def list_workbench_skills(conn: AsyncConnection, *, tenant_id: str, include_disabled: bool = False) -> list[dict[str, Any]]:
@@ -928,10 +1004,12 @@ def _capability_distribution_string_list(value: Any) -> list[str]:
         try:
             value = json.loads(value)
         except json.JSONDecodeError:
-            return []
+            raise RepositoryConflictError("capability_distribution_scope_invalid")
     if isinstance(value, (list, tuple)):
-        return [str(item) for item in value if str(item)]
-    return []
+        if any(not isinstance(item, str) for item in value):
+            raise RepositoryConflictError("capability_distribution_scope_invalid")
+        return [item for item in value if item]
+    raise RepositoryConflictError("capability_distribution_scope_invalid")
 
 
 def _capability_distribution_json(value: Any) -> dict[str, Any]:
@@ -967,6 +1045,18 @@ async def ensure_tenant_capability_distribution_backfill(
     tenant_id: str,
 ) -> None:
     """Backfill one tenant exactly once and record the completion boundary."""
+
+    completion_cursor = await conn.execute(
+        """
+        select completed_at
+        from tenant_capability_distribution_backfills
+        where tenant_id = %s
+        """,
+        (tenant_id,),
+    )
+    completion = await completion_cursor.fetchone()
+    if completion is not None and completion.get("completed_at") is not None:
+        return
 
     await conn.execute(
         """
@@ -1054,12 +1144,22 @@ async def ensure_tenant_capability_distribution_backfill(
           mcp_servers.tenant_id,
           'mcp_server',
           mcp_servers.name,
-          case when mcp_servers.status = 'active' then 'active' else 'disabled' end,
+          case
+            when jsonb_typeof(mcp_servers.allowed_roles) is distinct from 'array' then 'disabled'
+            when mcp_servers.status = 'active' then 'active'
+            else 'disabled'
+          end,
           true,
           'allowlist',
           mcp_servers.department_ids,
-          mcp_servers.allowed_roles,
-          '{"legacy_source":"mcp_servers"}'::jsonb,
+          case
+            when jsonb_typeof(mcp_servers.allowed_roles) = 'array' then mcp_servers.allowed_roles
+            else '[]'::jsonb
+          end,
+          jsonb_build_object(
+            'legacy_source', 'mcp_servers',
+            'legacy_scope_invalid', jsonb_typeof(mcp_servers.allowed_roles) is distinct from 'array'
+          ),
           mcp_servers.updated_by
         from mcp_servers
         where mcp_servers.tenant_id = %s
@@ -1260,8 +1360,30 @@ async def set_capability_distribution_status(
     return _capability_distribution_projection(dict(row))
 
 
-def _capability_not_authorized() -> RepositoryAuthorizationError:
-    return RepositoryAuthorizationError("capability_not_authorized")
+def _capability_not_authorized(
+    *,
+    context: CapabilityAccessContext | None = None,
+    capability_kind: str = "",
+    capability_id: str = "",
+    decision: CapabilityAccessDecision | None = None,
+) -> RepositoryAuthorizationError:
+    denial = None
+    if context is not None and capability_kind and capability_id:
+        denial_decision = decision or CapabilityAccessDecision(
+            visible=False,
+            usable=False,
+            manageable=False,
+            admin_bypass=False,
+            decision_reason="capability_not_authorized",
+        )
+        denial = CapabilityAuthorizationDenial.from_decision(
+            decision=denial_decision,
+            actor_department_id=context.department_id,
+            actor_roles=context.roles,
+            capability_kind=capability_kind,
+            capability_id=capability_id,
+        )
+    return RepositoryAuthorizationError("capability_not_authorized", denial=denial)
 
 
 _MCP_TOOL_ID_KEYS = ("mcp_tool_ids", "mcpToolIds")
@@ -1386,6 +1508,13 @@ async def authorize_run_capabilities(
 ) -> dict[str, Any]:
     """Authorize the selected Skill and explicit MCP tools before run creation."""
 
+    context = CapabilityAccessContext(
+        tenant_id=tenant_id,
+        department_id=str(principal_department_id or ""),
+        roles=normalize_roles(principal_roles or []),
+        is_admin=bool(is_admin),
+        permissions=[str(item) for item in permissions or [] if str(item)],
+    )
     try:
         skill = await resolve_agent_skill(
             conn,
@@ -1394,25 +1523,31 @@ async def authorize_run_capabilities(
             skill_id=skill_id,
         )
     except RepositoryNotFoundError as exc:
-        raise _capability_not_authorized() from exc
+        raise _capability_not_authorized(
+            context=context,
+            capability_kind="skill",
+            capability_id=skill_id,
+        ) from exc
     except RepositoryConflictError as exc:
-        if str(exc) in {"skill_inactive", "mcp_tool_disabled"}:
-            raise _capability_not_authorized() from exc
-        raise
+        raise _capability_not_authorized(
+            context=context,
+            capability_kind="skill",
+            capability_id=skill_id,
+        ) from exc
 
-    context = CapabilityAccessContext(
-        tenant_id=tenant_id,
-        department_id=str(principal_department_id or ""),
-        roles=normalize_roles(principal_roles or []),
-        is_admin=bool(is_admin),
-        permissions=[str(item) for item in permissions or [] if str(item)],
-    )
-    skill_distribution = await get_capability_distribution_row(
-        conn,
-        tenant_id=tenant_id,
-        capability_kind="skill",
-        capability_id=skill_id,
-    )
+    try:
+        skill_distribution = await get_capability_distribution_row(
+            conn,
+            tenant_id=tenant_id,
+            capability_kind="skill",
+            capability_id=skill_id,
+        )
+    except RepositoryConflictError as exc:
+        raise _capability_not_authorized(
+            context=context,
+            capability_kind="skill",
+            capability_id=skill_id,
+        ) from exc
     skill_decision = resolve_capability_access(
         context,
         CapabilityDistributionSubject(
@@ -1424,25 +1559,53 @@ async def authorize_run_capabilities(
         intent="use",
     )
     if not skill_decision.usable:
-        raise _capability_not_authorized()
+        raise _capability_not_authorized(
+            context=context,
+            capability_kind="skill",
+            capability_id=skill_id,
+            decision=skill_decision,
+        )
 
-    for tool_id in run_mcp_tool_ids_for_skill(skill, normalized_input):
+    try:
+        tool_ids = run_mcp_tool_ids_for_skill(skill, normalized_input)
+    except RepositoryAuthorizationError as exc:
+        raise _capability_not_authorized(
+            context=context,
+            capability_kind="skill",
+            capability_id=skill_id,
+        ) from exc
+    for tool_id in tool_ids:
         tool = await get_mcp_tool_registry_entry(
             conn,
             tenant_id=tenant_id,
             tool_id=tool_id,
         )
         if tool is None:
-            raise _capability_not_authorized()
+            raise _capability_not_authorized(
+                context=context,
+                capability_kind="mcp_tool",
+                capability_id=tool_id,
+            )
         server_id = str(tool.get("server_id") or "").strip()
         if not server_id:
-            raise _capability_not_authorized()
-        server_distribution = await get_capability_distribution_row(
-            conn,
-            tenant_id=tenant_id,
-            capability_kind="mcp_server",
-            capability_id=server_id,
-        )
+            raise _capability_not_authorized(
+                context=context,
+                capability_kind="mcp_tool",
+                capability_id=tool_id,
+            )
+        try:
+            server_distribution = await get_capability_distribution_row(
+                conn,
+                tenant_id=tenant_id,
+                capability_kind="mcp_server",
+                capability_id=server_id,
+            )
+        except RepositoryConflictError as exc:
+            raise _capability_not_authorized(
+                context=context,
+                capability_kind="mcp_tool",
+                capability_id=tool_id,
+            ) from exc
         tool_lifecycle_status = (
             "active"
             if str(tool.get("effective_status") or "disabled") == "active"
@@ -1462,7 +1625,12 @@ async def authorize_run_capabilities(
             intent="use",
         )
         if not tool_decision.usable:
-            raise _capability_not_authorized()
+            raise _capability_not_authorized(
+                context=context,
+                capability_kind="mcp_tool",
+                capability_id=tool_id,
+                decision=tool_decision,
+            )
     return skill
 
 
@@ -7693,6 +7861,33 @@ async def append_audit_log(
         ),
     )
     return audit_id
+
+
+async def append_capability_authorization_denial_audit(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    error: RepositoryAuthorizationError,
+    source: str,
+) -> str | None:
+    """Persist one structured capability denial after its source transaction rolls back."""
+
+    denial = error.denial
+    if denial is None:
+        return None
+    payload = denial.audit_payload()
+    payload["source"] = source
+    return await append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="capability_distribution.denied",
+        target_type=denial.capability_kind,
+        target_id=denial.capability_id,
+        trace_id=standard_trace_id(denial.capability_id),
+        payload_json=payload,
+    )
 
 
 async def list_authorized_sessions(

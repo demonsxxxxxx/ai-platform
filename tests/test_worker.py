@@ -6197,6 +6197,7 @@ async def test_worker_capability_distribution_denial_event_and_dotted_audit_are_
         "capability_kind",
         "capability_id",
         "actor_department_id",
+        "actor_roles",
         "department_scope_ids",
         "role_scope_ids",
         "scope_mode",
@@ -6207,6 +6208,7 @@ async def test_worker_capability_distribution_denial_event_and_dotted_audit_are_
         "agent_id",
         "skill_id",
     }
+    assert denied_audit["payload_json"]["actor_roles"] == ["qa_operator"]
     assert "private-marker" not in json.dumps(
         {"event": denied_event, "audit": denied_audit},
         ensure_ascii=False,

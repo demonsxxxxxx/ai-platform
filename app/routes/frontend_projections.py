@@ -536,7 +536,15 @@ async def get_agent_workspace_projection(
     artifact_read_allowed = _has_permission(principal, ARTIFACT_READ)
 
     async with transaction() as conn:
-        agent_rows = await repositories.list_lambchat_agents(conn, tenant_id=principal.tenant_id)
+        agent_rows = await repositories.list_principal_lambchat_agents(
+            conn,
+            tenant_id=principal.tenant_id,
+            actor_user_id=principal.user_id,
+            department_id=principal.department_id,
+            roles=principal.roles,
+            is_admin=is_ai_admin(principal),
+            permissions=principal.permissions,
+        )
         agents = [item for item in (_workspace_agent_projection(row) for row in agent_rows) if item is not None]
         selected_agent = _select_workspace_agent(agents, safe_agent_id)
         internal_agent_id = (

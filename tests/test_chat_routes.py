@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from app import repositories as repository_module
 from app.auth import AuthPrincipal
+from app.capability_distribution import CapabilityAuthorizationDenial
 from app.models import ChatSessionRequest, ChatStreamRequest, QueueRunPayload
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError
@@ -609,6 +610,69 @@ async def test_chat_stream_capability_distribution_denial_precedes_create_run(mo
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "capability_not_authorized"
     assert calls == [("authorize", "qa-file-reviewer")]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_audits_capability_denial_after_source_transaction_rollback(monkeypatch):
+    events = []
+    transaction_count = 0
+
+    @asynccontextmanager
+    async def ordered_transaction():
+        nonlocal transaction_count
+        transaction_count += 1
+        transaction_id = transaction_count
+        events.append(("enter", transaction_id))
+        try:
+            yield f"conn-{transaction_id}"
+        finally:
+            events.append(("exit", transaction_id))
+
+    denial = CapabilityAuthorizationDenial(
+        capability_kind="skill",
+        capability_id="qa-file-reviewer",
+        actor_department_id="finance",
+        actor_roles=("user",),
+        department_scope_ids=("qa",),
+        role_scope_ids=("qa_operator",),
+        scope_mode="allowlist",
+        decision_reason="department_not_allowed",
+    )
+
+    async def deny(*args, **kwargs):
+        events.append(("authorize", kwargs["skill_id"]))
+        raise repository_module.RepositoryAuthorizationError(
+            "capability_not_authorized",
+            denial=denial,
+        )
+
+    async def record_audit(conn, **kwargs):
+        events.append(("audit", conn, kwargs["source"], kwargs["error"].denial.capability_id))
+        return "aud-denied"
+
+    monkeypatch.setattr("app.routes.chat.transaction", ordered_transaction)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                agent_id="document-review",
+                message="review this document",
+                file_ids=["file_1"],
+            ),
+            principal=principal(department_id="finance", roles=["user"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert events == [
+        ("enter", 1),
+        ("authorize", "qa-file-reviewer"),
+        ("exit", 1),
+        ("enter", 2),
+        ("audit", "conn-2", "chat_stream", "qa-file-reviewer"),
+        ("exit", 2),
+    ]
 
 
 @pytest.mark.asyncio
@@ -2164,10 +2228,22 @@ async def test_chat_stream_returns_suggestions_for_ambiguous_docx_without_creati
         calls.append("enqueue")
         raise AssertionError("ambiguous request must not enqueue run")
 
+    async def all_principal_agents(conn, **kwargs):
+        return [
+            {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer"},
+            {"id": "baoyu-translate", "default_skill_id": "baoyu-translate"},
+            {"id": "general-agent", "default_skill_id": "general-chat"},
+        ]
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fail_resolve_agent_skill)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fail_enqueue_run)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.list_principal_lambchat_agents",
+        all_principal_agents,
+        raising=False,
+    )
 
     response = await chat_stream(
         ChatStreamRequest(
@@ -2185,6 +2261,53 @@ async def test_chat_stream_returns_suggestions_for_ambiguous_docx_without_creati
         "general_chat",
     ]
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_filters_confirmation_suggestions_through_principal_projection(monkeypatch):
+    calls = []
+
+    async def principal_agents(conn, **kwargs):
+        calls.append(kwargs)
+        return [
+            {"id": "baoyu-translate", "default_skill_id": "baoyu-translate"},
+            {"id": "general-agent", "default_skill_id": "general-chat"},
+        ]
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.list_principal_lambchat_agents",
+        principal_agents,
+        raising=False,
+    )
+
+    response = await chat_stream(
+        ChatStreamRequest(
+            message="处理一下这个文件",
+            attachments=[{"key": "file_docx", "name": "demo.docx"}],
+        ),
+        principal=principal(department_id="QA", roles=["QA-OPERATOR"]),
+    )
+
+    assert response.status == "needs_confirmation"
+    assert [item.capability_id for item in response.suggestions] == [
+        "document_translation",
+        "general_chat",
+    ]
+    assert [item.capability_id for item in response.intent_decision.suggestions] == [
+        "document_translation",
+        "general_chat",
+    ]
+    assert calls == [
+        {
+            "tenant_id": "tenant-a",
+            "actor_user_id": "user-a",
+            "department_id": "QA",
+            "roles": ["QA-OPERATOR"],
+            "is_admin": False,
+            "permissions": [],
+        }
+    ]
 
 
 @pytest.mark.asyncio

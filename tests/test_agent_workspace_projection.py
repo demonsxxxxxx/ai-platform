@@ -19,21 +19,106 @@ async def fake_transaction():
     yield object()
 
 
-def headers(roles="user", permissions="chat:read,session:read,artifact:download"):
+def headers(roles="user", permissions="chat:read,session:read,artifact:download", department_id="QA"):
     return {
         "x-ai-user-id": "user-a",
         "x-ai-user-name": "User A",
         "x-ai-tenant-id": "tenant-a",
         "x-ai-roles": roles,
+        "x-ai-department-id": department_id,
         "x-ai-permissions": permissions,
         "x-ai-gateway-secret": "test-secret",
     }
 
 
+def test_agent_workspace_agents_use_principal_distribution_projection(monkeypatch):
+    calls = []
+    unfiltered_rows = [
+        {
+            "id": "general-agent",
+            "name": "General company assistant",
+            "description": "General governed assistant",
+            "default_skill_id": "general-chat",
+            "status": "active",
+            "skill_version": "1.0.0",
+        },
+        {
+            "id": "qa-word-review",
+            "name": "Document reviewer",
+            "description": "Reviews documents",
+            "default_skill_id": "qa-file-reviewer",
+            "status": "active",
+            "skill_version": "1.1.0",
+        },
+    ]
+
+    async def fake_unfiltered(conn, *, tenant_id):
+        return unfiltered_rows
+
+    async def fake_principal_agents(
+        conn,
+        *,
+        tenant_id,
+        actor_user_id,
+        department_id,
+        roles,
+        is_admin,
+        permissions,
+    ):
+        calls.append((tenant_id, actor_user_id, department_id, roles, is_admin, permissions))
+        return unfiltered_rows[:1]
+
+    async def empty(*args, **kwargs):
+        return []
+
+    async def no_policy(*args, **kwargs):
+        return {
+            "workspace_id": "default",
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+            "redaction_mode": "standard",
+            "source": "default",
+            "reason": "",
+            "updated_at": None,
+        }
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.frontend_projections.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.frontend_projections.repositories.list_lambchat_agents", fake_unfiltered)
+    monkeypatch.setattr(
+        "app.routes.frontend_projections.repositories.list_principal_lambchat_agents",
+        fake_principal_agents,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.frontend_projections.repositories.list_agent_workspace_sessions", empty)
+    monkeypatch.setattr("app.routes.frontend_projections.repositories.list_agent_workspace_runs", empty)
+    monkeypatch.setattr("app.routes.frontend_projections.repositories.list_agent_workspace_tool_permissions", empty)
+    monkeypatch.setattr("app.routes.frontend_projections.repositories.get_effective_memory_policy", no_policy)
+
+    response = TestClient(create_app()).get(
+        "/api/agent-workspace?workspace_id=default",
+        headers=headers(roles="QA-OPERATOR", department_id="QA"),
+    )
+
+    assert response.status_code == 200
+    assert [agent["agent_id"] for agent in response.json()["agents"]] == ["general-agent"]
+    assert calls == [
+        (
+            "tenant-a",
+            "user-a",
+            "QA",
+            ["QA-OPERATOR"],
+            False,
+            ["chat:read", "session:read", "artifact:download"],
+        )
+    ]
+
+
 def test_agent_workspace_projection_sanitizes_public_contract(monkeypatch):
     calls = []
 
-    async def fake_list_lambchat_agents(conn, *, tenant_id):
+    async def fake_list_lambchat_agents(conn, *, tenant_id, **kwargs):
         calls.append(("agents", tenant_id))
         return [
             {
@@ -282,7 +367,10 @@ def test_agent_workspace_projection_sanitizes_public_contract(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.frontend_projections.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.frontend_projections.repositories.list_lambchat_agents", fake_list_lambchat_agents)
+    monkeypatch.setattr(
+        "app.routes.frontend_projections.repositories.list_principal_lambchat_agents",
+        fake_list_lambchat_agents,
+    )
     monkeypatch.setattr(
         "app.routes.frontend_projections.repositories.list_agent_workspace_sessions",
         fake_list_workspace_sessions,
@@ -376,7 +464,7 @@ def test_agent_workspace_projection_requires_chat_and_session_read(monkeypatch):
 def test_agent_workspace_projection_omits_artifacts_without_download_permission(monkeypatch):
     calls = []
 
-    async def fake_list_lambchat_agents(conn, *, tenant_id):
+    async def fake_list_lambchat_agents(conn, *, tenant_id, **kwargs):
         calls.append(("agents", tenant_id))
         return [
             {
@@ -474,7 +562,10 @@ def test_agent_workspace_projection_omits_artifacts_without_download_permission(
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.frontend_projections.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.frontend_projections.repositories.list_lambchat_agents", fake_list_lambchat_agents)
+    monkeypatch.setattr(
+        "app.routes.frontend_projections.repositories.list_principal_lambchat_agents",
+        fake_list_lambchat_agents,
+    )
     monkeypatch.setattr(
         "app.routes.frontend_projections.repositories.list_agent_workspace_sessions",
         fake_list_workspace_sessions,
@@ -516,7 +607,7 @@ def test_agent_workspace_projection_omits_artifacts_without_download_permission(
 def test_agent_workspace_projection_selected_empty_session_does_not_widen_approvals(monkeypatch):
     calls = []
 
-    async def fake_list_lambchat_agents(conn, *, tenant_id):
+    async def fake_list_lambchat_agents(conn, *, tenant_id, **kwargs):
         calls.append(("agents", tenant_id))
         return []
 
@@ -588,7 +679,10 @@ def test_agent_workspace_projection_selected_empty_session_does_not_widen_approv
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.frontend_projections.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.frontend_projections.repositories.list_lambchat_agents", fake_list_lambchat_agents)
+    monkeypatch.setattr(
+        "app.routes.frontend_projections.repositories.list_principal_lambchat_agents",
+        fake_list_lambchat_agents,
+    )
     monkeypatch.setattr(
         "app.routes.frontend_projections.repositories.list_agent_workspace_sessions",
         fake_list_workspace_sessions,

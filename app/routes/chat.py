@@ -50,6 +50,24 @@ _MISSING = object()
 _ORIGINAL_ENQUEUE_RUN = enqueue_run
 
 
+async def _audit_capability_denial(
+    principal: AuthPrincipal,
+    error: repositories.RepositoryAuthorizationError,
+    *,
+    source: str,
+) -> None:
+    if error.denial is None:
+        return
+    async with transaction() as conn:
+        await repositories.append_capability_authorization_denial_audit(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            error=error,
+            source=source,
+        )
+
+
 def _skill_manifest_pins(skill_id: str, input_payload: dict[str, Any]) -> list[dict[str, Any]]:
     settings = get_settings()
     try:
@@ -465,6 +483,7 @@ async def chat_stream(
             redact_public=not is_ai_admin(principal),
         )
     except repositories.RepositoryAuthorizationError as exc:
+        await _audit_capability_denial(principal, exc, source="chat_stream")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     try:
         async with transaction() as conn:
@@ -476,7 +495,28 @@ async def chat_stream(
                 )
                 decision_payload = decision.as_payload()
                 if decision.status == "needs_confirmation":
-                    suggestions = [CapabilitySuggestionResponse.model_validate(item) for item in decision_payload["suggestions"]]
+                    agent_rows = await repositories.list_principal_lambchat_agents(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        actor_user_id=principal.user_id,
+                        department_id=principal.department_id,
+                        roles=principal.roles,
+                        is_admin=is_ai_admin(principal),
+                        permissions=principal.permissions,
+                    )
+                    authorized_capability_ids = {
+                        capability_id_from_skill(row.get("default_skill_id"), row.get("id"))
+                        for row in agent_rows
+                    }
+                    decision_payload["suggestions"] = [
+                        item
+                        for item in decision_payload["suggestions"]
+                        if isinstance(item, dict) and item.get("capability_id") in authorized_capability_ids
+                    ]
+                    suggestions = [
+                        CapabilitySuggestionResponse.model_validate(item)
+                        for item in decision_payload["suggestions"]
+                    ]
                     return ChatStreamResponse(
                         session_id=request.session_id,
                         run_id=None,
@@ -676,6 +716,7 @@ async def chat_stream(
                 payload=_release_decision_event_payload(release_decision_payload, skill_id=resolved_skill_id),
             )
     except repositories.RepositoryAuthorizationError as exc:
+        await _audit_capability_denial(principal, exc, source="chat_stream")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

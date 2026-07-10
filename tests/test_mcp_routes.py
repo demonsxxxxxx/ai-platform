@@ -530,8 +530,8 @@ def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credenti
             "url": "https://mcp.example/sse?token=plain-secret",
             "headers": {"Authorization": "Bearer plain-secret"},
             "env_keys": ["MCP_SECRET"],
-            "allowed_roles": ["qa"],
-            "department_ids": ["qa"],
+            "allowed_roles": [" QA-Operator ", "qa-operator"],
+            "department_ids": [" QA ", "qa"],
         },
         headers=headers(roles="admin"),
     )
@@ -541,8 +541,8 @@ def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credenti
     assert created["enabled"] is True
     assert created["can_edit"] is True
     assert created["is_system"] is False
-    assert created["allowed_roles"] == ["qa"]
-    assert created["allowed_departments"] == ["qa"]
+    assert created["allowed_roles"] == ["qa-operator"]
+    assert created["allowed_departments"] == ["QA", "qa"]
     assert created["credential_state"] == "configured"
     assert "plain-secret" not in str(created)
     assert "Bearer" not in str(created)

@@ -93,6 +93,24 @@ def _raise_if_capability_revoked(exc: Exception) -> None:
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
 
 
+async def _audit_capability_denial(
+    principal: AuthPrincipal,
+    error: repositories.RepositoryAuthorizationError,
+    *,
+    source: str,
+) -> None:
+    if error.denial is None:
+        return
+    async with transaction() as conn:
+        await repositories.append_capability_authorization_denial_audit(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            error=error,
+            source=source,
+        )
+
+
 def _lease_ids_by_run_id(leases: list[dict[str, Any]]) -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = {}
     for lease in leases:
@@ -897,6 +915,7 @@ async def create_run(
             redact_public=not is_ai_admin(principal),
         )
     except repositories.RepositoryAuthorizationError as exc:
+        await _audit_capability_denial(principal, exc, source="create_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     try:
         async with transaction() as conn:
@@ -1058,6 +1077,7 @@ async def create_run(
                 payload=_release_decision_event_payload(release_decision_payload, skill_id=resolved_skill_id),
             )
     except repositories.RepositoryAuthorizationError as exc:
+        await _audit_capability_denial(principal, exc, source="create_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1093,6 +1113,7 @@ async def copy_run(
                     authorized_source_run_id=run_id,
                 )
     except repositories.RepositoryAuthorizationError as exc:
+        await _audit_capability_denial(principal, exc, source="copy_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1138,6 +1159,7 @@ async def retry_run(
                     authorized_source_run_id=run_id,
                 )
     except repositories.RepositoryAuthorizationError as exc:
+        await _audit_capability_denial(principal, exc, source="retry_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1184,6 +1206,7 @@ async def resume_run(
                     authorized_source_run_id=run_id,
                 )
     except repositories.RepositoryAuthorizationError as exc:
+        await _audit_capability_denial(principal, exc, source="resume_run")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1352,6 +1375,7 @@ async def handoff_multi_agent_dispatch(
                     authorized_source_run_id=run_id,
                 )
     except repositories.RepositoryAuthorizationError as exc:
+        await _audit_capability_denial(principal, exc, source="multi_agent_dispatch_handoff")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1444,6 +1468,7 @@ async def tick_multi_agent_dispatch(
                     authorized_source_run_id=run_id,
                 )
     except repositories.RepositoryAuthorizationError as exc:
+        await _audit_capability_denial(principal, exc, source="multi_agent_dispatch_tick")
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except SkillVersionMaterializationError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

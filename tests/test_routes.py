@@ -8,6 +8,7 @@ from fastapi import HTTPException
 
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
+from app.capability_distribution import CapabilityAuthorizationDenial
 from app.models import CreateRunRequest, QueueRunPayload
 from app.repositories import RepositoryConflictError
 from app.routes import runs as runs_module
@@ -25,6 +26,8 @@ from app.routes.runs import (
     multi_agent_snapshot_from_steps,
     progress_for_status,
     resolve_run_selector,
+    resume_run,
+    retry_run,
     run_playback_summary,
     run_event_response,
     run_step_response,
@@ -53,6 +56,22 @@ def principal(**overrides):
     }
     values.update(overrides)
     return AuthPrincipal(**values)
+
+
+def capability_denial_error() -> repository_module.RepositoryAuthorizationError:
+    return repository_module.RepositoryAuthorizationError(
+        "capability_not_authorized",
+        denial=CapabilityAuthorizationDenial(
+            capability_kind="skill",
+            capability_id="qa-file-reviewer",
+            actor_department_id="finance",
+            actor_roles=("user",),
+            department_scope_ids=("qa",),
+            role_scope_ids=("qa_operator",),
+            scope_mode="allowlist",
+            decision_reason="department_not_allowed",
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -2964,6 +2983,118 @@ async def test_create_run_capability_distribution_denial_precedes_create_run(mon
     assert exc_info.value.status_code == 403
     assert exc_info.value.detail == "capability_not_authorized"
     assert calls == [("authorize", "qa-file-reviewer")]
+
+
+@pytest.mark.asyncio
+async def test_create_run_audits_capability_denial_after_source_transaction_rollback(monkeypatch):
+    events = []
+    transaction_count = 0
+
+    @asynccontextmanager
+    async def ordered_transaction():
+        nonlocal transaction_count
+        transaction_count += 1
+        transaction_id = transaction_count
+        events.append(("enter", transaction_id))
+        try:
+            yield f"conn-{transaction_id}"
+        finally:
+            events.append(("exit", transaction_id))
+
+    async def deny(*args, **kwargs):
+        events.append(("authorize", kwargs["skill_id"]))
+        raise capability_denial_error()
+
+    async def record_audit(conn, **kwargs):
+        events.append(("audit", conn, kwargs["source"], kwargs["error"].denial.capability_id))
+        return "aud-denied"
+
+    monkeypatch.setattr("app.routes.runs.transaction", ordered_transaction)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="document-review",
+                capability_id="document_review",
+            ),
+            principal=principal(department_id="finance", roles=["user"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert events == [
+        ("enter", 1),
+        ("authorize", "qa-file-reviewer"),
+        ("exit", 1),
+        ("enter", 2),
+        ("audit", "conn-2", "create_run", "qa-file-reviewer"),
+        ("exit", 2),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route_func", "repository_method", "source"),
+    [
+        (copy_run, "copy_run_as_new_task", "copy_run"),
+        (retry_run, "retry_run_as_new_task", "retry_run"),
+        (resume_run, "resume_run_as_new_task", "resume_run"),
+    ],
+)
+async def test_requeue_routes_audit_capability_denial_after_source_transaction_rollback(
+    monkeypatch,
+    route_func,
+    repository_method,
+    source,
+):
+    events = []
+    transaction_count = 0
+
+    @asynccontextmanager
+    async def ordered_transaction():
+        nonlocal transaction_count
+        transaction_count += 1
+        transaction_id = transaction_count
+        events.append(("enter", transaction_id))
+        try:
+            yield f"conn-{transaction_id}"
+        finally:
+            events.append(("exit", transaction_id))
+
+    async def allow_admission(*args, **kwargs):
+        return 0
+
+    async def copy_source(*args, **kwargs):
+        return {"run_id": "run-copy"}
+
+    async def deny_prepare(*args, **kwargs):
+        events.append(("authorize", source))
+        raise capability_denial_error()
+
+    async def record_audit(conn, **kwargs):
+        events.append(("audit", conn, kwargs["source"]))
+        return "aud-denied"
+
+    monkeypatch.setattr("app.routes.runs.transaction", ordered_transaction)
+    monkeypatch.setattr(runs_module, "enforce_user_active_run_limit", allow_admission)
+    monkeypatch.setattr(repository_module, repository_method, copy_source)
+    monkeypatch.setattr(runs_module, "prepare_copied_run_for_queue", deny_prepare)
+    monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route_func("run-source", principal=principal(department_id="finance", roles=["user"]))
+
+    assert exc_info.value.status_code == 403
+    assert events == [
+        ("enter", 1),
+        ("authorize", source),
+        ("exit", 1),
+        ("enter", 2),
+        ("audit", "conn-2", source),
+        ("exit", 2),
+    ]
 
 
 def test_queue_run_payload_auth_snapshot_schema_remains_server_owned():

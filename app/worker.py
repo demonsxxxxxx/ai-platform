@@ -1253,6 +1253,7 @@ def _worker_capability_audit_payload(
         **capability_distribution_audit_payload(
             decision=record.decision,
             actor_department_id=principal.department_id,
+            actor_roles=principal.roles,
             capability_kind=record.capability_kind,
             capability_id=record.capability_id,
         ),

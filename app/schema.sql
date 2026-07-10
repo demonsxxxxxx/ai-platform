@@ -144,8 +144,28 @@ create table if not exists tenant_capability_distributions (
   unique (tenant_id, capability_kind, capability_id),
   check (capability_kind in ('skill', 'mcp_server')),
   check (status in ('active', 'disabled')),
-  check (scope_mode in ('allowlist'))
+  check (scope_mode in ('allowlist')),
+  constraint tenant_capability_distributions_allowed_roles_array
+    check (jsonb_typeof(allowed_roles) = 'array')
 );
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'tenant_capability_distributions_allowed_roles_array'
+      and conrelid = 'tenant_capability_distributions'::regclass
+  ) then
+    alter table tenant_capability_distributions
+      add constraint tenant_capability_distributions_allowed_roles_array
+      check (jsonb_typeof(allowed_roles) = 'array') not valid;
+  end if;
+end
+$$;
+
+alter table tenant_capability_distributions
+  validate constraint tenant_capability_distributions_allowed_roles_array;
 
 create table if not exists tenant_capability_distribution_backfills (
   tenant_id text primary key references tenants(id),

@@ -38,6 +38,8 @@ def test_schema_declares_capability_distribution_authority_constraints():
     assert "check (capability_kind in ('skill', 'mcp_server'))" in schema
     assert "check (status in ('active', 'disabled'))" in schema
     assert "check (scope_mode in ('allowlist'))" in schema
+    assert "tenant_capability_distributions_allowed_roles_array" in schema
+    assert "jsonb_typeof(allowed_roles) = 'array'" in schema
 
 
 def test_schema_declares_per_tenant_capability_distribution_backfill_completion_boundary():
