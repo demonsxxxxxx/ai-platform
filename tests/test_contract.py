@@ -5,6 +5,7 @@ from app.models import AgentApp, CreateRunRequest, QueueRunPayload, SkillDefinit
 from app.control_plane_contracts import sanitize_public_payload
 from app.repositories import new_id
 from fastapi.testclient import TestClient
+import os
 
 
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
@@ -62,6 +63,16 @@ def test_app_allows_browser_cors_for_frontend_cutover():
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://10.56.0.211:8080"
     assert response.headers["access-control-allow-credentials"] == "true"
+
+
+def test_health_reports_dynamic_runtime_commit(monkeypatch):
+    commit = "7" * 40
+    monkeypatch.setenv("AI_PLATFORM_RUNTIME_COMMIT", commit)
+
+    response = TestClient(create_app()).get("/api/ai/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "runtime_commit": commit}
 
 
 def test_runtime211_payload_keeps_platform_context():

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 
 import pytest
@@ -10,6 +11,42 @@ from app.worker_main import run_once
 
 
 _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER = worker_main.cleanup_expired_memory_records_for_worker
+
+
+def test_write_worker_runtime_heartbeat_records_process_commit(monkeypatch, tmp_path):
+    commit = "8" * 40
+    heartbeat = tmp_path / "worker-runtime-heartbeat.json"
+    monkeypatch.setenv("AI_PLATFORM_RUNTIME_COMMIT", commit)
+    monkeypatch.setattr("app.worker_main.WORKER_RUNTIME_HEARTBEAT_PATH", heartbeat)
+
+    worker_main.write_worker_runtime_heartbeat("worker-a")
+
+    payload = json.loads(heartbeat.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "ai-platform.worker-runtime-heartbeat.v1"
+    assert payload["worker_id"] == "worker-a"
+    assert payload["runtime_commit"] == commit
+    assert payload["pid"] > 0
+    assert payload["observed_at"]
+
+
+@pytest.mark.asyncio
+async def test_worker_runtime_heartbeat_refreshes_until_cancelled(monkeypatch):
+    calls: list[str] = []
+
+    def fake_write(worker_id: str):
+        calls.append(worker_id)
+
+    async def fake_sleep(_seconds: float):
+        if len(calls) >= 2:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr("app.worker_main.write_worker_runtime_heartbeat", fake_write)
+    monkeypatch.setattr("app.worker_main.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker_main._worker_runtime_heartbeat_until_done("worker-process")
+
+    assert calls == ["worker-process", "worker-process"]
 
 
 @pytest.fixture(autouse=True)

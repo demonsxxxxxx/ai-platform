@@ -1,6 +1,6 @@
 # Release Authority Phase Status
 
-Status: `implementation / independent re-review pending / 211 candidate preflight complete`
+Status: `implementation / second independent re-review pending / 211 candidate preflight complete`
 
 This document tracks only Release Authority recovery. It does not authorize or
 record B1, B2, or B3 runtime acceptance.
@@ -38,11 +38,14 @@ record B1, B2, or B3 runtime acceptance.
   deployment, exact manual frontend identity replacement, and strict parity
   reporting. The verifier derives repo-local compose and published API/frontend
   endpoints from current source and Docker inspection, requires running
-  containers, live API health, worker running state, canonical served frontend
-  provenance, and matching OCI/repository labels. Existing full-commit image
-  tags are reused only when all provenance labels match; mismatches fail closed
-  instead of rebuilding over the tag. Local CLI and contract tests pass; Docker
-  deployment execution remains pending on 211.
+  containers, live API process commit, a fresh worker process heartbeat with a
+  live in-container PID, canonical served frontend provenance, authoritative
+  repository identity, full Compose identity, and matching OCI/repository
+  labels. IPv4-only, IPv6-only, and dual-stack published endpoints are handled
+  explicitly. Existing full-commit image tags are reused only when all
+  provenance labels match; mismatches fail closed instead of rebuilding over
+  the tag. Local CLI and contract tests pass; Docker deployment execution
+  remains pending on 211.
 - [x] Phase 5: Frontend is defined only in repo-local
   `deploy/ai-platform/docker-compose.yml`; the standalone frontend compose file
   is removed in the recovery branch. Runtime ownership transition remains pending.
@@ -83,14 +86,15 @@ remains unchanged and is not an authorized deployment source.
 
 ## Local Verification Evidence
 
-- Backend required workflow scope: `324 passed`.
-- Frontend required Python scope: `138 passed`.
+- Backend required workflow scope: `390 passed` after adding API process
+  provenance and worker runtime-heartbeat contracts to the required workflow.
+- Frontend required Python scope: `142 passed`.
 - Cross-cutting pre-commit scope: `136 passed`.
 - `python -m compileall -q app tools scripts`: exit `0`.
 - `corepack pnpm run ci:verify`: exit `0`; projection audit, source smoke,
   ESLint, TypeScript build, Vite/PWA build, and provenance generation completed.
 - `git diff --check`: exit `0`.
-- Strengthened Release Authority contracts: `16 passed`.
+- Strengthened Release Authority contracts: `20 passed`.
 - Workflow/frontend traceability and B2 readiness regression scope: `65 passed`.
 - Foundation Alpha readiness fresh short-basetemp rerun: `83 passed`. An earlier
   long-basetemp run produced `12` Windows path-length fixture errors after `71`
@@ -111,9 +115,13 @@ remains unchanged and is not an authorized deployment source.
   review found no Critical issues and five Important verifier gaps: caller-
   controlled compose/frontend subjects, static-only API/worker evidence,
   mutable commit tags, and incomplete OCI/repository validation. Those findings
-  are now addressed test-first; an independent follow-up review remains pending.
-  Final deployment and parity must use the eventual merged `main` commit, not
-  this PR head.
+  were addressed test-first. The first follow-up review closed six findings and
+  kept two Important gaps open: IPv6-only published endpoint handling and
+  dynamic API/worker process identity. Those gaps are now addressed with
+  IPv6-aware endpoint derivation, API process commit projection, and a fresh
+  worker heartbeat tied to a live in-container PID. A second independent
+  follow-up review remains pending. Final deployment and parity must use the
+  eventual merged `main` commit, not this PR head.
 
 ## Pre-Commit Self-Review
 

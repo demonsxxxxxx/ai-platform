@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import io
 import json
@@ -21,6 +21,13 @@ SCHEMA_VERSION = "ai-platform.release-authority.v1"
 PRESERVATION_SCHEMA_VERSION = "ai-platform.release-authority-preservation.v1"
 FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 DEFAULT_COMPOSE_RELATIVE_PATH = Path("deploy/ai-platform/docker-compose.yml")
+COMPOSE_PROJECT = "ai-platform-phaseb"
+AUTHORITATIVE_REPOSITORY = "https://github.com/demonsxxxxxx/ai-platform.git"
+AUTHORITATIVE_REPOSITORY_ALIASES = {
+    AUTHORITATIVE_REPOSITORY,
+    "git@github.com:demonsxxxxxx/ai-platform.git",
+    "ssh://git@github.com/demonsxxxxxx/ai-platform.git",
+}
 SECRET_PATH_NAMES = {".env", ".env.local", ".env.production", ".env.development"}
 
 
@@ -80,6 +87,13 @@ def build_image_references(commit: str) -> dict[str, str]:
         "backend": f"ai-platform:{normalized}",
         "frontend": f"ai-platform-frontend:{normalized}",
     }
+
+
+def authoritative_repository(repo_root: Path) -> str:
+    origin = str(_git(repo_root, "config", "--get", "remote.origin.url")).strip().rstrip("/")
+    if origin not in AUTHORITATIVE_REPOSITORY_ALIASES:
+        raise ReleaseAuthorityError("authoritative repository mismatch")
+    return AUTHORITATIVE_REPOSITORY
 
 
 def _is_secret_path(relative_path: str) -> bool:
@@ -228,6 +242,14 @@ def build_parity_report(
         config_files = str(labels.get("com.docker.compose.project.config_files") or "")
         if config_files != f"{expected_compose_dir}/docker-compose.yml":
             mismatches.append(f"{role}_compose_config_mismatch")
+        if labels.get("com.docker.compose.project") != COMPOSE_PROJECT:
+            mismatches.append(f"{role}_compose_project_mismatch")
+        if labels.get("com.docker.compose.service") != role:
+            mismatches.append(f"{role}_compose_service_mismatch")
+        if labels.get("com.docker.compose.oneoff") != "False":
+            mismatches.append(f"{role}_compose_oneoff_mismatch")
+        if not str(labels.get("com.docker.compose.config-hash") or "").strip():
+            mismatches.append(f"{role}_compose_config_hash_missing")
         expected_image_id = images.get(image_role, {}).get("id")
         if not expected_image_id or container.get("image_id") != expected_image_id:
             mismatches.append(f"{role}_container_image_mismatch")
@@ -307,6 +329,7 @@ def _container_record(docker: list[str], name: str) -> dict[str, Any]:
         "image_id": payload.get("Image"),
         "labels": payload.get("Config", {}).get("Labels") or {},
         "running": state.get("Running") is True,
+        "pid": state.get("Pid"),
         "health": (state.get("Health") or {}).get("Status") or "",
         "ports": (payload.get("NetworkSettings") or {}).get("Ports") or {},
     }
@@ -337,7 +360,44 @@ def _published_loopback_url(container: dict[str, Any], container_port: str, path
     host_port = host_ports.pop()
     if not host_port.isdigit():
         raise ReleaseAuthorityError(f"invalid published host port for {container_port}")
-    return f"http://127.0.0.1:{host_port}/{path.lstrip('/')}"
+    host_ips = {str(binding.get("HostIp") or "").strip() for binding in bindings}
+    if any(host in {"0.0.0.0", "127.0.0.1"} for host in host_ips):
+        host = "127.0.0.1"
+    elif host_ips and all(host in {"::", "::1"} for host in host_ips):
+        host = "[::1]"
+    else:
+        raise ReleaseAuthorityError(f"unsupported published host binding for {container_port}")
+    return f"http://{host}:{host_port}/{path.lstrip('/')}"
+
+
+def _container_json_file(docker: list[str], name: str, path: str) -> dict[str, Any]:
+    result = _run([*docker, "exec", name, "cat", path])
+    return json.loads(result.stdout)
+
+
+def _container_process_alive(docker: list[str], name: str, pid: Any) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    result = _run([*docker, "exec", name, "kill", "-0", str(pid)], check=False)
+    return result.returncode == 0
+
+
+def _validate_worker_runtime_heartbeat(payload: dict[str, Any], *, process_alive: bool) -> None:
+    if payload.get("schema_version") != "ai-platform.worker-runtime-heartbeat.v1":
+        raise ReleaseAuthorityError("worker runtime heartbeat schema mismatch")
+    if not str(payload.get("worker_id") or "").strip():
+        raise ReleaseAuthorityError("worker runtime heartbeat worker ID missing")
+    if not process_alive:
+        raise ReleaseAuthorityError("worker runtime heartbeat process is not alive")
+    try:
+        observed_at = datetime.fromisoformat(str(payload.get("observed_at") or ""))
+    except ValueError as exc:
+        raise ReleaseAuthorityError("worker runtime heartbeat timestamp invalid") from exc
+    if observed_at.tzinfo is None:
+        raise ReleaseAuthorityError("worker runtime heartbeat timestamp lacks timezone")
+    age = datetime.now(timezone.utc) - observed_at.astimezone(timezone.utc)
+    if age < timedelta(seconds=-5) or age > timedelta(seconds=30):
+        raise ReleaseAuthorityError("worker runtime heartbeat is stale")
 
 
 def collect_live_parity(
@@ -373,15 +433,29 @@ def collect_live_parity(
         raise ReleaseAuthorityError("frontend provenance path mismatch")
     if frontend_provenance.get("git", {}).get("dirty") is not False:
         raise ReleaseAuthorityError("frontend provenance is dirty")
+    worker_heartbeat = _container_json_file(
+        docker,
+        "ai-platform-worker",
+        "/tmp/ai-platform-worker-runtime-heartbeat.json",
+    )
+    _validate_worker_runtime_heartbeat(
+        worker_heartbeat,
+        process_alive=_container_process_alive(
+            docker,
+            "ai-platform-worker",
+            worker_heartbeat.get("pid"),
+        ),
+    )
     runtime = {
-        "api_commit": _container_file_commit(docker, "ai-platform-api", "/app/.ai-platform-source-revision"),
+        "api_commit": str(api_health.get("runtime_commit") or ""),
         "api_health_status": api_health.get("status"),
-        "worker_commit": _container_file_commit(docker, "ai-platform-worker", "/app/.ai-platform-source-revision"),
+        "worker_heartbeat": worker_heartbeat,
         "worker_running": containers["worker"].get("running") is True,
         "frontend_commit": str(frontend_provenance.get("git", {}).get("commit") or ""),
     }
+    runtime["worker_commit"] = str(runtime["worker_heartbeat"].get("runtime_commit") or "")
     compose_dir = (repo_root.resolve() / DEFAULT_COMPOSE_RELATIVE_PATH).parent.as_posix()
-    repository = str(_git(repo_root, "config", "--get", "remote.origin.url")).strip()
+    repository = authoritative_repository(repo_root)
     return build_parity_report(
         expected_commit=normalized,
         source={"commit": normalized, "dirty": False, "path": str(repo_root.resolve())},
@@ -407,7 +481,7 @@ def deploy_clean_commit(
     normalized = assert_clean_commit(repo_root, commit)
     docker = _docker_base(docker_cmd)
     refs = build_image_references(normalized)
-    repository = str(_git(repo_root, "config", "--get", "remote.origin.url")).strip()
+    repository = authoritative_repository(repo_root)
     common_args = [
         "--build-arg", f"AI_PLATFORM_BUILD_COMMIT={normalized}",
         "--build-arg", "AI_PLATFORM_BUILD_DIRTY=false",
@@ -447,6 +521,10 @@ def deploy_clean_commit(
             if (
                 labels.get("com.docker.compose.project.working_dir") != compose_dir
                 or labels.get("com.docker.compose.project.config_files") != expected_config
+                or labels.get("com.docker.compose.project") != COMPOSE_PROJECT
+                or labels.get("com.docker.compose.service") != "frontend"
+                or labels.get("com.docker.compose.oneoff") != "False"
+                or not str(labels.get("com.docker.compose.config-hash") or "").strip()
             ):
                 raise ReleaseAuthorityError("frontend compose ownership mismatch")
         else:
@@ -476,6 +554,8 @@ def deploy_clean_commit(
         [
             *compose_command,
             "compose",
+            "-p",
+            COMPOSE_PROJECT,
             "--env-file",
             str(env_file.resolve()),
             "-f",

@@ -17,6 +17,8 @@ def test_backend_required_check_is_stable_for_every_main_pull_request():
     assert "tests/test_b2_sandbox_readiness.py" in workflow
     assert "tests/test_backend_ci_workflow.py" in workflow
     assert "tests/test_release_authority.py" in workflow
+    assert "tests/test_contract.py" in workflow
+    assert "tests/test_worker_main.py" in workflow
 
 
 def test_backend_required_check_runs_on_every_main_push():

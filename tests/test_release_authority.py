@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 
 import yaml
 
@@ -19,6 +20,7 @@ from tools.release_authority import (
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.yml"
 LEGACY_FRONTEND_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.frontend.yml"
+AUTHORITATIVE_REPOSITORY = "https://github.com/demonsxxxxxx/ai-platform.git"
 
 
 def test_repo_local_compose_is_the_only_frontend_owner_and_binds_one_commit():
@@ -33,6 +35,26 @@ def test_repo_local_compose_is_the_only_frontend_owner_and_binds_one_commit():
         assert labels["ai-platform.source-dirty"] == "false"
         assert labels["ai-platform.release-owner"] == "repo-local-compose"
         assert labels["ai-platform.release-role"] == service_name
+    for service_name in ("api", "worker"):
+        assert services[service_name]["environment"]["AI_PLATFORM_RUNTIME_COMMIT"] == (
+            "${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}"
+        )
+
+
+def test_release_authority_rejects_non_authoritative_origin(monkeypatch, tmp_path):
+    from tools.release_authority import authoritative_repository
+
+    monkeypatch.setattr(
+        "tools.release_authority._git",
+        lambda repo, *args: "https://example.invalid/fork.git\n",
+    )
+
+    try:
+        authoritative_repository(tmp_path)
+    except ReleaseAuthorityError as exc:
+        assert "authoritative repository mismatch" in str(exc)
+    else:
+        raise AssertionError("a local origin rewrite must not redefine release authority")
 
 
 def test_repo_local_compose_requires_immutable_backend_and_frontend_images():
@@ -145,18 +167,18 @@ def test_preserve_dirty_source_writes_hashed_manifest_without_cleaning_repo(tmp_
 
 def test_parity_report_rejects_manual_frontend_and_commit_mismatch():
     commit = "a" * 40
-    repository = "https://example.invalid/ai-platform.git"
+    repository = AUTHORITATIVE_REPOSITORY
     source = {"commit": commit, "dirty": False}
     images = {
         "backend": {"id": "sha256:backend", "labels": {"ai-platform.source-commit": commit, "org.opencontainers.image.revision": commit, "ai-platform.source-repository": repository, "ai-platform.build-dirty": "false", "ai-platform.release-role": "backend"}},
-        "frontend": {"id": "sha256:frontend", "labels": {"ai-platform.source-commit": commit, "org.opencontainers.image.revision": commit, "ai-platform.source-repository": repository, "ai-platform.build-dirty": "false", "ai-platform.release-role": "frontend"}},
+        "frontend": {"id": "sha256:frontend", "labels": {"ai-platform.source-commit": commit, "org.opencontainers.image.revision": commit, "ai-platform.source-repository": repository, "ai-platform.build-dirty": "false", "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
     }
     compose_dir = "/srv/ai-platform-release/deploy/ai-platform"
-    common = {"ai-platform.source-commit": commit, "ai-platform.source-dirty": "false", "ai-platform.release-owner": "repo-local-compose", "com.docker.compose.project.working_dir": compose_dir, "com.docker.compose.project.config_files": f"{compose_dir}/docker-compose.yml"}
+    common = {"ai-platform.source-commit": commit, "ai-platform.source-dirty": "false", "ai-platform.release-owner": "repo-local-compose", "com.docker.compose.project.working_dir": compose_dir, "com.docker.compose.project.config_files": f"{compose_dir}/docker-compose.yml", "com.docker.compose.project": "ai-platform-phaseb", "com.docker.compose.oneoff": "False", "com.docker.compose.config-hash": "config-hash"}
     containers = {
-        "api": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "api"}},
-        "worker": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "worker"}},
-        "frontend": {"image_id": "sha256:frontend", "running": True, "labels": {**common, "ai-platform.release-owner": "manual", "ai-platform.release-role": "frontend"}},
+        "api": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "api", "com.docker.compose.service": "api"}},
+        "worker": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "worker", "com.docker.compose.service": "worker"}},
+        "frontend": {"image_id": "sha256:frontend", "running": True, "labels": {**common, "ai-platform.release-owner": "manual", "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
     }
     runtime = {
         "api_commit": commit,
@@ -183,17 +205,17 @@ def test_parity_report_rejects_manual_frontend_and_commit_mismatch():
 
 def test_parity_report_verifies_one_clean_repo_local_compose_commit():
     commit = "c" * 40
-    repository = "https://example.invalid/ai-platform.git"
+    repository = AUTHORITATIVE_REPOSITORY
     compose_dir = "/srv/ai-platform-release/deploy/ai-platform"
     images = {
         "backend": {"id": "sha256:backend", "labels": {"ai-platform.source-commit": commit, "org.opencontainers.image.revision": commit, "ai-platform.source-repository": repository, "ai-platform.build-dirty": "false", "ai-platform.release-role": "backend"}},
-        "frontend": {"id": "sha256:frontend", "labels": {"ai-platform.source-commit": commit, "org.opencontainers.image.revision": commit, "ai-platform.source-repository": repository, "ai-platform.build-dirty": "false", "ai-platform.release-role": "frontend"}},
+        "frontend": {"id": "sha256:frontend", "labels": {"ai-platform.source-commit": commit, "org.opencontainers.image.revision": commit, "ai-platform.source-repository": repository, "ai-platform.build-dirty": "false", "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
     }
-    common = {"ai-platform.source-commit": commit, "ai-platform.source-dirty": "false", "ai-platform.release-owner": "repo-local-compose", "com.docker.compose.project.working_dir": compose_dir, "com.docker.compose.project.config_files": f"{compose_dir}/docker-compose.yml"}
+    common = {"ai-platform.source-commit": commit, "ai-platform.source-dirty": "false", "ai-platform.release-owner": "repo-local-compose", "com.docker.compose.project.working_dir": compose_dir, "com.docker.compose.project.config_files": f"{compose_dir}/docker-compose.yml", "com.docker.compose.project": "ai-platform-phaseb", "com.docker.compose.oneoff": "False", "com.docker.compose.config-hash": "config-hash"}
     containers = {
-        "api": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "api"}},
-        "worker": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "worker"}},
-        "frontend": {"image_id": "sha256:frontend", "running": True, "labels": {**common, "ai-platform.release-role": "frontend"}},
+        "api": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "api", "com.docker.compose.service": "api"}},
+        "worker": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "worker", "com.docker.compose.service": "worker"}},
+        "frontend": {"image_id": "sha256:frontend", "running": True, "labels": {**common, "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
     }
 
     report = build_parity_report(
@@ -212,7 +234,7 @@ def test_parity_report_verifies_one_clean_repo_local_compose_commit():
 
 def test_parity_report_rejects_stopped_release_container():
     commit = "6" * 40
-    repository = "https://example.invalid/ai-platform.git"
+    repository = AUTHORITATIVE_REPOSITORY
     compose_dir = "/srv/ai-platform/deploy/ai-platform"
     image_labels = {
         "ai-platform.source-commit": commit,
@@ -226,18 +248,21 @@ def test_parity_report_rejects_stopped_release_container():
         "ai-platform.release-owner": "repo-local-compose",
         "com.docker.compose.project.working_dir": compose_dir,
         "com.docker.compose.project.config_files": f"{compose_dir}/docker-compose.yml",
+        "com.docker.compose.project": "ai-platform-phaseb",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.config-hash": "config-hash",
     }
     report = build_parity_report(
         expected_commit=commit,
         source={"commit": commit, "dirty": False},
         images={
             "backend": {"id": "sha256:backend", "labels": {**image_labels, "ai-platform.release-role": "backend"}},
-            "frontend": {"id": "sha256:frontend", "labels": {**image_labels, "ai-platform.release-role": "frontend"}},
+            "frontend": {"id": "sha256:frontend", "labels": {**image_labels, "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
         },
         containers={
-            "api": {"image_id": "sha256:backend", "running": False, "labels": {**common, "ai-platform.release-role": "api"}},
-            "worker": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "worker"}},
-            "frontend": {"image_id": "sha256:frontend", "running": False, "labels": {**common, "ai-platform.release-role": "frontend"}},
+            "api": {"image_id": "sha256:backend", "running": False, "labels": {**common, "ai-platform.release-role": "api", "com.docker.compose.service": "api"}},
+            "worker": {"image_id": "sha256:backend", "running": True, "labels": {**common, "ai-platform.release-role": "worker", "com.docker.compose.service": "worker"}},
+            "frontend": {"image_id": "sha256:frontend", "running": False, "labels": {**common, "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
         },
         runtime={
             "api_commit": commit,
@@ -255,10 +280,58 @@ def test_parity_report_rejects_stopped_release_container():
     assert "frontend_container_not_running" in report["mismatches"]
 
 
+def test_parity_report_rejects_incomplete_compose_identity():
+    commit = "a" * 40
+    compose_dir = "/srv/ai-platform/deploy/ai-platform"
+    image_labels = {
+        "ai-platform.source-commit": commit,
+        "org.opencontainers.image.revision": commit,
+        "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
+        "ai-platform.build-dirty": "false",
+    }
+    common = {
+        "ai-platform.source-commit": commit,
+        "ai-platform.source-dirty": "false",
+        "ai-platform.release-owner": "repo-local-compose",
+        "com.docker.compose.project.working_dir": compose_dir,
+        "com.docker.compose.project.config_files": f"{compose_dir}/docker-compose.yml",
+    }
+    report = build_parity_report(
+        expected_commit=commit,
+        source={"commit": commit, "dirty": False},
+        images={
+            "backend": {"id": "sha256:backend", "labels": {**image_labels, "ai-platform.release-role": "backend"}},
+            "frontend": {"id": "sha256:frontend", "labels": {**image_labels, "ai-platform.release-role": "frontend", "com.docker.compose.service": "frontend"}},
+        },
+        containers={
+            role: {
+                "image_id": "sha256:frontend" if role == "frontend" else "sha256:backend",
+                "running": True,
+                "labels": {**common, "ai-platform.release-role": role, "com.docker.compose.service": role},
+            }
+            for role in ("api", "worker", "frontend")
+        },
+        runtime={
+            "api_commit": commit,
+            "api_health_status": "ok",
+            "worker_commit": commit,
+            "worker_running": True,
+            "frontend_commit": commit,
+        },
+        expected_compose_dir=compose_dir,
+        expected_repository=AUTHORITATIVE_REPOSITORY,
+    )
+
+    assert report["verified"] is False
+    assert "api_compose_project_mismatch" in report["mismatches"]
+    assert "worker_compose_oneoff_mismatch" in report["mismatches"]
+    assert "frontend_compose_config_hash_missing" in report["mismatches"]
+
+
 def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monkeypatch, tmp_path):
     commit = "d" * 40
     observed_urls: list[str] = []
-    repository = "https://example.invalid/ai-platform.git"
+    repository = AUTHORITATIVE_REPOSITORY
 
     monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
     monkeypatch.setattr("tools.release_authority._git", lambda repo, *args: repository + "\n")
@@ -283,14 +356,18 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
         "ai-platform.release-owner": "repo-local-compose",
         "com.docker.compose.project.working_dir": compose_dir,
         "com.docker.compose.project.config_files": f"{compose_dir}/docker-compose.yml",
+        "com.docker.compose.project": "ai-platform-phaseb",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.config-hash": "config-hash",
     }
     monkeypatch.setattr(
         "tools.release_authority._container_record",
         lambda docker, name: {
             "name": name,
             "image_id": "sha256:frontend" if name.endswith("frontend") else "sha256:backend",
-            "labels": {**common, "ai-platform.release-role": name.removeprefix("ai-platform-")},
+            "labels": {**common, "ai-platform.release-role": name.removeprefix("ai-platform-"), "com.docker.compose.service": name.removeprefix("ai-platform-")},
             "running": True,
+            "pid": 1234 if name.endswith("worker") else 4321,
             "health": "healthy" if not name.endswith("worker") else "",
             "ports": {
                 "8080/tcp" if name.endswith("frontend") else "8020/tcp": [
@@ -306,12 +383,22 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
             },
         },
     )
-    monkeypatch.setattr("tools.release_authority._container_file_commit", lambda docker, name, path: commit)
+    monkeypatch.setattr(
+        "tools.release_authority._container_json_file",
+        lambda docker, name, path: {
+            "schema_version": "ai-platform.worker-runtime-heartbeat.v1",
+            "worker_id": "worker-a",
+            "runtime_commit": commit,
+            "pid": 1234,
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    monkeypatch.setattr("tools.release_authority._container_process_alive", lambda docker, name, pid: True)
 
     def fake_http_json(url: str):
         observed_urls.append(url)
         if url.endswith("/api/ai/health"):
-            return {"status": "ok"}
+            return {"status": "ok", "runtime_commit": commit}
         return {
             "schema_version": "ai-platform.frontend-build-provenance.v1",
             "frontend_path": "frontend/web",
@@ -336,12 +423,101 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
     assert report["runtime"]["worker_running"] is True
 
 
+def test_collect_live_parity_rejects_stale_worker_heartbeat(monkeypatch, tmp_path):
+    commit = "9" * 40
+    repository = AUTHORITATIVE_REPOSITORY
+    compose_dir = str((tmp_path / "deploy" / "ai-platform").resolve()).replace("\\", "/")
+    common = {
+        "ai-platform.source-commit": commit,
+        "ai-platform.source-dirty": "false",
+        "ai-platform.release-owner": "repo-local-compose",
+        "com.docker.compose.project.working_dir": compose_dir,
+        "com.docker.compose.project.config_files": f"{compose_dir}/docker-compose.yml",
+        "com.docker.compose.project": "ai-platform-phaseb",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.config-hash": "config-hash",
+    }
+    monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
+    monkeypatch.setattr("tools.release_authority._git", lambda repo, *args: repository + "\n")
+    monkeypatch.setattr(
+        "tools.release_authority._image_record",
+        lambda docker, image: {
+            "id": "sha256:frontend" if "frontend" in image else "sha256:backend",
+            "labels": {
+                "ai-platform.source-commit": commit,
+                "org.opencontainers.image.revision": commit,
+                "ai-platform.source-repository": repository,
+                "ai-platform.build-dirty": "false",
+                "ai-platform.release-role": "frontend" if "frontend" in image else "backend",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "tools.release_authority._container_record",
+        lambda docker, name: {
+            "name": name,
+            "image_id": "sha256:frontend" if name.endswith("frontend") else "sha256:backend",
+            "labels": {**common, "ai-platform.release-role": name.removeprefix("ai-platform-"), "com.docker.compose.service": name.removeprefix("ai-platform-")},
+            "running": True,
+            "pid": 2222 if name.endswith("worker") else 1111,
+            "health": "healthy",
+            "ports": {
+                "8080/tcp" if name.endswith("frontend") else "8020/tcp": [
+                    {"HostIp": "0.0.0.0", "HostPort": "18001" if name.endswith("frontend") else "8020"}
+                ]
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "tools.release_authority._http_json",
+        lambda url: (
+            {"status": "ok", "runtime_commit": commit}
+            if url.endswith("/api/ai/health")
+            else {
+                "schema_version": "ai-platform.frontend-build-provenance.v1",
+                "frontend_path": "frontend/web",
+                "git": {"commit": commit, "dirty": False},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "tools.release_authority._container_json_file",
+        lambda docker, name, path: {
+            "schema_version": "ai-platform.worker-runtime-heartbeat.v1",
+            "worker_id": "worker-a",
+            "runtime_commit": commit,
+            "pid": 1111,
+            "observed_at": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+        },
+    )
+    monkeypatch.setattr("tools.release_authority._container_process_alive", lambda docker, name, pid: False)
+
+    try:
+        collect_live_parity(tmp_path, commit, docker_cmd="docker")
+    except ReleaseAuthorityError as exc:
+        assert "worker runtime heartbeat" in str(exc)
+    else:
+        raise AssertionError("stale or wrong-process worker heartbeat must be rejected")
+
+
+def test_published_url_supports_ipv6_only_binding():
+    from tools.release_authority import _published_loopback_url
+
+    url = _published_loopback_url(
+        {"ports": {"8080/tcp": [{"HostIp": "::", "HostPort": "18001"}]}},
+        "8080/tcp",
+        "/healthz",
+    )
+
+    assert url == "http://[::1]:18001/healthz"
+
+
 def test_deploy_rejects_unexpected_manual_frontend_identity(monkeypatch, tmp_path):
     commit = "e" * 40
     removed: list[list[str]] = []
 
     monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
-    monkeypatch.setattr("tools.release_authority._git", lambda repo, *args: "https://example.invalid/repo.git\n")
+    monkeypatch.setattr("tools.release_authority._git", lambda repo, *args: AUTHORITATIVE_REPOSITORY + "\n")
     monkeypatch.setattr(
         "tools.release_authority._image_record",
         lambda docker, image: {
@@ -349,7 +525,7 @@ def test_deploy_rejects_unexpected_manual_frontend_identity(monkeypatch, tmp_pat
             "labels": {
                 "ai-platform.source-commit": commit,
                 "org.opencontainers.image.revision": commit,
-                "ai-platform.source-repository": "https://example.invalid/repo.git",
+                "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
                 "ai-platform.build-dirty": "false",
                 "ai-platform.release-role": "frontend" if "frontend" in image else "backend",
             },
@@ -391,7 +567,7 @@ def test_deploy_rejects_unexpected_manual_frontend_identity(monkeypatch, tmp_pat
 def test_deploy_reuses_valid_existing_commit_tag_without_rebuilding(monkeypatch, tmp_path):
     commit = "1" * 40
     build_commands: list[list[str]] = []
-    repository = "https://example.invalid/repo.git"
+    repository = AUTHORITATIVE_REPOSITORY
 
     monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
     monkeypatch.setattr("tools.release_authority._git", lambda repo, *args: repository + "\n")
@@ -431,7 +607,7 @@ def test_deploy_reuses_valid_existing_commit_tag_without_rebuilding(monkeypatch,
 
 def test_deploy_rejects_existing_commit_tag_with_wrong_provenance(monkeypatch, tmp_path):
     commit = "3" * 40
-    repository = "https://example.invalid/repo.git"
+    repository = AUTHORITATIVE_REPOSITORY
     build_commands: list[list[str]] = []
 
     monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
@@ -475,7 +651,7 @@ def test_deploy_rejects_existing_commit_tag_with_wrong_provenance(monkeypatch, t
 
 def test_deploy_rejects_spoofed_repo_owned_frontend(monkeypatch, tmp_path):
     commit = "2" * 40
-    repository = "https://example.invalid/repo.git"
+    repository = AUTHORITATIVE_REPOSITORY
 
     monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
     monkeypatch.setattr("tools.release_authority._git", lambda repo, *args: repository + "\n")
@@ -566,7 +742,7 @@ def test_release_authority_cli_exposes_preserve_deploy_and_verify_commands():
 
 def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
     commit = "5" * 40
-    repository = "https://example.invalid/repo.git"
+    repository = AUTHORITATIVE_REPOSITORY
     commands: list[list[str]] = []
     image_records = {
         f"ai-platform:{commit}": {
@@ -618,6 +794,8 @@ def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
     assert f"AI_PLATFORM_FRONTEND_IMAGE=ai-platform-frontend:{commit}" in compose
     assert compose[compose.index("compose") :] == [
         "compose",
+        "-p",
+        "ai-platform-phaseb",
         "--env-file",
         str(env_file.resolve()),
         "-f",

@@ -63,6 +63,7 @@ services:
       ai-platform.release-role: api
     restart: unless-stopped
     environment:
+      AI_PLATFORM_RUNTIME_COMMIT: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
       DATABASE_URL: postgresql://${POSTGRES_USER:-ai_platform}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_platform}
       DATABASE_POOL_MIN_SIZE: ${DATABASE_POOL_MIN_SIZE:-1}
       DATABASE_POOL_MAX_SIZE: ${DATABASE_POOL_MAX_SIZE:-10}
@@ -165,6 +166,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.worker_main"]
     environment:
+      AI_PLATFORM_RUNTIME_COMMIT: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
       DATABASE_URL: postgresql://${POSTGRES_USER:-ai_platform}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_platform}
       DATABASE_POOL_MIN_SIZE: ${DATABASE_POOL_MIN_SIZE:-1}
       DATABASE_POOL_MAX_SIZE: ${DATABASE_POOL_MAX_SIZE:-10}
