@@ -7,7 +7,7 @@ import pytest
 from app.executors.base import ArtifactManifest, ExecutorResult
 from app.executors.fake import FakeFailureAdapter, FakeSuccessAdapter
 from app.executors.registry import AdapterRegistry
-from app.repositories import RepositoryConflictError
+from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.worker import _multi_agent_result_summary, _record_run_step_from_event, process_run_payload
 
 
@@ -129,6 +129,54 @@ def default_cancel_not_requested(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease, raising=False)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease, raising=False)
     monkeypatch.setattr("app.worker._PARENT_ROLLUP_RETRY_DELAY_SECONDS", 0, raising=False)
+
+    async def resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return {
+            "agent_id": agent_id,
+            "agent_status": "active",
+            "skill_id": skill_id,
+            "skill_status": "active",
+            "executor_type": "fake",
+        }
+
+    async def get_capability_distribution_row(conn, *, tenant_id, capability_kind, capability_id):
+        return {
+            "tenant_id": tenant_id,
+            "capability_kind": capability_kind,
+            "capability_id": capability_id,
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": [],
+            "allowed_roles": [],
+        }
+
+    async def get_mcp_tool_registry_entry(conn, *, tenant_id, tool_id):
+        return {
+            "tool_id": tool_id,
+            "server_id": "default-server",
+            "effective_status": "active",
+            "server_status": "active",
+            "visible_to_user": True,
+            "write_capable": False,
+            "risk_level": "low",
+        }
+
+    async def append_audit_log(conn, **kwargs):
+        return "audit-default"
+
+    monkeypatch.setattr("app.worker.repositories.resolve_agent_skill", resolve_agent_skill, raising=False)
+    monkeypatch.setattr(
+        "app.worker.repositories.get_capability_distribution_row",
+        get_capability_distribution_row,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker.repositories.get_mcp_tool_registry_entry",
+        get_mcp_tool_registry_entry,
+        raising=False,
+    )
+    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log, raising=False)
 
 
 @pytest.mark.asyncio
@@ -5470,3 +5518,560 @@ async def test_worker_fails_closed_when_allow_once_mcp_decision_cannot_be_consum
     denied_audit = next(item for item in calls if item[0] == "audit")
     assert denied_audit[1] == "mcp_tool_policy_denied"
     assert denied_audit[2]["reason"] == "tool_permission_consumed_or_expired"
+
+
+def _task6_distribution(
+    capability_kind,
+    capability_id,
+    *,
+    status="active",
+    visible_to_user=True,
+    department_ids=None,
+    allowed_roles=None,
+):
+    return {
+        "tenant_id": "tenant-a",
+        "capability_kind": capability_kind,
+        "capability_id": capability_id,
+        "status": status,
+        "visible_to_user": visible_to_user,
+        "scope_mode": "allowlist",
+        "department_ids": list(department_ids or []),
+        "allowed_roles": list(allowed_roles or []),
+    }
+
+
+def _task6_tool(tool_id, server_id, *, server_status="active", write_capable=False, risk_level="low"):
+    return {
+        "tool_id": tool_id,
+        "server_id": server_id,
+        "effective_status": "active",
+        "server_status": server_status,
+        "visible_to_user": True,
+        "write_capable": write_capable,
+        "risk_level": risk_level,
+    }
+
+
+def _install_task6_worker_fakes(
+    monkeypatch,
+    *,
+    locked_input=None,
+    queue_input=None,
+    principal_roles=None,
+    principal_department_id="qa",
+    auth_source="session-token",
+):
+    calls = []
+    skill_id = "qa-file-reviewer"
+    state = {
+        "skill": {
+            "agent_id": "qa-word-review",
+            "agent_status": "active",
+            "skill_id": skill_id,
+            "skill_status": "active",
+            "executor_type": "capture",
+        },
+        "skill_error": None,
+        "distributions": {
+            ("skill", skill_id): _task6_distribution(
+                "skill",
+                skill_id,
+                department_ids=["qa"],
+                allowed_roles=["qa_operator"],
+            )
+        },
+        "tools": {},
+        "permission_decisions": {},
+        "consume_result": {"status": "consumed"},
+    }
+    persisted_input = dict(locked_input or {"mode": "file"})
+    locked_run = {
+        "id": "run-a",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "agent_id": "qa-word-review",
+        "skill_id": skill_id,
+        "trace_id": "trace-run-a",
+        "principal_roles": list(principal_roles or ["qa_operator"]),
+        "principal_department_id": principal_department_id,
+        "auth_source": auth_source,
+        "input_json": {
+            "input": persisted_input,
+            "file_ids": ["file-a"],
+            "executor_type": "capture",
+            "skill_version": "hash-qa-file-reviewer",
+            "release_decision": release_decision("hash-qa-file-reviewer"),
+        },
+    }
+
+    class CaptureAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            calls.append(("adapter", payload.input))
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="capture/1",
+                executor_type="capture",
+                executor_version="capture",
+                capabilities={"artifacts": False, "streaming": False, "tools": True},
+                result={"message": "done"},
+            )
+
+    class CaptureRegistry:
+        def get(self, executor_type):
+            calls.append(("registry_get", executor_type))
+            return CaptureAdapter()
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        calls.append(("lock", tenant_id, run_id))
+        return locked_run
+
+    async def resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        calls.append(("skill_lookup", tenant_id, agent_id, skill_id))
+        if state["skill_error"] is not None:
+            raise state["skill_error"]
+        return dict(state["skill"])
+
+    async def get_capability_distribution_row(conn, *, tenant_id, capability_kind, capability_id):
+        calls.append(("distribution", tenant_id, capability_kind, capability_id))
+        return state["distributions"].get((capability_kind, capability_id))
+
+    async def get_mcp_tool_registry_entry(conn, *, tenant_id, tool_id):
+        calls.append(("tool_lookup", tenant_id, tool_id))
+        entry = state["tools"].get(tool_id)
+        return dict(entry) if entry is not None else None
+
+    async def get_exact_tool_permission_decision(conn, **kwargs):
+        calls.append(("permission_lookup", kwargs))
+        return state["permission_decisions"].get(kwargs["tool_id"])
+
+    async def consume_tool_permission_decision(conn, **kwargs):
+        calls.append(("permission_consume", kwargs))
+        result = state["consume_result"]
+        return dict(result) if isinstance(result, dict) else result
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "event-task6"
+
+    async def append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "audit-task6"
+
+    async def fail_run(conn, **kwargs):
+        calls.append(("fail", kwargs))
+
+    async def complete_run(conn, **kwargs):
+        calls.append(("complete", kwargs))
+
+    async def upsert_run_skill_snapshot(conn, **kwargs):
+        calls.append(("skill_snapshot", kwargs))
+
+    async def create_sandbox_lease(conn, **kwargs):
+        calls.append(("sandbox_create", kwargs))
+        return {"id": "lease-task6", **kwargs}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("sandbox_release", kwargs))
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.resolve_agent_skill", resolve_agent_skill, raising=False)
+    monkeypatch.setattr(
+        "app.worker.repositories.get_capability_distribution_row",
+        get_capability_distribution_row,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker.repositories.get_mcp_tool_registry_entry",
+        get_mcp_tool_registry_entry,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker.repositories.get_exact_tool_permission_decision",
+        get_exact_tool_permission_decision,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker.repositories.consume_tool_permission_decision",
+        consume_tool_permission_decision,
+        raising=False,
+    )
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+    monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+
+    raw = base_payload(
+        input=dict(queue_input or {"mode": "queue"}),
+        executor_type="capture",
+    )
+    return raw, CaptureRegistry(), state, calls
+
+
+def _task6_assert_no_executor_calls(calls):
+    assert not any(call[0] in {"registry_get", "sandbox_create", "adapter"} for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_authorization_snapshot_uses_only_locked_run_principal(monkeypatch):
+    captured = {}
+    raw, registry, _, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={
+            "mode": "file",
+            "principal_roles": ["admin"],
+            "principal_department_id": "rd",
+            "auth_source": "caller-input",
+        },
+        queue_input={
+            "principal_roles": ["admin"],
+            "principal_department_id": "finance",
+            "auth_source": "queue-input",
+        },
+        principal_roles=[" QA-Operator ", "qa_operator"],
+        principal_department_id="qa",
+        auth_source="locked-session-token",
+    )
+
+    def capture_admin_check(principal):
+        captured.update(
+            tenant_id=principal.tenant_id,
+            department_id=principal.department_id,
+            roles=principal.roles,
+            source=principal.source,
+        )
+        return False
+
+    monkeypatch.setattr("app.worker.is_ai_admin", capture_admin_check, raising=False)
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "succeeded"
+    assert captured == {
+        "tenant_id": "tenant-a",
+        "department_id": "qa",
+        "roles": ["qa_operator"],
+        "source": "locked-session-token",
+    }
+    assert any(call[0] == "skill_lookup" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_capability_distribution_allows_current_skill_after_enqueue(monkeypatch):
+    raw, registry, _, calls = _install_task6_worker_fakes(monkeypatch)
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "succeeded"
+    assert ("skill_lookup", "tenant-a", "qa-word-review", "qa-file-reviewer") in calls
+    assert ("distribution", "tenant-a", "skill", "qa-file-reviewer") in calls
+    assert any(call[0] == "adapter" for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_reason"),
+    [
+        ("hidden", "distribution_hidden"),
+        ("disabled", "distribution_disabled"),
+        ("department", "department_not_allowed"),
+        ("role", "role_not_allowed"),
+        ("distribution_missing", "distribution_missing"),
+        ("lifecycle_disabled", "lifecycle_denied"),
+        ("registry_missing", "lifecycle_denied"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_worker_capability_distribution_rechecks_skill_changes_after_enqueue(
+    monkeypatch,
+    change,
+    expected_reason,
+):
+    raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch)
+    distribution = state["distributions"][("skill", "qa-file-reviewer")]
+    if change == "hidden":
+        distribution["visible_to_user"] = False
+    elif change == "disabled":
+        distribution["status"] = "disabled"
+    elif change == "department":
+        distribution["department_ids"] = ["rd"]
+    elif change == "role":
+        distribution["allowed_roles"] = ["reviewer"]
+    elif change == "distribution_missing":
+        state["distributions"].pop(("skill", "qa-file-reviewer"))
+    elif change == "lifecycle_disabled":
+        state["skill_error"] = RepositoryConflictError("skill_inactive")
+    elif change == "registry_missing":
+        state["skill_error"] = RepositoryNotFoundError("agent_or_skill_not_found")
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    _task6_assert_no_executor_calls(calls)
+    failed = next(call[1] for call in calls if call[0] == "fail")
+    assert failed["error_code"] == "capability_not_authorized"
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["stage"] == "authorization"
+    assert denied_event["payload"]["capability_kind"] == "skill"
+    assert denied_event["payload"]["capability_id"] == "qa-file-reviewer"
+    assert denied_event["payload"]["policy"] == "capability_distribution"
+    assert denied_event["payload"]["reason"] == expected_reason
+
+
+@pytest.mark.asyncio
+async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monkeypatch):
+    locked_input = {
+        "mode": "file",
+        "mcp_tool_ids": ["tool-global"],
+        "multi_agent_steps": [
+            {
+                "step_key": "review",
+                "role": "review",
+                "mcp_tool_ids": ["tool-step"],
+            }
+        ],
+    }
+    raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch, locked_input=locked_input)
+    state["tools"].update(
+        {
+            "tool-global": _task6_tool("tool-global", "server-global"),
+            "tool-step": _task6_tool("tool-step", "server-step"),
+        }
+    )
+    state["distributions"].update(
+        {
+            ("mcp_server", "server-global"): _task6_distribution("mcp_server", "server-global"),
+            ("mcp_server", "server-step"): _task6_distribution("mcp_server", "server-step"),
+        }
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "succeeded"
+    assert ("tool_lookup", "tenant-a", "tool-global") in calls
+    assert ("tool_lookup", "tenant-a", "tool-step") in calls
+    registered_input = next(call[1] for call in calls if call[0] == "adapter")
+    assert registered_input["mcp_tool_ids"] == ["tool-global"]
+    assert registered_input["multi_agent_steps"][0]["mcp_tool_ids"] == ["tool-step"]
+    assert "mcpToolIds" not in registered_input
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_reason"),
+    [
+        ("hidden", "distribution_hidden"),
+        ("disabled", "distribution_disabled"),
+        ("department", "department_not_allowed"),
+        ("role", "role_not_allowed"),
+        ("distribution_missing", "distribution_missing"),
+        ("parent_disabled", "lifecycle_denied"),
+        ("tool_missing", "distribution_missing"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_worker_capability_distribution_rechecks_mcp_parent_changes_after_enqueue(
+    monkeypatch,
+    change,
+    expected_reason,
+):
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"mode": "file", "mcp_tool_ids": ["tool-a"]},
+    )
+    state["tools"]["tool-a"] = _task6_tool("tool-a", "server-a")
+    state["distributions"][("mcp_server", "server-a")] = _task6_distribution(
+        "mcp_server",
+        "server-a",
+        department_ids=["qa"],
+        allowed_roles=["qa_operator"],
+    )
+    distribution = state["distributions"][("mcp_server", "server-a")]
+    if change == "hidden":
+        distribution["visible_to_user"] = False
+    elif change == "disabled":
+        distribution["status"] = "disabled"
+    elif change == "department":
+        distribution["department_ids"] = ["rd"]
+    elif change == "role":
+        distribution["allowed_roles"] = ["reviewer"]
+    elif change == "distribution_missing":
+        state["distributions"].pop(("mcp_server", "server-a"))
+    elif change == "parent_disabled":
+        state["tools"]["tool-a"]["server_status"] = "disabled"
+    elif change == "tool_missing":
+        state["tools"].pop("tool-a")
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    _task6_assert_no_executor_calls(calls)
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["payload"]["capability_kind"] == "mcp_tool"
+    assert denied_event["payload"]["capability_id"] == "tool-a"
+    assert denied_event["payload"]["reason"] == expected_reason
+
+
+@pytest.mark.asyncio
+async def test_worker_registered_tools_never_receive_partially_authorized_mcp_set(monkeypatch):
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"mode": "file", "mcp_tool_ids": ["tool-allowed", "tool-denied"]},
+    )
+    state["tools"].update(
+        {
+            "tool-allowed": _task6_tool("tool-allowed", "server-allowed"),
+            "tool-denied": _task6_tool("tool-denied", "server-denied"),
+        }
+    )
+    state["distributions"].update(
+        {
+            ("mcp_server", "server-allowed"): _task6_distribution("mcp_server", "server-allowed"),
+            ("mcp_server", "server-denied"): _task6_distribution(
+                "mcp_server",
+                "server-denied",
+                visible_to_user=False,
+            ),
+        }
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.error_code == "capability_not_authorized"
+    _task6_assert_no_executor_calls(calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypatch):
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"mode": "file", "mcp_tool_ids": ["tool-admin"]},
+        principal_roles=["admin"],
+        principal_department_id="platform",
+    )
+    state["distributions"][("skill", "qa-file-reviewer")]["visible_to_user"] = False
+    state["tools"]["tool-admin"] = _task6_tool("tool-admin", "server-admin")
+    state["distributions"][("mcp_server", "server-admin")] = _task6_distribution(
+        "mcp_server",
+        "server-admin",
+        visible_to_user=False,
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "succeeded"
+    bypass_audits = [
+        call[1]
+        for call in calls
+        if call[0] == "audit" and call[1]["action"] == "capability_distribution.admin_bypass"
+    ]
+    assert {(audit["target_type"], audit["target_id"]) for audit in bypass_audits} == {
+        ("skill", "qa-file-reviewer"),
+        ("mcp_tool", "tool-admin"),
+    }
+    for audit in bypass_audits:
+        assert audit["payload_json"]["admin_bypass"] is True
+        assert audit["payload_json"]["decision_reason"] == "admin_bypass"
+        assert audit["payload_json"]["run_id"] == "run-a"
+        assert audit["payload_json"]["session_id"] == "session-a"
+        assert audit["payload_json"]["agent_id"] == "qa-word-review"
+
+
+@pytest.mark.asyncio
+async def test_worker_capability_distribution_denial_event_and_dotted_audit_are_sanitized(monkeypatch):
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"mode": "file", "private_payload": "private-marker"},
+    )
+    distribution = state["distributions"][("skill", "qa-file-reviewer")]
+    distribution["visible_to_user"] = False
+    distribution["metadata_json"] = {"credential": "private-marker"}
+    state["skill"]["private_payload"] = "private-marker"
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.error_code == "capability_not_authorized"
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    denied_audit = next(
+        call[1]
+        for call in calls
+        if call[0] == "audit" and call[1]["action"] == "capability_distribution.denied"
+    )
+    assert set(denied_event["payload"]) == {
+        "capability_kind",
+        "capability_id",
+        "policy",
+        "reason",
+        "visible_to_user",
+        "severity",
+    }
+    assert set(denied_audit["payload_json"]) == {
+        "capability_kind",
+        "capability_id",
+        "actor_department_id",
+        "department_scope_ids",
+        "role_scope_ids",
+        "scope_mode",
+        "decision_reason",
+        "admin_bypass",
+        "run_id",
+        "session_id",
+        "agent_id",
+        "skill_id",
+    }
+    assert "private-marker" not in json.dumps(
+        {"event": denied_event, "audit": denied_audit},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_capability_distribution_keeps_mcp_risk_write_policy_after_allow(monkeypatch):
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"mode": "file", "mcp_tool_ids": ["tool-write"]},
+    )
+    state["tools"]["tool-write"] = _task6_tool(
+        "tool-write",
+        "server-write",
+        write_capable=True,
+        risk_level="high",
+    )
+    state["distributions"][("mcp_server", "server-write")] = _task6_distribution(
+        "mcp_server",
+        "server-write",
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    assert any(call[0] == "permission_lookup" and call[1]["tool_id"] == "tool-write" for call in calls)
+    _task6_assert_no_executor_calls(calls)
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["payload"]["reason"] == "tool_permission_required"
