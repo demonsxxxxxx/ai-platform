@@ -1477,10 +1477,16 @@ async def activate_marketplace_skill_direct(
                     "department_id": principal.department_id,
                 },
             )
+            rows = await repositories.list_public_skill_catalog(
+                conn,
+                tenant_id=principal.tenant_id,
+                include_disabled=True,
+                rollout_key=None,
+            )
+            row = _find_row(rows, skill_name=safe_skill_name)
+            row["status"] = distribution["status"]
     except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
         raise _repository_http_exception(exc) from exc
-    row = await _public_skill_row(principal=principal, skill_name=safe_skill_name)
-    row["status"] = distribution["status"]
     return _marketplace_item(row, principal)
 
 

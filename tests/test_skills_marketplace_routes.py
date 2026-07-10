@@ -2178,6 +2178,76 @@ def test_public_skill_direct_marketplace_activation_accepts_frontend_is_active_p
     assert response.json()["is_active"] is False
 
 
+@pytest.mark.parametrize("selected_previous_status", [None, "draft", "reviewed", "disabled", "deprecated"])
+@pytest.mark.parametrize("active", [False, True])
+def test_marketplace_activation_uses_non_rollout_admin_response_inside_write_transaction(
+    monkeypatch,
+    selected_previous_status,
+    active,
+):
+    calls = install_route_fakes(monkeypatch)
+    transaction_id = 0
+
+    @asynccontextmanager
+    async def recording_transaction():
+        nonlocal transaction_id
+        transaction_id += 1
+        current_id = transaction_id
+        calls.append(("tx_enter", {"id": current_id}))
+        try:
+            yield object()
+        except Exception:
+            calls.append(("tx_rollback", {"id": current_id}))
+            raise
+        else:
+            calls.append(("tx_commit", {"id": current_id}))
+
+    async def fake_list(conn, *, tenant_id, include_disabled=False, rollout_key=None):
+        calls.append(
+            (
+                "activation_catalog",
+                {
+                    "include_disabled": include_disabled,
+                    "rollout_key": rollout_key,
+                    "selected_previous_status": selected_previous_status,
+                },
+            )
+        )
+        if rollout_key is not None:
+            return []
+        return [dict(_catalog_rows()[0])]
+
+    monkeypatch.setattr("app.routes.skills_marketplace.transaction", recording_transaction)
+    monkeypatch.setattr("app.routes.skills_marketplace.repositories.list_public_skill_catalog", fake_list)
+    client = TestClient(create_app())
+
+    response = client.patch(
+        "/api/marketplace/qa-file-reviewer/activate",
+        json={"active": active},
+        headers=headers("marketplace:admin"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_active"] is active
+    assert [payload for name, payload in calls if name == "activation_catalog"] == [
+        {
+            "include_disabled": True,
+            "rollout_key": None,
+            "selected_previous_status": selected_previous_status,
+        }
+    ]
+    assert len([1 for name, _ in calls if name == "tx_enter"]) == 1
+    toggle_index = next(index for index, (name, _) in enumerate(calls) if name == "toggle_distribution")
+    audit_index = next(
+        index
+        for index, (name, payload) in enumerate(calls)
+        if name == "audit" and payload["action"] == "marketplace.skill.activation_changed"
+    )
+    list_index = next(index for index, (name, _) in enumerate(calls) if name == "activation_catalog")
+    commit_index = next(index for index, (name, _) in enumerate(calls) if name == "tx_commit")
+    assert toggle_index < audit_index < list_index < commit_index
+
+
 def test_public_skill_batch_routes_are_permission_gated_and_report_item_errors(monkeypatch):
     install_route_fakes(monkeypatch)
 
