@@ -1230,6 +1230,12 @@ def _append_explicit_mcp_tool_ids(target: list[str], container: dict[str, Any]) 
                 target.append(tool_id)
 
 
+def _explicit_mcp_tool_scope(container: dict[str, Any]) -> tuple[bool, list[str]]:
+    tool_ids: list[str] = []
+    _append_explicit_mcp_tool_ids(tool_ids, container)
+    return any(key in container for key in _MCP_TOOL_ID_KEYS), tool_ids
+
+
 def extract_run_mcp_tool_ids(normalized_input: dict[str, Any]) -> list[str]:
     """Extract explicit MCP IDs from accepted run and multi-agent step fields."""
 
@@ -1264,7 +1270,7 @@ def normalize_run_input_for_enqueue(input_payload: object, *, redact_public: boo
 
     if not isinstance(input_payload, dict):
         return {}
-    requested_tool_ids = extract_run_mcp_tool_ids(input_payload)
+    top_level_tools_present, top_level_tool_ids = _explicit_mcp_tool_scope(input_payload)
     if redact_public:
         cleaned = sanitize_user_control_input(input_payload)
     else:
@@ -1273,8 +1279,11 @@ def normalize_run_input_for_enqueue(input_payload: object, *, redact_public: boo
     normalized = strip_caller_run_auth_snapshot_fields(cleaned)
     if not isinstance(normalized, dict):
         normalized = {}
-    if requested_tool_ids:
-        normalized["mcp_tool_ids"] = requested_tool_ids
+    if redact_public:
+        for key in _MCP_TOOL_ID_KEYS:
+            normalized.pop(key, None)
+    if top_level_tools_present:
+        normalized["mcp_tool_ids"] = top_level_tool_ids
 
     original_steps = input_payload.get("multi_agent_steps")
     normalized_steps = normalized.get("multi_agent_steps")
@@ -1282,9 +1291,11 @@ def normalize_run_input_for_enqueue(input_payload: object, *, redact_public: boo
         for original_step, normalized_step in zip(original_steps, normalized_steps):
             if not isinstance(original_step, dict) or not isinstance(normalized_step, dict):
                 continue
-            step_tool_ids: list[str] = []
-            _append_explicit_mcp_tool_ids(step_tool_ids, original_step)
-            if step_tool_ids:
+            step_tools_present, step_tool_ids = _explicit_mcp_tool_scope(original_step)
+            if redact_public:
+                for key in _MCP_TOOL_ID_KEYS:
+                    normalized_step.pop(key, None)
+            if step_tools_present:
                 normalized_step["mcp_tool_ids"] = step_tool_ids
     return normalized
 
@@ -4933,6 +4944,56 @@ def _clean_child_execution_input(source_execution_input: dict[str, Any]) -> dict
     return cleaned
 
 
+def _multi_agent_dispatch_child_execution_input(
+    source_execution_input: dict[str, Any],
+    *,
+    parent_run_id: str,
+    dispatch_id: str,
+    step: dict[str, Any],
+    depends_on: list[str],
+    resume_payload: dict[str, Any],
+) -> dict[str, Any]:
+    cleaned = _clean_child_execution_input(source_execution_input)
+    selected_step_key = str(step["step_key"])
+    selected_source_step: dict[str, Any] | None = None
+    raw_steps = cleaned.get("multi_agent_steps")
+    if isinstance(raw_steps, list):
+        for raw_step in raw_steps:
+            if not isinstance(raw_step, dict):
+                continue
+            raw_step_key = raw_step.get("step_key")
+            if raw_step_key is None:
+                raw_step_key = raw_step.get("stepKey")
+            if str(raw_step_key or "") == selected_step_key:
+                selected_source_step = raw_step
+                break
+
+    child_step = {
+        "step_key": selected_step_key,
+        "role": str(step.get("role") or ""),
+        "title": str(step.get("title") or selected_step_key),
+        "depends_on": depends_on,
+    }
+    if selected_source_step is not None and "mcp_tool_ids" in selected_source_step:
+        child_step["mcp_tool_ids"] = list(selected_source_step["mcp_tool_ids"])
+
+    child_input = {
+        **cleaned,
+        "copied_from_run_id": parent_run_id,
+        "execution_mode": "multi_agent",
+        "multi_agent_steps": [child_step],
+        "multi_agent_dispatch": {
+            "parent_run_id": parent_run_id,
+            "parent_step_id": str(step["id"]),
+            "step_key": selected_step_key,
+            "dispatch_id": dispatch_id,
+        },
+    }
+    if resume_payload:
+        child_input["resume"] = resume_payload
+    return child_input
+
+
 def _completed_dependency_resume_payload(
     steps: list[dict[str, Any]],
     *,
@@ -5129,27 +5190,14 @@ async def create_multi_agent_dispatch_child_run(
     resume_payload = _completed_dependency_resume_payload(steps, parent_run_id=parent_run_id, depends_on=depends_on)
     source_input = parent.get("input_json") if isinstance(parent.get("input_json"), dict) else {}
     source_execution_input = _run_execution_input_from_row(parent)
-    child_execution_input = {
-        **_clean_child_execution_input(source_execution_input),
-        "copied_from_run_id": parent_run_id,
-        "execution_mode": "multi_agent",
-        "multi_agent_steps": [
-            {
-                "step_key": str(step["step_key"]),
-                "role": str(step.get("role") or ""),
-                "title": str(step.get("title") or step["step_key"]),
-                "depends_on": depends_on,
-            }
-        ],
-        "multi_agent_dispatch": {
-            "parent_run_id": parent_run_id,
-            "parent_step_id": str(step["id"]),
-            "step_key": str(step["step_key"]),
-            "dispatch_id": dispatch_id,
-        },
-    }
-    if resume_payload:
-        child_execution_input["resume"] = resume_payload
+    child_execution_input = _multi_agent_dispatch_child_execution_input(
+        source_execution_input,
+        parent_run_id=parent_run_id,
+        dispatch_id=dispatch_id,
+        step=dict(step),
+        depends_on=depends_on,
+        resume_payload=resume_payload,
+    )
 
     sanitized_source_input = strip_caller_run_auth_snapshot_fields(sanitize_user_control_input(source_input))
     if isinstance(source_input.get("input"), dict):

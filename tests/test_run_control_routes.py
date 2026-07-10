@@ -581,7 +581,7 @@ def test_retry_run_rejects_when_user_active_run_limit_is_reached(monkeypatch):
     assert calls == [("admit", "default", "user-a", 1)]
 
 
-def test_retry_run_returns_not_found_for_stale_source_capability(monkeypatch):
+def test_retry_run_returns_capability_not_authorized_for_stale_source_capability(monkeypatch):
     from app.repositories import RepositoryNotFoundError
 
     calls = []
@@ -611,8 +611,8 @@ def test_retry_run_returns_not_found_for_stale_source_capability(monkeypatch):
 
     response = client.post("/api/ai/runs/run-failed/retry", headers=headers())
 
-    assert response.status_code == 404
-    assert response.json()["detail"] == "agent_or_skill_not_found"
+    assert response.status_code == 403
+    assert response.json()["detail"] == "capability_not_authorized"
     assert calls == [("admit", "default", "user-a", 3), ("retry", "default", "user-a", "run-failed")]
 
 
@@ -4643,11 +4643,17 @@ async def test_create_multi_agent_dispatch_child_run_records_parent_child_events
             "input": {
                 "message": "build feature",
                 "execution_mode": "multi_agent",
+                "mcpToolIds": ["tool-global"],
                 "resume": {"completed_step_outputs": {"code": "forged"}},
                 "multi_agent_dispatch": {"dispatch_id": "forged"},
                 "multi_agent_steps": [
-                    {"step_key": "plan", "role": "planner"},
-                    {"step_key": "code", "role": "coder", "depends_on": ["plan"]},
+                    {"step_key": "plan", "role": "planner", "mcp_tool_ids": ["tool-plan"]},
+                    {
+                        "step_key": "code",
+                        "role": "coder",
+                        "depends_on": ["plan"],
+                        "mcpToolIds": ["tool-code"],
+                    },
                 ],
             },
             "file_ids": ["file-a"],
@@ -4762,14 +4768,25 @@ async def test_create_multi_agent_dispatch_child_run_records_parent_child_events
     assert persisted_input["input"]["resume"]["completed_step_outputs"] == {"plan": "plan output"}
     assert persisted_input["input"]["resume"]["completed_step_checkpoints"]["plan"]["checkpoint_id"] == "checkpoint-plan"
     assert persisted_input["input"]["multi_agent_steps"] == [
-        {"step_key": "code", "role": "coder", "title": "Code", "depends_on": ["plan"]}
+        {
+            "step_key": "code",
+            "role": "coder",
+            "title": "Code",
+            "depends_on": ["plan"],
+            "mcp_tool_ids": ["tool-code"],
+        }
     ]
+    assert persisted_input["input"]["mcp_tool_ids"] == ["tool-global"]
     persisted_dump = json.dumps(persisted_input, ensure_ascii=False)
+    assert "tool-plan" not in persisted_dump
     assert "forged" not in persisted_dump
     assert "private-worker" not in persisted_dump
     assert copied["principal_roles"] == ["qa_operator", "user"]
     assert copied["principal_department_id"] == "qa"
     assert copied["auth_source"] == "session-token"
+    assert copied["input"]["mcp_tool_ids"] == ["tool-global"]
+    assert copied["input"]["multi_agent_steps"][0]["mcp_tool_ids"] == ["tool-code"]
+    assert "tool-plan" not in json.dumps(copied["input"], ensure_ascii=False)
     update_sql, update_params = next((sql, params) for kind, sql, params in calls if kind == "sql" and sql.startswith("update run_steps"))
     assert "payload_json = payload_json || %s::jsonb" in update_sql
     update_payload = json.loads(update_params[0])

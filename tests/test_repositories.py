@@ -3,6 +3,7 @@ import json
 import pytest
 
 from app import repositories
+from app.models import QueueRunPayload
 from app.repositories import (
     RepositoryConflictError,
     RepositoryNotFoundError,
@@ -386,6 +387,103 @@ def test_extract_run_mcp_tool_ids_covers_top_level_aliases_and_canonical_multi_a
     )
 
     assert extracted == ["tool-a", "tool-shared", "tool-b", "tool-c", "tool-d"]
+
+
+@pytest.mark.parametrize("redact_public", [False, True])
+def test_normalize_run_input_preserves_top_level_and_step_mcp_tool_scopes(redact_public):
+    normalized = repositories.normalize_run_input_for_enqueue(
+        {
+            "message": "run scoped tools",
+            "mcpToolIds": ["tool-global"],
+            "multi_agent_steps": [
+                {"step_key": "plan", "mcp_tool_ids": ["tool-plan"]},
+                {"step_key": "code", "mcpToolIds": ["tool-code"]},
+            ],
+        },
+        redact_public=redact_public,
+    )
+
+    assert normalized["mcp_tool_ids"] == ["tool-global"]
+    assert normalized["multi_agent_steps"][0]["mcp_tool_ids"] == ["tool-plan"]
+    assert normalized["multi_agent_steps"][1]["mcp_tool_ids"] == ["tool-code"]
+    if redact_public:
+        assert "mcpToolIds" not in normalized
+        assert "mcpToolIds" not in normalized["multi_agent_steps"][1]
+    else:
+        assert normalized["mcpToolIds"] == ["tool-global"]
+        assert normalized["multi_agent_steps"][1]["mcpToolIds"] == ["tool-code"]
+    assert repositories.extract_run_mcp_tool_ids(normalized) == ["tool-global", "tool-plan", "tool-code"]
+
+    step_only = repositories.normalize_run_input_for_enqueue(
+        {
+            "multi_agent_steps": [
+                {"step_key": "plan", "mcpToolIds": ["tool-plan"]},
+                {"step_key": "code", "mcp_tool_ids": ["tool-code"]},
+            ]
+        },
+        redact_public=redact_public,
+    )
+    assert "mcp_tool_ids" not in step_only
+    assert "mcpToolIds" not in step_only
+
+
+@pytest.mark.parametrize(
+    ("selected_step_key", "selected_tool_id", "sibling_tool_id"),
+    [
+        ("plan", "tool-plan", "tool-code"),
+        ("code", "tool-code", "tool-plan"),
+    ],
+)
+def test_multi_agent_child_and_queue_input_exclude_sibling_step_tools(
+    selected_step_key,
+    selected_tool_id,
+    sibling_tool_id,
+):
+    child_input = repositories._multi_agent_dispatch_child_execution_input(
+        {
+            "message": "run scoped tools",
+            "mcpToolIds": ["tool-global"],
+            "multi_agent_steps": [
+                {"step_key": "plan", "mcp_tool_ids": ["tool-plan"]},
+                {"step_key": "code", "mcpToolIds": ["tool-code"]},
+            ],
+        },
+        parent_run_id="run-parent",
+        dispatch_id=f"dispatch-{selected_step_key}",
+        step={
+            "id": f"step-{selected_step_key}",
+            "step_key": selected_step_key,
+            "role": f"{selected_step_key}-role",
+            "title": selected_step_key.title(),
+        },
+        depends_on=[],
+        resume_payload={},
+    )
+    queue_payload = QueueRunPayload(
+        tenant_id="tenant-a",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="session-a",
+        run_id=f"run-child-{selected_step_key}",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input=child_input,
+        executor_type="claude-agent-worker",
+        skill_version="hash-primary",
+        release_decision={
+            "schema_version": "ai-platform.skill-release-decision.v1",
+            "policy_active": False,
+            "selected_version": "hash-primary",
+            "selected_track": "manifest_pin",
+        },
+        skill_manifests=[{"skill_id": "general-chat", "content_hash": "hash-primary"}],
+    )
+
+    assert child_input["mcp_tool_ids"] == ["tool-global"]
+    assert child_input["multi_agent_steps"][0]["mcp_tool_ids"] == [selected_tool_id]
+    assert sibling_tool_id not in json.dumps(child_input)
+    assert queue_payload.input == child_input
+    assert sibling_tool_id not in json.dumps(queue_payload.input)
 
 
 @pytest.mark.parametrize(

@@ -3099,6 +3099,63 @@ async def test_copy_retry_resume_revocation_returns_403_without_enqueue(monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "repository_method"),
+    [
+        (runs_module.copy_run, "copy_run_as_new_task"),
+        (runs_module.retry_run, "retry_run_as_new_task"),
+        (runs_module.resume_run, "resume_run_as_new_task"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("error_type", "error_detail"),
+    [
+        (repository_module.RepositoryNotFoundError, "agent_or_skill_not_found"),
+        (repository_module.RepositoryConflictError, "skill_inactive"),
+    ],
+)
+async def test_copy_retry_resume_missing_or_inactive_skill_returns_403_without_enqueue(
+    monkeypatch,
+    route,
+    repository_method,
+    error_type,
+    error_detail,
+):
+    calls = []
+
+    async def reject_new_run(*args, **kwargs):
+        calls.append((repository_method, kwargs["run_id"]))
+        raise error_type(error_detail)
+
+    async def fail_prepare(*args, **kwargs):
+        calls.append(("prepare", kwargs))
+        raise AssertionError("revoked Skill must fail before queue preparation")
+
+    async def fail_enqueue(*args, **kwargs):
+        calls.append(("enqueue", kwargs))
+        raise AssertionError("revoked Skill must not enqueue")
+
+    async def allow_admission(*args, **kwargs):
+        return 0
+
+    monkeypatch.setattr(runs_module, "transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, repository_method, reject_new_run)
+    monkeypatch.setattr(runs_module, "prepare_copied_run_for_queue", fail_prepare)
+    monkeypatch.setattr(runs_module, "enqueue_run", fail_enqueue)
+    monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", allow_admission)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route(
+            "run-original",
+            principal=principal(department_id="qa", roles=["qa_operator"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert calls == [(repository_method, "run-original")]
+
+
+@pytest.mark.asyncio
 async def test_persisted_owner_capability_authorization_uses_run_snapshot(monkeypatch):
     calls = []
     run = {
