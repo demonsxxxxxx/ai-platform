@@ -2248,6 +2248,125 @@ def test_marketplace_activation_uses_non_rollout_admin_response_inside_write_tra
     assert toggle_index < audit_index < list_index < commit_index
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("patch", "/api/marketplace/qa-file-reviewer/activate", {"active": False}),
+        ("patch", "/api/marketplace/qa-file-reviewer/activate", {"active": True}),
+        (
+            "post",
+            "/api/marketplace/",
+            {"skill_name": "qa-file-reviewer", "description": "Created response failure"},
+        ),
+        ("put", "/api/marketplace/qa-file-reviewer", {"description": "Updated response failure"}),
+    ],
+    ids=["deactivate", "activate", "create", "update"],
+)
+def test_marketplace_writes_roll_back_when_response_model_build_fails(monkeypatch, method, path, payload):
+    calls = install_route_fakes(monkeypatch)
+    transaction_id = 0
+
+    @asynccontextmanager
+    async def recording_transaction():
+        nonlocal transaction_id
+        transaction_id += 1
+        current_id = transaction_id
+        calls.append(("tx_enter", {"id": current_id}))
+        try:
+            yield object()
+        except Exception:
+            calls.append(("tx_rollback", {"id": current_id}))
+            raise
+        else:
+            calls.append(("tx_commit", {"id": current_id}))
+
+    def fail_response_build(row, principal):
+        calls.append(("response_build_failed", {"skill_id": row.get("skill_id")}))
+        raise RuntimeError("response_build_failed")
+
+    monkeypatch.setattr("app.routes.skills_marketplace.transaction", recording_transaction)
+    monkeypatch.setattr("app.routes.skills_marketplace._marketplace_item", fail_response_build)
+    client = TestClient(create_app(), raise_server_exceptions=False)
+
+    response = getattr(client, method)(path, json=payload, headers=headers("marketplace:admin"))
+
+    assert response.status_code == 500
+    names = [name for name, _ in calls]
+    assert names.count("tx_enter") == 1
+    assert "tx_rollback" in names
+    assert "tx_commit" not in names
+    assert names.index("response_build_failed") < names.index("tx_rollback")
+    assert sum(name == "audit" for name, _ in calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("patch", "/api/marketplace/qa-file-reviewer/activate", {"active": False}),
+        ("patch", "/api/marketplace/qa-file-reviewer/activate", {"active": True}),
+        (
+            "post",
+            "/api/marketplace/",
+            {"skill_name": "qa-file-reviewer", "description": "Created missing response"},
+        ),
+        ("put", "/api/marketplace/qa-file-reviewer", {"description": "Updated missing response"}),
+    ],
+    ids=["deactivate", "activate", "create", "update"],
+)
+def test_marketplace_writes_roll_back_when_response_catalog_row_is_missing(monkeypatch, method, path, payload):
+    calls = install_route_fakes(monkeypatch)
+    transaction_id = 0
+    catalog_call_count = 0
+    activation_path = path.endswith("/activate")
+
+    @asynccontextmanager
+    async def recording_transaction():
+        nonlocal transaction_id
+        transaction_id += 1
+        current_id = transaction_id
+        calls.append(("tx_enter", {"id": current_id}))
+        try:
+            yield object()
+        except Exception:
+            calls.append(("tx_rollback", {"id": current_id}))
+            raise
+        else:
+            calls.append(("tx_commit", {"id": current_id}))
+
+    async def missing_response_catalog(conn, *, tenant_id, include_disabled=False, rollout_key=None):
+        nonlocal catalog_call_count
+        catalog_call_count += 1
+        calls.append(
+            (
+                "response_catalog",
+                {
+                    "call": catalog_call_count,
+                    "include_disabled": include_disabled,
+                    "rollout_key": rollout_key,
+                },
+            )
+        )
+        if not activation_path and catalog_call_count == 1:
+            return [dict(_catalog_rows()[0])]
+        return []
+
+    monkeypatch.setattr("app.routes.skills_marketplace.transaction", recording_transaction)
+    monkeypatch.setattr(
+        "app.routes.skills_marketplace.repositories.list_public_skill_catalog",
+        missing_response_catalog,
+    )
+    client = TestClient(create_app(), raise_server_exceptions=False)
+
+    response = getattr(client, method)(path, json=payload, headers=headers("marketplace:admin"))
+
+    assert response.status_code == 404
+    names = [name for name, _ in calls]
+    assert names.count("tx_enter") == 1
+    assert "tx_rollback" in names
+    assert "tx_commit" not in names
+    assert sum(name == "audit" for name, _ in calls) == 1
+
+
 def test_public_skill_batch_routes_are_permission_gated_and_report_item_errors(monkeypatch):
     install_route_fakes(monkeypatch)
 

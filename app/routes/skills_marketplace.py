@@ -736,7 +736,7 @@ async def _persist_marketplace_lifecycle(
     skill_name: str,
     request: MarketplaceLifecycleRequest,
     audit_action: str,
-) -> dict[str, Any]:
+) -> MarketplaceSkillResponse:
     safe_skill_name = _safe_skill_name(request.skill_name or skill_name)
     if safe_skill_name != skill_name:
         raise HTTPException(status_code=400, detail="marketplace_skill_name_mismatch")
@@ -805,7 +805,8 @@ async def _persist_marketplace_lifecycle(
             tenant_id=principal.tenant_id,
             include_disabled=True,
         )
-    return _find_row(rows_after, skill_name=safe_skill_name)
+        response_row = _find_row(rows_after, skill_name=safe_skill_name)
+        return _marketplace_item(response_row, principal)
 
 
 async def _persist_public_import_package(
@@ -1380,13 +1381,12 @@ async def create_marketplace_skill(
     request = _marketplace_lifecycle_request(payload)
     if not request.skill_name:
         raise HTTPException(status_code=400, detail="marketplace_skill_name_required")
-    row = await _persist_marketplace_lifecycle(
+    return await _persist_marketplace_lifecycle(
         principal=principal,
         skill_name=_safe_skill_name(request.skill_name),
         request=request,
         audit_action="marketplace.skill.created",
     )
-    return _marketplace_item(row, principal)
 
 
 @router.get("/marketplace/tags", response_model=MarketplaceTagsResponse)
@@ -1434,13 +1434,12 @@ async def update_marketplace_skill_direct(
     _require_permission(principal, "marketplace:admin")
     _require_ai_admin(principal)
     safe_skill_name = _safe_skill_name(skill_name)
-    row = await _persist_marketplace_lifecycle(
+    return await _persist_marketplace_lifecycle(
         principal=principal,
         skill_name=safe_skill_name,
         request=_marketplace_lifecycle_request(payload),
         audit_action="marketplace.skill.updated",
     )
-    return _marketplace_item(row, principal)
 
 
 @router.patch("/marketplace/{skill_name}/activate")
@@ -1485,9 +1484,10 @@ async def activate_marketplace_skill_direct(
             )
             row = _find_row(rows, skill_name=safe_skill_name)
             row["status"] = distribution["status"]
+            response = _marketplace_item(row, principal)
     except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
         raise _repository_http_exception(exc) from exc
-    return _marketplace_item(row, principal)
+    return response
 
 
 @router.delete("/marketplace/{skill_name}")
