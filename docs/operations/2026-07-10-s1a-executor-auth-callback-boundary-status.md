@@ -17,6 +17,13 @@ Status:
   - P1 fix: trusted callback allowlist now rejects link-local/reserved IPs such as `169.254.169.254` and enforces a callback port allowlist (`80`, `443`, `8000`, `8020`).
   - P1 fix: executor scope binding now fails closed with `executor_scope_not_configured` when `AI_PLATFORM_SESSION_ID` or `AI_PLATFORM_RUN_ID` is missing, and rejects mismatched session/run even with a valid executor credential.
   - Post-review verification: `python -m pytest tests/test_sandbox_executor_app.py tests/test_sandbox_runtime.py tests/test_sandbox_container_provider.py tests/test_runtime_callbacks.py tests/test_sandbox_contracts.py -q --basetemp .pytest-tmp\\s1a-final-verify` -> `118 passed`.
+- [x] Phase 7: GitHub evidence chain recorded.
+  - Issue: `#373` (`S1A: executor authentication and callback boundary hardening`)
+  - Branch: `codex/373-s1a-executor-auth-callback-boundary`
+  - PR: `#374` (`fix: harden sandbox executor auth boundary`)
+  - Head: `ac3bcd4b07bc9276f2432d9eaadbc6c396081ab4`
+  - PR comment posted with sub-agent review substitute scope, findings, fixes, and local verification evidence.
+  - Current CI state on PR `#374`: `backend required` = success, `projection audit, lint, build, trace` = success, `packaged image build` = success, `frontend required` = success.
 
 Constraints:
 - Do not modify `app/worker.py`, `app/repositories.py`, `app/schema.sql`, `app/routes/runs.py`, `app/executors/claude_agent_worker.py`, `deploy/**`, `Dockerfile`, `frontend/**`, or Capability Distribution-owned schema/repository/run/worker files.
