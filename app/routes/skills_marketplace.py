@@ -12,7 +12,13 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
-from app.capability_distribution import CapabilityAccessContext, CapabilityDistributionSubject, resolve_capability_access
+from app.capability_distribution import (
+    CapabilityAccessContext,
+    CapabilityAccessDecision,
+    CapabilityDistributionSubject,
+    capability_distribution_audit_payload,
+    resolve_capability_access,
+)
 from app.db import transaction
 from app.models import (
     MarketplaceInstallResponse,
@@ -400,13 +406,13 @@ async def _public_catalog_rows(
     return _attach_user_file_overlays(rows, overlays)
 
 
-async def _public_skill_row(
+async def _public_skill_access(
     *,
     principal: AuthPrincipal,
     skill_name: str,
     include_file_overlay_content: bool = False,
     include_user_file_overlays: bool = True,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], CapabilityAccessDecision]:
     async with transaction() as conn:
         rows = await repositories.list_public_skill_catalog(
             conn,
@@ -449,7 +455,23 @@ async def _public_skill_row(
             if include_user_file_overlays
             else []
         )
-    return _attach_user_file_overlays([row], overlays)[0]
+    return _attach_user_file_overlays([row], overlays)[0], decision
+
+
+async def _public_skill_row(
+    *,
+    principal: AuthPrincipal,
+    skill_name: str,
+    include_file_overlay_content: bool = False,
+    include_user_file_overlays: bool = True,
+) -> dict[str, Any]:
+    row, _ = await _public_skill_access(
+        principal=principal,
+        skill_name=skill_name,
+        include_file_overlay_content=include_file_overlay_content,
+        include_user_file_overlays=include_user_file_overlays,
+    )
+    return row
 
 
 def _find_row(rows: list[dict[str, Any]], *, skill_name: str) -> dict[str, Any]:
@@ -1126,8 +1148,13 @@ async def publish_skill(
     _require_permission(principal, "marketplace:publish")
     request = _request_model(PublishToMarketplaceRequest, payload or {})
     safe_skill_name = _safe_skill_name(skill_name)
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
-    row = dict(_find_row(rows, skill_name=safe_skill_name))
+    row = dict(
+        await _public_skill_row(
+            principal=principal,
+            skill_name=safe_skill_name,
+            include_user_file_overlays=False,
+        )
+    )
     if request.description:
         row["description"] = request.description
     if request.version:
@@ -1445,7 +1472,16 @@ async def _install_or_update_marketplace_skill(
     _require_permission(principal, "marketplace:read")
     _require_permission(principal, "skill:write")
     safe_skill_name = _safe_skill_name(skill_name)
-    row = await _public_skill_row(principal=principal, skill_name=safe_skill_name)
+    row, decision = await _public_skill_access(principal=principal, skill_name=safe_skill_name)
+    audit_payload = {"department_id": principal.department_id}
+    audit_payload.update(
+        capability_distribution_audit_payload(
+            decision=decision,
+            actor_department_id=principal.department_id,
+            capability_kind="skill",
+            capability_id=safe_skill_name,
+        )
+    )
     try:
         async with transaction() as conn:
             await repositories.append_audit_log(
@@ -1455,7 +1491,7 @@ async def _install_or_update_marketplace_skill(
                 action=audit_action,
                 target_type="skill",
                 target_id=safe_skill_name,
-                payload_json={"department_id": principal.department_id},
+                payload_json=audit_payload,
             )
     except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
         raise _repository_http_exception(exc) from exc

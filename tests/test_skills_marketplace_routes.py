@@ -605,6 +605,95 @@ def test_skill_and_marketplace_write_contracts_fail_closed_without_permissions(m
     assert install_response.json()["detail"] == "missing_permission:skill:write"
 
 
+def test_publish_distribution_allows_authorized_skill(monkeypatch):
+    calls = install_route_fakes(
+        monkeypatch,
+        distribution_rows=[
+            {
+                "capability_kind": "skill",
+                "capability_id": "qa-file-reviewer",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": ["qa"],
+                "allowed_roles": [],
+                "metadata_json": {},
+            }
+        ],
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/skills/qa-file-reviewer/publish",
+        json={"description": "Approved publish preview."},
+        headers=headers("marketplace:publish"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["description"] == "Approved publish preview."
+    assert any(
+        name == "audit" and payload["action"] == "skill.public.publish_requested"
+        for name, payload in calls
+    )
+
+
+def test_publish_distribution_hides_cross_department_skill(monkeypatch):
+    calls = install_route_fakes(
+        monkeypatch,
+        distribution_rows=[
+            {
+                "capability_kind": "skill",
+                "capability_id": "qa-file-reviewer",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": ["qa"],
+                "allowed_roles": [],
+                "metadata_json": {},
+            }
+        ],
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/skills/qa-file-reviewer/publish",
+        json={"description": "Unauthorized publish preview."},
+        headers=headers("marketplace:publish", department_id="rd"),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "skill_not_found"
+    assert not any(name == "audit" for name, _ in calls)
+
+
+def test_publish_distribution_hides_disabled_and_missing_rows(monkeypatch):
+    distributions = [
+        {
+            "capability_kind": "skill",
+            "capability_id": "qa-file-reviewer",
+            "status": "disabled",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": [],
+            "allowed_roles": [],
+            "metadata_json": {},
+        }
+    ]
+    calls = install_route_fakes(monkeypatch, distribution_rows=distributions)
+    client = TestClient(create_app())
+    publish_headers = headers("marketplace:publish")
+
+    disabled = client.post("/api/skills/qa-file-reviewer/publish", json={}, headers=publish_headers)
+    distributions.clear()
+    missing = client.post("/api/skills/qa-file-reviewer/publish", json={}, headers=publish_headers)
+
+    assert disabled.status_code == 404
+    assert disabled.json()["detail"] == "skill_not_found"
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "skill_not_found"
+    assert not any(name == "audit" for name, _ in calls)
+
+
 def test_marketplace_list_fails_closed_and_projects_openapi_object_shape(monkeypatch):
     install_route_fakes(monkeypatch)
     client = TestClient(create_app())
@@ -720,6 +809,92 @@ def test_shared_skill_lifecycle_requires_admin_and_marketplace_install_stays_use
     admin = headers("skill:write,skill:delete,marketplace:read", roles="admin")
     assert client.patch("/api/skills/qa-file-reviewer/toggle", json={"enabled": False}, headers=admin).status_code == 200
     assert any(name == "toggle_distribution" for name, _ in calls)
+
+
+def test_marketplace_install_audit_includes_allowed_distribution_decision(monkeypatch):
+    calls = install_route_fakes(
+        monkeypatch,
+        distribution_rows=[
+            {
+                "capability_kind": "skill",
+                "capability_id": "qa-file-reviewer",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": ["qa"],
+                "allowed_roles": ["qa_operator"],
+                "metadata_json": {},
+            }
+        ],
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/marketplace/qa-file-reviewer/install",
+        headers=headers("skill:write,marketplace:read", roles="QA Operator"),
+    )
+
+    assert response.status_code == 200
+    audit = next(
+        payload
+        for name, payload in calls
+        if name == "audit" and payload["action"] == "marketplace.skill.installed"
+    )
+    assert audit["payload_json"] == {
+        "department_id": "qa",
+        "capability_kind": "skill",
+        "capability_id": "qa-file-reviewer",
+        "actor_department_id": "qa",
+        "department_scope_ids": ["qa"],
+        "role_scope_ids": ["qa_operator"],
+        "scope_mode": "allowlist",
+        "decision_reason": "allowed",
+        "admin_bypass": False,
+    }
+    assert not any(name == "toggle_distribution" for name, _ in calls)
+
+
+def test_marketplace_update_audit_includes_admin_bypass_distribution_decision(monkeypatch):
+    calls = install_route_fakes(
+        monkeypatch,
+        distribution_rows=[
+            {
+                "capability_kind": "skill",
+                "capability_id": "qa-file-reviewer",
+                "status": "disabled",
+                "visible_to_user": False,
+                "scope_mode": "allowlist",
+                "department_ids": ["qa"],
+                "allowed_roles": ["qa_operator"],
+                "metadata_json": {},
+            }
+        ],
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/marketplace/qa-file-reviewer/update",
+        headers=headers("skill:write,marketplace:read", roles="admin", department_id="platform"),
+    )
+
+    assert response.status_code == 200
+    audit = next(
+        payload
+        for name, payload in calls
+        if name == "audit" and payload["action"] == "marketplace.skill.updated"
+    )
+    assert audit["payload_json"] == {
+        "department_id": "platform",
+        "capability_kind": "skill",
+        "capability_id": "qa-file-reviewer",
+        "actor_department_id": "platform",
+        "department_scope_ids": ["qa"],
+        "role_scope_ids": ["qa_operator"],
+        "scope_mode": "allowlist",
+        "decision_reason": "admin_bypass",
+        "admin_bypass": True,
+    }
+    assert not any(name == "toggle_distribution" for name, _ in calls)
 
 
 def test_skill_toggle_and_marketplace_install_update_tenant_availability(monkeypatch):
