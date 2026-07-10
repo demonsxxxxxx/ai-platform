@@ -43,6 +43,7 @@ export interface DownloadPreviewUrlOptions {
 
 export interface OpenPreviewUrlOptions {
   url: string;
+  fileName?: string | null;
   mimeType?: string | null;
   fetchOptions?: DocumentFetchOptions;
   openWindow?: OpenWindow;
@@ -50,6 +51,24 @@ export interface OpenPreviewUrlOptions {
   revokeObjectURL?: RevokeObjectURL;
   revokeDelayMs?: number;
 }
+
+const ACTIVE_PREVIEW_MIME_TYPES = new Set([
+  "application/xhtml+xml",
+  "application/xml",
+  "image/svg+xml",
+  "text/html",
+  "text/xml",
+]);
+
+const ACTIVE_PREVIEW_EXTENSIONS = new Set([
+  "htm",
+  "html",
+  "mhtml",
+  "shtml",
+  "svg",
+  "xhtml",
+  "xml",
+]);
 
 function getDefaultCreateObjectURL(): CreateObjectURL {
   return URL.createObjectURL.bind(URL);
@@ -65,6 +84,59 @@ function getDefaultDocument(): Document | undefined {
 
 function getDefaultOpenWindow(): OpenWindow | undefined {
   return typeof window === "undefined" ? undefined : window.open.bind(window);
+}
+
+function normalizeMimeType(value?: string | null): string {
+  return value?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+}
+
+function getPathExtension(value?: string | null): string {
+  if (!value) {
+    return "";
+  }
+  const [path] = value.split(/[?#]/, 1);
+  const normalized = decodeURIComponent(path).replace(/\\/g, "/");
+  const segment = normalized.split("/").pop() ?? "";
+  const lastDot = segment.lastIndexOf(".");
+  return lastDot <= 0 ? "" : segment.slice(lastDot + 1).toLowerCase();
+}
+
+function isPotentiallyActivePreviewContent(input: {
+  url: string;
+  fileName?: string | null;
+  mimeType?: string | null;
+}): boolean {
+  if (ACTIVE_PREVIEW_MIME_TYPES.has(normalizeMimeType(input.mimeType))) {
+    return true;
+  }
+  if (ACTIVE_PREVIEW_EXTENSIONS.has(getPathExtension(input.fileName))) {
+    return true;
+  }
+  return ACTIVE_PREVIEW_EXTENSIONS.has(getPathExtension(input.url));
+}
+
+function shouldFailClosedOpaqueAuthenticatedOpen(
+  input: OpenPreviewUrlOptions,
+): boolean {
+  return (
+    shouldUseAuthenticatedDocumentRequest(input.url, input.fetchOptions) &&
+    !normalizeMimeType(input.mimeType) &&
+    !getPathExtension(input.fileName) &&
+    !getPathExtension(input.url)
+  );
+}
+
+async function createPlainTextDocumentObjectUrl(input: {
+  url: string;
+  fetchOptions?: DocumentFetchOptions;
+  createObjectURL?: CreateObjectURL;
+}): Promise<string> {
+  const buffer = await fetchDocumentArrayBuffer(input.url, input.fetchOptions);
+  const blob = new Blob([buffer], {
+    type: "text/plain;charset=utf-8",
+  });
+  const createObjectURL = input.createObjectURL ?? getDefaultCreateObjectURL();
+  return createObjectURL(blob);
 }
 
 export async function createDocumentObjectUrl(input: {
@@ -194,6 +266,32 @@ export async function openPreviewUrl(
     return;
   }
 
+  if (isUnsafeExternalHttpDocumentUrl(input.url, input.fetchOptions)) {
+    return;
+  }
+  if (isUnsafeUnauthenticatedDocumentUrl(input.url, input.fetchOptions)) {
+    return;
+  }
+
+  if (
+    isPotentiallyActivePreviewContent(input) ||
+    shouldFailClosedOpaqueAuthenticatedOpen(input)
+  ) {
+    const objectUrl = await createPlainTextDocumentObjectUrl({
+      url: input.url,
+      fetchOptions: input.fetchOptions,
+      createObjectURL: input.createObjectURL,
+    });
+    openWindow(objectUrl, "_blank", "noopener noreferrer");
+    const revokeObjectURL =
+      input.revokeObjectURL ?? getDefaultRevokeObjectURL();
+    setTimeout(
+      () => revokeObjectURL(objectUrl),
+      input.revokeDelayMs ?? 30_000,
+    );
+    return;
+  }
+
   if (shouldUseAuthenticatedDocumentRequest(input.url, input.fetchOptions)) {
     const objectUrl = await createDocumentObjectUrl({
       url: input.url,
@@ -208,13 +306,6 @@ export async function openPreviewUrl(
       () => revokeObjectURL(objectUrl),
       input.revokeDelayMs ?? 30_000,
     );
-    return;
-  }
-
-  if (isUnsafeExternalHttpDocumentUrl(input.url, input.fetchOptions)) {
-    return;
-  }
-  if (isUnsafeUnauthenticatedDocumentUrl(input.url, input.fetchOptions)) {
     return;
   }
 

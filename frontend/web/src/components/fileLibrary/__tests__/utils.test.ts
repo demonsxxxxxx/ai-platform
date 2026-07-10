@@ -338,6 +338,7 @@ test("file context menu download and open actions use safe revealed file urls", 
   assert.match(source, /safeFileUrl/);
   assert.match(source, /downloadPreviewUrl/);
   assert.match(source, /openPreviewUrl/);
+  assert.match(source, /fileName:\s*file\.file_name/);
   assert.doesNotMatch(source, /getFullUrl\(file\.url!\)/);
   assert.doesNotMatch(source, /getFullUrl\(safeFileUrl\)/);
   assert.doesNotMatch(source, /window\.open\(\s*getFullUrl/);

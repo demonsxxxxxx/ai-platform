@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { useState, useRef, useCallback, memo, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Paperclip, Image, Video, Music, FileText } from "lucide-react";
@@ -31,8 +32,124 @@ const CATEGORY_ACCEPT_MAP: Record<FileCategory, string> = {
   video: "video/*",
   audio: "audio/*",
   document:
-    ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.rtf,.odt,.ods,.odp,.epub,.json,.xml,.html,.htm,.dxf,.dwg,.log,.yaml,.yml,.toml,.ini,.cfg,.tex,.diff,.patch,.py,.js,.ts,.jsx,.tsx,.vue,.svelte,.go,.rs,.rb,.php,.java,.c,.cpp,.h,.cs,.swift,.kt,.scala,.dart,.lua,.r,.pl,.sql,.sh,.bash,.zsh,.fish,.ps1,.bat,.cmd,.properties,.gradle,.cmake,.env,.graphql,.proto,.zip,.rar,.7z,.tar,.gz,.bz2,.xz,.tgz",
+    ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.csv,.rtf,.odt,.ods,.odp,.epub,.json,.dxf,.dwg,.log,.yaml,.yml,.toml,.ini,.cfg,.tex,.diff,.patch,.py,.js,.ts,.jsx,.tsx,.vue,.svelte,.go,.rs,.rb,.php,.java,.c,.cpp,.h,.cs,.swift,.kt,.scala,.dart,.lua,.r,.pl,.sql,.sh,.bash,.zsh,.fish,.ps1,.bat,.cmd,.properties,.gradle,.cmake,.env,.graphql,.proto,.zip,.rar,.7z,.tar,.gz,.bz2,.xz,.tgz",
 };
+
+const ACTIVE_UPLOAD_MIME_TYPES = new Set([
+  "application/xhtml+xml",
+  "application/xml",
+  "image/svg+xml",
+  "text/html",
+  "text/xml",
+]);
+
+const ACTIVE_UPLOAD_EXTENSIONS = new Set([
+  "htm",
+  "html",
+  "mhtml",
+  "shtml",
+  "svg",
+  "xhtml",
+  "xml",
+]);
+
+type UploadBatchValidationResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason:
+        | "active_content_blocked"
+        | "permission_denied"
+        | "permission_probe_failed";
+      blockedCategory: FileCategory;
+      blockedFileName: string;
+    };
+
+function normalizeMimeType(value?: string | null): string {
+  return value?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+}
+
+function getFileExtension(value?: string | null): string {
+  if (!value) {
+    return "";
+  }
+  const normalized = value.replace(/\\/g, "/");
+  const segment = normalized.split("/").pop() ?? "";
+  const lastDot = segment.lastIndexOf(".");
+  return lastDot <= 0 ? "" : segment.slice(lastDot + 1).toLowerCase();
+}
+
+function isPotentiallyActiveUpload(file: Pick<File, "name" | "type">): boolean {
+  if (ACTIVE_UPLOAD_MIME_TYPES.has(normalizeMimeType(file.type))) {
+    return true;
+  }
+  return ACTIVE_UPLOAD_EXTENSIONS.has(getFileExtension(file.name));
+}
+
+/**
+ * Resolve the effective upload category, preserving explicit user selection.
+ */
+export function inferUploadCategory(
+  file: Pick<File, "type">,
+  requestedCategory?: FileCategory,
+): FileCategory {
+  if (requestedCategory) {
+    return requestedCategory;
+  }
+  if (file.type.startsWith("image/")) {
+    return "image";
+  }
+  if (file.type.startsWith("video/")) {
+    return "video";
+  }
+  if (file.type.startsWith("audio/")) {
+    return "audio";
+  }
+  return "document";
+}
+
+/**
+ * Validate a selected upload batch before any browser upload work begins.
+ */
+export function validateUploadBatch(
+  files: readonly Pick<File, "name" | "type">[],
+  options: {
+    requestedCategory?: FileCategory;
+    hasPermission: (permission: Permission) => boolean;
+  },
+): UploadBatchValidationResult {
+  for (const file of files) {
+    const fileCategory = inferUploadCategory(file, options.requestedCategory);
+    if (isPotentiallyActiveUpload(file)) {
+      return {
+        ok: false,
+        reason: "active_content_blocked",
+        blockedCategory: fileCategory,
+        blockedFileName: file.name,
+      };
+    }
+
+    try {
+      if (!options.hasPermission(CATEGORY_PERMISSIONS[fileCategory])) {
+        return {
+          ok: false,
+          reason: "permission_denied",
+          blockedCategory: fileCategory,
+          blockedFileName: file.name,
+        };
+      }
+    } catch {
+      return {
+        ok: false,
+        reason: "permission_probe_failed",
+        blockedCategory: fileCategory,
+        blockedFileName: file.name,
+      };
+    }
+  }
+
+  return { ok: true };
+}
 
 // Icons
 const CATEGORY_ICONS: Record<FileCategory, React.ElementType> = {
@@ -63,7 +180,13 @@ export const FileUploadButton = memo(function FileUploadButton({
 
   // Get available categories based on permissions
   const availableCategories = Object.keys(CATEGORY_PERMISSIONS).filter((cat) =>
-    hasPermission(CATEGORY_PERMISSIONS[cat as FileCategory]),
+    (() => {
+      try {
+        return hasPermission(CATEGORY_PERMISSIONS[cat as FileCategory]);
+      } catch {
+        return false;
+      }
+    })(),
   ) as FileCategory[];
 
   // Check if user has any upload permission
@@ -86,24 +209,40 @@ export const FileUploadButton = memo(function FileUploadButton({
     (files: FileList | null, category?: FileCategory) => {
       if (!files || files.length === 0) return;
 
-      for (const file of Array.from(files)) {
-        const fileCategory =
-          category || file.type.startsWith("image/")
-            ? "image"
-            : file.type.startsWith("video/")
-              ? "video"
-              : file.type.startsWith("audio/")
-                ? "audio"
-                : "document";
-
-        if (!hasPermission(CATEGORY_PERMISSIONS[fileCategory])) {
+      const validation = validateUploadBatch(Array.from(files), {
+        requestedCategory: category,
+        hasPermission(permission) {
+          return hasPermission(permission);
+        },
+      });
+      if (!validation.ok) {
+        if (validation.reason === "active_content_blocked") {
           toast.error(
-            t("fileUpload.noPermission", {
-              type: t(`fileUpload.categories.${fileCategory}`),
+            t("fileUpload.activeContentBlocked", {
+              fileName: validation.blockedFileName,
+              defaultValue:
+                "Active HTML, SVG, or XML files are blocked for browser uploads.",
             }),
           );
-          continue;
+          return;
         }
+
+        if (validation.reason === "permission_probe_failed") {
+          toast.error(
+            t("fileUpload.permissionCheckFailed", {
+              defaultValue:
+                "Upload permissions could not be verified. Upload cancelled.",
+            }),
+          );
+          return;
+        }
+
+        toast.error(
+          t("fileUpload.noPermission", {
+            type: t(`fileUpload.categories.${validation.blockedCategory}`),
+          }),
+        );
+        return;
       }
 
       // Delegate count validation + upload to the hook
