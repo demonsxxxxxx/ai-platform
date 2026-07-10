@@ -1152,7 +1152,10 @@ async def test_download_artifact_streams_file_bytes(monkeypatch):
     monkeypatch.setattr("app.routes.files.get_authorized_artifact", fake_get_authorized_artifact)
     monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
 
-    response = await download_artifact("art-a", principal=principal())
+    response = await download_artifact(
+        "art-a",
+        principal=principal(permissions=["artifact:download"]),
+    )
 
     assert response.body == b"docx-bytes"
     assert "filename*=UTF-8''demo_reviewed.docx" in response.headers["content-disposition"]
@@ -1175,7 +1178,10 @@ async def test_download_artifact_denied_does_not_read_storage(monkeypatch):
     monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
 
     with pytest.raises(Exception) as exc_info:
-        await download_artifact("art-b", principal=principal())
+        await download_artifact(
+            "art-b",
+            principal=principal(permissions=["artifact:download"]),
+        )
 
     assert getattr(exc_info.value, "status_code", None) == 404
     assert getattr(exc_info.value, "detail", None) == "artifact_not_found"
@@ -1195,11 +1201,11 @@ async def test_upload_file_rejects_cross_user_session(monkeypatch):
         return None
 
     class FakeUpload:
-        filename = "demo.docx"
-        content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = "demo.txt"
+        content_type = "text/plain"
 
-        async def read(self):
-            return b"should-not-be-read"
+        async def read(self, *args):
+            return b"should-not-be-stored"
 
     monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.files.ensure_workspace", fake_ensure_workspace)
@@ -1211,7 +1217,7 @@ async def test_upload_file_rejects_cross_user_session(monkeypatch):
             file=FakeUpload(),
             workspace_id="default",
             session_id="ses_b",
-            principal=principal(),
+            principal=principal(permissions=["file:upload", "file:upload:document"]),
         )
 
     assert getattr(exc_info.value, "status_code", None) == 404
@@ -1230,10 +1236,10 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
         assert kwargs["storage_key"].startswith("tenants/tenant-a/")
 
     class FakeUpload:
-        filename = "demo.docx"
-        content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = "demo.txt"
+        content_type = "text/plain"
 
-        async def read(self):
+        async def read(self, *args):
             return b"docx-bytes"
 
     class FakeStorage:
@@ -1255,7 +1261,12 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
     monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
     monkeypatch.setattr("app.routes.files.new_id", lambda prefix: "file_uploaded")
 
-    response = await upload_file(file=FakeUpload(), workspace_id="default", session_id=None, principal=principal())
+    response = await upload_file(
+        file=FakeUpload(),
+        workspace_id="default",
+        session_id=None,
+        principal=principal(permissions=["file:upload", "file:upload:document"]),
+    )
     payload = response.model_dump()
 
     assert payload == {"file_id": "file_uploaded", "sha256": "sha-a", "size_bytes": 10}
