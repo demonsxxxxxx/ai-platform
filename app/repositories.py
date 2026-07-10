@@ -876,6 +876,275 @@ def _mcp_server_projection(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _capability_distribution_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if str(item)]
+    return []
+
+
+def _capability_distribution_json(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _capability_distribution_projection(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(row.get("id") or ""),
+        "tenant_id": str(row.get("tenant_id") or ""),
+        "capability_kind": str(row.get("capability_kind") or ""),
+        "capability_id": str(row.get("capability_id") or ""),
+        "status": str(row.get("status") or "disabled"),
+        "visible_to_user": bool(row.get("visible_to_user")),
+        "scope_mode": str(row.get("scope_mode") or "allowlist"),
+        "department_ids": _capability_distribution_string_list(row.get("department_ids")),
+        "allowed_roles": _capability_distribution_string_list(row.get("allowed_roles")),
+        "metadata_json": _capability_distribution_json(row.get("metadata_json")),
+        "updated_by": row.get("updated_by"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+async def ensure_tenant_capability_distribution_backfill(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+) -> None:
+    """Insert missing distribution rows from the current legacy authorities."""
+
+    await conn.execute(
+        """
+        insert into tenant_capability_distributions(
+          id, tenant_id, capability_kind, capability_id, status, visible_to_user,
+          scope_mode, department_ids, allowed_roles, metadata_json
+        )
+        select
+          source_rows.id, source_rows.tenant_id, source_rows.capability_kind,
+          source_rows.capability_id, source_rows.status, source_rows.visible_to_user,
+          source_rows.scope_mode, source_rows.department_ids, source_rows.allowed_roles,
+          source_rows.metadata_json
+        from (
+          select
+            'capdist_' || substr(md5(tenant_workbench_skills.tenant_id || ':skill:' || tenant_workbench_skills.skill_id), 1, 24),
+            tenant_workbench_skills.tenant_id,
+            'skill',
+            tenant_workbench_skills.skill_id,
+            tenant_workbench_skills.status,
+            tenant_workbench_skills.visible_to_user,
+            'allowlist',
+            array[]::text[],
+            '[]'::jsonb,
+            '{"legacy_source":"tenant_workbench_skills"}'::jsonb
+          from tenant_workbench_skills
+          join skills on skills.id = tenant_workbench_skills.skill_id
+          where tenant_workbench_skills.tenant_id = %s
+          union all
+          select
+            'capdist_' || substr(md5(%s || ':skill:' || skills.id), 1, 24),
+            %s,
+            'skill',
+            skills.id,
+            'active',
+            true,
+            'allowlist',
+            array[]::text[],
+            '[]'::jsonb,
+            '{"legacy_source":"builtin_public_skill"}'::jsonb
+          from skills
+          left join tenant_workbench_skills
+            on tenant_workbench_skills.tenant_id = %s
+           and tenant_workbench_skills.skill_id = skills.id
+          where skills.id = any(%s)
+            and tenant_workbench_skills.skill_id is null
+        ) as source_rows(
+          id, tenant_id, capability_kind, capability_id, status, visible_to_user,
+          scope_mode, department_ids, allowed_roles, metadata_json
+        )
+        on conflict (tenant_id, capability_kind, capability_id) do nothing
+        """,
+        (tenant_id, tenant_id, tenant_id, tenant_id, sorted(PUBLIC_WORKBENCH_SKILL_IDS)),
+    )
+    await conn.execute(
+        """
+        insert into tenant_capability_distributions(
+          id, tenant_id, capability_kind, capability_id, status, visible_to_user,
+          scope_mode, department_ids, allowed_roles, metadata_json, updated_by
+        )
+        select
+          'capdist_' || substr(md5(mcp_servers.tenant_id || ':mcp_server:' || mcp_servers.name), 1, 24),
+          mcp_servers.tenant_id,
+          'mcp_server',
+          mcp_servers.name,
+          case when mcp_servers.status = 'active' then 'active' else 'disabled' end,
+          true,
+          'allowlist',
+          mcp_servers.department_ids,
+          mcp_servers.allowed_roles,
+          '{"legacy_source":"mcp_servers"}'::jsonb,
+          mcp_servers.updated_by
+        from mcp_servers
+        where mcp_servers.tenant_id = %s
+          and mcp_servers.status <> 'deleted'
+        on conflict (tenant_id, capability_kind, capability_id) do nothing
+        """,
+        (tenant_id,),
+    )
+
+
+async def list_capability_distribution_rows(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str | None = None,
+    include_disabled: bool = True,
+) -> list[dict[str, Any]]:
+    """List the authoritative distribution rows for one tenant."""
+
+    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    filters = ["tenant_id = %s", "(%s or status = 'active')"]
+    params: list[Any] = [tenant_id, include_disabled]
+    if capability_kind is not None:
+        filters.insert(1, "capability_kind = %s")
+        params.insert(1, capability_kind)
+    cursor = await conn.execute(
+        f"""
+        select id, tenant_id, capability_kind, capability_id, status, visible_to_user,
+               scope_mode, department_ids, allowed_roles, metadata_json, updated_by,
+               created_at, updated_at
+        from tenant_capability_distributions
+        where {' and '.join(filters)}
+        order by capability_kind asc, capability_id asc
+        """,
+        tuple(params),
+    )
+    return [_capability_distribution_projection(dict(row)) for row in await cursor.fetchall()]
+
+
+async def get_capability_distribution_row(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str,
+    capability_id: str,
+) -> dict[str, Any] | None:
+    """Fetch one authoritative distribution row after insert-only backfill."""
+
+    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, capability_kind, capability_id, status, visible_to_user,
+               scope_mode, department_ids, allowed_roles, metadata_json, updated_by,
+               created_at, updated_at
+        from tenant_capability_distributions
+        where tenant_id = %s and capability_kind = %s and capability_id = %s
+        """,
+        (tenant_id, capability_kind, capability_id),
+    )
+    row = await cursor.fetchone()
+    return _capability_distribution_projection(dict(row)) if row is not None else None
+
+
+async def upsert_capability_distribution_row(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str,
+    capability_id: str,
+    status: str,
+    visible_to_user: bool,
+    scope_mode: str,
+    department_ids: list[str],
+    allowed_roles: list[str],
+    metadata_json: dict[str, Any],
+    updated_by: str | None,
+) -> dict[str, Any]:
+    """Create or update one authoritative capability distribution row."""
+
+    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    cursor = await conn.execute(
+        """
+        insert into tenant_capability_distributions(
+          id, tenant_id, capability_kind, capability_id, status, visible_to_user,
+          scope_mode, department_ids, allowed_roles, metadata_json, updated_by, updated_at
+        )
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, now())
+        on conflict (tenant_id, capability_kind, capability_id) do update
+        set status = excluded.status,
+            visible_to_user = excluded.visible_to_user,
+            scope_mode = excluded.scope_mode,
+            department_ids = excluded.department_ids,
+            allowed_roles = excluded.allowed_roles,
+            metadata_json = excluded.metadata_json,
+            updated_by = excluded.updated_by,
+            updated_at = now()
+        returning id, tenant_id, capability_kind, capability_id, status, visible_to_user,
+                  scope_mode, department_ids, allowed_roles, metadata_json, updated_by,
+                  created_at, updated_at
+        """,
+        (
+            new_id("capdist"),
+            tenant_id,
+            capability_kind,
+            capability_id,
+            status,
+            visible_to_user,
+            scope_mode,
+            department_ids,
+            json.dumps(allowed_roles, ensure_ascii=False),
+            dumps_json(metadata_json),
+            updated_by,
+        ),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryNotFoundError("capability_distribution_not_found")
+    return _capability_distribution_projection(dict(row))
+
+
+async def toggle_capability_distribution_row(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str,
+    capability_id: str,
+    enabled: bool | None,
+    updated_by: str | None,
+) -> dict[str, Any]:
+    """Toggle or set the status of one authoritative distribution row."""
+
+    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    cursor = await conn.execute(
+        """
+        update tenant_capability_distributions
+        set status = case
+              when %s::boolean is null then case when status = 'active' then 'disabled' else 'active' end
+              when %s::boolean then 'active'
+              else 'disabled'
+            end,
+            updated_by = %s,
+            updated_at = now()
+        where tenant_id = %s and capability_kind = %s and capability_id = %s
+        returning id, tenant_id, capability_kind, capability_id, status, visible_to_user,
+                  scope_mode, department_ids, allowed_roles, metadata_json, updated_by,
+                  created_at, updated_at
+        """,
+        (enabled, enabled, updated_by, tenant_id, capability_kind, capability_id),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryNotFoundError("capability_distribution_not_found")
+    return _capability_distribution_projection(dict(row))
+
+
 async def list_mcp_server_registry(
     conn: AsyncConnection,
     *,

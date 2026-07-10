@@ -11,6 +11,7 @@ def test_schema_declares_platform_fact_tables():
         "agents",
         "skills",
         "tenant_workbench_skills",
+        "tenant_capability_distributions",
         "mcp_tools",
         "tool_policies",
         "sessions",
@@ -26,6 +27,16 @@ def test_schema_declares_platform_fact_tables():
         "audit_logs",
     ]:
         assert f"create table if not exists {table}" in schema
+
+
+def test_schema_declares_capability_distribution_authority_constraints():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "create table if not exists tenant_capability_distributions" in schema
+    assert "unique (tenant_id, capability_kind, capability_id)" in schema
+    assert "check (capability_kind in ('skill', 'mcp_server'))" in schema
+    assert "check (status in ('active', 'disabled'))" in schema
+    assert "check (scope_mode in ('allowlist'))" in schema
 
 
 def test_schema_seeds_first_agent_apps():

@@ -97,6 +97,125 @@ class SingleRowConnection:
 
 
 @pytest.mark.asyncio
+async def test_capability_distribution_backfill_is_insert_only_idempotent_and_binds_every_placeholder():
+    backfill = getattr(repositories, "ensure_tenant_capability_distribution_backfill", None)
+    assert callable(backfill), "ensure_tenant_capability_distribution_backfill missing"
+
+    class EmptyCursor:
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params=()):
+            self.calls.append((" ".join(sql.split()), params))
+            return EmptyCursor()
+
+    conn = Connection()
+    await backfill(conn, tenant_id="tenant-a")
+    await backfill(conn, tenant_id="tenant-a")
+
+    assert len(conn.calls) == 4
+    skill_sql, skill_params = conn.calls[0]
+    mcp_sql, mcp_params = conn.calls[1]
+    assert conn.calls[2:] == conn.calls[:2]
+    assert "from tenant_workbench_skills" in skill_sql
+    assert "from skills" in skill_sql
+    assert "on conflict (tenant_id, capability_kind, capability_id) do nothing" in skill_sql
+    assert "do update" not in skill_sql
+    assert "from mcp_servers" in mcp_sql
+    assert "department_ids" in mcp_sql
+    assert "allowed_roles" in mcp_sql
+    assert "on conflict (tenant_id, capability_kind, capability_id) do nothing" in mcp_sql
+    assert "do update" not in mcp_sql
+    assert skill_sql.count("%s") == len(skill_params)
+    assert mcp_sql.count("%s") == len(mcp_params)
+
+
+@pytest.mark.asyncio
+async def test_capability_distribution_list_and_get_normalize_array_and_json_projections():
+    list_rows = getattr(repositories, "list_capability_distribution_rows", None)
+    get_row = getattr(repositories, "get_capability_distribution_row", None)
+    assert callable(list_rows), "list_capability_distribution_rows missing"
+    assert callable(get_row), "get_capability_distribution_row missing"
+
+    row = {
+        "id": "capdist_a",
+        "tenant_id": "tenant-a",
+        "capability_kind": "mcp_server",
+        "capability_id": "qa-mcp",
+        "status": "active",
+        "visible_to_user": True,
+        "scope_mode": "allowlist",
+        "department_ids": ("qa",),
+        "allowed_roles": '["qa_operator"]',
+        "metadata_json": '{"legacy_source":"mcp_servers"}',
+        "updated_by": "admin-a",
+        "created_at": None,
+        "updated_at": None,
+    }
+
+    class Cursor:
+        async def fetchone(self):
+            return row
+
+        async def fetchall(self):
+            return [row]
+
+    class Connection:
+        async def execute(self, sql, params=()):
+            return Cursor()
+
+    conn = Connection()
+    listed = await list_rows(conn, tenant_id="tenant-a", capability_kind="mcp_server", include_disabled=False)
+    fetched = await get_row(conn, tenant_id="tenant-a", capability_kind="mcp_server", capability_id="qa-mcp")
+
+    assert listed == [fetched]
+    assert fetched["department_ids"] == ["qa"]
+    assert fetched["allowed_roles"] == ["qa_operator"]
+    assert fetched["metadata_json"] == {"legacy_source": "mcp_servers"}
+
+
+@pytest.mark.asyncio
+async def test_capability_distribution_upsert_and_toggle_raise_controlled_not_found_errors():
+    upsert = getattr(repositories, "upsert_capability_distribution_row", None)
+    toggle = getattr(repositories, "toggle_capability_distribution_row", None)
+    assert callable(upsert), "upsert_capability_distribution_row missing"
+    assert callable(toggle), "toggle_capability_distribution_row missing"
+
+    class MissingCursor:
+        async def fetchone(self):
+            return None
+
+    class Connection:
+        async def execute(self, sql, params=()):
+            return MissingCursor()
+
+    conn = Connection()
+    kwargs = {
+        "tenant_id": "tenant-a",
+        "capability_kind": "skill",
+        "capability_id": "qa-file-reviewer",
+    }
+    with pytest.raises(RepositoryNotFoundError, match="capability_distribution_not_found"):
+        await upsert(
+            conn,
+            **kwargs,
+            status="active",
+            visible_to_user=True,
+            scope_mode="allowlist",
+            department_ids=["qa"],
+            allowed_roles=["qa_operator"],
+            metadata_json={},
+            updated_by="admin-a",
+        )
+    with pytest.raises(RepositoryNotFoundError, match="capability_distribution_not_found"):
+        await toggle(conn, **kwargs, enabled=False, updated_by="admin-a")
+
+
+@pytest.mark.asyncio
 async def test_create_context_snapshot_preserves_private_context_manifest_refs_without_storage_keys():
     conn = SingleRowConnection({"id": "ctx-row"})
 

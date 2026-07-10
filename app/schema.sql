@@ -127,6 +127,26 @@ create table if not exists mcp_servers (
 create index if not exists idx_mcp_servers_tenant_status
   on mcp_servers(tenant_id, status, name);
 
+create table if not exists tenant_capability_distributions (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  capability_kind text not null,
+  capability_id text not null,
+  status text not null default 'active',
+  visible_to_user boolean not null default true,
+  scope_mode text not null default 'allowlist',
+  department_ids text[] not null default array[]::text[],
+  allowed_roles jsonb not null default '[]'::jsonb,
+  metadata_json jsonb not null default '{}'::jsonb,
+  updated_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (tenant_id, capability_kind, capability_id),
+  check (capability_kind in ('skill', 'mcp_server')),
+  check (status in ('active', 'disabled')),
+  check (scope_mode in ('allowlist'))
+);
+
 create table if not exists mcp_server_credentials (
   tenant_id text not null references tenants(id),
   server_name text not null,
