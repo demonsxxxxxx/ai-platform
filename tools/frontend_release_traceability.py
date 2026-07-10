@@ -12,7 +12,6 @@ FRONTEND_PATH = Path("frontend/web")
 WORKFLOW_PATH = Path(".github/workflows/ai-platform-frontend.yml")
 FRONTEND_DOCKERFILE_PATH = Path("frontend/web/Dockerfile")
 FRONTEND_NGINX_TEMPLATE_PATH = Path("frontend/web/nginx.conf.template")
-FRONTEND_COMPOSE_OVERLAY_PATH = Path("deploy/ai-platform/docker-compose.frontend.yml")
 FRONTEND_COMPOSE_RUNTIME_PATH = Path("deploy/ai-platform/docker-compose.yml")
 DIST_BUILD_PROVENANCE_FILENAME = "ai-platform-build-provenance.json"
 CI_COMMANDS = [
@@ -27,7 +26,7 @@ DIST_REMEDIATION_COMMANDS = [
 WORKFLOW_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
     "python -m pip install pytest",
-    "python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py tests/test_governance_readiness.py -q --basetemp .pytest-tmp",
+    "python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_backend_ci_workflow.py tests/test_release_authority.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py tests/test_governance_readiness.py -q --basetemp .pytest-tmp",
     "corepack pnpm run ci:verify",
     "python tools/frontend_release_traceability.py --format json",
     "python tools/deploy_frontend_static.py --help",
@@ -39,34 +38,9 @@ WORKFLOW_COMMANDS = [
     "docker run --rm --entrypoint cat",
     "ai-platform-build-provenance.json",
 ]
-WORKFLOW_PATH_FILTERS = [
-    "frontend/web/**",
-    "app/governance_readiness.py",
-    "docs/agent-rules/ai-platform-guardrails.md",
-    "docs/frontend/**",
-    "docs/operations/ai-platform-gate-status.md",
-    "docs/operations/ai-platform-governance-readiness.md",
-    "docs/operations/frontend-static-release-deploy.md",
-    "docs/superpowers/plans/**",
-    "deploy/ai-platform/.env.example",
-    "deploy/ai-platform/docker-compose.yml",
-    "deploy/ai-platform/docker-compose.frontend.yml",
-    "tests/test_foundation_alpha_readiness.py",
-    "tests/test_deploy_frontend_static.py",
-    "tests/test_frontend_*.py",
-    "tests/test_runtime_launch_script.py",
-    "tests/test_source_authority_docs.py",
-    "tests/test_governance_readiness.py",
-    "tools/deploy_frontend_static.py",
-    "tools/frontend_projection_audit.py",
-    "tools/frontend_release_traceability.py",
-    "tools/frontend_packaged_runtime_smoke.py",
-    ".github/workflows/ai-platform-frontend.yml",
-]
 PACKAGED_DELIVERY_PATHS = [
     FRONTEND_DOCKERFILE_PATH,
     FRONTEND_NGINX_TEMPLATE_PATH,
-    FRONTEND_COMPOSE_OVERLAY_PATH,
 ]
 PACKAGED_DELIVERY_FORBIDDEN_TERMS = [
     ".env",
@@ -107,22 +81,13 @@ PACKAGED_DELIVERY_REQUIRED_TERMS = {
         "nginx_proxy_request_buffering_off_required": "proxy_request_buffering off",
         "nginx_spa_fallback_required": 'try_files $uri $uri/ /index.html',
     },
-    FRONTEND_COMPOSE_OVERLAY_PATH: {
-        "compose_frontend_dockerfile_required": "dockerfile: frontend/web/Dockerfile",
-        "compose_build_commit_args_required": "AI_PLATFORM_BUILD_COMMIT",
-        "compose_build_dirty_args_required": "AI_PLATFORM_BUILD_DIRTY",
-        "compose_api_upstream_required": "AI_PLATFORM_API_UPSTREAM",
-        "compose_frontend_proxy_limits_required": "AI_PLATFORM_FRONTEND_MAX_BODY_SIZE",
-        "compose_frontend_proxy_read_timeout_required": "AI_PLATFORM_FRONTEND_PROXY_READ_TIMEOUT",
-        "compose_frontend_proxy_send_timeout_required": "AI_PLATFORM_FRONTEND_PROXY_SEND_TIMEOUT",
-    },
 }
 FORMAL_FRONTEND_RUNTIME_REQUIRED_TERMS = {
     "runtime_frontend_service_required": "  frontend:",
-    "runtime_frontend_image_required": "image: ${AI_PLATFORM_FRONTEND_IMAGE:-ai-platform-frontend:local}",
-    "runtime_frontend_dockerfile_required": "dockerfile: frontend/web/Dockerfile",
-    "runtime_frontend_commit_arg_required": "AI_PLATFORM_BUILD_COMMIT",
-    "runtime_frontend_dirty_arg_required": "AI_PLATFORM_BUILD_DIRTY",
+    "runtime_frontend_image_required": "image: ${AI_PLATFORM_FRONTEND_IMAGE:?set AI_PLATFORM_FRONTEND_IMAGE}",
+    "runtime_frontend_commit_label_required": "ai-platform.source-commit: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}",
+    "runtime_frontend_clean_label_required": 'ai-platform.source-dirty: "false"',
+    "runtime_frontend_owner_required": "ai-platform.release-owner: repo-local-compose",
     "runtime_frontend_container_required": "container_name: ai-platform-frontend",
     "runtime_frontend_api_upstream_required": "AI_PLATFORM_API_UPSTREAM",
     "runtime_frontend_port_required": "${AI_PLATFORM_FRONTEND_PORT:-18001}:8080",
@@ -353,16 +318,12 @@ def _dist_manifest(
 
 def _workflow_manifest(workflow_path: Path) -> dict[str, object]:
     missing_commands: list[str] = []
-    missing_path_filters: list[str] = []
     if workflow_path.exists():
         workflow_content = workflow_path.read_text(encoding="utf-8")
         missing_commands = [command for command in WORKFLOW_COMMANDS if command not in workflow_content]
-        missing_path_filters = [path_filter for path_filter in WORKFLOW_PATH_FILTERS if path_filter not in workflow_content]
     blockers = []
     if missing_commands:
         blockers.append("frontend_workflow_enforced_commands_missing")
-    if missing_path_filters:
-        blockers.append("frontend_workflow_path_filters_missing")
     status = "missing"
     if workflow_path.exists():
         status = "present_with_policy_gaps" if blockers else "present"
@@ -372,8 +333,8 @@ def _workflow_manifest(workflow_path: Path) -> dict[str, object]:
         "sha256": _sha256(workflow_path) if workflow_path.exists() else None,
         "enforced_commands": WORKFLOW_COMMANDS,
         "missing_commands": missing_commands,
-        "required_path_filters": WORKFLOW_PATH_FILTERS,
-        "missing_path_filters": missing_path_filters,
+        "required_path_filters": [],
+        "missing_path_filters": [],
         "blockers": blockers,
     }
     return manifest
@@ -421,21 +382,21 @@ def _packaged_delivery_contract_scan(root: Path) -> dict[str, object]:
 
 def _packaged_frontend_image_manifest(root: Path, *, git_commit: str) -> dict[str, object]:
     dockerfile_path = root / FRONTEND_DOCKERFILE_PATH
-    compose_overlay_path = root / FRONTEND_COMPOSE_OVERLAY_PATH
+    compose_runtime_path = root / FRONTEND_COMPOSE_RUNTIME_PATH
     dockerfile_present = dockerfile_path.exists()
-    compose_overlay_present = compose_overlay_path.exists()
+    compose_runtime_present = compose_runtime_path.exists()
     contract_scan = _packaged_delivery_contract_scan(root)
     blockers: list[str] = []
     if not dockerfile_present:
         blockers.append("packaged_frontend_dockerfile_missing")
-    if not compose_overlay_present:
-        blockers.append("packaged_frontend_compose_overlay_missing")
+    if not compose_runtime_present:
+        blockers.append("packaged_frontend_compose_runtime_missing")
     if contract_scan["status"] != "pass":
         blockers.append("packaged_frontend_contract_scan_failed")
     if blockers:
         blockers.append("packaged_frontend_image_trace_missing")
     status = "not_configured"
-    if dockerfile_present and compose_overlay_present:
+    if dockerfile_present and compose_runtime_present:
         status = "configured_with_policy_gaps" if contract_scan["status"] != "pass" else "configured"
 
     return {
@@ -446,10 +407,10 @@ def _packaged_frontend_image_manifest(root: Path, *, git_commit: str) -> dict[st
             "status": "present" if dockerfile_present else "missing",
             "sha256": _sha256(dockerfile_path) if dockerfile_present else None,
         },
-        "compose_overlay": {
-            "path": FRONTEND_COMPOSE_OVERLAY_PATH.as_posix(),
-            "status": "present" if compose_overlay_present else "missing",
-            "sha256": _sha256(compose_overlay_path) if compose_overlay_present else None,
+        "compose_runtime": {
+            "path": FRONTEND_COMPOSE_RUNTIME_PATH.as_posix(),
+            "status": "present" if compose_runtime_present else "missing",
+            "sha256": _sha256(compose_runtime_path) if compose_runtime_present else None,
         },
         "release_trace": {
             "frontend_artifact": "frontend_static_image",
@@ -636,8 +597,8 @@ def render_frontend_release_traceability_markdown(trace: dict[str, Any]) -> str:
         f"- artifact_kind: `{packaged_image['artifact_kind']}`\n"
         f"- dockerfile: `{packaged_image['dockerfile']['path']}` "
         f"(`{packaged_image['dockerfile']['status']}`)\n"
-        f"- compose_overlay: `{packaged_image['compose_overlay']['path']}` "
-        f"(`{packaged_image['compose_overlay']['status']}`)\n"
+        f"- compose_runtime: `{packaged_image['compose_runtime']['path']}` "
+        f"(`{packaged_image['compose_runtime']['status']}`)\n"
         f"- backend_worker_commit: `{packaged_image['release_trace']['backend_worker_commit']}`\n\n"
         "Blockers:\n\n"
         f"{blockers}\n\n"

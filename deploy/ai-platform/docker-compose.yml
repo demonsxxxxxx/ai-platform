@@ -54,13 +54,13 @@ services:
       retries: 10
 
   api:
-    image: ${AI_PLATFORM_IMAGE:-ai-platform:local}
-    build:
-      context: ../..
-      args:
-        AI_PLATFORM_BUILD_COMMIT: ${AI_PLATFORM_BUILD_COMMIT:-unknown}
-        AI_PLATFORM_BUILD_DIRTY: ${AI_PLATFORM_BUILD_DIRTY:-unknown}
+    image: ${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}
     container_name: ai-platform-api
+    labels:
+      ai-platform.source-commit: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
+      ai-platform.source-dirty: "false"
+      ai-platform.release-owner: repo-local-compose
+      ai-platform.release-role: api
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-ai_platform}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-ai_platform}
@@ -155,13 +155,13 @@ services:
         condition: service_healthy
 
   worker:
-    image: ${AI_PLATFORM_IMAGE:-ai-platform:local}
-    build:
-      context: ../..
-      args:
-        AI_PLATFORM_BUILD_COMMIT: ${AI_PLATFORM_BUILD_COMMIT:-unknown}
-        AI_PLATFORM_BUILD_DIRTY: ${AI_PLATFORM_BUILD_DIRTY:-unknown}
+    image: ${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}
     container_name: ai-platform-worker
+    labels:
+      ai-platform.source-commit: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
+      ai-platform.source-dirty: "false"
+      ai-platform.release-owner: repo-local-compose
+      ai-platform.release-role: worker
     restart: unless-stopped
     command: ["python", "-m", "app.worker_main"]
     environment:
@@ -265,14 +265,13 @@ services:
         condition: service_healthy
 
   frontend:
-    image: ${AI_PLATFORM_FRONTEND_IMAGE:-ai-platform-frontend:local}
-    build:
-      context: ../..
-      dockerfile: frontend/web/Dockerfile
-      args:
-        AI_PLATFORM_BUILD_COMMIT: ${AI_PLATFORM_BUILD_COMMIT:-unknown}
-        AI_PLATFORM_BUILD_DIRTY: ${AI_PLATFORM_BUILD_DIRTY:-unknown}
+    image: ${AI_PLATFORM_FRONTEND_IMAGE:?set AI_PLATFORM_FRONTEND_IMAGE}
     container_name: ai-platform-frontend
+    labels:
+      ai-platform.source-commit: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
+      ai-platform.source-dirty: "false"
+      ai-platform.release-owner: repo-local-compose
+      ai-platform.release-role: frontend
     restart: unless-stopped
     environment:
       AI_PLATFORM_API_UPSTREAM: ${AI_PLATFORM_API_UPSTREAM:-http://api:8020}

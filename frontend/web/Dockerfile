@@ -2,11 +2,13 @@
 
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown
+ARG AI_PLATFORM_BUILD_REPOSITORY=unknown
 
 FROM node:22-bookworm AS build
 
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown
+ARG AI_PLATFORM_BUILD_REPOSITORY=unknown
 
 WORKDIR /workspace
 
@@ -29,10 +31,15 @@ FROM nginx:1.27-alpine
 
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown
+ARG AI_PLATFORM_BUILD_REPOSITORY=unknown
 
 LABEL org.opencontainers.image.title=ai-platform-frontend
 LABEL org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT
 LABEL ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT
+LABEL ai-platform.source-commit=$AI_PLATFORM_BUILD_COMMIT
+LABEL ai-platform.build-dirty="$AI_PLATFORM_BUILD_DIRTY"
+LABEL ai-platform.source-repository=$AI_PLATFORM_BUILD_REPOSITORY
+LABEL ai-platform.release-role=frontend
 
 ENV AI_PLATFORM_API_UPSTREAM=http://api:8020
 ENV AI_PLATFORM_FRONTEND_MAX_BODY_SIZE=50m

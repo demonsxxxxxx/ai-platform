@@ -2,47 +2,11 @@ name: ai-platform backend
 
 on:
   pull_request:
-    paths:
-      - "app/runtime/sandbox/**"
-      - "app/routes/sandbox_runtime_cleanup.py"
-      - "app/settings.py"
-      - "app/b2_sandbox_readiness.py"
-      - "app/capacity_baseline.py"
-      - "app/governance_readiness.py"
-      - "app/observability_readiness.py"
-      - "app/repositories.py"
-      - "deploy/ai-platform/.env.example"
-      - "deploy/ai-platform/docker-compose.yml"
-      - "docs/operations/opensandbox-provider-phase-status.md"
-      - "pyproject.toml"
-      - "scripts/generate_sandbox_runtime_evidence_211.py"
-      - "scripts/verify_sandbox_runtime_211.py"
-      - "tests/test_b2_sandbox_readiness.py"
-      - "tests/test_repositories.py"
-      - "tests/test_sandbox_*.py"
-      - ".github/workflows/ai-platform-backend.yml"
+    branches:
+      - main
   push:
     branches:
       - main
-    paths:
-      - "app/runtime/sandbox/**"
-      - "app/routes/sandbox_runtime_cleanup.py"
-      - "app/settings.py"
-      - "app/b2_sandbox_readiness.py"
-      - "app/capacity_baseline.py"
-      - "app/governance_readiness.py"
-      - "app/observability_readiness.py"
-      - "app/repositories.py"
-      - "deploy/ai-platform/.env.example"
-      - "deploy/ai-platform/docker-compose.yml"
-      - "docs/operations/opensandbox-provider-phase-status.md"
-      - "pyproject.toml"
-      - "scripts/generate_sandbox_runtime_evidence_211.py"
-      - "scripts/verify_sandbox_runtime_211.py"
-      - "tests/test_b2_sandbox_readiness.py"
-      - "tests/test_repositories.py"
-      - "tests/test_sandbox_*.py"
-      - ".github/workflows/ai-platform-backend.yml"
   workflow_dispatch:
 
 permissions:
@@ -50,7 +14,7 @@ permissions:
 
 jobs:
   sandbox-provider:
-    name: sandbox provider targeted checks
+    name: backend required
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -91,5 +55,7 @@ jobs:
             tests/test_sandbox_runtime_211_script.py \
             tests/test_b2_sandbox_readiness.py \
             tests/test_repositories.py \
+            tests/test_backend_ci_workflow.py \
+            tests/test_release_authority.py \
             -q \
             --basetemp .pytest-tmp

@@ -1150,9 +1150,10 @@ def test_source_authority_docs_keep_current_repo_and_211_deploy_boundary():
 
 def test_default_compose_uses_current_repo_context_and_no_docker_socket():
     compose_text = read(COMPOSE)
-    assert compose_text.count("context: ../..") == 3
+    assert "context: ../.." not in compose_text
     assert "container_name: ai-platform-frontend" in compose_text
-    assert "dockerfile: frontend/web/Dockerfile" in compose_text
+    assert "${AI_PLATFORM_FRONTEND_IMAGE:?set AI_PLATFORM_FRONTEND_IMAGE}" in compose_text
+    assert "${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}" in compose_text
     assert "${AI_PLATFORM_FRONTEND_PORT:-18001}:8080" in compose_text
     assert "/var/run/docker.sock:/var/run/docker.sock" not in compose_text
 
@@ -1176,14 +1177,13 @@ def test_backend_dockerfile_defines_source_authority_label_contract():
         'ai-platform.build-dirty="$AI_PLATFORM_BUILD_DIRTY"',
     ):
         assert label in dockerfile
-    expected_backend_args = {
-        "AI_PLATFORM_BUILD_COMMIT": "${AI_PLATFORM_BUILD_COMMIT:-unknown}",
-        "AI_PLATFORM_BUILD_DIRTY": "${AI_PLATFORM_BUILD_DIRTY:-unknown}",
-    }
-    assert compose["services"]["api"]["build"]["args"] == expected_backend_args
-    assert compose["services"]["worker"]["build"]["args"] == expected_backend_args
-    assert "AI_PLATFORM_BUILD_COMMIT=unknown" in env_text
-    assert "AI_PLATFORM_BUILD_DIRTY=unknown" in env_text
+    assert compose["services"]["api"]["image"] == "${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}"
+    assert compose["services"]["worker"]["image"] == "${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}"
+    assert compose["services"]["api"]["labels"]["ai-platform.source-dirty"] == "false"
+    assert compose["services"]["worker"]["labels"]["ai-platform.source-dirty"] == "false"
+    assert "AI_PLATFORM_SOURCE_COMMIT=" in env_text
+    assert "AI_PLATFORM_BUILD_COMMIT=" in env_text
+    assert "AI_PLATFORM_BUILD_DIRTY=false" in env_text
 
 
 def test_env_template_satisfies_required_runtime_defaults_without_real_secrets():
@@ -1193,7 +1193,7 @@ def test_env_template_satisfies_required_runtime_defaults_without_real_secrets()
     assert "EXISTING_USER_INFO_BASE_URL=http://10.56.0.25:5166" in env_text
     assert "PUBLIC_SKILL_FILE_OVERLAY_MAX_BYTES=262144" in env_text
     assert "AI_PLATFORM_FRONTEND_PORT=18001" in env_text
-    assert "AI_PLATFORM_FRONTEND_IMAGE=ai-platform-frontend:local" in env_text
+    assert "AI_PLATFORM_FRONTEND_IMAGE=" in env_text
     assert "AI_PLATFORM_API_UPSTREAM=http://api:8020" in env_text
     assert "WORKER_CLAUDE_AGENT_SDK_ENABLED=false" in env_text
     assert "CLAUDE_AGENT_SDK_ENABLED=false" not in set(env_text.splitlines())
