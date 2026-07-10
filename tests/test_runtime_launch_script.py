@@ -232,9 +232,13 @@ def test_compose_exposes_sandbox_runtime_configuration():
     for service_name in ["api:", "worker:"]:
         assert service_name in compose_text
 
-    assert compose_text.count("context: ../..") == 3
+    assert "context: ../.." not in compose_text
+    assert "build:" not in compose_service_text(compose_text, "api")
+    assert "build:" not in compose_service_text(compose_text, "worker")
+    assert "build:" not in compose_service_text(compose_text, "frontend")
     assert "container_name: ai-platform-frontend" in compose_text
-    assert "dockerfile: frontend/web/Dockerfile" in compose_text
+    assert "${AI_PLATFORM_FRONTEND_IMAGE:?set AI_PLATFORM_FRONTEND_IMAGE}" in compose_text
+    assert "${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}" in compose_text
     assert "${AI_PLATFORM_FRONTEND_PORT:-18001}:8080" in compose_text
     assert "SANDBOX_CONTAINER_PROVIDER" in compose_text
     assert "SANDBOX_EXECUTOR_IMAGE" in compose_text

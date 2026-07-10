@@ -2,6 +2,7 @@ FROM python:3.11-slim
 
 ARG AI_PLATFORM_BUILD_COMMIT=unknown
 ARG AI_PLATFORM_BUILD_DIRTY=unknown
+ARG AI_PLATFORM_BUILD_REPOSITORY=unknown
 
 LABEL org.opencontainers.image.title=ai-platform
 LABEL org.opencontainers.image.revision=$AI_PLATFORM_BUILD_COMMIT
@@ -12,6 +13,9 @@ LABEL ai-platform.source_commit=$AI_PLATFORM_BUILD_COMMIT
 LABEL ai-platform.runtime_subject=$AI_PLATFORM_BUILD_COMMIT
 LABEL ai-platform.source_tree_commit=$AI_PLATFORM_BUILD_COMMIT
 LABEL ai-platform.build-dirty="$AI_PLATFORM_BUILD_DIRTY"
+LABEL ai-platform.source-commit=$AI_PLATFORM_BUILD_COMMIT
+LABEL ai-platform.source-repository=$AI_PLATFORM_BUILD_REPOSITORY
+LABEL ai-platform.release-role=backend
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1

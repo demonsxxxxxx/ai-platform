@@ -1,7 +1,11 @@
 import argparse
 import asyncio
 import contextlib
+from datetime import datetime, timezone
+import json
 import logging
+import os
+from pathlib import Path
 import socket
 import time
 import uuid
@@ -19,11 +23,31 @@ from app.worker import WorkerOutcome, process_run_payload
 
 
 _next_memory_cleanup_at = 0.0
+WORKER_RUNTIME_HEARTBEAT_PATH = Path("/tmp/ai-platform-worker-runtime-heartbeat.json")
 logger = logging.getLogger(__name__)
 
 
 def default_worker_id() -> str:
     return f"{socket.gethostname()}:{uuid.uuid4().hex[:12]}"
+
+
+def write_worker_runtime_heartbeat(worker_id: str) -> None:
+    payload = {
+        "schema_version": "ai-platform.worker-runtime-heartbeat.v1",
+        "worker_id": worker_id,
+        "runtime_commit": os.environ.get("AI_PLATFORM_RUNTIME_COMMIT", "unknown"),
+        "pid": os.getpid(),
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    temporary = WORKER_RUNTIME_HEARTBEAT_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(WORKER_RUNTIME_HEARTBEAT_PATH)
+
+
+async def _worker_runtime_heartbeat_until_done(worker_id: str, interval_seconds: float = 5.0) -> None:
+    while True:
+        write_worker_runtime_heartbeat(worker_id)
+        await asyncio.sleep(interval_seconds)
 
 
 async def _heartbeat_until_done(message_id: str, worker_id: str, interval_seconds: float) -> None:
@@ -186,6 +210,10 @@ async def run_once(
 async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float = 0.5) -> None:
     registry = AdapterRegistry()
     worker_id = default_worker_id()
+    heartbeat_task = asyncio.create_task(
+        _worker_runtime_heartbeat_until_done(f"{socket.gethostname()}:{os.getpid()}"),
+        name="ai-platform-worker-runtime-heartbeat",
+    )
     try:
         while True:
             try:
@@ -197,6 +225,10 @@ async def run_forever(poll_timeout_seconds: int = 5, idle_sleep_seconds: float =
             if outcome.status == "idle":
                 await asyncio.sleep(idle_sleep_seconds)
     finally:
+        if not heartbeat_task.done():
+            heartbeat_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat_task
         await close_pool()
 
 
@@ -236,11 +268,16 @@ async def run_worker_pool(
         return
 
     settings = get_settings()
+    process_worker_id = f"{socket.gethostname()}:{os.getpid()}"
     await run_worker_maintenance(settings)
     registry = AdapterRegistry()
     maintenance_task = asyncio.create_task(
         _maintenance_until_done(settings, _worker_maintenance_interval_seconds(settings)),
         name="ai-platform-worker-maintenance",
+    )
+    heartbeat_task = asyncio.create_task(
+        _worker_runtime_heartbeat_until_done(process_worker_id),
+        name="ai-platform-worker-runtime-heartbeat",
     )
     tasks = [
         asyncio.create_task(
@@ -256,10 +293,10 @@ async def run_worker_pool(
     try:
         await asyncio.gather(*tasks)
     finally:
-        for task in [*tasks, maintenance_task]:
+        for task in [*tasks, maintenance_task, heartbeat_task]:
             if not task.done():
                 task.cancel()
-        for task in [*tasks, maintenance_task]:
+        for task in [*tasks, maintenance_task, heartbeat_task]:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         await close_pool()
