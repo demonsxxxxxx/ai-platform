@@ -1,6 +1,6 @@
 # S0B File Artifact Backend Boundary Phase Status
 
-Status: `implementation complete / local verification green / review substitute handled / pr pending`
+Status: `implementation complete / local verification green / review substitute handled / pr open / ci pending`
 
 ## Scope
 
@@ -25,7 +25,7 @@ Status: `implementation complete / local verification green / review substitute 
   - `python -m pytest tests/test_artifact_permissions.py tests/test_file_upload_security.py tests/test_lambchat_frontend_compat.py tests/test_two_user_artifact_isolation.py tests/test_frontend_projection_routes.py tests/test_contract.py -q --basetemp .pytest-tmp\\s0b-postfix-verify`
   - `git diff --check`
 - [x] Phase 6: Independent sub-agent review substitute and re-review are posted and fully handled. Evidence: initial review found a UTF-8 BOM active-content sniff bypass in `app/routes/files.py`; the fix added BOM-aware sniffing plus regression coverage in `tests/test_file_upload_security.py`, and the follow-up review returned `No findings`.
-- [ ] Phase 7: PR is open with validation evidence and any observed CI is complete.
+- [~] Phase 7: PR is open with validation evidence posted; observed CI is still pending. Evidence: ready PR `#378` is open on `codex/s0b-file-artifact-boundary`, both `review substitute` and `validation evidence` comments are posted, and the currently observed GitHub checks are `backend required` and `projection audit, lint, build, trace` in progress.
 
 ## Current Notes
 
