@@ -302,6 +302,8 @@ async def test_lambchat_agent_repository_exposes_only_canonical_agents():
     assert "skills.status = 'active'" in sql
     assert "skill_release_policies.current_version" in sql
     assert "coalesce(skill_versions.status, 'active') as skill_version_status" in sql
+    assert "skill_release_policies.previous_version as release_policy_previous_version" in sql
+    assert "previous_skill_versions.status as release_policy_previous_version_status" in sql
     assert params == ("default",)
 
 

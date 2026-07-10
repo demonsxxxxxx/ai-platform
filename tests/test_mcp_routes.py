@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi.testclient import TestClient
+import pytest
 
 from app.main import create_app
 from app.settings import Settings
@@ -637,6 +638,41 @@ def test_shared_mcp_lifecycle_writes_authoritative_distribution(monkeypatch):
     assert distribution_writes[1][1]["department_ids"] == ["rd"]
     assert distribution_writes[2][1]["status"] == "disabled"
     assert distribution_writes[3][1]["status"] == "disabled"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        (
+            "post",
+            "/api/admin/mcp/",
+            {
+                "name": "blank-role",
+                "transport": "streamable_http",
+                "allowed_roles": [""],
+            },
+        ),
+        (
+            "put",
+            "/api/mcp/ragflow",
+            {
+                "enabled": True,
+                "allowed_roles": ["   "],
+            },
+        ),
+    ],
+)
+def test_mcp_lifecycle_rejects_blank_roles_before_repository_writes(monkeypatch, method, path, payload):
+    calls = install_mcp_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    response = getattr(client, method)(path, json=payload, headers=headers(roles="admin"))
+
+    assert response.status_code == 422
+    assert not any(
+        name in {"upsert_server", "upsert_distribution", "record_credential", "audit"}
+        for name, _ in calls
+    )
 
 
 def test_mcp_lifecycle_validation_errors_do_not_echo_secret_inputs(monkeypatch):

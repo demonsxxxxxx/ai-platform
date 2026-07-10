@@ -80,7 +80,8 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
             from pg_constraint
             where conname in (
                 'tenant_capability_distributions_allowed_roles_array',
-                'tenant_capability_distributions_allowed_roles_strings'
+                'tenant_capability_distributions_allowed_roles_strings',
+                'tenant_capability_distributions_department_ids_nonblank'
             )
               and conrelid = to_regclass(%s)
             order by conname
@@ -95,6 +96,10 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
             },
             {
                 "conname": "tenant_capability_distributions_allowed_roles_strings",
+                "convalidated": True,
+            },
+            {
+                "conname": "tenant_capability_distributions_department_ids_nonblank",
                 "convalidated": True,
             },
         ]
@@ -135,6 +140,24 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
                 """,
                 ("capdist-blank-role", "default", "blank-role-authority"),
             )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await admin_conn.execute(
+                """
+                insert into tenant_capability_distributions(
+                  id, tenant_id, capability_kind, capability_id, department_ids
+                ) values (%s, %s, 'mcp_server', %s, array['QA', '   ']::text[])
+                """,
+                ("capdist-blank-department", "default", "blank-department-authority"),
+            )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await admin_conn.execute(
+                """
+                insert into tenant_capability_distributions(
+                  id, tenant_id, capability_kind, capability_id, department_ids
+                ) values (%s, %s, 'mcp_server', %s, array['QA', null]::text[])
+                """,
+                ("capdist-null-department", "default", "null-department-authority"),
+            )
 
         tenant_id = f"tenant-{uuid.uuid4().hex}"
         await admin_conn.execute(
@@ -159,6 +182,17 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
             )
             """,
             (tenant_id, "normalized-legacy-mcp"),
+        )
+        await admin_conn.execute(
+            """
+            insert into mcp_servers(
+              tenant_id, name, status, allowed_roles, department_ids
+            ) values (
+              %s, %s, 'active', '["Reviewer"]'::jsonb,
+              array['QA', '   ']::text[]
+            )
+            """,
+            (tenant_id, "malformed-department-legacy-mcp"),
         )
 
         await repositories.ensure_tenant_capability_distribution_backfill(
@@ -207,6 +241,26 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
             "metadata_json": {
                 "legacy_source": "mcp_servers",
                 "legacy_scope_invalid": False,
+            },
+        }
+        malformed_department_cursor = await admin_conn.execute(
+            """
+            select status, department_ids, allowed_roles, metadata_json
+            from tenant_capability_distributions
+            where tenant_id = %s
+              and capability_kind = 'mcp_server'
+              and capability_id = 'malformed-department-legacy-mcp'
+            """,
+            (tenant_id,),
+        )
+        malformed_department = await malformed_department_cursor.fetchone()
+        assert malformed_department == {
+            "status": "disabled",
+            "department_ids": [],
+            "allowed_roles": ["reviewer"],
+            "metadata_json": {
+                "legacy_source": "mcp_servers",
+                "legacy_scope_invalid": True,
             },
         }
         count_cursor = await admin_conn.execute(

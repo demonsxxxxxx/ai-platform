@@ -141,13 +141,14 @@ def install_route_fakes(
         }
     ]
 
-    async def fake_list(conn, *, tenant_id, include_disabled=False):
+    async def fake_list(conn, *, tenant_id, include_disabled=False, rollout_key=None):
         calls.append(
             (
                 "list",
                 {
                     "tenant_id": tenant_id,
                     "include_disabled": include_disabled,
+                    "rollout_key": rollout_key,
                     "conn_type": type(conn).__name__,
                 },
             )
@@ -557,7 +558,7 @@ def test_public_skill_reads_hide_disabled_tenant_availability(monkeypatch):
 
     calls = []
 
-    async def fake_list(conn, *, tenant_id, include_disabled=False):
+    async def fake_list(conn, *, tenant_id, include_disabled=False, rollout_key=None):
         calls.append({"tenant_id": tenant_id, "include_disabled": include_disabled})
         if not include_disabled:
             return []
@@ -632,8 +633,8 @@ def test_public_skill_reads_hide_non_runnable_versions(monkeypatch, version_stat
     row = dict(_catalog_rows()[0])
     row.update(lifecycle_status="active", version_status=version_status)
 
-    async def fake_list(conn, *, tenant_id, include_disabled=False):
-        calls.append(include_disabled)
+    async def fake_list(conn, *, tenant_id, include_disabled=False, rollout_key):
+        calls.append((include_disabled, rollout_key))
         return [dict(row)]
 
     async def fake_list_overlays(conn, *, tenant_id, user_id, skill_ids, include_content=False):
@@ -674,7 +675,8 @@ def test_public_skill_reads_hide_non_runnable_versions(monkeypatch, version_stat
         "/api/marketplace/qa-file-reviewer/files/SKILL.md",
         headers=headers(),
     ).status_code == 404
-    assert calls and all(include_disabled is False for include_disabled in calls)
+    assert calls and all(include_disabled is False for include_disabled, _ in calls)
+    assert all(rollout_key == "ordinary" for _, rollout_key in calls)
 
 
 def test_skill_and_marketplace_write_contracts_fail_closed_without_permissions(monkeypatch):
@@ -1379,7 +1381,7 @@ def test_public_skill_overlay_is_scoped_to_principal_user_and_tenant(monkeypatch
 def test_public_skill_overlay_keeps_fallback_skill_md_when_snapshot_has_no_files(monkeypatch):
     calls = install_route_fakes(monkeypatch)
 
-    async def fake_list_without_files(conn, *, tenant_id, include_disabled=False):
+    async def fake_list_without_files(conn, *, tenant_id, include_disabled=False, rollout_key=None):
         calls.append(("list_without_files", {"tenant_id": tenant_id, "include_disabled": include_disabled}))
         row = dict(_catalog_rows()[0])
         row["source"] = {"kind": "builtin", "tags": ["document"]}

@@ -44,6 +44,9 @@ def test_schema_declares_capability_distribution_authority_constraints():
     assert "jsonb_path_exists(allowed_roles" in schema
     assert "@ == \"\"" in schema
     assert r'@ like_regex "^\\s*$"' in schema
+    assert "create or replace function ai_platform_text_array_all_nonblank" in schema
+    assert "tenant_capability_distributions_department_ids_nonblank" in schema
+    assert "check (ai_platform_text_array_all_nonblank(department_ids))" in schema
 
 
 def test_schema_declares_per_tenant_capability_distribution_backfill_completion_boundary():

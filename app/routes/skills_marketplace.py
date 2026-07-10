@@ -390,6 +390,7 @@ async def _public_catalog_rows(
             conn,
             tenant_id=principal.tenant_id,
             include_disabled=include_disabled,
+            rollout_key=principal.user_id,
         )
         distributions = await repositories.list_capability_distribution_rows(
             conn,
@@ -456,6 +457,7 @@ async def _public_skill_access(
             conn,
             tenant_id=principal.tenant_id,
             include_disabled=False,
+            rollout_key=principal.user_id,
         )
         row = _find_row(rows, skill_name=skill_name)
         distribution = await repositories.get_capability_distribution_row(

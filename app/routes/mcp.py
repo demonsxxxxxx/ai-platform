@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app import repositories
-from app.auth import AuthPrincipal, is_ai_admin, normalize_roles, require_principal
+from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.capability_distribution import (
     CapabilityAccessContext,
     CapabilityAccessDecision,
@@ -66,7 +66,12 @@ class McpServerLifecycleRequest(BaseModel):
     @field_validator("allowed_roles")
     @classmethod
     def normalize_allowed_roles(cls, value: list[str], info):
-        return [assert_safe_id(item, info.field_name) for item in normalize_roles(value)]
+        normalized: list[str] = []
+        for item in value:
+            candidate = assert_safe_id(item.strip(), info.field_name).casefold()
+            if candidate not in normalized:
+                normalized.append(candidate)
+        return normalized
 
     @field_validator("department_ids", "env_keys")
     @classmethod

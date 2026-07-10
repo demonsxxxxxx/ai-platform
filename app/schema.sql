@@ -127,6 +127,19 @@ create table if not exists mcp_servers (
 create index if not exists idx_mcp_servers_tenant_status
   on mcp_servers(tenant_id, status, name);
 
+create or replace function ai_platform_text_array_all_nonblank(input_values text[])
+returns boolean
+language sql
+immutable
+parallel safe
+as $$
+  select coalesce(
+    bool_and(value is not null and btrim(value) <> ''),
+    true
+  )
+  from unnest(input_values) as items(value)
+$$;
+
 create table if not exists tenant_capability_distributions (
   id text primary key,
   tenant_id text not null references tenants(id),
@@ -145,6 +158,8 @@ create table if not exists tenant_capability_distributions (
   check (capability_kind in ('skill', 'mcp_server')),
   check (status in ('active', 'disabled')),
   check (scope_mode in ('allowlist')),
+  constraint tenant_capability_distributions_department_ids_nonblank
+    check (ai_platform_text_array_all_nonblank(department_ids)),
   constraint tenant_capability_distributions_allowed_roles_array
     check (jsonb_typeof(allowed_roles) = 'array'),
   constraint tenant_capability_distributions_allowed_roles_strings
@@ -200,6 +215,32 @@ $$;
 
 alter table tenant_capability_distributions
   validate constraint tenant_capability_distributions_allowed_roles_strings;
+
+update tenant_capability_distributions
+set
+  status = 'disabled',
+  department_ids = array[]::text[],
+  metadata_json = metadata_json || '{"legacy_scope_invalid":true}'::jsonb,
+  updated_at = now()
+where not ai_platform_text_array_all_nonblank(department_ids);
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'tenant_capability_distributions_department_ids_nonblank'
+      and conrelid = 'tenant_capability_distributions'::regclass
+  ) then
+    alter table tenant_capability_distributions
+      add constraint tenant_capability_distributions_department_ids_nonblank
+      check (ai_platform_text_array_all_nonblank(department_ids)) not valid;
+  end if;
+end
+$$;
+
+alter table tenant_capability_distributions
+  validate constraint tenant_capability_distributions_department_ids_nonblank;
 
 create table if not exists tenant_capability_distribution_backfills (
   tenant_id text primary key references tenants(id),

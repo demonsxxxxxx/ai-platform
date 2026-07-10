@@ -154,6 +154,9 @@ async def test_capability_distribution_backfill_marks_completion_and_never_recre
     assert "jsonb_array_elements" in mcp_sql
     assert "jsonb_typeof(role_value) is distinct from 'string'" in mcp_sql
     assert "select distinct lower(btrim(role_value #>> '{}'))" in mcp_sql
+    assert "unnest(mcp_servers.department_ids)" in mcp_sql
+    assert "department_validation.scope_valid" in mcp_sql
+    assert "not role_validation.scope_valid or not department_validation.scope_valid" in mcp_sql
     assert "else 'disabled'" in mcp_sql
     assert "on conflict (tenant_id, capability_kind, capability_id) do nothing" in mcp_sql
     assert "do update" not in mcp_sql
@@ -318,6 +321,42 @@ async def test_capability_distribution_projection_rejects_malformed_allowed_role
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("department_ids", [("QA", ""), ("QA", "   "), ("QA", None)])
+async def test_capability_distribution_projection_rejects_malformed_department_ids(department_ids):
+    row = {
+        "id": "capdist-malformed-department",
+        "tenant_id": "tenant-a",
+        "capability_kind": "mcp_server",
+        "capability_id": "unsafe-mcp",
+        "status": "active",
+        "visible_to_user": True,
+        "scope_mode": "allowlist",
+        "department_ids": department_ids,
+        "allowed_roles": [],
+        "metadata_json": {},
+        "updated_by": "admin-a",
+        "created_at": None,
+        "updated_at": None,
+    }
+
+    class Cursor:
+        async def fetchone(self):
+            return row
+
+    class Connection:
+        async def execute(self, sql, params=()):
+            return Cursor()
+
+    with pytest.raises(repositories.RepositoryConflictError, match="capability_distribution_scope_invalid"):
+        await repositories.get_capability_distribution_row(
+            Connection(),
+            tenant_id="tenant-a",
+            capability_kind="mcp_server",
+            capability_id="unsafe-mcp",
+        )
+
+
+@pytest.mark.asyncio
 async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_bypass(monkeypatch):
     rows = [
         {
@@ -419,6 +458,104 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
         assert audit["target_type"] == "skill"
         assert audit["payload_json"]["admin_bypass"] is True
         assert audit["payload_json"]["decision_reason"] == "admin_bypass"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("previous_status", ["draft", "reviewed", "disabled", "deprecated"])
+async def test_principal_agent_projection_hides_non_runnable_rollout_selected_previous_version(
+    monkeypatch,
+    previous_status,
+):
+    async def fake_list_agents(conn, *, tenant_id):
+        return [
+            {
+                "id": "qa-word-review",
+                "default_skill_id": "qa-file-reviewer",
+                "status": "active",
+                "skill_version": "hash-new",
+                "skill_version_status": "released",
+                "release_policy_version": "hash-new",
+                "release_policy_previous_version": "hash-old",
+                "release_policy_rollout_percent": 0,
+                "release_policy_previous_version_status": previous_status,
+            }
+        ]
+
+    async def fake_list_distributions(conn, **kwargs):
+        return [
+            {
+                "capability_kind": "skill",
+                "capability_id": "qa-file-reviewer",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+            }
+        ]
+
+    monkeypatch.setattr(repositories, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(repositories, "list_capability_distribution_rows", fake_list_distributions)
+
+    rows = await repositories.list_principal_lambchat_agents(
+        object(),
+        tenant_id="tenant-a",
+        actor_user_id="previous-track-user",
+        department_id="QA",
+        roles=["user"],
+        is_admin=False,
+        permissions=["chat:read"],
+    )
+
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_principal_agent_projection_projects_runnable_rollout_selected_previous_version(monkeypatch):
+    async def fake_list_agents(conn, *, tenant_id):
+        return [
+            {
+                "id": "qa-word-review",
+                "default_skill_id": "qa-file-reviewer",
+                "status": "active",
+                "skill_version": "hash-new",
+                "skill_version_status": "released",
+                "release_policy_version": "hash-new",
+                "release_policy_previous_version": "hash-old",
+                "release_policy_rollout_percent": 0,
+                "release_policy_previous_version_status": "released",
+            }
+        ]
+
+    async def fake_list_distributions(conn, **kwargs):
+        return [
+            {
+                "capability_kind": "skill",
+                "capability_id": "qa-file-reviewer",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+            }
+        ]
+
+    monkeypatch.setattr(repositories, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(repositories, "list_capability_distribution_rows", fake_list_distributions)
+
+    rows = await repositories.list_principal_lambchat_agents(
+        object(),
+        tenant_id="tenant-a",
+        actor_user_id="previous-track-user",
+        department_id="QA",
+        roles=["user"],
+        is_admin=False,
+        permissions=["chat:read"],
+    )
+
+    assert rows[0]["skill_version"] == "hash-old"
+    assert rows[0]["skill_version_status"] == "released"
+    assert "release_policy_previous_version_status" not in rows[0]
 
 
 @pytest.mark.asyncio
@@ -1430,6 +1567,121 @@ async def test_list_public_skill_catalog_hides_unreleased_selected_versions_by_d
 
     assert [row["skill_id"] for row in rows] == ["general-chat", "qa-file-reviewer"]
     assert "coalesce(skill_versions.status, 'active') as version_status" in conn.sql
+    assert "previous_skill_versions.status as release_policy_previous_version_status" in conn.sql
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("previous_status", ["draft", "reviewed", "disabled", "deprecated"])
+async def test_public_skill_catalog_hides_non_runnable_rollout_selected_previous_version(
+    monkeypatch,
+    previous_status,
+):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    class CatalogCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "skill_id": "qa-file-reviewer",
+                    "name": "QA Word Review",
+                    "version": "hash-new",
+                    "description": "New description",
+                    "lifecycle_status": "active",
+                    "status": "active",
+                    "visible_to_user": True,
+                    "version_status": "released",
+                    "source_json": {"kind": "builtin", "tags": ["new"]},
+                    "dependency_ids": ["new-dependency"],
+                    "created_by": "admin-new",
+                    "created_at": None,
+                    "updated_at": None,
+                    "release_policy_version": "hash-new",
+                    "release_policy_previous_version": "hash-old",
+                    "release_policy_rollout_percent": 0,
+                    "release_policy_previous_version_status": previous_status,
+                    "release_policy_previous_description": "Old description",
+                    "release_policy_previous_source_json": {"kind": "builtin", "tags": ["old"]},
+                    "release_policy_previous_dependency_ids": ["old-dependency"],
+                    "release_policy_previous_created_by": "admin-old",
+                    "release_policy_previous_created_at": None,
+                }
+            ]
+
+    class CatalogConnection:
+        def __init__(self):
+            self.sql = ""
+
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split())
+            return CatalogCursor()
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+
+    rows = await repositories.list_public_skill_catalog(
+        CatalogConnection(),
+        tenant_id="default",
+        include_disabled=False,
+        rollout_key="previous-track-user",
+    )
+
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_public_skill_catalog_projects_runnable_rollout_selected_previous_version(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    class CatalogCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "skill_id": "qa-file-reviewer",
+                    "name": "QA Word Review",
+                    "version": "hash-new",
+                    "description": "New description",
+                    "lifecycle_status": "active",
+                    "status": "active",
+                    "visible_to_user": True,
+                    "version_status": "released",
+                    "source_json": {"kind": "builtin", "tags": ["new"]},
+                    "dependency_ids": ["new-dependency"],
+                    "created_by": "admin-new",
+                    "created_at": None,
+                    "updated_at": None,
+                    "release_policy_version": "hash-new",
+                    "release_policy_previous_version": "hash-old",
+                    "release_policy_rollout_percent": 0,
+                    "release_policy_previous_version_status": "released",
+                    "release_policy_previous_description": "Old description",
+                    "release_policy_previous_source_json": {"kind": "builtin", "tags": ["old"]},
+                    "release_policy_previous_dependency_ids": ["old-dependency"],
+                    "release_policy_previous_created_by": "admin-old",
+                    "release_policy_previous_created_at": None,
+                }
+            ]
+
+    class CatalogConnection:
+        async def execute(self, sql, params):
+            return CatalogCursor()
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+
+    rows = await repositories.list_public_skill_catalog(
+        CatalogConnection(),
+        tenant_id="default",
+        include_disabled=False,
+        rollout_key="previous-track-user",
+    )
+
+    assert rows[0]["version"] == "hash-old"
+    assert rows[0]["version_status"] == "released"
+    assert rows[0]["description"] == "Old description"
+    assert rows[0]["source"]["tags"] == ["old"]
+    assert rows[0]["dependency_ids"] == ["old-dependency"]
+    assert rows[0]["created_by"] == "admin-old"
+    assert not any(key.startswith("release_policy_") for key in rows[0])
 
 
 @pytest.mark.asyncio

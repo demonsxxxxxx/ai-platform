@@ -469,6 +469,27 @@ async def list_scoped_context_memory_records(
     return list(await cursor.fetchall())
 
 
+def _principal_skill_release_decision(
+    row: dict[str, Any],
+    *,
+    tenant_id: str,
+    skill_id: str,
+    rollout_key: str,
+    fallback_version_field: str,
+):
+    return resolve_rollout_skill_decision(
+        {
+            "skill_version": row.get(fallback_version_field),
+            "release_policy_version": row.get("release_policy_version"),
+            "release_policy_previous_version": row.get("release_policy_previous_version"),
+            "release_policy_rollout_percent": row.get("release_policy_rollout_percent"),
+        },
+        tenant_id=tenant_id,
+        skill_id=skill_id,
+        rollout_key=rollout_key,
+    )
+
+
 async def list_lambchat_agents(conn: AsyncConnection, *, tenant_id: str) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """
@@ -481,6 +502,10 @@ async def list_lambchat_agents(conn: AsyncConnection, *, tenant_id: str) -> list
           agents.status,
           coalesce(skill_release_policies.current_version, skills.version) as skill_version,
           coalesce(skill_versions.status, 'active') as skill_version_status,
+          skill_release_policies.current_version as release_policy_version,
+          skill_release_policies.previous_version as release_policy_previous_version,
+          skill_release_policies.rollout_percent as release_policy_rollout_percent,
+          previous_skill_versions.status as release_policy_previous_version_status,
           skills.input_modes,
           skills.output_modes
         from agents
@@ -493,6 +518,9 @@ async def list_lambchat_agents(conn: AsyncConnection, *, tenant_id: str) -> list
         left join skill_versions
           on skill_versions.skill_id = skills.id
          and skill_versions.version = coalesce(skill_release_policies.current_version, skills.version)
+        left join skill_versions as previous_skill_versions
+          on previous_skill_versions.skill_id = skills.id
+         and previous_skill_versions.version = skill_release_policies.previous_version
         where agents.tenant_id = %s
           and agents.id in ('general-agent', 'baoyu-translate', 'qa-word-review')
           and agents.status = 'active'
@@ -541,9 +569,31 @@ async def list_principal_lambchat_agents(
     )
     authorized_rows: list[dict[str, Any]] = []
     for row in rows:
-        skill_id = str(row.get("default_skill_id") or "")
-        lifecycle_status = str(row.get("status") or "disabled")
-        if not is_user_runnable_status(row.get("skill_version_status", "active")):
+        projected = dict(row)
+        skill_id = str(projected.get("default_skill_id") or "")
+        release_decision = _principal_skill_release_decision(
+            projected,
+            tenant_id=tenant_id,
+            skill_id=skill_id,
+            rollout_key=actor_user_id,
+            fallback_version_field="skill_version",
+        )
+        selected_version_status = (
+            projected.get("release_policy_previous_version_status")
+            if release_decision.selected_track == "previous"
+            else projected.get("skill_version_status", "active")
+        )
+        projected["skill_version"] = release_decision.selected_version
+        projected["skill_version_status"] = selected_version_status
+        for field in (
+            "release_policy_version",
+            "release_policy_previous_version",
+            "release_policy_rollout_percent",
+            "release_policy_previous_version_status",
+        ):
+            projected.pop(field, None)
+        lifecycle_status = str(projected.get("status") or "disabled")
+        if not is_user_runnable_status(selected_version_status):
             lifecycle_status = "disabled"
         decision = resolve_capability_access(
             context,
@@ -574,7 +624,7 @@ async def list_principal_lambchat_agents(
                     capability_id=skill_id,
                 ),
             )
-        authorized_rows.append(row)
+        authorized_rows.append(projected)
     return authorized_rows
 
 
@@ -721,6 +771,7 @@ async def list_public_skill_catalog(
     *,
     tenant_id: str,
     include_disabled: bool = False,
+    rollout_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return tenant-visible public Skills/Marketplace catalog rows."""
 
@@ -738,6 +789,15 @@ async def list_public_skill_catalog(
           coalesce(tenant_capability_distributions.department_ids, array[]::text[]) as department_ids,
           coalesce(tenant_capability_distributions.allowed_roles, '[]'::jsonb) as allowed_roles,
           coalesce(skill_versions.status, 'active') as version_status,
+          skill_release_policies.current_version as release_policy_version,
+          skill_release_policies.previous_version as release_policy_previous_version,
+          skill_release_policies.rollout_percent as release_policy_rollout_percent,
+          previous_skill_versions.status as release_policy_previous_version_status,
+          previous_skill_versions.description as release_policy_previous_description,
+          previous_skill_versions.source_json as release_policy_previous_source_json,
+          previous_skill_versions.dependency_ids as release_policy_previous_dependency_ids,
+          previous_skill_versions.created_by as release_policy_previous_created_by,
+          previous_skill_versions.created_at as release_policy_previous_created_at,
           coalesce(skill_versions.source_json, '{}'::jsonb) as source_json,
           coalesce(skill_versions.dependency_ids, '[]'::jsonb) as dependency_ids,
           skill_versions.created_by,
@@ -756,6 +816,9 @@ async def list_public_skill_catalog(
         left join skill_versions
           on skill_versions.skill_id = skills.id
          and skill_versions.version = coalesce(skill_release_policies.current_version, skills.version)
+        left join skill_versions as previous_skill_versions
+          on previous_skill_versions.skill_id = skills.id
+         and previous_skill_versions.version = skill_release_policies.previous_version
         where (skills.id = any(%s) or tenant_capability_distributions.capability_id is not null)
           and skills.status = 'active'
         order by skills.name asc, skills.id asc
@@ -765,6 +828,34 @@ async def list_public_skill_catalog(
     rows = []
     for row in list(await cursor.fetchall()):
         projected = dict(row)
+        if rollout_key is not None:
+            release_decision = _principal_skill_release_decision(
+                projected,
+                tenant_id=tenant_id,
+                skill_id=str(projected.get("skill_id") or ""),
+                rollout_key=rollout_key,
+                fallback_version_field="version",
+            )
+            if release_decision.selected_track == "previous":
+                projected["version"] = release_decision.selected_version
+                projected["version_status"] = projected.get("release_policy_previous_version_status")
+                projected["description"] = projected.get("release_policy_previous_description") or ""
+                projected["source_json"] = projected.get("release_policy_previous_source_json") or {}
+                projected["dependency_ids"] = projected.get("release_policy_previous_dependency_ids") or []
+                projected["created_by"] = projected.get("release_policy_previous_created_by")
+                projected["created_at"] = projected.get("release_policy_previous_created_at")
+        for field in (
+            "release_policy_version",
+            "release_policy_previous_version",
+            "release_policy_rollout_percent",
+            "release_policy_previous_version_status",
+            "release_policy_previous_description",
+            "release_policy_previous_source_json",
+            "release_policy_previous_dependency_ids",
+            "release_policy_previous_created_by",
+            "release_policy_previous_created_at",
+        ):
+            projected.pop(field, None)
         if not include_disabled and not is_user_runnable_status(projected.get("version_status")):
             continue
         projected["source"] = _json_dict(projected.pop("source_json", {}))
@@ -1157,17 +1248,21 @@ async def ensure_tenant_capability_distribution_backfill(
           'mcp_server',
           mcp_servers.name,
           case
-            when not role_validation.scope_valid then 'disabled'
+            when not role_validation.scope_valid or not department_validation.scope_valid then 'disabled'
             when mcp_servers.status = 'active' then 'active'
             else 'disabled'
           end,
           true,
           'allowlist',
-          mcp_servers.department_ids,
+          case
+            when department_validation.scope_valid then mcp_servers.department_ids
+            else array[]::text[]
+          end,
           role_scope.normalized_allowed_roles,
           jsonb_build_object(
             'legacy_source', 'mcp_servers',
-            'legacy_scope_invalid', not role_validation.scope_valid
+            'legacy_scope_invalid',
+            not role_validation.scope_valid or not department_validation.scope_valid
           ),
           mcp_servers.updated_by
         from mcp_servers
@@ -1183,6 +1278,13 @@ async def ensure_tenant_capability_distribution_backfill(
             else true
           end as scope_valid
         ) as role_validation
+        cross join lateral (
+          select coalesce(
+            bool_and(department_id is not null and btrim(department_id) <> ''),
+            true
+          ) as scope_valid
+          from unnest(mcp_servers.department_ids) as department_items(department_id)
+        ) as department_validation
         cross join lateral (
           select case
             when role_validation.scope_valid then coalesce(
