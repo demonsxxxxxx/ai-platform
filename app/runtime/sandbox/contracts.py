@@ -1,4 +1,7 @@
-from typing import Any, Literal
+from dataclasses import dataclass
+from ipaddress import ip_address
+from typing import Any, Iterable, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -9,6 +12,102 @@ from app.validation import assert_safe_id, assert_safe_principal_user_id
 SandboxMode = Literal["ephemeral", "persistent"]
 ContainerProviderName = Literal["fake", "docker", "opensandbox"]
 CallbackStatus = Literal["running", "completed", "failed", "cancelled"]
+EXECUTOR_AUTH_HEADER = "X-AI-Platform-Executor-Credential"
+EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
+EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/tool-permission"
+_TRUSTED_CALLBACK_HOSTS = {
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "host.docker.internal",
+    "gateway.docker.internal",
+}
+_TRUSTED_CALLBACK_SUFFIXES = (".test", ".localhost", ".invalid", ".internal")
+_TRUSTED_CALLBACK_PORTS = {80, 443, 8000, 8020}
+
+
+class CallbackTargetValidationError(ValueError):
+    """Raised when a callback base URL violates the sandbox trusted-target policy."""
+
+    pass
+
+
+@dataclass(frozen=True)
+class TrustedCallbackTarget:
+    """Normalized platform callback endpoints derived from a trusted base URL."""
+
+    base_url: str
+    callback_url: str
+    tool_permission_url: str
+    host: str
+
+
+def _normalize_host(host: str) -> str:
+    return str(host or "").strip().lower().rstrip(".")
+
+
+def _is_ipv6_host(host: str) -> bool:
+    return ":" in host and not host.startswith("[")
+
+
+def _trusted_callback_netloc(host: str, port: int | None) -> str:
+    formatted_host = f"[{host}]" if _is_ipv6_host(host) else host
+    return f"{formatted_host}:{port}" if port is not None else formatted_host
+
+
+def is_trusted_callback_host(host: str, *, extra_hosts: Iterable[str] = ()) -> bool:
+    """Return true only for internal callback hosts explicitly allowed by policy."""
+
+    normalized = _normalize_host(host)
+    if not normalized:
+        return False
+    if normalized in _TRUSTED_CALLBACK_HOSTS:
+        return True
+    if normalized.endswith(_TRUSTED_CALLBACK_SUFFIXES):
+        return True
+    normalized_extra_hosts = {_normalize_host(item) for item in extra_hosts if str(item or "").strip()}
+    if normalized in normalized_extra_hosts:
+        return True
+    try:
+        parsed_ip = ip_address(normalized)
+    except ValueError:
+        return False
+    if parsed_ip.is_link_local or parsed_ip.is_multicast or parsed_ip.is_unspecified or parsed_ip.is_reserved:
+        return False
+    return parsed_ip.is_loopback or parsed_ip.is_private
+
+
+def build_trusted_callback_target(
+    base_url: str,
+    *,
+    extra_hosts: Iterable[str] = (),
+) -> TrustedCallbackTarget:
+    """Validate and normalize the platform callback base URL for sandbox use."""
+
+    parsed = urlsplit(str(base_url or "").strip())
+    if parsed.scheme not in {"http", "https"}:
+        raise CallbackTargetValidationError("callback scheme must be http or https")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise CallbackTargetValidationError("callback url must not include credentials, query, or fragment")
+    host = _normalize_host(parsed.hostname or "")
+    if not is_trusted_callback_host(host, extra_hosts=extra_hosts):
+        raise CallbackTargetValidationError("callback host is not in the trusted allowlist")
+    if parsed.path not in {"", "/"}:
+        raise CallbackTargetValidationError("callback base url must not include a path prefix")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise CallbackTargetValidationError("callback port is invalid") from exc
+    effective_port = port if port is not None else 443 if parsed.scheme == "https" else 80
+    if effective_port not in _TRUSTED_CALLBACK_PORTS:
+        raise CallbackTargetValidationError("callback port is not in the trusted allowlist")
+    normalized_base_url = urlunsplit((parsed.scheme, _trusted_callback_netloc(host, port), "", "", ""))
+    return TrustedCallbackTarget(
+        base_url=normalized_base_url,
+        callback_url=f"{normalized_base_url}{EXECUTOR_CALLBACK_PATH}",
+        tool_permission_url=f"{normalized_base_url}{EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH}",
+        host=host,
+    )
 
 
 class ContextRetrievalScope(BaseModel):

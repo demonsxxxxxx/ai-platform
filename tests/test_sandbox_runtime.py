@@ -68,7 +68,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         workspace_root=tmp_path,
         provider=FakeContainerProvider(executor_url="http://executor.test"),
         execute_task=execute,
-        callback_token_resolver=lambda token_id: "secret-token" if token_id == "cbt_run-a" else "",
+        callback_token_resolver=lambda token_id: "secret-token",
         record_lease=lambda lease, request, workspace: lease_calls.append(("record", lease, request, workspace)),
         release_lease=lambda lease, reason: lease_calls.append(("release", lease, reason)),
     )
@@ -100,8 +100,8 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
     assert sent[0][1].session_id == "session-a"
     assert sent[0][1].run_id == "run-a"
     assert sent[0][1].prompt == "hello"
-    assert sent[0][1].callback_url == "http://callback.test/api/ai/runtime/callbacks/executor"
-    assert sent[0][1].callback_token_id == "cbt_run-a"
+    assert sent[0][1].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
+    assert sent[0][1].callback_token_id == "cbt_run-a_exec-run-a"
     assert sent[0][1].callback_token == "secret-token"
     assert sent[0][1].callback_base_url == "http://platform.test"
     assert sent[0][1].permission_mode == "default"
@@ -163,6 +163,8 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp
 
     assert sent[0].config["context_manifest"]["available_retrieval_tools"] == ["read_context_file"]
     assert sent[0].config["context_retrieval_scope"]["user_id"] == "user-a"
+    assert sent[0].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
+    assert sent[0].callback_token_id == "cbt_run-a_exec-run-a"
 
 
 @pytest.mark.asyncio
@@ -668,9 +670,45 @@ async def test_runtime_default_callback_token_is_hmac_scoped_to_token_id(tmp_pat
 
     await runtime.submit(request(callback_token_id="cbt_run-a"))
 
-    assert sent[0].callback_token_id == "cbt_run-a"
-    assert sent[0].callback_token == derived_callback_token("settings-token", "cbt_run-a")
+    assert sent[0].callback_token_id == "cbt_run-a_exec-run-a"
+    assert sent[0].callback_token == derived_callback_token("settings-token", "cbt_run-a_exec-run-a")
     assert sent[0].callback_token != "settings-token"
+
+
+@pytest.mark.asyncio
+async def test_runtime_ignores_untrusted_callback_input_and_uses_trusted_platform_target(tmp_path, monkeypatch):
+    sent = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    async def execute(executor_url, task_request):
+        sent.append(task_request)
+        return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=FakeContainerProvider(executor_url="http://executor.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: f"derived-for-{token_id}",
+        record_lease=noop_lease,
+        release_lease=noop_lease,
+    )
+
+    await runtime.submit(
+        request(
+            callback_url="http://169.254.169.254/latest/meta-data",
+            callback_token_id="cbt_run-a",
+        )
+    )
+
+    assert sent[0].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
+    assert sent[0].callback_base_url == "http://platform.test"
+    assert sent[0].callback_token_id == "cbt_run-a_exec-run-a"
+    assert sent[0].callback_token == "derived-for-cbt_run-a_exec-run-a"
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,16 @@ from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.executor_app import create_executor_app
 
 
-def task_payload(callback_url: str) -> dict[str, object]:
+EXECUTOR_AUTH_TOKEN = "executor-secret"
+TRUSTED_CALLBACK_BASE_URL = "http://ai-platform.test"
+TRUSTED_CALLBACK_URL = f"{TRUSTED_CALLBACK_BASE_URL}/api/ai/runtime/callbacks/executor"
+
+
+def task_payload(
+    callback_url: str = TRUSTED_CALLBACK_URL,
+    *,
+    callback_base_url: str = TRUSTED_CALLBACK_BASE_URL,
+) -> dict[str, object]:
     return {
         "session_id": "session-a",
         "run_id": "run-a",
@@ -14,7 +23,7 @@ def task_payload(callback_url: str) -> dict[str, object]:
         "callback_url": callback_url,
         "callback_token_id": "cbt_run-a",
         "callback_token": "secret",
-        "callback_base_url": "http://ai-platform.test",
+        "callback_base_url": callback_base_url,
         "sdk_session_id": None,
         "permission_mode": "default",
         "config": {
@@ -28,7 +37,7 @@ def task_payload(callback_url: str) -> dict[str, object]:
     }
 
 
-def sensitive_task_payload(callback_url: str) -> dict[str, object]:
+def sensitive_task_payload(callback_url: str = TRUSTED_CALLBACK_URL) -> dict[str, object]:
     payload = task_payload(callback_url)
     payload["config"] = {
         "model": "deepseek-v4-flash",
@@ -48,8 +57,25 @@ def sensitive_task_payload(callback_url: str) -> dict[str, object]:
     return payload
 
 
+def auth_headers(token: str = EXECUTOR_AUTH_TOKEN) -> dict[str, str]:
+    return {"X-AI-Platform-Executor-Credential": token}
+
+
+def create_test_client(tmp_path, **kwargs) -> TestClient:
+    return TestClient(
+        create_executor_app(
+            workspace_root=tmp_path,
+            executor_auth_token=EXECUTOR_AUTH_TOKEN,
+            expected_session_id="session-a",
+            expected_run_id="run-a",
+            trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+            **kwargs,
+        )
+    )
+
+
 def test_executor_health_returns_ready(tmp_path):
-    client = TestClient(create_executor_app(workspace_root=tmp_path))
+    client = create_test_client(tmp_path)
 
     response = client.get("/health")
 
@@ -85,11 +111,9 @@ def test_executor_execute_posts_running_and_completed_callbacks(tmp_path, monkey
     # keep this focused on the default happy path instead of the disabled fail-closed branch
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    client = TestClient(
-        create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender)
-    )
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -139,15 +163,13 @@ def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
         callbacks.append((url, payload, token))
         return {"accepted": True}
 
-    client = TestClient(
-        create_executor_app(
-            workspace_root=tmp_path,
-            callback_sender=callback_sender,
-            executor_runner=executor_runner,
-        )
+    client = create_test_client(
+        tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
     )
 
-    response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -216,9 +238,9 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
 
-    client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -247,9 +269,9 @@ def test_executor_execute_fails_when_claude_sdk_disabled(tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
 
-    client = TestClient(create_executor_app(workspace_root=tmp_path))
+    client = create_test_client(tmp_path)
 
-    response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -284,7 +306,7 @@ def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, mo
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
 
-    payload = task_payload("http://platform/callback")
+    payload = task_payload()
     payload["config"]["context_manifest"] = {
         "schema_version": "ai-platform.context-manifest.v1",
         "available_retrieval_tools": ["read_context_file"],
@@ -298,9 +320,9 @@ def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, mo
         "agent_id": "general-agent",
     }
 
-    client = TestClient(create_executor_app(workspace_root=tmp_path))
+    client = create_test_client(tmp_path)
 
-    response = client.post("/v1/tasks/execute", json=payload)
+    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     assert response.json()["status"] == "accepted"
@@ -316,16 +338,16 @@ def test_executor_execute_fails_closed_for_manifest_without_valid_scope(tmp_path
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
 
-    payload = task_payload("http://platform/callback")
+    payload = task_payload()
     payload["config"]["context_manifest"] = {
         "schema_version": "ai-platform.context-manifest.v1",
         "available_retrieval_tools": ["read_context_file"],
     }
     payload["config"]["context_retrieval_scope"] = {"tenant_id": "tenant-a"}
 
-    client = TestClient(create_executor_app(workspace_root=tmp_path))
+    client = create_test_client(tmp_path)
 
-    response = client.post("/v1/tasks/execute", json=payload)
+    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -384,9 +406,9 @@ def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeyp
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
 
-    client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -410,16 +432,16 @@ def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeyp
 
 def test_executor_execute_reports_platform_timeout_probe_as_failed_callback(tmp_path):
     callbacks = []
-    payload = task_payload("http://platform/callback")
+    payload = task_payload()
     payload["config"]["resource_limits"] = {"max_seconds": 0}
 
     def callback_sender(url, payload, token):
         callbacks.append((url, payload, token))
         return {"accepted": True}
 
-    client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=payload)
+    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -435,7 +457,7 @@ def test_executor_execute_reports_platform_timeout_probe_as_failed_callback(tmp_
 
 def test_executor_execute_does_not_truncate_fractional_positive_timeout(tmp_path, monkeypatch):
     callbacks = []
-    payload = task_payload("http://platform/callback")
+    payload = task_payload()
     payload["config"]["resource_limits"] = {"max_seconds": 0.5}
 
     class StubSettings:
@@ -462,9 +484,9 @@ def test_executor_execute_does_not_truncate_fractional_positive_timeout(tmp_path
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=payload)
+    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -474,14 +496,12 @@ def test_executor_execute_does_not_truncate_fractional_positive_timeout(tmp_path
 
 
 def test_executor_execute_writes_runtime_marker_without_host_path(tmp_path):
-    client = TestClient(
-        create_executor_app(
-            workspace_root=tmp_path,
-            callback_sender=lambda url, payload, token: {},
-        )
+    client = create_test_client(
+        tmp_path,
+        callback_sender=lambda url, payload, token: {},
     )
 
-    response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     marker = Path(tmp_path) / "runtime" / "run-a.json"
@@ -492,14 +512,12 @@ def test_executor_execute_writes_runtime_marker_without_host_path(tmp_path):
 
 
 def test_executor_marker_redacts_unapproved_config_and_tokens(tmp_path):
-    client = TestClient(
-        create_executor_app(
-            workspace_root=tmp_path,
-            callback_sender=lambda url, payload, token: {},
-        )
+    client = create_test_client(
+        tmp_path,
+        callback_sender=lambda url, payload, token: {},
     )
 
-    response = client.post("/v1/tasks/execute", json=sensitive_task_payload("http://platform/callback"))
+    response = client.post("/v1/tasks/execute", json=sensitive_task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     content = (Path(tmp_path) / "runtime" / "run-a.json").read_text(encoding="utf-8")
@@ -541,9 +559,9 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path, monk
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -582,11 +600,108 @@ def test_executor_completed_callback_marker_path_is_container_path(tmp_path, mon
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    client = TestClient(create_executor_app(workspace_root=tmp_path, callback_sender=callback_sender))
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=task_payload("http://platform/callback"))
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
     marker_path = callbacks[-1]["state_patch"]["marker_path"]
     assert marker_path == "/workspace/runtime/run-a.json"
     assert str(tmp_path) not in marker_path
+
+
+def test_executor_execute_rejects_missing_executor_credential(tmp_path):
+    client = create_test_client(tmp_path)
+
+    response = client.post("/v1/tasks/execute", json=task_payload())
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_executor_credential"}
+
+
+def test_executor_execute_rejects_wrong_executor_credential(tmp_path):
+    client = create_test_client(tmp_path)
+
+    response = client.post(
+        "/v1/tasks/execute",
+        json=task_payload(),
+        headers=auth_headers("wrong-token"),
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_executor_credential"}
+
+
+def test_executor_execute_rejects_replay_after_first_dispatch(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "sdk final",
+                "session_id": "sdk-session-a",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+                "error": None,
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+
+    first = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    second = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json() == {"detail": "executor_request_replayed"}
+
+
+def test_executor_execute_rejects_untrusted_callback_target(tmp_path):
+    client = create_test_client(tmp_path)
+
+    response = client.post(
+        "/v1/tasks/execute",
+        json=task_payload(
+            "http://169.254.169.254/latest/meta-data",
+            callback_base_url="http://169.254.169.254",
+        ),
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid_callback_target"}
+
+
+def test_executor_execute_rejects_missing_executor_scope_binding(tmp_path):
+    client = TestClient(
+        create_executor_app(
+            workspace_root=tmp_path,
+            executor_auth_token=EXECUTOR_AUTH_TOKEN,
+            trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+        )
+    )
+
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "executor_scope_not_configured"}
+
+
+def test_executor_execute_rejects_wrong_executor_scope(tmp_path):
+    client = create_test_client(tmp_path)
+
+    response = client.post(
+        "/v1/tasks/execute",
+        json=task_payload(callback_url=TRUSTED_CALLBACK_URL) | {"session_id": "session-b"},
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid_executor_scope"}

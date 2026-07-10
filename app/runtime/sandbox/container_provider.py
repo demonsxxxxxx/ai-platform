@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import os
+import secrets
 import shlex
 import time
 from datetime import timedelta
@@ -18,7 +19,16 @@ try:
 except ImportError:  # pragma: no cover - exercised through docker = None path
     docker = None
 
-from app.runtime.sandbox.contracts import ContainerLease, ContainerStatus, SandboxRuntimeRequest, StopResult, WorkspaceLease
+from app.runtime.sandbox.contracts import (
+    EXECUTOR_AUTH_HEADER,
+    CallbackTargetValidationError,
+    ContainerLease,
+    ContainerStatus,
+    SandboxRuntimeRequest,
+    StopResult,
+    WorkspaceLease,
+    build_trusted_callback_target,
+)
 from app.settings import get_settings
 
 
@@ -93,7 +103,9 @@ def _published_executor_url_from_container(container: Any) -> str | None:
     if bindings:
         host_port = bindings[0].get("HostPort")
         if host_port:
-            host = get_settings().sandbox_executor_published_host
+            host = str(bindings[0].get("HostIp") or "").strip()
+            if host in {"", "0.0.0.0", "::"}:
+                host = get_settings().sandbox_executor_published_host
             return f"http://{host}:{host_port}"
     return None
 
@@ -104,6 +116,7 @@ def _lease_from_request(
     workspace: WorkspaceLease,
     *,
     executor_url: str,
+    executor_headers: dict[str, str] | None = None,
     timings: dict[str, int] | None = None,
 ) -> ContainerLease:
     container_id = f"exec-{request.run_id}"
@@ -112,6 +125,7 @@ def _lease_from_request(
         container_name=f"executor-{container_id}",
         provider=provider,
         executor_url=executor_url,
+        executor_headers=dict(executor_headers or {}),
         tenant_id=request.tenant_id,
         workspace_id=request.workspace_id,
         user_id=request.user_id,
@@ -285,19 +299,29 @@ def _env_value(settings: Any, name: str, default: object = "") -> str:
     return str(value)
 
 
+def _trusted_callback_target(settings: Any):
+    return build_trusted_callback_target(
+        _env_value(settings, "sandbox_callback_base_url"),
+        extra_hosts=[_env_value(settings, "sandbox_callback_host_gateway")],
+    )
+
+
 def _executor_environment(
     request: SandboxRuntimeRequest,
     settings: Any,
     *,
+    executor_auth_token: str,
     workspace_container_path: str = "/workspace",
 ) -> dict[str, str]:
+    trusted_callback = _trusted_callback_target(settings)
     return {
         "APP_MODULE": "app.runtime.sandbox.executor_app:create_executor_app",
         "APP_PORT": "18000",
         "AI_PLATFORM_SESSION_ID": request.session_id,
         "AI_PLATFORM_RUN_ID": request.run_id,
-        "AI_PLATFORM_CALLBACK_BASE_URL": _env_value(settings, "sandbox_callback_base_url"),
-        "SANDBOX_CALLBACK_BASE_URL": _env_value(settings, "sandbox_callback_base_url"),
+        "AI_PLATFORM_CALLBACK_BASE_URL": trusted_callback.base_url,
+        "SANDBOX_CALLBACK_BASE_URL": trusted_callback.base_url,
+        "AI_PLATFORM_EXECUTOR_AUTH_TOKEN": executor_auth_token,
         "OPENAI_BASE_URL": _env_value(settings, "openai_base_url"),
         "OPENAI_API_KEY": _env_value(settings, "openai_api_key"),
         "OPENAI_MODEL": _env_value(settings, "openai_model", "deepseek-v4-flash"),
@@ -419,8 +443,10 @@ def _callback_policy_host(settings: Any) -> str:
     callback_host = str(getattr(settings, "sandbox_callback_host_gateway", "") or "").strip()
     if callback_host:
         return callback_host
-    parsed = urlsplit(str(getattr(settings, "sandbox_callback_base_url", "") or ""))
-    return parsed.hostname or ""
+    try:
+        return _trusted_callback_target(settings).host
+    except CallbackTargetValidationError:
+        return ""
 
 
 def _split_csv(value: object) -> list[str]:
@@ -757,6 +783,37 @@ def _stop_and_remove_container(container: Any) -> None:
             pass
 
 
+def _generate_executor_auth_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def _executor_auth_headers(executor_auth_token: str, headers: dict[str, str] | None = None) -> dict[str, str]:
+    resolved = dict(headers or {})
+    resolved[EXECUTOR_AUTH_HEADER] = executor_auth_token
+    return resolved
+
+
+def _container_environment(container: Any) -> dict[str, str]:
+    raw_environment = getattr(container, "environment", None)
+    if isinstance(raw_environment, dict):
+        return {str(key): str(value) for key, value in raw_environment.items()}
+    raw_environment = getattr(container, "attrs", {}).get("Config", {}).get("Env", [])
+    if not isinstance(raw_environment, list):
+        return {}
+    environment: dict[str, str] = {}
+    for item in raw_environment:
+        if not isinstance(item, str) or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        if key:
+            environment[key] = value
+    return environment
+
+
+def _container_executor_auth_token(container: Any) -> str:
+    return _container_environment(container).get("AI_PLATFORM_EXECUTOR_AUTH_TOKEN", "")
+
+
 class FakeContainerProvider:
     def __init__(self, executor_url: str = "http://fake-sandbox-executor.invalid") -> None:
         self._executor_url = executor_url
@@ -771,7 +828,13 @@ class FakeContainerProvider:
         existing = self._leases.get(container_id)
         if existing is not None:
             return existing
-        lease = _lease_from_request("fake", request, workspace, executor_url=self._executor_url)
+        lease = _lease_from_request(
+            "fake",
+            request,
+            workspace,
+            executor_url=self._executor_url,
+            executor_headers=_executor_auth_headers(f"fake-executor-token-{request.run_id}"),
+        )
         self._leases[lease.container_id] = lease
         return lease
 
@@ -848,12 +911,16 @@ class DockerContainerProvider:
         expected_user = lease.labels.get("ai-platform.executor.user", "")
         if expected_user and _container_config_user(container) != expected_user:
             return None
+        executor_auth_token = _container_executor_auth_token(container)
+        if not executor_auth_token:
+            return None
         executor_url = await self._wait_for_executor_url(container, timeout_seconds)
         return ContainerLease(
             container_id=lease.container_id,
             container_name=lease.container_name,
             provider="docker",
             executor_url=executor_url,
+            executor_headers=_executor_auth_headers(executor_auth_token),
             tenant_id=lease.tenant_id,
             workspace_id=lease.workspace_id,
             user_id=lease.user_id,
@@ -910,6 +977,7 @@ class DockerContainerProvider:
             self._leases[recovered.container_id] = recovered
             return recovered
         cold_start_started_at = self._monotonic()
+        executor_auth_token = _generate_executor_auth_token()
         try:
             container = client.containers.create(
                 image=settings.sandbox_executor_image,
@@ -925,22 +993,32 @@ class DockerContainerProvider:
                 environment=_executor_environment(
                     request,
                     settings,
+                    executor_auth_token=executor_auth_token,
                     workspace_container_path=workspace.workspace_container_path,
                 ),
-                ports={"18000/tcp": None},
+                ports={"18000/tcp": ("127.0.0.1", None)},
                 **_docker_egress_network_kwargs(client, settings),
                 **_docker_security_kwargs(),
                 **({"user": workspace_user} if workspace_user else {}),
                 **_docker_resource_kwargs(request.resource_limits),
             )
-            if hasattr(container, "start"):
-                container.start()
+        except CallbackTargetValidationError as exc:
+            raise ContainerStartFailedError() from exc
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
             if isinstance(normalized_exc, DockerPermissionDeniedError):
                 raise normalized_exc from exc
             if "container" in locals():
                 _stop_and_remove_container(container)
+            raise ContainerStartFailedError() from exc
+        try:
+            if hasattr(container, "start"):
+                container.start()
+        except Exception as exc:
+            normalized_exc = _normalize_docker_availability_error(exc)
+            if isinstance(normalized_exc, DockerPermissionDeniedError):
+                raise normalized_exc from exc
+            _stop_and_remove_container(container)
             raise ContainerStartFailedError() from exc
 
         try:
@@ -969,6 +1047,7 @@ class DockerContainerProvider:
             request,
             workspace,
             executor_url=executor_url,
+            executor_headers=_executor_auth_headers(executor_auth_token),
             timings={
                 "sandbox_container_start_latency_ms": sandbox_container_cold_start_latency_ms,
                 "sandbox_container_cold_start_latency_ms": sandbox_container_cold_start_latency_ms,
@@ -1218,9 +1297,11 @@ class OpenSandboxContainerProvider:
         started_at = self._monotonic()
         connection_config = self._connection_config(settings)
         metadata = _opensandbox_labels(settings, request)
+        executor_auth_token = _generate_executor_auth_token()
         environment = _executor_environment(
             request,
             settings,
+            executor_auth_token=executor_auth_token,
             workspace_container_path=workspace.workspace_container_path,
         )
         kwargs = {
@@ -1277,7 +1358,7 @@ class OpenSandboxContainerProvider:
             container_name=f"opensandbox-{request.run_id}",
             provider="opensandbox",
             executor_url=executor_url,
-            executor_headers=executor_headers,
+            executor_headers=_executor_auth_headers(executor_auth_token, executor_headers),
             tenant_id=request.tenant_id,
             workspace_id=request.workspace_id,
             user_id=request.user_id,

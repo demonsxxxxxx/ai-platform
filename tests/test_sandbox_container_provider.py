@@ -77,9 +77,19 @@ class FakeDockerContainer:
         self.removed = False
         self._start_error = start_error
         self._stop_error = stop_error
-        port_bindings = [] if host_port is None else [{"HostIp": "0.0.0.0", "HostPort": host_port}]
+        published_host = "0.0.0.0"
+        port_binding = ports.get("18000/tcp")
+        if isinstance(port_binding, tuple) and len(port_binding) == 2:
+            candidate_host = str(port_binding[0] or "").strip()
+            if candidate_host:
+                published_host = candidate_host
+        port_bindings = [] if host_port is None else [{"HostIp": published_host, "HostPort": host_port}]
         self.attrs = {
-            "Config": {"Labels": self.labels, "User": str(docker_kwargs.get("user") or "")},
+            "Config": {
+                "Labels": self.labels,
+                "User": str(docker_kwargs.get("user") or ""),
+                "Env": [f"{key}={value}" for key, value in self.environment.items()],
+            },
             "NetworkSettings": {
                 "Ports": {
                     "18000/tcp": port_bindings
@@ -1111,7 +1121,8 @@ async def test_opensandbox_provider_keeps_endpoint_headers_private_and_uses_them
     lease = await provider.create_or_reuse(request(), workspace())
 
     assert lease.executor_url == "http://osb-run-a.opensandbox.test:18000"
-    assert lease.executor_headers == {"OPENSANDBOX-EGRESS-AUTH": "opensandbox-secret"}
+    assert lease.executor_headers["OPENSANDBOX-EGRESS-AUTH"] == "opensandbox-secret"
+    assert lease.executor_headers["X-AI-Platform-Executor-Credential"]
     assert health_calls == [
         (
             "http://osb-run-a.opensandbox.test:18000",
@@ -1346,7 +1357,7 @@ async def test_docker_provider_uses_platform_egress_network_without_disabling_pu
     ]
     assert created["network"] == "ai-platform-sandbox-egress"
     assert created["extra_hosts"] == {"host.docker.internal": "host-gateway"}
-    assert created["ports"] == {"18000/tcp": None}
+    assert created["ports"] == {"18000/tcp": ("127.0.0.1", None)}
     assert created["labels"]["ai-platform.egress.policy"] == "default-deny-no-masq"
     assert created["labels"]["ai-platform.egress.network"] == "ai-platform-sandbox-egress"
     assert created["labels"]["ai-platform.egress.callback_host"] == "host.docker.internal"
@@ -1509,6 +1520,7 @@ async def test_docker_provider_sets_default_security_options_without_docker_sock
     assert created["cap_drop"] == ["ALL"]
     assert created["read_only"] is True
     assert created["tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=64m"}
+    assert created["ports"] == {"18000/tcp": ("127.0.0.1", None)}
     assert created["volumes"] == {
         leased_workspace.workspace_host_path: {
             "bind": "/workspace",
@@ -1552,6 +1564,7 @@ async def test_docker_provider_runs_executor_as_workspace_owner_when_host_path_i
     assert created["cap_drop"] == ["ALL"]
     assert created["read_only"] is True
     assert created["tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=64m"}
+    assert created["ports"] == {"18000/tcp": ("127.0.0.1", None)}
     assert "/var/run/docker.sock" not in str(created).lower()
 
 
@@ -1769,6 +1782,104 @@ async def test_docker_provider_reuses_existing_docker_container_after_restart():
 
     assert second_lease.container_name == first_lease.container_name
     assert len(fake.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_uses_loopback_executor_url_and_private_auth_header(monkeypatch):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.contracts import EXECUTOR_AUTH_HEADER
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    settings = type(
+        "StubSettings",
+        (),
+        {
+            "sandbox_executor_published_host": "127.0.0.1",
+            "sandbox_executor_image": "ai-platform-executor:dev",
+            "sandbox_callback_base_url": "http://platform.test",
+            "sandbox_callback_host_gateway": "host.docker.internal",
+            "sandbox_egress_policy_enabled": False,
+            "sandbox_container_start_timeout_seconds": 5,
+            "sandbox_executor_health_timeout_seconds": 5,
+        },
+    )()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+
+    fake = FakeDockerClient(host_port="43123")
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    created = fake.created[0]
+    assert lease.executor_url == "http://127.0.0.1:43123"
+    assert created["ports"] == {"18000/tcp": ("127.0.0.1", None)}
+    assert created["environment"]["AI_PLATFORM_EXECUTOR_AUTH_TOKEN"]
+    assert lease.executor_headers[EXECUTOR_AUTH_HEADER] == created["environment"]["AI_PLATFORM_EXECUTOR_AUTH_TOKEN"]
+    assert lease.executor_headers[EXECUTOR_AUTH_HEADER] not in str(lease.platform_labels())
+    assert "AI_PLATFORM_EXECUTOR_AUTH_TOKEN" not in str(lease.platform_labels())
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_rejects_untrusted_public_callback_base_url(monkeypatch):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    settings = type(
+        "StubSettings",
+        (),
+        {
+            "sandbox_executor_published_host": "127.0.0.1",
+            "sandbox_executor_image": "ai-platform-executor:dev",
+            "sandbox_callback_base_url": "http://example.com",
+            "sandbox_callback_host_gateway": "",
+            "sandbox_egress_policy_enabled": False,
+            "sandbox_container_start_timeout_seconds": 5,
+            "sandbox_executor_health_timeout_seconds": 5,
+        },
+    )()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    with pytest.raises(ContainerStartFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_rejects_link_local_callback_base_url(monkeypatch):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    settings = type(
+        "StubSettings",
+        (),
+        {
+            "sandbox_executor_published_host": "127.0.0.1",
+            "sandbox_executor_image": "ai-platform-executor:dev",
+            "sandbox_callback_base_url": "http://169.254.169.254",
+            "sandbox_callback_host_gateway": "",
+            "sandbox_egress_policy_enabled": False,
+            "sandbox_container_start_timeout_seconds": 5,
+            "sandbox_executor_health_timeout_seconds": 5,
+        },
+    )()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    with pytest.raises(ContainerStartFailedError):
+        await provider.create_or_reuse(request(), workspace())
 
 
 @pytest.mark.asyncio
