@@ -5,7 +5,7 @@ Status:
 - [x] Phase 1: current source selected as `origin/main` commit `124a09c39290bb3bf39d9b13bd2fa1bd632a5040`; the user-provided `e43eae3` base is historical because `main` advanced through Agent Workspace V1.
 - [x] Phase 2: historical range `097d839..6a77c37` audited; no commit is safe for whole cherry-pick, and extraction is limited to final Capability Distribution behavior and tests.
 - [x] Phase 3: rescue design approved; delivery is one atomic, strictly focused backend PR with no 211 operation.
-- [ ] Phase 4: detailed implementation plan written against current-main interfaces.
+- [x] Phase 4: detailed TDD implementation plan written against current-main interfaces at `docs/superpowers/plans/2026-07-10-capability-distribution-v1-backend-rescue.md`.
 - [ ] Phase 5: schema, backfill, repository, and unified resolver implemented by TDD.
 - [ ] Phase 6: Admin API plus Skill, Marketplace, and MCP read/write cutover implemented by TDD.
 - [ ] Phase 7: enqueue snapshot, worker Skill/MCP reauthorization, child-run inheritance, registration filtering, and audit implemented by TDD.
