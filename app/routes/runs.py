@@ -738,9 +738,10 @@ async def prepare_copied_run_for_queue(
 ) -> dict[str, Any]:
     effective_principal = queue_principal or principal
     snapshot_auth_source = copied.get("auth_source") if queue_principal is not None else principal.source
-    copied_input = copied["input"] if isinstance(copied.get("input"), dict) else {}
+    copied_snapshot = repositories.copied_run_execution_snapshot(copied)
+    copied_input = copied_snapshot["input"]
     source_run_id = _copied_run_source_run_id(authorized_source_run_id)
-    copied_skill_version = str(copied.get("skill_version") or "")
+    copied_skill_version = str(copied_snapshot["skill_version"] or "")
     await repositories.authorize_run_capabilities(
         conn,
         tenant_id=effective_principal.tenant_id,
@@ -766,7 +767,7 @@ async def prepare_copied_run_for_queue(
     )
     copied["skill_version"] = copied_skill_version
     copied["release_decision"] = release_decision_payload_for_locked_version(
-        copied.get("release_decision") if isinstance(copied.get("release_decision"), dict) else {},
+        copied_snapshot["release_decision"],
         locked_version=copied_skill_version,
     )
     skill_manifests = attach_skill_snapshot_governance(
@@ -805,7 +806,7 @@ async def prepare_copied_run_for_queue(
         skill_id=str(copied["skill_id"]),
         input_payload=copied_input,
         message_ids=[],
-        file_ids=list(copied["file_ids"]),
+        file_ids=list(copied_snapshot["file_ids"]),
         source=source,
         source_run_id=source_run_id,
     )
@@ -813,8 +814,8 @@ async def prepare_copied_run_for_queue(
         agent_id=str(copied["agent_id"]),
         skill_id=str(copied["skill_id"]),
         skill_version=copied_skill_version,
-        executor_type=str(copied["executor_type"]),
-        file_ids=list(copied["file_ids"]),
+        executor_type=str(copied_snapshot["executor_type"]),
+        file_ids=list(copied_snapshot["file_ids"]),
         source=source,
     ):
         await repositories.append_event(
@@ -826,6 +827,16 @@ async def prepare_copied_run_for_queue(
             message=event["message"],
             payload=event["payload"],
         )
+    queue_snapshot = repositories.copied_run_execution_snapshot(
+        {
+            **copied_snapshot,
+            "skill_version": copied_skill_version,
+            "release_decision": copied["release_decision"],
+            "skill_manifests": skill_manifests,
+            "context_snapshot_id": context_ref["context_snapshot_id"],
+            "context_snapshot": context_ref,
+        }
+    )
     queue_payload = _validate_queue_payload_for_enqueue(
         {
             "tenant_id": effective_principal.tenant_id,
@@ -835,29 +846,21 @@ async def prepare_copied_run_for_queue(
             "run_id": copied["run_id"],
             "agent_id": copied["agent_id"],
             "skill_id": copied["skill_id"],
-            "file_ids": copied["file_ids"],
-            "input": copied["input"],
-            "executor_type": copied["executor_type"],
-            "skill_version": copied_skill_version,
-            "release_decision": copied.get("release_decision") if isinstance(copied.get("release_decision"), dict) else {},
-            "skill_manifests": skill_manifests,
-            "context_snapshot_id": context_ref["context_snapshot_id"],
-            "context_snapshot": context_ref,
+            **queue_snapshot,
         }
     )
+    validated_snapshot = repositories.copied_run_execution_snapshot(queue_payload)
     await repositories.update_run_input_execution_snapshot(
         conn,
         tenant_id=effective_principal.tenant_id,
         run_id=copied["run_id"],
-        skill_version=queue_payload["skill_version"],
-        release_decision=queue_payload["release_decision"],
-        skill_manifests=queue_payload["skill_manifests"],
+        execution_snapshot=validated_snapshot,
     )
     await seed_copied_run_steps(
         conn,
         tenant_id=effective_principal.tenant_id,
         run_id=copied["run_id"],
-        copied_input=copied["input"],
+        copied_input=copied_input,
         source=source,
     )
     return queue_payload

@@ -19,6 +19,7 @@ from app.control_plane_contracts import (
     EXECUTOR_RESULT_SCHEMA_VERSION,
     HASH_LIKE_VALUE_PATTERN,
     RUN_CONTRACT_VERSION,
+    RUN_PAYLOAD_SCHEMA_VERSION,
     artifact_lineage_contract,
     artifact_manifest_contract,
     sanitize_public_payload,
@@ -5200,14 +5201,11 @@ async def create_multi_agent_dispatch_child_run(
     )
 
     sanitized_source_input = strip_caller_run_auth_snapshot_fields(sanitize_user_control_input(source_input))
-    if isinstance(source_input.get("input"), dict):
-        child_input_json = {
-            **sanitized_source_input,
-            "input": child_execution_input,
-            "copied_from_run_id": parent_run_id,
-        }
-    else:
-        child_input_json = child_execution_input
+    child_input_json = {
+        **sanitized_source_input,
+        "input": child_execution_input,
+        "copied_from_run_id": parent_run_id,
+    }
 
     skill = await resolve_agent_skill(
         conn,
@@ -5225,10 +5223,16 @@ async def create_multi_agent_dispatch_child_run(
     skill_version = release_decision.selected_version
     release_decision_payload = release_decision.to_payload()
     release_policy_version = skill_version if release_decision.policy_active else ""
-    if isinstance(child_input_json, dict):
-        child_input_json["executor_type"] = executor_type
-        child_input_json["skill_version"] = skill_version
-        child_input_json["release_decision"] = release_decision_payload
+    child_input_json.update(
+        executor_type=executor_type,
+        skill_version=skill_version,
+        release_decision=release_decision_payload,
+        context_snapshot_id=None,
+        context_snapshot={},
+        schema_version=RUN_PAYLOAD_SCHEMA_VERSION,
+    )
+    child_execution_snapshot = copied_run_execution_snapshot(child_input_json)
+    child_input_json.update(child_execution_snapshot)
 
     child_run_id = new_id("run")
     inherited_roles = normalize_capability_roles(parent.get("principal_roles") or [])
@@ -5335,7 +5339,6 @@ async def create_multi_agent_dispatch_child_run(
             "result_status": "queued",
         },
     )
-    file_ids = list(source_input.get("file_ids") or [])
     return {
         "parent_run_id": parent_run_id,
         "parent_step_id": str(step["id"]),
@@ -5351,12 +5354,8 @@ async def create_multi_agent_dispatch_child_run(
         "principal_roles": inherited_roles,
         "principal_department_id": inherited_department_id,
         "auth_source": inherited_auth_source,
-        "file_ids": file_ids,
-        "input": child_execution_input,
-        "executor_type": executor_type,
-        "skill_version": skill_version,
         "release_policy_version": release_policy_version,
-        "release_decision": release_decision_payload,
+        **child_execution_snapshot,
         "event_id": event_id,
         "child_event_id": child_event_id,
         "audit_id": audit_id,
@@ -6797,7 +6796,6 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     skill_version = release_decision.selected_version
     release_decision_payload = release_decision.to_payload()
     release_policy_version = skill_version if release_decision.policy_active else ""
-    file_ids = list(source_input.get("file_ids") or [])
     inherited_roles = normalize_capability_roles(source.get("principal_roles") or [])
     inherited_department_id = str(source.get("principal_department_id") or "")
     inherited_auth_source = source.get("auth_source")
@@ -6822,15 +6820,21 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         if completed_step_checkpoints:
             resume_payload["completed_step_checkpoints"] = completed_step_checkpoints
         copied_execution_input["resume"] = resume_payload
-    copied_input_json = (
-        {**sanitized_source_input, "input": copied_execution_input, "copied_from_run_id": run_id}
-        if isinstance(source_input.get("input"), dict)
-        else copied_execution_input
+    copied_input_json = {
+        **sanitized_source_input,
+        "input": copied_execution_input,
+        "copied_from_run_id": run_id,
+    }
+    copied_input_json.update(
+        executor_type=executor_type,
+        skill_version=skill_version,
+        release_decision=release_decision_payload,
+        context_snapshot_id=None,
+        context_snapshot={},
+        schema_version=RUN_PAYLOAD_SCHEMA_VERSION,
     )
-    if isinstance(copied_input_json, dict):
-        copied_input_json["executor_type"] = executor_type
-        copied_input_json["skill_version"] = skill_version
-        copied_input_json["release_decision"] = release_decision_payload
+    copied_execution_snapshot = copied_run_execution_snapshot(copied_input_json)
+    copied_input_json.update(copied_execution_snapshot)
     await conn.execute(
         """
         insert into runs(
@@ -6891,12 +6895,8 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         "principal_roles": inherited_roles,
         "principal_department_id": inherited_department_id,
         "auth_source": inherited_auth_source,
-        "file_ids": file_ids,
-        "input": copied_execution_input,
-        "executor_type": executor_type,
-        "skill_version": skill_version,
         "release_policy_version": release_policy_version,
-        "release_decision": release_decision_payload,
+        **copied_execution_snapshot,
     }
 
 
@@ -7016,34 +7016,55 @@ async def resume_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_
     return copied
 
 
+def copied_run_execution_snapshot(input_json: object) -> dict[str, Any]:
+    """Project every QueueRunPayload non-identity field from copied run input JSON."""
+    source = input_json if isinstance(input_json, dict) else {}
+    file_ids = source.get("file_ids")
+    execution_input = source.get("input")
+    release_decision = source.get("release_decision")
+    skill_manifests = source.get("skill_manifests")
+    context_snapshot = source.get("context_snapshot")
+    skill_version = source.get("skill_version")
+    context_snapshot_id = source.get("context_snapshot_id")
+    model_id = source.get("model_id")
+    model_value = source.get("model_value")
+    schema_version = source.get("schema_version")
+    return {
+        "file_ids": list(file_ids) if isinstance(file_ids, list) else [],
+        "input": dict(execution_input) if isinstance(execution_input, dict) else {},
+        "executor_type": str(source.get("executor_type") or ""),
+        "skill_version": skill_version if isinstance(skill_version, str) else None,
+        "release_decision": dict(release_decision) if isinstance(release_decision, dict) else {},
+        "skill_manifests": [dict(item) for item in skill_manifests if isinstance(item, dict)]
+        if isinstance(skill_manifests, list)
+        else [],
+        "context_snapshot_id": context_snapshot_id if isinstance(context_snapshot_id, str) else None,
+        "context_snapshot": dict(context_snapshot) if isinstance(context_snapshot, dict) else {},
+        "model_id": model_id if isinstance(model_id, str) else None,
+        "model_value": model_value if isinstance(model_value, str) else None,
+        "schema_version": schema_version
+        if isinstance(schema_version, str) and schema_version
+        else RUN_PAYLOAD_SCHEMA_VERSION,
+    }
+
+
 async def update_run_input_execution_snapshot(
     conn: AsyncConnection,
     *,
     tenant_id: str,
     run_id: str,
-    skill_version: str | None,
-    release_decision: dict[str, Any],
-    skill_manifests: list[dict[str, Any]],
+    execution_snapshot: dict[str, Any],
 ) -> None:
-    """Replace the locked copied-run execution snapshot in one tenant-scoped update."""
+    """Merge one canonical copied-run execution snapshot in a tenant-scoped update."""
+    canonical_snapshot = copied_run_execution_snapshot(execution_snapshot)
     await conn.execute(
         """
         update runs
-        set input_json = jsonb_set(
-          jsonb_set(
-            jsonb_set(coalesce(input_json, '{}'::jsonb), '{skill_version}', %s::jsonb, true),
-            '{release_decision}', %s::jsonb,
-            true
-          ),
-          '{skill_manifests}', %s::jsonb,
-          true
-        )
+        set input_json = coalesce(input_json, '{}'::jsonb) || %s::jsonb
         where tenant_id = %s and id = %s
         """,
         (
-            json.dumps(skill_version, ensure_ascii=False),
-            json.dumps(release_decision, ensure_ascii=False),
-            json.dumps(skill_manifests, ensure_ascii=False),
+            json.dumps(canonical_snapshot, ensure_ascii=False),
             tenant_id,
             run_id,
         ),

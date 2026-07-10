@@ -4276,6 +4276,8 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
         "skill_version": "db-version",
         "release_decision": dict(source_release_decision),
         "skill_manifests": list(source_skill_manifests),
+        "model_id": "model-catalog-copy",
+        "model_value": "provider-model-copy",
     }
 
     async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
@@ -4290,6 +4292,8 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
             "executor_type": "claude-agent-worker",
             "skill_version": "db-version",
             "release_decision": dict(source_release_decision),
+            "model_id": "model-catalog-copy",
+            "model_value": "provider-model-copy",
         }
 
     async def fake_update_run_input_execution_snapshot(
@@ -4297,22 +4301,14 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
         *,
         tenant_id,
         run_id,
-        skill_version,
-        release_decision,
-        skill_manifests,
+        execution_snapshot,
     ):
         calls["update"] = {
             "tenant_id": tenant_id,
             "run_id": run_id,
-            "skill_version": skill_version,
-            "release_decision": release_decision,
-            "skill_manifests": skill_manifests,
+            "execution_snapshot": execution_snapshot,
         }
-        persisted_input_json.update(
-            skill_version=skill_version,
-            release_decision=release_decision,
-            skill_manifests=skill_manifests,
-        )
+        persisted_input_json.update(execution_snapshot)
 
     async def fake_append_event(conn, **kwargs):
         calls.setdefault("events", []).append(kwargs)
@@ -4377,11 +4373,9 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
     response = await copy_run("run_source", principal=principal())
 
     assert response.run_id == "run_copy"
-    assert calls["update"]["skill_version"] == "hash-pin"
-    assert calls["update"]["release_decision"] == calls["queue"]["release_decision"]
-    assert calls["update"]["skill_manifests"] == calls["queue"]["skill_manifests"]
-    assert calls["update"]["release_decision"] != source_release_decision
-    assert calls["update"]["skill_manifests"] != source_skill_manifests
+    assert calls["update"]["execution_snapshot"] == repository_module.copied_run_execution_snapshot(calls["queue"])
+    assert calls["update"]["execution_snapshot"]["release_decision"] != source_release_decision
+    assert calls["update"]["execution_snapshot"]["skill_manifests"] != source_skill_manifests
     assert calls["context"]["source"] == "copy_run"
     assert calls["context"]["source_run_id"] == "run_source"
     assert calls["context"]["tenant_id"] == "tenant-a"
@@ -4398,6 +4392,8 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
     assert calls["queue"]["context_snapshot"]["source"] == "copy_run"
     assert calls["queue"]["skill_version"] == "hash-pin"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-pin"
+    assert calls["queue"]["model_id"] == "model-catalog-copy"
+    assert calls["queue"]["model_value"] == "provider-model-copy"
     assert any(event["payload"]["skill_version"] == "hash-pin" for event in calls["events"])
     locked_payload = QueueRunPayload.model_validate(
         {
@@ -4447,9 +4443,9 @@ async def test_copy_run_ignores_unsafe_source_run_id_for_followup_context(monkey
         }
 
     async def fake_update_run_input_execution_snapshot(
-        conn, *, tenant_id, run_id, skill_version, release_decision, skill_manifests
+        conn, *, tenant_id, run_id, execution_snapshot
     ):
-        calls["update"] = skill_version
+        calls["update"] = execution_snapshot["skill_version"]
 
     async def fake_append_event(conn, **kwargs):
         calls.setdefault("events", []).append(kwargs)
@@ -4524,9 +4520,9 @@ async def test_copy_run_uses_authorized_route_source_when_copied_input_lacks_sou
         }
 
     async def fake_update_run_input_execution_snapshot(
-        conn, *, tenant_id, run_id, skill_version, release_decision, skill_manifests
+        conn, *, tenant_id, run_id, execution_snapshot
     ):
-        calls["update"] = skill_version
+        calls["update"] = execution_snapshot["skill_version"]
 
     async def fake_append_event(conn, **kwargs):
         calls.setdefault("events", []).append(kwargs)
@@ -4600,9 +4596,9 @@ async def test_copy_run_prefers_authorized_route_source_over_payload_source_id(m
         }
 
     async def fake_update_run_input_execution_snapshot(
-        conn, *, tenant_id, run_id, skill_version, release_decision, skill_manifests
+        conn, *, tenant_id, run_id, execution_snapshot
     ):
-        calls["update"] = skill_version
+        calls["update"] = execution_snapshot["skill_version"]
 
     async def fake_append_event(conn, **kwargs):
         calls.setdefault("events", []).append(kwargs)
@@ -4676,9 +4672,9 @@ async def test_copy_run_prevalidates_queue_payload_before_seeding_reused_steps(m
         }
 
     async def fake_update_run_input_execution_snapshot(
-        conn, *, tenant_id, run_id, skill_version, release_decision, skill_manifests
+        conn, *, tenant_id, run_id, execution_snapshot
     ):
-        calls["update"] = skill_version
+        calls["update"] = execution_snapshot["skill_version"]
 
     async def fake_append_event(conn, **kwargs):
         calls.setdefault("events", []).append(kwargs)
@@ -4784,14 +4780,12 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
         return uploaded_skill_version_row(skill_id=skill_id, version=version)
 
     async def fake_update_run_input_execution_snapshot(
-        conn, *, tenant_id, run_id, skill_version, release_decision, skill_manifests
+        conn, *, tenant_id, run_id, execution_snapshot
     ):
         calls["update"] = {
             "tenant_id": tenant_id,
             "run_id": run_id,
-            "skill_version": skill_version,
-            "release_decision": release_decision,
-            "skill_manifests": skill_manifests,
+            **execution_snapshot,
         }
 
     async def fake_append_event(conn, **kwargs):

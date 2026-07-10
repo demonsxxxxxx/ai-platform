@@ -4866,41 +4866,47 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
 @pytest.mark.asyncio
 async def test_update_run_input_execution_snapshot_atomically_replaces_canonical_fields():
     conn = RecordingConnection()
-    release_decision = {
-        "schema_version": "ai-platform.skill-release-decision.v1",
-        "policy_active": False,
-        "selected_version": "hash-current",
-        "selected_track": "manifest_pin",
-    }
-    skill_manifests = [
+    execution_snapshot = repositories.copied_run_execution_snapshot(
         {
-            "skill_id": "qa-file-reviewer",
-            "content_hash": "hash-current",
-            "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer"},
+            "tenant_id": "must-not-project",
+            "file_ids": ["file-a"],
+            "input": {"message": "review"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-current",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": "hash-current",
+                "selected_track": "manifest_pin",
+            },
+            "skill_manifests": [
+                {
+                    "skill_id": "qa-file-reviewer",
+                    "content_hash": "hash-current",
+                    "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer"},
+                }
+            ],
+            "context_snapshot_id": "ctx-current",
+            "context_snapshot": {"context_snapshot_id": "ctx-current", "source": "copy_run"},
+            "model_id": "model-catalog-a",
+            "model_value": "provider-model-a",
+            "schema_version": "ai-platform.run-payload.v1",
         }
-    ]
+    )
 
     await repositories.update_run_input_execution_snapshot(
         conn,
         tenant_id="default",
         run_id="run-a",
-        skill_version="hash-current",
-        release_decision=release_decision,
-        skill_manifests=skill_manifests,
+        execution_snapshot=execution_snapshot,
     )
 
     sql, params = conn.calls[0]
     assert "update runs" in sql
-    assert sql.count("jsonb_set") == 3
-    assert "{skill_version}" in sql
-    assert "{release_decision}" in sql
-    assert "{skill_manifests}" in sql
-    assert "release_decision,selected_version" not in sql
+    assert "coalesce(input_json, '{}'::jsonb) || %s::jsonb" in sql
     assert "tenant_id = %s and id = %s" in sql
     assert params == (
-        '"hash-current"',
-        json.dumps(release_decision, ensure_ascii=False),
-        json.dumps(skill_manifests, ensure_ascii=False),
+        json.dumps(execution_snapshot, ensure_ascii=False),
         "default",
         "run-a",
     )
@@ -4909,20 +4915,69 @@ async def test_update_run_input_execution_snapshot_atomically_replaces_canonical
 @pytest.mark.asyncio
 async def test_update_run_input_execution_snapshot_explicitly_replaces_null_and_empty_values():
     conn = RecordingConnection()
+    execution_snapshot = repositories.copied_run_execution_snapshot(
+        {
+            "input": {},
+            "executor_type": "claude-agent-worker",
+            "skill_version": None,
+            "release_decision": {},
+            "skill_manifests": [],
+            "context_snapshot_id": None,
+            "context_snapshot": {},
+            "model_id": None,
+            "model_value": None,
+        }
+    )
 
     await repositories.update_run_input_execution_snapshot(
         conn,
         tenant_id="tenant-a",
         run_id="run-empty",
-        skill_version=None,
-        release_decision={},
-        skill_manifests=[],
+        execution_snapshot=execution_snapshot,
     )
 
     assert len(conn.calls) == 1
-    sql, params = conn.calls[0]
-    assert sql.count("jsonb_set") == 3
-    assert params == ("null", "{}", "[]", "tenant-a", "run-empty")
+    _, params = conn.calls[0]
+    assert params == (
+        json.dumps(execution_snapshot, ensure_ascii=False),
+        "tenant-a",
+        "run-empty",
+    )
+
+
+def test_copied_run_execution_snapshot_audits_all_queue_non_identity_fields():
+    snapshot = repositories.copied_run_execution_snapshot(
+        {
+            "tenant_id": "must-not-project",
+            "run_id": "must-not-project",
+            "file_ids": ["file-a"],
+            "input": {"message": "copy"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-a",
+            "release_decision": {"selected_version": "hash-a"},
+            "skill_manifests": [{"skill_id": "general-chat", "content_hash": "hash-a"}],
+            "context_snapshot_id": "ctx-a",
+            "context_snapshot": {"context_snapshot_id": "ctx-a"},
+            "model_id": "model-catalog-a",
+            "model_value": "provider-model-a",
+            "schema_version": "ai-platform.run-payload.v1",
+            "unrelated": "preserve-outside-projection",
+        }
+    )
+
+    assert snapshot == {
+        "file_ids": ["file-a"],
+        "input": {"message": "copy"},
+        "executor_type": "claude-agent-worker",
+        "skill_version": "hash-a",
+        "release_decision": {"selected_version": "hash-a"},
+        "skill_manifests": [{"skill_id": "general-chat", "content_hash": "hash-a"}],
+        "context_snapshot_id": "ctx-a",
+        "context_snapshot": {"context_snapshot_id": "ctx-a"},
+        "model_id": "model-catalog-a",
+        "model_value": "provider-model-a",
+        "schema_version": "ai-platform.run-payload.v1",
+    }
 
 
 @pytest.mark.asyncio
