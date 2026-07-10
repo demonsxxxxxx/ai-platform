@@ -25,6 +25,39 @@ async def _set_search_path(conn: psycopg.AsyncConnection, schema_name: str) -> N
     await conn.execute(sql.SQL("set search_path to {}").format(sql.Identifier(schema_name)))
 
 
+async def _wait_for_lock_blocker(
+    conn: psycopg.AsyncConnection,
+    *,
+    waiter_pid: int,
+    blocker_pid: int,
+    timeout_seconds: float = 2.0,
+) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    while True:
+        cursor = await conn.execute(
+            """
+            select
+              state,
+              wait_event_type,
+              %s = any(pg_blocking_pids(pid)) as blocked_by_expected_backend
+            from pg_stat_activity
+            where pid = %s
+            """,
+            (blocker_pid, waiter_pid),
+        )
+        row = await cursor.fetchone()
+        if (
+            row is not None
+            and row["state"] == "active"
+            and row["wait_event_type"] == "Lock"
+            and row["blocked_by_expected_backend"] is True
+        ):
+            return
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("second backfill did not enter the expected marker lock wait")
+        await asyncio.sleep(0.02)
+
+
 @pytest.mark.asyncio
 async def test_capability_distribution_schema_backfill_and_completed_marker_concurrency():
     dsn = _postgres_dsn()
@@ -215,20 +248,36 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
         try:
             await _set_search_path(first_conn, schema_name)
             await first_conn.execute("set local statement_timeout = '5s'")
+            first_pid_cursor = await first_conn.execute("select pg_backend_pid() as pid")
+            first_pid = int((await first_pid_cursor.fetchone())["pid"])
             await repositories.ensure_tenant_capability_distribution_backfill(
                 first_conn,
                 tenant_id=concurrent_tenant_id,
             )
             await _set_search_path(second_conn, schema_name)
             await second_conn.execute("set local statement_timeout = '5s'")
+            second_pid_cursor = await second_conn.execute("select pg_backend_pid() as pid")
+            second_pid = int((await second_pid_cursor.fetchone())["pid"])
             second_task = asyncio.create_task(
                 repositories.ensure_tenant_capability_distribution_backfill(
                     second_conn,
                     tenant_id=concurrent_tenant_id,
                 )
             )
-            await asyncio.sleep(0.1)
-            assert not second_task.done(), "second backfill must wait on the incomplete marker row lock"
+            await _wait_for_lock_blocker(
+                admin_conn,
+                waiter_pid=second_pid,
+                blocker_pid=first_pid,
+            )
+            assert not second_task.done()
+            await admin_conn.execute(
+                """
+                insert into mcp_servers(
+                  tenant_id, name, status, allowed_roles, department_ids
+                ) values (%s, %s, 'active', '["Reviewer"]'::jsonb, array['QA']::text[])
+                """,
+                (concurrent_tenant_id, "late-legacy-mcp"),
+            )
 
             await first_conn.commit()
             await asyncio.wait_for(second_task, timeout=2.0)
@@ -236,15 +285,18 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
 
             concurrent_distribution_cursor = await admin_conn.execute(
                 """
-                select count(*) as count
+                select capability_id
                 from tenant_capability_distributions
                 where tenant_id = %s
                   and capability_kind = 'mcp_server'
-                  and capability_id = 'concurrent-legacy-mcp'
+                  and capability_id in ('concurrent-legacy-mcp', 'late-legacy-mcp')
+                order by capability_id
                 """,
                 (concurrent_tenant_id,),
             )
-            assert await concurrent_distribution_cursor.fetchone() == {"count": 1}
+            assert await concurrent_distribution_cursor.fetchall() == [
+                {"capability_id": "concurrent-legacy-mcp"}
+            ]
             concurrent_marker_cursor = await admin_conn.execute(
                 """
                 select completed_at is not null as completed

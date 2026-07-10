@@ -157,11 +157,6 @@ def parse_queue_payload(raw: dict[str, Any]) -> QueueRunPayload:
     return QueueRunPayload.model_validate(raw)
 
 
-def _multi_agent_dispatch_from_payload(payload: QueueRunPayload) -> dict[str, Any] | None:
-    dispatch = payload.input.get("multi_agent_dispatch")
-    return dispatch if isinstance(dispatch, dict) else None
-
-
 async def _reconcile_multi_agent_child_terminal_state(
     conn,
     *,
@@ -171,8 +166,6 @@ async def _reconcile_multi_agent_child_terminal_state(
     error_code: str | None = None,
     error_message: str | None = None,
 ) -> dict[str, Any] | None:
-    if _multi_agent_dispatch_from_payload(payload) is None:
-        return None
     return await repositories.reconcile_multi_agent_child_run_terminal_state(
         conn,
         tenant_id=payload.tenant_id,
@@ -192,8 +185,6 @@ def _parent_rollup_retry_args(
         return None
     parent_run_id = str(reconciled.get("parent_run_id") or "").strip()
     if not parent_run_id:
-        return None
-    if _multi_agent_dispatch_from_payload(payload) is None:
         return None
     return {
         "tenant_id": payload.tenant_id,

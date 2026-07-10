@@ -158,6 +158,15 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
 
+    async def reconcile_multi_agent_child_run_terminal_state(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.worker.repositories.reconcile_multi_agent_child_run_terminal_state",
+        reconcile_multi_agent_child_run_terminal_state,
+        raising=False,
+    )
+
     async def finalize_multi_agent_parent_run_if_ready(conn, **kwargs):
         return None
 
@@ -1475,7 +1484,7 @@ async def test_worker_reconciles_multi_agent_child_after_cancel(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_worker_does_not_reconcile_ordinary_run(monkeypatch):
+async def test_worker_reconciliation_uses_repository_for_ordinary_run(monkeypatch):
     calls = []
 
     async def mark_run_running(conn, *, tenant_id, run_id):
@@ -1492,7 +1501,7 @@ async def test_worker_does_not_reconcile_ordinary_run(monkeypatch):
 
     async def reconcile(conn, **kwargs):
         calls.append(("reconcile", kwargs))
-        return {"parent_run_id": "run-parent"}
+        return None
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
@@ -1506,7 +1515,10 @@ async def test_worker_does_not_reconcile_ordinary_run(monkeypatch):
 
     assert outcome.status == "succeeded"
     assert ("complete", "run-a") in calls
-    assert not any(item[0] == "reconcile" for item in calls)
+    reconcile_call = next(item[1] for item in calls if item[0] == "reconcile")
+    assert reconcile_call["tenant_id"] == "tenant-a"
+    assert reconcile_call["child_run_id"] == "run-a"
+    assert reconcile_call["child_status"] == "succeeded"
 
 
 @pytest.mark.asyncio
@@ -6384,7 +6396,7 @@ async def test_worker_invalid_locked_child_snapshot_reconciles_parent_after_comm
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input=dispatch_input,
-        queue_input=dispatch_input,
+        queue_input={"mode": "queue-without-dispatch"},
     )
     state["locked_run"]["input_json"]["skill_manifests"] = []
 
