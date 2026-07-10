@@ -1223,6 +1223,100 @@ def test_admin_upload_existing_catalog_skill_without_tenant_policy_publishes_to_
     ]
 
 
+def test_admin_publishing_upload_rolls_back_when_response_model_build_fails(monkeypatch):
+    calls = []
+    package_content = skill_package_zip(
+        name="response-failure-skill",
+        description="Exercise response construction rollback.",
+    )
+
+    @asynccontextmanager
+    async def recording_transaction():
+        calls.append(("tx_enter", {}))
+        try:
+            yield object()
+        except Exception:
+            calls.append(("tx_rollback", {}))
+            raise
+        else:
+            calls.append(("tx_commit", {}))
+
+    class FakeObjectStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            assert content == package_content
+            assert content_type == "application/zip"
+            return StoredObject(storage_key=storage_key, sha256="response-failure-sha256", size_bytes=len(content))
+
+    async def fake_get_skill(conn, *, skill_id):
+        assert skill_id == "response-failure-skill"
+        return None
+
+    async def fake_list_skill_ids(conn):
+        return []
+
+    async def fake_create_skill_catalog(conn, **kwargs):
+        calls.append(("create_catalog", kwargs))
+
+    async def fake_upsert_skill_version(conn, **kwargs):
+        calls.append(("upsert_version", kwargs))
+        return True
+
+    async def fake_set_skill_release_policy(conn, **kwargs):
+        calls.append(("set_policy", kwargs))
+
+    async def fake_set_uploaded_workbench_skill_status(conn, **kwargs):
+        calls.append(("set_visibility", kwargs))
+        return {"skill_id": kwargs["skill_id"], "status": kwargs["status"]}
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return f"aud-{kwargs['action']}"
+
+    def fail_response_build(**kwargs):
+        calls.append(("response_build_failed", kwargs))
+        raise RuntimeError("response_build_failed")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", recording_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.ObjectStorage", FakeObjectStorage)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.get_skill", fake_get_skill)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    monkeypatch.setattr(
+        "app.routes.admin_skills.repositories.create_skill_catalog",
+        fake_create_skill_catalog,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.admin_skills.repositories.upsert_skill_version", fake_upsert_skill_version)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.set_skill_release_policy", fake_set_skill_release_policy)
+    monkeypatch.setattr(
+        "app.routes.admin_skills.repositories.set_uploaded_workbench_skill_status",
+        fake_set_uploaded_workbench_skill_status,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.admin_skills.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.routes.admin_skills.AdminSkillUploadResponse", fail_response_build)
+    client = TestClient(create_app(), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/ai/admin/skills/response-failure-skill/versions/upload",
+        files={"package": ("response-failure-skill.zip", package_content, "application/zip")},
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 500
+    names = [name for name, _ in calls]
+    assert names.count("tx_enter") == 1
+    assert "tx_rollback" in names
+    assert "tx_commit" not in names
+    assert names.index("response_build_failed") < names.index("tx_rollback")
+    audit_actions = [payload["action"] for name, payload in calls if name == "audit"]
+    assert audit_actions == [
+        "skill_catalog_created_from_upload",
+        "skill_version_uploaded",
+        "skill_release_promoted_from_upload",
+    ]
+
+
 def test_admin_upload_skill_package_rejects_name_mismatch_before_storage(monkeypatch):
     class FakeConnection:
         pass

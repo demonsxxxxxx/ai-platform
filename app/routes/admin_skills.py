@@ -623,7 +623,8 @@ async def admin_upload_skill_package(
                 version=parsed.content_hash,
                 previous_version=previous_version,
             )
-    return AdminSkillUploadResponse(uploaded=uploaded)
+        response = AdminSkillUploadResponse(uploaded=uploaded)
+    return response
 
 
 @router.post("/admin/skills/upload/preview", response_model=PublicSkillImportPreviewResponse)

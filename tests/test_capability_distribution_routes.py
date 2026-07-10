@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 import importlib
 import importlib.util
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -355,6 +356,75 @@ def test_toggle_aliases_update_distribution_and_audit(monkeypatch):
     assert calls[0]["enabled"] is False
     assert calls[1]["action"] == "capability_distribution.toggled"
     assert calls[1]["payload_json"]["admin_bypass"] is True
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("put", "/api/admin/capability-distributions/skill/qa-file-reviewer", {}),
+        ("patch", "/api/admin/capability-distributions/skill/qa-file-reviewer/toggle", {}),
+    ],
+    ids=["update", "implicit-toggle"],
+)
+def test_distribution_writes_roll_back_when_response_model_build_fails(
+    monkeypatch,
+    method,
+    path,
+    payload,
+):
+    calls = []
+
+    @asynccontextmanager
+    async def recording_transaction():
+        calls.append(("tx_enter", {}))
+        try:
+            yield object()
+        except Exception:
+            calls.append(("tx_rollback", {}))
+            raise
+        else:
+            calls.append(("tx_commit", {}))
+
+    async def fake_get_skill(conn, *, skill_id):
+        return {"skill_id": skill_id, "status": "active"}
+
+    async def fake_upsert(conn, **kwargs):
+        calls.append(("upsert", kwargs))
+        return distribution_row()
+
+    async def fake_toggle(conn, **kwargs):
+        calls.append(("toggle", kwargs))
+        return distribution_row(status="disabled")
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-capdist-response-failure"
+
+    def fail_response_build(**kwargs):
+        calls.append(("response_build_failed", kwargs))
+        raise RuntimeError("response_build_failed")
+
+    route_module = configure_admin_route(monkeypatch)
+    monkeypatch.setattr(route_module, "transaction", recording_transaction)
+    patch_repository(monkeypatch, route_module, "get_skill", fake_get_skill)
+    patch_repository(monkeypatch, route_module, "upsert_capability_distribution_row", fake_upsert)
+    patch_repository(monkeypatch, route_module, "toggle_capability_distribution_row", fake_toggle)
+    patch_repository(monkeypatch, route_module, "append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr(route_module, "CapabilityDistributionWriteResponse", fail_response_build)
+    client = TestClient(create_app(), raise_server_exceptions=False)
+
+    response = getattr(client, method)(path, headers=admin_headers(), json=payload)
+
+    assert response.status_code == 500
+    names = [name for name, _ in calls]
+    assert names.count("tx_enter") == 1
+    assert "tx_rollback" in names
+    assert "tx_commit" not in names
+    assert names.index("response_build_failed") < names.index("tx_rollback")
+    assert names.count("audit") == 1
+    if method == "patch":
+        toggle_call = next(call for name, call in calls if name == "toggle")
+        assert toggle_call["enabled"] is None
 
 
 def test_ordinary_user_cannot_access_capability_distribution_management(monkeypatch):

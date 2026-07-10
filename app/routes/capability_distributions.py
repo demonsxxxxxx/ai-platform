@@ -154,13 +154,14 @@ async def _write_distribution(
                 trace_id=standard_trace_id(f"{capability_kind}:{capability_id}"),
                 payload_json=_audit_payload(principal, row),
             )
+            response = CapabilityDistributionWriteResponse(
+                capability_distribution=CapabilityDistributionResponse.model_validate(row),
+                audit_id=audit_id,
+                audit_action=action,
+            )
     except repositories.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return CapabilityDistributionWriteResponse(
-        capability_distribution=CapabilityDistributionResponse.model_validate(row),
-        audit_id=audit_id,
-        audit_action=action,
-    )
+    return response
 
 
 @router.get("/admin/capability-distributions", response_model=CapabilityDistributionListResponse)
