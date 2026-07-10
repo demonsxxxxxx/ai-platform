@@ -42,7 +42,7 @@ def test_create_run_request_uses_file_ids_contract_only():
 
 def test_app_registers_platform_routes():
     app = create_app()
-    paths = {route.path for route in app.routes if hasattr(route, "path")}
+    paths = set(app.openapi()["paths"])
 
     assert "/api/ai/health" in paths
     assert "/api/ai/admin/status" in paths
