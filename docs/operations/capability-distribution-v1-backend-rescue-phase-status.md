@@ -9,7 +9,7 @@ Status:
 - [x] Phase 5: schema, backfill, repository, and unified resolver implemented by TDD in `9e517ae` plus `a7393df`; focused result `18 passed, 158 deselected`, compile/diff checks passed, and task re-review found no Critical, Important, or Minor findings.
 - [x] Phase 6: Admin API plus Skill, Marketplace, and MCP read/write cutover implemented by TDD; Admin API `9 passed`, Skill/Marketplace final `55 passed`, MCP final `160 passed`, and each task's final independent review found no Critical, Important, or Minor findings.
 - [x] Phase 7: enqueue snapshot, worker Skill/MCP reauthorization, child-run inheritance, registration filtering, atomic allow-once handling, and sanitized audit implemented by TDD; final high-risk review found no Critical, Important, or Minor findings.
-- [ ] Phase 8: compile, focused pytest, migration/backfill, integration, and diff verification complete on final source.
+- [x] Phase 8: final local-source verification complete on `152ef289102dbb3673d139e1d35a67aa6c125811`: compile exited 0; foundation `214 passed`; routes `341 passed, 1 deselected` (known sandbox cancel excluded), worker `196 passed, 3 skipped`; migration/backfill, capability routes, discovery cutover, enqueue, and worker authorization are covered by those focused slices; `git diff --check origin/main...HEAD` exited 0 and the exact scope audit found no forbidden or unknown paths. This is current local CI evidence only, not deployment, runtime, browser, B1/B2/B3, 211, or rollout acceptance.
 - [ ] Phase 9: independent sub-agent review complete; all Critical and Important findings fixed and re-reviewed.
 - [ ] Phase 10: focused PR created and required GitHub checks pass on its final head.
 
@@ -24,6 +24,13 @@ Baseline evidence:
 - `python -m compileall -q app tools scripts` -> passed on `124a09c`.
 - Selected backend baseline -> `623 passed, 3 skipped, 1 failed`.
 - The sole failure, `test_cancel_run_ignores_user_controlled_sandbox_container_payload`, also fails alone on `124a09c`; status is `historical/pre-existing`, scope is sandbox cancel, and this rescue does not modify it.
+
+Phase 8 verification evidence:
+- `python -m compileall -q app tools scripts` -> exit 0.
+- Foundation slice -> `214 passed in 4.45s`.
+- Route slice with only the pre-existing sandbox cancel test excluded -> `341 passed, 1 deselected, 1 warning in 45.58s`; the warning is the existing duplicate OpenAPI operation id for `active_notifications` in `app/routes/lambchat_compat.py`.
+- Worker slice -> `196 passed, 3 skipped in 4.97s`.
+- Aggregate focused pytest result -> `751 passed, 3 skipped, 1 deselected`; no Capability Distribution defect was reproduced, so no source or test repair was made in Task 7.
 
 Boundaries:
 - No unknown dirty file has been cleaned, reset, copied, or overwritten.
