@@ -41,6 +41,7 @@ RUN_SCHEMA_FIELDS = {
 }
 EVENT_SCHEMA_FIELDS = {"schema_version": "ai-platform.event-envelope.v1"}
 _ORIGINAL_RESOLVE_AGENT_SKILL = repository_module.resolve_agent_skill
+_ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
 
 
 @asynccontextmanager
@@ -3449,6 +3450,90 @@ async def test_create_run_maps_unreleased_skill_version_conflict_to_409(monkeypa
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "skill_version_not_released"
     assert calls == [("resolve", "default", "general-agent", "general-chat")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("row_field", "row_value"),
+    [
+        pytest.param("agent_status", "disabled", id="agent-inactive"),
+        pytest.param("skill_status", "disabled", id="skill-inactive"),
+        pytest.param("skill_version_status", "draft", id="skill-version-not-released"),
+        pytest.param("executor_type", "unsupported", id="executor-type-not-allowed"),
+        pytest.param("default_skill_id", "other-skill", id="agent-skill-mismatch"),
+    ],
+)
+async def test_create_run_real_authorizer_maps_agent_skill_state_to_generic_403(
+    monkeypatch,
+    row_field,
+    row_value,
+):
+    row = {
+        "agent_status": "active",
+        "skill_status": "active",
+        "skill_version_status": "active",
+        "executor_type": "claude-agent-worker",
+        "default_skill_id": "general-chat",
+    }
+    row[row_field] = row_value
+    execute_params = []
+    audits = []
+
+    class Cursor:
+        async def fetchone(self):
+            return row
+
+    class Connection:
+        async def execute(self, query, params):
+            assert "from agents" in query
+            execute_params.append(params)
+            return Cursor()
+
+    @asynccontextmanager
+    async def lifecycle_transaction():
+        yield Connection()
+
+    async def record_audit(conn, **kwargs):
+        audits.append(
+            (
+                kwargs["source"],
+                kwargs["error"].denial.capability_id,
+                kwargs["error"].denial.decision_reason,
+            )
+        )
+        return "aud-denied"
+
+    async def fail_create_session(*args, **kwargs):
+        raise AssertionError("authorization denial must precede persistence")
+
+    monkeypatch.setattr(runs_module, "transaction", lifecycle_transaction)
+    monkeypatch.setattr(
+        repository_module,
+        "authorize_run_capabilities",
+        _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES,
+    )
+    monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+    monkeypatch.setattr(repository_module, "create_session", fail_create_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="general-agent",
+                capability_id="general_chat",
+            ),
+            principal=principal(
+                user_id="user-skill-status",
+                tenant_id="default",
+                department_id="qa",
+                roles=["user"],
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert execute_params == [("general-chat", "default", "general-agent")]
+    assert audits == [("create_run", "general-chat", "capability_not_authorized")]
 
 
 @pytest.mark.asyncio

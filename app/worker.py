@@ -1073,12 +1073,20 @@ async def _reauthorize_worker_capabilities(
         skill_lifecycle_status = str(skill.get("skill_status") or "disabled")
     except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError):
         pass
-    skill_distribution = await repositories.get_capability_distribution_row(
-        conn,
-        tenant_id=run_identity["tenant_id"],
-        capability_kind="skill",
-        capability_id=run_identity["skill_id"],
-    )
+    try:
+        skill_distribution = await repositories.get_capability_distribution_row(
+            conn,
+            tenant_id=run_identity["tenant_id"],
+            capability_kind="skill",
+            capability_id=run_identity["skill_id"],
+        )
+    except repositories.RepositoryConflictError:
+        denial = _worker_capability_record(
+            "skill",
+            run_identity["skill_id"],
+            _denied_capability_decision("distribution_scope_invalid"),
+        )
+        return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
     skill_decision = resolve_capability_access(
         context,
         CapabilityDistributionSubject(
@@ -1130,12 +1138,20 @@ async def _reauthorize_worker_capabilities(
                 _denied_capability_decision("distribution_inheritance_missing"),
             )
             return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
-        server_distribution = await repositories.get_capability_distribution_row(
-            conn,
-            tenant_id=run_identity["tenant_id"],
-            capability_kind="mcp_server",
-            capability_id=server_id,
-        )
+        try:
+            server_distribution = await repositories.get_capability_distribution_row(
+                conn,
+                tenant_id=run_identity["tenant_id"],
+                capability_kind="mcp_server",
+                capability_id=server_id,
+            )
+        except repositories.RepositoryConflictError:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                tool_id,
+                _denied_capability_decision("distribution_scope_invalid"),
+            )
+            return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
         distribution_decision = resolve_capability_access(
             context,
             CapabilityDistributionSubject(

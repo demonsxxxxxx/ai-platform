@@ -115,6 +115,65 @@ def test_agent_workspace_agents_use_principal_distribution_projection(monkeypatc
     ]
 
 
+def test_agent_workspace_empty_authorized_agent_set_short_circuits_historical_projections(monkeypatch):
+    calls = []
+
+    async def no_authorized_agents(conn, **kwargs):
+        calls.append(("agents", kwargs["tenant_id"], kwargs["department_id"]))
+        return []
+
+    async def fail_projection(*args, **kwargs):
+        raise AssertionError("empty authorized Agent set must not query historical workspace projections")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.frontend_projections.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.frontend_projections.repositories.list_principal_lambchat_agents",
+        no_authorized_agents,
+    )
+    monkeypatch.setattr(
+        "app.routes.frontend_projections.repositories.list_agent_workspace_sessions",
+        fail_projection,
+    )
+    monkeypatch.setattr(
+        "app.routes.frontend_projections.repositories.list_agent_workspace_runs",
+        fail_projection,
+    )
+    monkeypatch.setattr(
+        "app.routes.frontend_projections.repositories.list_agent_workspace_tool_permissions",
+        fail_projection,
+    )
+    monkeypatch.setattr(
+        "app.routes.frontend_projections.repositories.get_effective_memory_policy",
+        fail_projection,
+    )
+
+    response = TestClient(create_app()).get(
+        "/api/agent-workspace?workspace_id=default",
+        headers=headers(department_id="revoked"),
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert calls == [("agents", "tenant-a", "revoked")]
+    assert data["agents"] == []
+    assert data["selected_agent"] is None
+    assert data["sessions"] == []
+    assert data["latest_runs"] == []
+    assert data["run_console"] == {
+        "run_id": None,
+        "status": "idle",
+        "next_after_sequence": 0,
+        "events": [],
+        "steps": [],
+    }
+    assert data["artifacts"] == []
+    assert data["pending_tool_permissions"] == []
+    assert data["memory_context_policy"]["agent_id"] is None
+    assert data["memory_context_policy"]["capability_id"] is None
+    assert data["memory_context_policy"]["memory_enabled"] is False
+
+
 def test_agent_workspace_projection_sanitizes_public_contract(monkeypatch):
     calls = []
 
@@ -711,11 +770,13 @@ def test_agent_workspace_projection_selected_empty_session_does_not_widen_approv
 
     assert response.status_code == 200
     data = response.json()
+    assert data["selected_agent"] is None
+    assert data["sessions"] == []
     assert data["latest_runs"] == []
     assert data["run_console"]["status"] == "idle"
     assert data["pending_tool_permissions"] == []
-    assert ("runs", "tenant-a", "default", "user-a", None, "ses-empty", 10) in calls
-    assert ("permissions", "tenant-a", "user-a", "default", None, "ses-empty", "pending", 50) in calls
+    assert data["memory_context_policy"]["memory_enabled"] is False
+    assert calls == [("agents", "tenant-a")]
 
 
 def test_agent_workspace_projection_rejects_unsafe_workspace_id(monkeypatch):

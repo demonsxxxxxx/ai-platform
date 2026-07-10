@@ -146,7 +146,12 @@ create table if not exists tenant_capability_distributions (
   check (status in ('active', 'disabled')),
   check (scope_mode in ('allowlist')),
   constraint tenant_capability_distributions_allowed_roles_array
-    check (jsonb_typeof(allowed_roles) = 'array')
+    check (jsonb_typeof(allowed_roles) = 'array'),
+  constraint tenant_capability_distributions_allowed_roles_strings
+    check (
+      not jsonb_path_exists(allowed_roles, '$[*] ? (@.type() != "string")')
+      and not jsonb_path_exists(allowed_roles, '$[*] ? (@ == "")')
+    )
 );
 
 do $$
@@ -166,6 +171,27 @@ $$;
 
 alter table tenant_capability_distributions
   validate constraint tenant_capability_distributions_allowed_roles_array;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'tenant_capability_distributions_allowed_roles_strings'
+      and conrelid = 'tenant_capability_distributions'::regclass
+  ) then
+    alter table tenant_capability_distributions
+      add constraint tenant_capability_distributions_allowed_roles_strings
+      check (
+        not jsonb_path_exists(allowed_roles, '$[*] ? (@.type() != "string")')
+        and not jsonb_path_exists(allowed_roles, '$[*] ? (@ == "")')
+      ) not valid;
+  end if;
+end
+$$;
+
+alter table tenant_capability_distributions
+  validate constraint tenant_capability_distributions_allowed_roles_strings;
 
 create table if not exists tenant_capability_distribution_backfills (
   tenant_id text primary key references tenants(id),

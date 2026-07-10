@@ -145,7 +145,7 @@ async def test_agent_app_repository_uses_active_platform_registry():
     assert params == ("default",)
 
 
-async def test_resolve_agent_skill_uses_tenant_workbench_skill_status():
+async def test_resolve_agent_skill_uses_global_skill_lifecycle_status():
     from app.repositories import RepositoryConflictError, resolve_agent_skill
 
     class OneRowCursor:
@@ -180,13 +180,13 @@ async def test_resolve_agent_skill_uses_tenant_workbench_skill_status():
         )
 
     sql, params = conn.executed[-1]
-    assert "left join tenant_workbench_skills" in sql
-    assert "coalesce(tenant_workbench_skills.status, skills.status) as skill_status" in sql
+    assert "skills.status as skill_status" in sql
+    assert "tenant_workbench_skills" not in sql
     assert params == ("qa-file-reviewer", "default", "qa-word-review")
 
 
-async def test_resolve_agent_skill_rejects_disabled_mcp_backed_skill():
-    from app.repositories import RepositoryConflictError, resolve_agent_skill
+async def test_resolve_agent_skill_projects_canonical_mcp_backing_for_authorizer():
+    from app.repositories import resolve_agent_skill
 
     class OneRowCursor:
         async def fetchone(self):
@@ -199,6 +199,7 @@ async def test_resolve_agent_skill_rejects_disabled_mcp_backed_skill():
                 "skill_version": "0.1.0",
                 "executor_type": "ragflow",
                 "input_modes": ["chat"],
+                "backing_mcp_tool_id": "ragflow-knowledge-search",
                 "mcp_tool_status": "disabled",
             }
 
@@ -212,18 +213,80 @@ async def test_resolve_agent_skill_rejects_disabled_mcp_backed_skill():
 
     conn = RecordingConnection()
 
-    with pytest.raises(RepositoryConflictError, match="mcp_tool_disabled"):
-        await resolve_agent_skill(
-            conn,
+    row = await resolve_agent_skill(
+        conn,
+        tenant_id="default",
+        agent_id="sop-assistant",
+        skill_id="ragflow-knowledge-search",
+    )
+
+    sql, params = conn.executed[-1]
+    assert row["backing_mcp_tool_id"] == "ragflow-knowledge-search"
+    assert "left join mcp_tools on mcp_tools.id = skills.id" in sql
+    assert "mcp_tools.id as backing_mcp_tool_id" in sql
+    assert params == ("ragflow-knowledge-search", "default", "sop-assistant")
+
+
+async def test_authorize_run_capabilities_rejects_disabled_mcp_backed_skill(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    async def resolve_skill(conn, *, tenant_id, agent_id, skill_id):
+        calls.append(("skill", skill_id))
+        return {
+            "skill_id": skill_id,
+            "skill_status": "active",
+            "executor_type": "ragflow",
+            "backing_mcp_tool_id": "ragflow-knowledge-search",
+        }
+
+    async def get_distribution(conn, *, tenant_id, capability_kind, capability_id):
+        calls.append(("distribution", capability_kind, capability_id))
+        return {
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": [],
+            "allowed_roles": [],
+        }
+
+    async def get_tool(conn, *, tenant_id, tool_id):
+        calls.append(("tool", tool_id))
+        return {
+            "id": tool_id,
+            "server_id": "ragflow-server",
+            "effective_status": "disabled",
+            "server_status": "active",
+            "visible_to_user": True,
+        }
+
+    monkeypatch.setattr(repositories, "resolve_agent_skill", resolve_skill)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", get_distribution)
+    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", get_tool)
+
+    with pytest.raises(repositories.RepositoryAuthorizationError) as exc_info:
+        await repositories.authorize_run_capabilities(
+            object(),
             tenant_id="default",
             agent_id="sop-assistant",
             skill_id="ragflow-knowledge-search",
+            normalized_input={},
+            principal_department_id="qa",
+            principal_roles=["user"],
+            is_admin=False,
+            permissions=[],
         )
 
-    sql, params = conn.executed[-1]
-    assert "left join mcp_tools on mcp_tools.id = skills.id" in sql
-    assert "mcp_tools.status as mcp_tool_status" in sql
-    assert params == ("ragflow-knowledge-search", "default", "sop-assistant")
+    assert str(exc_info.value) == "capability_not_authorized"
+    assert exc_info.value.denial.capability_kind == "mcp_tool"
+    assert exc_info.value.denial.capability_id == "ragflow-knowledge-search"
+    assert calls == [
+        ("skill", "ragflow-knowledge-search"),
+        ("distribution", "skill", "ragflow-knowledge-search"),
+        ("tool", "ragflow-knowledge-search"),
+        ("distribution", "mcp_server", "ragflow-server"),
+    ]
 
 
 async def test_workbench_capability_status_follows_disabled_mcp_tool(monkeypatch):

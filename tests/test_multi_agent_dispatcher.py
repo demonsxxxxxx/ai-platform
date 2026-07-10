@@ -1,5 +1,6 @@
 import pytest
 
+from app.capability_distribution import CapabilityAuthorizationDenial
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError
 
 
@@ -557,3 +558,172 @@ async def test_worker_dispatcher_skips_revoked_owner_and_continues_batch(monkeyp
         },
     ]
     assert calls == [("dispatch", "run-revoked"), ("dispatch", "run-allowed"), ("enqueue", "run-child")]
+
+
+@pytest.mark.asyncio
+async def test_worker_dispatcher_audits_structured_owner_denial_after_rollback_once(monkeypatch):
+    from app import multi_agent_dispatcher
+
+    events = []
+    transaction_count = 0
+
+    class Settings:
+        multi_agent_dispatch_worker_enabled = True
+        multi_agent_dispatch_worker_interval_seconds = 30.0
+        multi_agent_dispatch_worker_limit = 1
+        multi_agent_dispatch_worker_user_id = "system:multi-agent-dispatcher"
+        default_tenant_id = "default"
+
+    class Transaction:
+        async def __aenter__(self):
+            nonlocal transaction_count
+            transaction_count += 1
+            self.transaction_id = transaction_count
+            events.append(("enter", self.transaction_id))
+            return f"conn-{self.transaction_id}"
+
+        async def __aexit__(self, exc_type, exc, tb):
+            events.append(("exit", self.transaction_id, exc_type.__name__ if exc_type else None))
+            return False
+
+    denial = CapabilityAuthorizationDenial(
+        capability_kind="skill",
+        capability_id="qa-file-reviewer",
+        actor_department_id="QA",
+        actor_roles=("qa-operator",),
+        department_scope_ids=("finance",),
+        role_scope_ids=("reviewer",),
+        scope_mode="allowlist",
+        decision_reason="department_not_allowed",
+    )
+
+    async def list_candidates(conn, *, tenant_id, limit):
+        return ["run-revoked"]
+
+    async def dispatch_one(conn, *, tenant_id, run_id, principal, settings):
+        events.append(("dispatch", conn, run_id))
+        raise RepositoryAuthorizationError("capability_not_authorized", denial=denial)
+
+    async def get_run(conn, *, tenant_id, run_id, for_update=False):
+        events.append(("owner", conn, tenant_id, run_id, for_update))
+        return {
+            "id": run_id,
+            "tenant_id": tenant_id,
+            "user_id": "persisted-owner",
+            "principal_department_id": "QA",
+            "principal_roles": ["qa-operator"],
+            "auth_source": "session-token",
+        }
+
+    async def append_denial(conn, **kwargs):
+        events.append(
+            (
+                "audit",
+                conn,
+                kwargs["user_id"],
+                kwargs["source"],
+                kwargs["error"].denial.capability_id,
+            )
+        )
+        return "aud-denied"
+
+    monkeypatch.setattr(multi_agent_dispatcher, "_next_multi_agent_dispatch_at", 0.0, raising=False)
+    monkeypatch.setattr(multi_agent_dispatcher, "transaction", lambda: Transaction())
+    monkeypatch.setattr(
+        multi_agent_dispatcher.repositories,
+        "list_multi_agent_dispatch_candidate_run_ids",
+        list_candidates,
+        raising=False,
+    )
+    monkeypatch.setattr(multi_agent_dispatcher, "_dispatch_one_ready_parent", dispatch_one)
+    monkeypatch.setattr(multi_agent_dispatcher.repositories, "get_run", get_run, raising=False)
+    monkeypatch.setattr(
+        multi_agent_dispatcher.repositories,
+        "append_capability_authorization_denial_audit",
+        append_denial,
+        raising=False,
+    )
+
+    result = await multi_agent_dispatcher.dispatch_multi_agent_ready_steps_for_worker(Settings(), now=10.0)
+
+    assert result == [
+        {"run_id": "run-revoked", "status": "skipped", "reason": "capability_not_authorized"}
+    ]
+    assert events == [
+        ("enter", 1),
+        ("exit", 1, None),
+        ("enter", 2),
+        ("dispatch", "conn-2", "run-revoked"),
+        ("exit", 2, "RepositoryAuthorizationError"),
+        ("enter", 3),
+        ("owner", "conn-3", "default", "run-revoked", False),
+        ("audit", "conn-3", "persisted-owner", "worker_multi_agent_dispatcher", "qa-file-reviewer"),
+        ("exit", 3, None),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_worker_dispatcher_does_not_silence_structured_denial_audit_failure(monkeypatch):
+    from app import multi_agent_dispatcher
+
+    audit_calls = []
+
+    class Settings:
+        multi_agent_dispatch_worker_enabled = True
+        multi_agent_dispatch_worker_interval_seconds = 30.0
+        multi_agent_dispatch_worker_limit = 1
+        multi_agent_dispatch_worker_user_id = "system:multi-agent-dispatcher"
+        default_tenant_id = "default"
+
+    class Transaction:
+        async def __aenter__(self):
+            return "conn"
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    denial = CapabilityAuthorizationDenial(
+        capability_kind="skill",
+        capability_id="qa-file-reviewer",
+        actor_department_id="QA",
+        actor_roles=("qa-operator",),
+        department_scope_ids=("finance",),
+        role_scope_ids=(),
+        scope_mode="allowlist",
+        decision_reason="department_not_allowed",
+    )
+
+    async def list_candidates(conn, *, tenant_id, limit):
+        return ["run-revoked"]
+
+    async def dispatch_one(*args, **kwargs):
+        raise RepositoryAuthorizationError("capability_not_authorized", denial=denial)
+
+    async def get_run(*args, **kwargs):
+        return {"user_id": "persisted-owner"}
+
+    async def fail_audit(*args, **kwargs):
+        audit_calls.append(kwargs)
+        raise RuntimeError("denial_audit_unavailable")
+
+    monkeypatch.setattr(multi_agent_dispatcher, "_next_multi_agent_dispatch_at", 0.0, raising=False)
+    monkeypatch.setattr(multi_agent_dispatcher, "transaction", lambda: Transaction())
+    monkeypatch.setattr(
+        multi_agent_dispatcher.repositories,
+        "list_multi_agent_dispatch_candidate_run_ids",
+        list_candidates,
+        raising=False,
+    )
+    monkeypatch.setattr(multi_agent_dispatcher, "_dispatch_one_ready_parent", dispatch_one)
+    monkeypatch.setattr(multi_agent_dispatcher.repositories, "get_run", get_run, raising=False)
+    monkeypatch.setattr(
+        multi_agent_dispatcher.repositories,
+        "append_capability_authorization_denial_audit",
+        fail_audit,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="denial_audit_unavailable"):
+        await multi_agent_dispatcher.dispatch_multi_agent_ready_steps_for_worker(Settings(), now=10.0)
+
+    assert len(audit_calls) == 1

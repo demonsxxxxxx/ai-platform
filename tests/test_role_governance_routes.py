@@ -206,6 +206,60 @@ def test_role_governance_skill_projection_uses_unified_distribution(monkeypatch)
     assert any(name == "list_distributions" for name, _ in calls)
 
 
+def test_role_governance_admin_skill_projection_audits_distribution_bypass(monkeypatch):
+    calls = install_role_governance_route_fakes(
+        monkeypatch,
+        distribution_rows=[
+            {
+                "capability_kind": "skill",
+                "capability_id": "restricted-skill",
+                "status": "disabled",
+                "visible_to_user": False,
+                "scope_mode": "allowlist",
+                "department_ids": ["qa"],
+                "allowed_roles": ["qa-operator"],
+                "metadata_json": {"private": "must-not-be-audited"},
+            }
+        ],
+        skill_rows={"restricted-skill": {"status": "active"}},
+    )
+
+    response = TestClient(create_app()).get(
+        "/api/role-governance/overview?workspace_id=workspace-a",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["scope"]["skill_availability"] == [
+        {
+            "skill_id": "restricted-skill",
+            "availability_state": "inherited",
+            "inherited_from": "tenant",
+            "scope_id": "tenant-a",
+        }
+    ]
+    bypass_audits = [
+        payload
+        for name, payload in calls
+        if name == "audit" and payload["action"] == "capability_distribution.admin_bypass"
+    ]
+    assert len(bypass_audits) == 1
+    audit = bypass_audits[0]
+    assert (audit["target_type"], audit["target_id"]) == ("skill", "restricted-skill")
+    assert audit["payload_json"] == {
+        "capability_kind": "skill",
+        "capability_id": "restricted-skill",
+        "actor_department_id": "platform",
+        "actor_roles": ["admin"],
+        "department_scope_ids": ["qa"],
+        "role_scope_ids": ["qa-operator"],
+        "scope_mode": "allowlist",
+        "decision_reason": "admin_bypass",
+        "admin_bypass": True,
+    }
+    assert "must-not-be-audited" not in str(audit)
+
+
 def test_role_governance_omits_disabled_skill_lifecycle(monkeypatch):
     install_role_governance_route_fakes(
         monkeypatch,

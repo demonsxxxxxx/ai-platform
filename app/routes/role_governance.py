@@ -7,8 +7,13 @@ from pydantic import BaseModel, ValidationError
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
-from app.capability_distribution import CapabilityAccessContext, CapabilityDistributionSubject, resolve_capability_access
-from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
+from app.capability_distribution import (
+    CapabilityAccessContext,
+    CapabilityDistributionSubject,
+    capability_distribution_audit_payload,
+    resolve_capability_access,
+)
+from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
 from app.db import transaction
 from app.memory_redaction import is_sensitive_redaction_key
 from app.models import (
@@ -182,6 +187,14 @@ async def _scope_projection(principal: AuthPrincipal, workspace_id: str) -> Role
                 requestable=True,
             )
         )
+    skills = []
+    context = CapabilityAccessContext(
+        tenant_id=principal.tenant_id,
+        department_id=principal.department_id,
+        roles=principal.roles,
+        is_admin=is_ai_admin(principal),
+        permissions=principal.permissions,
+    )
     async with transaction() as conn:
         distributions = await repositories.list_capability_distribution_rows(
             conn,
@@ -194,36 +207,46 @@ async def _scope_projection(principal: AuthPrincipal, workspace_id: str) -> Role
             for skill_id in {str(row.get("capability_id") or "") for row in distributions}
             if skill_id
         }
-    skills = []
-    for distribution in distributions:
-        skill_id = str(distribution.get("capability_id") or "")
-        if not skill_id:
-            continue
-        decision = resolve_capability_access(
-            CapabilityAccessContext(
-                tenant_id=principal.tenant_id,
-                department_id=principal.department_id,
-                roles=principal.roles,
-                is_admin=is_ai_admin(principal),
-                permissions=principal.permissions,
-            ),
-            CapabilityDistributionSubject(
-                capability_kind="skill",
-                capability_id=skill_id,
-                lifecycle_status=catalog_statuses.get(skill_id, "disabled"),
-                distribution=distribution,
-            ),
-            intent="discover",
-        )
-        if decision.visible:
-            skills.append(
-                RoleGovernanceSkillAvailabilityResponse(
-                    skill_id=skill_id,
-                    availability_state="inherited",
-                    inherited_from="tenant",
-                    scope_id=principal.tenant_id,
-                )
+        for distribution in distributions:
+            skill_id = str(distribution.get("capability_id") or "")
+            if not skill_id:
+                continue
+            decision = resolve_capability_access(
+                context,
+                CapabilityDistributionSubject(
+                    capability_kind="skill",
+                    capability_id=skill_id,
+                    lifecycle_status=catalog_statuses.get(skill_id, "disabled"),
+                    distribution=distribution,
+                ),
+                intent="discover",
             )
+            if decision.visible:
+                if decision.admin_bypass:
+                    await repositories.append_audit_log(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        user_id=principal.user_id,
+                        action="capability_distribution.admin_bypass",
+                        target_type="skill",
+                        target_id=skill_id,
+                        trace_id=standard_trace_id(skill_id),
+                        payload_json=capability_distribution_audit_payload(
+                            decision=decision,
+                            actor_department_id=principal.department_id,
+                            actor_roles=principal.roles,
+                            capability_kind="skill",
+                            capability_id=skill_id,
+                        ),
+                    )
+                skills.append(
+                    RoleGovernanceSkillAvailabilityResponse(
+                        skill_id=skill_id,
+                        availability_state="inherited",
+                        inherited_from="tenant",
+                        scope_id=principal.tenant_id,
+                    )
+                )
     return RoleGovernanceScopeResponse(
         tenant_id=principal.tenant_id,
         workspace_id=workspace_id,

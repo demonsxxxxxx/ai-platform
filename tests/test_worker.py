@@ -5660,6 +5660,7 @@ def _install_task6_worker_fakes(
             "executor_type": "capture",
         },
         "skill_error": None,
+        "distribution_errors": {},
         "distributions": {
             ("skill", skill_id): _task6_distribution(
                 "skill",
@@ -5735,6 +5736,9 @@ def _install_task6_worker_fakes(
 
     async def get_capability_distribution_row(conn, *, tenant_id, capability_kind, capability_id):
         calls.append(("distribution", tenant_id, capability_kind, capability_id))
+        error = state["distribution_errors"].get((capability_kind, capability_id))
+        if error is not None:
+            raise error
         return state["distributions"].get((capability_kind, capability_id))
 
     async def get_mcp_tool_registry_entry(conn, *, tenant_id, tool_id):
@@ -6214,6 +6218,45 @@ async def test_worker_capability_distribution_denial_event_and_dotted_audit_are_
         ensure_ascii=False,
         sort_keys=True,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_scope", ["skill", "mcp_server"])
+async def test_worker_malformed_distribution_scope_becomes_terminal_audited_denial(
+    monkeypatch,
+    invalid_scope,
+):
+    locked_input = {"mode": "file"}
+    if invalid_scope == "mcp_server":
+        locked_input["mcp_tool_ids"] = ["tool-malformed"]
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input=locked_input,
+    )
+    if invalid_scope == "skill":
+        key = ("skill", "qa-file-reviewer")
+        expected_target = ("skill", "qa-file-reviewer")
+    else:
+        state["tools"]["tool-malformed"] = _task6_tool("tool-malformed", "server-malformed")
+        key = ("mcp_server", "server-malformed")
+        expected_target = ("mcp_tool", "tool-malformed")
+    state["distribution_errors"][key] = RepositoryConflictError(
+        "capability_distribution_scope_invalid"
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    denied_audit = next(
+        call[1]
+        for call in calls
+        if call[0] == "audit" and call[1]["action"] == "capability_distribution.denied"
+    )
+    assert (denied_audit["target_type"], denied_audit["target_id"]) == expected_target
+    assert denied_audit["payload_json"]["decision_reason"] == "distribution_scope_invalid"
+    assert any(call[0] == "fail" for call in calls)
+    _task6_assert_no_executor_calls(calls)
 
 
 @pytest.mark.asyncio

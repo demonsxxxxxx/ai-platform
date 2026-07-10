@@ -547,12 +547,37 @@ async def get_agent_workspace_projection(
         )
         agents = [item for item in (_workspace_agent_projection(row) for row in agent_rows) if item is not None]
         selected_agent = _select_workspace_agent(agents, safe_agent_id)
-        internal_agent_id = (
-            internal_agent_id_for_request(selected_agent.agent_id)
-            if selected_agent is not None
-            else None
-        )
-        selected_capability_id = selected_agent.capability_id if selected_agent else None
+        if selected_agent is None:
+            return AgentWorkspaceProjectionResponse(
+                workspace_id=safe_workspace_id,
+                selected_agent=None,
+                agents=[],
+                sessions=[],
+                latest_runs=[],
+                run_console=AgentWorkspaceConsoleResponse(
+                    run_id=None,
+                    status="idle",
+                    next_after_sequence=0,
+                    events=[],
+                    steps=[],
+                ),
+                artifacts=[],
+                pending_tool_permissions=[],
+                memory_context_policy=_workspace_memory_policy_projection(
+                    {
+                        "workspace_id": safe_workspace_id,
+                        "memory_enabled": False,
+                        "long_term_memory_enabled": False,
+                        "source": "capability_authority",
+                        "reason": "no_authorized_agent",
+                    },
+                    public_agent_id=None,
+                    capability_id=None,
+                    latest_context=None,
+                ),
+            )
+        internal_agent_id = internal_agent_id_for_request(selected_agent.agent_id)
+        selected_capability_id = selected_agent.capability_id
 
         session_rows = await repositories.list_agent_workspace_sessions(
             conn,

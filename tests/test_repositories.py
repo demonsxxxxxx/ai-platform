@@ -150,7 +150,10 @@ async def test_capability_distribution_backfill_marks_completion_and_never_recre
     assert "from mcp_servers" in mcp_sql
     assert "department_ids" in mcp_sql
     assert "allowed_roles" in mcp_sql
-    assert "jsonb_typeof(mcp_servers.allowed_roles) = 'array'" in mcp_sql
+    assert "jsonb_typeof(mcp_servers.allowed_roles) is distinct from 'array'" in mcp_sql
+    assert "jsonb_array_elements" in mcp_sql
+    assert "jsonb_typeof(role_value) is distinct from 'string'" in mcp_sql
+    assert "select distinct lower(btrim(role_value #>> '{}'))" in mcp_sql
     assert "else 'disabled'" in mcp_sql
     assert "on conflict (tenant_id, capability_kind, capability_id) do nothing" in mcp_sql
     assert "do update" not in mcp_sql
@@ -276,7 +279,11 @@ async def test_capability_distribution_list_and_get_normalize_array_and_json_pro
 
 
 @pytest.mark.asyncio
-async def test_capability_distribution_projection_rejects_malformed_allowed_roles():
+@pytest.mark.parametrize(
+    "allowed_roles",
+    ['{"unexpected":"object"}', '[1,"qa"]', '[""]'],
+)
+async def test_capability_distribution_projection_rejects_malformed_allowed_roles(allowed_roles):
     row = {
         "id": "capdist-malformed",
         "tenant_id": "tenant-a",
@@ -286,7 +293,7 @@ async def test_capability_distribution_projection_rejects_malformed_allowed_role
         "visible_to_user": True,
         "scope_mode": "allowlist",
         "department_ids": ("QA",),
-        "allowed_roles": '{"unexpected":"object"}',
+        "allowed_roles": allowed_roles,
         "metadata_json": '{}',
         "updated_by": "admin-a",
         "created_at": None,

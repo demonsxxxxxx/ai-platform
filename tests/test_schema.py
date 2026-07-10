@@ -40,6 +40,9 @@ def test_schema_declares_capability_distribution_authority_constraints():
     assert "check (scope_mode in ('allowlist'))" in schema
     assert "tenant_capability_distributions_allowed_roles_array" in schema
     assert "jsonb_typeof(allowed_roles) = 'array'" in schema
+    assert "tenant_capability_distributions_allowed_roles_strings" in schema
+    assert "jsonb_path_exists(allowed_roles" in schema
+    assert "@ == \"\"" in schema
 
 
 def test_schema_declares_per_tenant_capability_distribution_backfill_completion_boundary():

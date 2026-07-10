@@ -42,15 +42,28 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
 
         constraint_cursor = await admin_conn.execute(
             """
-            select convalidated
+            select conname, convalidated
             from pg_constraint
-            where conname = 'tenant_capability_distributions_allowed_roles_array'
+            where conname in (
+                'tenant_capability_distributions_allowed_roles_array',
+                'tenant_capability_distributions_allowed_roles_strings'
+            )
               and conrelid = to_regclass(%s)
+            order by conname
             """,
             (f"{schema_name}.tenant_capability_distributions",),
         )
-        constraint = await constraint_cursor.fetchone()
-        assert constraint == {"convalidated": True}
+        constraints = await constraint_cursor.fetchall()
+        assert constraints == [
+            {
+                "conname": "tenant_capability_distributions_allowed_roles_array",
+                "convalidated": True,
+            },
+            {
+                "conname": "tenant_capability_distributions_allowed_roles_strings",
+                "convalidated": True,
+            },
+        ]
 
         with pytest.raises(psycopg.errors.CheckViolation):
             await admin_conn.execute(
@@ -60,6 +73,24 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
                 ) values (%s, %s, 'mcp_server', %s, '{}'::jsonb)
                 """,
                 ("capdist-malformed", "default", "malformed-authority"),
+            )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await admin_conn.execute(
+                """
+                insert into tenant_capability_distributions(
+                  id, tenant_id, capability_kind, capability_id, allowed_roles
+                ) values (%s, %s, 'mcp_server', %s, '[1,"qa"]'::jsonb)
+                """,
+                ("capdist-malformed-array", "default", "malformed-array-authority"),
+            )
+        with pytest.raises(psycopg.errors.CheckViolation):
+            await admin_conn.execute(
+                """
+                insert into tenant_capability_distributions(
+                  id, tenant_id, capability_kind, capability_id, allowed_roles
+                ) values (%s, %s, 'mcp_server', %s, '[""]'::jsonb)
+                """,
+                ("capdist-empty-role", "default", "empty-role-authority"),
             )
 
         tenant_id = f"tenant-{uuid.uuid4().hex}"
@@ -71,9 +102,20 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
             """
             insert into mcp_servers(
               tenant_id, name, status, allowed_roles, department_ids
-            ) values (%s, %s, 'active', '{"unexpected":"object"}'::jsonb, array['QA']::text[])
+            ) values (%s, %s, 'active', '[1,"QA-Operator"]'::jsonb, array['QA']::text[])
             """,
             (tenant_id, "malformed-legacy-mcp"),
+        )
+        await admin_conn.execute(
+            """
+            insert into mcp_servers(
+              tenant_id, name, status, allowed_roles, department_ids
+            ) values (
+              %s, %s, 'active', '[" QA-Operator ","qa-operator","Reviewer"]'::jsonb,
+              array['QA']::text[]
+            )
+            """,
+            (tenant_id, "normalized-legacy-mcp"),
         )
 
         await repositories.ensure_tenant_capability_distribution_backfill(
@@ -102,6 +144,26 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
             "metadata_json": {
                 "legacy_source": "mcp_servers",
                 "legacy_scope_invalid": True,
+            },
+        }
+        normalized_cursor = await admin_conn.execute(
+            """
+            select status, department_ids, allowed_roles, metadata_json
+            from tenant_capability_distributions
+            where tenant_id = %s
+              and capability_kind = 'mcp_server'
+              and capability_id = 'normalized-legacy-mcp'
+            """,
+            (tenant_id,),
+        )
+        normalized = await normalized_cursor.fetchone()
+        assert normalized == {
+            "status": "active",
+            "department_ids": ["QA"],
+            "allowed_roles": ["qa-operator", "reviewer"],
+            "metadata_json": {
+                "legacy_source": "mcp_servers",
+                "legacy_scope_invalid": False,
             },
         }
         count_cursor = await admin_conn.execute(

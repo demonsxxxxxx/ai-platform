@@ -132,6 +132,34 @@ async def _dispatch_one_ready_parent(
     }
 
 
+async def _audit_dispatch_authorization_denial(
+    *,
+    tenant_id: str,
+    run_id: str,
+    error: RepositoryAuthorizationError,
+) -> None:
+    if error.denial is None:
+        return
+    async with transaction() as conn:
+        run = await repositories.get_run(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+        )
+        if run is None:
+            raise RepositoryNotFoundError("run_not_found")
+        owner_user_id = str(run.get("user_id") or "").strip()
+        if not owner_user_id:
+            raise RepositoryConflictError("run_owner_missing")
+        await repositories.append_capability_authorization_denial_audit(
+            conn,
+            tenant_id=tenant_id,
+            user_id=owner_user_id,
+            error=error,
+            source="worker_multi_agent_dispatcher",
+        )
+
+
 async def dispatch_multi_agent_ready_steps_for_worker(
     settings: object | None = None,
     *,
@@ -210,11 +238,13 @@ async def dispatch_multi_agent_ready_steps_for_worker(
                 results.append(_skip_result(run_id, exc.detail))
                 continue
             raise
-        except (
-            RepositoryAuthorizationError,
-            RepositoryConflictError,
-            RepositoryNotFoundError,
-            SkillVersionMaterializationError,
-        ) as exc:
+        except RepositoryAuthorizationError as exc:
+            await _audit_dispatch_authorization_denial(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                error=exc,
+            )
+            results.append(_skip_result(run_id, str(exc)))
+        except (RepositoryConflictError, RepositoryNotFoundError, SkillVersionMaterializationError) as exc:
             results.append(_skip_result(run_id, str(exc)))
     return results

@@ -1006,9 +1006,9 @@ def _capability_distribution_string_list(value: Any) -> list[str]:
         except json.JSONDecodeError:
             raise RepositoryConflictError("capability_distribution_scope_invalid")
     if isinstance(value, (list, tuple)):
-        if any(not isinstance(item, str) for item in value):
+        if any(not isinstance(item, str) or not item for item in value):
             raise RepositoryConflictError("capability_distribution_scope_invalid")
-        return [item for item in value if item]
+        return list(value)
     raise RepositoryConflictError("capability_distribution_scope_invalid")
 
 
@@ -1145,23 +1145,47 @@ async def ensure_tenant_capability_distribution_backfill(
           'mcp_server',
           mcp_servers.name,
           case
-            when jsonb_typeof(mcp_servers.allowed_roles) is distinct from 'array' then 'disabled'
+            when not role_validation.scope_valid then 'disabled'
             when mcp_servers.status = 'active' then 'active'
             else 'disabled'
           end,
           true,
           'allowlist',
           mcp_servers.department_ids,
-          case
-            when jsonb_typeof(mcp_servers.allowed_roles) = 'array' then mcp_servers.allowed_roles
-            else '[]'::jsonb
-          end,
+          role_scope.normalized_allowed_roles,
           jsonb_build_object(
             'legacy_source', 'mcp_servers',
-            'legacy_scope_invalid', jsonb_typeof(mcp_servers.allowed_roles) is distinct from 'array'
+            'legacy_scope_invalid', not role_validation.scope_valid
           ),
           mcp_servers.updated_by
         from mcp_servers
+        cross join lateral (
+          select case
+            when jsonb_typeof(mcp_servers.allowed_roles) is distinct from 'array' then false
+            when exists (
+              select 1
+              from jsonb_array_elements(mcp_servers.allowed_roles) as role_items(role_value)
+              where jsonb_typeof(role_value) is distinct from 'string'
+                 or btrim(role_value #>> '{}') = ''
+            ) then false
+            else true
+          end as scope_valid
+        ) as role_validation
+        cross join lateral (
+          select case
+            when role_validation.scope_valid then coalesce(
+              (
+                select jsonb_agg(normalized_role order by normalized_role)
+                from (
+                  select distinct lower(btrim(role_value #>> '{}')) as normalized_role
+                  from jsonb_array_elements(mcp_servers.allowed_roles) as role_items(role_value)
+                ) as normalized_roles
+              ),
+              '[]'::jsonb
+            )
+            else '[]'::jsonb
+          end as normalized_allowed_roles
+        ) as role_scope
         where mcp_servers.tenant_id = %s
           and mcp_servers.status <> 'deleted'
         on conflict (tenant_id, capability_kind, capability_id) do nothing
