@@ -474,6 +474,25 @@ async def _public_skill_row(
     return row
 
 
+def _skill_distribution_audit_payload(
+    *,
+    principal: AuthPrincipal,
+    skill_name: str,
+    decision: CapabilityAccessDecision,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(payload)
+    merged.update(
+        capability_distribution_audit_payload(
+            decision=decision,
+            actor_department_id=principal.department_id,
+            capability_kind="skill",
+            capability_id=skill_name,
+        )
+    )
+    return merged
+
+
 def _find_row(rows: list[dict[str, Any]], *, skill_name: str) -> dict[str, Any]:
     for row in rows:
         if str(row.get("skill_id") or "") == skill_name:
@@ -749,7 +768,7 @@ async def _persist_public_import_package(
     audit_action: str,
     audit_payload: dict[str, Any],
 ) -> None:
-    await _public_skill_row(principal=principal, skill_name=parsed.skill_id)
+    _, decision = await _public_skill_access(principal=principal, skill_name=parsed.skill_id)
     async with transaction() as conn:
         await repositories.ensure_user(
             conn,
@@ -776,6 +795,12 @@ async def _persist_public_import_package(
             "department_id": principal.department_id,
         }
         payload_json.update(audit_payload)
+        payload_json = _skill_distribution_audit_payload(
+            principal=principal,
+            skill_name=parsed.skill_id,
+            decision=decision,
+            payload=payload_json,
+        )
         await repositories.append_audit_log(
             conn,
             tenant_id=principal.tenant_id,
@@ -981,7 +1006,7 @@ async def update_skill_file(
     if max_bytes > 0 and len(content) > max_bytes:
         raise HTTPException(status_code=413, detail="skill_file_too_large")
     encoded = base64.b64encode(content).decode("ascii")
-    await _public_skill_row(principal=principal, skill_name=safe_skill_name)
+    _, decision = await _public_skill_access(principal=principal, skill_name=safe_skill_name)
     async with transaction() as conn:
         await repositories.ensure_user(
             conn,
@@ -1005,11 +1030,16 @@ async def update_skill_file(
             action="skill.public.file_upsert",
             target_type="skill",
             target_id=safe_skill_name,
-            payload_json={
-                "file_path": safe_file_path,
-                "size_bytes": int(saved.get("size_bytes") or len(content)),
-                "department_id": principal.department_id,
-            },
+            payload_json=_skill_distribution_audit_payload(
+                principal=principal,
+                skill_name=safe_skill_name,
+                decision=decision,
+                payload={
+                    "file_path": safe_file_path,
+                    "size_bytes": int(saved.get("size_bytes") or len(content)),
+                    "department_id": principal.department_id,
+                },
+            ),
         )
     return PublicSkillFileMutationResponse(
         skill_name=safe_skill_name,
@@ -1030,7 +1060,7 @@ async def delete_skill_file(
     _require_permission(principal, "skill:delete")
     safe_skill_name = _safe_skill_name(skill_name)
     safe_file_path = _safe_file_path(file_path)
-    await _public_skill_row(principal=principal, skill_name=safe_skill_name)
+    _, decision = await _public_skill_access(principal=principal, skill_name=safe_skill_name)
     async with transaction() as conn:
         await repositories.ensure_user(
             conn,
@@ -1052,7 +1082,12 @@ async def delete_skill_file(
             action="skill.public.file_delete",
             target_type="skill",
             target_id=safe_skill_name,
-            payload_json={"file_path": safe_file_path, "department_id": principal.department_id},
+            payload_json=_skill_distribution_audit_payload(
+                principal=principal,
+                skill_name=safe_skill_name,
+                decision=decision,
+                payload={"file_path": safe_file_path, "department_id": principal.department_id},
+            ),
         )
     return PublicSkillFileMutationResponse(
         skill_name=safe_skill_name,
@@ -1148,13 +1183,12 @@ async def publish_skill(
     _require_permission(principal, "marketplace:publish")
     request = _request_model(PublishToMarketplaceRequest, payload or {})
     safe_skill_name = _safe_skill_name(skill_name)
-    row = dict(
-        await _public_skill_row(
-            principal=principal,
-            skill_name=safe_skill_name,
-            include_user_file_overlays=False,
-        )
+    resolved_row, decision = await _public_skill_access(
+        principal=principal,
+        skill_name=safe_skill_name,
+        include_user_file_overlays=False,
     )
+    row = dict(resolved_row)
     if request.description:
         row["description"] = request.description
     if request.version:
@@ -1171,11 +1205,16 @@ async def publish_skill(
             action="skill.public.publish_requested",
             target_type="skill",
             target_id=safe_skill_name,
-            payload_json={
-                "marketplace_skill_name": request.skill_name or safe_skill_name,
-                "version": request.version,
-                "department_id": principal.department_id,
-            },
+            payload_json=_skill_distribution_audit_payload(
+                principal=principal,
+                skill_name=safe_skill_name,
+                decision=decision,
+                payload={
+                    "marketplace_skill_name": request.skill_name or safe_skill_name,
+                    "version": request.version,
+                    "department_id": principal.department_id,
+                },
+            ),
         )
     return _marketplace_item(row, principal)
 
@@ -1473,14 +1512,11 @@ async def _install_or_update_marketplace_skill(
     _require_permission(principal, "skill:write")
     safe_skill_name = _safe_skill_name(skill_name)
     row, decision = await _public_skill_access(principal=principal, skill_name=safe_skill_name)
-    audit_payload = {"department_id": principal.department_id}
-    audit_payload.update(
-        capability_distribution_audit_payload(
-            decision=decision,
-            actor_department_id=principal.department_id,
-            capability_kind="skill",
-            capability_id=safe_skill_name,
-        )
+    audit_payload = _skill_distribution_audit_payload(
+        principal=principal,
+        skill_name=safe_skill_name,
+        decision=decision,
+        payload={"department_id": principal.department_id},
     )
     try:
         async with transaction() as conn:
@@ -1507,7 +1543,7 @@ async def install_marketplace_skill(
     skill_name: str,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> MarketplaceInstallResponse:
-    """Install a marketplace skill by enabling tenant availability."""
+    """Install a marketplace skill for the current user without changing shared availability."""
 
     return await _install_or_update_marketplace_skill(
         skill_name=skill_name,

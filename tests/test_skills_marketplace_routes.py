@@ -419,6 +419,58 @@ def install_route_fakes(
     return calls
 
 
+def admin_bypass_distribution_rows() -> list[dict[str, object]]:
+    return [
+        {
+            "capability_kind": "skill",
+            "capability_id": "qa-file-reviewer",
+            "status": "disabled",
+            "visible_to_user": False,
+            "scope_mode": "allowlist",
+            "department_ids": ["qa"],
+            "allowed_roles": ["qa_operator"],
+            "metadata_json": {},
+        }
+    ]
+
+
+def assert_admin_bypass_audit(
+    calls: list[tuple[str, dict[str, object]]],
+    *,
+    action: str,
+) -> dict[str, object]:
+    audit = next(
+        payload
+        for name, payload in calls
+        if name == "audit" and payload["action"] == action
+    )
+    payload_json = audit["payload_json"]
+    assert isinstance(payload_json, dict)
+    assert {
+        key: payload_json[key]
+        for key in (
+            "capability_kind",
+            "capability_id",
+            "actor_department_id",
+            "department_scope_ids",
+            "role_scope_ids",
+            "scope_mode",
+            "decision_reason",
+            "admin_bypass",
+        )
+    } == {
+        "capability_kind": "skill",
+        "capability_id": "qa-file-reviewer",
+        "actor_department_id": "platform",
+        "department_scope_ids": ["qa"],
+        "role_scope_ids": ["qa_operator"],
+        "scope_mode": "allowlist",
+        "decision_reason": "admin_bypass",
+        "admin_bypass": True,
+    }
+    return payload_json
+
+
 def test_skills_and_marketplace_read_contracts_project_catalog_and_files(monkeypatch):
     calls = install_route_fakes(monkeypatch)
     client = TestClient(create_app())
@@ -692,6 +744,82 @@ def test_publish_distribution_hides_disabled_and_missing_rows(monkeypatch):
     assert missing.status_code == 404
     assert missing.json()["detail"] == "skill_not_found"
     assert not any(name == "audit" for name, _ in calls)
+
+
+def test_publish_admin_bypass_audit_preserves_distribution_decision(monkeypatch):
+    calls = install_route_fakes(monkeypatch, distribution_rows=admin_bypass_distribution_rows())
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/skills/qa-file-reviewer/publish",
+        json={"description": "Admin publish preview."},
+        headers=headers("marketplace:publish", roles="admin", department_id="platform"),
+    )
+
+    assert response.status_code == 200
+    payload_json = assert_admin_bypass_audit(calls, action="skill.public.publish_requested")
+    assert payload_json["marketplace_skill_name"] == "qa-file-reviewer"
+
+
+def test_zip_import_admin_bypass_audit_preserves_distribution_decision(monkeypatch):
+    calls = install_route_fakes(monkeypatch, distribution_rows=admin_bypass_distribution_rows())
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/skills/upload",
+        files={"file": ("qa-file-reviewer.zip", _skill_package_zip(), "application/zip")},
+        headers=headers("skill:write", roles="admin", department_id="platform"),
+    )
+
+    assert response.status_code == 200
+    payload_json = assert_admin_bypass_audit(calls, action="skill.public.zip_imported")
+    assert payload_json["file_count"] == 2
+    assert not any(name == "toggle_distribution" for name, _ in calls)
+
+
+def test_github_import_admin_bypass_audit_preserves_distribution_decision(monkeypatch):
+    calls = install_route_fakes(monkeypatch, distribution_rows=admin_bypass_distribution_rows())
+
+    async def fake_download(url: str) -> bytes:
+        return _github_skill_archive()
+
+    monkeypatch.setattr("app.routes.skills_marketplace._download_github_archive", fake_download)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/github/install",
+        json={"repo_url": "https://github.com/example/skills", "skill_names": ["qa-file-reviewer"]},
+        headers=headers("skill:write", roles="admin", department_id="platform"),
+    )
+
+    assert response.status_code == 200
+    payload_json = assert_admin_bypass_audit(calls, action="skill.public.github_imported")
+    assert payload_json["repo_url"] == "https://github.com/example/skills"
+    assert not any(name == "toggle_distribution" for name, _ in calls)
+
+
+def test_user_file_overlay_admin_bypass_audits_preserve_distribution_decision(monkeypatch):
+    calls = install_route_fakes(monkeypatch, distribution_rows=admin_bypass_distribution_rows())
+    client = TestClient(create_app())
+    admin_headers = headers("skill:write,skill:delete", roles="admin", department_id="platform")
+
+    update = client.put(
+        "/api/skills/qa-file-reviewer/files/notes.md",
+        json={"content": "admin notes"},
+        headers=admin_headers,
+    )
+    delete = client.delete(
+        "/api/skills/qa-file-reviewer/files/notes.md",
+        headers=admin_headers,
+    )
+
+    assert update.status_code == 200
+    assert delete.status_code == 200
+    upsert_payload = assert_admin_bypass_audit(calls, action="skill.public.file_upsert")
+    delete_payload = assert_admin_bypass_audit(calls, action="skill.public.file_delete")
+    assert upsert_payload["file_path"] == "notes.md"
+    assert delete_payload["file_path"] == "notes.md"
+    assert not any(name == "toggle_distribution" for name, _ in calls)
 
 
 def test_marketplace_list_fails_closed_and_projects_openapi_object_shape(monkeypatch):
