@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import hmac
 import inspect
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, status
 
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
 from app.context_retrieval import ContextRetrieval, TransactionalContextRetrievalRepository
@@ -19,10 +21,13 @@ from app.executors.claude_agent_sdk_runner import (
 )
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.contracts import (
+    EXECUTOR_AUTH_HEADER,
+    CallbackTargetValidationError,
     ContextRetrievalScope,
     ExecutorCallbackEvent,
     ExecutorTaskRequest,
     ExecutorToolPermissionRequest,
+    build_trusted_callback_target,
 )
 from app.settings import get_settings
 from app.storage import ObjectStorage
@@ -135,6 +140,58 @@ def _task_skill_ids(request: ExecutorTaskRequest) -> list[str]:
 
 def _tool_permission_callback_url(request: ExecutorTaskRequest) -> str:
     return f"{request.callback_base_url.rstrip('/')}/api/ai/runtime/callbacks/tool-permission"
+
+
+def _configured_executor_auth_token(explicit_value: str | None) -> str:
+    return str(explicit_value or os.getenv("AI_PLATFORM_EXECUTOR_AUTH_TOKEN") or "").strip()
+
+
+def _configured_expected_value(explicit_value: str | None, env_name: str) -> str:
+    return str(explicit_value or os.getenv(env_name) or "").strip()
+
+
+def _trusted_callback_target(explicit_base_url: str | None):
+    configured_base_url = str(explicit_base_url or os.getenv("AI_PLATFORM_CALLBACK_BASE_URL") or "").strip()
+    if not configured_base_url:
+        raise CallbackTargetValidationError("trusted callback base url is not configured")
+    callback_gateway = str(os.getenv("SANDBOX_CALLBACK_HOST_GATEWAY") or "").strip()
+    return build_trusted_callback_target(configured_base_url, extra_hosts=[callback_gateway])
+
+
+def _require_executor_credential(provided_credential: str | None, expected_credential: str) -> None:
+    if not expected_credential:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="executor_auth_not_configured",
+        )
+    if not provided_credential or not hmac.compare_digest(str(provided_credential), expected_credential):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid_executor_credential",
+        )
+
+
+def _validate_executor_request_scope(
+    request: ExecutorTaskRequest,
+    *,
+    expected_session_id: str,
+    expected_run_id: str,
+    trusted_callback_base_url: str | None,
+) -> None:
+    if not expected_session_id or not expected_run_id:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="executor_scope_not_configured")
+    if request.session_id != expected_session_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_executor_scope")
+    if request.run_id != expected_run_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_executor_scope")
+    try:
+        trusted_callback_target = _trusted_callback_target(trusted_callback_base_url)
+    except CallbackTargetValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="executor_callback_not_configured") from exc
+    if request.callback_base_url != trusted_callback_target.base_url:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_callback_target")
+    if request.callback_url != trusted_callback_target.callback_url:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_callback_target")
 
 
 def _normalize_tool_permission_response(result: CallbackResult, *, default_reason: str) -> dict[str, Any]:
@@ -321,10 +378,18 @@ def create_executor_app(
     workspace_root: str | Path = "/workspace",
     callback_sender: CallbackSender | None = None,
     executor_runner: ExecutorRunner | None = None,
+    executor_auth_token: str | None = None,
+    expected_session_id: str | None = None,
+    expected_run_id: str | None = None,
+    trusted_callback_base_url: str | None = None,
 ) -> FastAPI:
     app = FastAPI(title="AI Platform Sandbox Executor", version="0.1.0")
     resolved_workspace_root = Path(workspace_root)
     resolved_callback_sender = callback_sender or _default_callback_sender
+    configured_executor_auth_token = _configured_executor_auth_token(executor_auth_token)
+    configured_expected_session_id = _configured_expected_value(expected_session_id, "AI_PLATFORM_SESSION_ID")
+    configured_expected_run_id = _configured_expected_value(expected_run_id, "AI_PLATFORM_RUN_ID")
+    execute_claimed = {"value": False}
 
     async def default_executor_runner(
         request: ExecutorTaskRequest,
@@ -345,7 +410,20 @@ def create_executor_app(
         return {"status": "ready"}
 
     @app.post("/v1/tasks/execute")
-    async def execute_task(request: ExecutorTaskRequest) -> dict[str, Any]:
+    async def execute_task(
+        request: ExecutorTaskRequest,
+        executor_credential: str | None = Header(default=None, alias=EXECUTOR_AUTH_HEADER),
+    ) -> dict[str, Any]:
+        _require_executor_credential(executor_credential, configured_executor_auth_token)
+        _validate_executor_request_scope(
+            request,
+            expected_session_id=configured_expected_session_id,
+            expected_run_id=configured_expected_run_id,
+            trusted_callback_base_url=trusted_callback_base_url,
+        )
+        if execute_claimed["value"]:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="executor_request_replayed")
+        execute_claimed["value"] = True
         started_at = time.monotonic()
         document_started_at = time.monotonic()
         marker_path = _write_runtime_marker(resolved_workspace_root, request)

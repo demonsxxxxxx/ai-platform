@@ -9,7 +9,14 @@ from app import repositories
 from app.db import transaction
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.container_provider import ContainerProvider, create_container_provider
-from app.runtime.sandbox.contracts import ContainerLease, ExecutorTaskRequest, SandboxRuntimeRequest, StopResult, WorkspaceLease
+from app.runtime.sandbox.contracts import (
+    ContainerLease,
+    ExecutorTaskRequest,
+    SandboxRuntimeRequest,
+    StopResult,
+    WorkspaceLease,
+    build_trusted_callback_target,
+)
 from app.runtime.sandbox.callback_tokens import derive_callback_token
 from app.runtime.sandbox.event_normalizer import container_started_event
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
@@ -187,12 +194,22 @@ class SandboxRuntime:
             return 0
         return max(parsed, 0)
 
+    def _trusted_callback_target(self):
+        return build_trusted_callback_target(
+            self.settings.sandbox_callback_base_url,
+            extra_hosts=[getattr(self.settings, "sandbox_callback_host_gateway", "")],
+        )
+
+    def _lease_callback_token_id(self, lease: ContainerLease) -> str:
+        return f"cbt_{lease.run_id}_{lease.container_id}"
+
     async def submit(
         self,
         request: SandboxRuntimeRequest,
         event_sink: EventSink | None = None,
     ) -> SandboxRuntimeResult:
         total_started_at = time.monotonic()
+        trusted_callback_target = self._trusted_callback_target()
         workspace = self.workspace_manager.prepare(request)
         lease_started_at = time.monotonic()
         lease = await self.provider.create_or_reuse(request, workspace)
@@ -225,10 +242,10 @@ class SandboxRuntime:
                 session_id=request.session_id,
                 run_id=request.run_id,
                 prompt=request.input_message,
-                callback_url=request.callback_url,
-                callback_token_id=request.callback_token_id,
-                callback_token=self.callback_token_resolver(request.callback_token_id),
-                callback_base_url=self.settings.sandbox_callback_base_url,
+                callback_url=trusted_callback_target.callback_url,
+                callback_token_id=self._lease_callback_token_id(lease),
+                callback_token=self.callback_token_resolver(self._lease_callback_token_id(lease)),
+                callback_base_url=trusted_callback_target.base_url,
                 sdk_session_id=request.sdk_session_id,
                 permission_mode="default",
                 config=task_config,
