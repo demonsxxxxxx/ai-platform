@@ -62,6 +62,12 @@ class WorkerRunCancelled(asyncio.CancelledError):
     """Raised inside the worker when a running run observes a platform cancel request."""
 
 
+class _WorkerAllowOnceConsumptionFailed(Exception):
+    def __init__(self, denial: "_WorkerCapabilityDecision") -> None:
+        super().__init__(denial.decision.decision_reason)
+        self.denial = denial
+
+
 @dataclass(frozen=True)
 class _WorkerTerminalAfterTransaction:
     outcome: WorkerOutcome
@@ -85,11 +91,19 @@ class _WorkerCapabilityDecision:
 
 
 @dataclass(frozen=True)
+class _WorkerAllowOnceGrant:
+    tool_id: str
+    request_id: str
+    distribution_decision: CapabilityAccessDecision
+
+
+@dataclass(frozen=True)
 class _WorkerCapabilityAuthorization:
     payload: QueueRunPayload
     principal: AuthPrincipal
     decisions: tuple[_WorkerCapabilityDecision, ...]
     denial: _WorkerCapabilityDecision | None = None
+    allow_once_grants: tuple[_WorkerAllowOnceGrant, ...] = ()
 
 
 _PARENT_ROLLUP_RETRY_ATTEMPTS = 3
@@ -865,39 +879,39 @@ def _identity_mismatch_fields(payload: QueueRunPayload, identity: dict[str, str]
     return [field for field in RUN_IDENTITY_FIELDS if str(payload_identity[field]) != str(identity[field])]
 
 
-def _payload_with_locked_run_input(payload: QueueRunPayload, locked_run: object) -> QueueRunPayload:
+LOCKED_RUN_SNAPSHOT_FIELDS = (
+    "file_ids",
+    "input",
+    "executor_type",
+    "skill_version",
+    "release_decision",
+    "skill_manifests",
+    "context_snapshot_id",
+    "context_snapshot",
+    "model_id",
+    "model_value",
+    "schema_version",
+)
+
+
+def _payload_from_locked_run(
+    locked_run: object,
+    *,
+    run_identity: dict[str, str],
+) -> QueueRunPayload | None:
     if not isinstance(locked_run, dict):
-        return payload
+        return None
     input_json = locked_run.get("input_json")
-    if not isinstance(input_json, dict):
-        return payload
-
-    updates: dict[str, Any] = {}
-    run_input = input_json.get("input")
-    if isinstance(run_input, dict):
-        updates["input"] = run_input
-    file_ids = input_json.get("file_ids")
-    if isinstance(file_ids, list):
-        updates["file_ids"] = [str(item) for item in file_ids if isinstance(item, str) and item]
-    executor_type = input_json.get("executor_type")
-    if isinstance(executor_type, str) and executor_type:
-        updates["executor_type"] = executor_type
-    skill_version = input_json.get("skill_version")
-    if isinstance(skill_version, str) and skill_version:
-        updates["skill_version"] = skill_version
-    model_id = input_json.get("model_id")
-    if isinstance(model_id, str) and model_id:
-        updates["model_id"] = model_id
-    model_value = input_json.get("model_value")
-    if isinstance(model_value, str) and model_value:
-        updates["model_value"] = model_value
-    release_decision = input_json.get("release_decision")
-    if isinstance(release_decision, dict):
-        updates["release_decision"] = release_decision
-
-    if not updates:
-        return payload
-    return payload.model_copy(update=updates)
+    if not isinstance(input_json, dict) or not isinstance(input_json.get("input"), dict):
+        return None
+    candidate = {
+        **run_identity,
+        **{field: input_json[field] for field in LOCKED_RUN_SNAPSHOT_FIELDS if field in input_json},
+    }
+    try:
+        return QueueRunPayload.model_validate(candidate)
+    except ValidationError:
+        return None
 
 
 def _locked_run_trace_id(payload: QueueRunPayload, locked_run: object) -> str:
@@ -1068,6 +1082,7 @@ async def _reauthorize_worker_capabilities(
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
 
     allowed_entries: list[dict[str, Any]] = []
+    allow_once_grants: list[_WorkerAllowOnceGrant] = []
     request_payload = _mcp_tool_request_payload(payload)
     for tool_id in requested_tool_ids:
         tool = await repositories.get_mcp_tool_registry_entry(
@@ -1132,30 +1147,53 @@ async def _reauthorize_worker_capabilities(
             )
             return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
         if tool_gate.decision == "allow_once":
-            consumed = await repositories.consume_tool_permission_decision(
-                conn,
-                tenant_id=run_identity["tenant_id"],
-                user_id=run_identity["user_id"],
-                run_id=run_identity["run_id"],
-                request_id=tool_gate.permission_request_id,
-            )
-            if consumed is None:
-                denial = _worker_capability_record(
-                    "mcp_tool",
-                    tool_id,
-                    _denied_capability_decision(
-                        "tool_permission_consumed_or_expired",
-                        source=distribution_decision,
-                    ),
+            allow_once_grants.append(
+                _WorkerAllowOnceGrant(
+                    tool_id=tool_id,
+                    request_id=tool_gate.permission_request_id,
+                    distribution_decision=distribution_decision,
                 )
-                return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
+            )
         allowed_entries.append(tool)
 
     authorized_payload = _payload_with_authorized_mcp_registration(
         payload,
         allowed_entries=allowed_entries,
     )
-    return _WorkerCapabilityAuthorization(authorized_payload, principal, tuple(decisions))
+    return _WorkerCapabilityAuthorization(
+        authorized_payload,
+        principal,
+        tuple(decisions),
+        allow_once_grants=tuple(allow_once_grants),
+    )
+
+
+async def _consume_worker_allow_once_grants(
+    conn,
+    *,
+    authorization: _WorkerCapabilityAuthorization,
+    run_identity: dict[str, str],
+) -> None:
+    for grant in authorization.allow_once_grants:
+        consumed = await repositories.consume_tool_permission_decision(
+            conn,
+            tenant_id=run_identity["tenant_id"],
+            user_id=run_identity["user_id"],
+            run_id=run_identity["run_id"],
+            request_id=grant.request_id,
+        )
+        if consumed is not None:
+            continue
+        raise _WorkerAllowOnceConsumptionFailed(
+            _worker_capability_record(
+                "mcp_tool",
+                grant.tool_id,
+                _denied_capability_decision(
+                    "tool_permission_consumed_or_expired",
+                    source=grant.distribution_decision,
+                ),
+            )
+        )
 
 
 def _worker_capability_audit_payload(
@@ -1204,6 +1242,82 @@ async def _audit_worker_capability_bypasses(
         )
 
 
+async def _append_worker_capability_denial_evidence(
+    conn,
+    *,
+    denial: _WorkerCapabilityDecision,
+    principal: AuthPrincipal,
+    run_identity: dict[str, str],
+    trace_id: str,
+    policy: str,
+    error_message: str,
+) -> None:
+    await repositories.append_event(
+        conn,
+        tenant_id=run_identity["tenant_id"],
+        run_id=run_identity["run_id"],
+        event_type="capability_not_authorized",
+        stage="authorization",
+        message=error_message,
+        payload={
+            "capability_kind": denial.capability_kind,
+            "capability_id": denial.capability_id,
+            "policy": policy,
+            "reason": denial.decision.decision_reason,
+            "visible_to_user": True,
+            "severity": "error",
+        },
+    )
+    await repositories.append_audit_log(
+        conn,
+        tenant_id=run_identity["tenant_id"],
+        user_id=run_identity["user_id"],
+        action="capability_distribution.denied",
+        target_type=denial.capability_kind,
+        target_id=denial.capability_id,
+        trace_id=trace_id,
+        payload_json=_worker_capability_audit_payload(
+            denial,
+            principal=principal,
+            run_identity=run_identity,
+        ),
+    )
+
+
+async def _fail_locked_run_snapshot(
+    conn,
+    *,
+    locked_run: object,
+    run_identity: dict[str, str],
+    trace_id: str,
+) -> WorkerOutcome:
+    error_code = "capability_not_authorized"
+    error_message = "Capability is not authorized for this run"
+    principal = _locked_run_principal(locked_run, run_identity)
+    denial = _worker_capability_record(
+        "skill",
+        run_identity["skill_id"],
+        _denied_capability_decision("locked_snapshot_invalid"),
+    )
+    await repositories.fail_run(
+        conn,
+        tenant_id=run_identity["tenant_id"],
+        run_id=run_identity["run_id"],
+        error_code=error_code,
+        error_message=error_message,
+    )
+    await _append_worker_capability_denial_evidence(
+        conn,
+        denial=denial,
+        principal=principal,
+        run_identity=run_identity,
+        trace_id=trace_id,
+        policy="locked_run_snapshot",
+        error_message=error_message,
+    )
+    return WorkerOutcome("failed", run_identity["run_id"], error_code, error_message)
+
+
 async def _fail_worker_capability_authorization(
     conn,
     *,
@@ -1225,35 +1339,14 @@ async def _fail_worker_capability_authorization(
         error_code=error_code,
         error_message=error_message,
     )
-    await repositories.append_event(
+    await _append_worker_capability_denial_evidence(
         conn,
-        tenant_id=run_identity["tenant_id"],
-        run_id=run_identity["run_id"],
-        event_type="capability_not_authorized",
-        stage="authorization",
-        message=error_message,
-        payload={
-            "capability_kind": denial.capability_kind,
-            "capability_id": denial.capability_id,
-            "policy": "capability_distribution",
-            "reason": denial.decision.decision_reason,
-            "visible_to_user": True,
-            "severity": "error",
-        },
-    )
-    await repositories.append_audit_log(
-        conn,
-        tenant_id=run_identity["tenant_id"],
-        user_id=run_identity["user_id"],
-        action="capability_distribution.denied",
-        target_type=denial.capability_kind,
-        target_id=denial.capability_id,
+        denial=denial,
+        principal=authorization.principal,
+        run_identity=run_identity,
         trace_id=trace_id,
-        payload_json=_worker_capability_audit_payload(
-            denial,
-            principal=authorization.principal,
-            run_identity=run_identity,
-        ),
+        policy="capability_distribution",
+        error_message=error_message,
     )
     return _WorkerTerminalAfterTransaction(
         WorkerOutcome("failed", run_identity["run_id"], error_code, error_message),
@@ -1501,6 +1594,7 @@ async def process_run_payload(
     runtime_sandbox_lease_released = False
 
     terminal_after_transaction: _WorkerTerminalAfterTransaction | None = None
+    capability_authorization: _WorkerCapabilityAuthorization | None = None
     try:
         async with transaction() as conn:
             locked = await repositories.mark_run_running(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
@@ -1580,8 +1674,19 @@ async def process_run_payload(
                     reconciled_parent,
                 )
                 return terminal_after_transaction.outcome
-            payload = _payload_with_locked_run_input(payload, locked)
             trace_id = _locked_run_trace_id(payload, locked)
+            locked_payload = _payload_from_locked_run(
+                locked,
+                run_identity=run_identity,
+            )
+            if locked_payload is None:
+                return await _fail_locked_run_snapshot(
+                    conn,
+                    locked_run=locked,
+                    run_identity=run_identity,
+                    trace_id=trace_id,
+                )
+            payload = locked_payload
             capability_authorization = await _reauthorize_worker_capabilities(
                 conn,
                 payload=payload,
@@ -1924,6 +2029,11 @@ async def process_run_payload(
                         reconciled_parent,
                     )
                     return terminal_after_transaction.outcome
+            await _consume_worker_allow_once_grants(
+                conn,
+                authorization=capability_authorization,
+                run_identity=run_identity,
+            )
             try:
                 adapter = adapter_registry.get(payload.executor_type)
             except KeyError as exc:
@@ -1962,6 +2072,25 @@ async def process_run_payload(
                     trace_id=trace_id,
                     worker_id=worker_id,
                 )
+    except _WorkerAllowOnceConsumptionFailed as exc:
+        if capability_authorization is None:
+            raise
+        failed_authorization = _WorkerCapabilityAuthorization(
+            payload=capability_authorization.payload,
+            principal=capability_authorization.principal,
+            decisions=capability_authorization.decisions,
+            denial=exc.denial,
+            allow_once_grants=capability_authorization.allow_once_grants,
+        )
+        async with transaction() as conn:
+            terminal_after_transaction = await _fail_worker_capability_authorization(
+                conn,
+                payload=failed_authorization.payload,
+                authorization=failed_authorization,
+                run_identity=run_identity,
+                trace_id=trace_id,
+            )
+        return terminal_after_transaction.outcome
     finally:
         if terminal_after_transaction is not None:
             await _finalize_multi_agent_parent_after_child_commit(

@@ -7,11 +7,19 @@ import pytest
 from app.executors.base import ArtifactManifest, ExecutorResult
 from app.executors.fake import FakeFailureAdapter, FakeSuccessAdapter
 from app.executors.registry import AdapterRegistry
+from app.models import QueueRunPayload
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
-from app.worker import _multi_agent_result_summary, _record_run_step_from_event, process_run_payload
+from app.worker import (
+    _multi_agent_result_summary,
+    _payload_from_locked_run,
+    _record_run_step_from_event,
+    parse_queue_payload,
+    process_run_payload,
+)
 
 
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
+_CURRENT_QUEUE_PAYLOAD = None
 
 
 def release_decision(version: str) -> dict:
@@ -67,6 +75,23 @@ async def fake_append_message(*args, **kwargs):
 
 @pytest.fixture(autouse=True)
 def default_cancel_not_requested(monkeypatch):
+    global _CURRENT_QUEUE_PAYLOAD
+    _CURRENT_QUEUE_PAYLOAD = None
+
+    def capture_queue_payload(raw):
+        global _CURRENT_QUEUE_PAYLOAD
+        parsed = parse_queue_payload(raw)
+        _CURRENT_QUEUE_PAYLOAD = parsed.model_dump(mode="json")
+        return parsed
+
+    def materialize_legacy_locked_run(locked_run, *, run_identity):
+        if locked_run is True:
+            locked_run = locked_run_from_payload(_CURRENT_QUEUE_PAYLOAD)
+        return _payload_from_locked_run(locked_run, run_identity=run_identity)
+
+    monkeypatch.setattr("app.worker.parse_queue_payload", capture_queue_payload)
+    monkeypatch.setattr("app.worker._payload_from_locked_run", materialize_legacy_locked_run)
+
     async def is_cancel_requested(conn, *, tenant_id, run_id):
         return False
 
@@ -306,6 +331,37 @@ def base_payload(**overrides):
     return payload
 
 
+def locked_run_from_payload(payload):
+    validated = QueueRunPayload.model_validate(payload).model_dump(mode="json")
+    return {
+        "id": validated["run_id"],
+        "tenant_id": validated["tenant_id"],
+        "workspace_id": validated["workspace_id"],
+        "user_id": validated["user_id"],
+        "session_id": validated["session_id"],
+        "agent_id": validated["agent_id"],
+        "skill_id": validated["skill_id"],
+        "trace_id": f"trace_{validated['run_id']}",
+        "principal_roles": [],
+        "principal_department_id": "",
+        "auth_source": "test",
+        "input_json": {
+            key: value
+            for key, value in validated.items()
+            if key
+            not in {
+                "tenant_id",
+                "workspace_id",
+                "user_id",
+                "session_id",
+                "run_id",
+                "agent_id",
+                "skill_id",
+            }
+        },
+    }
+
+
 def test_multi_agent_result_summary_counts_pending_and_cancelled_steps_like_sse_snapshot():
     summary = _multi_agent_result_summary(
         [
@@ -425,25 +481,14 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
 @pytest.mark.asyncio
 async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
     calls = []
-    locked_run = {
-        "id": "run-a",
-        "tenant_id": "tenant-a",
-        "workspace_id": "workspace-a",
-        "user_id": "user-a",
-        "session_id": "session-a",
-        "agent_id": "qa-word-review",
-        "skill_id": "qa-file-reviewer",
-        "trace_id": "trace-run-a",
-        "input_json": {
-            "input": {"mode": "file"},
-            "file_ids": ["file-a"],
-            "executor_type": "capture",
-            "skill_version": "hash-qa-file-reviewer",
-            "release_decision": release_decision("hash-qa-file-reviewer"),
-            "model_id": "pro-tier",
-            "model_value": "deepseek-v4-pro",
-        },
-    }
+    locked_run = locked_run_from_payload(
+        base_payload(
+            executor_type="capture",
+            model_id="pro-tier",
+            model_value="deepseek-v4-pro",
+        )
+    )
+    locked_run["trace_id"] = "trace-run-a"
 
     class CaptureAdapter:
         async def submit_run(self, payload, event_sink=None):
@@ -484,23 +529,8 @@ async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
 @pytest.mark.asyncio
 async def test_worker_records_runtime_sandbox_lease_around_successful_executor_run(monkeypatch):
     calls = []
-    locked_run = {
-        "id": "run-a",
-        "tenant_id": "tenant-a",
-        "workspace_id": "workspace-locked",
-        "user_id": "user-a",
-        "session_id": "session-a",
-        "agent_id": "qa-word-review",
-        "skill_id": "qa-file-reviewer",
-        "trace_id": "trace-run-a",
-        "input_json": {
-            "input": {"mode": "file"},
-            "file_ids": ["file-a"],
-            "executor_type": "fake",
-            "skill_version": "hash-qa-file-reviewer",
-            "release_decision": release_decision("hash-qa-file-reviewer"),
-        },
-    }
+    locked_run = locked_run_from_payload(base_payload(workspace_id="workspace-locked"))
+    locked_run["trace_id"] = "trace-run-a"
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -2652,11 +2682,12 @@ async def test_worker_uses_db_run_input_when_queue_execution_fields_are_tampered
             "input_json": {
                 "input": {"mode": "db", "message": "authoritative"},
                 "file_ids": ["file-db"],
-                "executor_type": "claude-agent-worker",
-                "skill_version": version,
-                "release_decision": release_decision(version),
-            },
-        }
+                    "executor_type": "claude-agent-worker",
+                    "skill_version": version,
+                    "release_decision": release_decision(version),
+                    "skill_manifests": [primary_manifest("qa-file-reviewer", version)],
+                },
+            }
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs.get("payload") or {}))
@@ -3647,27 +3678,21 @@ async def test_worker_parks_top_level_multi_agent_parent_for_dispatcher_without_
         async def submit_run(self, payload, event_sink=None):
             raise AssertionError("parked multi-agent parent must not execute adapter steps")
 
-    locked_run = {
-        "id": "run-a",
-        "tenant_id": "tenant-a",
-        "workspace_id": "workspace-a",
-        "user_id": "user-a",
-        "session_id": "session-a",
-        "agent_id": "general-agent",
-        "skill_id": "general-chat",
-        "trace_id": "trace-run-a",
-        "input_json": {
-            "input": {
+    locked_run = locked_run_from_payload(
+        base_payload(
+            file_ids=[],
+            agent_id="general-agent",
+            skill_id="general-chat",
+            input={
                 "message": "build feature",
                 "execution_mode": "multi_agent",
                 "multi_agent_steps": [{"step_key": "code", "depends_on": []}],
             },
-            "file_ids": [],
-            "executor_type": "fake",
-            "skill_version": "hash-general-chat",
-            "release_decision": release_decision("hash-general-chat"),
-        },
-    }
+            executor_type="fake",
+            skill_manifests=[primary_manifest("general-chat", "hash-general-chat")],
+        )
+    )
+    locked_run["trace_id"] = "trace-run-a"
 
     async def mark_run_running(conn, *, tenant_id, run_id):
         calls.append(("running", tenant_id, run_id))
@@ -5584,6 +5609,7 @@ def _install_task6_worker_fakes(
         "tools": {},
         "permission_decisions": {},
         "consume_result": {"status": "consumed"},
+        "consume_results": None,
     }
     persisted_input = dict(locked_input or {"mode": "file"})
     locked_run = {
@@ -5604,8 +5630,19 @@ def _install_task6_worker_fakes(
             "executor_type": "capture",
             "skill_version": "hash-qa-file-reviewer",
             "release_decision": release_decision("hash-qa-file-reviewer"),
+            "skill_manifests": [primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer")],
+            "context_snapshot_id": "ctx-existing",
+            "context_snapshot": {
+                "schema_version": "ai-platform.context-snapshot.v1",
+                "context_snapshot_id": "ctx-existing",
+                "source": "test",
+                "message_count": 0,
+                "file_count": 1,
+                "memory_record_count": 0,
+            },
         },
     }
+    state["locked_run"] = locked_run
 
     class CaptureAdapter:
         async def submit_run(self, payload, event_sink=None):
@@ -5649,7 +5686,8 @@ def _install_task6_worker_fakes(
 
     async def consume_tool_permission_decision(conn, **kwargs):
         calls.append(("permission_consume", kwargs))
-        result = state["consume_result"]
+        consume_results = state["consume_results"]
+        result = consume_results.pop(0) if isinstance(consume_results, list) else state["consume_result"]
         return dict(result) if isinstance(result, dict) else result
 
     async def append_event(conn, **kwargs):
@@ -6075,3 +6113,176 @@ async def test_worker_capability_distribution_keeps_mcp_risk_write_policy_after_
         if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
     )
     assert denied_event["payload"]["reason"] == "tool_permission_required"
+
+
+@pytest.mark.parametrize(
+    "snapshot_change",
+    [
+        "missing_input_json",
+        "non_mapping_input_json",
+        "missing_input",
+        "non_mapping_input",
+        "invalid_complete_payload",
+    ],
+)
+@pytest.mark.asyncio
+async def test_worker_locked_snapshot_invalid_never_falls_back_to_queue_mcp_input(
+    monkeypatch,
+    snapshot_change,
+):
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        queue_input={
+            "mode": "queue",
+            "mcp_tool_ids": ["queue-only-tool"],
+            "private_payload": "queue-private-marker",
+        },
+    )
+    state["tools"]["queue-only-tool"] = _task6_tool("queue-only-tool", "queue-server")
+    state["distributions"][("mcp_server", "queue-server")] = _task6_distribution(
+        "mcp_server",
+        "queue-server",
+    )
+    locked_run = state["locked_run"]
+    if snapshot_change == "missing_input_json":
+        locked_run.pop("input_json")
+    elif snapshot_change == "non_mapping_input_json":
+        locked_run["input_json"] = "invalid"
+    elif snapshot_change == "missing_input":
+        locked_run["input_json"].pop("input")
+    elif snapshot_change == "non_mapping_input":
+        locked_run["input_json"]["input"] = ["invalid"]
+    elif snapshot_change == "invalid_complete_payload":
+        locked_run["input_json"]["skill_manifests"] = []
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    assert not any(
+        call[0]
+        in {
+            "skill_lookup",
+            "distribution",
+            "tool_lookup",
+            "permission_lookup",
+            "permission_consume",
+            "registry_get",
+            "sandbox_create",
+            "adapter",
+        }
+        for call in calls
+    )
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    denied_audit = next(
+        call[1]
+        for call in calls
+        if call[0] == "audit" and call[1]["action"] == "capability_distribution.denied"
+    )
+    assert denied_event["stage"] == "authorization"
+    assert denied_event["payload"]["policy"] == "locked_run_snapshot"
+    assert denied_event["payload"]["reason"] == "locked_snapshot_invalid"
+    evidence = json.dumps(
+        {"event": denied_event, "audit": denied_audit},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    assert "queue-only-tool" not in evidence
+    assert "queue-private-marker" not in evidence
+
+
+@pytest.mark.asyncio
+async def test_worker_allow_once_is_not_consumed_when_later_mcp_distribution_denies(monkeypatch):
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"mode": "file", "mcp_tool_ids": ["tool-once", "tool-denied"]},
+    )
+    state["tools"].update(
+        {
+            "tool-once": _task6_tool(
+                "tool-once",
+                "server-once",
+                write_capable=True,
+                risk_level="high",
+            ),
+            "tool-denied": _task6_tool("tool-denied", "server-denied"),
+        }
+    )
+    state["distributions"].update(
+        {
+            ("mcp_server", "server-once"): _task6_distribution("mcp_server", "server-once"),
+            ("mcp_server", "server-denied"): _task6_distribution(
+                "mcp_server",
+                "server-denied",
+                visible_to_user=False,
+            ),
+        }
+    )
+    state["permission_decisions"]["tool-once"] = {"id": "grant-once", "decision": "allow_once"}
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    assert any(call[0] == "permission_lookup" and call[1]["tool_id"] == "tool-once" for call in calls)
+    assert not any(call[0] == "permission_consume" for call in calls)
+    _task6_assert_no_executor_calls(calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_allow_once_batch_failure_rolls_back_before_failed_outcome(monkeypatch):
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"mode": "file", "mcp_tool_ids": ["tool-first", "tool-second"]},
+    )
+    for suffix in ("first", "second"):
+        state["tools"][f"tool-{suffix}"] = _task6_tool(
+            f"tool-{suffix}",
+            f"server-{suffix}",
+            write_capable=True,
+            risk_level="high",
+        )
+        state["distributions"][("mcp_server", f"server-{suffix}")] = _task6_distribution(
+            "mcp_server",
+            f"server-{suffix}",
+        )
+        state["permission_decisions"][f"tool-{suffix}"] = {
+            "id": f"grant-{suffix}",
+            "decision": "allow_once",
+        }
+    state["consume_results"] = [{"status": "consumed"}, None]
+    transaction_count = 0
+
+    @asynccontextmanager
+    async def recording_transaction():
+        nonlocal transaction_count
+        transaction_count += 1
+        transaction_id = transaction_count
+        calls.append(("tx_enter", transaction_id))
+        try:
+            yield object()
+        except Exception:
+            calls.append(("tx_rollback", transaction_id))
+            raise
+        else:
+            calls.append(("tx_commit", transaction_id))
+
+    monkeypatch.setattr("app.worker.transaction", recording_transaction)
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    assert [call[1]["request_id"] for call in calls if call[0] == "permission_consume"] == [
+        "grant-first",
+        "grant-second",
+    ]
+    assert ("tx_rollback", 1) in calls
+    assert ("tx_commit", 1) not in calls
+    assert ("tx_enter", 2) in calls
+    assert calls.index(("tx_rollback", 1)) < next(index for index, call in enumerate(calls) if call[0] == "fail")
+    _task6_assert_no_executor_calls(calls)
