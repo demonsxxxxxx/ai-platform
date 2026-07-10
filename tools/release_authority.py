@@ -66,7 +66,7 @@ def assert_clean_commit(repo_root: Path, requested_commit: str) -> str:
         raise ReleaseAuthorityError(
             f"source HEAD {head or 'unknown'} does not match requested commit {commit}"
         )
-    status = str(_git(repo_root, "status", "--porcelain=v1", "--untracked-files=all"))
+    status = str(_git(repo_root, "status", "--porcelain", "--untracked-files=all"))
     if status.strip():
         raise ReleaseAuthorityError("dirty source is forbidden for release deployment")
     return commit

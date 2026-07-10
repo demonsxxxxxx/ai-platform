@@ -78,6 +78,9 @@ they verify, 211 source transition is blocked.
 - `corepack pnpm run ci:verify`: exit `0`; projection audit, source smoke,
   ESLint, TypeScript build, Vite/PWA build, and provenance generation completed.
 - `git diff --check`: exit `0`.
+- 211 candidate preflight found the host Git does not support
+  `git status --porcelain=v1`; the release tool now uses the compatible
+  `--porcelain` flag and has a regression test for that exact command shape.
 
 ## Pre-Commit Self-Review
 

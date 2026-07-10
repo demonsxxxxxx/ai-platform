@@ -94,6 +94,24 @@ def test_clean_commit_and_immutable_image_reference_contract(tmp_path):
         raise AssertionError("dirty source must be rejected")
 
 
+def test_clean_commit_uses_git_porcelain_flag_supported_by_211(monkeypatch, tmp_path):
+    commands: list[tuple[str, ...]] = []
+
+    def fake_git(repo_root: Path, *args: str, text: bool = True):
+        commands.append(args)
+        if args[:2] == ("rev-parse", "HEAD"):
+            return "d" * 40 + "\n"
+        if args[:2] == ("status", "--porcelain"):
+            return ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr("tools.release_authority._git", fake_git)
+
+    assert assert_clean_commit(tmp_path, "d" * 40) == "d" * 40
+    assert ("status", "--porcelain", "--untracked-files=all") in commands
+    assert all("--porcelain=v1" not in args for args in commands)
+
+
 def test_preserve_dirty_source_writes_hashed_manifest_without_cleaning_repo(tmp_path):
     repo = tmp_path / "repo"
     commit = _init_repo(repo)
