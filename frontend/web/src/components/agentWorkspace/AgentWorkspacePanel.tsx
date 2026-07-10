@@ -23,7 +23,7 @@ import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { WorkbenchStateSurface } from "../workbench/WorkbenchStateSurface";
 import { workbenchSurface } from "../workbench/workbenchSurface";
 import { useAuth } from "../../hooks/useAuth";
-import { agentApi } from "../../services/api/agent";
+import { fetchAgentWorkspace } from "../../services/api/agent";
 import { formatDateTimeShort } from "../../utils/datetime";
 import type {
   AgentWorkspaceArtifact,
@@ -698,7 +698,7 @@ export function AgentWorkspacePanel() {
     setIsLoading(true);
     setLoadError(null);
     try {
-      const response = await agentApi.workspace({
+      const response = await fetchAgentWorkspace({
         workspace_id: workspaceId,
         agent_id: selectedAgentId,
         session_id: selectedSessionId,

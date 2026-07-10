@@ -56,10 +56,34 @@ Status:
   - Review found no Critical or Important findings.
   - Minor finding was this status wording underclaiming the already-created fix commit; this doc-only refresh addresses that.
   - Review assessment: ready to merge, subject to fresh GitHub checks on the latest pushed PR head.
+- [x] Phase 12: PR branch updated to current `origin/main` on 2026-07-10:
+  - Current main source: `e43eae3e2ebf10ecf8b51eb6e31e51db889d8ef7`.
+  - Local merge commit: `8a663869daf2b68e285f8c30cb0c88f151bb3349`.
+  - Merge completed without unresolved conflict markers in the Agent Workspace touched paths.
+  - `git merge-base HEAD origin/main` -> `e43eae3e2ebf10ecf8b51eb6e31e51db889d8ef7`.
+- [x] Phase 13: current-main local verification completed after the merge:
+  - `python -m pytest tests/test_agent_workspace_projection.py -q --basetemp .pytest-tmp` -> 5 passed.
+  - `python -m pytest tests/test_repositories.py -q --basetemp .pytest-tmp -k "agent_workspace_tool_permissions or list_tool_permission_inbox"` -> 2 passed, 134 deselected.
+  - `python -m compileall -q app tools scripts` -> passed.
+  - `pnpm exec tsx --test src/services/api/__tests__/agentWorkspace.test.ts src/components/panels/SidebarParts/__tests__/navigationState.test.ts` -> 6 passed.
+  - `pnpm run projection:audit` -> passed with status `pass_with_policy_gaps`.
+  - `pnpm exec tsc -b` -> passed.
+  - `pnpm run build` -> passed; Vite reported existing large chunk warnings.
+- [x] Phase 14: local ordinary-user and admin browser smoke completed against the built frontend using `vite preview` and CDP:
+  - Ordinary user: `/agent-workspace` reached `data-frontend-governance-state="ready"` and requested `/api/agent-workspace?workspace_id=default`.
+  - Admin user: `/agent-workspace` reached `data-frontend-governance-state="ready"` and requested `/api/agent-workspace?workspace_id=default`.
+  - Both smoke runs rendered Agent identity, Sessions and runs, Artifact preview, Run Console, Pending approvals, and Memory context.
+  - Both smoke runs reported zero browser console errors and no visible forbidden terms from the private-field denylist.
+  - Evidence files are local-only under `.pytest-tmp/agent-workspace-browser-smoke/`.
+- [x] Phase 15: fresh sub-agent review after current-main merge and projection-audit hardening:
+  - Prior Important review finding fixed: memory/context `input_keys` now use `safe_public_context_input_keys`, and regression coverage rejects `storage_key`, `sandbox_workdir`, `source_json`, executor payload, and local path labels from the public projection.
+  - Prior Minor review finding fixed: `/api/agent-workspace` is now classified in the frontend projection audit safe public route inventory, including the active multiline `fetchAgentWorkspace` route reference.
+  - Follow-up sub-agent review `019f4ab9-919c-7f53-a981-6f14d0b6557e` found no Critical, Important, or Minor findings.
+  - Review assessment: ready to merge after the uncommitted fixes are committed/pushed and fresh GitHub CI completes.
+- [ ] Phase 16: push updated PR branch and wait for fresh GitHub CI on the new PR head.
 
 Notes:
 - UI/UX source checklist was applied against the Agent Workspace page: tokenized workbench surfaces, Lucide icons, explicit loading/degraded states, responsive two-column layout, semantic buttons, and no hardcoded runtime data.
 - `ui-ux-pro-max` search script path was not available in the local skill install, so no script-generated UX report was produced.
 
-Current status: local CI-failure fix and post-fix sub-agent review are complete on the clean PR branch. Mergeability depends on fresh GitHub checks for the latest pushed PR head. No 211 deployment has been performed.
-Browser visual smoke was not run; validation is source review, targeted tests, typecheck, build, compile, and diff whitespace only.
+Current status: PR branch is updated to current `origin/main`; local verification, ordinary-user/admin browser smoke, and fresh post-merge sub-agent review are complete in the isolated worktree. Current `pnpm run projection:audit` status is `pass_with_policy_gaps`, not a clean no-gap status. Push and fresh GitHub CI on the new PR head are still pending. No 211 deployment has been performed.

@@ -29,6 +29,7 @@ from app.models import (
     RevealedFileSessionResponse,
 )
 from app.projection_redaction import capability_id_from_skill, internal_agent_id_for_request, public_agent_id_for_projection
+from app.public_context_keys import safe_public_context_input_keys
 from app.run_projection import artifact_card, progress_for_status, run_event_response, run_step_response
 from app.tool_permission_projection import tool_permission_decision_endpoint
 from app.validation import assert_safe_id
@@ -469,6 +470,14 @@ def _safe_count(value: object) -> int:
     return int(value) if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
+def _safe_context_label(value: object, default: str) -> str:
+    label = sanitize_public_text(value)
+    if not label:
+        return default
+    safe_labels = safe_public_context_input_keys([label])
+    return safe_labels[0] if safe_labels else default
+
+
 def _workspace_context_summary(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if not row:
         return None
@@ -477,7 +486,7 @@ def _workspace_context_summary(row: dict[str, Any] | None) -> dict[str, Any] | N
     materials = payload.get("referenced_materials") if isinstance(payload.get("referenced_materials"), dict) else {}
     input_keys = used_context.get("input_keys") if isinstance(used_context.get("input_keys"), list) else []
     return {
-        "source": sanitize_public_text(used_context.get("source")) or "not_recorded",
+        "source": _safe_context_label(used_context.get("source"), "not_recorded"),
         "referenced_materials": {
             "message_count": len(row.get("included_message_ids") or []) or _safe_count(materials.get("message_count")),
             "file_count": len(row.get("included_file_ids") or []) or _safe_count(materials.get("file_count")),
@@ -485,9 +494,12 @@ def _workspace_context_summary(row: dict[str, Any] | None) -> dict[str, Any] | N
             "memory_record_count": len(row.get("included_memory_record_ids") or []) or _safe_count(materials.get("memory_record_count")),
         },
         "used_context_summary": {
-            "source": sanitize_public_text(used_context.get("source")) or "not_recorded",
-            "input_keys": [sanitize_public_text(item) for item in input_keys if sanitize_public_text(item)],
-            "memory_policy_source": sanitize_public_text(used_context.get("memory_policy_source")) or "not_recorded",
+            "source": _safe_context_label(used_context.get("source"), "not_recorded"),
+            "input_keys": safe_public_context_input_keys(input_keys),
+            "memory_policy_source": _safe_context_label(
+                used_context.get("memory_policy_source"),
+                "not_recorded",
+            ),
             "long_term_memory_read": bool(used_context.get("long_term_memory_read")),
         },
     }

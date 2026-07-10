@@ -257,7 +257,15 @@ def test_agent_workspace_projection_sanitizes_public_contract(monkeypatch):
             "payload_json": {
                 "used_context_summary": {
                     "source": "chat_stream",
-                    "input_keys": ["message"],
+                    "input_keys": [
+                        "message",
+                        "raw_storage_key",
+                        "storage_key",
+                        "sandbox_workdir",
+                        "source_json",
+                        "executor_payload",
+                        "local_path",
+                    ],
                     "memory_policy_source": "user",
                     "long_term_memory_read": False,
                 },
@@ -322,6 +330,7 @@ def test_agent_workspace_projection_sanitizes_public_contract(monkeypatch):
     assert data["pending_tool_permissions"][0]["run_id"] == "run-older"
     assert data["memory_context_policy"]["memory_enabled"] is True
     assert data["memory_context_policy"]["latest_context"]["referenced_materials"]["artifact_count"] == 1
+    assert data["memory_context_policy"]["latest_context"]["used_context_summary"]["input_keys"] == ["message"]
 
     serialized = response.text
     forbidden_terms = [

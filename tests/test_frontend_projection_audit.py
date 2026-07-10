@@ -76,6 +76,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         for route in active_route_inventory["safe_public_projection_routes"]
     }
     assert active_safe_routes == {
+        "/api/agent-workspace",
         "/api/agent/models/available",
         "/api/channels",
         "/api/feedback",
@@ -83,6 +84,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         "/api/marketplace",
         "/api/mcp",
         "/api/notifications/active",
+        "/api/role-governance",
         "/api/skills",
         "/api/settings",
         "/api/users",
@@ -97,6 +99,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         for route in audit["route_inventory"]["safe_public_projection_routes"]
     }
     assert "/api/channels" in all_safe_routes
+    assert "/api/agent-workspace" in all_safe_routes
     assert "/api/mcp" in all_safe_routes
     assert "/api/notifications/active" in all_safe_routes
     assert "/api/settings" in all_safe_routes

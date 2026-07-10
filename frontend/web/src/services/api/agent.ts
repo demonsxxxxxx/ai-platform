@@ -28,6 +28,7 @@ export interface AgentWorkspaceFetchOptions extends RequestInit {
 }
 
 const AGENT_WORKSPACE_CONTRACT_VERSION = "ai-platform.agent-workspace.v1";
+const AGENT_WORKSPACE_API_ROUTE = `${API_BASE}/api/agent-workspace`;
 
 const PRIVATE_PROJECTION_KEYS = new Set([
   "default_skill_id",
@@ -463,11 +464,17 @@ function normalizeMemoryContextPolicy(
 export function buildAgentWorkspaceUrl(
   params: AgentWorkspaceParams = {},
 ): string {
+  return withQuery(AGENT_WORKSPACE_API_ROUTE, buildAgentWorkspaceQuery(params));
+}
+
+function buildAgentWorkspaceQuery(
+  params: AgentWorkspaceParams = {},
+): URLSearchParams {
   const query = new URLSearchParams();
   appendQueryParam(query, "workspace_id", params.workspace_id);
   appendQueryParam(query, "agent_id", params.agent_id);
   appendQueryParam(query, "session_id", params.session_id);
-  return withQuery(`${API_BASE}/api/agent-workspace`, query);
+  return query;
 }
 
 export function normalizeAgentWorkspaceProjection(
@@ -500,8 +507,9 @@ export async function fetchAgentWorkspace(
   params: AgentWorkspaceParams = {},
   options: AgentWorkspaceFetchOptions = {},
 ): Promise<AgentWorkspaceProjection> {
+  const query = buildAgentWorkspaceQuery(params);
   const response = await authFetch<AgentWorkspaceProjection | null>(
-    buildAgentWorkspaceUrl(params),
+    withQuery(AGENT_WORKSPACE_API_ROUTE, query),
     {
       ...options,
       method: "GET",
