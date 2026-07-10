@@ -18,6 +18,7 @@ from app.capability_distribution import (
 )
 from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
 from app.db import transaction
+from app.tool_policy import evaluate_tool_policy
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -299,7 +300,12 @@ def _mcp_server_decision(
         CapabilityDistributionSubject(
             capability_kind="mcp_server",
             capability_id=name,
-            lifecycle_status=str(row.get("status") or row.get("effective_status") or "disabled"),
+            lifecycle_status=str(
+                row.get("server_status")
+                or row.get("status")
+                or row.get("effective_status")
+                or "disabled"
+            ),
             distribution=distribution,
         ),
         intent="discover",
@@ -683,6 +689,8 @@ async def discover_mcp_tools(
             intent="discover",
         )
         if not decision.visible:
+            continue
+        if not evaluate_tool_policy(tool=row).allowed:
             continue
         tools.append(
             {

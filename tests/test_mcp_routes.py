@@ -347,6 +347,32 @@ def test_mcp_tool_inherits_parent_distribution_and_preserves_tool_lifecycle_gate
     assert response.json()["tools"] == []
 
 
+def test_mcp_tool_discovery_preserves_existing_risk_write_policy_gate(monkeypatch):
+    install_mcp_route_fakes(
+        monkeypatch,
+        distribution_rows=[_mcp_distribution(department_ids=["qa"])],
+        tool_rows=[
+            {
+                "tool_id": "ragflow-knowledge-search",
+                "server_id": "ragflow",
+                "name": "RAGFlow Search",
+                "description": "Search governed knowledge bases.",
+                "effective_status": "active",
+                "status": "active",
+                "visible_to_user": True,
+                "write_capable": True,
+                "risk_level": "high",
+            }
+        ],
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/mcp/ragflow/tools", headers=headers(department_id="qa"))
+
+    assert response.status_code == 200
+    assert response.json()["tools"] == []
+
+
 def test_mcp_admin_bypass_read_audits_target_scope(monkeypatch):
     calls = install_mcp_route_fakes(monkeypatch, distribution_rows=[_mcp_distribution(status="disabled", visible_to_user=False)])
     client = TestClient(create_app())
@@ -387,6 +413,33 @@ def test_authorized_mcp_registration_entries_exclude_denied_parent_servers():
         registry_entries=entries,
         distributions_by_server=distributions,
     ) == [entries[0]]
+
+
+def test_authorized_mcp_registration_entries_require_active_parent_server():
+    from app.routes import mcp
+
+    entry = {
+        "tool_id": "qa-tool",
+        "server_id": "qa-server",
+        "status": "active",
+        "effective_status": "active",
+        "server_status": "disabled",
+    }
+    distribution = _mcp_distribution(department_ids=["qa"]) | {"capability_id": "qa-server"}
+    principal = mcp.AuthPrincipal(
+        tenant_id="default",
+        user_id="ordinary",
+        display_name="ordinary",
+        department_id="qa",
+        roles=["user"],
+        permissions=[],
+    )
+
+    assert mcp.authorized_mcp_registration_entries(
+        principal=principal,
+        registry_entries=[entry],
+        distributions_by_server={"qa-server": distribution},
+    ) == []
 
 
 def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credentials(monkeypatch):
@@ -447,6 +500,28 @@ def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credenti
     )
     assert admin_update_response.status_code == 200
     assert admin_update_response.json()["enabled"] is False
+
+
+def test_shared_mcp_update_and_toggle_require_ai_admin(monkeypatch):
+    calls = install_mcp_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+
+    update_response = client.put(
+        "/api/mcp/ragflow",
+        json={"enabled": False, "transport": "streamable_http"},
+        headers=headers(),
+    )
+    toggle_response = client.patch(
+        "/api/mcp/ragflow/toggle",
+        json={"enabled": False},
+        headers=headers(),
+    )
+
+    assert update_response.status_code == 403
+    assert update_response.json()["detail"] == "not_ai_admin"
+    assert toggle_response.status_code == 403
+    assert toggle_response.json()["detail"] == "not_ai_admin"
+    assert not any(name in {"upsert_server", "toggle_server"} for name, _ in calls)
 
 
 def test_mcp_lifecycle_validation_errors_do_not_echo_secret_inputs(monkeypatch):
