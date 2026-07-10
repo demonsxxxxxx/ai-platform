@@ -583,6 +583,7 @@ async def chat_stream(
                     "executor_type": skill["executor_type"],
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
+                    "skill_manifests": queue_payload["skill_manifests"],
                     "intent": decision_payload,
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,

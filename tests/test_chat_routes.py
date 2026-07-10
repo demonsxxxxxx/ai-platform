@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 from app import repositories as repository_module
 from app.auth import AuthPrincipal
-from app.models import ChatSessionRequest, ChatStreamRequest
+from app.models import ChatSessionRequest, ChatStreamRequest, QueueRunPayload
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError
 from app.routes.chat import (
@@ -1107,7 +1107,7 @@ async def test_chat_stream_rejects_invalid_snapshot_governance_manifest_as_mater
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_uses_uploaded_release_policy_manifest(monkeypatch):
+async def test_chat_stream_producer_contract_persists_uploaded_release_policy_manifest(monkeypatch):
     calls = {}
     dependency_manifest = snapshot_manifest("minimax-docx", description="Pinned DOCX helper")
 
@@ -1177,11 +1177,34 @@ async def test_chat_stream_uses_uploaded_release_policy_manifest(monkeypatch):
     assert response.run_id == "run_uploaded"
     assert calls["create_run"]["input_json"]["skill_version"] == "hash-uploaded"
     assert calls["queue"]["skill_version"] == "hash-uploaded"
+    assert calls["create_run"]["input_json"]["skill_manifests"] == calls["queue"]["skill_manifests"]
     assert [item["skill_id"] for item in calls["queue"]["skill_manifests"]] == ["qa-file-reviewer", "minimax-docx"]
     assert calls["queue"]["skill_manifests"][0]["source"]["kind"] == "uploaded"
     assert calls["queue"]["skill_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
     assert calls["queue"]["skill_manifests"][1]["content_hash"] == dependency_manifest["content_hash"]
     assert any(event["payload"].get("skill_version") == "hash-uploaded" for event in calls["events"])
+    persisted_non_identity_snapshot = {
+        **calls["create_run"]["input_json"],
+        "context_snapshot_id": calls["queue"]["context_snapshot_id"],
+        "context_snapshot": calls["queue"]["context_snapshot"],
+    }
+    locked_payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": calls["create_run"]["tenant_id"],
+            "workspace_id": calls["create_run"]["workspace_id"],
+            "user_id": calls["create_run"]["user_id"],
+            "session_id": calls["create_run"]["session_id"],
+            "run_id": response.run_id,
+            "agent_id": calls["create_run"]["agent_id"],
+            "skill_id": calls["create_run"]["skill_id"],
+            **{
+                field: persisted_non_identity_snapshot[field]
+                for field in QueueRunPayload.model_fields
+                if field in persisted_non_identity_snapshot
+            },
+        }
+    )
+    assert locked_payload.model_dump(mode="json") == calls["queue"]
 
 
 @pytest.mark.asyncio

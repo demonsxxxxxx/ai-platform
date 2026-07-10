@@ -6019,6 +6019,7 @@ async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypa
         for call in calls
         if call[0] == "audit" and call[1]["action"] == "capability_distribution.admin_bypass"
     ]
+    assert len(bypass_audits) == 2
     assert {(audit["target_type"], audit["target_id"]) for audit in bypass_audits} == {
         ("skill", "qa-file-reviewer"),
         ("mcp_tool", "tool-admin"),
@@ -6285,4 +6286,91 @@ async def test_worker_allow_once_batch_failure_rolls_back_before_failed_outcome(
     assert ("tx_commit", 1) not in calls
     assert ("tx_enter", 2) in calls
     assert calls.index(("tx_rollback", 1)) < next(index for index, call in enumerate(calls) if call[0] == "fail")
+    _task6_assert_no_executor_calls(calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_allow_once_failure_replays_admin_bypass_audits_in_recovery(monkeypatch):
+    private_marker = "private-bypass-payload"
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={
+            "mode": "file",
+            "mcp_tool_ids": ["tool-first", "tool-second"],
+            "private_payload": private_marker,
+        },
+        principal_roles=["admin"],
+        principal_department_id="platform",
+    )
+    state["skill"]["private_payload"] = private_marker
+    state["distributions"][("skill", "qa-file-reviewer")].update(
+        visible_to_user=False,
+        metadata_json={"credential": private_marker},
+    )
+    for suffix in ("first", "second"):
+        tool_id = f"tool-{suffix}"
+        server_id = f"server-{suffix}"
+        state["tools"][tool_id] = {
+            **_task6_tool(tool_id, server_id, write_capable=True, risk_level="high"),
+            "private_payload": private_marker,
+        }
+        state["distributions"][("mcp_server", server_id)] = {
+            **_task6_distribution("mcp_server", server_id, visible_to_user=False),
+            "metadata_json": {"credential": private_marker},
+        }
+        state["permission_decisions"][tool_id] = {
+            "id": f"grant-{suffix}",
+            "decision": "allow_once",
+            "private_payload": private_marker,
+        }
+    state["consume_results"] = [{"status": "consumed"}, None]
+    persisted_audits = []
+    transaction_count = 0
+
+    class PendingTransaction:
+        def __init__(self, transaction_id):
+            self.transaction_id = transaction_id
+            self.audits = []
+
+    @asynccontextmanager
+    async def recording_transaction():
+        nonlocal transaction_count
+        transaction_count += 1
+        conn = PendingTransaction(transaction_count)
+        try:
+            yield conn
+        except Exception:
+            calls.append(("tx_rollback", conn.transaction_id))
+            raise
+        else:
+            persisted_audits.extend(conn.audits)
+            calls.append(("tx_commit", conn.transaction_id))
+
+    async def append_audit_log(conn, **kwargs):
+        conn.audits.append(kwargs)
+        return "audit-task6"
+
+    monkeypatch.setattr("app.worker.transaction", recording_transaction)
+    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    assert ("tx_rollback", 1) in calls
+    assert ("tx_commit", 2) in calls
+    assert [audit["action"] for audit in persisted_audits] == [
+        "capability_distribution.admin_bypass",
+        "capability_distribution.admin_bypass",
+        "capability_distribution.admin_bypass",
+        "capability_distribution.denied",
+    ]
+    assert [(audit["target_type"], audit["target_id"]) for audit in persisted_audits[:3]] == [
+        ("skill", "qa-file-reviewer"),
+        ("mcp_tool", "tool-first"),
+        ("mcp_tool", "tool-second"),
+    ]
+    assert persisted_audits[-1]["target_id"] == "tool-second"
+    assert persisted_audits[-1]["payload_json"]["decision_reason"] == "tool_permission_consumed_or_expired"
+    assert private_marker not in json.dumps(persisted_audits, ensure_ascii=False, sort_keys=True)
     _task6_assert_no_executor_calls(calls)

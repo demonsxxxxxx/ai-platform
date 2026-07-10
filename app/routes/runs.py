@@ -986,6 +986,7 @@ async def create_run(
                     "executor_type": skill["executor_type"],
                     "skill_version": skill_version,
                     "release_decision": release_decision_payload,
+                    "skill_manifests": queue_payload["skill_manifests"],
                 },
                 principal_roles=principal.roles,
                 principal_department_id=principal.department_id,

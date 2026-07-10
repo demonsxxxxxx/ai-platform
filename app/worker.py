@@ -106,6 +106,16 @@ class _WorkerCapabilityAuthorization:
     allow_once_grants: tuple[_WorkerAllowOnceGrant, ...] = ()
 
 
+@dataclass(frozen=True)
+class _WorkerAdminBypassAudit:
+    tenant_id: str
+    user_id: str
+    target_type: str
+    target_id: str
+    trace_id: str
+    payload_json: dict[str, Any]
+
+
 _PARENT_ROLLUP_RETRY_ATTEMPTS = 3
 _PARENT_ROLLUP_RETRY_DELAY_SECONDS = 0.05
 _EXECUTOR_ERROR_REQUEST_ID_RE = re.compile(
@@ -1216,29 +1226,48 @@ def _worker_capability_audit_payload(
     }
 
 
-async def _audit_worker_capability_bypasses(
-    conn,
+def _worker_admin_bypass_audits(
     *,
     authorization: _WorkerCapabilityAuthorization,
     run_identity: dict[str, str],
     trace_id: str,
-) -> None:
+) -> tuple[_WorkerAdminBypassAudit, ...]:
+    audits: list[_WorkerAdminBypassAudit] = []
     for record in authorization.decisions:
         if not record.decision.admin_bypass:
             continue
+        audits.append(
+            _WorkerAdminBypassAudit(
+                tenant_id=run_identity["tenant_id"],
+                user_id=run_identity["user_id"],
+                target_type=record.capability_kind,
+                target_id=record.capability_id,
+                trace_id=trace_id,
+                payload_json=_worker_capability_audit_payload(
+                    record,
+                    principal=authorization.principal,
+                    run_identity=run_identity,
+                ),
+            )
+        )
+    return tuple(audits)
+
+
+async def _append_worker_admin_bypass_audits(
+    conn,
+    *,
+    audits: tuple[_WorkerAdminBypassAudit, ...],
+) -> None:
+    for audit in audits:
         await repositories.append_audit_log(
             conn,
-            tenant_id=run_identity["tenant_id"],
-            user_id=run_identity["user_id"],
+            tenant_id=audit.tenant_id,
+            user_id=audit.user_id,
             action="capability_distribution.admin_bypass",
-            target_type=record.capability_kind,
-            target_id=record.capability_id,
-            trace_id=trace_id,
-            payload_json=_worker_capability_audit_payload(
-                record,
-                principal=authorization.principal,
-                run_identity=run_identity,
-            ),
+            target_type=audit.target_type,
+            target_id=audit.target_id,
+            trace_id=audit.trace_id,
+            payload_json=audit.payload_json,
         )
 
 
@@ -1595,6 +1624,7 @@ async def process_run_payload(
 
     terminal_after_transaction: _WorkerTerminalAfterTransaction | None = None
     capability_authorization: _WorkerCapabilityAuthorization | None = None
+    admin_bypass_audits: tuple[_WorkerAdminBypassAudit, ...] = ()
     try:
         async with transaction() as conn:
             locked = await repositories.mark_run_running(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
@@ -1693,12 +1723,12 @@ async def process_run_payload(
                 locked_run=locked,
                 run_identity=run_identity,
             )
-            await _audit_worker_capability_bypasses(
-                conn,
+            admin_bypass_audits = _worker_admin_bypass_audits(
                 authorization=capability_authorization,
                 run_identity=run_identity,
                 trace_id=trace_id,
             )
+            await _append_worker_admin_bypass_audits(conn, audits=admin_bypass_audits)
             if capability_authorization.denial is not None:
                 terminal_after_transaction = await _fail_worker_capability_authorization(
                     conn,
@@ -2083,6 +2113,7 @@ async def process_run_payload(
             allow_once_grants=capability_authorization.allow_once_grants,
         )
         async with transaction() as conn:
+            await _append_worker_admin_bypass_audits(conn, audits=admin_bypass_audits)
             terminal_after_transaction = await _fail_worker_capability_authorization(
                 conn,
                 payload=failed_authorization.payload,

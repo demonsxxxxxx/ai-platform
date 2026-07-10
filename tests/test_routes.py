@@ -3833,7 +3833,7 @@ async def test_create_run_rejects_release_policy_version_that_differs_from_prima
 
 
 @pytest.mark.asyncio
-async def test_create_run_uses_uploaded_release_policy_manifest(monkeypatch, tmp_path):
+async def test_create_run_producer_contract_persists_uploaded_release_policy_manifest(monkeypatch, tmp_path):
     calls = {}
     dependency_dir = tmp_path / "minimax-docx"
     dependency_dir.mkdir()
@@ -3919,12 +3919,35 @@ async def test_create_run_uses_uploaded_release_policy_manifest(monkeypatch, tmp
     assert response.run_id == "run_uploaded"
     assert calls["create_run"]["input_json"]["skill_version"] == "hash-uploaded"
     assert calls["queue"]["skill_version"] == "hash-uploaded"
+    assert calls["create_run"]["input_json"]["skill_manifests"] == calls["queue"]["skill_manifests"]
     assert [item["skill_id"] for item in calls["queue"]["skill_manifests"]] == ["qa-file-reviewer", "minimax-docx"]
     assert calls["queue"]["skill_manifests"][0]["source"]["kind"] == "uploaded"
     assert calls["queue"]["skill_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
     assert calls["queue"]["skill_manifests"][1]["content_hash"] == pinned_dependency_manifest["content_hash"]
     assert calls["queue"]["skill_manifests"][1]["files"][0]["relative_path"] == "SKILL.md"
     assert any(event["payload"]["skill_version"] == "hash-uploaded" for event in calls["events"])
+    persisted_non_identity_snapshot = {
+        **calls["create_run"]["input_json"],
+        "context_snapshot_id": calls["queue"]["context_snapshot_id"],
+        "context_snapshot": calls["queue"]["context_snapshot"],
+    }
+    locked_payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": calls["create_run"]["tenant_id"],
+            "workspace_id": calls["create_run"]["workspace_id"],
+            "user_id": calls["create_run"]["user_id"],
+            "session_id": calls["create_run"]["session_id"],
+            "run_id": response.run_id,
+            "agent_id": calls["create_run"]["agent_id"],
+            "skill_id": calls["create_run"]["skill_id"],
+            **{
+                field: persisted_non_identity_snapshot[field]
+                for field in QueueRunPayload.model_fields
+                if field in persisted_non_identity_snapshot
+            },
+        }
+    )
+    assert locked_payload.model_dump(mode="json") == calls["queue"]
 
 
 @pytest.mark.asyncio
