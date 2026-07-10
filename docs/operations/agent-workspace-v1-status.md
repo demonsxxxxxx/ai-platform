@@ -80,7 +80,7 @@ Status:
   - Prior Minor review finding fixed: `/api/agent-workspace` is now classified in the frontend projection audit safe public route inventory, including the active multiline `fetchAgentWorkspace` route reference.
   - Follow-up sub-agent review `019f4ab9-919c-7f53-a981-6f14d0b6557e` found no Critical, Important, or Minor findings.
   - Review assessment: ready to merge after the uncommitted fixes are committed/pushed and fresh GitHub CI completes.
-- [x] Phase 16: updated PR branch pushed and fresh GitHub CI passed on PR head `d392a0d32c3e6847be2e976ab50962aeaf39f2e4`:
+- [x] Phase 16: updated PR branch pushed and fresh GitHub CI passed for the current-main Agent Workspace PR refresh:
   - PR #334: `https://github.com/demonsxxxxxx/ai-platform/pull/334`.
   - GitHub merge state after CI: `CLEAN`.
   - `backend required` -> `SUCCESS`.
