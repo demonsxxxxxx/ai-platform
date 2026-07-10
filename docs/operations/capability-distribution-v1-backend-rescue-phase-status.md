@@ -8,7 +8,7 @@ Status:
 - [x] Phase 4: detailed TDD implementation plan written against current-main interfaces at `docs/superpowers/plans/2026-07-10-capability-distribution-v1-backend-rescue.md`.
 - [x] Phase 5: schema, backfill, repository, and unified resolver implemented by TDD in `9e517ae` plus `a7393df`; focused result `18 passed, 158 deselected`, compile/diff checks passed, and task re-review found no Critical, Important, or Minor findings.
 - [x] Phase 6: Admin API plus Skill, Marketplace, and MCP read/write cutover implemented by TDD; Admin API `9 passed`, Skill/Marketplace final `55 passed`, MCP final `160 passed`, and each task's final independent review found no Critical, Important, or Minor findings.
-- [ ] Phase 7: enqueue snapshot, worker Skill/MCP reauthorization, child-run inheritance, registration filtering, and audit implemented by TDD.
+- [x] Phase 7: enqueue snapshot, worker Skill/MCP reauthorization, child-run inheritance, registration filtering, atomic allow-once handling, and sanitized audit implemented by TDD; final high-risk review found no Critical, Important, or Minor findings.
 - [ ] Phase 8: compile, focused pytest, migration/backfill, integration, and diff verification complete on final source.
 - [ ] Phase 9: independent sub-agent review complete; all Critical and Important findings fixed and re-reviewed.
 - [ ] Phase 10: focused PR created and required GitHub checks pass on its final head.
