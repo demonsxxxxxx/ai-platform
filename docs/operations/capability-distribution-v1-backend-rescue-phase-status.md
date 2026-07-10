@@ -32,6 +32,39 @@ Phase 8 verification evidence:
 - Worker slice -> `196 passed, 3 skipped in 4.97s`.
 - Aggregate focused pytest result -> `751 passed, 3 skipped, 1 deselected`; no Capability Distribution defect was reproduced, so no source or test repair was made in Task 7.
 
+Phase 8 scope-audit evidence:
+- Fresh command: `git diff --name-only origin/main...HEAD`.
+- Exact count: `26` tracked paths. Every path in the complete output below is approved for this rescue; no scratch file is present.
+
+```text
+app/capability_distribution.py
+app/main.py
+app/models.py
+app/repositories.py
+app/routes/capability_distributions.py
+app/routes/chat.py
+app/routes/mcp.py
+app/routes/role_governance.py
+app/routes/runs.py
+app/routes/skills_marketplace.py
+app/schema.sql
+app/worker.py
+docs/operations/capability-distribution-v1-backend-rescue-phase-status.md
+docs/superpowers/plans/2026-07-10-capability-distribution-v1-backend-rescue.md
+docs/superpowers/specs/2026-07-10-capability-distribution-v1-backend-rescue-design.md
+tests/test_capability_distribution.py
+tests/test_capability_distribution_routes.py
+tests/test_chat_routes.py
+tests/test_mcp_routes.py
+tests/test_repositories.py
+tests/test_role_governance_routes.py
+tests/test_routes.py
+tests/test_run_control_routes.py
+tests/test_schema.py
+tests/test_skills_marketplace_routes.py
+tests/test_worker.py
+```
+
 Boundaries:
 - No unknown dirty file has been cleaned, reset, copied, or overwritten.
 - No old branch has been merged or broadly cherry-picked.
