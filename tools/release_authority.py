@@ -378,7 +378,10 @@ def _container_json_file(docker: list[str], name: str, path: str) -> dict[str, A
 def _container_process_alive(docker: list[str], name: str, pid: Any) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
-    result = _run([*docker, "exec", name, "kill", "-0", str(pid)], check=False)
+    result = _run(
+        [*docker, "exec", name, "/bin/sh", "-c", 'kill -0 "$1"', "sh", str(pid)],
+        check=False,
+    )
     return result.returncode == 0
 
 

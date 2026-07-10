@@ -512,6 +512,32 @@ def test_published_url_supports_ipv6_only_binding():
     assert url == "http://[::1]:18001/healthz"
 
 
+def test_container_process_alive_uses_shell_builtin_kill(monkeypatch):
+    from tools.release_authority import _container_process_alive
+
+    observed: list[str] = []
+
+    def fake_run(command, **kwargs):
+        observed.extend(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+
+    assert _container_process_alive(["sudo", "-n", "docker"], "ai-platform-worker", 1234) is True
+    assert observed == [
+        "sudo",
+        "-n",
+        "docker",
+        "exec",
+        "ai-platform-worker",
+        "/bin/sh",
+        "-c",
+        'kill -0 "$1"',
+        "sh",
+        "1234",
+    ]
+
+
 def test_deploy_rejects_unexpected_manual_frontend_identity(monkeypatch, tmp_path):
     commit = "e" * 40
     removed: list[list[str]] = []

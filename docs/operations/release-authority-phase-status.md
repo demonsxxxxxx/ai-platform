@@ -86,7 +86,7 @@ remains unchanged and is not an authorized deployment source.
 
 ## Local Verification Evidence
 
-- Backend required workflow scope: `390 passed` after adding API process
+- Backend required workflow scope: `391 passed` after adding API process
   provenance and worker runtime-heartbeat contracts to the required workflow.
 - Frontend required Python scope: `142 passed`.
 - Cross-cutting pre-commit scope: `136 passed`.
@@ -94,7 +94,7 @@ remains unchanged and is not an authorized deployment source.
 - `corepack pnpm run ci:verify`: exit `0`; projection audit, source smoke,
   ESLint, TypeScript build, Vite/PWA build, and provenance generation completed.
 - `git diff --check`: exit `0`.
-- Strengthened Release Authority contracts: `20 passed`.
+- Strengthened Release Authority contracts: `21 passed`.
 - Workflow/frontend traceability and B2 readiness regression scope: `65 passed`.
 - Foundation Alpha readiness fresh short-basetemp rerun: `83 passed`. An earlier
   long-basetemp run produced `12` Windows path-length fixture errors after `71`
@@ -120,8 +120,13 @@ remains unchanged and is not an authorized deployment source.
   dynamic API/worker process identity. Those gaps are now addressed with
   IPv6-aware endpoint derivation, API process commit projection, and a fresh
   worker heartbeat tied to a live in-container PID. A second independent
-  follow-up review remains pending. Final deployment and parity must use the
-  eventual merged `main` commit, not this PR head.
+  follow-up review found one final Important command-shape gap: the image does
+  not ship an external `kill` executable. Fresh 211 readback confirmed direct
+  `kill -0` exits `126`, while `/bin/sh` builtin `kill -0` exits `0`; the
+  verifier now uses the shell builtin with positional PID binding and a command-
+  shape regression test. A final narrow follow-up review remains pending. Final
+  deployment and parity must use the eventual merged `main` commit, not this PR
+  head.
 
 ## Pre-Commit Self-Review
 
