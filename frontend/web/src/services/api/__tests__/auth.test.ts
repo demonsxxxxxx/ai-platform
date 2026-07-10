@@ -8,10 +8,16 @@ import { refreshTokens } from "../tokenManager.ts";
 
 function installAuthApiBrowserStubs(
   responseBody: Record<string, unknown> = {
-    access_token: "access-token",
-    refresh_token: "refresh-token",
-    token_type: "bearer",
+    user_id: "dev001",
+    user_name: "dev001",
+    display_name: "Developer",
+    tenant_id: "default",
+    roles: ["developer"],
+    permissions: ["agent:use"],
+    is_admin: true,
+    source: "company-login",
   },
+  status = 200,
 ) {
   const originalFetch = Object.getOwnPropertyDescriptor(globalThis, "fetch");
   const originalLocalStorage = Object.getOwnPropertyDescriptor(
@@ -22,13 +28,15 @@ function installAuthApiBrowserStubs(
   const stored = new Map<string, string>();
   const events: string[] = [];
   const fetchCalls: string[] = [];
+  const fetchInit: RequestInit[] = [];
 
   Object.defineProperty(globalThis, "fetch", {
     configurable: true,
-    value: async (input: RequestInfo | URL) => {
+    value: async (input: RequestInfo | URL, init?: RequestInit) => {
       fetchCalls.push(String(input));
+      fetchInit.push(init ?? {});
       return new Response(JSON.stringify(responseBody), {
-        status: 200,
+        status,
         headers: { "Content-Type": "application/json" },
       });
     },
@@ -58,6 +66,7 @@ function installAuthApiBrowserStubs(
   return {
     events,
     fetchCalls,
+    fetchInit,
     stored,
     restore() {
       if (originalFetch) {
@@ -83,7 +92,7 @@ test("buildOAuthLoginUrl keeps same-origin deployments relative", () => {
   assert.equal(buildOAuthLoginUrl("google"), "/api/auth/oauth/google");
 });
 
-test("login clears auth-scoped preview caches before replacing tokens", async () => {
+test("login clears auth-scoped preview caches and marks cookie session without storing bearer tokens", async () => {
   const stubs = installAuthApiBrowserStubs();
   let clearCount = 0;
   const unregister = registerAuthScopedCacheClearer(() => {
@@ -94,8 +103,14 @@ test("login clears auth-scoped preview caches before replacing tokens", async ()
     await authApi.login({ username: "user@example.com", password: "secret" });
 
     assert.equal(clearCount, 1);
-    assert.equal(stubs.stored.get("access_token"), "access-token");
-    assert.equal(stubs.stored.get("refresh_token"), "refresh-token");
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/login"]);
+    assert.equal(stubs.fetchInit[0].credentials, "include");
+    assert.match(
+      stubs.stored.get("ai_platform_session_present") ?? "",
+      /^\d+-[a-z0-9]+$/i,
+    );
+    assert.equal(stubs.stored.get("access_token"), undefined);
+    assert.equal(stubs.stored.get("refresh_token"), undefined);
     assert.deepEqual(stubs.events, ["auth:login"]);
   } finally {
     unregister();
@@ -103,7 +118,7 @@ test("login clears auth-scoped preview caches before replacing tokens", async ()
   }
 });
 
-test("OAuth token callback clears auth-scoped preview caches before replacing tokens", async () => {
+test("OAuth token callback clears auth-scoped preview caches before marking cookie session", async () => {
   const stubs = installAuthApiBrowserStubs();
   let clearCount = 0;
   const unregister = registerAuthScopedCacheClearer(() => {
@@ -114,42 +129,89 @@ test("OAuth token callback clears auth-scoped preview caches before replacing to
     await authApi.handleOAuthCallback("github", "code", "state");
 
     assert.equal(clearCount, 1);
-    assert.equal(stubs.stored.get("access_token"), "access-token");
-    assert.equal(stubs.stored.get("refresh_token"), "refresh-token");
+    assert.match(
+      stubs.stored.get("ai_platform_session_present") ?? "",
+      /^\d+-[a-z0-9]+$/i,
+    );
+    assert.equal(stubs.stored.get("access_token"), undefined);
+    assert.equal(stubs.stored.get("refresh_token"), undefined);
   } finally {
     unregister();
     stubs.restore();
   }
 });
 
-test("silent refresh clears auth-scoped preview caches before replacing tokens", async () => {
+test("cookie-session probe clears auth-scoped preview caches without restoring bearer tokens", async () => {
   const stubs = installAuthApiBrowserStubs({
-    access_token: "refreshed-access-token",
-    refresh_token: "refreshed-refresh-token",
-    token_type: "bearer",
+    user_id: "dev001",
+    user_name: "dev001",
+    display_name: "Developer",
+    tenant_id: "default",
+    roles: ["developer"],
+    permissions: ["agent:use"],
+    is_admin: true,
+    source: "company-login",
   });
   let clearCount = 0;
   const unregister = registerAuthScopedCacheClearer(() => {
-    assert.notEqual(stubs.stored.get("access_token"), "refreshed-access-token");
-    assert.notEqual(
-      stubs.stored.get("refresh_token"),
-      "refreshed-refresh-token",
-    );
     clearCount += 1;
   });
 
-  stubs.stored.set("access_token", "initial-access-token");
-  stubs.stored.set("refresh_token", "initial-refresh-token");
+  stubs.stored.set("ai_platform_session_present", "existing-marker");
 
   try {
     const refreshed = await refreshTokens();
 
     assert.equal(clearCount, 1);
-    assert.equal(refreshed.access_token, "refreshed-access-token");
-    assert.equal(stubs.stored.get("access_token"), "refreshed-access-token");
-    assert.equal(stubs.stored.get("refresh_token"), "refreshed-refresh-token");
+    assert.equal(refreshed.access_token, "cookie-session");
+    assert.match(
+      stubs.stored.get("ai_platform_session_present") ?? "",
+      /^\d+-[a-z0-9]+$/i,
+    );
+    assert.equal(stubs.stored.get("access_token"), undefined);
+    assert.equal(stubs.stored.get("refresh_token"), undefined);
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/me"]);
   } finally {
     unregister();
+    stubs.restore();
+  }
+});
+
+test("logout calls backend logout before clearing browser auth state", async () => {
+  const stubs = installAuthApiBrowserStubs({ status: "logged_out" });
+  stubs.stored.set("ai_platform_session_present", "session-marker");
+  stubs.stored.set("access_token", "legacy-access");
+  stubs.stored.set("refresh_token", "legacy-refresh");
+
+  try {
+    await authApi.logout();
+
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/logout"]);
+    assert.equal(stubs.fetchInit[0].method, "POST");
+    assert.equal(stubs.fetchInit[0].credentials, "include");
+    assert.equal(stubs.stored.get("ai_platform_session_present"), undefined);
+    assert.equal(stubs.stored.get("access_token"), undefined);
+    assert.equal(stubs.stored.get("refresh_token"), undefined);
+    assert.deepEqual(stubs.events, ["auth:logout"]);
+  } finally {
+    stubs.restore();
+  }
+});
+
+test("logout keeps browser auth state when backend logout fails", async () => {
+  const stubs = installAuthApiBrowserStubs(
+    { detail: "logout_failed" },
+    500,
+  );
+  stubs.stored.set("ai_platform_session_present", "session-marker");
+
+  try {
+    await assert.rejects(() => authApi.logout(), /logout_failed/i);
+
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/logout"]);
+    assert.equal(stubs.stored.get("ai_platform_session_present"), "session-marker");
+    assert.deepEqual(stubs.events, []);
+  } finally {
     stubs.restore();
   }
 });

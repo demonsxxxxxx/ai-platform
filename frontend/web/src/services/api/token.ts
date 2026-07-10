@@ -2,44 +2,90 @@
  * Token management utilities
  */
 
+export const AUTH_SESSION_MARKER_KEY = "ai_platform_session_present";
 const TOKEN_KEY = "access_token";
 const REFRESH_TOKEN_KEY = "refresh_token";
 const REDIRECT_PATH_KEY = "redirect_after_login";
+
+type StorageEventLike = {
+  key: string | null;
+  oldValue: string | null;
+  newValue: string | null;
+};
+
+function browserLocalStorage(): Storage | null {
+  return typeof localStorage === "undefined" ? null : localStorage;
+}
+
+function browserSessionStorage(): Storage | null {
+  return typeof sessionStorage === "undefined" ? null : sessionStorage;
+}
+
+function clearLegacyBearerStorage(): void {
+  const storage = browserLocalStorage();
+  if (!storage) {
+    return;
+  }
+  if (typeof storage.getItem !== "function") {
+    storage.removeItem?.(TOKEN_KEY);
+    storage.removeItem?.(REFRESH_TOKEN_KEY);
+    return;
+  }
+  if (storage.getItem(TOKEN_KEY) !== null) {
+    storage.removeItem(TOKEN_KEY);
+  }
+  if (storage.getItem(REFRESH_TOKEN_KEY) !== null) {
+    storage.removeItem(REFRESH_TOKEN_KEY);
+  }
+}
+
+function createSessionMarker(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 export function isSafeRedirectPath(path: string): boolean {
   return path !== "/" && !path.startsWith("/auth/");
 }
 
 /**
- * 获取存储的 access token
+ * 浏览器生产路径不再把脚本可读 bearer token 当作授权来源。
+ * 这里仅返回一个非秘密的 cookie-session 存在标记，供 UI 判断是否需要探测服务端会话。
  */
 export function getAccessToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+  clearLegacyBearerStorage();
+  return browserLocalStorage()?.getItem(AUTH_SESSION_MARKER_KEY) ?? null;
 }
 
 /**
- * 获取存储的 refresh token
+ * 为了兼容旧调用方，这里返回与 access token 相同的非秘密会话标记。
  */
 export function getRefreshToken(): string | null {
-  return localStorage.getItem(REFRESH_TOKEN_KEY);
+  clearLegacyBearerStorage();
+  return browserLocalStorage()?.getItem(AUTH_SESSION_MARKER_KEY) ?? null;
 }
 
 /**
- * 保存 tokens
+ * 标记浏览器存在同源 cookie session，并顺带清掉旧 bearer 存储。
  */
-export function setTokens(access_token: string, refresh_token?: string): void {
-  localStorage.setItem(TOKEN_KEY, access_token);
-  if (refresh_token) {
-    localStorage.setItem(REFRESH_TOKEN_KEY, refresh_token);
+export function setTokens(_access_token: string, _refresh_token?: string): void {
+  const storage = browserLocalStorage();
+  if (!storage) {
+    return;
   }
+  clearLegacyBearerStorage();
+  storage.setItem(AUTH_SESSION_MARKER_KEY, createSessionMarker());
 }
 
 /**
- * 清除 tokens
+ * 清除浏览器 cookie-session 标记以及历史 bearer 存储。
  */
 export function clearTokens(): void {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(REFRESH_TOKEN_KEY);
+  const storage = browserLocalStorage();
+  if (!storage) {
+    return;
+  }
+  storage.removeItem(AUTH_SESSION_MARKER_KEY);
+  clearLegacyBearerStorage();
 }
 
 /**
@@ -54,6 +100,9 @@ export function isAuthenticated(): boolean {
  */
 export function decodeToken(token: string): Record<string, unknown> | null {
   try {
+    if (token === "1" || token === "cookie-session") {
+      return null;
+    }
     const base64Url = token.split(".")[1];
     const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
     const jsonPayload = decodeURIComponent(
@@ -73,7 +122,7 @@ export function decodeToken(token: string): Record<string, unknown> | null {
  */
 export function isTokenExpired(token: string): boolean {
   const payload = decodeToken(token);
-  if (!payload || !payload.exp) return true;
+  if (!payload || !payload.exp) return false;
   return (payload.exp as number) * 1000 < Date.now();
 }
 
@@ -81,11 +130,11 @@ export function isTokenExpired(token: string): boolean {
  * 获取登录后重定向路径
  */
 export function getRedirectPath(): string | null {
-  const redirectPath = sessionStorage.getItem(REDIRECT_PATH_KEY);
+  const redirectPath = browserSessionStorage()?.getItem(REDIRECT_PATH_KEY);
   if (!redirectPath) return null;
 
   if (!isSafeRedirectPath(redirectPath)) {
-    sessionStorage.removeItem(REDIRECT_PATH_KEY);
+    browserSessionStorage()?.removeItem(REDIRECT_PATH_KEY);
     return null;
   }
 
@@ -96,5 +145,24 @@ export function getRedirectPath(): string | null {
  * 清除重定向路径
  */
 export function clearRedirectPath(): void {
-  sessionStorage.removeItem(REDIRECT_PATH_KEY);
+  browserSessionStorage()?.removeItem(REDIRECT_PATH_KEY);
+}
+
+export function setRedirectPath(path: string): void {
+  browserSessionStorage()?.setItem(REDIRECT_PATH_KEY, path);
+}
+
+export function parseAuthStorageEvent(
+  event: StorageEventLike,
+): "login" | "logout" | null {
+  if (event.key !== AUTH_SESSION_MARKER_KEY) {
+    return null;
+  }
+  if (event.newValue && event.oldValue !== event.newValue) {
+    return "login";
+  }
+  if (event.oldValue && !event.newValue) {
+    return "logout";
+  }
+  return null;
 }

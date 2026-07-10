@@ -15,12 +15,11 @@ import {
   authApi,
   buildOAuthLoginUrl,
   getAccessToken,
-  getRefreshToken,
-  isAuthenticated,
-  isTokenExpired,
   getRedirectPath,
   clearRedirectPath,
+  isAuthenticated,
 } from "../services/api";
+import { parseAuthStorageEvent, setTokens } from "../services/api/token";
 import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../components/layout/AppContent/useAgentOptions";
 import {
   hasAllEffectivePermissions,
@@ -107,7 +106,7 @@ interface AuthContextType extends AuthState {
     code: string,
     state: string,
   ) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<boolean>;
   refreshUser: () => Promise<void>;
   hasPermission: (permission: Permission) => boolean;
   hasAnyPermission: (permissions: Permission[]) => boolean;
@@ -130,63 +129,66 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 权限列表：从 API 动态获取
   const permissions = dynamicPermissions;
 
+  const applyAuthenticatedUser = useCallback((currentUser: User) => {
+    setToken(getAccessToken());
+    setUser(currentUser);
+    applyUserMetadata(currentUser.metadata);
+    if (currentUser.permissions) {
+      setDynamicPermissions(
+        currentUser.permissions.filter((p): p is Permission =>
+          Object.values(Permission).includes(p as Permission),
+        ),
+      );
+    } else {
+      setDynamicPermissions([]);
+    }
+  }, []);
+
+  const clearLocalAuthView = useCallback(() => {
+    setToken(null);
+    setUser(null);
+    setDynamicPermissions([]);
+  }, []);
+
+  const rollbackServerSession = useCallback(async () => {
+    await authApi.logout();
+  }, []);
+
+  const refreshUser = useCallback(async () => {
+    if (!isAuthenticated()) return;
+
+    try {
+      const currentUser = await authApi.getCurrentUser();
+      applyAuthenticatedUser(currentUser);
+    } catch (error) {
+      if (error instanceof Error && /Unauthorized/i.test(error.message)) {
+        clearLocalAuthView();
+        return;
+      }
+      console.error("Failed to refresh user info:", error);
+    }
+  }, [applyAuthenticatedUser, clearLocalAuthView]);
+
   // 初始化：检查现有 token 并获取用户信息
   useEffect(() => {
     const initAuth = async () => {
-      const accessToken = getAccessToken();
+      const hadSessionMarker = !!getAccessToken();
 
-      if (!accessToken) {
-        setIsLoading(false);
-        return;
-      }
-
-      let validToken = accessToken;
-
-      // 检查 token 是否过期，尝试用 refresh token 刷新
-      if (isTokenExpired(accessToken)) {
-        const refreshToken = getRefreshToken();
-        if (refreshToken && !isTokenExpired(refreshToken)) {
-          try {
-            const tokenResponse = await authApi.refreshToken();
-            validToken = tokenResponse.access_token;
-          } catch {
-            // 刷新失败，需要重新登录
-            authApi.logout();
-            setToken(null);
-            setUser(null);
-            setIsLoading(false);
-            return;
-          }
-        } else {
-          // refresh token 也不存在或已过期，需要重新登录
-          authApi.logout();
-          setToken(null);
-          setUser(null);
+      try {
+        const currentUser = await authApi.getCurrentUser();
+        if (!hadSessionMarker) {
+          setTokens("cookie-session");
+        }
+        applyAuthenticatedUser(currentUser);
+        if (!hadSessionMarker) {
+          window.dispatchEvent(new CustomEvent("auth:login"));
+        }
+      } catch (err) {
+        if (err instanceof Error && /Unauthorized/i.test(err.message)) {
+          clearLocalAuthView();
           setIsLoading(false);
           return;
         }
-      }
-
-      setToken(validToken);
-
-      // 尝试获取用户信息（带重试）
-      try {
-        const currentUser = await authApi.getCurrentUser();
-        setUser(currentUser);
-        applyUserMetadata(currentUser.metadata);
-        // 更新动态权限
-        if (currentUser.permissions) {
-          setDynamicPermissions(
-            currentUser.permissions.filter((p): p is Permission =>
-              Object.values(Permission).includes(p as Permission),
-            ),
-          );
-        }
-      } catch (err) {
-        // Only treat 401 as auth failure — network errors / server restarts
-        // should NOT clear auth state during development.
-        // authFetch already handles 401 by calling redirectToLogin internally,
-        // so this catch only fires for non-401 errors.
         console.warn("[useAuth] Failed to fetch current user:", err);
       }
 
@@ -194,18 +196,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
 
     initAuth();
-  }, []);
+  }, [applyAuthenticatedUser, clearLocalAuthView]);
 
   // 监听登出事件
   useEffect(() => {
     const handleLogout = () => {
-      setToken(null);
-      setUser(null);
+      clearLocalAuthView();
+    };
+
+    const handleStorage = (event: StorageEvent) => {
+      const authEvent = parseAuthStorageEvent(event);
+      if (authEvent === "logout") {
+        clearLocalAuthView();
+        return;
+      }
+      if (authEvent === "login") {
+        void refreshUser();
+      }
     };
 
     window.addEventListener("auth:logout", handleLogout);
-    return () => window.removeEventListener("auth:logout", handleLogout);
-  }, []);
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      window.removeEventListener("auth:logout", handleLogout);
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [clearLocalAuthView, refreshUser]);
 
   // 登录
   const login = useCallback(
@@ -213,28 +229,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setIsLoading(true);
       try {
         await authApi.login(credentials, turnstileToken);
-        const accessToken = getAccessToken();
-        setToken(accessToken);
 
-        // 获取用户信息
         try {
           const currentUser = await authApi.getCurrentUser();
-          setUser(currentUser);
-          applyUserMetadata(currentUser.metadata);
-          // 更新动态权限
-          if (currentUser.permissions) {
-            setDynamicPermissions(
-              currentUser.permissions.filter((p): p is Permission =>
-                Object.values(Permission).includes(p as Permission),
-              ),
-            );
-          }
-        } catch {
-          // 获取用户信息失败，清除登录状态
-          authApi.logout();
-          setToken(null);
-          setIsLoading(false);
-          return null;
+          applyAuthenticatedUser(currentUser);
+        } catch (error) {
+          await rollbackServerSession();
+          throw error;
         }
 
         // 登录成功后，跳转到之前的页面
@@ -247,7 +248,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsLoading(false);
       }
     },
-    [],
+    [applyAuthenticatedUser, rollbackServerSession],
   );
 
   // 注册
@@ -281,60 +282,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setIsLoading(true);
       try {
         await authApi.handleOAuthCallback(provider, code, state);
-        const accessToken = getAccessToken();
-        setToken(accessToken);
 
-        // 获取用户信息
         try {
           const currentUser = await authApi.getCurrentUser();
-          setUser(currentUser);
-          applyUserMetadata(currentUser.metadata);
-          // 更新动态权限
-          if (currentUser.permissions) {
-            setDynamicPermissions(
-              currentUser.permissions.filter((p): p is Permission =>
-                Object.values(Permission).includes(p as Permission),
-              ),
-            );
-          }
-        } catch {
-          // 忽略用户信息获取失败
+          applyAuthenticatedUser(currentUser);
+        } catch (error) {
+          await rollbackServerSession();
+          throw error;
         }
       } finally {
         setIsLoading(false);
       }
     },
-    [],
+    [applyAuthenticatedUser, rollbackServerSession],
   );
 
   // 登出
-  const logout = useCallback(() => {
-    authApi.logout();
-    setToken(null);
-    setUser(null);
-  }, []);
-
-  // 刷新用户信息（同时更新动态权限）
-  const refreshUser = useCallback(async () => {
-    if (!isAuthenticated()) return;
-
-    const accessToken = getAccessToken();
-    setToken(accessToken);
-
+  const logout = useCallback(async () => {
     try {
-      const currentUser = await authApi.getCurrentUser();
-      setUser(currentUser);
-      applyUserMetadata(currentUser.metadata);
-      // 更新动态权限
-      if (currentUser.permissions) {
-        setDynamicPermissions(
-          currentUser.permissions.filter((p): p is Permission =>
-            Object.values(Permission).includes(p as Permission),
-          ),
-        );
-      }
+      await authApi.logout();
+      return true;
     } catch (error) {
-      console.error("Failed to refresh user info:", error);
+      console.error("[useAuth] Failed to logout:", error);
+      return false;
     }
   }, []);
 

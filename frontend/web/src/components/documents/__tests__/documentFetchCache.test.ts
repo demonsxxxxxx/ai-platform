@@ -185,7 +185,11 @@ test("clearAuthState clears document fetch caches when tokens are cleared", asyn
     assert.equal(first, "public-1");
     assert.equal(second, "public-2");
     assert.deepEqual(stubs.events, ["auth:logout"]);
-    assert.deepEqual(stubs.removedKeys, ["access_token", "refresh_token"]);
+    assert.deepEqual(stubs.removedKeys, [
+      "ai_platform_session_present",
+      "access_token",
+      "refresh_token",
+    ]);
   } finally {
     stubs.restore();
     clearDocumentFetchCaches();

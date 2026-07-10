@@ -15,6 +15,37 @@ import { clearAuthScopedCaches } from "./authCacheInvalidation";
 import { authFetch } from "./fetch";
 import { setTokens } from "./token";
 import { clearAuthState, refreshTokens } from "./tokenManager";
+import i18n from "../../i18n";
+
+interface PrincipalResponseWire {
+  user_id: string;
+  user_name?: string;
+  display_name: string;
+  tenant_id: string;
+  roles: string[];
+  permissions: string[];
+  is_admin: boolean;
+  source: string;
+}
+
+function mapPrincipalToUser(principal: PrincipalResponseWire): User {
+  return {
+    id: principal.user_id,
+    username: principal.user_name || principal.user_id,
+    email: "",
+    avatar_url: undefined,
+    roles: principal.roles,
+    permissions: principal.permissions,
+    is_admin: principal.is_admin,
+    is_active: true,
+    metadata: {
+      display_name: principal.display_name,
+      source: principal.source,
+    },
+    created_at: "",
+    updated_at: "",
+  };
+}
 
 export function buildOAuthLoginUrl(provider: string): string {
   return `${API_BASE}/api/auth/oauth/${provider}`;
@@ -27,7 +58,7 @@ export const authApi = {
   async login(
     credentials: LoginRequest,
     turnstileToken?: string,
-  ): Promise<TokenResponse> {
+  ): Promise<void> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
@@ -35,21 +66,20 @@ export const authApi = {
       headers["X-Turnstile-Token"] = turnstileToken;
     }
 
-    const response = await authFetch<TokenResponse>(
-      `${API_BASE}/api/auth/login`,
+    await authFetch<PrincipalResponseWire>(
+      `${API_BASE}/api/ai/auth/login`,
       {
         method: "POST",
         skipAuth: true,
+        credentials: "include",
         body: JSON.stringify(credentials),
         headers,
       },
     );
 
     clearAuthScopedCaches();
-    setTokens(response.access_token, response.refresh_token);
+    setTokens("cookie-session");
     window.dispatchEvent(new CustomEvent("auth:login"));
-
-    return response;
   },
 
   /**
@@ -90,14 +120,34 @@ export const authApi = {
    * 获取当前用户信息
    */
   async getCurrentUser(): Promise<User> {
-    return authFetch<User>(`${API_BASE}/api/auth/me`);
+    const principal = await authFetch<PrincipalResponseWire>(
+      `${API_BASE}/api/ai/auth/me`,
+    );
+    return mapPrincipalToUser(principal);
   },
 
   /**
    * 登出
    */
-  logout(): void {
-    clearAuthState();
+  async logout(): Promise<void> {
+    const response = await fetch(`${API_BASE}/api/ai/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Accept-Language": i18n.language || "en",
+      },
+    });
+    if (response.ok || response.status === 401 || response.status === 403) {
+      clearAuthState();
+      return;
+    }
+
+    const errorData = await response.json().catch(() => ({}));
+    const detail =
+      typeof errorData.detail === "string"
+        ? errorData.detail
+        : `Request failed: ${response.statusText}`;
+    throw new Error(detail);
   },
 
   /**
@@ -181,20 +231,24 @@ export const authApi = {
     code: string,
     state: string,
   ): Promise<TokenResponse> {
-    const response = await authFetch<TokenResponse>(
+    await authFetch<Record<string, unknown>>(
       `${API_BASE}/api/auth/oauth/${provider}/callback`,
       {
         method: "POST",
         skipAuth: true,
+        credentials: "include",
         body: JSON.stringify({ code, state }),
       },
     );
 
     clearAuthScopedCaches();
-    setTokens(response.access_token, response.refresh_token);
+    setTokens("cookie-session");
     window.dispatchEvent(new CustomEvent("auth:login"));
 
-    return response;
+    return {
+      access_token: "cookie-session",
+      token_type: "bearer",
+    };
   },
 
   /**
