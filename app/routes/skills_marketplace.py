@@ -12,6 +12,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
+from app.capability_distribution import CapabilityAccessContext, CapabilityDistributionSubject, resolve_capability_access
 from app.db import transaction
 from app.models import (
     MarketplaceInstallResponse,
@@ -133,6 +134,11 @@ def _effective_permissions(principal: AuthPrincipal) -> list[str]:
 def _require_permission(principal: AuthPrincipal, permission: str) -> None:
     if permission not in _effective_permission_set(principal):
         raise HTTPException(status_code=403, detail=f"missing_permission:{permission}")
+
+
+def _require_ai_admin(principal: AuthPrincipal) -> None:
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
 
 
 def _tags_from_row(row: dict[str, Any]) -> list[str]:
@@ -342,21 +348,108 @@ async def _public_catalog_rows(
     principal: AuthPrincipal,
     include_disabled: bool,
     include_file_overlay_content: bool = False,
+    include_user_file_overlays: bool = True,
 ) -> list[dict[str, Any]]:
     async with transaction() as conn:
         rows = await repositories.list_public_skill_catalog(
             conn,
             tenant_id=principal.tenant_id,
-            include_disabled=include_disabled,
+            include_disabled=True,
         )
-        overlays = await repositories.list_user_skill_file_overlays(
+        distributions = await repositories.list_capability_distribution_rows(
             conn,
             tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            skill_ids=[str(row.get("skill_id") or "") for row in rows],
-            include_content=include_file_overlay_content,
+            capability_kind="skill",
+            include_disabled=True,
+        )
+        distribution_map = {
+            str(row.get("capability_id") or ""): row
+            for row in distributions
+        }
+        rows = [
+            row
+            for row in rows
+            if resolve_capability_access(
+                CapabilityAccessContext(
+                    tenant_id=principal.tenant_id,
+                    department_id=principal.department_id,
+                    roles=principal.roles,
+                    is_admin=is_ai_admin(principal),
+                    permissions=principal.permissions,
+                ),
+                CapabilityDistributionSubject(
+                    capability_kind="skill",
+                    capability_id=str(row.get("skill_id") or ""),
+                    lifecycle_status=str(row.get("status") or "disabled"),
+                    distribution=distribution_map.get(str(row.get("skill_id") or "")),
+                ),
+                intent="discover",
+            ).visible
+        ]
+        overlays = (
+            await repositories.list_user_skill_file_overlays(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                skill_ids=[str(row.get("skill_id") or "") for row in rows],
+                include_content=include_file_overlay_content,
+            )
+            if include_user_file_overlays
+            else []
         )
     return _attach_user_file_overlays(rows, overlays)
+
+
+async def _public_skill_row(
+    *,
+    principal: AuthPrincipal,
+    skill_name: str,
+    include_file_overlay_content: bool = False,
+    include_user_file_overlays: bool = True,
+) -> dict[str, Any]:
+    async with transaction() as conn:
+        rows = await repositories.list_public_skill_catalog(
+            conn,
+            tenant_id=principal.tenant_id,
+            include_disabled=True,
+        )
+        row = _find_row(rows, skill_name=skill_name)
+        distribution = await repositories.get_capability_distribution_row(
+            conn,
+            tenant_id=principal.tenant_id,
+            capability_kind="skill",
+            capability_id=skill_name,
+        )
+        decision = resolve_capability_access(
+            CapabilityAccessContext(
+                tenant_id=principal.tenant_id,
+                department_id=principal.department_id,
+                roles=principal.roles,
+                is_admin=is_ai_admin(principal),
+                permissions=principal.permissions,
+            ),
+            CapabilityDistributionSubject(
+                capability_kind="skill",
+                capability_id=skill_name,
+                lifecycle_status=str(row.get("status") or "disabled"),
+                distribution=distribution,
+            ),
+            intent="discover",
+        )
+        if not decision.visible:
+            raise HTTPException(status_code=404, detail="skill_not_found")
+        overlays = (
+            await repositories.list_user_skill_file_overlays(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                skill_ids=[skill_name],
+                include_content=include_file_overlay_content,
+            )
+            if include_user_file_overlays
+            else []
+        )
+    return _attach_user_file_overlays([row], overlays)[0]
 
 
 def _find_row(rows: list[dict[str, Any]], *, skill_name: str) -> dict[str, Any]:
@@ -634,13 +727,8 @@ async def _persist_public_import_package(
     audit_action: str,
     audit_payload: dict[str, Any],
 ) -> None:
+    await _public_skill_row(principal=principal, skill_name=parsed.skill_id)
     async with transaction() as conn:
-        rows = await repositories.list_public_skill_catalog(
-            conn,
-            tenant_id=principal.tenant_id,
-            include_disabled=True,
-        )
-        _find_row(rows, skill_name=parsed.skill_id)
         await repositories.ensure_user(
             conn,
             tenant_id=principal.tenant_id,
@@ -658,12 +746,6 @@ async def _persist_public_import_package(
                 content_base64=str(item.get("content_base64") or ""),
                 size_bytes=int(item.get("size_bytes") or 0),
             )
-        await repositories.set_public_skill_enabled(
-            conn,
-            tenant_id=principal.tenant_id,
-            skill_id=parsed.skill_id,
-            status="active",
-        )
         payload_json = {
             "skill_id": parsed.skill_id,
             "content_hash": parsed.content_hash,
@@ -754,17 +836,20 @@ async def batch_delete_skills(
     """Disable multiple tenant-visible skills through the existing availability contract."""
 
     _require_permission(principal, "skill:delete")
+    _require_ai_admin(principal)
     names = _request_names(payload)
     deleted: list[str] = []
     errors: list[dict[str, str]] = []
     async with transaction() as conn:
         for skill_name in names:
             try:
-                await repositories.set_public_skill_enabled(
+                await repositories.toggle_capability_distribution_row(
                     conn,
                     tenant_id=principal.tenant_id,
-                    skill_id=skill_name,
-                    status="disabled",
+                    capability_kind="skill",
+                    capability_id=skill_name,
+                    enabled=False,
+                    updated_by=principal.user_id,
                 )
                 await repositories.append_audit_log(
                     conn,
@@ -789,21 +874,23 @@ async def batch_toggle_skills(
     """Toggle multiple tenant-visible skills through the existing availability contract."""
 
     _require_permission(principal, "skill:write")
+    _require_ai_admin(principal)
     names = _request_names(payload)
     if not isinstance(payload, dict) or not isinstance(payload.get("enabled"), bool):
         raise HTTPException(status_code=400, detail="skill_batch_enabled_required")
     enabled = bool(payload["enabled"])
-    status = "active" if enabled else "disabled"
     updated: list[str] = []
     errors: list[dict[str, str]] = []
     async with transaction() as conn:
         for skill_name in names:
             try:
-                await repositories.set_public_skill_enabled(
+                await repositories.toggle_capability_distribution_row(
                     conn,
                     tenant_id=principal.tenant_id,
-                    skill_id=skill_name,
-                    status=status,
+                    capability_kind="skill",
+                    capability_id=skill_name,
+                    enabled=enabled,
+                    updated_by=principal.user_id,
                 )
                 await repositories.append_audit_log(
                     conn,
@@ -829,8 +916,7 @@ async def get_skill(
 
     _require_permission(principal, "skill:read")
     safe_skill_name = _safe_skill_name(skill_name)
-    rows = await _public_catalog_rows(principal=principal, include_disabled=False)
-    return _skill_detail(_find_row(rows, skill_name=safe_skill_name))
+    return _skill_detail(await _public_skill_row(principal=principal, skill_name=safe_skill_name))
 
 
 @router.get("/skills/{skill_name}/files/{file_path:path}", response_model=PublicSkillFileResponse)
@@ -843,12 +929,12 @@ async def get_skill_file(
 
     _require_permission(principal, "skill:read")
     safe_skill_name = _safe_skill_name(skill_name)
-    rows = await _public_catalog_rows(
+    row = await _public_skill_row(
         principal=principal,
-        include_disabled=False,
+        skill_name=safe_skill_name,
         include_file_overlay_content=True,
     )
-    return _file_response(_find_row(rows, skill_name=safe_skill_name), file_path=file_path)
+    return _file_response(row, file_path=file_path)
 
 
 @router.put("/skills/{skill_name}/files/{file_path:path}", response_model=PublicSkillFileMutationResponse)
@@ -873,13 +959,8 @@ async def update_skill_file(
     if max_bytes > 0 and len(content) > max_bytes:
         raise HTTPException(status_code=413, detail="skill_file_too_large")
     encoded = base64.b64encode(content).decode("ascii")
+    await _public_skill_row(principal=principal, skill_name=safe_skill_name)
     async with transaction() as conn:
-        rows = await repositories.list_public_skill_catalog(
-            conn,
-            tenant_id=principal.tenant_id,
-            include_disabled=True,
-        )
-        _find_row(rows, skill_name=safe_skill_name)
         await repositories.ensure_user(
             conn,
             tenant_id=principal.tenant_id,
@@ -927,13 +1008,8 @@ async def delete_skill_file(
     _require_permission(principal, "skill:delete")
     safe_skill_name = _safe_skill_name(skill_name)
     safe_file_path = _safe_file_path(file_path)
+    await _public_skill_row(principal=principal, skill_name=safe_skill_name)
     async with transaction() as conn:
-        rows = await repositories.list_public_skill_catalog(
-            conn,
-            tenant_id=principal.tenant_id,
-            include_disabled=True,
-        )
-        _find_row(rows, skill_name=safe_skill_name)
         await repositories.ensure_user(
             conn,
             tenant_id=principal.tenant_id,
@@ -973,17 +1049,19 @@ async def toggle_skill(
     """Enable or disable tenant availability for a public skill."""
 
     _require_permission(principal, "skill:write")
+    _require_ai_admin(principal)
     request = _request_model(PublicSkillToggleRequest, payload or {})
     safe_skill_name = _safe_skill_name(skill_name)
     enabled = True if request.enabled is None else request.enabled
-    status = "active" if enabled else "disabled"
     try:
         async with transaction() as conn:
-            await repositories.set_public_skill_enabled(
+            await repositories.toggle_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
-                skill_id=safe_skill_name,
-                status=status,
+                capability_kind="skill",
+                capability_id=safe_skill_name,
+                enabled=enabled,
+                updated_by=principal.user_id,
             )
             await repositories.append_audit_log(
                 conn,
@@ -1011,14 +1089,17 @@ async def delete_skill(
     """Map public skill uninstall to tenant availability disablement."""
 
     _require_permission(principal, "skill:delete")
+    _require_ai_admin(principal)
     safe_skill_name = _safe_skill_name(skill_name)
     try:
         async with transaction() as conn:
-            await repositories.set_public_skill_enabled(
+            await repositories.toggle_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
-                skill_id=safe_skill_name,
-                status="disabled",
+                capability_kind="skill",
+                capability_id=safe_skill_name,
+                enabled=False,
+                updated_by=principal.user_id,
             )
             await repositories.append_audit_log(
                 conn,
@@ -1146,7 +1227,11 @@ async def list_marketplace(
     """List active marketplace skills for authenticated users."""
 
     _require_permission(principal, "marketplace:read")
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=False)
+    rows = await _public_catalog_rows(
+        principal=principal,
+        include_disabled=False,
+        include_user_file_overlays=False,
+    )
     tag_values = [tag.strip() for tag in (tags or "").split(",") if tag.strip()]
     filtered = _filter_rows(rows, query=search, tags=tag_values)
     page = filtered[skip : skip + limit]
@@ -1168,6 +1253,7 @@ async def create_marketplace_skill(
     """Publish an existing public Skill into the tenant Marketplace projection."""
 
     _require_permission(principal, "marketplace:admin")
+    _require_ai_admin(principal)
     request = _marketplace_lifecycle_request(payload)
     if not request.skill_name:
         raise HTTPException(status_code=400, detail="marketplace_skill_name_required")
@@ -1187,7 +1273,11 @@ async def list_marketplace_tags(
     """Return marketplace tags for frontend filters."""
 
     _require_permission(principal, "marketplace:read")
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=False)
+    rows = await _public_catalog_rows(
+        principal=principal,
+        include_disabled=False,
+        include_user_file_overlays=False,
+    )
     return MarketplaceTagsResponse(tags=_available_tags(rows))
 
 
@@ -1200,8 +1290,14 @@ async def get_marketplace_skill(
 
     _require_permission(principal, "marketplace:read")
     safe_skill_name = _safe_skill_name(skill_name)
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=False)
-    return _marketplace_item(_find_row(rows, skill_name=safe_skill_name), principal)
+    return _marketplace_item(
+        await _public_skill_row(
+            principal=principal,
+            skill_name=safe_skill_name,
+            include_user_file_overlays=False,
+        ),
+        principal,
+    )
 
 
 @router.put("/marketplace/{skill_name}")
@@ -1213,6 +1309,7 @@ async def update_marketplace_skill_direct(
     """Update tenant Marketplace metadata for an existing public Skill."""
 
     _require_permission(principal, "marketplace:admin")
+    _require_ai_admin(principal)
     safe_skill_name = _safe_skill_name(skill_name)
     row = await _persist_marketplace_lifecycle(
         principal=principal,
@@ -1232,16 +1329,18 @@ async def activate_marketplace_skill_direct(
     """Enable or disable tenant Marketplace availability for a public Skill."""
 
     _require_permission(principal, "marketplace:admin")
+    _require_ai_admin(principal)
     safe_skill_name = _safe_skill_name(skill_name)
     request = _request_model(MarketplaceActivationRequest, payload or {})
-    status = "active" if request.active else "disabled"
     try:
         async with transaction() as conn:
-            await repositories.set_public_skill_enabled(
+            distribution = await repositories.toggle_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
-                skill_id=safe_skill_name,
-                status=status,
+                capability_kind="skill",
+                capability_id=safe_skill_name,
+                enabled=request.active,
+                updated_by=principal.user_id,
             )
             await repositories.append_audit_log(
                 conn,
@@ -1255,14 +1354,11 @@ async def activate_marketplace_skill_direct(
                     "department_id": principal.department_id,
                 },
             )
-            rows = await repositories.list_public_skill_catalog(
-                conn,
-                tenant_id=principal.tenant_id,
-                include_disabled=True,
-            )
     except (repositories.RepositoryNotFoundError, repositories.RepositoryConflictError) as exc:
         raise _repository_http_exception(exc) from exc
-    return _marketplace_item(_find_row(rows, skill_name=safe_skill_name), principal)
+    row = await _public_skill_row(principal=principal, skill_name=safe_skill_name)
+    row["status"] = distribution["status"]
+    return _marketplace_item(row, principal)
 
 
 @router.delete("/marketplace/{skill_name}")
@@ -1273,14 +1369,17 @@ async def delete_marketplace_skill_direct(
     """Disable tenant Marketplace availability without deleting global Skill records."""
 
     _require_permission(principal, "marketplace:admin")
+    _require_ai_admin(principal)
     safe_skill_name = _safe_skill_name(skill_name)
     try:
         async with transaction() as conn:
-            await repositories.set_public_skill_enabled(
+            await repositories.toggle_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
-                skill_id=safe_skill_name,
-                status="disabled",
+                capability_kind="skill",
+                capability_id=safe_skill_name,
+                enabled=False,
+                updated_by=principal.user_id,
             )
             await repositories.append_audit_log(
                 conn,
@@ -1305,8 +1404,15 @@ async def list_marketplace_files(
 
     _require_permission(principal, "marketplace:read")
     safe_skill_name = _safe_skill_name(skill_name)
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=False)
-    return MarketplaceSkillFilesResponse(files=_file_paths(_find_row(rows, skill_name=safe_skill_name)))
+    return MarketplaceSkillFilesResponse(
+        files=_file_paths(
+            await _public_skill_row(
+                principal=principal,
+                skill_name=safe_skill_name,
+                include_user_file_overlays=False,
+            )
+        )
+    )
 
 
 @router.get("/marketplace/{skill_name}/files/{file_path:path}", response_model=PublicSkillFileResponse)
@@ -1319,8 +1425,14 @@ async def get_marketplace_file(
 
     _require_permission(principal, "marketplace:read")
     safe_skill_name = _safe_skill_name(skill_name)
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=False)
-    return _file_response(_find_row(rows, skill_name=safe_skill_name), file_path=file_path)
+    return _file_response(
+        await _public_skill_row(
+            principal=principal,
+            skill_name=safe_skill_name,
+            include_user_file_overlays=False,
+        ),
+        file_path=file_path,
+    )
 
 
 async def _install_or_update_marketplace_skill(
@@ -1333,16 +1445,9 @@ async def _install_or_update_marketplace_skill(
     _require_permission(principal, "marketplace:read")
     _require_permission(principal, "skill:write")
     safe_skill_name = _safe_skill_name(skill_name)
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
-    row = _find_row(rows, skill_name=safe_skill_name)
+    row = await _public_skill_row(principal=principal, skill_name=safe_skill_name)
     try:
         async with transaction() as conn:
-            await repositories.set_public_skill_enabled(
-                conn,
-                tenant_id=principal.tenant_id,
-                skill_id=safe_skill_name,
-                status="active",
-            )
             await repositories.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
