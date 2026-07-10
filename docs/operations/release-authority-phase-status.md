@@ -12,7 +12,7 @@ record B1, B2, or B3 runtime acceptance.
 | Baseline GitHub source | `d189877fde72ccffef4db3d237dba402b6029a08` | `current` |
 | Recovery worktree | `C:/aiwt/release-authority-d189877-20260710` | `current`, clean at creation |
 | Recovery branch | `codex/release-authority-d189877-20260710` | `current` |
-| Recovery branch head | `4fedd2389730a66bd219cb665affe85ea54d0463` | `current`; PR #371 head |
+| Candidate preflight commit | `4fedd2389730a66bd219cb665affe85ea54d0463` | `current preflight`; ancestor of PR #371 head |
 | Historical local lane | dirty `6a77c3795d5880a628fa11300a2e450e493023fb` | `historical`; untouched |
 | 211 source | dirty `12d626203ba37ce724d20e579bac2ac763e1341a` | `stale`; preserved, not deployment source |
 | 211 API/worker | historical ordinary-sandbox image | `stale` |
@@ -31,7 +31,7 @@ record B1, B2, or B3 runtime acceptance.
   fail-closed suites now pass `306` backend tests and `129` frontend/release
   tests; frontend projection, source smoke, lint, typecheck, and build also exit 0.
 - [x] Phase 3: Stable workflow contexts implemented as `backend required` and
-  `frontend required`. Fresh PR #371 head checks for
+  `frontend required`. PR #371 checks for candidate preflight commit
   `4fedd2389730a66bd219cb665affe85ea54d0463` both completed successfully.
 - [x] Phase 4: `tools/release_authority.py` implements clean-source rejection,
   immutable image tags, image-label validation, preservation, repo-local compose
