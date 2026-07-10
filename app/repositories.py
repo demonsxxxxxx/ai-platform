@@ -848,6 +848,50 @@ async def list_workbench_mcp_tools(conn: AsyncConnection, *, tenant_id: str, inc
     ]
 
 
+async def get_mcp_tool_registry_entry(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    tool_id: str,
+) -> dict[str, Any] | None:
+    """Fetch one tool only when its parent MCP server belongs to the tenant."""
+
+    cursor = await conn.execute(
+        """
+        select
+          mcp_tools.id as tool_id,
+          mcp_tools.server_id,
+          mcp_tools.name,
+          mcp_tools.description,
+          mcp_tools.status as registry_status,
+          mcp_servers.status as server_status,
+          mcp_tools.write_capable as registry_write_capable,
+          mcp_tools.risk_level as registry_risk_level,
+          mcp_tools.visible_to_user as registry_visible_to_user,
+          tool_policies.status as policy_status,
+          tool_policies.write_capable as policy_write_capable,
+          tool_policies.risk_level as policy_risk_level,
+          tool_policies.visible_to_user as policy_visible_to_user
+        from mcp_tools
+        join mcp_servers
+          on mcp_servers.tenant_id = %s
+         and mcp_servers.name = mcp_tools.server_id
+         and mcp_servers.status <> 'deleted'
+        left join tool_policies
+          on tool_policies.tenant_id = mcp_servers.tenant_id
+         and tool_policies.tool_id = mcp_tools.id
+        where mcp_tools.id = %s
+        """,
+        (tenant_id, tool_id),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    entry = _tool_policy_projection(dict(row), tenant_id=tenant_id)
+    entry["server_status"] = str(row.get("server_status") or "disabled")
+    return entry
+
+
 def _json_dict_projection(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -1180,6 +1224,41 @@ async def list_mcp_server_registry(
         order by is_system desc, name asc
         """,
         (tenant_id, department_id, include_disabled),
+    )
+    return [_mcp_server_projection(dict(row)) for row in await cursor.fetchall()]
+
+
+async def list_tenant_mcp_server_registry(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    include_disabled: bool = True,
+) -> list[dict[str, Any]]:
+    """Return the unfiltered tenant MCP registry for distribution resolution."""
+
+    cursor = await conn.execute(
+        """
+        select
+          tenant_id,
+          name,
+          transport,
+          endpoint_redacted,
+          status,
+          is_system,
+          allowed_roles,
+          role_quotas_json,
+          department_ids,
+          credential_state,
+          credential_metadata_json,
+          created_at,
+          updated_at
+        from mcp_servers
+        where tenant_id = %s
+          and status <> 'deleted'
+          and (%s or status = 'active')
+        order by is_system desc, name asc
+        """,
+        (tenant_id, include_disabled),
     )
     return [_mcp_server_projection(dict(row)) for row in await cursor.fetchall()]
 

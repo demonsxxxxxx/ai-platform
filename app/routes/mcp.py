@@ -9,6 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
+from app.capability_distribution import (
+    CapabilityAccessContext,
+    CapabilityAccessDecision,
+    CapabilityDistributionSubject,
+    capability_distribution_audit_payload,
+    resolve_capability_access,
+)
 from app.control_plane_contracts import sanitize_public_payload, standard_trace_id
 from app.db import transaction
 from app.validation import assert_safe_id
@@ -204,10 +211,9 @@ def _legacy_server_response(name: str, rows: list[dict[str, Any]]) -> dict[str, 
 
 async def _server_rows(principal: AuthPrincipal, *, include_disabled: bool = True) -> list[dict[str, Any]]:
     async with transaction() as conn:
-        rows = await repositories.list_mcp_server_registry(
+        rows = await repositories.list_tenant_mcp_server_registry(
             conn,
             tenant_id=principal.tenant_id,
-            department_id=principal.department_id,
             include_disabled=include_disabled,
         )
     return [dict(row) for row in rows]
@@ -233,7 +239,7 @@ async def _tool_rows(principal: AuthPrincipal, *, include_disabled: bool = True)
 
 
 def _server_name(row: dict[str, Any]) -> str:
-    return str(row.get("server_id") or row.get("tool_id") or row.get("id") or "")
+    return str(row.get("server_id") or row.get("name") or row.get("tool_id") or row.get("id") or "")
 
 
 def _server_enabled(rows: list[dict[str, Any]]) -> bool:
@@ -271,14 +277,139 @@ async def _legacy_projected_servers(principal: AuthPrincipal) -> list[dict[str, 
     return [_legacy_server_response(name, grouped[name]) for name in sorted(grouped)]
 
 
-async def _combined_projected_servers(principal: AuthPrincipal) -> list[dict[str, Any]]:
-    registry_rows = await _server_rows(principal, include_disabled=True)
-    projected = [_server_response(row, can_edit=is_ai_admin(principal)) for row in registry_rows]
-    seen_names = await _server_names(principal)
-    for legacy_server in await _legacy_projected_servers(principal):
-        if legacy_server["name"] not in seen_names:
-            projected.append(legacy_server)
-    return projected
+def _capability_access_context(principal: AuthPrincipal) -> CapabilityAccessContext:
+    return CapabilityAccessContext(
+        tenant_id=principal.tenant_id,
+        department_id=principal.department_id,
+        roles=principal.roles,
+        is_admin=is_ai_admin(principal),
+        permissions=principal.permissions,
+    )
+
+
+def _mcp_server_decision(
+    *,
+    principal: AuthPrincipal,
+    row: dict[str, Any],
+    distribution: dict[str, Any] | None,
+) -> CapabilityAccessDecision:
+    name = _server_name(row)
+    return resolve_capability_access(
+        _capability_access_context(principal),
+        CapabilityDistributionSubject(
+            capability_kind="mcp_server",
+            capability_id=name,
+            lifecycle_status=str(row.get("status") or row.get("effective_status") or "disabled"),
+            distribution=distribution,
+        ),
+        intent="discover",
+    )
+
+
+def authorized_mcp_registration_entries(
+    *,
+    principal: AuthPrincipal,
+    registry_entries: list[dict[str, Any]],
+    distributions_by_server: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep only registry inputs whose parent server can be used by this principal."""
+
+    authorized: list[dict[str, Any]] = []
+    for entry in registry_entries:
+        server_id = _server_name(entry)
+        decision = _mcp_server_decision(
+            principal=principal,
+            row=entry,
+            distribution=distributions_by_server.get(server_id),
+        )
+        if decision.usable:
+            authorized.append(entry)
+    return authorized
+
+
+async def _audit_mcp_admin_bypass(
+    conn: Any,
+    *,
+    principal: AuthPrincipal,
+    name: str,
+    decision: CapabilityAccessDecision,
+) -> None:
+    if not decision.admin_bypass:
+        return
+    await repositories.append_audit_log(
+        conn,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        action="capability_distribution.admin_bypass",
+        target_type="mcp_server",
+        target_id=name,
+        trace_id=standard_trace_id(name),
+        payload_json=capability_distribution_audit_payload(
+            decision=decision,
+            actor_department_id=principal.department_id,
+            capability_kind="mcp_server",
+            capability_id=name,
+        ),
+    )
+
+
+async def _public_server_access(
+    *,
+    principal: AuthPrincipal,
+    name: str,
+) -> tuple[dict[str, Any], dict[str, Any], CapabilityAccessDecision]:
+    async with transaction() as conn:
+        registry_rows = await repositories.list_tenant_mcp_server_registry(
+            conn,
+            tenant_id=principal.tenant_id,
+            include_disabled=True,
+        )
+        row = _find_registry_server(registry_rows, name=name)
+        distribution = await repositories.get_capability_distribution_row(
+            conn,
+            tenant_id=principal.tenant_id,
+            capability_kind="mcp_server",
+            capability_id=name,
+        )
+        decision = _mcp_server_decision(principal=principal, row=row, distribution=distribution)
+        if not decision.visible:
+            raise HTTPException(status_code=404, detail="mcp_server_not_found")
+        await _audit_mcp_admin_bypass(conn, principal=principal, name=name, decision=decision)
+    return row, distribution or {}, decision
+
+
+async def _public_projected_servers(principal: AuthPrincipal) -> list[dict[str, Any]]:
+    async with transaction() as conn:
+        rows = await repositories.list_tenant_mcp_server_registry(
+            conn,
+            tenant_id=principal.tenant_id,
+            include_disabled=True,
+        )
+        distributions = await repositories.list_capability_distribution_rows(
+            conn,
+            tenant_id=principal.tenant_id,
+            capability_kind="mcp_server",
+            include_disabled=True,
+        )
+        distribution_map = {str(row.get("capability_id") or ""): row for row in distributions}
+        authorized = authorized_mcp_registration_entries(
+            principal=principal,
+            registry_entries=rows,
+            distributions_by_server=distribution_map,
+        )
+        for row in authorized:
+            name = _server_name(row)
+            await _audit_mcp_admin_bypass(
+                conn,
+                principal=principal,
+                name=name,
+                decision=_mcp_server_decision(
+                    principal=principal,
+                    row=row,
+                    distribution=distribution_map.get(name),
+                ),
+            )
+    return [_server_response(row, can_edit=is_ai_admin(principal)) for row in authorized]
 
 
 async def _write_server(
@@ -364,7 +495,7 @@ async def list_mcp_servers(
     """Return governed MCP tool servers without exposing unmanaged lifecycle controls."""
 
     normalized_query = (q or "").strip().lower()
-    projected = await _combined_projected_servers(principal)
+    projected = await _public_projected_servers(principal)
     if normalized_query:
         projected = [server for server in projected if normalized_query in str(server.get("name") or "").lower()]
     page_servers = projected[skip : skip + limit]
@@ -414,7 +545,7 @@ async def export_mcp_servers(
 ) -> dict[str, Any]:
     """Export a redacted read-only MCP directory projection."""
 
-    projected = await _combined_projected_servers(principal)
+    projected = await _public_projected_servers(principal)
     return {
         "servers": {
             str(server.get("name")): {
@@ -435,16 +566,8 @@ async def get_mcp_server(
     """Return a single governed MCP server projection."""
 
     safe_name = _safe_name(name)
-    registry_rows = await _server_rows(principal, include_disabled=True)
-    try:
-        return _server_response(_find_registry_server(registry_rows, name=safe_name), can_edit=is_ai_admin(principal))
-    except HTTPException as exc:
-        if exc.status_code != 404:
-            raise
-        if safe_name in await _server_names(principal):
-            raise
-    rows = await _tool_rows(principal, include_disabled=True)
-    return _legacy_server_response(safe_name, _find_server(rows, name=safe_name))
+    row, _, _ = await _public_server_access(principal=principal, name=safe_name)
+    return _server_response(row, can_edit=is_ai_admin(principal))
 
 
 @router.put("/mcp/{name}")
@@ -543,25 +666,30 @@ async def discover_mcp_tools(
     """Return governed tool discovery from the platform registry projection."""
 
     safe_name = _safe_name(name)
-    registry_rows = await _server_rows(principal, include_disabled=True)
-    try:
-        _find_registry_server(registry_rows, name=safe_name)
-    except HTTPException as exc:
-        if exc.status_code != 404:
-            raise
-        if safe_name in await _server_names(principal):
-            raise
+    _, distribution, _ = await _public_server_access(principal=principal, name=safe_name)
     rows = await _tool_rows(principal, include_disabled=True)
     server_rows = _find_server(rows, name=safe_name)
     tools = []
     for row in server_rows:
-        status = str(row.get("effective_status") or row.get("status") or "disabled")
+        decision = resolve_capability_access(
+            _capability_access_context(principal),
+            CapabilityDistributionSubject(
+                capability_kind="mcp_tool",
+                capability_id=str(row.get("tool_id") or row.get("id") or ""),
+                lifecycle_status=str(row.get("effective_status") or row.get("status") or "disabled"),
+                distribution=distribution,
+                inherited_distribution_source=f"mcp_server:{safe_name}",
+            ),
+            intent="discover",
+        )
+        if not decision.visible:
+            continue
         tools.append(
             {
                 "name": str(row.get("tool_id") or row.get("id") or ""),
                 "description": str(row.get("description") or ""),
                 "parameters": [],
-                "system_disabled": status != "active",
+                "system_disabled": False,
                 "user_disabled": False,
             }
         )

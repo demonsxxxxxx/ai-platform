@@ -21,7 +21,13 @@ def headers(
     }
 
 
-def install_mcp_route_fakes(monkeypatch, *, seed_registry_ragflow: bool = True) -> list[tuple[str, dict[str, object]]]:
+def install_mcp_route_fakes(
+    monkeypatch,
+    *,
+    seed_registry_ragflow: bool = True,
+    distribution_rows: list[dict[str, object]] | None = None,
+    tool_rows: list[dict[str, object]] | None = None,
+) -> list[tuple[str, dict[str, object]]]:
     from app.routes import mcp
 
     class FakeConnection:
@@ -47,6 +53,36 @@ def install_mcp_route_fakes(monkeypatch, *, seed_registry_ragflow: bool = True) 
             "updated_at": "2026-06-23T00:00:00Z",
         }
 
+    distributions: dict[str, dict[str, object]] = {
+        name: {
+            "capability_kind": "mcp_server",
+            "capability_id": name,
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": list(row.get("department_ids") or []),
+            "allowed_roles": list(row.get("allowed_roles") or []),
+            "metadata_json": {},
+        }
+        for name, row in servers.items()
+    }
+    if distribution_rows is not None:
+        distributions = {str(row["capability_id"]): dict(row) for row in distribution_rows}
+    registry_tools = tool_rows or [
+        {
+            "tool_id": "ragflow-knowledge-search",
+            "server_id": "ragflow",
+            "name": "RAGFlow Search",
+            "description": "Search governed knowledge bases.",
+            "effective_status": "active",
+            "status": "active",
+            "visible_to_user": True,
+            "write_capable": False,
+            "risk_level": "low",
+            "updated_at": "2026-06-23T00:00:00Z",
+        }
+    ]
+
     async def fake_list(conn, *, tenant_id, include_disabled=True):
         calls.append(
             (
@@ -58,28 +94,14 @@ def install_mcp_route_fakes(monkeypatch, *, seed_registry_ragflow: bool = True) 
                 },
             )
         )
-        return [
-            {
-                "tool_id": "ragflow-knowledge-search",
-                "server_id": "ragflow",
-                "name": "RAGFlow Search",
-                "description": "Search governed knowledge bases.",
-                "effective_status": "active",
-                "status": "active",
-                "visible_to_user": True,
-                "write_capable": False,
-                "risk_level": "low",
-                "updated_at": "2026-06-23T00:00:00Z",
-            }
-        ]
+        return [dict(row) for row in registry_tools]
 
-    async def fake_list_servers(conn, *, tenant_id, department_id, include_disabled=True):
+    async def fake_list_servers(conn, *, tenant_id, include_disabled=True):
         calls.append(
             (
                 "list_servers",
                 {
                     "tenant_id": tenant_id,
-                    "department_id": department_id,
                     "include_disabled": include_disabled,
                     "conn_type": type(conn).__name__,
                 },
@@ -89,13 +111,19 @@ def install_mcp_route_fakes(monkeypatch, *, seed_registry_ragflow: bool = True) 
         for row in servers.values():
             if row.get("status") == "deleted":
                 continue
-            departments = list(row.get("department_ids") or [])
-            if departments and department_id not in departments:
-                continue
             if not include_disabled and row.get("status") != "active":
                 continue
             rows.append(dict(row))
         return rows
+
+    async def fake_list_distributions(conn, *, tenant_id, capability_kind, include_disabled=True):
+        calls.append(("list_distributions", {"tenant_id": tenant_id, "capability_kind": capability_kind}))
+        return [dict(row) for row in distributions.values() if row["capability_kind"] == capability_kind]
+
+    async def fake_get_distribution(conn, *, tenant_id, capability_kind, capability_id):
+        calls.append(("get_distribution", {"tenant_id": tenant_id, "capability_kind": capability_kind, "capability_id": capability_id}))
+        row = distributions.get(capability_id)
+        return dict(row) if row and row["capability_kind"] == capability_kind else None
 
     async def fake_list_server_names(conn, *, tenant_id):
         calls.append(("list_server_names", {"tenant_id": tenant_id}))
@@ -120,6 +148,16 @@ def install_mcp_route_fakes(monkeypatch, *, seed_registry_ragflow: bool = True) 
             "updated_at": "2026-06-23T01:00:00Z",
         }
         servers[kwargs["name"]] = server
+        distributions[kwargs["name"]] = {
+            "capability_kind": "mcp_server",
+            "capability_id": kwargs["name"],
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": list(kwargs["department_ids"]),
+            "allowed_roles": list(kwargs["allowed_roles"]),
+            "metadata_json": {},
+        }
         return dict(server)
 
     async def fake_toggle_server(conn, **kwargs):
@@ -162,7 +200,10 @@ def install_mcp_route_fakes(monkeypatch, *, seed_registry_ragflow: bool = True) 
     monkeypatch.setattr(mcp, "transaction", fake_transaction)
     monkeypatch.setattr(mcp.repositories, "list_workbench_mcp_tools", fake_list)
     monkeypatch.setattr(mcp.repositories, "list_mcp_server_registry", fake_list_servers, raising=False)
+    monkeypatch.setattr(mcp.repositories, "list_tenant_mcp_server_registry", fake_list_servers, raising=False)
     monkeypatch.setattr(mcp.repositories, "list_mcp_server_registry_names", fake_list_server_names, raising=False)
+    monkeypatch.setattr(mcp.repositories, "list_capability_distribution_rows", fake_list_distributions, raising=False)
+    monkeypatch.setattr(mcp.repositories, "get_capability_distribution_row", fake_get_distribution, raising=False)
     monkeypatch.setattr(mcp.repositories, "upsert_mcp_server_registry", fake_upsert_server, raising=False)
     monkeypatch.setattr(mcp.repositories, "toggle_mcp_server_registry", fake_toggle_server, raising=False)
     monkeypatch.setattr(mcp.repositories, "delete_mcp_server_registry", fake_delete_server, raising=False)
@@ -222,7 +263,130 @@ def test_mcp_read_contract_projects_visible_tools_without_lifecycle_write(monkey
         "count": 1,
     }
     assert calls[0][1]["tenant_id"] == "default"
-    assert calls[0][1]["department_id"] == "qa"
+
+
+def _mcp_distribution(
+    *,
+    status: str = "active",
+    visible_to_user: bool = True,
+    department_ids: list[str] | None = None,
+    allowed_roles: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "capability_kind": "mcp_server",
+        "capability_id": "ragflow",
+        "status": status,
+        "visible_to_user": visible_to_user,
+        "scope_mode": "allowlist",
+        "department_ids": department_ids or [],
+        "allowed_roles": allowed_roles or [],
+        "metadata_json": {},
+    }
+
+
+def test_mcp_distribution_allows_matching_department_and_normalized_role(monkeypatch):
+    install_mcp_route_fakes(
+        monkeypatch,
+        distribution_rows=[_mcp_distribution(department_ids=["qa"], allowed_roles=["qa_operator"])],
+    )
+    client = TestClient(create_app())
+    authorized = headers(roles="QA Operator", department_id="qa")
+
+    assert client.get("/api/mcp/", headers=authorized).json()["total"] == 1
+    assert client.get("/api/mcp/ragflow", headers=authorized).status_code == 200
+    assert client.get("/api/mcp/ragflow/tools", headers=authorized).status_code == 200
+
+
+def test_mcp_distribution_omits_cross_department_and_returns_not_found_for_direct_reads(monkeypatch):
+    install_mcp_route_fakes(monkeypatch, distribution_rows=[_mcp_distribution(department_ids=["qa"])])
+    client = TestClient(create_app())
+    unauthorized = headers(department_id="rd")
+
+    assert client.get("/api/mcp/", headers=unauthorized).json()["servers"] == []
+    assert client.get("/api/mcp/ragflow", headers=unauthorized).status_code == 404
+    assert client.get("/api/mcp/ragflow/tools", headers=unauthorized).status_code == 404
+
+
+def test_mcp_distribution_denies_role_hidden_disabled_and_missing_rows(monkeypatch):
+    client = TestClient(create_app())
+    cases = [
+        [_mcp_distribution(allowed_roles=["qa_operator"])],
+        [_mcp_distribution(visible_to_user=False)],
+        [_mcp_distribution(status="disabled")],
+        [],
+    ]
+    for distributions in cases:
+        install_mcp_route_fakes(monkeypatch, distribution_rows=distributions)
+        denied = headers(roles="viewer")
+        assert client.get("/api/mcp/ragflow", headers=denied).status_code == 404
+        assert client.get("/api/mcp/ragflow/tools", headers=denied).status_code == 404
+
+
+def test_mcp_tool_inherits_parent_distribution_and_preserves_tool_lifecycle_gate(monkeypatch):
+    install_mcp_route_fakes(
+        monkeypatch,
+        distribution_rows=[_mcp_distribution(department_ids=["qa"])],
+        tool_rows=[
+            {
+                "tool_id": "ragflow-knowledge-search",
+                "server_id": "ragflow",
+                "name": "RAGFlow Search",
+                "description": "Search governed knowledge bases.",
+                "effective_status": "disabled",
+                "status": "disabled",
+                "visible_to_user": True,
+                "write_capable": True,
+                "risk_level": "high",
+            }
+        ],
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/mcp/ragflow/tools", headers=headers(department_id="qa"))
+    assert response.status_code == 200
+    assert response.json()["tools"] == []
+
+
+def test_mcp_admin_bypass_read_audits_target_scope(monkeypatch):
+    calls = install_mcp_route_fakes(monkeypatch, distribution_rows=[_mcp_distribution(status="disabled", visible_to_user=False)])
+    client = TestClient(create_app())
+
+    response = client.get("/api/mcp/ragflow", headers=headers(roles="admin", department_id="platform"))
+
+    assert response.status_code == 200
+    audit = next(payload for name, payload in calls if name == "audit")
+    assert audit["action"] == "capability_distribution.admin_bypass"
+    assert audit["target_type"] == "mcp_server"
+    assert audit["target_id"] == "ragflow"
+    assert audit["payload_json"]["admin_bypass"] is True
+    assert audit["payload_json"]["decision_reason"] == "admin_bypass"
+
+
+def test_authorized_mcp_registration_entries_exclude_denied_parent_servers():
+    from app.routes import mcp
+
+    entries = [
+        {"tool_id": "qa-tool", "server_id": "qa-server", "effective_status": "active"},
+        {"tool_id": "rd-tool", "server_id": "rd-server", "effective_status": "active"},
+    ]
+    distributions = {
+        "qa-server": _mcp_distribution(department_ids=["qa"]) | {"capability_id": "qa-server"},
+        "rd-server": _mcp_distribution(department_ids=["rd"]) | {"capability_id": "rd-server"},
+    }
+    principal = mcp.AuthPrincipal(
+        tenant_id="default",
+        user_id="ordinary",
+        display_name="ordinary",
+        department_id="qa",
+        roles=["user"],
+        permissions=[],
+    )
+
+    assert mcp.authorized_mcp_registration_entries(
+        principal=principal,
+        registry_entries=entries,
+        distributions_by_server=distributions,
+    ) == [entries[0]]
 
 
 def test_mcp_lifecycle_routes_are_admin_gated_then_backed_with_redacted_credentials(monkeypatch):
@@ -399,7 +563,13 @@ def test_mcp_lifecycle_audit_and_repository_payloads_never_include_raw_credentia
 
 
 def test_mcp_directory_filters_servers_by_principal_department(monkeypatch):
-    install_mcp_route_fakes(monkeypatch)
+    install_mcp_route_fakes(
+        monkeypatch,
+        distribution_rows=[
+            _mcp_distribution(),
+            _mcp_distribution(department_ids=["qa"]) | {"capability_id": "qa-only"},
+        ],
+    )
     client = TestClient(create_app())
 
     create_response = client.post(
@@ -473,12 +643,10 @@ def test_mcp_directory_merges_registry_servers_with_platform_registered_tools(mo
 
     list_response = client.get("/api/mcp/", headers=headers())
     assert list_response.status_code == 200
-    assert {server["name"] for server in list_response.json()["servers"]} == {"custom", "ragflow"}
+    assert {server["name"] for server in list_response.json()["servers"]} == {"custom"}
 
     detail_response = client.get("/api/mcp/ragflow", headers=headers())
-    assert detail_response.status_code == 200
-    assert detail_response.json()["name"] == "ragflow"
-    assert detail_response.json()["credential_state"] == "platform_managed"
+    assert detail_response.status_code == 404
 
 
 def test_mcp_lifecycle_delete_and_empty_credential_update_clear_public_state(monkeypatch):

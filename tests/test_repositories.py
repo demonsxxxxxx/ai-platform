@@ -1908,6 +1908,80 @@ async def test_list_mcp_server_registry_names_excludes_deleted_registry_override
 
 
 @pytest.mark.asyncio
+async def test_get_mcp_tool_registry_entry_scopes_tool_through_parent_server_tenant():
+    class RegistryCursor:
+        async def fetchone(self):
+            return {
+                "tool_id": "qa-search",
+                "server_id": "qa-mcp",
+                "name": "QA Search",
+                "description": "Search QA records.",
+                "registry_status": "active",
+                "server_status": "active",
+                "registry_write_capable": False,
+                "registry_risk_level": "low",
+                "registry_visible_to_user": True,
+                "policy_status": "active",
+                "policy_write_capable": False,
+                "policy_risk_level": "low",
+                "policy_visible_to_user": True,
+            }
+
+    class RegistryConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return RegistryCursor()
+
+    conn = RegistryConnection()
+
+    row = await repositories.get_mcp_tool_registry_entry(
+        conn,
+        tenant_id="tenant-a",
+        tool_id="qa-search",
+    )
+
+    sql, params = conn.calls[0]
+    assert "join mcp_servers" in sql
+    assert "mcp_servers.tenant_id = %s" in sql
+    assert "mcp_servers.name = mcp_tools.server_id" in sql
+    assert "mcp_tools.id = %s" in sql
+    assert sql.count("%s") == len(params)
+    assert params == ("tenant-a", "qa-search")
+    assert row is not None
+    assert {
+        key: row[key]
+        for key in (
+            "tool_id",
+            "server_id",
+            "name",
+            "description",
+            "registry_status",
+            "server_status",
+            "write_capable",
+            "risk_level",
+            "visible_to_user",
+            "effective_status",
+            "source",
+        )
+    } == {
+        "tool_id": "qa-search",
+        "server_id": "qa-mcp",
+        "name": "QA Search",
+        "description": "Search QA records.",
+        "registry_status": "active",
+        "server_status": "active",
+        "write_capable": False,
+        "risk_level": "low",
+        "visible_to_user": True,
+        "effective_status": "active",
+        "source": "tenant",
+    }
+
+
+@pytest.mark.asyncio
 async def test_record_mcp_server_credential_keeps_hash_not_secret_material():
     class CredentialConnection:
         def __init__(self):
