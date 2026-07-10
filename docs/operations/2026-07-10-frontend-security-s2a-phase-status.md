@@ -1,7 +1,7 @@
 # Frontend Security S2A Phase Status
 
 Status:
-- [x] Phase 0: Scope and ownership checked. Evidence: authoritative brief is the delegation contract on baseline `124a09c39290bb3bf39d9b13bd2fa1bd632a5040`; this worktree is already isolated and clean at start; the referenced triage markdown is intentionally absent from clean `origin/main` and is not required for this lane.
+- [x] Phase 0: Scope and ownership checked. Evidence: authoritative brief remains the delegation contract for this lane; the implementation began from historical baseline `124a09c39290bb3bf39d9b13bd2fa1bd632a5040`, then was cleanly rebased onto current `origin/main@86f90ae1cec636615af5cfec9453028a2131613d` before final verification and PR evidence refresh. The referenced triage markdown is intentionally absent from clean `origin/main` and is not required for this lane.
 - [x] Phase 1: Actual write set confirmed. Evidence: the allowed production files are `frontend/web/src/components/fileLibrary/components/FileContextMenu.tsx`, `frontend/web/src/components/documents/documentPreviewSources.ts`, `frontend/web/src/components/documents/previews/ExcelPreview.tsx`, `frontend/web/src/components/chat/FileUploadButton.tsx`, `frontend/web/package.json`, and `frontend/web/pnpm-lock.yaml`; directly related frontend tests and this status file are in scope.
 - [x] Phase 2: Ownership conflicts checked. Evidence: `git status --short -- <allowed files>` returned empty in this worktree before edits; no pre-existing local modifications were present on the owned paths. The delegation brief named `frontend/web/src/components/files/FileUploadButton.tsx`, but the actual repository path is `frontend/web/src/components/chat/FileUploadButton.tsx`; no second competing file exists.
 - [x] Phase 3: Red tests added for active content new-tab safety, upload fail-closed behavior, and workbook parser safety boundaries. Evidence: added `frontend/web/src/components/chat/__tests__/FileUploadButton.test.ts`, `frontend/web/src/components/documents/previews/__tests__/ExcelPreview.test.ts`, and expanded `frontend/web/src/components/documents/__tests__/documentPreviewSources.test.ts` plus `frontend/web/src/components/fileLibrary/__tests__/utils.test.ts` to cover malicious HTML/SVG, spoofed MIME, permission probe failure, unsupported workbook formats, malformed workbook XML, timeout, and unpacked-size boundaries.
@@ -19,6 +19,9 @@ Status:
 
 - Issue: `#375` - `S2A frontend: fail-close active artifact content and remove SheetJS from browser preview path`
 - Branch: `codex/375-s2a-frontend-artifact-safety`
+- Rebased implementation commit: `105cb7103f531e2f68226b58111201df91f9ddf3`
+- This status refresh is intentionally carried as a separate follow-up commit on top of the rebased implementation commit so the review package matches the final PR head without rewriting the implementation diff.
+- Final verification baseline: all evidence below was rerun after a clean rebase onto `origin/main@86f90ae1cec636615af5cfec9453028a2131613d`.
 - This lane remains frontend-only; the GitHub tracking intentionally excludes backend MIME enforcement, token-storage migration, and 211 deployment work.
 
 ## Implementation Summary
@@ -63,9 +66,8 @@ Status:
   - Confirmation: `corepack pnpm audit --prod 2>&1 | Select-String 'xlsx|sheetjs|SheetJS'` returned no matches.
 - Full frontend test run: NOT GREEN; baseline failures remain outside this lane.
   - Command: `corepack pnpm exec tsx --test "src/**/*.test.ts" "src/**/*.test.tsx"`
-  - Current fresh summary result: `835` tests total, `813` passed, `22` failed according to the test runner summary.
-  - Filtered `not ok` capture on the same command currently yields `21` named failure lines, so the harness summary and line-filtered count are not perfectly aligned; this discrepancy is recorded here instead of being flattened away.
-  - Prior local run on `2026-07-10` had recorded `19` failures, so the full-suite baseline drifted upward on the fresh `2026-07-11` rerun. This PR does not attempt to fix or absorb those unrelated failures.
+  - Fresh post-rebase summary result: `835` tests total, `814` passed, `21` failed.
+  - Prior local run on `2026-07-10` had recorded `19` failures, so the full-suite baseline remains worse than the earlier local snapshot even after the final rebase. This PR does not attempt to fix or absorb those unrelated failures.
   - Current filtered failure names still point to existing unrelated suites in brand, workbench/projection, lazy-preview, persona, message outline, scroll behavior, notification, and skills parity coverage:
     - `brand entry surfaces consume the ai-platform home authority`
     - `skills and marketplace clients use only PR177 public contracts`
@@ -95,6 +97,7 @@ Status:
 
 - Independent review was run on the scoped implementation.
 - Fresh sub-agent re-review on `2026-07-11` returned `no findings` and verdict `ready for PR review substitute`.
+- The branch then rebased cleanly onto `origin/main@86f90ae1cec636615af5cfec9453028a2131613d` with no lane-scope conflicts before the final verification reruns above.
 - Findings addressed in-lane:
   - Added fail-closed handling for authenticated preview opens that lack safe metadata, reducing exposure from callers outside the owned write list.
   - Added entry-size and total-uncompressed-size bounds to the workbook parser to prevent large decompression paths from remaining browser-triggerable.
