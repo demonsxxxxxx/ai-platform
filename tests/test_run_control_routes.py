@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.models import QueueRunPayload
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError
 
 
@@ -239,8 +240,8 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
         calls.append(("admit", tenant_id, user_id, limit))
         return 0
 
-    async def fake_update_run_input_skill_version(conn, **kwargs):
-        calls.append(("skill_version", kwargs))
+    async def fake_update_run_input_execution_snapshot(conn, **kwargs):
+        calls.append(("execution_snapshot", kwargs))
 
     async def fake_append_event(conn, **kwargs):
         calls.append(("event", kwargs))
@@ -288,7 +289,11 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
         "app.routes.runs.repositories.get_effective_skill_version_for_policy",
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.repositories.upsert_run_step", fake_upsert_run_step)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
@@ -345,8 +350,16 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
     assert context_calls[0]["input_payload"] == queued_payload["input"]
     assert context_calls[0]["message_ids"] == []
     assert context_calls[0]["file_ids"] == []
-    skill_version_calls = [item[1] for item in calls if item[0] == "skill_version"]
-    assert skill_version_calls[0]["skill_version"] == "hash-old"
+    execution_snapshot_calls = [item[1] for item in calls if item[0] == "execution_snapshot"]
+    assert execution_snapshot_calls == [
+        {
+            "tenant_id": "default",
+            "run_id": "run_new",
+            "skill_version": queued_payload["skill_version"],
+            "release_decision": queued_payload["release_decision"],
+            "skill_manifests": queued_payload["skill_manifests"],
+        }
+    ]
     step_calls = [item[1] for item in calls if item[0] == "step"]
     assert [(item["step_key"], item["status"]) for item in step_calls] == [
         ("code", "pending"),
@@ -440,7 +453,7 @@ async def test_seed_copied_run_steps_preserves_server_owned_producer_source_run(
 
 
 def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
-    calls = {"retry": [], "enqueue": [], "step": []}
+    calls = {"retry": [], "enqueue": [], "step": [], "execution_snapshot": []}
 
     async def fake_retry_run_as_new_task(conn, *, tenant_id, user_id, run_id):
         calls["retry"].append((tenant_id, user_id, run_id))
@@ -500,8 +513,8 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
         calls["active_limit"] = (tenant_id, user_id, limit)
         return 0
 
-    async def fake_update_run_input_skill_version(conn, **kwargs):
-        return None
+    async def fake_update_run_input_execution_snapshot(conn, **kwargs):
+        calls["execution_snapshot"].append(kwargs)
 
     async def fake_append_event(conn, **kwargs):
         return None
@@ -520,7 +533,11 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     monkeypatch.setattr("app.routes.runs.repositories.retry_run_as_new_task", fake_retry_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_initial_context_snapshot)
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.repositories.upsert_run_step", fake_upsert_run_step)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
@@ -538,6 +555,15 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
     assert calls["active_limit"] == ("default", "user-a", 3)
     assert calls["enqueue"][0]["run_id"] == "run-retry"
     assert calls["enqueue"][0]["context_snapshot_id"] == "ctx-retry"
+    assert calls["execution_snapshot"] == [
+        {
+            "tenant_id": "default",
+            "run_id": "run-retry",
+            "skill_version": calls["enqueue"][0]["skill_version"],
+            "release_decision": calls["enqueue"][0]["release_decision"],
+            "skill_manifests": calls["enqueue"][0]["skill_manifests"],
+        }
+    ]
     assert calls["step"][0]["payload_json"]["seeded_from"] == "retry_run"
     assert calls["step"][0]["payload_json"]["checkpoint_id"] == "checkpoint-retry-code"
     assert calls["step"][0]["payload_json"]["source_step_id"] == "step-retry-source"
@@ -685,7 +711,7 @@ def test_retry_run_returns_not_found_without_enqueue(monkeypatch):
 
 
 def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
-    calls = {"resume": [], "enqueue": [], "context": [], "step": []}
+    calls = {"resume": [], "enqueue": [], "context": [], "step": [], "execution_snapshot": []}
 
     async def fake_resume_run_as_new_task(conn, *, tenant_id, user_id, run_id):
         calls["resume"].append((tenant_id, user_id, run_id))
@@ -732,8 +758,8 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
         assert release_policy_version == ""
         return [{"skill_id": skill_id, "content_hash": "hash-a"}]
 
-    async def fake_update_run_input_skill_version(conn, **kwargs):
-        return None
+    async def fake_update_run_input_execution_snapshot(conn, **kwargs):
+        calls["execution_snapshot"].append(kwargs)
 
     async def fake_append_event(conn, **kwargs):
         return None
@@ -773,7 +799,11 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
     )
     monkeypatch.setattr("app.routes.runs.repositories.resume_run_as_new_task", fake_resume_run_as_new_task, raising=False)
     monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.runs.repositories.upsert_run_step", fake_upsert_run_step)
@@ -797,6 +827,15 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
     assert calls["context"][0]["source_run_id"] == "run-failed"
     assert calls["enqueue"][0]["context_snapshot_id"] == "ctx_resume_route"
     assert calls["enqueue"][0]["context_snapshot"]["source"] == "resume_run"
+    assert calls["execution_snapshot"] == [
+        {
+            "tenant_id": "default",
+            "run_id": "run-resume-new",
+            "skill_version": calls["enqueue"][0]["skill_version"],
+            "release_decision": calls["enqueue"][0]["release_decision"],
+            "skill_manifests": calls["enqueue"][0]["skill_manifests"],
+        }
+    ]
     assert calls["enqueue"][0]["input"]["resume"]["completed_step_outputs"] == {"code": "code output"}
     assert [(item["step_key"], item["status"]) for item in calls["step"]] == [
         ("code", "pending"),
@@ -2035,7 +2074,7 @@ def test_multi_agent_dispatch_tick_rejects_when_only_ready_step_is_unsafe(monkey
     assert response.json()["detail"] == "no_safe_ready_steps"
 
 
-def test_multi_agent_dispatch_tick_auth_snapshot_claims_handoffs_and_enqueues_next_ready_step(monkeypatch):
+def test_multi_agent_dispatch_tick_routes_child_through_atomic_execution_snapshot(monkeypatch):
     calls = []
 
     @asynccontextmanager
@@ -2143,30 +2182,40 @@ def test_multi_agent_dispatch_tick_auth_snapshot_claims_handoffs_and_enqueues_ne
             "file_ids": [],
             "input": {"message": "build feature"},
             "executor_type": "claude-agent-worker",
-            "skill_version": "0.1.0",
-            "release_decision": {},
+            "skill_version": "hash-parent",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": "hash-parent",
+                "selected_track": "catalog",
+            },
             "event_id": "evt-handoff",
             "child_event_id": "evt-child-created",
             "audit_id": "aud-handoff",
         }
 
-    async def fake_prepare(conn, *, copied, principal, queue_principal=None, source, authorized_source_run_id=None):
-        calls.append(
-            (
-                "prepare",
-                copied["run_id"],
-                principal.user_id,
-                queue_principal.user_id,
-                queue_principal.roles,
-                queue_principal.department_id,
-                queue_principal.source,
-                source,
-                authorized_source_run_id,
-            )
-        )
-        assert source == "multi_agent_dispatch_tick"
-        assert authorized_source_run_id == "run-parent"
-        return {"run_id": copied["run_id"], "context_snapshot_id": "ctx-child"}
+    async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
+        assert skill_id == "general-chat"
+        assert input_payload == {"message": "build feature"}
+        assert release_policy_version is None
+        return [{"skill_id": skill_id, "content_hash": "hash-child-current"}]
+
+    async def fake_record_initial_context_snapshot(conn, **kwargs):
+        calls.append(("context", kwargs["source"], kwargs["source_run_id"]))
+        return {"context_snapshot_id": "ctx-child", "source": kwargs["source"]}
+
+    async def fake_update_run_input_execution_snapshot(conn, **kwargs):
+        calls.append(("execution_snapshot", kwargs))
+
+    async def fake_append_event(conn, **kwargs):
+        return None
+
+    async def fake_seed_copied_run_steps(conn, **kwargs):
+        return None
+
+    async def fake_update_run_auth_snapshot(conn, **kwargs):
+        assert kwargs["run_id"] == "run-child"
+        assert kwargs["principal_roles"] == ["qa_operator", "user"]
 
     async def fake_enqueue(payload):
         calls.append(("enqueue", payload))
@@ -2186,7 +2235,16 @@ def test_multi_agent_dispatch_tick_auth_snapshot_claims_handoffs_and_enqueues_ne
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.claim_multi_agent_dispatch_step", fake_claim, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fake_handoff, raising=False)
-    monkeypatch.setattr("app.routes.runs.prepare_copied_run_for_queue", fake_prepare, raising=False)
+    monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
+    monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_initial_context_snapshot)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.runs.repositories.update_run_auth_snapshot", fake_update_run_auth_snapshot)
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue, raising=False)
     monkeypatch.setattr("app.routes.runs.get_queue_insight", fake_queue_insight, raising=False)
     client = TestClient(create_app())
@@ -2216,12 +2274,22 @@ def test_multi_agent_dispatch_tick_auth_snapshot_claims_handoffs_and_enqueues_ne
         "list_steps",
         "claim",
         "handoff",
-        "prepare",
+        "context",
+        "execution_snapshot",
         "enqueue",
         "queue_insight",
     ]
-    prepare = next(item for item in calls if item[0] == "prepare")
-    assert prepare[3:7] == ("user-a", ["qa_operator", "user"], "qa", "session-token")
+    context = next(item for item in calls if item[0] == "context")
+    assert context[1:] == ("multi_agent_dispatch_tick", "run-parent")
+    snapshot = next(item[1] for item in calls if item[0] == "execution_snapshot")
+    queued_payload = next(item[1] for item in calls if item[0] == "enqueue")
+    assert snapshot == {
+        "tenant_id": "default",
+        "run_id": "run-child",
+        "skill_version": queued_payload["skill_version"],
+        "release_decision": queued_payload["release_decision"],
+        "skill_manifests": queued_payload["skill_manifests"],
+    }
 
 
 def test_admin_multi_agent_dispatch_claim_maps_repository_conflict_to_409(monkeypatch):
@@ -2408,11 +2476,26 @@ def test_multi_agent_dispatch_handoff_revocation_denies_before_child_or_enqueue(
 
 
 def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues(monkeypatch):
-    calls = {"handoff": [], "context": [], "queue": [], "step": [], "auth_snapshot": []}
+    calls = {
+        "handoff": [],
+        "context": [],
+        "queue": [],
+        "step": [],
+        "auth_snapshot": [],
+        "execution_snapshot": [],
+    }
+    parent_release_decision = {
+        "schema_version": "ai-platform.skill-release-decision.v1",
+        "policy_active": False,
+        "selected_version": "hash-parent",
+        "selected_track": "catalog",
+    }
+    parent_skill_manifests = [{"skill_id": "general-chat", "content_hash": "hash-parent"}]
+    persisted_input_json = {}
 
     async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by, active_run_admission_limit):
         calls["handoff"].append((tenant_id, parent_run_id, dispatch_id, handed_off_by, active_run_admission_limit))
-        return {
+        copied = {
             "parent_run_id": parent_run_id,
             "parent_step_id": "step-code",
             "step_key": "code",
@@ -2450,31 +2533,45 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
                 },
             },
             "executor_type": "claude-agent-worker",
-            "skill_version": "hash-a",
+            "skill_version": "hash-parent",
             "release_policy_version": "",
-            "release_decision": {
-                "schema_version": "ai-platform.skill-release-decision.v1",
-                "policy_active": False,
-                "selected_version": "hash-a",
-                "selected_track": "manifest_pin",
-            },
+            "release_decision": dict(parent_release_decision),
             "event_id": "evt-handoff",
             "child_event_id": "evt-child",
             "audit_id": "aud-handoff",
         }
+        persisted_input_json.update(
+            input=copied["input"],
+            file_ids=copied["file_ids"],
+            executor_type=copied["executor_type"],
+            skill_version=copied["skill_version"],
+            release_decision=dict(parent_release_decision),
+            skill_manifests=list(parent_skill_manifests),
+        )
+        return copied
 
     async def fake_governed_skill_manifest_pins(conn, *, skill_id, input_payload, release_policy_version):
         assert skill_id == "general-chat"
         assert input_payload["multi_agent_dispatch"]["dispatch_id"] == "dispatch-code"
         assert release_policy_version == ""
-        return [{"skill_id": skill_id, "content_hash": "hash-a"}]
+        return [{"skill_id": skill_id, "content_hash": "hash-child-current"}]
 
     async def fake_record_initial_context_snapshot(conn, **kwargs):
         calls["context"].append(kwargs)
-        return {"context_snapshot_id": "ctx-child", "source": kwargs["source"]}
+        context_ref = {"context_snapshot_id": "ctx-child", "source": kwargs["source"]}
+        persisted_input_json.update(
+            context_snapshot_id=context_ref["context_snapshot_id"],
+            context_snapshot=context_ref,
+        )
+        return context_ref
 
-    async def fake_update_run_input_skill_version(conn, **kwargs):
-        calls["skill_version"] = kwargs
+    async def fake_update_run_input_execution_snapshot(conn, **kwargs):
+        calls["execution_snapshot"].append(kwargs)
+        persisted_input_json.update(
+            skill_version=kwargs["skill_version"],
+            release_decision=kwargs["release_decision"],
+            skill_manifests=kwargs["skill_manifests"],
+        )
 
     async def fake_update_run_auth_snapshot(conn, **kwargs):
         calls["auth_snapshot"].append(kwargs)
@@ -2497,7 +2594,11 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
     monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fake_handoff, raising=False)
     monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_initial_context_snapshot)
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+        raising=False,
+    )
     monkeypatch.setattr(
         "app.routes.runs.repositories.update_run_auth_snapshot",
         fake_update_run_auth_snapshot,
@@ -2540,6 +2641,36 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
     assert calls["queue"][0]["run_id"] == "run-child"
     assert calls["queue"][0]["context_snapshot_id"] == "ctx-child"
     assert calls["queue"][0]["context_snapshot"]["source"] == "multi_agent_dispatch_handoff"
+    assert calls["queue"][0]["skill_version"] == "hash-child-current"
+    assert calls["queue"][0]["release_decision"]["selected_version"] == "hash-child-current"
+    assert calls["execution_snapshot"] == [
+        {
+            "tenant_id": "default",
+            "run_id": "run-child",
+            "skill_version": calls["queue"][0]["skill_version"],
+            "release_decision": calls["queue"][0]["release_decision"],
+            "skill_manifests": calls["queue"][0]["skill_manifests"],
+        }
+    ]
+    assert calls["execution_snapshot"][0]["release_decision"] != parent_release_decision
+    assert calls["execution_snapshot"][0]["skill_manifests"] != parent_skill_manifests
+    locked_payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": "default",
+            "workspace_id": "default",
+            "user_id": "user-a",
+            "session_id": "ses-owner",
+            "run_id": "run-child",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            **{
+                field: persisted_input_json[field]
+                for field in QueueRunPayload.model_fields
+                if field in persisted_input_json
+            },
+        }
+    )
+    assert locked_payload.model_dump(mode="json") == calls["queue"][0]
     assert calls["step"][0]["source"] == "multi_agent_dispatch_handoff"
     assert calls["auth_snapshot"] == [
         {

@@ -7016,36 +7016,34 @@ async def resume_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_
     return copied
 
 
-async def update_run_input_skill_version(
+async def update_run_input_execution_snapshot(
     conn: AsyncConnection,
     *,
     tenant_id: str,
     run_id: str,
-    skill_version: str,
+    skill_version: str | None,
+    release_decision: dict[str, Any],
+    skill_manifests: list[dict[str, Any]],
 ) -> None:
+    """Replace the locked copied-run execution snapshot in one tenant-scoped update."""
     await conn.execute(
         """
         update runs
         set input_json = jsonb_set(
-          case
-            when coalesce((input_json->'release_decision'->>'policy_active')::boolean, false) = false
-             and input_json ? 'release_decision'
-            then jsonb_set(
-              jsonb_set(coalesce(input_json, '{}'::jsonb), '{release_decision,selected_version}', %s::jsonb, true),
-              '{release_decision,selected_track}', %s::jsonb,
-              true
-            )
-            else coalesce(input_json, '{}'::jsonb)
-          end,
-          '{skill_version}', %s::jsonb,
+          jsonb_set(
+            jsonb_set(coalesce(input_json, '{}'::jsonb), '{skill_version}', %s::jsonb, true),
+            '{release_decision}', %s::jsonb,
+            true
+          ),
+          '{skill_manifests}', %s::jsonb,
           true
         )
         where tenant_id = %s and id = %s
         """,
         (
             json.dumps(skill_version, ensure_ascii=False),
-            json.dumps("manifest_pin", ensure_ascii=False),
-            json.dumps(skill_version, ensure_ascii=False),
+            json.dumps(release_decision, ensure_ascii=False),
+            json.dumps(skill_manifests, ensure_ascii=False),
             tenant_id,
             run_id,
         ),

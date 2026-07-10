@@ -4262,6 +4262,21 @@ async def test_create_run_rejects_invalid_snapshot_governance_manifest_as_materi
 @pytest.mark.asyncio
 async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatch):
     calls = {}
+    source_release_decision = {
+        "schema_version": "ai-platform.skill-release-decision.v1",
+        "policy_active": False,
+        "selected_version": "db-version",
+        "selected_track": "catalog",
+    }
+    source_skill_manifests = [{"skill_id": "qa-file-reviewer", "content_hash": "db-version"}]
+    persisted_input_json = {
+        "input": {"message": "继续审核", "copied_from_run_id": "run_source"},
+        "file_ids": ["file_1"],
+        "executor_type": "claude-agent-worker",
+        "skill_version": "db-version",
+        "release_decision": dict(source_release_decision),
+        "skill_manifests": list(source_skill_manifests),
+    }
 
     async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
         return {
@@ -4274,27 +4289,37 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
             "input": {"message": "继续审核", "copied_from_run_id": run_id},
             "executor_type": "claude-agent-worker",
             "skill_version": "db-version",
-            "release_decision": {
-                "schema_version": "ai-platform.skill-release-decision.v1",
-                "policy_active": False,
-                "selected_version": "db-version",
-                "selected_track": "manifest_pin",
-            },
+            "release_decision": dict(source_release_decision),
         }
 
-    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
+    async def fake_update_run_input_execution_snapshot(
+        conn,
+        *,
+        tenant_id,
+        run_id,
+        skill_version,
+        release_decision,
+        skill_manifests,
+    ):
         calls["update"] = {
             "tenant_id": tenant_id,
             "run_id": run_id,
             "skill_version": skill_version,
+            "release_decision": release_decision,
+            "skill_manifests": skill_manifests,
         }
+        persisted_input_json.update(
+            skill_version=skill_version,
+            release_decision=release_decision,
+            skill_manifests=skill_manifests,
+        )
 
     async def fake_append_event(conn, **kwargs):
         calls.setdefault("events", []).append(kwargs)
 
     async def fake_record_context(conn, **kwargs):
         calls["context"] = kwargs
-        return {
+        context_ref = {
             "schema_version": "ai-platform.context-snapshot.v1",
             "context_snapshot_id": "ctx_copy",
             "source": kwargs["source"],
@@ -4302,6 +4327,11 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
             "file_count": len(kwargs.get("file_ids") or []),
             "memory_record_count": 0,
         }
+        persisted_input_json.update(
+            context_snapshot_id=context_ref["context_snapshot_id"],
+            context_snapshot=context_ref,
+        )
+        return context_ref
 
     async def fake_seed_copied_run_steps(*args, **kwargs):
         calls["seed"] = kwargs
@@ -4332,7 +4362,11 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
@@ -4344,6 +4378,10 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
 
     assert response.run_id == "run_copy"
     assert calls["update"]["skill_version"] == "hash-pin"
+    assert calls["update"]["release_decision"] == calls["queue"]["release_decision"]
+    assert calls["update"]["skill_manifests"] == calls["queue"]["skill_manifests"]
+    assert calls["update"]["release_decision"] != source_release_decision
+    assert calls["update"]["skill_manifests"] != source_skill_manifests
     assert calls["context"]["source"] == "copy_run"
     assert calls["context"]["source_run_id"] == "run_source"
     assert calls["context"]["tenant_id"] == "tenant-a"
@@ -4361,6 +4399,23 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
     assert calls["queue"]["skill_version"] == "hash-pin"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-pin"
     assert any(event["payload"]["skill_version"] == "hash-pin" for event in calls["events"])
+    locked_payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": "tenant-a",
+            "workspace_id": "default",
+            "user_id": "user-a",
+            "session_id": "ses_copy",
+            "run_id": "run_copy",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            **{
+                field: persisted_input_json[field]
+                for field in QueueRunPayload.model_fields
+                if field in persisted_input_json
+            },
+        }
+    )
+    assert locked_payload.model_dump(mode="json") == calls["queue"]
 
 
 @pytest.mark.asyncio
@@ -4391,7 +4446,9 @@ async def test_copy_run_ignores_unsafe_source_run_id_for_followup_context(monkey
             },
         }
 
-    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
+    async def fake_update_run_input_execution_snapshot(
+        conn, *, tenant_id, run_id, skill_version, release_decision, skill_manifests
+    ):
         calls["update"] = skill_version
 
     async def fake_append_event(conn, **kwargs):
@@ -4423,7 +4480,10 @@ async def test_copy_run_ignores_unsafe_source_run_id_for_followup_context(monkey
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
@@ -4463,7 +4523,9 @@ async def test_copy_run_uses_authorized_route_source_when_copied_input_lacks_sou
             },
         }
 
-    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
+    async def fake_update_run_input_execution_snapshot(
+        conn, *, tenant_id, run_id, skill_version, release_decision, skill_manifests
+    ):
         calls["update"] = skill_version
 
     async def fake_append_event(conn, **kwargs):
@@ -4495,7 +4557,10 @@ async def test_copy_run_uses_authorized_route_source_when_copied_input_lacks_sou
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
@@ -4534,7 +4599,9 @@ async def test_copy_run_prefers_authorized_route_source_over_payload_source_id(m
             },
         }
 
-    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
+    async def fake_update_run_input_execution_snapshot(
+        conn, *, tenant_id, run_id, skill_version, release_decision, skill_manifests
+    ):
         calls["update"] = skill_version
 
     async def fake_append_event(conn, **kwargs):
@@ -4566,7 +4633,10 @@ async def test_copy_run_prefers_authorized_route_source_over_payload_source_id(m
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
@@ -4605,7 +4675,9 @@ async def test_copy_run_prevalidates_queue_payload_before_seeding_reused_steps(m
             "skill_version": "db-version",
         }
 
-    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
+    async def fake_update_run_input_execution_snapshot(
+        conn, *, tenant_id, run_id, skill_version, release_decision, skill_manifests
+    ):
         calls["update"] = skill_version
 
     async def fake_append_event(conn, **kwargs):
@@ -4634,7 +4706,10 @@ async def test_copy_run_prevalidates_queue_payload_before_seeding_reused_steps(m
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fail_seed_copied_run_steps)
     monkeypatch.setattr("app.routes.runs._skill_manifest_pins", fake_skill_manifest_pins)
@@ -4654,6 +4729,7 @@ async def test_copy_run_prevalidates_queue_payload_before_seeding_reused_steps(m
             }
         ],
     }
+    assert "update" not in calls
     assert "copy-secret-token" not in str(exc_info.value.detail)
     assert "/var/lib/ai-platform/private/copy.log" not in str(exc_info.value.detail)
 
@@ -4707,11 +4783,15 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
         assert version == "hash-uploaded"
         return uploaded_skill_version_row(skill_id=skill_id, version=version)
 
-    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
+    async def fake_update_run_input_execution_snapshot(
+        conn, *, tenant_id, run_id, skill_version, release_decision, skill_manifests
+    ):
         calls["update"] = {
             "tenant_id": tenant_id,
             "run_id": run_id,
             "skill_version": skill_version,
+            "release_decision": release_decision,
+            "skill_manifests": skill_manifests,
         }
 
     async def fake_append_event(conn, **kwargs):
@@ -4734,7 +4814,10 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
         "app.routes.runs.repositories.get_effective_skill_version_for_policy",
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)

@@ -4864,22 +4864,65 @@ async def test_list_run_skill_snapshots_projects_persisted_telemetry():
 
 
 @pytest.mark.asyncio
-async def test_update_run_input_skill_version_is_tenant_and_run_scoped():
+async def test_update_run_input_execution_snapshot_atomically_replaces_canonical_fields():
     conn = RecordingConnection()
+    release_decision = {
+        "schema_version": "ai-platform.skill-release-decision.v1",
+        "policy_active": False,
+        "selected_version": "hash-current",
+        "selected_track": "manifest_pin",
+    }
+    skill_manifests = [
+        {
+            "skill_id": "qa-file-reviewer",
+            "content_hash": "hash-current",
+            "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer"},
+        }
+    ]
 
-    await repositories.update_run_input_skill_version(
+    await repositories.update_run_input_execution_snapshot(
         conn,
         tenant_id="default",
         run_id="run-a",
-        skill_version="hash-a",
+        skill_version="hash-current",
+        release_decision=release_decision,
+        skill_manifests=skill_manifests,
     )
 
     sql, params = conn.calls[0]
     assert "update runs" in sql
-    assert "jsonb_set" in sql
-    assert "release_decision,selected_version" in sql
+    assert sql.count("jsonb_set") == 3
+    assert "{skill_version}" in sql
+    assert "{release_decision}" in sql
+    assert "{skill_manifests}" in sql
+    assert "release_decision,selected_version" not in sql
     assert "tenant_id = %s and id = %s" in sql
-    assert params == ('"hash-a"', '"manifest_pin"', '"hash-a"', "default", "run-a")
+    assert params == (
+        '"hash-current"',
+        json.dumps(release_decision, ensure_ascii=False),
+        json.dumps(skill_manifests, ensure_ascii=False),
+        "default",
+        "run-a",
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_run_input_execution_snapshot_explicitly_replaces_null_and_empty_values():
+    conn = RecordingConnection()
+
+    await repositories.update_run_input_execution_snapshot(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-empty",
+        skill_version=None,
+        release_decision={},
+        skill_manifests=[],
+    )
+
+    assert len(conn.calls) == 1
+    sql, params = conn.calls[0]
+    assert sql.count("jsonb_set") == 3
+    assert params == ("null", "{}", "[]", "tenant-a", "run-empty")
 
 
 @pytest.mark.asyncio

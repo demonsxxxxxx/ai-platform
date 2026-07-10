@@ -781,12 +781,6 @@ async def prepare_copied_run_for_queue(
         principal_department_id=effective_principal.department_id,
         auth_source=snapshot_auth_source,
     )
-    await repositories.update_run_input_skill_version(
-        conn,
-        tenant_id=effective_principal.tenant_id,
-        run_id=copied["run_id"],
-        skill_version=copied_skill_version,
-    )
     await repositories.append_event(
         conn,
         tenant_id=effective_principal.tenant_id,
@@ -850,6 +844,14 @@ async def prepare_copied_run_for_queue(
             "context_snapshot_id": context_ref["context_snapshot_id"],
             "context_snapshot": context_ref,
         }
+    )
+    await repositories.update_run_input_execution_snapshot(
+        conn,
+        tenant_id=effective_principal.tenant_id,
+        run_id=copied["run_id"],
+        skill_version=queue_payload["skill_version"],
+        release_decision=queue_payload["release_decision"],
+        skill_manifests=queue_payload["skill_manifests"],
     )
     await seed_copied_run_steps(
         conn,
