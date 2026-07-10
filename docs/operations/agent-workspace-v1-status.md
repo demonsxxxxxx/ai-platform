@@ -80,10 +80,17 @@ Status:
   - Prior Minor review finding fixed: `/api/agent-workspace` is now classified in the frontend projection audit safe public route inventory, including the active multiline `fetchAgentWorkspace` route reference.
   - Follow-up sub-agent review `019f4ab9-919c-7f53-a981-6f14d0b6557e` found no Critical, Important, or Minor findings.
   - Review assessment: ready to merge after the uncommitted fixes are committed/pushed and fresh GitHub CI completes.
-- [ ] Phase 16: push updated PR branch and wait for fresh GitHub CI on the new PR head.
+- [x] Phase 16: updated PR branch pushed and fresh GitHub CI passed on PR head `d392a0d32c3e6847be2e976ab50962aeaf39f2e4`:
+  - PR #334: `https://github.com/demonsxxxxxx/ai-platform/pull/334`.
+  - GitHub merge state after CI: `CLEAN`.
+  - `backend required` -> `SUCCESS`.
+  - `projection audit, lint, build, trace` -> `SUCCESS`.
+  - `packaged image build` -> `SUCCESS`.
+  - `frontend required` -> `SUCCESS`.
+  - PR evidence comment: `https://github.com/demonsxxxxxx/ai-platform/pull/334#issuecomment-4932784324`.
 
 Notes:
 - UI/UX source checklist was applied against the Agent Workspace page: tokenized workbench surfaces, Lucide icons, explicit loading/degraded states, responsive two-column layout, semantic buttons, and no hardcoded runtime data.
 - `ui-ux-pro-max` search script path was not available in the local skill install, so no script-generated UX report was produced.
 
-Current status: PR branch is updated to current `origin/main`; local verification, ordinary-user/admin browser smoke, and fresh post-merge sub-agent review are complete in the isolated worktree. Current `pnpm run projection:audit` status is `pass_with_policy_gaps`, not a clean no-gap status. Push and fresh GitHub CI on the new PR head are still pending. No 211 deployment has been performed.
+Current status: PR branch is updated to current `origin/main`; local verification, ordinary-user/admin browser smoke, fresh post-merge sub-agent review, and fresh GitHub CI are complete. Current `pnpm run projection:audit` status is `pass_with_policy_gaps`, not a clean no-gap status. No 211 deployment has been performed.
