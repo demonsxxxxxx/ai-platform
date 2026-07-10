@@ -148,17 +148,42 @@ def install_mcp_route_fakes(
             "updated_at": "2026-06-23T01:00:00Z",
         }
         servers[kwargs["name"]] = server
-        distributions[kwargs["name"]] = {
-            "capability_kind": "mcp_server",
-            "capability_id": kwargs["name"],
-            "status": "active",
-            "visible_to_user": True,
-            "scope_mode": "allowlist",
+        return dict(server)
+
+    async def fake_upsert_distribution(conn, **kwargs):
+        calls.append(("upsert_distribution", dict(kwargs)))
+        row = {
+            "capability_kind": kwargs["capability_kind"],
+            "capability_id": kwargs["capability_id"],
+            "status": kwargs["status"],
+            "visible_to_user": kwargs["visible_to_user"],
+            "scope_mode": kwargs["scope_mode"],
             "department_ids": list(kwargs["department_ids"]),
             "allowed_roles": list(kwargs["allowed_roles"]),
-            "metadata_json": {},
+            "metadata_json": dict(kwargs["metadata_json"]),
         }
-        return dict(server)
+        distributions[kwargs["capability_id"]] = row
+        return dict(row)
+
+    async def fake_set_distribution_status(conn, **kwargs):
+        calls.append(("set_distribution_status", dict(kwargs)))
+        row = dict(
+            distributions.get(
+                kwargs["capability_id"],
+                {
+                    "capability_kind": kwargs["capability_kind"],
+                    "capability_id": kwargs["capability_id"],
+                    "visible_to_user": True,
+                    "scope_mode": "allowlist",
+                    "department_ids": [],
+                    "allowed_roles": [],
+                    "metadata_json": {},
+                },
+            )
+        )
+        row["status"] = kwargs["status"]
+        distributions[kwargs["capability_id"]] = row
+        return dict(row)
 
     async def fake_toggle_server(conn, **kwargs):
         calls.append(("toggle_server", dict(kwargs)))
@@ -205,6 +230,18 @@ def install_mcp_route_fakes(
     monkeypatch.setattr(mcp.repositories, "list_capability_distribution_rows", fake_list_distributions, raising=False)
     monkeypatch.setattr(mcp.repositories, "get_capability_distribution_row", fake_get_distribution, raising=False)
     monkeypatch.setattr(mcp.repositories, "upsert_mcp_server_registry", fake_upsert_server, raising=False)
+    monkeypatch.setattr(
+        mcp.repositories,
+        "upsert_capability_distribution_row",
+        fake_upsert_distribution,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        mcp.repositories,
+        "set_capability_distribution_status",
+        fake_set_distribution_status,
+        raising=False,
+    )
     monkeypatch.setattr(mcp.repositories, "toggle_mcp_server_registry", fake_toggle_server, raising=False)
     monkeypatch.setattr(mcp.repositories, "delete_mcp_server_registry", fake_delete_server, raising=False)
     monkeypatch.setattr(mcp.repositories, "record_mcp_server_credential", fake_record_credential, raising=False)
@@ -224,7 +261,9 @@ def test_mcp_read_contract_projects_visible_tools_without_lifecycle_write(monkey
             {
                 "name": "ragflow",
                 "transport": "streamable_http",
+                "status": "active",
                 "enabled": True,
+                "visible_to_user": True,
                 "is_system": True,
                 "can_edit": False,
                 "allowed_roles": ["user"],
@@ -284,13 +323,13 @@ def _mcp_distribution(
     }
 
 
-def test_mcp_distribution_allows_matching_department_and_normalized_role(monkeypatch):
+def test_mcp_distribution_allows_matching_department_and_casefolded_exact_role(monkeypatch):
     install_mcp_route_fakes(
         monkeypatch,
-        distribution_rows=[_mcp_distribution(department_ids=["qa"], allowed_roles=["qa_operator"])],
+        distribution_rows=[_mcp_distribution(department_ids=["qa"], allowed_roles=["qa-operator"])],
     )
     client = TestClient(create_app())
-    authorized = headers(roles="QA Operator", department_id="qa")
+    authorized = headers(roles="QA-OPERATOR", department_id="qa")
 
     assert client.get("/api/mcp/", headers=authorized).json()["total"] == 1
     assert client.get("/api/mcp/ragflow", headers=authorized).status_code == 200
@@ -386,6 +425,34 @@ def test_mcp_admin_bypass_read_audits_target_scope(monkeypatch):
     assert audit["target_id"] == "ragflow"
     assert audit["payload_json"]["admin_bypass"] is True
     assert audit["payload_json"]["decision_reason"] == "admin_bypass"
+
+
+def test_mcp_response_projects_authoritative_distribution_over_registry_scope(monkeypatch):
+    install_mcp_route_fakes(
+        monkeypatch,
+        distribution_rows=[
+            _mcp_distribution(
+                status="disabled",
+                visible_to_user=False,
+                department_ids=["rd"],
+                allowed_roles=["reviewer"],
+            )
+        ],
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/mcp/",
+        headers=headers(roles="admin", department_id="platform"),
+    )
+
+    assert response.status_code == 200
+    server = response.json()["servers"][0]
+    assert server["status"] == "disabled"
+    assert server["enabled"] is False
+    assert server["visible_to_user"] is False
+    assert server["allowed_roles"] == ["reviewer"]
+    assert server["allowed_departments"] == ["rd"]
 
 
 def test_authorized_mcp_registration_entries_exclude_denied_parent_servers():
@@ -522,6 +589,54 @@ def test_shared_mcp_update_and_toggle_require_ai_admin(monkeypatch):
     assert toggle_response.status_code == 403
     assert toggle_response.json()["detail"] == "not_ai_admin"
     assert not any(name in {"upsert_server", "toggle_server"} for name, _ in calls)
+
+
+def test_shared_mcp_lifecycle_writes_authoritative_distribution(monkeypatch):
+    calls = install_mcp_route_fakes(monkeypatch, seed_registry_ragflow=False)
+    client = TestClient(create_app())
+
+    created = client.post(
+        "/api/mcp/",
+        json={
+            "name": "scoped",
+            "enabled": False,
+            "allowed_roles": ["qa_operator"],
+            "department_ids": ["qa"],
+        },
+        headers=headers(roles="admin"),
+    )
+    updated = client.put(
+        "/api/mcp/scoped",
+        json={
+            "enabled": True,
+            "allowed_roles": ["reviewer"],
+            "department_ids": ["rd"],
+        },
+        headers=headers(roles="admin"),
+    )
+    toggled = client.patch(
+        "/api/mcp/scoped/toggle",
+        json={"enabled": False},
+        headers=headers(roles="admin"),
+    )
+    deleted = client.delete("/api/mcp/scoped", headers=headers(roles="admin"))
+
+    assert [response.status_code for response in (created, updated, toggled, deleted)] == [200, 200, 200, 200]
+    distribution_writes = [call for call in calls if call[0] in {"upsert_distribution", "set_distribution_status"}]
+    assert [name for name, _ in distribution_writes] == [
+        "upsert_distribution",
+        "upsert_distribution",
+        "set_distribution_status",
+        "set_distribution_status",
+    ]
+    assert distribution_writes[0][1]["status"] == "disabled"
+    assert distribution_writes[0][1]["allowed_roles"] == ["qa_operator"]
+    assert distribution_writes[0][1]["department_ids"] == ["qa"]
+    assert distribution_writes[1][1]["status"] == "active"
+    assert distribution_writes[1][1]["allowed_roles"] == ["reviewer"]
+    assert distribution_writes[1][1]["department_ids"] == ["rd"]
+    assert distribution_writes[2][1]["status"] == "disabled"
+    assert distribution_writes[3][1]["status"] == "disabled"
 
 
 def test_mcp_lifecycle_validation_errors_do_not_echo_secret_inputs(monkeypatch):

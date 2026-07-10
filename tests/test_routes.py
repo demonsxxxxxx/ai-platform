@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app import repositories as repository_module
-from app.auth import AuthPrincipal
+from app.auth import AuthPrincipal, is_ai_admin
 from app.models import CreateRunRequest, QueueRunPayload
 from app.repositories import RepositoryConflictError
 from app.routes import runs as runs_module
@@ -53,6 +53,29 @@ def principal(**overrides):
     }
     values.update(overrides)
     return AuthPrincipal(**values)
+
+
+@pytest.mark.parametrize(
+    ("stored_role", "expected_admin"),
+    [
+        (" PLATFORM_ADMIN ", True),
+        ("platform-admin", False),
+        ("platform admin", False),
+    ],
+)
+def test_requeue_owner_role_identity_matches_shared_normalization(stored_role, expected_admin):
+    owner = runs_module._persisted_owner_principal(
+        {
+            "user_id": "user-a",
+            "principal_roles": [stored_role],
+            "principal_department_id": "qa",
+            "auth_source": "session-token",
+        },
+        tenant_id="tenant-a",
+    )
+
+    assert owner.roles == [stored_role.strip().lower()]
+    assert is_ai_admin(owner) is expected_admin
 
 
 @pytest.fixture(autouse=True)
@@ -3038,6 +3061,47 @@ async def test_prepare_copied_run_for_queue_reauthorizes_before_any_queue_prepar
     assert authorize_kwargs["normalized_input"]["multi_agent_steps"][0]["mcpToolIds"] == ["revoked-tool"]
     assert authorize_kwargs["principal_department_id"] == "qa"
     assert authorize_kwargs["principal_roles"] == ["qa_operator"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_copied_direct_ragflow_without_explicit_selector_uses_unified_authorizer(monkeypatch):
+    calls = []
+
+    async def deny(*args, **kwargs):
+        calls.append(kwargs)
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_manifest(*args, **kwargs):
+        raise AssertionError("direct ragflow denial must precede queue preparation")
+
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr(runs_module, "_governed_skill_manifest_pins", fail_manifest)
+
+    with pytest.raises(repository_module.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await runs_module.prepare_copied_run_for_queue(
+            object(),
+            copied={
+                "run_id": "run-ragflow-copy",
+                "session_id": "ses-ragflow-copy",
+                "workspace_id": "default",
+                "user_id": "user-a",
+                "agent_id": "sop-assistant",
+                "skill_id": "ragflow-knowledge-search",
+                "file_ids": [],
+                "input": {"message": "search the knowledge base"},
+                "executor_type": "ragflow",
+                "skill_version": "hash-ragflow",
+                "release_decision": {},
+            },
+            principal=principal(department_id="qa", roles=["user"]),
+            source="copy_run",
+            authorized_source_run_id="run-ragflow-original",
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["agent_id"] == "sop-assistant"
+    assert calls[0]["skill_id"] == "ragflow-knowledge-search"
+    assert "mcp_tool_ids" not in calls[0]["normalized_input"]
 
 
 @pytest.mark.asyncio

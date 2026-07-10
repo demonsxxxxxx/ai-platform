@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app import repositories
-from app.auth import AuthPrincipal, is_ai_admin, require_principal
+from app.auth import AuthPrincipal, is_ai_admin, normalize_roles, require_principal
 from app.capabilities import get_capability
 from app.context_builder import ensure_public_context_provenance, record_initial_context_snapshot
 from app.db import transaction
@@ -692,7 +692,7 @@ def _persisted_owner_principal(run: dict[str, Any], *, tenant_id: str) -> AuthPr
         display_name=str(run.get("user_id") or ""),
         tenant_id=tenant_id,
         department_id=str(run.get("principal_department_id") or ""),
-        roles=[str(role) for role in run.get("principal_roles") or []],
+        roles=normalize_roles(run.get("principal_roles") or []),
         source=str(run.get("auth_source") or ""),
     )
 
@@ -1340,7 +1340,7 @@ async def handoff_multi_agent_dispatch(
                     display_name=str(copied.get("user_id") or ""),
                     tenant_id=principal.tenant_id,
                     department_id=str(copied.get("principal_department_id") or ""),
-                    roles=[str(role) for role in copied.get("principal_roles") or []],
+                    roles=normalize_roles(copied.get("principal_roles") or []),
                     source=str(copied.get("auth_source") or ""),
                 )
                 queue_payload = await prepare_copied_run_for_queue(
@@ -1432,7 +1432,7 @@ async def tick_multi_agent_dispatch(
                     display_name=str(copied.get("user_id") or ""),
                     tenant_id=principal.tenant_id,
                     department_id=str(copied.get("principal_department_id") or ""),
-                    roles=[str(role) for role in copied.get("principal_roles") or []],
+                    roles=normalize_roles(copied.get("principal_roles") or []),
                     source=str(copied.get("auth_source") or ""),
                 )
                 queue_payload = await prepare_copied_run_for_queue(

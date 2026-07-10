@@ -98,30 +98,49 @@ class SingleRowConnection:
 
 
 @pytest.mark.asyncio
-async def test_capability_distribution_backfill_is_insert_only_idempotent_and_binds_every_placeholder():
+async def test_capability_distribution_backfill_marks_completion_and_never_recreates_after_rerun():
     backfill = getattr(repositories, "ensure_tenant_capability_distribution_backfill", None)
     assert callable(backfill), "ensure_tenant_capability_distribution_backfill missing"
 
-    class EmptyCursor:
+    class Cursor:
+        def __init__(self, row=None):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
         async def fetchall(self):
             return []
 
     class Connection:
         def __init__(self):
             self.calls = []
+            self.completed = False
 
         async def execute(self, sql, params=()):
-            self.calls.append((" ".join(sql.split()), params))
-            return EmptyCursor()
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            if compact.startswith("select completed_at from tenant_capability_distribution_backfills"):
+                return Cursor({"completed_at": "now" if self.completed else None})
+            if compact.startswith("update tenant_capability_distribution_backfills set completed_at = now()"):
+                self.completed = True
+            return Cursor()
 
     conn = Connection()
     await backfill(conn, tenant_id="tenant-a")
     await backfill(conn, tenant_id="tenant-a")
 
-    assert len(conn.calls) == 4
-    skill_sql, skill_params = conn.calls[0]
-    mcp_sql, mcp_params = conn.calls[1]
-    assert conn.calls[2:] == conn.calls[:2]
+    assert len(conn.calls) == 7
+    marker_insert, marker_lock, skill_call, mcp_call, completion_update, rerun_insert, rerun_lock = conn.calls
+    skill_sql, skill_params = skill_call
+    mcp_sql, mcp_params = mcp_call
+    assert "insert into tenant_capability_distribution_backfills" in marker_insert[0]
+    assert marker_insert[1] == ("tenant-a",)
+    assert "for update" in marker_lock[0]
+    assert marker_lock[1] == ("tenant-a",)
+    assert completion_update[1] == ("tenant-a",)
+    assert rerun_insert == marker_insert
+    assert rerun_lock == marker_lock
     assert "from tenant_workbench_skills" in skill_sql
     assert "from skills" in skill_sql
     assert skill_sql.count("skills.status = 'active'") == 2
@@ -141,6 +160,37 @@ async def test_capability_distribution_backfill_is_insert_only_idempotent_and_bi
         "tenant-a",
         sorted(repositories.PUBLIC_WORKBENCH_SKILL_IDS),
     )
+    assert sum("from tenant_workbench_skills" in sql for sql, _ in conn.calls) == 1
+    assert sum("from mcp_servers" in sql for sql, _ in conn.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_skill_uses_global_skill_lifecycle_and_canonical_backing_tool():
+    conn = SingleRowConnection(
+        {
+            "agent_id": "sop-assistant",
+            "agent_status": "active",
+            "default_skill_id": "ragflow-knowledge-search",
+            "skill_id": "ragflow-knowledge-search",
+            "skill_status": "active",
+            "skill_version": "0.1.0",
+            "skill_version_status": "active",
+            "executor_type": "ragflow",
+            "backing_mcp_tool_id": "ragflow-knowledge-search",
+            "input_modes": ["chat"],
+        }
+    )
+
+    row = await repositories.resolve_agent_skill(
+        conn,
+        tenant_id="tenant-a",
+        agent_id="sop-assistant",
+        skill_id="ragflow-knowledge-search",
+    )
+
+    assert row["backing_mcp_tool_id"] == "ragflow-knowledge-search"
+    assert "skills.status as skill_status" in conn.sql
+    assert "tenant_workbench_skills" not in conn.sql
 
 
 @pytest.mark.asyncio
@@ -239,7 +289,7 @@ async def test_capability_distribution_authorization_allows_same_department_skil
             "visible_to_user": True,
             "scope_mode": "allowlist",
             "department_ids": ["qa"],
-            "allowed_roles": ["qa_operator"],
+            "allowed_roles": ["qa-operator"],
         }
 
     async def fake_get_tool(conn, *, tenant_id, tool_id):
@@ -275,6 +325,123 @@ async def test_capability_distribution_authorization_allows_same_department_skil
         ("tool", "tenant-a", "qa-search"),
         ("distribution", "mcp_server", "qa-mcp"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_direct_ragflow_authorization_derives_canonical_backing_tool_without_explicit_selector(monkeypatch):
+    calls = []
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return {
+            "skill_id": skill_id,
+            "skill_status": "active",
+            "executor_type": "ragflow",
+            "backing_mcp_tool_id": "tenant-search",
+        }
+
+    async def fake_get_distribution(conn, *, tenant_id, capability_kind, capability_id):
+        calls.append(("distribution", capability_kind, capability_id))
+        return {
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["qa"],
+            "allowed_roles": ["qa_operator"],
+        }
+
+    async def fake_get_tool(conn, *, tenant_id, tool_id):
+        calls.append(("tool", tool_id))
+        return {
+            "tool_id": tool_id,
+            "server_id": "tenant-search-server",
+            "effective_status": "active",
+            "server_status": "active",
+            "visible_to_user": True,
+        }
+
+    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", fake_get_tool)
+
+    await repositories.authorize_run_capabilities(
+        object(),
+        tenant_id="tenant-a",
+        agent_id="sop-assistant",
+        skill_id="knowledge-skill",
+        normalized_input={},
+        principal_department_id="qa",
+        principal_roles=["qa_operator"],
+        is_admin=False,
+        permissions=[],
+    )
+
+    assert calls == [
+        ("distribution", "skill", "knowledge-skill"),
+        ("tool", "tenant-search"),
+        ("distribution", "mcp_server", "tenant-search-server"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "denial",
+    ["backing_missing", "tool_missing", "hidden", "disabled", "department", "role", "parent_disabled"],
+)
+async def test_direct_ragflow_authorization_fails_closed_for_current_parent_and_tool_state(monkeypatch, denial):
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        return {
+            "skill_id": skill_id,
+            "skill_status": "active",
+            "executor_type": "ragflow",
+            "backing_mcp_tool_id": None if denial == "backing_missing" else "tenant-search",
+        }
+
+    async def fake_get_distribution(conn, *, tenant_id, capability_kind, capability_id):
+        row = {
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["qa"],
+            "allowed_roles": ["qa_operator"],
+        }
+        if capability_kind == "mcp_server":
+            if denial == "hidden":
+                row["visible_to_user"] = False
+            elif denial == "disabled":
+                row["status"] = "disabled"
+            elif denial == "department":
+                row["department_ids"] = ["finance"]
+            elif denial == "role":
+                row["allowed_roles"] = ["reviewer"]
+        return row
+
+    async def fake_get_tool(conn, *, tenant_id, tool_id):
+        if denial == "tool_missing":
+            return None
+        return {
+            "tool_id": tool_id,
+            "server_id": "tenant-search-server",
+            "effective_status": "active",
+            "server_status": "disabled" if denial == "parent_disabled" else "active",
+            "visible_to_user": True,
+        }
+
+    monkeypatch.setattr(repositories, "resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", fake_get_distribution)
+    monkeypatch.setattr(repositories, "get_mcp_tool_registry_entry", fake_get_tool)
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.authorize_run_capabilities(
+            object(),
+            tenant_id="tenant-a",
+            agent_id="sop-assistant",
+            skill_id="knowledge-skill",
+            normalized_input={},
+            principal_department_id="qa",
+            principal_roles=["qa_operator"],
+            is_admin=False,
+            permissions=[],
+        )
 
 
 @pytest.mark.asyncio
@@ -811,7 +978,11 @@ async def test_count_active_runs_for_user_counts_queued_and_running_only():
 
 
 @pytest.mark.asyncio
-async def test_list_public_skill_catalog_projects_public_source_without_internal_dependencies():
+async def test_list_public_skill_catalog_projects_public_source_without_internal_dependencies(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
     class CatalogCursor:
         async def fetchall(self):
             return [
@@ -855,16 +1026,92 @@ async def test_list_public_skill_catalog_projects_public_source_without_internal
     assert rows[0]["source"]["tags"] == ["document"]
     assert rows[0]["source"]["files"][0]["relative_path"] == "SKILL.md"
     assert rows[0]["dependency_ids"] == ["minimax-docx"]
-    assert "(skills.id = any(%s) or tenant_workbench_skills.skill_id is not null)" in conn.sql
+    assert "tenant_capability_distributions.capability_id is not null" in conn.sql
+    assert "tenant_workbench_skills" not in conn.sql
     assert "skills.status = 'active'" in conn.sql
     assert conn.params[0:2] == ("default", "default")
     assert "qa-file-reviewer" in conn.params[2]
     assert "minimax-docx" not in conn.params[2]
-    assert conn.params[3] is True
 
 
 @pytest.mark.asyncio
-async def test_list_public_skill_catalog_hides_unreleased_selected_versions_by_default():
+async def test_list_workbench_skills_projects_distribution_without_legacy_status_or_visibility(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+
+    class Cursor:
+        async def fetchall(self):
+            return [
+                {
+                    "skill_id": "general-chat",
+                    "name": "General Chat",
+                    "version": "0.1.0",
+                    "description": "Chat",
+                    "input_modes": ["chat"],
+                    "output_modes": ["answer"],
+                    "executor_type": "claude-agent-worker",
+                    "lifecycle_status": "active",
+                    "status": "disabled",
+                    "visible_to_user": False,
+                }
+            ]
+
+    class Connection:
+        async def execute(self, sql, params):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return Cursor()
+
+    conn = Connection()
+    rows = await repositories.list_workbench_skills(conn, tenant_id="tenant-a", include_disabled=True)
+
+    assert rows[0]["status"] == "disabled"
+    assert "tenant_capability_distributions" in conn.sql
+    assert "tenant_workbench_skills" not in conn.sql
+    assert "skills.status as lifecycle_status" in conn.sql
+
+
+@pytest.mark.asyncio
+async def test_list_workbench_capabilities_uses_global_lifecycle_and_distribution_authority(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        assert tenant_id == "tenant-a"
+
+    class Cursor:
+        async def fetchall(self):
+            return []
+
+    class Connection:
+        def __init__(self):
+            self.sql = ""
+            self.params = None
+
+        async def execute(self, sql, params=()):
+            self.sql = " ".join(sql.split())
+            self.params = params
+            return Cursor()
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    conn = Connection()
+
+    rows = await repositories.list_workbench_capabilities(conn, tenant_id="tenant-a")
+
+    assert rows == []
+    assert "tenant_workbench_skills" not in conn.sql
+    assert "join tenant_capability_distributions" in conn.sql
+    assert "skills.status" in conn.sql
+    assert "tenant_capability_distributions.status" in conn.sql
+    assert "tenant_capability_distributions.visible_to_user" in conn.sql
+    assert conn.params == ("tenant-a", "tenant-a")
+
+
+@pytest.mark.asyncio
+async def test_list_public_skill_catalog_hides_unreleased_selected_versions_by_default(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
     def catalog_row(skill_id: str, version_status: str) -> dict[str, object]:
         return {
             "skill_id": skill_id,
@@ -1083,7 +1330,7 @@ async def test_create_run_binds_normalized_auth_snapshot():
 
     sql, params = conn.calls[0]
     assert "principal_roles, principal_department_id, auth_source" in sql
-    assert json.dumps(["qa_operator", "user"], ensure_ascii=False) in params
+    assert json.dumps(["qa-operator", "qa operator", "user"], ensure_ascii=False) in params
     assert "qa" in params
     assert "trusted-header" in params
 
@@ -1106,7 +1353,13 @@ async def test_update_run_auth_snapshot_normalizes_roles_and_scopes_update():
     assert "principal_roles = %s::jsonb" in sql
     assert "principal_department_id = %s" in sql
     assert "auth_source = %s" in sql
-    assert params == (json.dumps(["qa_operator", "user"], ensure_ascii=False), "qa", "trusted-header", "tenant-a", "run-a")
+    assert params == (
+        json.dumps(["qa-operator", "qa operator", "user"], ensure_ascii=False),
+        "qa",
+        "trusted-header",
+        "tenant-a",
+        "run-a",
+    )
 
 
 @pytest.mark.asyncio
@@ -5556,7 +5809,12 @@ async def test_diff_skill_versions_raises_when_version_missing():
 
 
 @pytest.mark.asyncio
-async def test_admin_skill_detail_projects_versions_and_recent_snapshots():
+async def test_admin_skill_detail_projects_versions_and_recent_snapshots(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        assert tenant_id == "tenant-a"
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+
     class DetailCursor:
         def __init__(self, *, one=None, many=None):
             self.one = one
@@ -5572,6 +5830,9 @@ async def test_admin_skill_detail_projects_versions_and_recent_snapshots():
         async def execute(self, sql, params):
             compact = " ".join(sql.split())
             if "from skills" in compact:
+                assert "tenant_workbench_skills" not in compact
+                assert "join tenant_capability_distributions" in compact
+                assert "skills.status as lifecycle_status" in compact
                 assert params == ("tenant-a", "qa-file-reviewer")
                 return DetailCursor(
                     one={
@@ -5738,7 +5999,12 @@ async def test_set_workbench_skill_status_rejects_internal_dependency_skill():
 
 
 @pytest.mark.asyncio
-async def test_set_uploaded_workbench_skill_status_allows_tenant_uploaded_skill():
+async def test_set_uploaded_workbench_skill_status_creates_authoritative_distribution(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+
     class UploadedSkillConnection:
         def __init__(self):
             self.calls = []
@@ -5746,6 +6012,21 @@ async def test_set_uploaded_workbench_skill_status_allows_tenant_uploaded_skill(
         async def execute(self, sql, params):
             compact = " ".join(sql.split())
             self.calls.append((compact, params))
+            if compact.startswith("insert into tenant_capability_distributions"):
+                return SingleRowCursor(
+                    {
+                        "id": "capdist-new",
+                        "tenant_id": "default",
+                        "capability_kind": "skill",
+                        "capability_id": "new-research-skill",
+                        "status": "active",
+                        "visible_to_user": True,
+                        "scope_mode": "allowlist",
+                        "department_ids": [],
+                        "allowed_roles": [],
+                        "metadata_json": {},
+                    }
+                )
             if compact.startswith("select skills.id as skill_id"):
                 return SingleRowCursor(
                     {
@@ -5772,13 +6053,33 @@ async def test_set_uploaded_workbench_skill_status_allows_tenant_uploaded_skill(
     )
 
     assert row["skill_id"] == "new-research-skill"
-    assert conn.calls[0][1] == ("default", "new-research-skill", "active")
-    assert "insert into tenant_workbench_skills" in conn.calls[0][0]
+    assert "insert into tenant_capability_distributions" in conn.calls[0][0]
+    assert "tenant_workbench_skills" not in " ".join(sql for sql, _ in conn.calls)
+    assert conn.calls[0][1][1:5] == ("default", "skill", "new-research-skill", "active")
     assert conn.calls[1][1] == ("default", "new-research-skill")
 
 
 @pytest.mark.asyncio
-async def test_set_public_skill_enabled_allows_existing_tenant_uploaded_skill():
+async def test_set_public_skill_enabled_updates_existing_authoritative_distribution(monkeypatch):
+    async def existing_distribution(conn, *, tenant_id, capability_kind, capability_id):
+        return {
+            "tenant_id": tenant_id,
+            "capability_kind": capability_kind,
+            "capability_id": capability_id,
+            "status": "disabled",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["qa"],
+            "allowed_roles": ["qa_operator"],
+            "metadata_json": {"source": "shared"},
+        }
+
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", existing_distribution)
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+
     class UploadedSkillConnection:
         def __init__(self):
             self.calls = []
@@ -5786,8 +6087,21 @@ async def test_set_public_skill_enabled_allows_existing_tenant_uploaded_skill():
         async def execute(self, sql, params):
             compact = " ".join(sql.split())
             self.calls.append((compact, params))
-            if compact.startswith("select 1 from tenant_workbench_skills"):
-                return SingleRowCursor({"exists": 1})
+            if compact.startswith("insert into tenant_capability_distributions"):
+                return SingleRowCursor(
+                    {
+                        "id": "capdist-existing",
+                        "tenant_id": "default",
+                        "capability_kind": "skill",
+                        "capability_id": "new-research-skill",
+                        "status": "active",
+                        "visible_to_user": True,
+                        "scope_mode": "allowlist",
+                        "department_ids": ["qa"],
+                        "allowed_roles": ["qa_operator"],
+                        "metadata_json": {"source": "shared"},
+                    }
+                )
             if compact.startswith("select skills.id as skill_id"):
                 return SingleRowCursor(
                     {
@@ -5814,13 +6128,17 @@ async def test_set_public_skill_enabled_allows_existing_tenant_uploaded_skill():
     )
 
     assert row["skill_id"] == "new-research-skill"
-    assert "select 1 from tenant_workbench_skills" in conn.calls[0][0]
-    assert conn.calls[0][1] == ("default", "new-research-skill")
-    assert "insert into tenant_workbench_skills" in conn.calls[1][0]
+    assert "insert into tenant_capability_distributions" in conn.calls[0][0]
+    assert "tenant_workbench_skills" not in " ".join(sql for sql, _ in conn.calls)
 
 
 @pytest.mark.asyncio
-async def test_set_public_skill_enabled_rejects_non_public_skill_without_tenant_row():
+async def test_set_public_skill_enabled_rejects_non_public_skill_without_distribution(monkeypatch):
+    async def missing_distribution(conn, *, tenant_id, capability_kind, capability_id):
+        return None
+
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", missing_distribution)
+
     class MissingUploadedSkillConnection:
         def __init__(self):
             self.calls = []
@@ -5840,8 +6158,7 @@ async def test_set_public_skill_enabled_rejects_non_public_skill_without_tenant_
             status="active",
         )
 
-    assert len(conn.calls) == 1
-    assert "insert into tenant_workbench_skills" not in conn.calls[0][0]
+    assert conn.calls == []
 
 
 @pytest.mark.asyncio

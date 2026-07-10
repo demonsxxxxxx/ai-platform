@@ -89,7 +89,6 @@ def _audit_payload(principal: AuthPrincipal, row: dict[str, object]) -> dict[str
         {
             "status": str(row["status"]),
             "visible_to_user": bool(row["visible_to_user"]),
-            "metadata": dict(row.get("metadata_json") or {}),
         }
     )
     return payload

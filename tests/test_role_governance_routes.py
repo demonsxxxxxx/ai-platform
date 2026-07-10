@@ -176,7 +176,7 @@ def test_role_governance_skill_projection_uses_unified_distribution(monkeypatch)
             "visible_to_user": True,
             "scope_mode": "allowlist",
             "department_ids": ["qa"],
-            "allowed_roles": ["qa_operator"],
+            "allowed_roles": ["qa-operator"],
             "metadata_json": {},
         }
     ]
@@ -185,7 +185,7 @@ def test_role_governance_skill_projection_uses_unified_distribution(monkeypatch)
 
     allowed = client.get(
         "/api/role-governance/overview?workspace_id=workspace-a",
-        headers={**user_headers(), "X-AI-Roles": "QA Operator"},
+        headers={**user_headers(), "X-AI-Roles": "QA-OPERATOR"},
     )
     assert allowed.status_code == 200
     assert allowed.json()["scope"]["skill_availability"] == [

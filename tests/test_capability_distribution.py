@@ -38,20 +38,26 @@ def _subject(module, **overrides):
     )
 
 
-def test_resolver_allows_same_department_and_normalized_role():
+def test_resolver_allows_case_insensitive_exact_role_without_punctuation_aliases():
     module = _module()
 
     decision = module.resolve_capability_access(
-        _context(module, roles=[" QA Operator "]),
+        _context(module, roles=[" QA-Operator "]),
+        _subject(module, distribution={"allowed_roles": ["qa-operator"]}),
+        intent="use",
+    )
+    denied = module.resolve_capability_access(
+        _context(module, roles=["qa_operator"]),
         _subject(module, distribution={"allowed_roles": ["qa-operator"]}),
         intent="use",
     )
 
-    assert module.normalize_capability_roles([" QA Operator ", "qa-operator"]) == ["qa_operator"]
+    assert module.normalize_capability_roles([" QA-Operator ", "qa-operator"]) == ["qa-operator"]
     assert decision.decision_reason == "allowed"
     assert decision.visible is True
     assert decision.usable is True
     assert decision.manageable is True
+    assert denied.decision_reason == "role_not_allowed"
 
 
 @pytest.mark.parametrize(

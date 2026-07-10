@@ -5,11 +5,11 @@ from typing import Any
 from fastapi import HTTPException
 
 from app import repositories
-from app.auth import AuthPrincipal
+from app.auth import AuthPrincipal, normalize_roles
 from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.db import transaction
 from app.queue import enqueue_run
-from app.repositories import RepositoryConflictError, RepositoryNotFoundError
+from app.repositories import RepositoryAuthorizationError, RepositoryConflictError, RepositoryNotFoundError
 from app.run_control_readiness import dispatch_tick_candidate
 from app.routes.runs import prepare_copied_run_for_queue
 from app.settings import get_settings
@@ -104,8 +104,9 @@ async def _dispatch_one_ready_parent(
         user_id=str(copied["user_id"]),
         display_name=str(copied.get("user_id") or ""),
         tenant_id=tenant_id,
-        roles=["user"],
-        source="worker_multi_agent_dispatcher",
+        department_id=str(copied.get("principal_department_id") or ""),
+        roles=normalize_roles(copied.get("principal_roles") or []),
+        source=str(copied.get("auth_source") or ""),
     )
     queue_payload = await prepare_copied_run_for_queue(
         conn,
@@ -209,6 +210,11 @@ async def dispatch_multi_agent_ready_steps_for_worker(
                 results.append(_skip_result(run_id, exc.detail))
                 continue
             raise
-        except (RepositoryConflictError, RepositoryNotFoundError, SkillVersionMaterializationError) as exc:
+        except (
+            RepositoryAuthorizationError,
+            RepositoryConflictError,
+            RepositoryNotFoundError,
+            SkillVersionMaterializationError,
+        ) as exc:
             results.append(_skip_result(run_id, str(exc)))
     return results

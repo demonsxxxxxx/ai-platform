@@ -1,6 +1,6 @@
 import pytest
 
-from app.repositories import RepositoryConflictError
+from app.repositories import RepositoryAuthorizationError, RepositoryConflictError
 
 
 def test_settings_accept_malformed_dispatcher_numeric_env_for_pass_level_fail_closed(monkeypatch):
@@ -161,6 +161,9 @@ async def test_worker_dispatcher_dispatches_candidate_parent_and_enqueues_child(
             "workspace_id": "default",
             "agent_id": "general-agent",
             "skill_id": "general-chat",
+            "principal_roles": ["QA-Operator"],
+            "principal_department_id": "qa",
+            "auth_source": "session-token",
             "file_ids": [],
             "input": {"message": "build feature"},
             "executor_type": "claude-agent-worker",
@@ -184,6 +187,9 @@ async def test_worker_dispatcher_dispatches_candidate_parent_and_enqueues_child(
         )
         assert source == "worker_multi_agent_dispatcher"
         assert authorized_source_run_id == "run-parent"
+        assert queue_principal.roles == ["qa-operator"]
+        assert queue_principal.department_id == "qa"
+        assert queue_principal.source == "session-token"
         return {"tenant_id": "default", "run_id": copied["run_id"], "context_snapshot_id": "ctx-child"}
 
     async def enqueue(payload):
@@ -483,3 +489,71 @@ async def test_worker_dispatcher_skips_conflicted_candidate_without_enqueue(monk
 
     assert result == [{"run_id": "run-parent", "status": "skipped", "reason": "dispatch_step_not_pending"}]
     assert calls == [("tx_enter",), ("tx_exit", True), ("tx_enter",), ("tx_exit", True)]
+
+
+@pytest.mark.asyncio
+async def test_worker_dispatcher_skips_revoked_owner_and_continues_batch(monkeypatch):
+    from app import multi_agent_dispatcher
+
+    calls = []
+
+    class Settings:
+        multi_agent_dispatch_worker_enabled = True
+        multi_agent_dispatch_worker_interval_seconds = 30.0
+        multi_agent_dispatch_worker_limit = 2
+        multi_agent_dispatch_worker_user_id = "system:multi-agent-dispatcher"
+        default_tenant_id = "default"
+
+    class Transaction:
+        async def __aenter__(self):
+            return "conn"
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def list_candidates(conn, *, tenant_id, limit):
+        return ["run-revoked", "run-allowed"]
+
+    async def dispatch_one(conn, *, tenant_id, run_id, principal, settings):
+        calls.append(("dispatch", run_id))
+        if run_id == "run-revoked":
+            raise RepositoryAuthorizationError("capability_not_authorized")
+        return {
+            "run_id": run_id,
+            "status": "queued",
+            "step_key": "code",
+            "dispatch_id": "dispatch-code",
+            "child_run_id": "run-child",
+            "parent_step_id": "step-code",
+            "queue_payload": {"tenant_id": tenant_id, "run_id": "run-child"},
+        }
+
+    async def enqueue(payload):
+        calls.append(("enqueue", payload["run_id"]))
+        return 5
+
+    monkeypatch.setattr(multi_agent_dispatcher, "_next_multi_agent_dispatch_at", 0.0, raising=False)
+    monkeypatch.setattr(multi_agent_dispatcher, "transaction", lambda: Transaction())
+    monkeypatch.setattr(
+        multi_agent_dispatcher.repositories,
+        "list_multi_agent_dispatch_candidate_run_ids",
+        list_candidates,
+        raising=False,
+    )
+    monkeypatch.setattr(multi_agent_dispatcher, "_dispatch_one_ready_parent", dispatch_one)
+    monkeypatch.setattr(multi_agent_dispatcher, "enqueue_run", enqueue)
+
+    result = await multi_agent_dispatcher.dispatch_multi_agent_ready_steps_for_worker(Settings(), now=10.0)
+
+    assert result == [
+        {"run_id": "run-revoked", "status": "skipped", "reason": "capability_not_authorized"},
+        {
+            "run_id": "run-allowed",
+            "status": "queued",
+            "step_key": "code",
+            "dispatch_id": "dispatch-code",
+            "child_run_id": "run-child",
+            "queue_position": 5,
+        },
+    ]
+    assert calls == [("dispatch", "run-revoked"), ("dispatch", "run-allowed"), ("enqueue", "run-child")]

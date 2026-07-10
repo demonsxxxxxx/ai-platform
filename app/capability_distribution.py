@@ -1,6 +1,7 @@
-import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Literal
+
+from app.auth import normalize_roles
 
 
 CapabilityAccessIntent = Literal["discover", "use", "manage"]
@@ -67,12 +68,7 @@ class CapabilityAccessDecision:
 def normalize_capability_roles(roles: Iterable[str]) -> list[str]:
     """Canonicalize role labels for distribution comparisons."""
 
-    normalized: list[str] = []
-    for role in roles:
-        candidate = re.sub(r"[\s-]+", "_", str(role).strip().lower())
-        if candidate and candidate not in normalized:
-            normalized.append(candidate)
-    return normalized
+    return normalize_roles(roles)
 
 
 def _decision(subject: CapabilityDistributionSubject, *, allowed: bool, reason: str, admin_bypass: bool = False) -> CapabilityAccessDecision:

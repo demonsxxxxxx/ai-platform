@@ -4,22 +4,51 @@ import json
 
 import pytest
 
+from app import repositories as repository_module
 from app.executors.base import ArtifactManifest, ExecutorResult
 from app.executors.fake import FakeFailureAdapter, FakeSuccessAdapter
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.worker import (
+    _locked_run_principal,
     _multi_agent_result_summary,
     _payload_from_locked_run,
     _record_run_step_from_event,
     parse_queue_payload,
     process_run_payload,
 )
+from app.auth import is_ai_admin
 
 
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
 _CURRENT_QUEUE_PAYLOAD = None
+_ORIGINAL_ENSURE_MCP_TOOL_ACTIVE = repository_module.ensure_mcp_tool_active
+
+
+@pytest.mark.parametrize(
+    ("stored_role", "expected_admin"),
+    [
+        (" PLATFORM_ADMIN ", True),
+        ("platform-admin", False),
+        ("platform admin", False),
+    ],
+)
+def test_worker_role_identity_matches_shared_normalization(stored_role, expected_admin):
+    principal = _locked_run_principal(
+        {
+            "principal_roles": [stored_role],
+            "principal_department_id": "qa",
+            "auth_source": "session-token",
+        },
+        {
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+        },
+    )
+
+    assert principal.roles == [stored_role.strip().lower()]
+    assert is_ai_admin(principal) is expected_admin
 
 
 def release_decision(version: str) -> dict:
@@ -156,12 +185,14 @@ def default_cancel_not_requested(monkeypatch):
     monkeypatch.setattr("app.worker._PARENT_ROLLUP_RETRY_DELAY_SECONDS", 0, raising=False)
 
     async def resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        executor_type = "ragflow" if skill_id == "ragflow-knowledge-search" else "fake"
         return {
             "agent_id": agent_id,
             "agent_status": "active",
             "skill_id": skill_id,
             "skill_status": "active",
-            "executor_type": "fake",
+            "executor_type": executor_type,
+            "backing_mcp_tool_id": skill_id if executor_type == "ragflow" else None,
         }
 
     async def get_capability_distribution_row(conn, *, tenant_id, capability_kind, capability_id):
@@ -177,6 +208,35 @@ def default_cancel_not_requested(monkeypatch):
         }
 
     async def get_mcp_tool_registry_entry(conn, *, tenant_id, tool_id):
+        if (
+            tool_id == "ragflow-knowledge-search"
+            and repository_module.ensure_mcp_tool_active is not _ORIGINAL_ENSURE_MCP_TOOL_ACTIVE
+        ):
+            try:
+                policy = await repository_module.ensure_mcp_tool_active(
+                    conn,
+                    tenant_id=tenant_id,
+                    tool_id=tool_id,
+                )
+            except RepositoryConflictError:
+                return {
+                    "tool_id": tool_id,
+                    "server_id": "default-server",
+                    "effective_status": "disabled",
+                    "server_status": "active",
+                    "visible_to_user": True,
+                    "write_capable": False,
+                    "risk_level": "low",
+                }
+            return {
+                "tool_id": str(policy.get("tool_id") or policy.get("id") or tool_id),
+                "server_id": str(policy.get("server_id") or "default-server"),
+                "effective_status": str(policy.get("effective_status") or policy.get("status") or "disabled"),
+                "server_status": str(policy.get("server_status") or "active"),
+                "visible_to_user": bool(policy.get("visible_to_user", True)),
+                "write_capable": bool(policy.get("write_capable")),
+                "risk_level": str(policy.get("risk_level") or "low"),
+            }
         return {
             "tool_id": tool_id,
             "server_id": "default-server",
@@ -5126,13 +5186,14 @@ async def test_worker_blocks_disabled_mcp_tool_before_dispatch(monkeypatch):
     )
 
     assert outcome.status == "failed"
-    assert outcome.error_code == "mcp_tool_disabled"
+    assert outcome.error_code == "capability_not_authorized"
     assert ("policy", "tenant-a", "ragflow-knowledge-search") in calls
     assert not any(item[0] == "adapter" for item in calls)
-    assert any(item[0] == "fail" and item[1] == "mcp_tool_disabled" for item in calls)
-    denied_event = next(item for item in calls if item[0] == "event" and item[1] == "mcp_tool_denied")
-    assert denied_event[2] == "tool_policy"
-    assert denied_event[3]["mcp_tool_id"] == "ragflow-knowledge-search"
+    assert any(item[0] == "fail" and item[1] == "capability_not_authorized" for item in calls)
+    denied_event = next(item for item in calls if item[0] == "event" and item[1] == "capability_not_authorized")
+    assert denied_event[2] == "authorization"
+    assert denied_event[3]["capability_id"] == "ragflow-knowledge-search"
+    assert denied_event[3]["reason"] == "lifecycle_denied"
     assert denied_event[3]["visible_to_user"] is True
 
 
@@ -5190,19 +5251,19 @@ async def test_worker_blocks_high_risk_mcp_tool_without_permission_decision(monk
     )
 
     assert outcome.status == "failed"
-    assert outcome.error_code == "tool_permission_required"
+    assert outcome.error_code == "capability_not_authorized"
     assert ("decision_lookup", "ragflow-knowledge-search") in calls
     assert not any(item[0] == "adapter" for item in calls)
-    assert any(item[0] == "fail" and item[1] == "tool_permission_required" for item in calls)
-    denied_event = next(item for item in calls if item[0] == "event" and item[1] == "mcp_tool_denied")
-    assert denied_event[2] == "tool_policy"
-    assert denied_event[3]["policy"] == "tool_permission_gate"
+    assert any(item[0] == "fail" and item[1] == "capability_not_authorized" for item in calls)
+    denied_event = next(item for item in calls if item[0] == "event" and item[1] == "capability_not_authorized")
+    assert denied_event[2] == "authorization"
+    assert denied_event[3]["policy"] == "capability_distribution"
     assert denied_event[3]["reason"] == "tool_permission_required"
-    assert denied_event[3]["risk_level"] == "high"
-    assert denied_event[3]["write_capable"] is True
     denied_audit = next(item for item in calls if item[0] == "audit")
     assert denied_audit[1] == "mcp_tool_policy_denied"
     assert denied_audit[2]["reason"] == "tool_permission_required"
+    assert denied_audit[2]["risk_level"] == "high"
+    assert denied_audit[2]["write_capable"] is True
 
 
 @pytest.mark.asyncio
@@ -5533,16 +5594,17 @@ async def test_worker_fails_closed_when_allow_once_mcp_decision_cannot_be_consum
     )
 
     assert outcome.status == "failed"
-    assert outcome.error_code == "tool_permission_consumed_or_expired"
+    assert outcome.error_code == "capability_not_authorized"
     assert not any(item[0] == "adapter" for item in calls)
     assert any(item[0] == "consume" and item[1]["request_id"] == "tpr-once" for item in calls)
-    assert any(item[0] == "fail" and item[1] == "tool_permission_consumed_or_expired" for item in calls)
-    denied_event = next(item for item in calls if item[0] == "event" and item[1] == "mcp_tool_denied")
-    assert denied_event[2] == "tool_policy"
+    assert any(item[0] == "fail" and item[1] == "capability_not_authorized" for item in calls)
+    denied_event = next(item for item in calls if item[0] == "event" and item[1] == "capability_not_authorized")
+    assert denied_event[2] == "authorization"
     assert denied_event[3]["reason"] == "tool_permission_consumed_or_expired"
-    denied_audit = next(item for item in calls if item[0] == "audit")
-    assert denied_audit[1] == "mcp_tool_policy_denied"
-    assert denied_audit[2]["reason"] == "tool_permission_consumed_or_expired"
+    denied_audit = next(
+        item for item in calls if item[0] == "audit" and item[1] == "capability_distribution.denied"
+    )
+    assert denied_audit[2]["decision_reason"] == "tool_permission_consumed_or_expired"
 
 
 def _task6_distribution(
@@ -5796,7 +5858,7 @@ async def test_worker_authorization_snapshot_uses_only_locked_run_principal(monk
     assert captured == {
         "tenant_id": "tenant-a",
         "department_id": "qa",
-        "roles": ["qa_operator"],
+        "roles": ["qa-operator", "qa_operator"],
         "source": "locked-session-token",
     }
     assert any(call[0] == "skill_lookup" for call in calls)
@@ -5904,6 +5966,73 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
     assert registered_input["mcp_tool_ids"] == ["tool-global"]
     assert registered_input["multi_agent_steps"][0]["mcp_tool_ids"] == ["tool-step"]
     assert "mcpToolIds" not in registered_input
+
+
+@pytest.mark.asyncio
+async def test_worker_direct_ragflow_and_explicit_selector_share_one_allow_once_pipeline(monkeypatch):
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        locked_input={"mode": "file", "mcp_tool_ids": ["tenant-search"]},
+    )
+    state["skill"].update(executor_type="ragflow", backing_mcp_tool_id="tenant-search")
+    state["locked_run"]["input_json"]["executor_type"] = "ragflow"
+    state["tools"]["tenant-search"] = _task6_tool(
+        "tenant-search",
+        "tenant-search-server",
+        write_capable=True,
+        risk_level="high",
+    )
+    state["distributions"][("mcp_server", "tenant-search-server")] = _task6_distribution(
+        "mcp_server",
+        "tenant-search-server",
+        department_ids=["qa"],
+        allowed_roles=["qa_operator"],
+    )
+    state["permission_decisions"]["tenant-search"] = {"id": "grant-once", "decision": "allow_once"}
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "succeeded"
+    assert [call for call in calls if call[0] == "tool_lookup"] == [
+        ("tool_lookup", "tenant-a", "tenant-search")
+    ]
+    assert len([call for call in calls if call[0] == "permission_lookup"]) == 1
+    assert [call[1]["request_id"] for call in calls if call[0] == "permission_consume"] == ["grant-once"]
+    policy_audits = [
+        call[1]
+        for call in calls
+        if call[0] == "audit" and call[1]["action"] == "mcp_tool_policy_allowed"
+    ]
+    assert len(policy_audits) == 1
+    assert policy_audits[0]["target_id"] == "tenant-search"
+    registered_input = next(call[1] for call in calls if call[0] == "adapter")
+    assert registered_input["mcp_tool_ids"] == ["tenant-search"]
+
+
+@pytest.mark.asyncio
+async def test_worker_direct_ragflow_rechecks_permission_policy_after_enqueue(monkeypatch):
+    raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch, locked_input={"mode": "file"})
+    state["skill"].update(executor_type="ragflow", backing_mcp_tool_id="tenant-search")
+    state["locked_run"]["input_json"]["executor_type"] = "ragflow"
+    state["tools"]["tenant-search"] = _task6_tool(
+        "tenant-search",
+        "tenant-search-server",
+        write_capable=True,
+        risk_level="high",
+    )
+    state["distributions"][("mcp_server", "tenant-search-server")] = _task6_distribution(
+        "mcp_server",
+        "tenant-search-server",
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    assert len([call for call in calls if call[0] == "tool_lookup"]) == 1
+    assert len([call for call in calls if call[0] == "permission_lookup"]) == 1
+    assert not any(call[0] == "permission_consume" for call in calls)
+    _task6_assert_no_executor_calls(calls)
 
 
 @pytest.mark.parametrize(
@@ -6363,12 +6492,18 @@ async def test_worker_allow_once_failure_replays_admin_bypass_audits_in_recovery
         "capability_distribution.admin_bypass",
         "capability_distribution.admin_bypass",
         "capability_distribution.admin_bypass",
+        "mcp_tool_policy_allowed",
+        "mcp_tool_policy_allowed",
         "capability_distribution.denied",
     ]
     assert [(audit["target_type"], audit["target_id"]) for audit in persisted_audits[:3]] == [
         ("skill", "qa-file-reviewer"),
         ("mcp_tool", "tool-first"),
         ("mcp_tool", "tool-second"),
+    ]
+    assert [audit["target_id"] for audit in persisted_audits[3:5]] == [
+        "tool-first",
+        "tool-second",
     ]
     assert persisted_audits[-1]["target_id"] == "tool-second"
     assert persisted_audits[-1]["payload_json"]["decision_reason"] == "tool_permission_consumed_or_expired"

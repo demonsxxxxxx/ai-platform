@@ -147,6 +147,12 @@ def test_admin_reads_capability_distribution_detail(monkeypatch):
 
 def test_admin_updates_skill_distribution_normalizes_scopes_and_audits(monkeypatch):
     calls = []
+    metadata = {
+        "ticket": "CAP-2",
+        "api_key": "plain-secret",
+        "credentials": {"token": "nested-secret"},
+        "environment": {"OPENAI_API_KEY": "env-secret"},
+    }
 
     async def fake_get_skill(conn, *, skill_id):
         assert skill_id == "qa-file-reviewer"
@@ -186,7 +192,7 @@ def test_admin_updates_skill_distribution_normalizes_scopes_and_audits(monkeypat
             "scope_mode": "allowlist",
             "department_ids": [" QA ", "qa", "RD"],
             "allowed_roles": [" QA_REVIEWER ", "qa_reviewer", "RD-Lead"],
-            "metadata": {"ticket": "CAP-2"},
+            "metadata": metadata,
         },
     )
 
@@ -196,7 +202,8 @@ def test_admin_updates_skill_distribution_normalizes_scopes_and_audits(monkeypat
     assert body["audit_action"] == "capability_distribution.updated"
     assert body["capability_distribution"]["department_ids"] == ["qa", "rd"]
     assert body["capability_distribution"]["allowed_roles"] == ["qa_reviewer", "rd-lead"]
-    assert calls[0][1]["metadata_json"] == {"ticket": "CAP-2"}
+    assert body["capability_distribution"]["metadata_json"] == metadata
+    assert calls[0][1]["metadata_json"] == metadata
     assert calls[1][1]["action"] == "capability_distribution.updated"
     assert calls[1][1]["payload_json"] == {
         "capability_kind": "skill",
@@ -209,8 +216,10 @@ def test_admin_updates_skill_distribution_normalizes_scopes_and_audits(monkeypat
         "admin_bypass": True,
         "status": "active",
         "visible_to_user": False,
-        "metadata": {"ticket": "CAP-2"},
     }
+    assert "plain-secret" not in str(calls[1][1]["payload_json"])
+    assert "nested-secret" not in str(calls[1][1]["payload_json"])
+    assert "env-secret" not in str(calls[1][1]["payload_json"])
 
 
 def test_admin_updates_mcp_distribution_only_for_tenant_registry_server(monkeypatch):

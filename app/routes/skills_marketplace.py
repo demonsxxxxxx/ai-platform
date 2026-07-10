@@ -19,6 +19,7 @@ from app.capability_distribution import (
     capability_distribution_audit_payload,
     resolve_capability_access,
 )
+from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
 from app.models import (
     MarketplaceInstallResponse,
@@ -323,15 +324,6 @@ def _available_tags(rows: list[dict[str, Any]]) -> list[str]:
     return sorted(tags)
 
 
-async def _catalog_rows(*, tenant_id: str, include_disabled: bool) -> list[dict[str, Any]]:
-    async with transaction() as conn:
-        return await repositories.list_public_skill_catalog(
-            conn,
-            tenant_id=tenant_id,
-            include_disabled=include_disabled,
-        )
-
-
 def _attach_user_file_overlays(
     rows: list[dict[str, Any]],
     overlays: list[dict[str, Any]],
@@ -347,6 +339,36 @@ def _attach_user_file_overlays(
         item["user_file_overlays"] = by_skill.get(str(item.get("skill_id") or ""), [])
         projected.append(item)
     return projected
+
+
+def _skill_lifecycle_status(row: dict[str, Any]) -> str:
+    return str(row.get("lifecycle_status") or row.get("status") or "disabled")
+
+
+async def _audit_skill_admin_bypass(
+    conn: Any,
+    *,
+    principal: AuthPrincipal,
+    skill_name: str,
+    decision: CapabilityAccessDecision,
+) -> None:
+    if not decision.admin_bypass:
+        return
+    await repositories.append_audit_log(
+        conn,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        action="capability_distribution.admin_bypass",
+        target_type="skill",
+        target_id=skill_name,
+        trace_id=standard_trace_id(skill_name),
+        payload_json=capability_distribution_audit_payload(
+            decision=decision,
+            actor_department_id=principal.department_id,
+            capability_kind="skill",
+            capability_id=skill_name,
+        ),
+    )
 
 
 async def _public_catalog_rows(
@@ -372,10 +394,10 @@ async def _public_catalog_rows(
             str(row.get("capability_id") or ""): row
             for row in distributions
         }
-        rows = [
-            row
-            for row in rows
-            if resolve_capability_access(
+        authorized_rows: list[dict[str, Any]] = []
+        for row in rows:
+            skill_name = str(row.get("skill_id") or "")
+            decision = resolve_capability_access(
                 CapabilityAccessContext(
                     tenant_id=principal.tenant_id,
                     department_id=principal.department_id,
@@ -385,13 +407,22 @@ async def _public_catalog_rows(
                 ),
                 CapabilityDistributionSubject(
                     capability_kind="skill",
-                    capability_id=str(row.get("skill_id") or ""),
-                    lifecycle_status=str(row.get("status") or "disabled"),
-                    distribution=distribution_map.get(str(row.get("skill_id") or "")),
+                    capability_id=skill_name,
+                    lifecycle_status=_skill_lifecycle_status(row),
+                    distribution=distribution_map.get(skill_name),
                 ),
                 intent="discover",
-            ).visible
-        ]
+            )
+            if not decision.visible:
+                continue
+            await _audit_skill_admin_bypass(
+                conn,
+                principal=principal,
+                skill_name=skill_name,
+                decision=decision,
+            )
+            authorized_rows.append(row)
+        rows = authorized_rows
         overlays = (
             await repositories.list_user_skill_file_overlays(
                 conn,
@@ -437,13 +468,19 @@ async def _public_skill_access(
             CapabilityDistributionSubject(
                 capability_kind="skill",
                 capability_id=skill_name,
-                lifecycle_status=str(row.get("status") or "disabled"),
+                lifecycle_status=_skill_lifecycle_status(row),
                 distribution=distribution,
             ),
             intent="discover",
         )
         if not decision.visible:
             raise HTTPException(status_code=404, detail="skill_not_found")
+        await _audit_skill_admin_bypass(
+            conn,
+            principal=principal,
+            skill_name=skill_name,
+            decision=decision,
+        )
         overlays = (
             await repositories.list_user_skill_file_overlays(
                 conn,
@@ -572,13 +609,13 @@ def _parse_public_skill_package(content: bytes) -> ParsedSkillPackage:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _preview_import_package(parsed: ParsedSkillPackage, rows: list[dict[str, Any]]) -> dict[str, object]:
+def _preview_import_package(parsed: ParsedSkillPackage, *, already_exists: bool) -> dict[str, object]:
     return {
         "name": parsed.skill_id,
         "description": parsed.description,
         "file_count": len(parsed.files),
         "files": [str(item.get("relative_path") or "") for item in parsed.files],
-        "already_exists": any(str(row.get("skill_id") or "") == parsed.skill_id for row in rows),
+        "already_exists": already_exists,
     }
 
 
@@ -845,10 +882,20 @@ async def preview_skill_upload(
 
     _require_permission(principal, "skill:write")
     parsed = await _read_and_parse_public_import(file)
-    rows = await _catalog_rows(tenant_id=principal.tenant_id, include_disabled=True)
+    try:
+        await _public_skill_access(
+            principal=principal,
+            skill_name=parsed.skill_id,
+            include_user_file_overlays=False,
+        )
+        already_exists = True
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+        already_exists = False
     return PublicSkillImportPreviewResponse(
         skill_count=1,
-        skills=[_preview_import_package(parsed, rows)],
+        skills=[_preview_import_package(parsed, already_exists=already_exists)],
     )
 
 

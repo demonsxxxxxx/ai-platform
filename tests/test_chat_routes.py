@@ -612,6 +612,39 @@ async def test_chat_stream_capability_distribution_denial_precedes_create_run(mo
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_direct_ragflow_without_explicit_selector_uses_unified_authorizer(monkeypatch):
+    calls = []
+
+    async def deny(*args, **kwargs):
+        calls.append(kwargs)
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_create_run(*args, **kwargs):
+        raise AssertionError("direct ragflow denial must precede create_run")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                agent_id="sop-assistant",
+                skill_id="ragflow-knowledge-search",
+                message="search the knowledge base",
+            ),
+            principal=principal(department_id="qa", roles=["user"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert len(calls) == 1
+    assert calls[0]["agent_id"] == "sop-assistant"
+    assert calls[0]["skill_id"] == "ragflow-knowledge-search"
+    assert "mcp_tool_ids" not in calls[0]["normalized_input"]
+
+
+@pytest.mark.asyncio
 async def test_chat_stream_invalid_mcp_selector_type_returns_controlled_403_before_create(monkeypatch):
     async def fail_create_run(*args, **kwargs):
         raise AssertionError("invalid MCP selector must fail before create_run")

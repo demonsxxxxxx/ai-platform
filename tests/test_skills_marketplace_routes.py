@@ -538,6 +538,10 @@ def test_skills_and_marketplace_read_contracts_project_catalog_and_files(monkeyp
     assert marketplace_file_response.json()["content"] == "Review guide"
 
     assert any(name == "list" and payload["tenant_id"] == "default" for name, payload in calls)
+    assert not any(
+        name == "audit" and payload["action"] == "capability_distribution.admin_bypass"
+        for name, payload in calls
+    )
 
 
 def test_public_skill_reads_hide_disabled_tenant_availability(monkeypatch):
@@ -846,13 +850,13 @@ def test_skill_and_marketplace_reads_resolve_unified_distribution(monkeypatch):
             "visible_to_user": True,
             "scope_mode": "allowlist",
             "department_ids": ["qa"],
-            "allowed_roles": ["qa_operator"],
+            "allowed_roles": ["qa-operator"],
             "metadata_json": {},
         }
     ]
     calls = install_route_fakes(monkeypatch, distribution_rows=distributions)
     client = TestClient(create_app())
-    qa_headers = headers(roles="QA Operator", department_id="qa")
+    qa_headers = headers(roles="QA-OPERATOR", department_id="qa")
 
     same_department = client.get("/api/skills/", headers=qa_headers)
     marketplace_same_department = client.get("/api/marketplace/", headers=qa_headers)
@@ -871,7 +875,7 @@ def test_skill_and_marketplace_reads_resolve_unified_distribution(monkeypatch):
     assert client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=cross_department_headers).status_code == 404
 
     distributions[0]["department_ids"] = []
-    distributions[0]["allowed_roles"] = ["qa_operator"]
+    distributions[0]["allowed_roles"] = ["qa-operator"]
     assert client.get("/api/marketplace/", headers=headers(roles="viewer")).json()["skills"] == []
 
     distributions[0]["visible_to_user"] = False
@@ -897,6 +901,72 @@ def test_skill_and_marketplace_reads_resolve_unified_distribution(monkeypatch):
     admin_response = client.get("/api/marketplace/", headers=headers(roles="admin", department_id="rd"))
     assert admin_response.json()["total"] == 1
     assert any(name == "list_distributions" for name, _ in calls)
+
+
+def test_skill_and_marketplace_admin_bypass_reads_are_audited(monkeypatch):
+    cases = [
+        (
+            {
+                "status": "active",
+                "visible_to_user": False,
+                "department_ids": [],
+                "allowed_roles": [],
+            },
+            "/api/skills/",
+        ),
+        (
+            {
+                "status": "disabled",
+                "visible_to_user": True,
+                "department_ids": [],
+                "allowed_roles": [],
+            },
+            "/api/marketplace/",
+        ),
+        (
+            {
+                "status": "active",
+                "visible_to_user": True,
+                "department_ids": ["qa"],
+                "allowed_roles": [],
+            },
+            "/api/skills/qa-file-reviewer",
+        ),
+        (
+            {
+                "status": "active",
+                "visible_to_user": True,
+                "department_ids": [],
+                "allowed_roles": ["qa-operator"],
+            },
+            "/api/marketplace/qa-file-reviewer/files/SKILL.md",
+        ),
+    ]
+
+    for distribution_overrides, path in cases:
+        distribution = {
+            "capability_kind": "skill",
+            "capability_id": "qa-file-reviewer",
+            "scope_mode": "allowlist",
+            "metadata_json": {},
+            **distribution_overrides,
+        }
+        calls = install_route_fakes(monkeypatch, distribution_rows=[distribution])
+        response = TestClient(create_app()).get(
+            path,
+            headers=headers(roles="admin", department_id="platform"),
+        )
+
+        assert response.status_code == 200
+        audit = next(
+            payload
+            for name, payload in calls
+            if name == "audit" and payload["action"] == "capability_distribution.admin_bypass"
+        )
+        assert audit["target_type"] == "skill"
+        assert audit["target_id"] == "qa-file-reviewer"
+        assert audit["payload_json"]["decision_reason"] == "admin_bypass"
+        assert audit["payload_json"]["admin_bypass"] is True
 
 
 def test_shared_skill_lifecycle_requires_admin_and_marketplace_install_stays_user_local(monkeypatch):
@@ -950,7 +1020,7 @@ def test_marketplace_install_audit_includes_allowed_distribution_decision(monkey
                 "visible_to_user": True,
                 "scope_mode": "allowlist",
                 "department_ids": ["qa"],
-                "allowed_roles": ["qa_operator"],
+                "allowed_roles": ["qa-operator"],
                 "metadata_json": {},
             }
         ],
@@ -959,7 +1029,7 @@ def test_marketplace_install_audit_includes_allowed_distribution_decision(monkey
 
     response = client.post(
         "/api/marketplace/qa-file-reviewer/install",
-        headers=headers("skill:write,marketplace:read", roles="QA Operator"),
+        headers=headers("skill:write,marketplace:read", roles="QA-OPERATOR"),
     )
 
     assert response.status_code == 200
@@ -974,7 +1044,7 @@ def test_marketplace_install_audit_includes_allowed_distribution_decision(monkey
         "capability_id": "qa-file-reviewer",
         "actor_department_id": "qa",
         "department_scope_ids": ["qa"],
-        "role_scope_ids": ["qa_operator"],
+        "role_scope_ids": ["qa-operator"],
         "scope_mode": "allowlist",
         "decision_reason": "allowed",
         "admin_bypass": False,
@@ -1354,6 +1424,84 @@ def test_public_skill_zip_preview_projects_package_without_persistence(monkeypat
     ]
     assert not any(name == "upsert_file" for name, _ in calls)
     assert not any(name == "audit" for name, _ in calls)
+
+
+def test_public_skill_zip_preview_hides_unauthorized_catalog_existence(monkeypatch):
+    distributions: list[dict[str, object]] = []
+    calls = install_route_fakes(monkeypatch, distribution_rows=distributions)
+    client = TestClient(create_app())
+    restricted_rows = [
+        {
+            "status": "active",
+            "visible_to_user": False,
+            "department_ids": [],
+            "allowed_roles": [],
+        },
+        {
+            "status": "disabled",
+            "visible_to_user": True,
+            "department_ids": [],
+            "allowed_roles": [],
+        },
+        {
+            "status": "active",
+            "visible_to_user": True,
+            "department_ids": ["qa"],
+            "allowed_roles": [],
+        },
+        {
+            "status": "active",
+            "visible_to_user": True,
+            "department_ids": [],
+            "allowed_roles": ["qa-operator"],
+        },
+    ]
+
+    for overrides in restricted_rows:
+        distributions[:] = [
+            {
+                "capability_kind": "skill",
+                "capability_id": "qa-file-reviewer",
+                "scope_mode": "allowlist",
+                "metadata_json": {},
+                **overrides,
+            }
+        ]
+        response = client.post(
+            "/api/skills/upload/preview",
+            files={"file": ("qa-file-reviewer.zip", _skill_package_zip(), "application/zip")},
+            headers=headers("skill:write", roles="viewer", department_id="rd"),
+        )
+        assert response.status_code == 200
+        assert response.json()["skills"][0]["already_exists"] is False
+
+    distributions.clear()
+    missing = client.post(
+        "/api/skills/upload/preview",
+        files={"file": ("qa-file-reviewer.zip", _skill_package_zip(), "application/zip")},
+        headers=headers("skill:write", roles="viewer", department_id="rd"),
+    )
+    assert missing.status_code == 200
+    assert missing.json()["skills"][0]["already_exists"] is False
+    assert not any(
+        name == "audit" and payload["action"] == "capability_distribution.admin_bypass"
+        for name, payload in calls
+    )
+
+
+def test_public_skill_zip_preview_admin_bypass_is_audited(monkeypatch):
+    calls = install_route_fakes(monkeypatch, distribution_rows=admin_bypass_distribution_rows())
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/skills/upload/preview",
+        files={"file": ("qa-file-reviewer.zip", _skill_package_zip(), "application/zip")},
+        headers=headers("skill:write", roles="admin", department_id="platform"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["skills"][0]["already_exists"] is True
+    assert_admin_bypass_audit(calls, action="capability_distribution.admin_bypass")
 
 
 def test_public_skill_zip_import_checks_permission_before_missing_file_validation(monkeypatch):

@@ -226,8 +226,13 @@ async def test_resolve_agent_skill_rejects_disabled_mcp_backed_skill():
     assert params == ("ragflow-knowledge-search", "default", "sop-assistant")
 
 
-async def test_workbench_capability_status_follows_disabled_mcp_tool():
+async def test_workbench_capability_status_follows_disabled_mcp_tool(monkeypatch):
     from app.repositories import list_workbench_capabilities
+
+    async def no_backfill(conn, *, tenant_id):
+        assert tenant_id == "default"
+
+    monkeypatch.setattr("app.repositories.ensure_tenant_capability_distribution_backfill", no_backfill)
 
     class EmptyCursor:
         async def fetchall(self):
@@ -251,5 +256,7 @@ async def test_workbench_capability_status_follows_disabled_mcp_tool():
     assert "coalesce(mcp_tools.status, 'disabled') <> 'active'" in sql
     assert "coalesce(tool_policies.status, 'disabled') <> 'active'" in sql
     assert "coalesce(tool_policies.visible_to_user, false) = false" in sql
+    assert "tenant_workbench_skills" not in sql
+    assert "join tenant_capability_distributions" in sql
     assert "then 'disabled'" in sql
-    assert params == ("default",)
+    assert params == ("default", "default")

@@ -12,6 +12,7 @@ def test_schema_declares_platform_fact_tables():
         "skills",
         "tenant_workbench_skills",
         "tenant_capability_distributions",
+        "tenant_capability_distribution_backfills",
         "mcp_tools",
         "tool_policies",
         "sessions",
@@ -37,6 +38,14 @@ def test_schema_declares_capability_distribution_authority_constraints():
     assert "check (capability_kind in ('skill', 'mcp_server'))" in schema
     assert "check (status in ('active', 'disabled'))" in schema
     assert "check (scope_mode in ('allowlist'))" in schema
+
+
+def test_schema_declares_per_tenant_capability_distribution_backfill_completion_boundary():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "create table if not exists tenant_capability_distribution_backfills" in schema
+    assert "tenant_id text primary key references tenants(id)" in schema
+    assert "completed_at timestamptz" in schema
 
 
 def test_schema_declares_principal_department_auth_snapshot():

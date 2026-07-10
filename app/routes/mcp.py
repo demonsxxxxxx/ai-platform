@@ -172,16 +172,24 @@ def _role_quotas_payload(role_quotas: dict[str, McpRoleQuota]) -> dict[str, Any]
     return {role: quota.model_dump(exclude_none=True) for role, quota in role_quotas.items()}
 
 
-def _server_response(row: dict[str, Any], *, can_edit: bool = False) -> dict[str, Any]:
-    enabled = str(row.get("status") or "disabled") == "active"
+def _server_response(
+    row: dict[str, Any],
+    *,
+    distribution: dict[str, Any] | None,
+    can_edit: bool = False,
+) -> dict[str, Any]:
+    distribution_status = str((distribution or {}).get("status") or "disabled")
+    enabled = distribution_status == "active"
     return {
         "name": str(row.get("name") or ""),
         "transport": str(row.get("transport") or "streamable_http"),
+        "status": distribution_status,
         "enabled": enabled,
+        "visible_to_user": bool((distribution or {}).get("visible_to_user")),
         "is_system": bool(row.get("is_system")),
         "can_edit": can_edit,
-        "allowed_roles": list(row.get("allowed_roles") or []),
-        "allowed_departments": list(row.get("department_ids") or []),
+        "allowed_roles": list((distribution or {}).get("allowed_roles") or []),
+        "allowed_departments": list((distribution or {}).get("department_ids") or []),
         "role_quotas": row.get("role_quotas") if isinstance(row.get("role_quotas"), dict) else {},
         "credential_state": str(row.get("credential_state") or "not_configured"),
         "credential_metadata": row.get("credential_metadata") if isinstance(row.get("credential_metadata"), dict) else {},
@@ -415,7 +423,14 @@ async def _public_projected_servers(principal: AuthPrincipal) -> list[dict[str, 
                     distribution=distribution_map.get(name),
                 ),
             )
-    return [_server_response(row, can_edit=is_ai_admin(principal)) for row in authorized]
+    return [
+        _server_response(
+            row,
+            distribution=distribution_map.get(_server_name(row)),
+            can_edit=is_ai_admin(principal),
+        )
+        for row in authorized
+    ]
 
 
 async def _write_server(
@@ -438,6 +453,12 @@ async def _write_server(
                 user_id=principal.user_id,
                 display_name=principal.display_name or principal.user_id,
             )
+            existing_distribution = await repositories.get_capability_distribution_row(
+                conn,
+                tenant_id=principal.tenant_id,
+                capability_kind="mcp_server",
+                capability_id=name,
+            )
             row = await repositories.upsert_mcp_server_registry(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -452,6 +473,31 @@ async def _write_server(
                 credential_state=credential_state,
                 credential_metadata=metadata,
                 credential_fingerprint=fingerprint,
+                updated_by=principal.user_id,
+            )
+            distribution = await repositories.upsert_capability_distribution_row(
+                conn,
+                tenant_id=principal.tenant_id,
+                capability_kind="mcp_server",
+                capability_id=name,
+                status="active" if request.enabled else "disabled",
+                visible_to_user=bool(
+                    existing_distribution.get("visible_to_user")
+                    if existing_distribution is not None
+                    else True
+                ),
+                scope_mode=str(
+                    existing_distribution.get("scope_mode")
+                    if existing_distribution is not None
+                    else "allowlist"
+                ),
+                department_ids=request.department_ids,
+                allowed_roles=request.allowed_roles,
+                metadata_json=dict(
+                    existing_distribution.get("metadata_json") or {}
+                    if existing_distribution is not None
+                    else {}
+                ),
                 updated_by=principal.user_id,
             )
             await repositories.record_mcp_server_credential(
@@ -487,7 +533,7 @@ async def _write_server(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except repositories.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return _server_response(row, can_edit=True)
+    return _server_response(row, distribution=distribution, can_edit=True)
 
 
 @router.get("/mcp/")
@@ -572,8 +618,12 @@ async def get_mcp_server(
     """Return a single governed MCP server projection."""
 
     safe_name = _safe_name(name)
-    row, _, _ = await _public_server_access(principal=principal, name=safe_name)
-    return _server_response(row, can_edit=is_ai_admin(principal))
+    row, distribution, _ = await _public_server_access(principal=principal, name=safe_name)
+    return _server_response(
+        row,
+        distribution=distribution,
+        can_edit=is_ai_admin(principal),
+    )
 
 
 @router.put("/mcp/{name}")
@@ -613,6 +663,14 @@ async def delete_mcp_server(
                 name=safe_name,
                 updated_by=principal.user_id,
             )
+            distribution = await repositories.set_capability_distribution_status(
+                conn,
+                tenant_id=principal.tenant_id,
+                capability_kind="mcp_server",
+                capability_id=safe_name,
+                status="disabled",
+                updated_by=principal.user_id,
+            )
             await repositories.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -625,7 +683,7 @@ async def delete_mcp_server(
             )
     except repositories.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return _server_response(row, can_edit=True)
+    return _server_response(row, distribution=distribution, can_edit=True)
 
 
 @router.patch("/mcp/{name}/toggle")
@@ -648,6 +706,14 @@ async def toggle_mcp_server(
                 enabled=request.requested_enabled(),  # type: ignore[attr-defined]
                 updated_by=principal.user_id,
             )
+            distribution = await repositories.set_capability_distribution_status(
+                conn,
+                tenant_id=principal.tenant_id,
+                capability_kind="mcp_server",
+                capability_id=safe_name,
+                status="active" if row.get("status") == "active" else "disabled",
+                updated_by=principal.user_id,
+            )
             await repositories.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -660,7 +726,7 @@ async def toggle_mcp_server(
             )
     except repositories.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    server = _server_response(row, can_edit=True)
+    server = _server_response(row, distribution=distribution, can_edit=True)
     return {"server": server, "message": "mcp_server_toggled"}
 
 
@@ -777,6 +843,14 @@ async def delete_admin_mcp_server(
                 name=safe_name,
                 updated_by=principal.user_id,
             )
+            distribution = await repositories.set_capability_distribution_status(
+                conn,
+                tenant_id=principal.tenant_id,
+                capability_kind="mcp_server",
+                capability_id=safe_name,
+                status="disabled",
+                updated_by=principal.user_id,
+            )
             await repositories.append_audit_log(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -789,7 +863,7 @@ async def delete_admin_mcp_server(
             )
     except repositories.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return _server_response(row, can_edit=True)
+    return _server_response(row, distribution=distribution, can_edit=True)
 
 
 @router.post("/admin/mcp/{name}/promote")

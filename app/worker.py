@@ -10,13 +10,12 @@ from typing import Any
 from pydantic import ValidationError
 
 from app import repositories
-from app.auth import AuthPrincipal, is_ai_admin
+from app.auth import AuthPrincipal, is_ai_admin, normalize_roles
 from app.capability_distribution import (
     CapabilityAccessContext,
     CapabilityAccessDecision,
     CapabilityDistributionSubject,
     capability_distribution_audit_payload,
-    normalize_capability_roles,
     resolve_capability_access,
 )
 from app.control_plane_contracts import (
@@ -98,12 +97,25 @@ class _WorkerAllowOnceGrant:
 
 
 @dataclass(frozen=True)
+class _WorkerToolPolicyAudit:
+    tool_id: str
+    allowed: bool
+    reason: str
+    risk_level: str
+    write_capable: bool
+    decision: str
+    permission_request_id: str
+    auto_allowed: bool
+
+
+@dataclass(frozen=True)
 class _WorkerCapabilityAuthorization:
     payload: QueueRunPayload
     principal: AuthPrincipal
     decisions: tuple[_WorkerCapabilityDecision, ...]
     denial: _WorkerCapabilityDecision | None = None
     allow_once_grants: tuple[_WorkerAllowOnceGrant, ...] = ()
+    tool_policy_audits: tuple[_WorkerToolPolicyAudit, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -933,7 +945,7 @@ def _locked_run_trace_id(payload: QueueRunPayload, locked_run: object) -> str:
 def _locked_run_principal(locked_run: object, run_identity: dict[str, str]) -> AuthPrincipal:
     locked = locked_run if isinstance(locked_run, dict) else {}
     raw_roles = locked.get("principal_roles")
-    roles = normalize_capability_roles(raw_roles if isinstance(raw_roles, (list, tuple, set)) else [])
+    roles = normalize_roles(raw_roles if isinstance(raw_roles, (list, tuple, set)) else [])
     return AuthPrincipal(
         user_id=run_identity["user_id"],
         display_name=run_identity["user_id"],
@@ -1049,6 +1061,7 @@ async def _reauthorize_worker_capabilities(
     context = _worker_capability_context(principal)
     decisions: list[_WorkerCapabilityDecision] = []
 
+    skill: dict[str, Any] = {}
     skill_lifecycle_status = "disabled"
     try:
         skill = await repositories.resolve_agent_skill(
@@ -1082,7 +1095,7 @@ async def _reauthorize_worker_capabilities(
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), skill_record)
 
     try:
-        requested_tool_ids = repositories.extract_run_mcp_tool_ids(payload.input)
+        requested_tool_ids = repositories.run_mcp_tool_ids_for_skill(skill, payload.input)
     except repositories.RepositoryAuthorizationError:
         denial = _worker_capability_record(
             "mcp_tool",
@@ -1093,6 +1106,8 @@ async def _reauthorize_worker_capabilities(
 
     allowed_entries: list[dict[str, Any]] = []
     allow_once_grants: list[_WorkerAllowOnceGrant] = []
+    allow_once_identities: set[tuple[str, str]] = set()
+    tool_policy_audits: list[_WorkerToolPolicyAudit] = []
     request_payload = _mcp_tool_request_payload(payload)
     for tool_id in requested_tool_ids:
         tool = await repositories.get_mcp_tool_registry_entry(
@@ -1149,21 +1164,42 @@ async def _reauthorize_worker_capabilities(
                 request_payload_json=request_payload,
             )
             tool_gate = evaluate_tool_policy(tool=tool, permission_decision=permission_decision)
+        tool_policy_audits.append(
+            _WorkerToolPolicyAudit(
+                tool_id=tool_id,
+                allowed=tool_gate.allowed,
+                reason=tool_gate.reason,
+                risk_level=tool_gate.risk_level,
+                write_capable=tool_gate.write_capable,
+                decision=tool_gate.decision,
+                permission_request_id=tool_gate.permission_request_id,
+                auto_allowed=tool_gate.auto_allowed,
+            )
+        )
         if not tool_gate.allowed:
             denial = _worker_capability_record(
                 "mcp_tool",
                 tool_id,
                 _denied_capability_decision(tool_gate.reason, source=distribution_decision),
             )
-            return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
-        if tool_gate.decision == "allow_once":
-            allow_once_grants.append(
-                _WorkerAllowOnceGrant(
-                    tool_id=tool_id,
-                    request_id=tool_gate.permission_request_id,
-                    distribution_decision=distribution_decision,
-                )
+            return _WorkerCapabilityAuthorization(
+                payload,
+                principal,
+                tuple(decisions),
+                denial,
+                tool_policy_audits=tuple(tool_policy_audits),
             )
+        if tool_gate.decision == "allow_once":
+            grant_identity = (tool_id, tool_gate.permission_request_id)
+            if grant_identity not in allow_once_identities:
+                allow_once_identities.add(grant_identity)
+                allow_once_grants.append(
+                    _WorkerAllowOnceGrant(
+                        tool_id=tool_id,
+                        request_id=tool_gate.permission_request_id,
+                        distribution_decision=distribution_decision,
+                    )
+                )
         allowed_entries.append(tool)
 
     authorized_payload = _payload_with_authorized_mcp_registration(
@@ -1175,6 +1211,7 @@ async def _reauthorize_worker_capabilities(
         principal,
         tuple(decisions),
         allow_once_grants=tuple(allow_once_grants),
+        tool_policy_audits=tuple(tool_policy_audits),
     )
 
 
@@ -1268,6 +1305,37 @@ async def _append_worker_admin_bypass_audits(
             target_id=audit.target_id,
             trace_id=audit.trace_id,
             payload_json=audit.payload_json,
+        )
+
+
+async def _append_worker_tool_policy_audits(
+    conn,
+    *,
+    authorization: _WorkerCapabilityAuthorization,
+    run_identity: dict[str, str],
+    trace_id: str,
+) -> None:
+    for audit in authorization.tool_policy_audits:
+        await repositories.append_audit_log(
+            conn,
+            tenant_id=run_identity["tenant_id"],
+            user_id=run_identity["user_id"],
+            action="mcp_tool_policy_allowed" if audit.allowed else "mcp_tool_policy_denied",
+            target_type="mcp_tool",
+            target_id=audit.tool_id,
+            trace_id=trace_id,
+            payload_json={
+                "run_id": run_identity["run_id"],
+                "session_id": run_identity["session_id"],
+                "agent_id": run_identity["agent_id"],
+                "skill_id": run_identity["skill_id"],
+                "reason": audit.reason,
+                "risk_level": audit.risk_level,
+                "write_capable": audit.write_capable,
+                "decision": audit.decision,
+                "permission_request_id": audit.permission_request_id,
+                "auto_allowed": audit.auto_allowed,
+            },
         )
 
 
@@ -1729,6 +1797,12 @@ async def process_run_payload(
                 trace_id=trace_id,
             )
             await _append_worker_admin_bypass_audits(conn, audits=admin_bypass_audits)
+            await _append_worker_tool_policy_audits(
+                conn,
+                authorization=capability_authorization,
+                run_identity=run_identity,
+                trace_id=trace_id,
+            )
             if capability_authorization.denial is not None:
                 terminal_after_transaction = await _fail_worker_capability_authorization(
                     conn,
@@ -1838,227 +1912,6 @@ async def process_run_payload(
                     reconciled_parent,
                 )
                 return terminal_after_transaction.outcome
-            if payload.executor_type == "ragflow":
-                try:
-                    tool_request_payload = _mcp_tool_request_payload(payload)
-                    tool_call_id = _mcp_tool_call_id(payload, tool_request_payload)
-                    tool = await repositories.ensure_mcp_tool_active(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        tool_id=payload.skill_id,
-                    )
-                    tool_gate = evaluate_tool_policy(tool=tool)
-                    if not tool_gate.allowed and tool_gate.reason == "tool_permission_required":
-                        permission_decision = await repositories.get_exact_tool_permission_decision(
-                            conn,
-                            tenant_id=payload.tenant_id,
-                            user_id=payload.user_id,
-                            run_id=payload.run_id,
-                            tool_id=payload.skill_id,
-                            tool_call_id=tool_call_id,
-                            request_payload_json=tool_request_payload,
-                        )
-                        tool_gate = evaluate_tool_policy(tool=tool, permission_decision=permission_decision)
-                    if not tool_gate.allowed:
-                        reconciled_parent = await _fail_run_and_reconcile(
-                            conn,
-                            payload=payload,
-                            tenant_id=payload.tenant_id,
-                            run_id=payload.run_id,
-                            error_code=tool_gate.reason,
-                            error_message="MCP tool denied by policy",
-                        )
-                        await repositories.append_event(
-                            conn,
-                            tenant_id=payload.tenant_id,
-                            run_id=payload.run_id,
-                            event_type="mcp_tool_denied",
-                            stage="tool_policy",
-                            message="MCP tool denied by policy",
-                            payload={
-                                "mcp_tool_id": payload.skill_id,
-                                "policy": "tool_permission_gate",
-                                "reason": tool_gate.reason,
-                                "risk_level": tool_gate.risk_level,
-                                "write_capable": tool_gate.write_capable,
-                                "decision": tool_gate.decision,
-                                "permission_request_id": tool_gate.permission_request_id,
-                                "visible_to_user": True,
-                                "severity": "error",
-                            },
-                        )
-                        await repositories.append_audit_log(
-                            conn,
-                            tenant_id=payload.tenant_id,
-                            user_id=payload.user_id,
-                            action="mcp_tool_policy_denied",
-                            target_type="mcp_tool",
-                            target_id=payload.skill_id,
-                            trace_id=trace_id,
-                            payload_json={
-                                "run_id": payload.run_id,
-                                "session_id": payload.session_id,
-                                "agent_id": payload.agent_id,
-                                "skill_id": payload.skill_id,
-                                "reason": tool_gate.reason,
-                                "risk_level": tool_gate.risk_level,
-                                "write_capable": tool_gate.write_capable,
-                                "decision": tool_gate.decision,
-                                "permission_request_id": tool_gate.permission_request_id,
-                            },
-                        )
-                        terminal_after_transaction = _WorkerTerminalAfterTransaction(
-                            WorkerOutcome("failed", payload.run_id, tool_gate.reason, "MCP tool denied by policy"),
-                            payload,
-                            reconciled_parent,
-                        )
-                        return terminal_after_transaction.outcome
-                    if tool_gate.decision == "allow_once":
-                        consumed_decision = await repositories.consume_tool_permission_decision(
-                            conn,
-                            tenant_id=payload.tenant_id,
-                            user_id=payload.user_id,
-                            run_id=payload.run_id,
-                            request_id=tool_gate.permission_request_id,
-                        )
-                        if consumed_decision is None:
-                            error_code = "tool_permission_consumed_or_expired"
-                            error_message = "MCP tool permission decision was already consumed or expired"
-                            reconciled_parent = await _fail_run_and_reconcile(
-                                conn,
-                                payload=payload,
-                                tenant_id=payload.tenant_id,
-                                run_id=payload.run_id,
-                                error_code=error_code,
-                                error_message=error_message,
-                            )
-                            await repositories.append_event(
-                                conn,
-                                tenant_id=payload.tenant_id,
-                                run_id=payload.run_id,
-                                event_type="mcp_tool_denied",
-                                stage="tool_policy",
-                                message="MCP tool denied by policy",
-                                payload={
-                                    "mcp_tool_id": payload.skill_id,
-                                    "policy": "tool_permission_gate",
-                                    "reason": error_code,
-                                    "risk_level": tool_gate.risk_level,
-                                    "write_capable": tool_gate.write_capable,
-                                    "decision": tool_gate.decision,
-                                    "permission_request_id": tool_gate.permission_request_id,
-                                    "visible_to_user": True,
-                                    "severity": "error",
-                                },
-                            )
-                            await repositories.append_audit_log(
-                                conn,
-                                tenant_id=payload.tenant_id,
-                                user_id=payload.user_id,
-                                action="mcp_tool_policy_denied",
-                                target_type="mcp_tool",
-                                target_id=payload.skill_id,
-                                trace_id=trace_id,
-                                payload_json={
-                                    "run_id": payload.run_id,
-                                    "session_id": payload.session_id,
-                                    "agent_id": payload.agent_id,
-                                    "skill_id": payload.skill_id,
-                                    "reason": error_code,
-                                    "risk_level": tool_gate.risk_level,
-                                    "write_capable": tool_gate.write_capable,
-                                    "decision": tool_gate.decision,
-                                    "permission_request_id": tool_gate.permission_request_id,
-                                    "auto_allowed": tool_gate.auto_allowed,
-                                },
-                            )
-                            terminal_after_transaction = _WorkerTerminalAfterTransaction(
-                                WorkerOutcome("failed", payload.run_id, error_code, error_message),
-                                payload,
-                                reconciled_parent,
-                            )
-                            return terminal_after_transaction.outcome
-                    await repositories.append_audit_log(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        user_id=payload.user_id,
-                        action="mcp_tool_policy_allowed",
-                        target_type="mcp_tool",
-                        target_id=payload.skill_id,
-                        trace_id=trace_id,
-                        payload_json={
-                            "run_id": payload.run_id,
-                            "session_id": payload.session_id,
-                            "agent_id": payload.agent_id,
-                            "skill_id": payload.skill_id,
-                            "reason": tool_gate.reason,
-                            "risk_level": tool_gate.risk_level,
-                            "write_capable": tool_gate.write_capable,
-                            "decision": tool_gate.decision,
-                            "permission_request_id": tool_gate.permission_request_id,
-                            "auto_allowed": tool_gate.auto_allowed,
-                        },
-                    )
-                except repositories.RepositoryConflictError as exc:
-                    reconciled_parent = await _fail_run_and_reconcile(
-                        conn,
-                        payload=payload,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        error_code=str(exc),
-                        error_message="MCP tool denied by policy",
-                    )
-                    await repositories.append_event(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        event_type="mcp_tool_denied",
-                        stage="tool_policy",
-                        message="MCP tool denied by policy",
-                        payload={
-                            "mcp_tool_id": payload.skill_id,
-                            "policy": "deny_by_default",
-                            "reason": str(exc),
-                            "visible_to_user": True,
-                            "severity": "error",
-                        },
-                    )
-                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
-                        WorkerOutcome("failed", payload.run_id, str(exc), "MCP tool denied by policy"),
-                        payload,
-                        reconciled_parent,
-                    )
-                    return terminal_after_transaction.outcome
-                except repositories.RepositoryNotFoundError as exc:
-                    reconciled_parent = await _fail_run_and_reconcile(
-                        conn,
-                        payload=payload,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        error_code=str(exc),
-                        error_message="MCP tool denied by policy",
-                    )
-                    await repositories.append_event(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        event_type="mcp_tool_denied",
-                        stage="tool_policy",
-                        message="MCP tool denied by policy",
-                        payload={
-                            "mcp_tool_id": payload.skill_id,
-                            "policy": "deny_by_default",
-                            "reason": str(exc),
-                            "visible_to_user": True,
-                            "severity": "error",
-                        },
-                    )
-                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
-                        WorkerOutcome("failed", payload.run_id, str(exc), "MCP tool denied by policy"),
-                        payload,
-                        reconciled_parent,
-                    )
-                    return terminal_after_transaction.outcome
             await _consume_worker_allow_once_grants(
                 conn,
                 authorization=capability_authorization,
@@ -2111,9 +1964,16 @@ async def process_run_payload(
             decisions=capability_authorization.decisions,
             denial=exc.denial,
             allow_once_grants=capability_authorization.allow_once_grants,
+            tool_policy_audits=capability_authorization.tool_policy_audits,
         )
         async with transaction() as conn:
             await _append_worker_admin_bypass_audits(conn, audits=admin_bypass_audits)
+            await _append_worker_tool_policy_audits(
+                conn,
+                authorization=failed_authorization,
+                run_identity=run_identity,
+                trace_id=trace_id,
+            )
             terminal_after_transaction = await _fail_worker_capability_authorization(
                 conn,
                 payload=failed_authorization.payload,

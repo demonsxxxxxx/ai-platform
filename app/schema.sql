@@ -147,6 +147,11 @@ create table if not exists tenant_capability_distributions (
   check (scope_mode in ('allowlist'))
 );
 
+create table if not exists tenant_capability_distribution_backfills (
+  tenant_id text primary key references tenants(id),
+  completed_at timestamptz
+);
+
 create table if not exists mcp_server_credentials (
   tenant_id text not null references tenants(id),
   server_name text not null,
