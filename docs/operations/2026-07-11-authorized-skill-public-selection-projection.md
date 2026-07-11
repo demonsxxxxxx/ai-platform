@@ -50,7 +50,9 @@ frontend code, admin APIs, deployment, or 211 runtime state.
 - [x] Phase 4 - latest-main rebase completed without conflict; independent
   review of `aacb7a578fdc84c9df112e869fe618578cbb191b` found no Critical,
   Important, or Minor issues and independently observed 305 passing tests.
-- [ ] Phase 5 - ready PR, exact-head evidence comments, and required CI.
+- [~] Phase 5 - ready PR, exact-head evidence comments, and required CI are
+  mutable GitHub evidence tracked on issue #389 and its PR; they do not advance
+  this source slice beyond local partial or imply frontend/211/runtime closure.
 
 ## Evidence
 
