@@ -1906,7 +1906,9 @@ async def test_list_public_skill_catalog_projects_public_source_without_internal
                     "skill_id": "qa-file-reviewer",
                     "name": "QA Word Review",
                     "version": "hash-a",
+                    "expected_version": "hash-a",
                     "description": "Review Word documents.",
+                    "input_modes": ["docx"],
                     "status": "active",
                     "visible_to_user": True,
                     "source_json": {
@@ -1918,6 +1920,11 @@ async def test_list_public_skill_catalog_projects_public_source_without_internal
                     "created_by": "dev-admin",
                     "created_at": None,
                     "updated_at": None,
+                    "release_policy_version": "hash-a",
+                    "release_policy_previous_version": "hash-old",
+                    "release_policy_rollout_percent": 100,
+                    "release_policy_previous_version_status": "released",
+                    "release_policy_previous_content_hash": "hash-old",
                 }
             ]
 
@@ -1937,17 +1944,77 @@ async def test_list_public_skill_catalog_projects_public_source_without_internal
         conn,
         tenant_id="default",
         include_disabled=True,
+        rollout_key="current-track-user",
     )
 
     assert rows[0]["source"]["tags"] == ["document"]
     assert rows[0]["source"]["files"][0]["relative_path"] == "SKILL.md"
     assert rows[0]["dependency_ids"] == ["minimax-docx"]
+    assert rows[0]["expected_version"] == "hash-a"
+    assert rows[0]["input_modes"] == ["docx"]
+    assert "skill_versions.content_hash as expected_version" in conn.sql
+    assert "skills.input_modes" in conn.sql
     assert "tenant_capability_distributions.capability_id is not null" in conn.sql
     assert "tenant_workbench_skills" not in conn.sql
     assert "skills.status = 'active'" in conn.sql
     assert conn.params[0:2] == ("default", "default")
     assert "qa-file-reviewer" in conn.params[2]
     assert "minimax-docx" not in conn.params[2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("version", "content_hash"),
+    [
+        (None, "hash-a"),
+        ("", "hash-a"),
+        ("hash-a", None),
+        ("hash-a", ""),
+        ("hash-a", "hash-other"),
+    ],
+)
+async def test_list_public_skill_catalog_hides_non_materializable_current_versions(
+    monkeypatch,
+    version,
+    content_hash,
+):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    class CatalogCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "skill_id": "qa-file-reviewer",
+                    "name": "QA Word Review",
+                    "version": version,
+                    "expected_version": content_hash,
+                    "description": "Review Word documents.",
+                    "input_modes": ["docx"],
+                    "status": "active",
+                    "visible_to_user": True,
+                    "version_status": "released",
+                    "source_json": {"kind": "builtin", "files": []},
+                    "dependency_ids": [],
+                    "created_by": "dev-admin",
+                    "created_at": None,
+                    "updated_at": None,
+                }
+            ]
+
+    class CatalogConnection:
+        async def execute(self, sql, params):
+            return CatalogCursor()
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+
+    rows = await repositories.list_public_skill_catalog(
+        CatalogConnection(),
+        tenant_id="default",
+        include_disabled=True,
+    )
+
+    assert rows == []
 
 
 @pytest.mark.asyncio
@@ -2029,11 +2096,14 @@ async def test_list_public_skill_catalog_hides_unreleased_selected_versions_by_d
 
     monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
     def catalog_row(skill_id: str, version_status: str) -> dict[str, object]:
+        version = f"{skill_id}-version"
         return {
             "skill_id": skill_id,
             "name": skill_id,
-            "version": f"{skill_id}-version",
+            "version": version,
+            "expected_version": version,
             "description": f"{skill_id} description",
+            "input_modes": ["chat"],
             "status": "active",
             "visible_to_user": True,
             "version_status": version_status,
@@ -2094,7 +2164,9 @@ async def test_public_skill_catalog_hides_non_runnable_rollout_selected_previous
                     "skill_id": "qa-file-reviewer",
                     "name": "QA Word Review",
                     "version": "hash-new",
+                    "expected_version": "hash-new",
                     "description": "New description",
+                    "input_modes": ["docx"],
                     "lifecycle_status": "active",
                     "status": "active",
                     "visible_to_user": True,
@@ -2106,6 +2178,7 @@ async def test_public_skill_catalog_hides_non_runnable_rollout_selected_previous
                     "updated_at": None,
                     "release_policy_version": "hash-new",
                     "release_policy_previous_version": "hash-old",
+                    "release_policy_previous_content_hash": "hash-old",
                     "release_policy_rollout_percent": 0,
                     "release_policy_previous_version_status": previous_status,
                     "release_policy_previous_description": "Old description",
@@ -2137,7 +2210,11 @@ async def test_public_skill_catalog_hides_non_runnable_rollout_selected_previous
 
 
 @pytest.mark.asyncio
-async def test_public_skill_catalog_projects_runnable_rollout_selected_previous_version(monkeypatch):
+@pytest.mark.parametrize("previous_content_hash", ["hash-old", None, "", "hash-other"])
+async def test_public_skill_catalog_projects_only_materializable_rollout_selected_previous_version(
+    monkeypatch,
+    previous_content_hash,
+):
     async def no_backfill(conn, *, tenant_id):
         return None
 
@@ -2148,7 +2225,9 @@ async def test_public_skill_catalog_projects_runnable_rollout_selected_previous_
                     "skill_id": "qa-file-reviewer",
                     "name": "QA Word Review",
                     "version": "hash-new",
+                    "expected_version": "hash-new",
                     "description": "New description",
+                    "input_modes": ["docx"],
                     "lifecycle_status": "active",
                     "status": "active",
                     "visible_to_user": True,
@@ -2160,6 +2239,7 @@ async def test_public_skill_catalog_projects_runnable_rollout_selected_previous_
                     "updated_at": None,
                     "release_policy_version": "hash-new",
                     "release_policy_previous_version": "hash-old",
+                    "release_policy_previous_content_hash": previous_content_hash,
                     "release_policy_rollout_percent": 0,
                     "release_policy_previous_version_status": "released",
                     "release_policy_previous_description": "Old description",
@@ -2183,7 +2263,13 @@ async def test_public_skill_catalog_projects_runnable_rollout_selected_previous_
         rollout_key="previous-track-user",
     )
 
+    if previous_content_hash != "hash-old":
+        assert rows == []
+        return
+
     assert rows[0]["version"] == "hash-old"
+    assert rows[0]["expected_version"] == "hash-old"
+    assert rows[0]["input_modes"] == ["docx"]
     assert rows[0]["version_status"] == "released"
     assert rows[0]["description"] == "Old description"
     assert rows[0]["source"]["tags"] == ["old"]

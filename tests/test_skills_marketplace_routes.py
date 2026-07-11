@@ -77,7 +77,9 @@ def _catalog_rows() -> list[dict[str, object]]:
             "skill_id": "qa-file-reviewer",
             "name": "QA Word Review",
             "version": "hash-a",
+            "expected_version": "hash-a",
             "description": "Review Word documents.",
+            "input_modes": ["docx"],
             "status": "active",
             "visible_to_user": True,
             "source": _source_with_files(),
@@ -486,6 +488,9 @@ def test_skills_and_marketplace_read_contracts_project_catalog_and_files(monkeyp
     assert skills_body["total"] == 1
     assert skills_body["skills"][0] == {
         "skill_name": "qa-file-reviewer",
+        "expected_version": "hash-a",
+        "input_modes": ["docx"],
+        "requires_file": True,
         "description": "Review Word documents.",
         "tags": ["document"],
         "files": ["SKILL.md", "references/guide.md"],
@@ -507,7 +512,26 @@ def test_skills_and_marketplace_read_contracts_project_catalog_and_files(monkeyp
 
     detail_response = client.get("/api/skills/qa-file-reviewer", headers=headers())
     assert detail_response.status_code == 200
-    assert detail_response.json()["files"] == ["SKILL.md", "references/guide.md"]
+    detail_body = detail_response.json()
+    assert detail_body["files"] == ["SKILL.md", "references/guide.md"]
+    assert detail_body["expected_version"] == "hash-a"
+    assert detail_body["input_modes"] == ["docx"]
+    assert detail_body["requires_file"] is True
+
+    internal_fields = {
+        "allowed_roles",
+        "content_hash",
+        "created_by",
+        "dependency_ids",
+        "department_ids",
+        "release_policy_rollout_percent",
+        "release_policy_version",
+        "status",
+        "version",
+        "visible_to_user",
+    }
+    assert internal_fields.isdisjoint(skills_body["skills"][0])
+    assert internal_fields.isdisjoint(detail_body)
 
     file_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=headers())
     assert file_response.status_code == 200
@@ -544,6 +568,25 @@ def test_skills_and_marketplace_read_contracts_project_catalog_and_files(monkeyp
         name == "audit" and payload["action"] == "capability_distribution.admin_bypass"
         for name, payload in calls
     )
+
+
+@pytest.mark.parametrize(
+    ("input_modes", "requires_file"),
+    [(["chat"], False), (["chat", "docx"], True)],
+)
+def test_public_skill_projection_derives_requires_file_from_docx_input_mode(input_modes, requires_file):
+    from app.routes import skills_marketplace
+
+    row = dict(_catalog_rows()[0])
+    row["input_modes"] = input_modes
+
+    item = skills_marketplace._public_skill_item(row)
+    detail = skills_marketplace._skill_detail(row)
+
+    assert item.input_modes == input_modes
+    assert detail.input_modes == input_modes
+    assert item.requires_file is requires_file
+    assert detail.requires_file is requires_file
 
 
 def test_public_skill_reads_hide_disabled_tenant_availability(monkeypatch):
