@@ -127,6 +127,126 @@ create table if not exists mcp_servers (
 create index if not exists idx_mcp_servers_tenant_status
   on mcp_servers(tenant_id, status, name);
 
+create or replace function ai_platform_text_array_all_nonblank(input_values text[])
+returns boolean
+language sql
+immutable
+parallel safe
+as $$
+  select coalesce(
+    bool_and(value is not null and btrim(value) <> ''),
+    true
+  )
+  from unnest(input_values) as items(value)
+$$;
+
+create table if not exists tenant_capability_distributions (
+  id text primary key,
+  tenant_id text not null references tenants(id),
+  capability_kind text not null,
+  capability_id text not null,
+  status text not null default 'active',
+  visible_to_user boolean not null default true,
+  scope_mode text not null default 'allowlist',
+  department_ids text[] not null default array[]::text[],
+  allowed_roles jsonb not null default '[]'::jsonb,
+  metadata_json jsonb not null default '{}'::jsonb,
+  updated_by text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (tenant_id, capability_kind, capability_id),
+  check (capability_kind in ('skill', 'mcp_server')),
+  check (status in ('active', 'disabled')),
+  check (scope_mode in ('allowlist')),
+  constraint tenant_capability_distributions_department_ids_nonblank
+    check (ai_platform_text_array_all_nonblank(department_ids)),
+  constraint tenant_capability_distributions_allowed_roles_array
+    check (jsonb_typeof(allowed_roles) = 'array'),
+  constraint tenant_capability_distributions_allowed_roles_strings
+    check (
+      not jsonb_path_exists(allowed_roles, '$[*] ? (@.type() != "string")')
+      and not jsonb_path_exists(allowed_roles, '$[*] ? (@ == "")')
+      and not jsonb_path_exists(
+        allowed_roles,
+        '$[*] ? (@.type() == "string" && @ like_regex "^\\s*$")'
+      )
+    )
+);
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'tenant_capability_distributions_allowed_roles_array'
+      and conrelid = 'tenant_capability_distributions'::regclass
+  ) then
+    alter table tenant_capability_distributions
+      add constraint tenant_capability_distributions_allowed_roles_array
+      check (jsonb_typeof(allowed_roles) = 'array') not valid;
+  end if;
+end
+$$;
+
+alter table tenant_capability_distributions
+  validate constraint tenant_capability_distributions_allowed_roles_array;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'tenant_capability_distributions_allowed_roles_strings'
+      and conrelid = 'tenant_capability_distributions'::regclass
+  ) then
+    alter table tenant_capability_distributions
+      add constraint tenant_capability_distributions_allowed_roles_strings
+      check (
+        not jsonb_path_exists(allowed_roles, '$[*] ? (@.type() != "string")')
+        and not jsonb_path_exists(allowed_roles, '$[*] ? (@ == "")')
+        and not jsonb_path_exists(
+          allowed_roles,
+          '$[*] ? (@.type() == "string" && @ like_regex "^\\s*$")'
+        )
+      ) not valid;
+  end if;
+end
+$$;
+
+alter table tenant_capability_distributions
+  validate constraint tenant_capability_distributions_allowed_roles_strings;
+
+update tenant_capability_distributions
+set
+  status = 'disabled',
+  department_ids = array[]::text[],
+  metadata_json = metadata_json || '{"legacy_scope_invalid":true}'::jsonb,
+  updated_at = now()
+where not ai_platform_text_array_all_nonblank(department_ids);
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'tenant_capability_distributions_department_ids_nonblank'
+      and conrelid = 'tenant_capability_distributions'::regclass
+  ) then
+    alter table tenant_capability_distributions
+      add constraint tenant_capability_distributions_department_ids_nonblank
+      check (ai_platform_text_array_all_nonblank(department_ids)) not valid;
+  end if;
+end
+$$;
+
+alter table tenant_capability_distributions
+  validate constraint tenant_capability_distributions_department_ids_nonblank;
+
+create table if not exists tenant_capability_distribution_backfills (
+  tenant_id text primary key references tenants(id),
+  completed_at timestamptz
+);
+
 create table if not exists mcp_server_credentials (
   tenant_id text not null references tenants(id),
   server_name text not null,
@@ -206,6 +326,7 @@ create table if not exists runs (
   schema_version text not null default 'ai-platform.run.v1',
   executor_schema_version text not null default 'ai-platform.executor-result.v1',
   principal_roles jsonb not null default '[]'::jsonb,
+  principal_department_id text not null default '',
   auth_source text,
   status text not null,
   input_json jsonb not null default '{}'::jsonb,
@@ -234,6 +355,7 @@ alter table runs add column if not exists trace_id text not null default '';
 alter table runs add column if not exists schema_version text not null default 'ai-platform.run.v1';
 alter table runs add column if not exists executor_schema_version text not null default 'ai-platform.executor-result.v1';
 alter table runs add column if not exists principal_roles jsonb not null default '[]'::jsonb;
+alter table runs add column if not exists principal_department_id text not null default '';
 alter table runs add column if not exists auth_source text;
 alter table runs add column if not exists copied_from_run_id text references runs(id);
 alter table runs add column if not exists cancel_requested_at timestamptz;

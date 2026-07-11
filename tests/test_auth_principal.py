@@ -1,9 +1,35 @@
 from types import SimpleNamespace
 
+import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
-from app.auth import AuthPrincipal, principal_from_trusted_headers, require_principal
+from app import auth as auth_module
+from app.auth import AuthPrincipal, is_ai_admin, principal_from_trusted_headers, require_principal
+
+
+@pytest.mark.parametrize(
+    ("role", "expected_role", "expected_admin"),
+    [
+        (" platform_admin ", "platform_admin", True),
+        ("PLATFORM_ADMIN", "platform_admin", True),
+        ("platform-admin", "platform-admin", False),
+        ("platform admin", "platform admin", False),
+        (" break_glass_admin ", "break_glass_admin", True),
+        ("break-glass-admin", "break-glass-admin", False),
+    ],
+)
+def test_role_identity_is_case_insensitive_exact_and_punctuation_preserving(role, expected_role, expected_admin):
+    principal = AuthPrincipal(
+        user_id="user-a",
+        display_name="User A",
+        tenant_id="tenant-a",
+        roles=[role],
+    )
+
+    assert hasattr(auth_module, "normalize_roles")
+    assert auth_module.normalize_roles(principal.roles) == [expected_role]
+    assert is_ai_admin(principal) is expected_admin
 
 
 def test_principal_from_trusted_headers_requires_user_id():

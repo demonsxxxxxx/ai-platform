@@ -11,6 +11,8 @@ def test_schema_declares_platform_fact_tables():
         "agents",
         "skills",
         "tenant_workbench_skills",
+        "tenant_capability_distributions",
+        "tenant_capability_distribution_backfills",
         "mcp_tools",
         "tool_policies",
         "sessions",
@@ -26,6 +28,40 @@ def test_schema_declares_platform_fact_tables():
         "audit_logs",
     ]:
         assert f"create table if not exists {table}" in schema
+
+
+def test_schema_declares_capability_distribution_authority_constraints():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "create table if not exists tenant_capability_distributions" in schema
+    assert "unique (tenant_id, capability_kind, capability_id)" in schema
+    assert "check (capability_kind in ('skill', 'mcp_server'))" in schema
+    assert "check (status in ('active', 'disabled'))" in schema
+    assert "check (scope_mode in ('allowlist'))" in schema
+    assert "tenant_capability_distributions_allowed_roles_array" in schema
+    assert "jsonb_typeof(allowed_roles) = 'array'" in schema
+    assert "tenant_capability_distributions_allowed_roles_strings" in schema
+    assert "jsonb_path_exists(allowed_roles" in schema
+    assert "@ == \"\"" in schema
+    assert r'@ like_regex "^\\s*$"' in schema
+    assert "create or replace function ai_platform_text_array_all_nonblank" in schema
+    assert "tenant_capability_distributions_department_ids_nonblank" in schema
+    assert "check (ai_platform_text_array_all_nonblank(department_ids))" in schema
+
+
+def test_schema_declares_per_tenant_capability_distribution_backfill_completion_boundary():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "create table if not exists tenant_capability_distribution_backfills" in schema
+    assert "tenant_id text primary key references tenants(id)" in schema
+    assert "completed_at timestamptz" in schema
+
+
+def test_schema_declares_principal_department_auth_snapshot():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "principal_department_id text not null default ''" in schema
+    assert "alter table runs add column if not exists principal_department_id text not null default '';" in schema
 
 
 def test_schema_seeds_first_agent_apps():

@@ -48,6 +48,8 @@ def install_role_governance_route_fakes(
     monkeypatch,
     *,
     audit_history: list[dict[str, object]] | None = None,
+    distribution_rows: list[dict[str, object]] | None = None,
+    skill_rows: dict[str, dict[str, object]] | None = None,
 ) -> list[tuple[str, dict[str, object]]]:
     from app.routes import role_governance
 
@@ -59,6 +61,22 @@ def install_role_governance_route_fakes(
         yield FakeConnection()
 
     calls: list[tuple[str, dict[str, object]]] = []
+    distributions = distribution_rows if distribution_rows is not None else [
+        {
+            "capability_kind": "skill",
+            "capability_id": "qa-file-reviewer",
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": [],
+            "allowed_roles": [],
+            "metadata_json": {},
+        }
+    ]
+    catalog = skill_rows or {
+        str(row["capability_id"]): {"status": "active"}
+        for row in distributions
+    }
 
     async def fake_audit(conn, **kwargs):
         calls.append(("audit", kwargs))
@@ -72,9 +90,33 @@ def install_role_governance_route_fakes(
         calls.append(("tenant_exists", kwargs))
         return True
 
+    async def fake_list_distributions(conn, *, tenant_id, capability_kind=None, include_disabled=True):
+        calls.append(
+            (
+                "list_distributions",
+                {
+                    "tenant_id": tenant_id,
+                    "capability_kind": capability_kind,
+                    "include_disabled": include_disabled,
+                },
+            )
+        )
+        return [
+            dict(row)
+            for row in distributions
+            if capability_kind is None or row.get("capability_kind") == capability_kind
+        ]
+
+    async def fake_get_skill(conn, *, skill_id):
+        calls.append(("get_skill", {"skill_id": skill_id}))
+        row = catalog.get(skill_id)
+        return dict(row) if row is not None else None
+
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(role_governance, "transaction", fake_transaction)
     monkeypatch.setattr(role_governance.repositories, "tenant_exists", fake_tenant_exists)
+    monkeypatch.setattr(role_governance.repositories, "list_capability_distribution_rows", fake_list_distributions)
+    monkeypatch.setattr(role_governance.repositories, "get_skill", fake_get_skill)
     monkeypatch.setattr(role_governance.repositories, "append_audit_log", fake_audit)
     monkeypatch.setattr(role_governance.repositories, "list_role_governance_audit_history", fake_audit_history)
     return calls
@@ -123,6 +165,124 @@ def test_role_governance_overview_projects_safe_roles_scope_and_audit(monkeypatc
     assert body["audit"][0]["source"] == "role_governance_projection"
     assert body["audit"][0]["rollback_available"] is False
     assert_no_sensitive_material(body)
+
+
+def test_role_governance_skill_projection_uses_unified_distribution(monkeypatch):
+    distributions = [
+        {
+            "capability_kind": "skill",
+            "capability_id": "restricted-skill",
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["qa"],
+            "allowed_roles": ["qa-operator"],
+            "metadata_json": {},
+        }
+    ]
+    calls = install_role_governance_route_fakes(monkeypatch, distribution_rows=distributions)
+    client = TestClient(create_app())
+
+    allowed = client.get(
+        "/api/role-governance/overview?workspace_id=workspace-a",
+        headers={**user_headers(), "X-AI-Roles": "QA-OPERATOR"},
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["scope"]["skill_availability"] == [
+        {
+            "skill_id": "restricted-skill",
+            "availability_state": "inherited",
+            "inherited_from": "tenant",
+            "scope_id": "tenant-a",
+        }
+    ]
+
+    denied = client.get(
+        "/api/role-governance/overview?workspace_id=workspace-a",
+        headers={**user_headers(), "X-AI-Roles": "viewer"},
+    )
+    assert denied.status_code == 200
+    assert denied.json()["scope"]["skill_availability"] == []
+    assert any(name == "list_distributions" for name, _ in calls)
+
+
+def test_role_governance_admin_skill_projection_audits_distribution_bypass(monkeypatch):
+    calls = install_role_governance_route_fakes(
+        monkeypatch,
+        distribution_rows=[
+            {
+                "capability_kind": "skill",
+                "capability_id": "restricted-skill",
+                "status": "disabled",
+                "visible_to_user": False,
+                "scope_mode": "allowlist",
+                "department_ids": ["qa"],
+                "allowed_roles": ["qa-operator"],
+                "metadata_json": {"private": "must-not-be-audited"},
+            }
+        ],
+        skill_rows={"restricted-skill": {"status": "active"}},
+    )
+
+    response = TestClient(create_app()).get(
+        "/api/role-governance/overview?workspace_id=workspace-a",
+        headers=admin_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["scope"]["skill_availability"] == [
+        {
+            "skill_id": "restricted-skill",
+            "availability_state": "inherited",
+            "inherited_from": "tenant",
+            "scope_id": "tenant-a",
+        }
+    ]
+    bypass_audits = [
+        payload
+        for name, payload in calls
+        if name == "audit" and payload["action"] == "capability_distribution.admin_bypass"
+    ]
+    assert len(bypass_audits) == 1
+    audit = bypass_audits[0]
+    assert (audit["target_type"], audit["target_id"]) == ("skill", "restricted-skill")
+    assert audit["payload_json"] == {
+        "capability_kind": "skill",
+        "capability_id": "restricted-skill",
+        "actor_department_id": "platform",
+        "actor_roles": ["admin"],
+        "department_scope_ids": ["qa"],
+        "role_scope_ids": ["qa-operator"],
+        "scope_mode": "allowlist",
+        "decision_reason": "admin_bypass",
+        "admin_bypass": True,
+    }
+    assert "must-not-be-audited" not in str(audit)
+
+
+def test_role_governance_omits_disabled_skill_lifecycle(monkeypatch):
+    install_role_governance_route_fakes(
+        monkeypatch,
+        distribution_rows=[
+            {
+                "capability_kind": "skill",
+                "capability_id": "disabled-skill",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+                "metadata_json": {},
+            }
+        ],
+        skill_rows={"disabled-skill": {"status": "disabled"}},
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/role-governance/overview?workspace_id=workspace-a", headers=user_headers())
+
+    assert response.status_code == 200
+    assert response.json()["scope"]["skill_availability"] == []
 
 
 def test_role_governance_overview_projects_backed_request_and_audit_history(monkeypatch):

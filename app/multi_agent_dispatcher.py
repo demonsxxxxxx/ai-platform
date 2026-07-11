@@ -5,11 +5,11 @@ from typing import Any
 from fastapi import HTTPException
 
 from app import repositories
-from app.auth import AuthPrincipal
+from app.auth import AuthPrincipal, normalize_roles
 from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.db import transaction
 from app.queue import enqueue_run
-from app.repositories import RepositoryConflictError, RepositoryNotFoundError
+from app.repositories import RepositoryAuthorizationError, RepositoryConflictError, RepositoryNotFoundError
 from app.run_control_readiness import dispatch_tick_candidate
 from app.routes.runs import prepare_copied_run_for_queue
 from app.settings import get_settings
@@ -104,8 +104,9 @@ async def _dispatch_one_ready_parent(
         user_id=str(copied["user_id"]),
         display_name=str(copied.get("user_id") or ""),
         tenant_id=tenant_id,
-        roles=["user"],
-        source="worker_multi_agent_dispatcher",
+        department_id=str(copied.get("principal_department_id") or ""),
+        roles=normalize_roles(copied.get("principal_roles") or []),
+        source=str(copied.get("auth_source") or ""),
     )
     queue_payload = await prepare_copied_run_for_queue(
         conn,
@@ -129,6 +130,34 @@ async def _dispatch_one_ready_parent(
         "child_event_id": str(copied["child_event_id"]),
         "handoff_audit_id": str(copied["audit_id"]),
     }
+
+
+async def _audit_dispatch_authorization_denial(
+    *,
+    tenant_id: str,
+    run_id: str,
+    error: RepositoryAuthorizationError,
+) -> None:
+    if error.denial is None:
+        return
+    async with transaction() as conn:
+        run = await repositories.get_run(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+        )
+        if run is None:
+            raise RepositoryNotFoundError("run_not_found")
+        owner_user_id = str(run.get("user_id") or "").strip()
+        if not owner_user_id:
+            raise RepositoryConflictError("run_owner_missing")
+        await repositories.append_capability_authorization_denial_audit(
+            conn,
+            tenant_id=tenant_id,
+            user_id=owner_user_id,
+            error=error,
+            source="worker_multi_agent_dispatcher",
+        )
 
 
 async def dispatch_multi_agent_ready_steps_for_worker(
@@ -164,22 +193,15 @@ async def dispatch_multi_agent_ready_steps_for_worker(
     results: list[dict[str, object]] = []
     for run_id in candidate_run_ids:
         run_id = str(run_id)
-        conflict_detail: str | None = None
         try:
             async with transaction() as conn:
-                try:
-                    dispatch = await _dispatch_one_ready_parent(
-                        conn,
-                        tenant_id=tenant_id,
-                        run_id=run_id,
-                        principal=principal,
-                        settings=settings,
-                    )
-                except RepositoryConflictError as exc:
-                    conflict_detail = str(exc)
-            if conflict_detail is not None:
-                results.append(_skip_result(run_id, conflict_detail))
-                continue
+                dispatch = await _dispatch_one_ready_parent(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=run_id,
+                    principal=principal,
+                    settings=settings,
+                )
             queue_payload = dispatch.pop("queue_payload")
             try:
                 queue_position = await enqueue_run(queue_payload if isinstance(queue_payload, dict) else {})
@@ -209,6 +231,13 @@ async def dispatch_multi_agent_ready_steps_for_worker(
                 results.append(_skip_result(run_id, exc.detail))
                 continue
             raise
+        except RepositoryAuthorizationError as exc:
+            await _audit_dispatch_authorization_denial(
+                tenant_id=tenant_id,
+                run_id=run_id,
+                error=exc,
+            )
+            results.append(_skip_result(run_id, str(exc)))
         except (RepositoryConflictError, RepositoryNotFoundError, SkillVersionMaterializationError) as exc:
             results.append(_skip_result(run_id, str(exc)))
     return results

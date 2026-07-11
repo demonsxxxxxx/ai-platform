@@ -6,8 +6,10 @@ import json
 import pytest
 from fastapi import HTTPException
 
+from app import repositories as repository_module
 from app.auth import AuthPrincipal
-from app.models import ChatSessionRequest, ChatStreamRequest
+from app.capability_distribution import CapabilityAuthorizationDenial
+from app.models import ChatSessionRequest, ChatStreamRequest, QueueRunPayload
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError
 from app.routes.chat import (
@@ -19,6 +21,9 @@ from app.routes.chat import (
 )
 
 
+_ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
+
+
 @asynccontextmanager
 async def fake_transaction():
     yield object()
@@ -28,6 +33,19 @@ def principal(**overrides):
     values = {"user_id": "user-a", "display_name": "User A", "tenant_id": "tenant-a"}
     values.update(overrides)
     return AuthPrincipal(**values)
+
+
+@pytest.fixture(autouse=True)
+def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
+    async def allow(conn, *, tenant_id, agent_id, skill_id, **_kwargs):
+        return await repository_module.resolve_agent_skill(
+            conn,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            skill_id=skill_id,
+        )
+
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", allow, raising=False)
 
 
 def snapshot_manifest(skill_id, *, description="Pinned skill"):
@@ -416,7 +434,7 @@ async def test_list_messages_redacts_raw_skill_metadata_for_ordinary_user(monkey
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
+async def test_chat_stream_capability_distribution_creates_run_with_auth_snapshot(monkeypatch):
     calls = []
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -431,6 +449,14 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
 
     async def fake_create_run(conn, **kwargs):
         calls.append(("run", kwargs["user_id"], kwargs["skill_id"], kwargs["input_json"]["file_ids"]))
+        calls.append(
+            (
+                "auth_snapshot",
+                kwargs["principal_roles"],
+                kwargs["principal_department_id"],
+                kwargs["auth_source"],
+            )
+        )
         return "run_3"
 
     async def fake_append_message(conn, **kwargs):
@@ -501,7 +527,7 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
             agent_options={"model_id": "deepseek-v4-pro"},
             attachments=[{"key": "file_1", "name": "review.docx"}],
         ),
-        principal=principal(),
+        principal=principal(department_id="qa", roles=["qa_operator"], source="session-token"),
     )
 
     assert response.run_id == "run_3"
@@ -515,6 +541,7 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
         "capacity": {"available_worker_slots": 0},
     }
     assert ("run", "user-a", "qa-file-reviewer", ["file_1"]) in calls
+    assert ("auth_snapshot", ["qa_operator"], "qa", "session-token") in calls
     assert ("files", ["file_1"]) in calls
     queue_payload = next(item[1] for item in calls if item[0] == "queue_payload")
     assert queue_payload["executor_type"] == "claude-agent-worker"
@@ -555,6 +582,153 @@ async def test_chat_stream_creates_message_run_and_queue_payload(monkeypatch):
             "queue_probe_source": "redis_metadata",
         },
     ) in calls
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_capability_distribution_denial_precedes_create_run(monkeypatch):
+    calls = []
+
+    async def deny(*args, **kwargs):
+        calls.append(("authorize", kwargs["skill_id"]))
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_create_run(*args, **kwargs):
+        calls.append(("create_run", kwargs))
+        raise AssertionError("authorization denial must precede create_run")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                agent_id="document-review",
+                message="review this document",
+                file_ids=["file_1"],
+            ),
+            principal=principal(department_id="finance", roles=["user"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert calls == [("authorize", "qa-file-reviewer")]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_audits_capability_denial_after_source_transaction_rollback(monkeypatch):
+    events = []
+    transaction_count = 0
+
+    @asynccontextmanager
+    async def ordered_transaction():
+        nonlocal transaction_count
+        transaction_count += 1
+        transaction_id = transaction_count
+        events.append(("enter", transaction_id))
+        try:
+            yield f"conn-{transaction_id}"
+        finally:
+            events.append(("exit", transaction_id))
+
+    denial = CapabilityAuthorizationDenial(
+        capability_kind="skill",
+        capability_id="qa-file-reviewer",
+        actor_department_id="finance",
+        actor_roles=("user",),
+        department_scope_ids=("qa",),
+        role_scope_ids=("qa_operator",),
+        scope_mode="allowlist",
+        decision_reason="department_not_allowed",
+    )
+
+    async def deny(*args, **kwargs):
+        events.append(("authorize", kwargs["skill_id"]))
+        raise repository_module.RepositoryAuthorizationError(
+            "capability_not_authorized",
+            denial=denial,
+        )
+
+    async def record_audit(conn, **kwargs):
+        events.append(("audit", conn, kwargs["source"], kwargs["error"].denial.capability_id))
+        return "aud-denied"
+
+    monkeypatch.setattr("app.routes.chat.transaction", ordered_transaction)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                agent_id="document-review",
+                message="review this document",
+                file_ids=["file_1"],
+            ),
+            principal=principal(department_id="finance", roles=["user"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert events == [
+        ("enter", 1),
+        ("authorize", "qa-file-reviewer"),
+        ("exit", 1),
+        ("enter", 2),
+        ("audit", "conn-2", "chat_stream", "qa-file-reviewer"),
+        ("exit", 2),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_direct_ragflow_without_explicit_selector_uses_unified_authorizer(monkeypatch):
+    calls = []
+
+    async def deny(*args, **kwargs):
+        calls.append(kwargs)
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_create_run(*args, **kwargs):
+        raise AssertionError("direct ragflow denial must precede create_run")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                agent_id="sop-assistant",
+                skill_id="ragflow-knowledge-search",
+                message="search the knowledge base",
+            ),
+            principal=principal(department_id="qa", roles=["user"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert len(calls) == 1
+    assert calls[0]["agent_id"] == "sop-assistant"
+    assert calls[0]["skill_id"] == "ragflow-knowledge-search"
+    assert "mcp_tool_ids" not in calls[0]["normalized_input"]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_invalid_mcp_selector_type_returns_controlled_403_before_create(monkeypatch):
+    async def fail_create_run(*args, **kwargs):
+        raise AssertionError("invalid MCP selector must fail before create_run")
+
+    monkeypatch.setattr(repository_module, "create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                message="run",
+                input={"mcp_tool_ids": "not-a-list"},
+            ),
+            principal=principal(roles=["admin"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
 
 
 @pytest.mark.asyncio
@@ -706,6 +880,11 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
 
     async def fake_create_run(conn, **kwargs):
         calls["create_run_input"] = kwargs["input_json"]["input"]
+        calls["auth_snapshot"] = {
+            "principal_roles": kwargs["principal_roles"],
+            "principal_department_id": kwargs["principal_department_id"],
+            "auth_source": kwargs["auth_source"],
+        }
         return "run-chat"
 
     async def fake_append_message(conn, **kwargs):
@@ -752,6 +931,24 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
         ChatStreamRequest(
             message="run chat with forged resume",
             input={
+                "mcp_tool_ids": ["qa-search"],
+                "principal_roles": ["forged-admin"],
+                "principalRoles": ["forged-camel-admin"],
+                "principal_department_id": "forged-department",
+                "principalDepartmentId": "forged-camel-department",
+                "auth_source": "forged-source",
+                "authSource": "forged-camel-source",
+                "nested": {
+                    "principalRoles": ["forged-nested"],
+                    "auth_source": "forged-nested-source",
+                },
+                "multi_agent_steps": [
+                    {
+                        "step_key": "inspect",
+                        "mcpToolIds": ["qa-search"],
+                        "principal_department_id": "forged-step-department",
+                    }
+                ],
                 "execution_mode": "multi_agent",
                 "resume": {
                     "copied_from_run_id": "run-other",
@@ -771,7 +968,12 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
                 },
             },
         ),
-        principal=principal(),
+        principal=principal(
+            user_id="admin-a",
+            department_id="qa",
+            roles=["admin", "qa_operator"],
+            source="session-token",
+        ),
     )
 
     assert response.status == "queued"
@@ -779,6 +981,22 @@ async def test_chat_stream_strips_user_controlled_server_owned_metadata(monkeypa
         assert calls[key]["message"] == "run chat with forged resume"
         assert "resume" not in calls[key]
         assert "multi_agent_dispatch" not in calls[key]
+        assert calls[key]["mcp_tool_ids"] == ["qa-search"]
+        serialized = json.dumps(calls[key], ensure_ascii=False)
+        for forbidden_key in (
+            "principal_roles",
+            "principalRoles",
+            "principal_department_id",
+            "principalDepartmentId",
+            "auth_source",
+            "authSource",
+        ):
+            assert forbidden_key not in serialized
+    assert calls["auth_snapshot"] == {
+        "principal_roles": ["admin", "qa_operator"],
+        "principal_department_id": "qa",
+        "auth_source": "session-token",
+    }
 
 
 @pytest.mark.asyncio
@@ -989,7 +1207,7 @@ async def test_chat_stream_rejects_invalid_snapshot_governance_manifest_as_mater
 
 
 @pytest.mark.asyncio
-async def test_chat_stream_uses_uploaded_release_policy_manifest(monkeypatch):
+async def test_chat_stream_producer_contract_persists_uploaded_release_policy_manifest(monkeypatch):
     calls = {}
     dependency_manifest = snapshot_manifest("minimax-docx", description="Pinned DOCX helper")
 
@@ -1059,11 +1277,34 @@ async def test_chat_stream_uses_uploaded_release_policy_manifest(monkeypatch):
     assert response.run_id == "run_uploaded"
     assert calls["create_run"]["input_json"]["skill_version"] == "hash-uploaded"
     assert calls["queue"]["skill_version"] == "hash-uploaded"
+    assert calls["create_run"]["input_json"]["skill_manifests"] == calls["queue"]["skill_manifests"]
     assert [item["skill_id"] for item in calls["queue"]["skill_manifests"]] == ["qa-file-reviewer", "minimax-docx"]
     assert calls["queue"]["skill_manifests"][0]["source"]["kind"] == "uploaded"
     assert calls["queue"]["skill_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
     assert calls["queue"]["skill_manifests"][1]["content_hash"] == dependency_manifest["content_hash"]
     assert any(event["payload"].get("skill_version") == "hash-uploaded" for event in calls["events"])
+    persisted_non_identity_snapshot = {
+        **calls["create_run"]["input_json"],
+        "context_snapshot_id": calls["queue"]["context_snapshot_id"],
+        "context_snapshot": calls["queue"]["context_snapshot"],
+    }
+    locked_payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": calls["create_run"]["tenant_id"],
+            "workspace_id": calls["create_run"]["workspace_id"],
+            "user_id": calls["create_run"]["user_id"],
+            "session_id": calls["create_run"]["session_id"],
+            "run_id": response.run_id,
+            "agent_id": calls["create_run"]["agent_id"],
+            "skill_id": calls["create_run"]["skill_id"],
+            **{
+                field: persisted_non_identity_snapshot[field]
+                for field in QueueRunPayload.model_fields
+                if field in persisted_non_identity_snapshot
+            },
+        }
+    )
+    assert locked_payload.model_dump(mode="json") == calls["queue"]
 
 
 @pytest.mark.asyncio
@@ -1990,10 +2231,22 @@ async def test_chat_stream_returns_suggestions_for_ambiguous_docx_without_creati
         calls.append("enqueue")
         raise AssertionError("ambiguous request must not enqueue run")
 
+    async def all_principal_agents(conn, **kwargs):
+        return [
+            {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer"},
+            {"id": "baoyu-translate", "default_skill_id": "baoyu-translate"},
+            {"id": "general-agent", "default_skill_id": "general-chat"},
+        ]
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fail_resolve_agent_skill)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fail_enqueue_run)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.list_principal_lambchat_agents",
+        all_principal_agents,
+        raising=False,
+    )
 
     response = await chat_stream(
         ChatStreamRequest(
@@ -2011,6 +2264,53 @@ async def test_chat_stream_returns_suggestions_for_ambiguous_docx_without_creati
         "general_chat",
     ]
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_filters_confirmation_suggestions_through_principal_projection(monkeypatch):
+    calls = []
+
+    async def principal_agents(conn, **kwargs):
+        calls.append(kwargs)
+        return [
+            {"id": "baoyu-translate", "default_skill_id": "baoyu-translate"},
+            {"id": "general-agent", "default_skill_id": "general-chat"},
+        ]
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.list_principal_lambchat_agents",
+        principal_agents,
+        raising=False,
+    )
+
+    response = await chat_stream(
+        ChatStreamRequest(
+            message="处理一下这个文件",
+            attachments=[{"key": "file_docx", "name": "demo.docx"}],
+        ),
+        principal=principal(department_id="QA", roles=["QA-OPERATOR"]),
+    )
+
+    assert response.status == "needs_confirmation"
+    assert [item.capability_id for item in response.suggestions] == [
+        "document_translation",
+        "general_chat",
+    ]
+    assert [item.capability_id for item in response.intent_decision.suggestions] == [
+        "document_translation",
+        "general_chat",
+    ]
+    assert calls == [
+        {
+            "tenant_id": "tenant-a",
+            "actor_user_id": "user-a",
+            "department_id": "QA",
+            "roles": ["QA-OPERATOR"],
+            "is_admin": False,
+            "permissions": [],
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -2132,3 +2432,83 @@ async def test_chat_stream_maps_unreleased_skill_version_conflict_to_409(monkeyp
     assert getattr(exc_info.value, "status_code", None) == 409
     assert getattr(exc_info.value, "detail", None) == "skill_version_not_released"
     assert calls == [("resolve", "tenant-a", "general-agent", "general-chat")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("row_field", "row_value"),
+    [
+        pytest.param("agent_status", "disabled", id="agent-inactive"),
+        pytest.param("skill_status", "disabled", id="skill-inactive"),
+        pytest.param("skill_version_status", "draft", id="skill-version-not-released"),
+        pytest.param("executor_type", "unsupported", id="executor-type-not-allowed"),
+        pytest.param("default_skill_id", "other-skill", id="agent-skill-mismatch"),
+    ],
+)
+async def test_chat_stream_real_authorizer_maps_agent_skill_state_to_generic_403(
+    monkeypatch,
+    row_field,
+    row_value,
+):
+    row = {
+        "agent_status": "active",
+        "skill_status": "active",
+        "skill_version_status": "active",
+        "executor_type": "claude-agent-worker",
+        "default_skill_id": "general-chat",
+    }
+    row[row_field] = row_value
+    execute_params = []
+    audits = []
+
+    class Cursor:
+        async def fetchone(self):
+            return row
+
+    class Connection:
+        async def execute(self, query, params):
+            assert "from agents" in query
+            execute_params.append(params)
+            return Cursor()
+
+    @asynccontextmanager
+    async def lifecycle_transaction():
+        yield Connection()
+
+    async def record_audit(conn, **kwargs):
+        audits.append(
+            (
+                kwargs["source"],
+                kwargs["error"].denial.capability_id,
+                kwargs["error"].denial.decision_reason,
+            )
+        )
+        return "aud-denied"
+
+    async def fail_create_session(*args, **kwargs):
+        raise AssertionError("authorization denial must precede persistence")
+
+    monkeypatch.setattr("app.routes.chat.transaction", lifecycle_transaction)
+    monkeypatch.setattr(
+        repository_module,
+        "authorize_run_capabilities",
+        _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES,
+    )
+    monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+    monkeypatch.setattr(repository_module, "create_session", fail_create_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(message="hello", confirmed_capability_id="general_chat"),
+            principal=principal(
+                user_id="user-skill-status",
+                tenant_id="tenant-a",
+                department_id="qa",
+                roles=["user"],
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert execute_params == [("general-chat", "tenant-a", "general-agent")]
+    assert audits == [("chat_stream", "general-chat", "capability_not_authorized")]

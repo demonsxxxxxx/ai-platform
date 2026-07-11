@@ -238,6 +238,7 @@ async def _publish_uploaded_skill_to_tenant(
     version: str,
     previous_version: str | None,
 ) -> None:
+    _require_admin(principal)
     await repositories.set_skill_release_policy(
         conn,
         tenant_id=principal.tenant_id,
@@ -436,7 +437,8 @@ async def admin_upload_skill_package(
     principal: AuthPrincipal = Depends(require_principal),
 ) -> AdminSkillUploadResponse:
     _require_skill_upload_admin(principal)
-    can_upload_existing_skill = is_ai_admin(principal)
+    can_publish_to_tenant = is_ai_admin(principal)
+    can_upload_existing_skill = can_publish_to_tenant
     skill_id = _safe_skill_id(skill_id)
 
     package_content = await _read_skill_package_upload(package)
@@ -481,7 +483,7 @@ async def admin_upload_skill_package(
                     tenant_id=principal.tenant_id,
                     skill_id=skill_id,
                 )
-                should_publish_existing_to_tenant = release_policy is None
+                should_publish_existing_to_tenant = can_publish_to_tenant and release_policy is None
                 previous_version = None
                 if should_publish_existing_to_tenant:
                     previous_version = str(skill.get("version") or "") or None
@@ -523,7 +525,7 @@ async def admin_upload_skill_package(
                 skill_id=skill_id,
             )
 
-        should_publish_to_tenant = is_new_skill or release_policy is None
+        should_publish_to_tenant = can_publish_to_tenant and (is_new_skill or release_policy is None)
         previous_version = None
         if should_publish_to_tenant and skill is not None:
             previous_version = str(skill.get("version") or "") or None
@@ -621,7 +623,8 @@ async def admin_upload_skill_package(
                 version=parsed.content_hash,
                 previous_version=previous_version,
             )
-    return AdminSkillUploadResponse(uploaded=uploaded)
+        response = AdminSkillUploadResponse(uploaded=uploaded)
+    return response
 
 
 @router.post("/admin/skills/upload/preview", response_model=PublicSkillImportPreviewResponse)

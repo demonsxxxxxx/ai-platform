@@ -5,7 +5,7 @@ from hmac import compare_digest
 import hmac
 import json
 import time
-from typing import Mapping
+from typing import Iterable, Mapping
 
 from fastapi import HTTPException, Request, status
 
@@ -67,11 +67,22 @@ def principal_from_trusted_headers(headers: Mapping[str, str]) -> AuthPrincipal 
 
 
 def is_ai_admin(principal: AuthPrincipal) -> bool:
-    return bool(normalized_roles(principal.roles).intersection(ADMIN_ROLE_ALIASES))
+    return bool(set(normalize_roles(principal.roles)).intersection(ADMIN_ROLE_ALIASES))
 
 
 def normalized_roles(roles: list[str]) -> set[str]:
-    return {role.strip().lower() for role in roles if role.strip()}
+    return set(normalize_roles(roles))
+
+
+def normalize_roles(roles: Iterable[object]) -> list[str]:
+    """Normalize role identity without creating punctuation aliases."""
+
+    normalized: list[str] = []
+    for role in roles:
+        candidate = str(role).strip().casefold()
+        if candidate and candidate not in normalized:
+            normalized.append(candidate)
+    return normalized
 
 
 def principal_to_response(principal: AuthPrincipal) -> dict[str, object]:

@@ -6,9 +6,12 @@ import json
 import pytest
 from fastapi import HTTPException
 
-from app.auth import AuthPrincipal
-from app.models import CreateRunRequest
+from app import repositories as repository_module
+from app.auth import AuthPrincipal, is_ai_admin
+from app.capability_distribution import CapabilityAuthorizationDenial
+from app.models import CreateRunRequest, QueueRunPayload
 from app.repositories import RepositoryConflictError
+from app.routes import runs as runs_module
 from app.routes.health import admin_status
 from app.routes.files import download_artifact, upload_file
 from app.routes.runs import (
@@ -23,6 +26,8 @@ from app.routes.runs import (
     multi_agent_snapshot_from_steps,
     progress_for_status,
     resolve_run_selector,
+    resume_run,
+    retry_run,
     run_playback_summary,
     run_event_response,
     run_step_response,
@@ -35,6 +40,8 @@ RUN_SCHEMA_FIELDS = {
     "executor_schema_version": "ai-platform.executor-result.v1",
 }
 EVENT_SCHEMA_FIELDS = {"schema_version": "ai-platform.event-envelope.v1"}
+_ORIGINAL_RESOLVE_AGENT_SKILL = repository_module.resolve_agent_skill
+_ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
 
 
 @asynccontextmanager
@@ -50,6 +57,64 @@ def principal(**overrides):
     }
     values.update(overrides)
     return AuthPrincipal(**values)
+
+
+def capability_denial_error() -> repository_module.RepositoryAuthorizationError:
+    return repository_module.RepositoryAuthorizationError(
+        "capability_not_authorized",
+        denial=CapabilityAuthorizationDenial(
+            capability_kind="skill",
+            capability_id="qa-file-reviewer",
+            actor_department_id="finance",
+            actor_roles=("user",),
+            department_scope_ids=("qa",),
+            role_scope_ids=("qa_operator",),
+            scope_mode="allowlist",
+            decision_reason="department_not_allowed",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("stored_role", "expected_admin"),
+    [
+        (" PLATFORM_ADMIN ", True),
+        ("platform-admin", False),
+        ("platform admin", False),
+    ],
+)
+def test_requeue_owner_role_identity_matches_shared_normalization(stored_role, expected_admin):
+    owner = runs_module._persisted_owner_principal(
+        {
+            "user_id": "user-a",
+            "principal_roles": [stored_role],
+            "principal_department_id": "qa",
+            "auth_source": "session-token",
+        },
+        tenant_id="tenant-a",
+    )
+
+    assert owner.roles == [stored_role.strip().lower()]
+    assert is_ai_admin(owner) is expected_admin
+
+
+@pytest.fixture(autouse=True)
+def allow_existing_run_route_tests_through_enqueue_authorization(monkeypatch):
+    async def allow(conn, *, tenant_id, agent_id, skill_id, **_kwargs):
+        if repository_module.resolve_agent_skill is _ORIGINAL_RESOLVE_AGENT_SKILL and not hasattr(conn, "execute"):
+            return {"skill_id": skill_id, "executor_type": "claude-agent-worker"}
+        return await repository_module.resolve_agent_skill(
+            conn,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            skill_id=skill_id,
+        )
+
+    async def update_auth_snapshot(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", allow, raising=False)
+    monkeypatch.setattr(repository_module, "update_run_auth_snapshot", update_auth_snapshot, raising=False)
 
 
 def snapshot_manifest(skill_id, *, description="Pinned skill", source=None):
@@ -1088,7 +1153,10 @@ async def test_download_artifact_streams_file_bytes(monkeypatch):
     monkeypatch.setattr("app.routes.files.get_authorized_artifact", fake_get_authorized_artifact)
     monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
 
-    response = await download_artifact("art-a", principal=principal())
+    response = await download_artifact(
+        "art-a",
+        principal=principal(permissions=["artifact:download"]),
+    )
 
     assert response.body == b"docx-bytes"
     assert "filename*=UTF-8''demo_reviewed.docx" in response.headers["content-disposition"]
@@ -1111,7 +1179,10 @@ async def test_download_artifact_denied_does_not_read_storage(monkeypatch):
     monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
 
     with pytest.raises(Exception) as exc_info:
-        await download_artifact("art-b", principal=principal())
+        await download_artifact(
+            "art-b",
+            principal=principal(permissions=["artifact:download"]),
+        )
 
     assert getattr(exc_info.value, "status_code", None) == 404
     assert getattr(exc_info.value, "detail", None) == "artifact_not_found"
@@ -1131,11 +1202,11 @@ async def test_upload_file_rejects_cross_user_session(monkeypatch):
         return None
 
     class FakeUpload:
-        filename = "demo.docx"
-        content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = "demo.txt"
+        content_type = "text/plain"
 
-        async def read(self):
-            return b"should-not-be-read"
+        async def read(self, *args):
+            return b"should-not-be-stored"
 
     monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.files.ensure_workspace", fake_ensure_workspace)
@@ -1147,7 +1218,7 @@ async def test_upload_file_rejects_cross_user_session(monkeypatch):
             file=FakeUpload(),
             workspace_id="default",
             session_id="ses_b",
-            principal=principal(),
+            principal=principal(permissions=["file:upload", "file:upload:document"]),
         )
 
     assert getattr(exc_info.value, "status_code", None) == 404
@@ -1166,10 +1237,10 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
         assert kwargs["storage_key"].startswith("tenants/tenant-a/")
 
     class FakeUpload:
-        filename = "demo.docx"
-        content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = "demo.txt"
+        content_type = "text/plain"
 
-        async def read(self):
+        async def read(self, *args):
             return b"docx-bytes"
 
     class FakeStorage:
@@ -1191,7 +1262,12 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
     monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
     monkeypatch.setattr("app.routes.files.new_id", lambda prefix: "file_uploaded")
 
-    response = await upload_file(file=FakeUpload(), workspace_id="default", session_id=None, principal=principal())
+    response = await upload_file(
+        file=FakeUpload(),
+        workspace_id="default",
+        session_id=None,
+        principal=principal(permissions=["file:upload", "file:upload:document"]),
+    )
     payload = response.model_dump()
 
     assert payload == {"file_id": "file_uploaded", "sha256": "sha-a", "size_bytes": 10}
@@ -2819,7 +2895,7 @@ def test_resolve_run_selector_accepts_public_agent_ids_for_public_capabilities()
 
 
 @pytest.mark.asyncio
-async def test_create_run_ensures_user_before_session(monkeypatch):
+async def test_create_run_capability_distribution_ensures_user_and_binds_auth_snapshot(monkeypatch):
     calls = []
 
     async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -2833,6 +2909,14 @@ async def test_create_run_ensures_user_before_session(monkeypatch):
         return "ses_1"
 
     async def fake_create_run(conn, **kwargs):
+        calls.append(
+            (
+                "auth_snapshot",
+                kwargs["principal_roles"],
+                kwargs["principal_department_id"],
+                kwargs["auth_source"],
+            )
+        )
         return kwargs["run_id"]
 
     async def fake_bind_files_to_run(conn, **kwargs):
@@ -2862,7 +2946,14 @@ async def test_create_run_ensures_user_before_session(monkeypatch):
             agent_id="qa-word-review",
             capability_id="document_review",
         ),
-        principal=principal(user_id="phaseb-smoke", display_name="Phase B Smoke", tenant_id="default"),
+        principal=principal(
+            user_id="phaseb-smoke",
+            display_name="Phase B Smoke",
+            tenant_id="default",
+            department_id="qa",
+            roles=["qa_operator"],
+            source="session-token",
+        ),
     )
 
     assert response.run_id.startswith("run_")
@@ -2871,7 +2962,554 @@ async def test_create_run_ensures_user_before_session(monkeypatch):
         ("create_session", "phaseb-smoke"),
     ]
     assert ("bind_files_to_run", "phaseb-smoke") in calls
+    assert ("auth_snapshot", ["qa_operator"], "qa", "session-token") in calls
     assert any(item[0:3] == ("enqueue", "phaseb-smoke", "default") and item[3].startswith("run_") for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_create_run_capability_distribution_denial_precedes_create_run(monkeypatch):
+    calls = []
+
+    async def deny(*args, **kwargs):
+        calls.append(("authorize", kwargs["skill_id"]))
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_create_run(*args, **kwargs):
+        calls.append(("create_run", kwargs))
+        raise AssertionError("authorization denial must precede create_run")
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr("app.routes.runs.repositories.create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="document-review",
+                capability_id="document_review",
+            ),
+            principal=principal(department_id="finance", roles=["user"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert calls == [("authorize", "qa-file-reviewer")]
+
+
+@pytest.mark.asyncio
+async def test_create_run_audits_capability_denial_after_source_transaction_rollback(monkeypatch):
+    events = []
+    transaction_count = 0
+
+    @asynccontextmanager
+    async def ordered_transaction():
+        nonlocal transaction_count
+        transaction_count += 1
+        transaction_id = transaction_count
+        events.append(("enter", transaction_id))
+        try:
+            yield f"conn-{transaction_id}"
+        finally:
+            events.append(("exit", transaction_id))
+
+    async def deny(*args, **kwargs):
+        events.append(("authorize", kwargs["skill_id"]))
+        raise capability_denial_error()
+
+    async def record_audit(conn, **kwargs):
+        events.append(("audit", conn, kwargs["source"], kwargs["error"].denial.capability_id))
+        return "aud-denied"
+
+    monkeypatch.setattr("app.routes.runs.transaction", ordered_transaction)
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="document-review",
+                capability_id="document_review",
+            ),
+            principal=principal(department_id="finance", roles=["user"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert events == [
+        ("enter", 1),
+        ("authorize", "qa-file-reviewer"),
+        ("exit", 1),
+        ("enter", 2),
+        ("audit", "conn-2", "create_run", "qa-file-reviewer"),
+        ("exit", 2),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route_func", "repository_method", "source"),
+    [
+        (copy_run, "copy_run_as_new_task", "copy_run"),
+        (retry_run, "retry_run_as_new_task", "retry_run"),
+        (resume_run, "resume_run_as_new_task", "resume_run"),
+    ],
+)
+async def test_requeue_routes_audit_capability_denial_after_source_transaction_rollback(
+    monkeypatch,
+    route_func,
+    repository_method,
+    source,
+):
+    events = []
+    transaction_count = 0
+
+    @asynccontextmanager
+    async def ordered_transaction():
+        nonlocal transaction_count
+        transaction_count += 1
+        transaction_id = transaction_count
+        events.append(("enter", transaction_id))
+        try:
+            yield f"conn-{transaction_id}"
+        finally:
+            events.append(("exit", transaction_id))
+
+    async def allow_admission(*args, **kwargs):
+        return 0
+
+    async def copy_source(*args, **kwargs):
+        return {"run_id": "run-copy"}
+
+    async def deny_prepare(*args, **kwargs):
+        events.append(("authorize", source))
+        raise capability_denial_error()
+
+    async def record_audit(conn, **kwargs):
+        events.append(("audit", conn, kwargs["source"]))
+        return "aud-denied"
+
+    monkeypatch.setattr("app.routes.runs.transaction", ordered_transaction)
+    monkeypatch.setattr(runs_module, "enforce_user_active_run_limit", allow_admission)
+    monkeypatch.setattr(repository_module, repository_method, copy_source)
+    monkeypatch.setattr(runs_module, "prepare_copied_run_for_queue", deny_prepare)
+    monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route_func("run-source", principal=principal(department_id="finance", roles=["user"]))
+
+    assert exc_info.value.status_code == 403
+    assert events == [
+        ("enter", 1),
+        ("authorize", source),
+        ("exit", 1),
+        ("enter", 2),
+        ("audit", "conn-2", source),
+        ("exit", 2),
+    ]
+
+
+def test_queue_run_payload_auth_snapshot_schema_remains_server_owned():
+    payload = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "default",
+        "user_id": "user-a",
+        "session_id": "ses-a",
+        "run_id": "run-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "executor_type": "claude-agent-worker",
+    }
+
+    assert "principal_roles" not in QueueRunPayload.model_fields
+    assert "principal_department_id" not in QueueRunPayload.model_fields
+    assert "auth_source" not in QueueRunPayload.model_fields
+    with pytest.raises(Exception, match="Extra inputs are not permitted"):
+        QueueRunPayload(
+            **payload,
+            principal_roles=["admin"],
+            principal_department_id="forged",
+            auth_source="forged",
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_run_invalid_mcp_selector_type_returns_controlled_403_before_create(monkeypatch):
+    async def fail_create_run(*args, **kwargs):
+        raise AssertionError("invalid MCP selector must fail before create_run")
+
+    monkeypatch.setattr(repository_module, "create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="general-agent",
+                capability_id="general_chat",
+                input={"mcpToolIds": "not-a-list"},
+            ),
+            principal=principal(roles=["admin"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+
+
+@pytest.mark.asyncio
+async def test_prepare_copied_run_for_queue_reauthorizes_before_any_queue_preparation(monkeypatch):
+    calls = []
+
+    async def deny(*args, **kwargs):
+        calls.append(("authorize", kwargs))
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_manifest(*args, **kwargs):
+        calls.append(("manifest", kwargs))
+        raise AssertionError("revoked run must fail before queue preparation")
+
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr(runs_module, "_governed_skill_manifest_pins", fail_manifest)
+
+    with pytest.raises(repository_module.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await runs_module.prepare_copied_run_for_queue(
+            object(),
+            copied={
+                "run_id": "run-copy",
+                "session_id": "ses-copy",
+                "workspace_id": "default",
+                "user_id": "user-a",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "file_ids": [],
+                "input": {
+                    "multi_agent_steps": [
+                        {"step_key": "inspect", "mcpToolIds": ["revoked-tool"]},
+                    ]
+                },
+                "executor_type": "claude-agent-worker",
+                "skill_version": "hash-old",
+                "release_decision": {},
+            },
+            principal=principal(
+                department_id="qa",
+                roles=["qa_operator"],
+                source="session-token",
+            ),
+            source="copy_run",
+            authorized_source_run_id="run-original",
+        )
+
+    assert [item[0] for item in calls] == ["authorize"]
+    authorize_kwargs = calls[0][1]
+    assert authorize_kwargs["normalized_input"]["multi_agent_steps"][0]["mcpToolIds"] == ["revoked-tool"]
+    assert authorize_kwargs["principal_department_id"] == "qa"
+    assert authorize_kwargs["principal_roles"] == ["qa_operator"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_copied_direct_ragflow_without_explicit_selector_uses_unified_authorizer(monkeypatch):
+    calls = []
+
+    async def deny(*args, **kwargs):
+        calls.append(kwargs)
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_manifest(*args, **kwargs):
+        raise AssertionError("direct ragflow denial must precede queue preparation")
+
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr(runs_module, "_governed_skill_manifest_pins", fail_manifest)
+
+    with pytest.raises(repository_module.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await runs_module.prepare_copied_run_for_queue(
+            object(),
+            copied={
+                "run_id": "run-ragflow-copy",
+                "session_id": "ses-ragflow-copy",
+                "workspace_id": "default",
+                "user_id": "user-a",
+                "agent_id": "sop-assistant",
+                "skill_id": "ragflow-knowledge-search",
+                "file_ids": [],
+                "input": {"message": "search the knowledge base"},
+                "executor_type": "ragflow",
+                "skill_version": "hash-ragflow",
+                "release_decision": {},
+            },
+            principal=principal(department_id="qa", roles=["user"]),
+            source="copy_run",
+            authorized_source_run_id="run-ragflow-original",
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["agent_id"] == "sop-assistant"
+    assert calls[0]["skill_id"] == "ragflow-knowledge-search"
+    assert "mcp_tool_ids" not in calls[0]["normalized_input"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "repository_method"),
+    [
+        (runs_module.copy_run, "copy_run_as_new_task"),
+        (runs_module.retry_run, "retry_run_as_new_task"),
+        (runs_module.resume_run, "resume_run_as_new_task"),
+    ],
+)
+async def test_copy_retry_resume_revocation_returns_403_without_enqueue(monkeypatch, route, repository_method):
+    calls = []
+
+    async def fake_new_run(*args, **kwargs):
+        calls.append((repository_method, kwargs["run_id"]))
+        return {
+            "session_id": "ses-copy",
+            "run_id": "run-copy",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "workspace_id": "default",
+            "file_ids": [],
+            "input": {"message": "copied"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-old",
+            "release_decision": {},
+        }
+
+    async def deny_prepare(*args, **kwargs):
+        calls.append(("prepare", kwargs["source"]))
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_enqueue(*args, **kwargs):
+        calls.append(("enqueue", kwargs))
+        raise AssertionError("revoked run must not enqueue")
+
+    async def allow_admission(*args, **kwargs):
+        return 0
+
+    monkeypatch.setattr(runs_module, "transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, repository_method, fake_new_run)
+    monkeypatch.setattr(runs_module, "prepare_copied_run_for_queue", deny_prepare)
+    monkeypatch.setattr(runs_module, "enqueue_run", fail_enqueue)
+    monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", allow_admission)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route(
+            "run-original",
+            principal=principal(department_id="qa", roles=["qa_operator"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert calls == [
+        (repository_method, "run-original"),
+        ("prepare", repository_method.removesuffix("_as_new_task").replace("_run", "_run")),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "repository_method"),
+    [
+        (runs_module.copy_run, "copy_run_as_new_task"),
+        (runs_module.retry_run, "retry_run_as_new_task"),
+        (runs_module.resume_run, "resume_run_as_new_task"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("error_type", "error_detail"),
+    [
+        (repository_module.RepositoryNotFoundError, "agent_or_skill_not_found"),
+        (repository_module.RepositoryConflictError, "skill_inactive"),
+        (repository_module.RepositoryConflictError, "mcp_tool_disabled"),
+    ],
+)
+async def test_copy_retry_resume_capability_lifecycle_denial_returns_403_without_enqueue(
+    monkeypatch,
+    route,
+    repository_method,
+    error_type,
+    error_detail,
+):
+    calls = []
+
+    async def reject_new_run(*args, **kwargs):
+        calls.append((repository_method, kwargs["run_id"]))
+        raise error_type(error_detail)
+
+    async def fail_prepare(*args, **kwargs):
+        calls.append(("prepare", kwargs))
+        raise AssertionError("revoked Skill must fail before queue preparation")
+
+    async def fail_enqueue(*args, **kwargs):
+        calls.append(("enqueue", kwargs))
+        raise AssertionError("revoked Skill must not enqueue")
+
+    async def allow_admission(*args, **kwargs):
+        return 0
+
+    monkeypatch.setattr(runs_module, "transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, repository_method, reject_new_run)
+    monkeypatch.setattr(runs_module, "prepare_copied_run_for_queue", fail_prepare)
+    monkeypatch.setattr(runs_module, "enqueue_run", fail_enqueue)
+    monkeypatch.setattr(repository_module, "enforce_user_active_run_admission", allow_admission)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route(
+            "run-original",
+            principal=principal(department_id="qa", roles=["qa_operator"]),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert calls == [(repository_method, "run-original")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", [runs_module.copy_run, runs_module.retry_run, runs_module.resume_run])
+@pytest.mark.parametrize(
+    "resolver_error",
+    [
+        "agent_inactive",
+        "skill_inactive",
+        "skill_version_not_released",
+        "executor_type_not_allowed",
+        "agent_skill_mismatch",
+    ],
+)
+async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits(
+    monkeypatch,
+    route,
+    resolver_error,
+):
+    audits = []
+    source_run = {
+        "id": "run-original",
+        "tenant_id": "tenant-a",
+        "workspace_id": "default",
+        "session_id": "ses-original",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "failed",
+        "input_json": {"input": {"message": "retry"}},
+        "principal_roles": ["user"],
+        "principal_department_id": "qa",
+        "auth_source": "session-token",
+    }
+
+    async def get_authorized_run(conn, **kwargs):
+        return dict(source_run)
+
+    async def reject_selector(*args, **kwargs):
+        raise RepositoryConflictError(resolver_error)
+
+    async def no_active_run(*args, **kwargs):
+        return None
+
+    async def completed_steps(*args, **kwargs):
+        return {"step-a": "done"}, {}
+
+    async def allow_admission(*args, **kwargs):
+        return 0
+
+    async def record_audit(conn, **kwargs):
+        audits.append(
+            (
+                kwargs["source"],
+                kwargs["error"].denial.capability_id,
+                kwargs["error"].denial.decision_reason,
+            )
+        )
+        return "aud-denied"
+
+    async def fail_prepare(*args, **kwargs):
+        raise AssertionError("selector denial must precede copied-run queue preparation")
+
+    async def fail_enqueue(*args, **kwargs):
+        raise AssertionError("selector denial must not enqueue")
+
+    monkeypatch.setattr(runs_module, "transaction", fake_transaction)
+    monkeypatch.setattr(runs_module, "enforce_user_active_run_limit", allow_admission)
+    monkeypatch.setattr(runs_module, "prepare_copied_run_for_queue", fail_prepare)
+    monkeypatch.setattr(runs_module, "enqueue_run", fail_enqueue)
+    monkeypatch.setattr(repository_module, "get_authorized_run", get_authorized_run)
+    monkeypatch.setattr(repository_module, "get_active_retry_for_source_run", no_active_run)
+    monkeypatch.setattr(repository_module, "get_active_resume_for_source_run", no_active_run)
+    monkeypatch.setattr(repository_module, "_completed_steps_for_resume", completed_steps)
+    monkeypatch.setattr(repository_module, "resolve_agent_skill", reject_selector)
+    monkeypatch.setattr(
+        repository_module,
+        "authorize_run_capabilities",
+        _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES,
+    )
+    monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route(
+            "run-original",
+            principal=principal(
+                user_id="user-a",
+                tenant_id="tenant-a",
+                department_id="qa",
+                roles=["user"],
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert audits == [(route.__name__, "general-chat", "capability_not_authorized")]
+
+
+@pytest.mark.asyncio
+async def test_persisted_owner_capability_authorization_uses_run_snapshot(monkeypatch):
+    calls = []
+    run = {
+        "id": "run-parent",
+        "tenant_id": "tenant-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "principal_roles": ["qa_operator", "user"],
+        "principal_department_id": "qa",
+        "auth_source": "session-token",
+        "input_json": {
+            "input": {
+                "multi_agent_steps": [
+                    {"step_key": "inspect", "mcp_tool_ids": ["qa-search"]},
+                ]
+            }
+        },
+    }
+
+    async def fake_authorize(conn, **kwargs):
+        calls.append(kwargs)
+        return {"skill_id": kwargs["skill_id"]}
+
+    monkeypatch.setattr(repository_module, "authorize_run_capabilities", fake_authorize)
+
+    authorized_run, owner = await runs_module._authorize_persisted_run_for_queue(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-parent",
+        run=run,
+    )
+
+    assert authorized_run is run
+    assert owner.user_id == "user-a"
+    assert owner.roles == ["qa_operator", "user"]
+    assert owner.department_id == "qa"
+    assert owner.source == "session-token"
+    assert calls == [
+        {
+            "tenant_id": "tenant-a",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "normalized_input": run["input_json"]["input"],
+            "principal_department_id": "qa",
+            "principal_roles": ["qa_operator", "user"],
+            "is_admin": False,
+            "permissions": [],
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -2911,6 +3549,90 @@ async def test_create_run_maps_unreleased_skill_version_conflict_to_409(monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("row_field", "row_value"),
+    [
+        pytest.param("agent_status", "disabled", id="agent-inactive"),
+        pytest.param("skill_status", "disabled", id="skill-inactive"),
+        pytest.param("skill_version_status", "draft", id="skill-version-not-released"),
+        pytest.param("executor_type", "unsupported", id="executor-type-not-allowed"),
+        pytest.param("default_skill_id", "other-skill", id="agent-skill-mismatch"),
+    ],
+)
+async def test_create_run_real_authorizer_maps_agent_skill_state_to_generic_403(
+    monkeypatch,
+    row_field,
+    row_value,
+):
+    row = {
+        "agent_status": "active",
+        "skill_status": "active",
+        "skill_version_status": "active",
+        "executor_type": "claude-agent-worker",
+        "default_skill_id": "general-chat",
+    }
+    row[row_field] = row_value
+    execute_params = []
+    audits = []
+
+    class Cursor:
+        async def fetchone(self):
+            return row
+
+    class Connection:
+        async def execute(self, query, params):
+            assert "from agents" in query
+            execute_params.append(params)
+            return Cursor()
+
+    @asynccontextmanager
+    async def lifecycle_transaction():
+        yield Connection()
+
+    async def record_audit(conn, **kwargs):
+        audits.append(
+            (
+                kwargs["source"],
+                kwargs["error"].denial.capability_id,
+                kwargs["error"].denial.decision_reason,
+            )
+        )
+        return "aud-denied"
+
+    async def fail_create_session(*args, **kwargs):
+        raise AssertionError("authorization denial must precede persistence")
+
+    monkeypatch.setattr(runs_module, "transaction", lifecycle_transaction)
+    monkeypatch.setattr(
+        repository_module,
+        "authorize_run_capabilities",
+        _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES,
+    )
+    monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
+    monkeypatch.setattr(repository_module, "create_session", fail_create_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="general-agent",
+                capability_id="general_chat",
+            ),
+            principal=principal(
+                user_id="user-skill-status",
+                tenant_id="default",
+                department_id="qa",
+                roles=["user"],
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert execute_params == [("general-chat", "default", "general-agent")]
+    assert audits == [("create_run", "general-chat", "capability_not_authorized")]
+
+
+@pytest.mark.asyncio
 async def test_create_run_strips_user_controlled_server_owned_metadata(monkeypatch):
     calls = {}
 
@@ -2928,6 +3650,11 @@ async def test_create_run_strips_user_controlled_server_owned_metadata(monkeypat
 
     async def fake_create_run(conn, **kwargs):
         calls["create_run_input"] = kwargs["input_json"]["input"]
+        calls["auth_snapshot"] = {
+            "principal_roles": kwargs["principal_roles"],
+            "principal_department_id": kwargs["principal_department_id"],
+            "auth_source": kwargs["auth_source"],
+        }
         return kwargs["run_id"]
 
     async def fake_bind_files_to_run(conn, **kwargs):
@@ -2978,6 +3705,24 @@ async def test_create_run_strips_user_controlled_server_owned_metadata(monkeypat
             capability_id="general_chat",
             input={
                 "message": "run with forged resume",
+                "mcpToolIds": ["qa-search"],
+                "principal_roles": ["forged-admin"],
+                "principalRoles": ["forged-camel-admin"],
+                "principal_department_id": "forged-department",
+                "principalDepartmentId": "forged-camel-department",
+                "auth_source": "forged-source",
+                "authSource": "forged-camel-source",
+                "nested": {
+                    "principal_roles": ["forged-nested"],
+                    "authSource": "forged-nested-source",
+                },
+                "multi_agent_steps": [
+                    {
+                        "step_key": "inspect",
+                        "mcp_tool_ids": ["qa-search"],
+                        "principalDepartmentId": "forged-step-department",
+                    }
+                ],
                 "execution_mode": "multi_agent",
                 "resume": {
                     "copied_from_run_id": "run-other",
@@ -2997,7 +3742,13 @@ async def test_create_run_strips_user_controlled_server_owned_metadata(monkeypat
                 },
             },
         ),
-        principal=principal(user_id="user-a", tenant_id="tenant-a"),
+        principal=principal(
+            user_id="admin-a",
+            tenant_id="tenant-a",
+            department_id="qa",
+            roles=["admin", "qa_operator"],
+            source="session-token",
+        ),
     )
 
     assert response.status == "queued"
@@ -3005,6 +3756,22 @@ async def test_create_run_strips_user_controlled_server_owned_metadata(monkeypat
         assert calls[key]["message"] == "run with forged resume"
         assert "resume" not in calls[key]
         assert "multi_agent_dispatch" not in calls[key]
+        assert calls[key]["mcpToolIds"] == ["qa-search"]
+        serialized = json.dumps(calls[key], ensure_ascii=False)
+        for forbidden_key in (
+            "principal_roles",
+            "principalRoles",
+            "principal_department_id",
+            "principalDepartmentId",
+            "auth_source",
+            "authSource",
+        ):
+            assert forbidden_key not in serialized
+    assert calls["auth_snapshot"] == {
+        "principal_roles": ["admin", "qa_operator"],
+        "principal_department_id": "qa",
+        "auth_source": "session-token",
+    }
 
 
 @pytest.mark.asyncio
@@ -3453,7 +4220,7 @@ async def test_create_run_rejects_release_policy_version_that_differs_from_prima
 
 
 @pytest.mark.asyncio
-async def test_create_run_uses_uploaded_release_policy_manifest(monkeypatch, tmp_path):
+async def test_create_run_producer_contract_persists_uploaded_release_policy_manifest(monkeypatch, tmp_path):
     calls = {}
     dependency_dir = tmp_path / "minimax-docx"
     dependency_dir.mkdir()
@@ -3539,12 +4306,35 @@ async def test_create_run_uses_uploaded_release_policy_manifest(monkeypatch, tmp
     assert response.run_id == "run_uploaded"
     assert calls["create_run"]["input_json"]["skill_version"] == "hash-uploaded"
     assert calls["queue"]["skill_version"] == "hash-uploaded"
+    assert calls["create_run"]["input_json"]["skill_manifests"] == calls["queue"]["skill_manifests"]
     assert [item["skill_id"] for item in calls["queue"]["skill_manifests"]] == ["qa-file-reviewer", "minimax-docx"]
     assert calls["queue"]["skill_manifests"][0]["source"]["kind"] == "uploaded"
     assert calls["queue"]["skill_manifests"][0]["files"][0]["relative_path"] == "SKILL.md"
     assert calls["queue"]["skill_manifests"][1]["content_hash"] == pinned_dependency_manifest["content_hash"]
     assert calls["queue"]["skill_manifests"][1]["files"][0]["relative_path"] == "SKILL.md"
     assert any(event["payload"]["skill_version"] == "hash-uploaded" for event in calls["events"])
+    persisted_non_identity_snapshot = {
+        **calls["create_run"]["input_json"],
+        "context_snapshot_id": calls["queue"]["context_snapshot_id"],
+        "context_snapshot": calls["queue"]["context_snapshot"],
+    }
+    locked_payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": calls["create_run"]["tenant_id"],
+            "workspace_id": calls["create_run"]["workspace_id"],
+            "user_id": calls["create_run"]["user_id"],
+            "session_id": calls["create_run"]["session_id"],
+            "run_id": response.run_id,
+            "agent_id": calls["create_run"]["agent_id"],
+            "skill_id": calls["create_run"]["skill_id"],
+            **{
+                field: persisted_non_identity_snapshot[field]
+                for field in QueueRunPayload.model_fields
+                if field in persisted_non_identity_snapshot
+            },
+        }
+    )
+    assert locked_payload.model_dump(mode="json") == calls["queue"]
 
 
 @pytest.mark.asyncio
@@ -3859,6 +4649,23 @@ async def test_create_run_rejects_invalid_snapshot_governance_manifest_as_materi
 @pytest.mark.asyncio
 async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatch):
     calls = {}
+    source_release_decision = {
+        "schema_version": "ai-platform.skill-release-decision.v1",
+        "policy_active": False,
+        "selected_version": "db-version",
+        "selected_track": "catalog",
+    }
+    source_skill_manifests = [{"skill_id": "qa-file-reviewer", "content_hash": "db-version"}]
+    persisted_input_json = {
+        "input": {"message": "继续审核", "copied_from_run_id": "run_source"},
+        "file_ids": ["file_1"],
+        "executor_type": "claude-agent-worker",
+        "skill_version": "db-version",
+        "release_decision": dict(source_release_decision),
+        "skill_manifests": list(source_skill_manifests),
+        "model_id": "model-catalog-copy",
+        "model_value": "provider-model-copy",
+    }
 
     async def fake_copy_run_as_new_task(conn, *, tenant_id, user_id, run_id):
         return {
@@ -3871,27 +4678,31 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
             "input": {"message": "继续审核", "copied_from_run_id": run_id},
             "executor_type": "claude-agent-worker",
             "skill_version": "db-version",
-            "release_decision": {
-                "schema_version": "ai-platform.skill-release-decision.v1",
-                "policy_active": False,
-                "selected_version": "db-version",
-                "selected_track": "manifest_pin",
-            },
+            "release_decision": dict(source_release_decision),
+            "model_id": "model-catalog-copy",
+            "model_value": "provider-model-copy",
         }
 
-    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
+    async def fake_update_run_input_execution_snapshot(
+        conn,
+        *,
+        tenant_id,
+        run_id,
+        execution_snapshot,
+    ):
         calls["update"] = {
             "tenant_id": tenant_id,
             "run_id": run_id,
-            "skill_version": skill_version,
+            "execution_snapshot": execution_snapshot,
         }
+        persisted_input_json.update(execution_snapshot)
 
     async def fake_append_event(conn, **kwargs):
         calls.setdefault("events", []).append(kwargs)
 
     async def fake_record_context(conn, **kwargs):
         calls["context"] = kwargs
-        return {
+        context_ref = {
             "schema_version": "ai-platform.context-snapshot.v1",
             "context_snapshot_id": "ctx_copy",
             "source": kwargs["source"],
@@ -3899,6 +4710,11 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
             "file_count": len(kwargs.get("file_ids") or []),
             "memory_record_count": 0,
         }
+        persisted_input_json.update(
+            context_snapshot_id=context_ref["context_snapshot_id"],
+            context_snapshot=context_ref,
+        )
+        return context_ref
 
     async def fake_seed_copied_run_steps(*args, **kwargs):
         calls["seed"] = kwargs
@@ -3929,7 +4745,11 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+        raising=False,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
@@ -3940,7 +4760,9 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
     response = await copy_run("run_source", principal=principal())
 
     assert response.run_id == "run_copy"
-    assert calls["update"]["skill_version"] == "hash-pin"
+    assert calls["update"]["execution_snapshot"] == repository_module.copied_run_execution_snapshot(calls["queue"])
+    assert calls["update"]["execution_snapshot"]["release_decision"] != source_release_decision
+    assert calls["update"]["execution_snapshot"]["skill_manifests"] != source_skill_manifests
     assert calls["context"]["source"] == "copy_run"
     assert calls["context"]["source_run_id"] == "run_source"
     assert calls["context"]["tenant_id"] == "tenant-a"
@@ -3957,7 +4779,26 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
     assert calls["queue"]["context_snapshot"]["source"] == "copy_run"
     assert calls["queue"]["skill_version"] == "hash-pin"
     assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-pin"
+    assert calls["queue"]["model_id"] == "model-catalog-copy"
+    assert calls["queue"]["model_value"] == "provider-model-copy"
     assert any(event["payload"]["skill_version"] == "hash-pin" for event in calls["events"])
+    locked_payload = QueueRunPayload.model_validate(
+        {
+            "tenant_id": "tenant-a",
+            "workspace_id": "default",
+            "user_id": "user-a",
+            "session_id": "ses_copy",
+            "run_id": "run_copy",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            **{
+                field: persisted_input_json[field]
+                for field in QueueRunPayload.model_fields
+                if field in persisted_input_json
+            },
+        }
+    )
+    assert locked_payload.model_dump(mode="json") == calls["queue"]
 
 
 @pytest.mark.asyncio
@@ -3988,8 +4829,10 @@ async def test_copy_run_ignores_unsafe_source_run_id_for_followup_context(monkey
             },
         }
 
-    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
-        calls["update"] = skill_version
+    async def fake_update_run_input_execution_snapshot(
+        conn, *, tenant_id, run_id, execution_snapshot
+    ):
+        calls["update"] = execution_snapshot["skill_version"]
 
     async def fake_append_event(conn, **kwargs):
         calls.setdefault("events", []).append(kwargs)
@@ -4020,7 +4863,10 @@ async def test_copy_run_ignores_unsafe_source_run_id_for_followup_context(monkey
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
@@ -4060,8 +4906,10 @@ async def test_copy_run_uses_authorized_route_source_when_copied_input_lacks_sou
             },
         }
 
-    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
-        calls["update"] = skill_version
+    async def fake_update_run_input_execution_snapshot(
+        conn, *, tenant_id, run_id, execution_snapshot
+    ):
+        calls["update"] = execution_snapshot["skill_version"]
 
     async def fake_append_event(conn, **kwargs):
         calls.setdefault("events", []).append(kwargs)
@@ -4092,7 +4940,10 @@ async def test_copy_run_uses_authorized_route_source_when_copied_input_lacks_sou
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
@@ -4131,8 +4982,10 @@ async def test_copy_run_prefers_authorized_route_source_over_payload_source_id(m
             },
         }
 
-    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
-        calls["update"] = skill_version
+    async def fake_update_run_input_execution_snapshot(
+        conn, *, tenant_id, run_id, execution_snapshot
+    ):
+        calls["update"] = execution_snapshot["skill_version"]
 
     async def fake_append_event(conn, **kwargs):
         calls.setdefault("events", []).append(kwargs)
@@ -4163,7 +5016,10 @@ async def test_copy_run_prefers_authorized_route_source_over_payload_source_id(m
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_context)
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
@@ -4202,8 +5058,10 @@ async def test_copy_run_prevalidates_queue_payload_before_seeding_reused_steps(m
             "skill_version": "db-version",
         }
 
-    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
-        calls["update"] = skill_version
+    async def fake_update_run_input_execution_snapshot(
+        conn, *, tenant_id, run_id, execution_snapshot
+    ):
+        calls["update"] = execution_snapshot["skill_version"]
 
     async def fake_append_event(conn, **kwargs):
         calls.setdefault("events", []).append(kwargs)
@@ -4231,7 +5089,10 @@ async def test_copy_run_prevalidates_queue_payload_before_seeding_reused_steps(m
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fail_seed_copied_run_steps)
     monkeypatch.setattr("app.routes.runs._skill_manifest_pins", fake_skill_manifest_pins)
@@ -4251,6 +5112,7 @@ async def test_copy_run_prevalidates_queue_payload_before_seeding_reused_steps(m
             }
         ],
     }
+    assert "update" not in calls
     assert "copy-secret-token" not in str(exc_info.value.detail)
     assert "/var/lib/ai-platform/private/copy.log" not in str(exc_info.value.detail)
 
@@ -4304,11 +5166,13 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
         assert version == "hash-uploaded"
         return uploaded_skill_version_row(skill_id=skill_id, version=version)
 
-    async def fake_update_run_input_skill_version(conn, *, tenant_id, run_id, skill_version):
+    async def fake_update_run_input_execution_snapshot(
+        conn, *, tenant_id, run_id, execution_snapshot
+    ):
         calls["update"] = {
             "tenant_id": tenant_id,
             "run_id": run_id,
-            "skill_version": skill_version,
+            **execution_snapshot,
         }
 
     async def fake_append_event(conn, **kwargs):
@@ -4331,7 +5195,10 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
         "app.routes.runs.repositories.get_effective_skill_version_for_policy",
         fake_get_effective_skill_version_for_policy,
     )
-    monkeypatch.setattr("app.routes.runs.repositories.update_run_input_skill_version", fake_update_run_input_skill_version)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.update_run_input_execution_snapshot",
+        fake_update_run_input_execution_snapshot,
+    )
     monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)

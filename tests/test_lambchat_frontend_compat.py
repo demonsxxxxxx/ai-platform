@@ -86,6 +86,11 @@ def test_lambchat_agents_endpoint_projects_platform_agents(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.lambchat_compat.repositories.list_lambchat_agents", fake_list_lambchat_agents)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_principal_lambchat_agents",
+        lambda *args, **kwargs: fake_list_lambchat_agents(args[0], tenant_id=kwargs["tenant_id"]),
+        raising=False,
+    )
     client = TestClient(create_app())
 
     response = client.get("/api/agents", headers=auth_headers())
@@ -103,6 +108,97 @@ def test_lambchat_agents_endpoint_projects_platform_agents(monkeypatch):
     assert payload["agents"][0]["supports_sandbox"] is False
     assert "qa-word-review" not in str(payload)
     assert "baoyu-translate" not in str(payload)
+
+
+def test_lambchat_agents_use_principal_distribution_projection(monkeypatch):
+    calls = []
+    unfiltered = [
+        {"id": "general-agent", "name": "General", "description": "General", "default_skill_id": "general-chat"},
+        {
+            "id": "qa-word-review",
+            "name": "Review",
+            "description": "Review",
+            "default_skill_id": "qa-file-reviewer",
+        },
+    ]
+
+    async def fake_unfiltered(conn, *, tenant_id):
+        return unfiltered
+
+    async def fake_principal_agents(conn, **kwargs):
+        calls.append(kwargs)
+        return unfiltered[1:]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.lambchat_compat.repositories.list_lambchat_agents", fake_unfiltered)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_principal_lambchat_agents",
+        fake_principal_agents,
+        raising=False,
+    )
+
+    response = TestClient(create_app()).get("/api/agents", headers=auth_headers())
+
+    assert response.status_code == 200
+    assert [agent["id"] for agent in response.json()["agents"]] == ["document-review"]
+    assert response.json()["default_agent"] == "document-review"
+    assert calls == [
+        {
+            "tenant_id": "default",
+            "actor_user_id": "user-a",
+            "department_id": "",
+            "roles": ["user"],
+            "is_admin": False,
+            "permissions": [],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version_status", ["draft", "reviewed", "disabled", "deprecated"])
+async def test_principal_agent_projection_hides_non_runnable_skill_versions(monkeypatch, version_status):
+    from app import repositories
+
+    async def list_agents(conn, *, tenant_id):
+        return [
+            {
+                "id": "qa-word-review",
+                "name": "Review",
+                "description": "Review",
+                "default_skill_id": "qa-file-reviewer",
+                "status": "active",
+                "skill_version_status": version_status,
+            }
+        ]
+
+    async def list_distributions(conn, **kwargs):
+        return [
+            {
+                "capability_kind": "skill",
+                "capability_id": "qa-file-reviewer",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+            }
+        ]
+
+    monkeypatch.setattr(repositories, "list_lambchat_agents", list_agents)
+    monkeypatch.setattr(repositories, "list_capability_distribution_rows", list_distributions)
+
+    rows = await repositories.list_principal_lambchat_agents(
+        object(),
+        tenant_id="default",
+        actor_user_id="user-a",
+        department_id="qa",
+        roles=["user"],
+        is_admin=False,
+        permissions=[],
+    )
+
+    assert rows == []
 
 
 def test_lambchat_sessions_project_public_agent_ids(monkeypatch):
@@ -204,6 +300,10 @@ async def test_lambchat_agent_repository_exposes_only_canonical_agents():
     assert "sop-assistant" not in sql
     assert "agents.status = 'active'" in sql
     assert "skills.status = 'active'" in sql
+    assert "skill_release_policies.current_version" in sql
+    assert "coalesce(skill_versions.status, 'active') as skill_version_status" in sql
+    assert "skill_release_policies.previous_version as release_policy_previous_version" in sql
+    assert "previous_skill_versions.status as release_policy_previous_version_status" in sql
     assert params == ("default",)
 
 
