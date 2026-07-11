@@ -137,7 +137,7 @@ initializer's migrate/drop/probe/close ordering. Fresh review of the resulting
 fixed branch head found the source fixes sound, while evidence review identified
 that failed cleanup could discard local tracking. That path is now typed, fail
 closed, and covered as described above. Fresh review of the new fixed branch
-head remains required before Phase 6 can complete.
+head completed on `06ed6c7` with no blocker, closing the source review phase.
 
 `python -m compileall -q app tools scripts` exited 0. `git diff --check`,
 the approved changed-file scope check, new-line secret scan, and checks forbidding
