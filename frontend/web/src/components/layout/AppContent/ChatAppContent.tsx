@@ -11,13 +11,13 @@ import { useApprovals } from "../../../hooks/useApprovals";
 import { useAuth } from "../../../hooks/useAuth";
 import { useTools } from "../../../hooks/useTools";
 import { useSkills } from "../../../hooks/useSkills";
+import { useSelectedSkillTask } from "../../../hooks/useSelectedSkillTask";
 import { usePersonaPresets } from "../../../hooks/usePersonaPresets";
 import { useProjectManager } from "../../../hooks/useProjectManager";
 import { useSessionConfig } from "../../../hooks/useSessionConfig";
 import {
   Permission,
   type ToolCategory,
-  type SkillSource,
   type PersonaPreset,
   type PersonaPresetSnapshot,
 } from "../../../types";
@@ -111,12 +111,26 @@ export function ChatAppContent({
   const {
     skills,
     isLoading: skillsLoading,
-    pendingSkillNames,
-    isMutating: skillsMutating,
+    listError: skillsListError,
     fetchSkills,
     effectivePermissions: skillsEffectivePermissions,
     effectivePermissionsKnown: skillsEffectivePermissionsKnown,
-  } = useSkills({ enabled: composerSkillsProbeAvailability.shouldFetchSkills });
+  } = useSkills({
+    enabled: composerSkillsProbeAvailability.shouldFetchSkills,
+    allAuthorizedCatalog: true,
+  });
+  const {
+    state: selectedSkillState,
+    selectSkill,
+    clearSelection: clearSelectedSkill,
+    recover: recoverSelectedSkill,
+    markFilesReady: markSelectedSkillFilesReady,
+  } = useSelectedSkillTask({
+    skills,
+    skillsLoading,
+    skillsError: skillsListError,
+    refreshSkills: fetchSkills,
+  });
   const composerSkillsAvailability = resolveComposerSkillsAvailability({
     isAuthenticated,
     canReadSkills,
@@ -249,7 +263,6 @@ export function ChatAppContent({
 
   const {
     config: sessionConfig,
-    toggleSkill: toggleSessionSkill,
     toggleMcpTool: toggleSessionMcpTool,
     setAgentOption: setSessionAgentOption,
     setPersonaPreset,
@@ -485,50 +498,6 @@ export function ChatAppContent({
     [tools, sessionConfig.disabledMcpTools, toggleSessionMcpTool],
   );
 
-  const effectiveToggleSkill = useCallback(
-    async (name: string): Promise<boolean> => {
-      toggleSessionSkill(name);
-      return true;
-    },
-    [toggleSessionSkill],
-  );
-
-  const effectiveToggleSkillCategory = useCallback(
-    async (category: SkillSource, enabled: boolean): Promise<boolean> => {
-      effectiveSkills
-        .filter((s) => s.source === category)
-        .forEach((s) => {
-          const isInSessionDisabled = sessionConfig.disabledSkills.includes(
-            s.name,
-          );
-          if (enabled && isInSessionDisabled) {
-            toggleSessionSkill(s.name);
-          } else if (!enabled && !isInSessionDisabled) {
-            toggleSessionSkill(s.name);
-          }
-        });
-      return true;
-    },
-    [effectiveSkills, sessionConfig.disabledSkills, toggleSessionSkill],
-  );
-
-  const effectiveToggleAllSkills = useCallback(
-    async (enabled: boolean): Promise<boolean> => {
-      effectiveSkills.forEach((s) => {
-        const isInSessionDisabled = sessionConfig.disabledSkills.includes(
-          s.name,
-        );
-        if (enabled && isInSessionDisabled) {
-          toggleSessionSkill(s.name);
-        } else if (!enabled && !isInSessionDisabled) {
-          toggleSessionSkill(s.name);
-        }
-      });
-      return true;
-    },
-    [effectiveSkills, sessionConfig.disabledSkills, toggleSessionSkill],
-  );
-
   const effectiveEnabledToolsCount = useMemo(
     () => effectiveTools.filter((t) => t.enabled).length,
     [effectiveTools],
@@ -667,6 +636,7 @@ export function ChatAppContent({
     });
 
     handleNewSession();
+    clearSelectedSkill();
     resetToDefaults();
 
     resetAgentOptionDefaults();
@@ -677,6 +647,7 @@ export function ChatAppContent({
     availableModels,
     defaultModel,
     handleNewSession,
+    clearSelectedSkill,
     resetToDefaults,
     resetAgentOptionDefaults,
   ]);
@@ -687,10 +658,11 @@ export function ChatAppContent({
   );
   const handleSelectSessionAndClose = useCallback(
     (id: string) => {
+      clearSelectedSkill();
       handleSelectSession(id);
       setMobileSidebarOpen(false);
     },
-    [handleSelectSession, setMobileSidebarOpen],
+    [clearSelectedSkill, handleSelectSession, setMobileSidebarOpen],
   );
   const handleNewSessionAndClose = useCallback(() => {
     handleNewSessionWithReset();
@@ -794,12 +766,13 @@ export function ChatAppContent({
           enabledToolsCount={effectiveEnabledToolsCount}
           totalToolsCount={totalToolsCount}
           skills={effectiveSkills}
-          onToggleSkill={effectiveToggleSkill}
-          onToggleSkillCategory={effectiveToggleSkillCategory}
-          onToggleAllSkills={effectiveToggleAllSkills}
+          taskSkills={skills}
+          selectedSkillState={selectedSkillState}
+          onSelectSkill={selectSkill}
+          onClearSelectedSkill={clearSelectedSkill}
+          onSelectedSkillRecoverable={recoverSelectedSkill}
+          onSelectedSkillFilesReady={markSelectedSkillFilesReady}
           skillsLoading={skillsLoading}
-          pendingSkillNames={pendingSkillNames}
-          skillsMutating={skillsMutating}
           enabledSkillsCount={countEnabledSkills(effectiveSkills)}
           totalSkillsCount={effectiveSkills.length}
           enableSkills={composerSkillsAvailability.enableComposerSkills}
@@ -812,7 +785,6 @@ export function ChatAppContent({
           selectedPersonaPresetId={sessionConfig.personaPresetId}
           selectedPersonaName={sessionConfig.personaSnapshot?.name || null}
           selectedPersonaSnapshot={sessionConfig.personaSnapshot}
-          personaSkillsControlled={false}
           personaPresetsLoading={personaPresetsLoading}
           personaPresetsMutating={personaPresetsMutating}
           onUsePersonaPreset={handleUsePersonaPreset}

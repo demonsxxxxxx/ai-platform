@@ -76,6 +76,8 @@ export type {
   SkillFileResponse,
   SkillToggleResponse,
   SkillResponse,
+  PublicSkillResponse,
+  SelectedSkillRequest,
   SkillsResponse,
   SkillCreate,
   MarketplaceSkillResponse,

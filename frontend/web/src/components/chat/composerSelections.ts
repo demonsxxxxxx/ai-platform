@@ -22,6 +22,7 @@ export interface ComposerSelection {
   state: ComposerSelectionState;
   description?: string;
   referenceId?: string;
+  visibleDetails?: string[];
   source?: string;
 }
 

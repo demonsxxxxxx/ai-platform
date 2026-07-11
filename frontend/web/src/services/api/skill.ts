@@ -37,15 +37,6 @@ export interface AdminSkillUploadResponse {
   };
 }
 
-type SkillListWireResponse =
-  | UserSkill[]
-  | (Omit<
-      SkillsResponse,
-      "effective_permissions_known" | "catalog_read_resolved"
-    > & {
-      catalog_read_resolved?: boolean;
-    });
-
 export interface SkillListParams {
   skip?: number;
   limit?: number;
@@ -80,10 +71,45 @@ export function buildAdminSkillPreviewUrl(): string {
   return `${API_BASE}/api/ai/admin/skills/upload/preview`;
 }
 
-export function normalizeSkillListResponse(
-  response: SkillListWireResponse,
-): SkillsResponse {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0;
+}
+
+function isUserSkill(value: unknown): value is UserSkill {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.skill_name === "string" &&
+    value.skill_name.trim().length > 0 &&
+    typeof value.expected_version === "string" &&
+    value.expected_version.trim().length > 0 &&
+    isStringArray(value.input_modes) &&
+    typeof value.requires_file === "boolean" &&
+    typeof value.description === "string" &&
+    isStringArray(value.tags) &&
+    isStringArray(value.files) &&
+    typeof value.enabled === "boolean" &&
+    isNonNegativeInteger(value.file_count) &&
+    (value.installed_from === "manual" || value.installed_from === "marketplace") &&
+    typeof value.is_published === "boolean" &&
+    typeof value.marketplace_is_active === "boolean"
+  );
+}
+
+function invalidSkillCatalog(): never {
+  throw new Error("authorized_skill_catalog_invalid");
+}
+
+export function normalizeSkillListResponse(response: unknown): SkillsResponse {
   if (Array.isArray(response)) {
+    if (!response.every(isUserSkill)) invalidSkillCatalog();
     return {
       skills: response,
       total: response.length,
@@ -96,7 +122,24 @@ export function normalizeSkillListResponse(
     };
   }
 
-  const skills = response.skills ?? [];
+  if (!isRecord(response)) invalidSkillCatalog();
+  const skills = response.skills;
+  if (
+    !Array.isArray(skills) ||
+    !skills.every(isUserSkill) ||
+    !isNonNegativeInteger(response.total) ||
+    !isNonNegativeInteger(response.skip) ||
+    !isNonNegativeInteger(response.limit) ||
+    response.limit < 1 ||
+    skills.length > response.limit ||
+    response.skip + skills.length > response.total ||
+    !isStringArray(response.available_tags) ||
+    !isStringArray(response.effective_permissions) ||
+    (response.catalog_read_resolved !== undefined &&
+      typeof response.catalog_read_resolved !== "boolean")
+  ) {
+    invalidSkillCatalog();
+  }
   const catalogReadResolved =
     typeof response.catalog_read_resolved === "boolean"
       ? response.catalog_read_resolved
@@ -104,14 +147,89 @@ export function normalizeSkillListResponse(
 
   return {
     skills,
-    total: response.total ?? skills.length,
-    skip: response.skip ?? 0,
-    limit: response.limit ?? skills.length,
-    available_tags: response.available_tags ?? [],
-    effective_permissions: response.effective_permissions ?? [],
-    effective_permissions_known: Array.isArray(response.effective_permissions),
+    total: response.total,
+    skip: response.skip,
+    limit: response.limit,
+    available_tags: response.available_tags,
+    effective_permissions: response.effective_permissions,
+    effective_permissions_known: true,
     catalog_read_resolved: catalogReadResolved,
   };
+}
+
+const AUTHORIZED_SKILL_PAGE_LIMIT = 200;
+const AUTHORIZED_SKILL_MAX_PAGES = 1_000;
+
+type SkillPageLoader = (params: SkillListParams) => Promise<SkillsResponse>;
+
+/** Load the complete authorized public catalog without exposing partial pages. */
+export async function collectAllAuthorizedSkills(
+  listPage: SkillPageLoader,
+): Promise<SkillsResponse> {
+  const skillsByName = new Map<string, UserSkill>();
+  const availableTags = new Set<string>();
+  const effectivePermissions = new Set<string>();
+  let effectivePermissionsKnown = true;
+  let catalogReadResolved = true;
+  let expectedTotal = 0;
+  let collectedItemCount = 0;
+  let skip = 0;
+  let pageCount = 0;
+
+  while (true) {
+    pageCount += 1;
+    if (pageCount > AUTHORIZED_SKILL_MAX_PAGES) {
+      throw new Error("authorized_skill_catalog_page_limit");
+    }
+    const page = await listPage({
+      skip,
+      limit: AUTHORIZED_SKILL_PAGE_LIMIT,
+    });
+    if (page.skip !== skip) {
+      throw new Error("authorized_skill_catalog_offset_mismatch");
+    }
+    const priorUniqueCount = skillsByName.size;
+    expectedTotal = Math.max(expectedTotal, page.total);
+    collectedItemCount += page.skills.length;
+    page.skills.forEach((skill) => skillsByName.set(skill.skill_name, skill));
+    page.available_tags.forEach((tag) => availableTags.add(tag));
+    page.effective_permissions.forEach((permission) =>
+      effectivePermissions.add(permission),
+    );
+    effectivePermissionsKnown &&= page.effective_permissions_known;
+    catalogReadResolved &&= page.catalog_read_resolved;
+
+    if (page.skills.length === 0) {
+      if (collectedItemCount >= expectedTotal) break;
+      throw new Error("authorized_skill_catalog_incomplete");
+    }
+    if (skillsByName.size === priorUniqueCount) {
+      throw new Error("authorized_skill_catalog_no_progress");
+    }
+    if (collectedItemCount >= expectedTotal) break;
+    skip += page.skills.length;
+  }
+
+  const skills = Array.from(skillsByName.values());
+  return {
+    skills,
+    total: skills.length,
+    skip: 0,
+    limit: AUTHORIZED_SKILL_PAGE_LIMIT,
+    available_tags: Array.from(availableTags),
+    effective_permissions: Array.from(effectivePermissions),
+    effective_permissions_known: effectivePermissionsKnown,
+    catalog_read_resolved: catalogReadResolved,
+  };
+}
+
+async function listSkills(params: SkillListParams = {}): Promise<SkillsResponse> {
+  const response = await authFetch<unknown>(buildSkillListUrl(params));
+  return normalizeSkillListResponse(response);
+}
+
+async function listAllAuthorizedSkills(): Promise<SkillsResponse> {
+  return collectAllAuthorizedSkills(listSkills);
 }
 
 export const skillApi = {
@@ -119,10 +237,12 @@ export const skillApi = {
    * List all user skills
    */
   async list(params: SkillListParams = {}): Promise<SkillsResponse> {
-    const response = await authFetch<SkillListWireResponse>(
-      buildSkillListUrl(params),
-    );
-    return normalizeSkillListResponse(response ?? []);
+    return listSkills(params);
+  },
+
+  /** List every Skill in the current principal's public authorized catalog. */
+  async listAllAuthorized(): Promise<SkillsResponse> {
+    return listAllAuthorizedSkills();
   },
 
   /**

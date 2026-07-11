@@ -13,6 +13,7 @@ import type {
   AgentListResponse,
   ConnectionStatus,
   MessageAttachment,
+  SelectedSkillRequest,
 } from "../types";
 import {
   isChatStreamNeedsConfirmation,
@@ -30,6 +31,7 @@ import {
   type UseAgentOptions,
   type SubagentStackItem,
   type HistoryEvent,
+  type SubmissionOutcome,
   type UseAgentReturn,
 } from "./useAgent/types";
 import {
@@ -55,6 +57,21 @@ import { resolvePersonaEnabledSkills } from "./useAgent/personaRequestConfig";
 import { translateBackendError } from "../utils/backendErrors";
 import { dispatchSessionTitleUpdated } from "../utils/sessionTitleEvents";
 import { resolveAvailableAgentId } from "./useAgent/agentSelection";
+import {
+  SELECTED_SKILL_RECOVERABLE_CODES,
+  type SelectedSkillRecoverableCode,
+} from "./useSelectedSkillTask";
+
+function getSelectedSkillRecoverableCode(
+  error: unknown,
+): SelectedSkillRecoverableCode | null {
+  if (!(error instanceof Error)) return null;
+  return (
+    SELECTED_SKILL_RECOVERABLE_CODES.find(
+      (code) => error.message.trim() === code,
+    ) ?? null
+  );
+}
 
 function formatConfirmationMessage(suggestions: CapabilitySuggestion[]): string {
   if (suggestions.length === 0) {
@@ -552,14 +569,15 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       content: string,
       agentOptions?: Record<string, boolean | string | number>,
       attachments?: MessageAttachment[],
-    ) => {
-      if (!content.trim()) return;
+      selectedSkill?: SelectedSkillRequest | null,
+    ): Promise<SubmissionOutcome> => {
+      if (!content.trim()) return { status: "failed" };
 
       if (isSendingRef.current) {
         console.log(
           "[sendMessage] Already sending, ignoring duplicate request",
         );
-        return;
+        return { status: "failed" };
       }
       isSendingRef.current = true;
 
@@ -573,9 +591,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       processedEventIdsRef.current.clear();
       lastHistoryTimestampRef.current = null;
 
+      const previousMessages = messagesRef.current;
       const { messages: optimisticMessages, assistantMessageId } =
         createOptimisticMessagesForSend({
-          previousMessages: messagesRef.current,
+          previousMessages,
           content,
           attachments,
         });
@@ -617,6 +636,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           disabledMcpTools,
           personaPresetId,
           enabledSkills,
+          selectedSkill,
         );
 
         if (isChatStreamNeedsConfirmation(submitData)) {
@@ -638,7 +658,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           );
           setConnectionStatus("disconnected");
           setIsInitializingSandbox(false);
-          return;
+          setIsLoading(false);
+          isSendingRef.current = false;
+          return { status: "accepted" };
         }
 
         const newSessionId = submitData.session_id;
@@ -754,15 +776,55 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
         isReconnectFromHistoryRef.current = false;
         const ctx = createSSEContext();
-        await connectToSSE(
+        void connectToSSE(
           streamSessionId,
           streamRunId,
           finalAssistantMessageId,
           ctx,
-        );
+        )
+          .catch(() => {
+            toast.dismiss("chat-queue");
+            const streamError = i18n.t("chat.requestFailed");
+            setError(streamError);
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === finalAssistantMessageId
+                  ? {
+                      ...message,
+                      content: i18n.t("chat.errorPrefix", {
+                        error: streamError,
+                      }),
+                      isStreaming: false,
+                      parts: clearAllLoadingStates(message.parts || []),
+                    }
+                  : message,
+              ),
+            );
+            setConnectionStatus("disconnected");
+            setIsInitializingSandbox(false);
+          })
+          .finally(() => {
+            setIsLoading(false);
+            isSendingRef.current = false;
+          });
+        return { status: "accepted" };
       } catch (err) {
+        toast.dismiss("chat-queue");
         if (err instanceof Error && err.name === "AbortError") {
-          return;
+          setIsLoading(false);
+          isSendingRef.current = false;
+          return { status: "failed" };
+        }
+        const recoverableCode = selectedSkill
+          ? getSelectedSkillRecoverableCode(err)
+          : null;
+        if (recoverableCode) {
+          setMessages(previousMessages);
+          setConnectionStatus("disconnected");
+          setIsInitializingSandbox(false);
+          setIsLoading(false);
+          isSendingRef.current = false;
+          return { status: "recoverable_error", code: recoverableCode };
         }
         const errorMessage =
           err instanceof Error
@@ -783,9 +845,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         );
         setConnectionStatus("disconnected");
         setIsInitializingSandbox(false);
-      } finally {
         setIsLoading(false);
         isSendingRef.current = false;
+        return { status: "failed" };
       }
     },
     [
@@ -805,6 +867,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
     isSendingRef.current = false;
     setIsLoading(false);
+    toast.dismiss("chat-queue");
     setIsInitializingSandbox(false);
     setSandboxError(null);
 

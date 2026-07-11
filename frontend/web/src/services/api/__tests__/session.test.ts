@@ -81,6 +81,47 @@ test("includes persona preset fields in the submit chat body", () => {
   );
 });
 
+test("submits one authorized Skill through the exact nested selector", () => {
+  const body = buildSubmitChatBody({
+    message: "review this document",
+    selectedSkill: {
+      skill_id: "document-review",
+      expected_version: "a1b2c3d4",
+    },
+    disabledSkills: ["legacy-review"],
+    enabledSkills: ["planning"],
+  });
+
+  assert.deepEqual(body, {
+    message: "review this document",
+    session_id: undefined,
+    agent_options: undefined,
+    attachments: undefined,
+    selected_skill: {
+      skill_id: "document-review",
+      expected_version: "a1b2c3d4",
+    },
+    disabled_skills: undefined,
+    enabled_skills: undefined,
+    persona_preset_id: undefined,
+    disabled_mcp_tools: undefined,
+  });
+  assert.equal("skill_id" in body, false);
+});
+
+test("keeps the fixed capability path unchanged without a selected Skill", () => {
+  const body = buildSubmitChatBody({
+    message: "plan the rollout",
+    disabledSkills: ["document-review"],
+    enabledSkills: ["planning"],
+  });
+
+  assert.equal("selected_skill" in body, false);
+  assert.deepEqual(body.disabled_skills, ["document-review"]);
+  assert.deepEqual(body.enabled_skills, ["planning"]);
+  assert.equal("skill_id" in body, false);
+});
+
 test("detects chat stream confirmation responses without a run id", () => {
   assert.equal(
     isChatStreamNeedsConfirmation({

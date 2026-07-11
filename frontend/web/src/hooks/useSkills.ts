@@ -11,6 +11,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { skillApi } from "../services/api/skill";
 import type { SkillListParams } from "../services/api/skill";
 import type {
+  PublicSkillResponse,
   SkillResponse,
   SkillSource,
   UserSkill,
@@ -37,7 +38,7 @@ function composeSkillResponse(
   detail?: UserSkillDetail,
   filesContent?: Record<string, string>,
   binaryFiles?: Record<string, BinaryFileInfo>,
-): SkillResponse {
+): PublicSkillResponse {
   // Use description from API directly (extracted from SKILL.md by backend)
   const description =
     detail?.description || userSkill.description || userSkill.skill_name;
@@ -50,6 +51,10 @@ function composeSkillResponse(
 
   return {
     name: userSkill.skill_name,
+    expected_version:
+      detail?.expected_version || userSkill.expected_version,
+    input_modes: detail?.input_modes ?? userSkill.input_modes,
+    requires_file: detail?.requires_file ?? userSkill.requires_file,
     description,
     tags,
     enabled: userSkill.enabled,
@@ -87,13 +92,23 @@ export function resolveExposedSkillPermissions({
   return { effectivePermissions, effectivePermissionsKnown };
 }
 
+/** Clear stale identities when the complete authorized catalog cannot load. */
+export function resolveSkillsAfterListFailure(
+  current: PublicSkillResponse[],
+  allAuthorizedCatalog: boolean,
+): PublicSkillResponse[] {
+  return allAuthorizedCatalog ? [] : current;
+}
+
 export function useSkills(options?: {
   enabled?: boolean;
   listParams?: SkillListParams;
+  allAuthorizedCatalog?: boolean;
 }) {
   const enabled = options?.enabled !== false; // Default to true
   const listParams = options?.listParams;
-  const [skills, setSkills] = useState<SkillResponse[]>([]);
+  const allAuthorizedCatalog = options?.allAuthorizedCatalog === true;
+  const [skills, setSkills] = useState<PublicSkillResponse[]>([]);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [effectivePermissions, setEffectivePermissions] = useState<string[]>(
     [],
@@ -127,7 +142,9 @@ export function useSkills(options?: {
       setPermissionsValid(false);
       setEffectivePermissionsKnown(false);
       try {
-        const response = await skillApi.list(params ?? listParams ?? {});
+        const response = allAuthorizedCatalog
+          ? await skillApi.listAllAuthorized()
+          : await skillApi.list(params ?? listParams ?? {});
         const userSkills: UserSkill[] = response.skills;
         // For list view, we don't fetch full details immediately
         // Components that need details will fetch them on demand
@@ -162,11 +179,18 @@ export function useSkills(options?: {
         setCatalogReadResolved(false);
         setPermissionsValid(true);
         setEffectivePermissionsKnown(true);
+        setSkills((current) =>
+          resolveSkillsAfterListFailure(current, allAuthorizedCatalog),
+        );
+        if (allAuthorizedCatalog) {
+          setTotal(0);
+          setAvailableTags([]);
+        }
       } finally {
         setIsLoading(false);
       }
     },
-    [enabled, listParams],
+    [allAuthorizedCatalog, enabled, listParams],
   );
 
   // Fetch single skill — metadata + file paths only (lazy: content loaded on demand)
@@ -183,6 +207,9 @@ export function useSkills(options?: {
         if (cached) {
           userSkill = {
             skill_name: cached.name,
+            expected_version: cached.expected_version,
+            input_modes: cached.input_modes,
+            requires_file: cached.requires_file,
             description: cached.description,
             tags: cached.tags,
             files: cached.filePaths || [],
@@ -198,6 +225,9 @@ export function useSkills(options?: {
         } else {
           userSkill = {
             skill_name: detail.skill_name || name,
+            expected_version: detail.expected_version || "",
+            input_modes: detail.input_modes || [],
+            requires_file: detail.requires_file ?? false,
             description: detail.description || name,
             tags: detail.tags || [],
             files: detail.files || [],
@@ -235,6 +265,9 @@ export function useSkills(options?: {
         if (cached) {
           userSkill = {
             skill_name: cached.name,
+            expected_version: cached.expected_version,
+            input_modes: cached.input_modes,
+            requires_file: cached.requires_file,
             description: cached.description,
             tags: cached.tags,
             files: cached.filePaths || [],
@@ -250,6 +283,9 @@ export function useSkills(options?: {
         } else {
           userSkill = {
             skill_name: detail.skill_name || name,
+            expected_version: detail.expected_version || "",
+            input_modes: detail.input_modes || [],
+            requires_file: detail.requires_file ?? false,
             description: detail.description || name,
             tags: detail.tags || [],
             files: detail.files || [],

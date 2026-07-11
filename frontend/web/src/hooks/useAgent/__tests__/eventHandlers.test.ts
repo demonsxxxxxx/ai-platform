@@ -9,6 +9,7 @@ import { prepareMessagesForRunningRun } from "../historyLoader.ts";
 function createContext(
   messages: Message[],
   lastHistoryTimestamp: Date | null,
+  dismissQueueToast?: () => void,
 ): EventHandlerContext & {
   connectionStatuses: string[];
   messages: () => Message[];
@@ -37,11 +38,36 @@ function createContext(
     },
     setIsInitializingSandbox: () => undefined,
     setSandboxError: () => undefined,
+    dismissQueueToast,
     connectionStatuses,
     messages: () => messages,
     setMessagesCalls: () => setMessagesCalls,
   };
 }
+
+test("terminal stream events dismiss a queued admission toast", () => {
+  for (const terminalEvent of [
+    "complete",
+    "done",
+    "user:cancel",
+    "error",
+  ] as const) {
+    let dismissCalls = 0;
+    const ctx = createContext([], null, () => {
+      dismissCalls += 1;
+    });
+
+    handleStreamEvent(
+      { event: terminalEvent, data: "{}" },
+      "assistant-1",
+      `terminal-${terminalEvent}`,
+      "2026-07-11T01:02:03.000Z",
+      ctx,
+    );
+
+    assert.equal(dismissCalls, 1, `${terminalEvent} must clear chat-queue`);
+  }
+});
 
 test("skips replayed SSE events at the history timestamp boundary", () => {
   const timestamp = "2026-04-19T01:02:03.456Z";

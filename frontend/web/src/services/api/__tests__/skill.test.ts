@@ -5,6 +5,7 @@ import {
   buildAdminSkillPreviewUrl,
   buildAdminSkillUploadUrl,
   buildSkillListUrl,
+  collectAllAuthorizedSkills,
   normalizeSkillListResponse,
 } from "../skill.ts";
 
@@ -31,6 +32,9 @@ test("buildAdminSkillPreviewUrl targets global-catalog admin ZIP preview", () =>
 
 const userSkill = {
   skill_name: "planner",
+  expected_version: "hash-planner-v1",
+  input_modes: ["chat"],
+  requires_file: false,
   description: "Planning workflow",
   tags: ["planning"],
   files: ["SKILL.md"],
@@ -45,7 +49,7 @@ test("normalizeSkillListResponse preserves projected PR177 skill permissions", (
   assert.deepEqual(
     normalizeSkillListResponse({
       skills: [userSkill],
-      total: 7,
+      total: 21,
       skip: 20,
       limit: 10,
       available_tags: ["planning", "review"],
@@ -53,7 +57,7 @@ test("normalizeSkillListResponse preserves projected PR177 skill permissions", (
     }),
     {
       skills: [userSkill],
-      total: 7,
+      total: 21,
       skip: 20,
       limit: 10,
       available_tags: ["planning", "review"],
@@ -75,4 +79,213 @@ test("normalizeSkillListResponse keeps legacy arrays readable but permission-unk
     effective_permissions_known: false,
     catalog_read_resolved: true,
   });
+});
+
+test("normalizeSkillListResponse rejects null and malformed pagination metadata", () => {
+  const validEnvelope = {
+    skills: [userSkill],
+    total: 1,
+    skip: 0,
+    limit: 200,
+    available_tags: ["planning"],
+    effective_permissions: ["skill:read"],
+  };
+
+  for (const response of [
+    null,
+    { ...validEnvelope, total: -1 },
+    { ...validEnvelope, total: "1" },
+    { ...validEnvelope, total: 0 },
+    { ...validEnvelope, skip: -1 },
+    { ...validEnvelope, skip: 1, total: 1 },
+    { ...validEnvelope, limit: 0 },
+    { ...validEnvelope, limit: "200" },
+    { ...validEnvelope, limit: 1, total: 2, skills: [userSkill, { ...userSkill, skill_name: "reviewer" }] },
+  ]) {
+    assert.throws(
+      () => normalizeSkillListResponse(response as never),
+      /authorized_skill_catalog_invalid/,
+    );
+  }
+});
+
+test("normalizeSkillListResponse rejects missing authorized selector fields", () => {
+  const { expected_version: _expectedVersion, ...missingVersion } = userSkill;
+
+  assert.throws(
+    () =>
+      normalizeSkillListResponse({
+        skills: [missingVersion],
+        total: 1,
+        skip: 0,
+        limit: 200,
+        available_tags: ["planning"],
+        effective_permissions: ["skill:read"],
+      } as never),
+    /authorized_skill_catalog_invalid/,
+  );
+});
+
+test("collectAllAuthorizedSkills aggregates beyond 200 and preserves catalog projection", async () => {
+  const calls: Array<{ skip?: number; limit?: number }> = [];
+  const allSkills = Array.from({ length: 205 }, (_, index) => ({
+    ...userSkill,
+    skill_name: `skill-${String(index).padStart(3, "0")}`,
+    expected_version: `hash-${index}`,
+  }));
+
+  const result = await collectAllAuthorizedSkills(async (params) => {
+    calls.push(params);
+    const skip = params.skip ?? 0;
+    const page = allSkills.slice(skip, skip + 200);
+    return {
+      skills: page,
+      total: allSkills.length,
+      skip,
+      limit: 200,
+      available_tags: skip === 0 ? ["planning"] : ["review"],
+      effective_permissions: ["skill:read"],
+      effective_permissions_known: true,
+      catalog_read_resolved: true,
+    };
+  });
+
+  assert.deepEqual(calls, [
+    { skip: 0, limit: 200 },
+    { skip: 200, limit: 200 },
+  ]);
+  assert.equal(result.skills.length, 205);
+  assert.equal(result.skills.at(-1)?.skill_name, "skill-204");
+  assert.deepEqual(result.available_tags, ["planning", "review"]);
+  assert.deepEqual(result.effective_permissions, ["skill:read"]);
+  assert.equal(result.effective_permissions_known, true);
+  assert.equal(result.catalog_read_resolved, true);
+});
+
+test("collectAllAuthorizedSkills accepts an authorized empty catalog", async () => {
+  const result = await collectAllAuthorizedSkills(async ({ skip = 0 }) => ({
+    skills: [],
+    total: 0,
+    skip,
+    limit: 200,
+    available_tags: [],
+    effective_permissions: ["skill:read"],
+    effective_permissions_known: true,
+    catalog_read_resolved: true,
+  }));
+
+  assert.deepEqual(result.skills, []);
+  assert.equal(result.total, 0);
+  assert.deepEqual(result.effective_permissions, ["skill:read"]);
+});
+
+test("collectAllAuthorizedSkills refreshes a second-page Skill version without duplicates", async () => {
+  let version = "hash-old";
+  const listPage = async (params: { skip?: number; limit?: number }) => {
+    const skip = params.skip ?? 0;
+    const firstPage = Array.from({ length: 200 }, (_, index) => ({
+      ...userSkill,
+      skill_name: `skill-${index}`,
+    }));
+    const secondPage = [
+      { ...userSkill, skill_name: "target-skill", expected_version: version },
+      { ...userSkill, skill_name: "skill-0" },
+    ];
+    return {
+      skills: skip === 0 ? firstPage : skip === 200 ? secondPage : [],
+      total: 202,
+      skip,
+      limit: 200,
+      available_tags: ["planning"],
+      effective_permissions: ["skill:read"],
+      effective_permissions_known: true,
+      catalog_read_resolved: true,
+    };
+  };
+
+  const initial = await collectAllAuthorizedSkills(listPage);
+  version = "hash-current";
+  const refreshed = await collectAllAuthorizedSkills(listPage);
+
+  assert.equal(initial.skills.length, 201);
+  assert.equal(
+    initial.skills.find((skill) => skill.skill_name === "target-skill")
+      ?.expected_version,
+    "hash-old",
+  );
+  assert.equal(
+    refreshed.skills.find((skill) => skill.skill_name === "target-skill")
+      ?.expected_version,
+    "hash-current",
+  );
+});
+
+test("collectAllAuthorizedSkills fails closed instead of returning a partial page", async () => {
+  await assert.rejects(
+    collectAllAuthorizedSkills(async ({ skip = 0 }) => {
+      if (skip > 0) throw new Error("page unavailable");
+      return {
+        skills: Array.from({ length: 200 }, (_, index) => ({
+          ...userSkill,
+          skill_name: `skill-${index}`,
+        })),
+        total: 201,
+        skip: 0,
+        limit: 200,
+        available_tags: ["planning"],
+        effective_permissions: ["skill:read"],
+        effective_permissions_known: true,
+        catalog_read_resolved: true,
+      };
+    }),
+    /page unavailable/,
+  );
+});
+
+test("collectAllAuthorizedSkills rejects an empty page before declared total", async () => {
+  await assert.rejects(
+    collectAllAuthorizedSkills(async ({ skip = 0 }) => ({
+      skills:
+        skip === 0
+          ? Array.from({ length: 200 }, (_, index) => ({
+              ...userSkill,
+              skill_name: `skill-${index}`,
+            }))
+          : [],
+      total: 201,
+      skip,
+      limit: 200,
+      available_tags: ["planning"],
+      effective_permissions: ["skill:read"],
+      effective_permissions_known: true,
+      catalog_read_resolved: true,
+    })),
+    /authorized_skill_catalog_incomplete/,
+  );
+});
+
+test("collectAllAuthorizedSkills rejects a repeated page with no unique progress", async () => {
+  const repeatedPage = Array.from({ length: 200 }, (_, index) => ({
+    ...userSkill,
+    skill_name: `skill-${index}`,
+  }));
+  let calls = 0;
+
+  await assert.rejects(
+    collectAllAuthorizedSkills(async ({ skip = 0 }) => {
+      calls += 1;
+      return {
+        skills: repeatedPage,
+        total: 201,
+        skip,
+        limit: 200,
+        available_tags: ["planning"],
+        effective_permissions: ["skill:read"],
+        effective_permissions_known: true,
+        catalog_read_resolved: true,
+      };
+    }),
+    /authorized_skill_catalog_no_progress/,
+  );
+  assert.equal(calls, 2);
 });

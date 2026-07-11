@@ -48,7 +48,14 @@ import {
 } from "../common/selectionActionPrompt";
 import type { ChatInputProps } from "./chatInputTypes";
 import type { FeaturePanel } from "../selectors/FeatureMenu";
-import type { MessageAttachment, PersonaPreset } from "../../types";
+import type {
+  MessageAttachment,
+  PersonaPreset,
+  PublicSkillResponse,
+} from "../../types";
+import {
+  prepareSelectedSkillSubmission,
+} from "../../hooks/useSelectedSkillTask";
 import {
   LibreChatComposerBox,
   LibreChatComposerFrame,
@@ -59,6 +66,8 @@ import {
 export type { ChatInputProps } from "./chatInputTypes";
 
 export const ChatInput = memo(function ChatInput({
+  draft: externalDraft,
+  onDraftChange,
   onSend,
   onStop,
   isLoading,
@@ -72,12 +81,12 @@ export const ChatInput = memo(function ChatInput({
   enabledToolsCount = 0,
   totalToolsCount = 0,
   skills = [],
-  onToggleSkill,
-  onToggleSkillCategory,
-  onToggleAllSkills,
+  selectedSkillState,
+  onSelectSkill,
+  onClearSelectedSkill,
+  onSelectedSkillRecoverable,
+  onSelectedSkillFilesReady,
   skillsLoading: _skillsLoading,
-  pendingSkillNames = [],
-  skillsMutating = false,
   enabledSkillsCount = 0,
   totalSkillsCount = 0,
   enableSkills = true,
@@ -89,7 +98,6 @@ export const ChatInput = memo(function ChatInput({
   onPersonaPresetsTagChange,
   selectedPersonaPresetId,
   selectedPersonaName,
-  personaSkillsControlled = false,
   personaPresetsLoading = false,
   personaPresetsMutating = false,
   onUsePersonaPreset,
@@ -113,7 +121,9 @@ export const ChatInput = memo(function ChatInput({
   className,
 }: ChatInputProps) {
   const { t } = useTranslation();
-  const [input, setInput] = useState("");
+  const [internalDraft, setInternalDraft] = useState("");
+  const input = externalDraft ?? internalDraft;
+  const setInput = onDraftChange ?? setInternalDraft;
 
   // Consume external pendingInput: fill textarea and focus
   useEffect(() => {
@@ -152,6 +162,7 @@ export const ChatInput = memo(function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const openFileCommandRef = useRef<(() => void) | null>(null);
+  const isSubmittingRef = useRef(false);
   const [cursorPosition, setCursorPosition] = useState(0);
   const [mentionPopupPlacement, setMentionPopupPlacement] =
     useState<ReturnType<typeof getMentionPopupFixedPlacement>>(null);
@@ -334,21 +345,44 @@ export const ChatInput = memo(function ChatInput({
     [input, mention, onUsePersonaPreset, resetMention, scheduleTextareaResize],
   );
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canSend) return;
     if (handleComposerCommandSubmit(input)) return;
-    if (input.trim() && !isLoading && !disabled) {
+    if (input.trim() && !isLoading && !disabled && !isSubmittingRef.current) {
       const trimmed = input.trim();
-      onSend(trimmed, agentOptionValues, attachments);
-      pushHistory(trimmed);
-      setInput("");
-      setAttachments([]);
-      requestAnimationFrame(() => {
-        if (textareaRef.current) {
-          textareaRef.current.style.height = "auto";
+      const selectedSkillSubmission = selectedSkillState
+        ? prepareSelectedSkillSubmission(selectedSkillState, attachments)
+        : { error: null, request: null };
+      if (selectedSkillSubmission.error) {
+        await onSelectedSkillRecoverable?.(selectedSkillSubmission.error);
+        return;
+      }
+
+      isSubmittingRef.current = true;
+      try {
+        const outcome = await onSend(
+          trimmed,
+          agentOptionValues,
+          attachments,
+          selectedSkillSubmission.request,
+        );
+        if (outcome.status === "recoverable_error") {
+          await onSelectedSkillRecoverable?.(outcome.code);
+          return;
         }
-      });
+        if (outcome.status === "accepted") {
+          pushHistory(trimmed);
+          setInput("");
+          setAttachments([]);
+          onClearSelectedSkill?.();
+          requestAnimationFrame(() => {
+            if (textareaRef.current) textareaRef.current.style.height = "auto";
+          });
+        }
+      } finally {
+        isSubmittingRef.current = false;
+      }
     }
   };
 
@@ -462,10 +496,7 @@ export const ChatInput = memo(function ChatInput({
   const hasContent = !!input.trim() && !disabled;
   const hasUploadingAttachment = attachments.some((a) => a.isUploading);
   const skillsAvailable =
-    enableSkills &&
-    !!onToggleSkill &&
-    !!onToggleSkillCategory &&
-    !!onToggleAllSkills;
+    enableSkills && !!onSelectSkill;
   const toolsAvailable = !!onToggleTool && !!onToggleCategory && !!onToggleAll;
   const commandPanelAvailability = useMemo(
     () => ({
@@ -743,6 +774,12 @@ export const ChatInput = memo(function ChatInput({
   const handlePanelChange = useCallback(
     (panel: FeaturePanel) => {
       setCommandSearchSeed(null);
+      if (panel === null) {
+        setActivePanel(null);
+        closeSlashMenu();
+        requestAnimationFrame(() => textareaRef.current?.focus());
+        return;
+      }
       if (panel === "file") {
         openFileCommandRef.current?.();
         return;
@@ -755,6 +792,31 @@ export const ChatInput = memo(function ChatInput({
       closeSlashMenu();
     },
     [closeSlashMenu, markContextUnavailableCommand],
+  );
+
+  const handleSelectTaskSkill = useCallback(
+    (skill: PublicSkillResponse) => {
+      onSelectSkill?.(skill);
+      const draft = resolveComposerCommandDraft(
+        input,
+        commandPanelAvailability,
+      );
+      if (draft?.panel === "skills") {
+        setInput("");
+        setCursorPosition(0);
+        requestAnimationFrame(scheduleTextareaResize);
+      }
+      setActivePanel(null);
+      setCommandSearchSeed(null);
+      closeSlashMenu();
+    },
+    [
+      closeSlashMenu,
+      commandPanelAvailability,
+      input,
+      onSelectSkill,
+      scheduleTextareaResize,
+    ],
   );
 
   useEffect(() => {
@@ -778,7 +840,43 @@ export const ChatInput = memo(function ChatInput({
 
   useEffect(() => {
     dispatchComposerSelection({ type: "clear-kind", kind: "skill" });
-  }, [skills]);
+    const selectedSkill = selectedSkillState?.selectedSkill;
+    if (!selectedSkill) return;
+
+    const state =
+      selectedSkillState.status === "stale"
+        ? "unavailable"
+        : selectedSkillState.status === "file_required"
+          ? "pending"
+          : "enabled";
+    const fileRequirement = selectedSkill.requires_file
+      ? t("skillSelector.fileRequired", "File required")
+      : t("skillSelector.noFileRequired", "No file required");
+    dispatchComposerSelection({
+      type: "upsert",
+      selection: {
+        id: `skill:${selectedSkill.name}`,
+        kind: "skill",
+        label: selectedSkill.name,
+        state,
+        referenceId: selectedSkill.expected_version.slice(0, 8),
+        description: `v${selectedSkill.expected_version.slice(0, 8)} · ${fileRequirement}`,
+        visibleDetails: [
+          `v${selectedSkill.expected_version.slice(0, 8)}`,
+          fileRequirement,
+        ],
+      },
+    });
+  }, [selectedSkillState, t]);
+
+  useEffect(() => {
+    if (
+      selectedSkillState?.status === "file_required" &&
+      attachments.some((attachment) => attachment.id && !attachment.isUploading)
+    ) {
+      onSelectedSkillFilesReady?.();
+    }
+  }, [attachments, onSelectedSkillFilesReady, selectedSkillState?.status]);
 
   useEffect(() => {
     dispatchComposerSelection({ type: "clear-kind", kind: "mcp" });
@@ -817,13 +915,7 @@ export const ChatInput = memo(function ChatInput({
         return;
       }
       if (id.startsWith("skill:")) {
-        const skillName = id.slice("skill:".length);
-        const skill = skills.find((item) => item.name === skillName);
-        if (skill?.enabled) {
-          onToggleSkill?.(skillName).catch((error) => {
-            console.error("Failed to remove selected skill chip:", error);
-          });
-        }
+        onClearSelectedSkill?.();
         return;
       }
       if (id.startsWith("mcp:")) {
@@ -844,11 +936,10 @@ export const ChatInput = memo(function ChatInput({
     [
       agents,
       currentAgent,
+      onClearSelectedSkill,
       onSelectAgent,
-      onToggleSkill,
       onToggleTool,
       setAttachments,
-      skills,
       tools,
     ],
   );
@@ -958,6 +1049,30 @@ export const ChatInput = memo(function ChatInput({
               />
             </LibreChatComposerRegion>
 
+            {selectedSkillState?.recoveryCode && (
+              <div
+                className="mx-3 mt-2 rounded-lg border border-[var(--theme-warning-ring)] bg-[var(--theme-warning-soft)] px-3 py-2 text-xs leading-relaxed text-[var(--theme-warning)]"
+                role="status"
+                data-selected-skill-error={selectedSkillState.recoveryCode}
+              >
+                {selectedSkillState.recoveryCode === "skill_selection_stale"
+                  ? t(
+                      "skillSelector.staleSelection",
+                      "This Skill version changed. Open Skills and confirm the current version before submitting again.",
+                    )
+                  : selectedSkillState.recoveryCode ===
+                      "capability_not_authorized"
+                    ? t(
+                        "skillSelector.selectionDenied",
+                        "The selected Skill is no longer available. Choose an authorized Skill again.",
+                      )
+                    : t(
+                        "skillSelector.fileRequiredInline",
+                        "Attach the required file before submitting this task.",
+                      )}
+              </div>
+            )}
+
             <LibreChatComposerRegion region="textarea">
               <div className="relative">
                 <LibreChatComposerTextarea
@@ -1036,16 +1151,10 @@ export const ChatInput = memo(function ChatInput({
         enabledToolsCount={enabledToolsCount}
         totalToolsCount={totalToolsCount}
         skills={skills}
-        onToggleSkill={onToggleSkill}
-        onToggleSkillCategory={onToggleSkillCategory}
-        onToggleAllSkills={onToggleAllSkills}
-        pendingSkillNames={pendingSkillNames}
-        skillsMutating={skillsMutating}
-        enabledSkillsCount={enabledSkillsCount}
-        totalSkillsCount={totalSkillsCount}
+        selectedSkill={selectedSkillState?.selectedSkill}
+        onSelectSkill={handleSelectTaskSkill}
+        skillsLoading={_skillsLoading}
         enableSkills={enableSkills}
-        personaSkillsControlled={personaSkillsControlled}
-        selectedPersonaName={selectedPersonaName}
         personaPresets={personaPresets}
         personaPresetsTotal={personaPresetsTotal}
         personaPresetsPage={personaPresetsPage}

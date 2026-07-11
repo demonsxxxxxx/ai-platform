@@ -6,6 +6,7 @@ import type {
   SessionEventsResponse,
   RunSummary,
   MessageAttachment,
+  SelectedSkillRequest,
 } from "../../types";
 import { API_BASE } from "./config";
 import { authFetch } from "./fetch";
@@ -111,6 +112,7 @@ export function buildSubmitChatBody({
   personaPresetId,
   disabledMcpTools,
   userTimezone,
+  selectedSkill,
 }: {
   message: string;
   sessionId?: string;
@@ -122,17 +124,22 @@ export function buildSubmitChatBody({
   personaPresetId?: string | null;
   disabledMcpTools?: string[];
   userTimezone?: string;
+  selectedSkill?: SelectedSkillRequest | null;
 }): Record<string, unknown> {
   const body: Record<string, unknown> = {
     message,
     session_id: sessionId,
     agent_options: agentOptions,
     attachments,
-    disabled_skills: disabledSkills,
-    enabled_skills: enabledSkills,
+    disabled_skills: selectedSkill ? undefined : disabledSkills,
+    enabled_skills: selectedSkill ? undefined : enabledSkills,
     persona_preset_id: personaPresetId || undefined,
     disabled_mcp_tools: disabledMcpTools,
   };
+
+  if (selectedSkill) {
+    body.selected_skill = selectedSkill;
+  }
 
   if (userTimezone) {
     body.user_timezone = userTimezone;
@@ -338,6 +345,7 @@ export const sessionApi = {
     disabledMcpTools?: string[],
     personaPresetId?: string | null,
     enabledSkills?: string[],
+    selectedSkill?: SelectedSkillRequest | null,
   ): Promise<ChatStreamResponse> {
     const body = buildSubmitChatBody({
       message,
@@ -350,6 +358,7 @@ export const sessionApi = {
       personaPresetId,
       disabledMcpTools,
       userTimezone: getBrowserTimezone(),
+      selectedSkill,
     });
     return authFetch(`${API_BASE}/api/chat/stream?agent_id=${agentId}`, {
       method: "POST",

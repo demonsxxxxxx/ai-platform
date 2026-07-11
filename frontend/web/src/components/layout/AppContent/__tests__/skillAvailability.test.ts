@@ -12,12 +12,12 @@ import {
 import type {
   SettingItem,
   SettingsResponse,
+  PublicSkillResponse,
   SkillResponse,
 } from "../../../../types";
 
-const { resolveExposedSkillPermissions } = await import(
-  "../../../../hooks/useSkills.ts"
-);
+const { resolveExposedSkillPermissions, resolveSkillsAfterListFailure } =
+  await import("../../../../hooks/useSkills.ts");
 
 function skill(name: string, enabled = true): SkillResponse {
   return {
@@ -361,6 +361,20 @@ test("exposes skill permissions only after the current catalog fetch resolves", 
       effectivePermissionsKnown: true,
     },
   );
+});
+
+test("authorized composer catalog failure clears cached Skill identities", () => {
+  const cached = [
+    {
+      ...skill("cached-authorized-skill"),
+      expected_version: "hash-old",
+      input_modes: ["chat"],
+      requires_file: false,
+    } satisfies PublicSkillResponse,
+  ];
+
+  assert.deepEqual(resolveSkillsAfterListFailure(cached, true), []);
+  assert.equal(resolveSkillsAfterListFailure(cached, false), cached);
 });
 
 test("chat composer only applies session-disabled skill subtraction to the backend catalog", () => {
