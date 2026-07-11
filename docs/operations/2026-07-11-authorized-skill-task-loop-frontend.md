@@ -21,6 +21,10 @@ multi-agent product authority, deployment, or 211 runtime state.
 - [x] Clean isolated worktree fetched and read back `origin/main` at
   `818cc80135a6c4d48c600bc6e9f0ef39cf47ecb1` before product writes.
 - [x] Non-interactive rebase onto that SHA completed without conflict.
+- [x] After backend PR #393 merged, the clean branch fetched and read back
+  `origin/main` at `c854085f916748ca3c34c8a01bfc6a505b8dca5b`, confirmed
+  reviewed head `4a819396343978b22270039c9b78e0959acbbe6b` as its parent,
+  and rebased non-interactively without conflict.
 - [x] Public DTO and `GET /api/skills/` readback confirmed required
   `expected_version`, `input_modes`, and `requires_file` fields from merged
   backend PR #390.
@@ -81,13 +85,16 @@ multi-agent product authority, deployment, or 211 runtime state.
   typecheck, Vite/PWA build, and provenance; Python compile exited 0. Exact
   precommit focused tests passed 165/165; 26 slice files produced 0
   forbidden-path, secret, personal-path, root-gitignore, or diff-check hits.
+  After the #393 rebase, focused tests again passed 165/165, Python compile and
+  `ci:verify` again exited 0, and the desktop/mobile mock browser evidence was
+  regenerated with status `passed`.
 - [ ] Phase 6 - fixed SHA `696e551` independent code and UX reviews found four
   Important and three Minor findings. Full-catalog pagination, atomic
   required-file submission, SSE setup rejection handling, real executable
   discovery, visible selected metadata, dialog/focus semantics, and mobile
-  touch targets are fixed locally. Final exact-head re-review remains pending
-  until backend PR #393 merges and this branch is cleanly rebased onto the new
-  authoritative `origin/main`.
+  touch targets are fixed locally. The branch is now rebased onto the current
+  authoritative main; final rebased exact-head code and UX re-review remains
+  pending.
 - [ ] Phase 7 - ready PR, exact-head review/validation comments, and required
   CI. No merge or 211 deployment is authorized in this lane.
 
