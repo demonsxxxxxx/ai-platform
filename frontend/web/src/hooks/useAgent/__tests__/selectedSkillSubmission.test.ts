@@ -34,3 +34,13 @@ test("recoverable admission errors remove optimistic messages and remain explici
   assert.match(source, /setMessages\(previousMessages\)/);
   assert.equal(source.match(/sessionApi\.submitChat/g)?.length, 1);
 });
+
+test("accepted fire-and-forget stream handles setup rejection before cleanup", () => {
+  const source = readFileSync(resolve(__dirname, "../../useAgent.ts"), "utf8");
+
+  assert.match(
+    source,
+    /void connectToSSE\([\s\S]*?\)\s*\.catch\([\s\S]*?\)\s*\.finally\(/,
+  );
+  assert.match(source, /setConnectionStatus\("disconnected"\)/);
+});

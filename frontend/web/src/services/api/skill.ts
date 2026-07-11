@@ -114,15 +114,76 @@ export function normalizeSkillListResponse(
   };
 }
 
+const AUTHORIZED_SKILL_PAGE_LIMIT = 200;
+
+type SkillPageLoader = (params: SkillListParams) => Promise<SkillsResponse>;
+
+/** Load the complete authorized public catalog without exposing partial pages. */
+export async function collectAllAuthorizedSkills(
+  listPage: SkillPageLoader,
+): Promise<SkillsResponse> {
+  const skillsByName = new Map<string, UserSkill>();
+  const availableTags = new Set<string>();
+  const effectivePermissions = new Set<string>();
+  let effectivePermissionsKnown = true;
+  let catalogReadResolved = true;
+  let expectedTotal = 0;
+  let skip = 0;
+
+  while (true) {
+    const page = await listPage({
+      skip,
+      limit: AUTHORIZED_SKILL_PAGE_LIMIT,
+    });
+    expectedTotal = Math.max(expectedTotal, page.total);
+    page.skills.forEach((skill) => skillsByName.set(skill.skill_name, skill));
+    page.available_tags.forEach((tag) => availableTags.add(tag));
+    page.effective_permissions.forEach((permission) =>
+      effectivePermissions.add(permission),
+    );
+    effectivePermissionsKnown &&= page.effective_permissions_known;
+    catalogReadResolved &&= page.catalog_read_resolved;
+
+    if (page.skills.length === 0) break;
+    skip += page.skills.length;
+    if (skillsByName.size >= expectedTotal) break;
+  }
+
+  const skills = Array.from(skillsByName.values());
+  return {
+    skills,
+    total: skills.length,
+    skip: 0,
+    limit: AUTHORIZED_SKILL_PAGE_LIMIT,
+    available_tags: Array.from(availableTags),
+    effective_permissions: Array.from(effectivePermissions),
+    effective_permissions_known: effectivePermissionsKnown,
+    catalog_read_resolved: catalogReadResolved,
+  };
+}
+
+async function listSkills(params: SkillListParams = {}): Promise<SkillsResponse> {
+  const response = await authFetch<SkillListWireResponse>(
+    buildSkillListUrl(params),
+  );
+  return normalizeSkillListResponse(response ?? []);
+}
+
+async function listAllAuthorizedSkills(): Promise<SkillsResponse> {
+  return collectAllAuthorizedSkills(listSkills);
+}
+
 export const skillApi = {
   /**
    * List all user skills
    */
   async list(params: SkillListParams = {}): Promise<SkillsResponse> {
-    const response = await authFetch<SkillListWireResponse>(
-      buildSkillListUrl(params),
-    );
-    return normalizeSkillListResponse(response ?? []);
+    return listSkills(params);
+  },
+
+  /** List every Skill in the current principal's public authorized catalog. */
+  async listAllAuthorized(): Promise<SkillsResponse> {
+    return listAllAuthorizedSkills();
   },
 
   /**

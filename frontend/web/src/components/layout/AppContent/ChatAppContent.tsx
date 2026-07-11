@@ -114,7 +114,10 @@ export function ChatAppContent({
     fetchSkills,
     effectivePermissions: skillsEffectivePermissions,
     effectivePermissionsKnown: skillsEffectivePermissionsKnown,
-  } = useSkills({ enabled: composerSkillsProbeAvailability.shouldFetchSkills });
+  } = useSkills({
+    enabled: composerSkillsProbeAvailability.shouldFetchSkills,
+    allAuthorizedCatalog: true,
+  });
   const {
     state: selectedSkillState,
     selectSkill,

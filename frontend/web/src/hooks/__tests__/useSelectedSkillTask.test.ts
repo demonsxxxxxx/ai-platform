@@ -118,20 +118,59 @@ test("requires-file preflight accepts only a completed existing upload", () => {
   );
 });
 
-test("only confirmed selection materializes the nested request", () => {
-  assert.equal(typeof selectedSkillTask.toSelectedSkillRequest, "function");
+test("file-required recovery materializes the selected request once a file is ready", () => {
+  const selected = selectedSkillTask.selectedSkillTaskReducer(
+    selectedSkillTask.createSelectedSkillTaskState(),
+    { type: "select", skill: skill("document-review", "hash-docx", true) },
+  );
+  const fileRequired = selectedSkillTask.selectedSkillTaskReducer(selected, {
+    type: "recoverable_error",
+    code: "file_required_for_skill",
+  });
+
+  assert.deepEqual(
+    selectedSkillTask.prepareSelectedSkillSubmission(fileRequired, [
+      { id: "file-1", isUploading: false },
+    ]),
+    {
+      error: null,
+      request: {
+        skill_id: "document-review",
+        expected_version: "hash-docx",
+      },
+    },
+  );
+  assert.deepEqual(
+    selectedSkillTask.prepareSelectedSkillSubmission(fileRequired, []),
+    { error: "file_required_for_skill", request: null },
+  );
+});
+
+test("only an eligible selection materializes through the atomic submission helper", () => {
   const confirmed = selectedSkillTask.selectedSkillTaskReducer(
     selectedSkillTask.createSelectedSkillTaskState(),
     { type: "select", skill: skill("review", "hash-review") },
   );
-  assert.deepEqual(selectedSkillTask.toSelectedSkillRequest(confirmed), {
-    skill_id: "review",
-    expected_version: "hash-review",
-  });
+  assert.deepEqual(
+    selectedSkillTask.prepareSelectedSkillSubmission(confirmed, []),
+    {
+      error: null,
+      request: {
+        skill_id: "review",
+        expected_version: "hash-review",
+      },
+    },
+  );
 
   const stale = selectedSkillTask.selectedSkillTaskReducer(confirmed, {
     type: "recoverable_error",
     code: "skill_selection_stale",
   });
-  assert.equal(selectedSkillTask.toSelectedSkillRequest(stale), null);
+  assert.deepEqual(
+    selectedSkillTask.prepareSelectedSkillSubmission(stale, []),
+    {
+      error: "skill_selection_stale",
+      request: null,
+    },
+  );
 });

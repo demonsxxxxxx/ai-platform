@@ -92,12 +92,22 @@ export function resolveExposedSkillPermissions({
   return { effectivePermissions, effectivePermissionsKnown };
 }
 
+/** Clear stale identities when the complete authorized catalog cannot load. */
+export function resolveSkillsAfterListFailure(
+  current: PublicSkillResponse[],
+  allAuthorizedCatalog: boolean,
+): PublicSkillResponse[] {
+  return allAuthorizedCatalog ? [] : current;
+}
+
 export function useSkills(options?: {
   enabled?: boolean;
   listParams?: SkillListParams;
+  allAuthorizedCatalog?: boolean;
 }) {
   const enabled = options?.enabled !== false; // Default to true
   const listParams = options?.listParams;
+  const allAuthorizedCatalog = options?.allAuthorizedCatalog === true;
   const [skills, setSkills] = useState<PublicSkillResponse[]>([]);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [effectivePermissions, setEffectivePermissions] = useState<string[]>(
@@ -132,7 +142,9 @@ export function useSkills(options?: {
       setPermissionsValid(false);
       setEffectivePermissionsKnown(false);
       try {
-        const response = await skillApi.list(params ?? listParams ?? {});
+        const response = allAuthorizedCatalog
+          ? await skillApi.listAllAuthorized()
+          : await skillApi.list(params ?? listParams ?? {});
         const userSkills: UserSkill[] = response.skills;
         // For list view, we don't fetch full details immediately
         // Components that need details will fetch them on demand
@@ -167,11 +179,18 @@ export function useSkills(options?: {
         setCatalogReadResolved(false);
         setPermissionsValid(true);
         setEffectivePermissionsKnown(true);
+        setSkills((current) =>
+          resolveSkillsAfterListFailure(current, allAuthorizedCatalog),
+        );
+        if (allAuthorizedCatalog) {
+          setTotal(0);
+          setAvailableTags([]);
+        }
       } finally {
         setIsLoading(false);
       }
     },
-    [enabled, listParams],
+    [allAuthorizedCatalog, enabled, listParams],
   );
 
   // Fetch single skill — metadata + file paths only (lazy: content loaded on demand)

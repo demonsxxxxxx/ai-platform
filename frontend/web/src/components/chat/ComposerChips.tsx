@@ -37,9 +37,8 @@ export function ComposerChips({
     >
       {visibleSelections.map((selection) => {
         const Icon = chipIcons[selection.kind];
-        return (
+        const chip = (
           <LibreChatComposerChip
-            key={selection.id}
             id={selection.id}
             kind={selection.kind}
             label={selection.label}
@@ -51,6 +50,25 @@ export function ComposerChips({
             removeLabel={t("common.remove")}
             onRemove={onRemove}
           />
+        );
+        return selection.kind === "skill" && selection.visibleDetails?.length ? (
+          <span
+            key={selection.id}
+            className="inline-flex max-w-full flex-wrap items-center gap-x-2 gap-y-1"
+          >
+            {chip}
+            {selection.visibleDetails.map((detail) => (
+              <span
+                key={detail}
+                className="text-[10px] leading-4 text-[var(--theme-text-secondary)]"
+                data-composer-skill-visible-detail={detail}
+              >
+                {detail}
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span key={selection.id}>{chip}</span>
         );
       })}
     </div>

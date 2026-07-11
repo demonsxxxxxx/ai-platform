@@ -143,13 +143,23 @@ export function getSelectedSkillPreflightError(
   return null;
 }
 
-export function toSelectedSkillRequest(
+/** Atomically validate and materialize one task-scoped selected Skill. */
+export function prepareSelectedSkillSubmission(
   state: SelectedSkillTaskState,
-): SelectedSkillRequest | null {
-  if (state.status !== "confirmed" || !state.selectedSkill) return null;
+  attachments: Array<Pick<MessageAttachment, "id" | "isUploading">>,
+): {
+  error: SelectedSkillRecoverableCode | null;
+  request: SelectedSkillRequest | null;
+} {
+  const error = getSelectedSkillPreflightError(state, attachments);
+  if (error) return { error, request: null };
+  if (!state.selectedSkill) return { error: null, request: null };
   return {
-    skill_id: state.selectedSkill.name,
-    expected_version: state.selectedSkill.expected_version,
+    error: null,
+    request: {
+      skill_id: state.selectedSkill.name,
+      expected_version: state.selectedSkill.expected_version,
+    },
   };
 }
 

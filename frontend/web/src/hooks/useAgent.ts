@@ -781,10 +781,31 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           streamRunId,
           finalAssistantMessageId,
           ctx,
-        ).finally(() => {
-          setIsLoading(false);
-          isSendingRef.current = false;
-        });
+        )
+          .catch(() => {
+            const streamError = i18n.t("chat.requestFailed");
+            setError(streamError);
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === finalAssistantMessageId
+                  ? {
+                      ...message,
+                      content: i18n.t("chat.errorPrefix", {
+                        error: streamError,
+                      }),
+                      isStreaming: false,
+                      parts: clearAllLoadingStates(message.parts || []),
+                    }
+                  : message,
+              ),
+            );
+            setConnectionStatus("disconnected");
+            setIsInitializingSandbox(false);
+          })
+          .finally(() => {
+            setIsLoading(false);
+            isSendingRef.current = false;
+          });
         return { status: "accepted" };
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {

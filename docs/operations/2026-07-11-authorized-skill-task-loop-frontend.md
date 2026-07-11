@@ -55,23 +55,39 @@ multi-agent product authority, deployment, or 211 runtime state.
 - [x] Phase 1 - TDD RED: 7/19 initial contract tests failed on the missing
   public DTO flow, single-selection UI, nested request, recoverable outcome, and
   draft preservation; state RED separately failed 5/5 before reducer behavior.
+  Fixed-SHA review follow-up RED failed 6/17 on full-catalog pagination,
+  atomic required-file materialization, visible selected metadata, picker
+  accessibility, and browser executable discovery.
 - [x] Phase 2 - GREEN: public projection type, task selection reducer, exact
   request builder, recoverable admission outcome, single-select picker/chip,
   required-file preflight, explicit refresh/reconfirm, and draft lifting are
   wired into the real composer.
-- [x] Phase 3 - focused frontend run passed 134/134 tests, including default
+- [x] Phase 3 - focused frontend run passed 165/165 tests, including default
   preference fallback, true run cancel, event/artifact projection, cookie auth,
-  and composer visual-contract regressions.
+  full authorized-catalog pagination/fail-closed behavior, and composer visual
+  contract regressions. A broader exploratory test found one unrelated base
+  contradiction: `frontendShellParityAcceptance` forbids `/api/ai/admin` in
+  `skill.ts`, while authoritative base already contains the governed admin
+  upload/preview endpoints; this slice does not change that admin contract.
 - [x] Phase 4 - mock-backed browser smoke passed on desktop `1440x1100` and
-  mobile `390x844`: picker, select, upload, file-required, stale preservation,
-  list refresh, exact payload, successful submit, and artifact entry. Local
-  screenshots/evidence are under the repository's existing ignored
-  `.codex-tmp/authorized-skill-browser-smoke/` root.
+  mobile `390x844`: a 201-item authorized catalog placed the target Skill on
+  page two; picker search/select, upload, file-required, stale full-catalog
+  refresh, exact payload, successful submit, and artifact entry passed. The
+  evidence also checks dialog labelling, Escape close/focus restore, visible
+  version/file metadata, 44px mobile actions, and no overlap or horizontal
+  overflow. Local screenshots/evidence are under the repository's existing
+  ignored `.codex-tmp/authorized-skill-browser-smoke/` root.
 - [x] Phase 5 - `ci:verify` passed projection audit, PRD source smoke, eslint,
-  typecheck, and Vite build; standalone build and Python compile exited 0.
-  Exact precommit focused tests passed 134/134; 22 changed/untracked source
-  files produced 0 forbidden-path, secret, personal-path, or diff-check hits.
-- [ ] Phase 6 - fixed-SHA independent code and UX review, fixes, and re-review.
+  typecheck, Vite/PWA build, and provenance; Python compile exited 0. Exact
+  precommit focused tests passed 165/165; 26 slice files produced 0
+  forbidden-path, secret, personal-path, root-gitignore, or diff-check hits.
+- [ ] Phase 6 - fixed SHA `696e551` independent code and UX reviews found four
+  Important and three Minor findings. Full-catalog pagination, atomic
+  required-file submission, SSE setup rejection handling, real executable
+  discovery, visible selected metadata, dialog/focus semantics, and mobile
+  touch targets are fixed locally. Final exact-head re-review remains pending
+  until backend PR #393 merges and this branch is cleanly rebased onto the new
+  authoritative `origin/main`.
 - [ ] Phase 7 - ready PR, exact-head review/validation comments, and required
   CI. No merge or 211 deployment is authorized in this lane.
 

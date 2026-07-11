@@ -19,6 +19,9 @@ test("public Skill DTO fields flow into the ordinary composer without alternate 
     assert.match(useSkills, new RegExp(field));
   }
   assert.match(chatApp, /useSelectedSkillTask/);
+  assert.match(chatApp, /allAuthorizedCatalog:\s*true/);
+  assert.match(useSkills, /skillApi\.listAllAuthorized/);
+  assert.match(useSkills, /resolveSkillsAfterListFailure/);
   assert.doesNotMatch(chatApp, /marketplaceApi|adminSkill|updated_at.*expected_version/);
 });
 
@@ -36,9 +39,31 @@ test("composer Skill selector is single-select and exposes version plus file req
   assert.match(selector, /requires_file/);
   assert.match(selector, /data-composer-skill-version/);
   assert.match(selector, /data-composer-skill-requires-file/);
+  assert.match(selector, /role="dialog"/);
+  assert.match(selector, /aria-modal="true"/);
+  assert.match(selector, /event\.key === "Escape"/);
+  assert.match(selector, /aria-pressed=\{selected\}/);
+  assert.match(selector, /min-h-11|size-11/);
   assert.doesNotMatch(selector, /onToggleAll|onToggleCategory|Checkbox/);
   assert.match(inputSelectors, /onSelectSkill/);
   assert.doesNotMatch(inputSelectors, /onToggleAllSkills/);
+});
+
+test("task-specific selected Skill chip visibly exposes version and file requirement", () => {
+  const chips = read("src/components/chat/ComposerChips.tsx");
+  const input = read("src/components/chat/ChatInput.tsx");
+  const sharedChips = read("src/librechat-ui/Chips.tsx");
+
+  assert.match(input, /visibleDetails:/);
+  assert.match(chips, /data-composer-skill-visible-detail/);
+  assert.match(chips, /selection\.visibleDetails/);
+  assert.doesNotMatch(sharedChips, /visibleDetails|data-composer-skill-visible-detail/);
+});
+
+test("browser harness checks executable candidates with the real Node filesystem API", () => {
+  const smoke = read("scripts/authorized-skill-browser-smoke.mjs");
+  assert.match(smoke, /existsSync/);
+  assert.doesNotMatch(smoke, /__nodeFs/);
 });
 
 test("selected Skill state is owned by one focused hook with explicit recovery", () => {

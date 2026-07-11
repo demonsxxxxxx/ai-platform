@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
@@ -25,17 +25,11 @@ function chromePath() {
   ].filter(Boolean);
   return candidates.find((candidate) => {
     try {
-      return Boolean(candidate && requireExists(candidate));
+      return Boolean(candidate && existsSync(candidate));
     } catch {
       return false;
     }
   });
-}
-
-function requireExists(path) {
-  const { statSync } = globalThis.__nodeFs ?? {};
-  if (statSync) return statSync(path).isFile();
-  return true;
 }
 
 async function httpJson(url, options = {}) {
@@ -184,7 +178,21 @@ function mockBootstrapSource() {
       status,
       headers: { "Content-Type": "application/json" },
     });
-    const skills = [
+    const fillerSkills = Array.from({ length: 200 }, (_, index) => ({
+      skill_name: "authorized-skill-" + String(index).padStart(3, "0"),
+      expected_version: "filler-" + String(index).padStart(3, "0"),
+      input_modes: ["chat"],
+      requires_file: false,
+      description: "Authorized filler Skill " + index,
+      tags: ["general"],
+      files: ["SKILL.md"],
+      enabled: true,
+      file_count: 1,
+      installed_from: "marketplace",
+      is_published: true,
+      marketplace_is_active: true,
+    }));
+    const skills = [...fillerSkills,
       {
         skill_name: "document-review",
         expected_version: "aaaaaaaa11111111",
@@ -194,20 +202,6 @@ function mockBootstrapSource() {
         tags: ["document"],
         files: ["SKILL.md"],
         enabled: true,
-        file_count: 1,
-        installed_from: "marketplace",
-        is_published: true,
-        marketplace_is_active: true,
-      },
-      {
-        skill_name: "quick-research",
-        expected_version: "bbbbbbbb22222222",
-        input_modes: ["chat"],
-        requires_file: false,
-        description: "Research a focused question",
-        tags: ["research"],
-        files: ["SKILL.md"],
-        enabled: false,
         file_count: 1,
         installed_from: "marketplace",
         is_published: true,
@@ -255,12 +249,14 @@ function mockBootstrapSource() {
               ? { ...skill, expected_version: "cccccccc33333333" }
               : skill)
           : skills;
+        const skip = Number(url.searchParams.get("skip") || 0);
+        const limit = Number(url.searchParams.get("limit") || 50);
         return json({
-          skills: projectedSkills,
+          skills: projectedSkills.slice(skip, skip + limit),
           total: projectedSkills.length,
-          skip: 0,
-          limit: 100,
-          available_tags: ["document", "research"],
+          skip,
+          limit,
+          available_tags: ["document", "general"],
           effective_permissions: ["skill:read"],
           effective_permissions_known: true,
           catalog_read_resolved: true,
@@ -390,12 +386,51 @@ async function runViewport(name, viewport) {
       `${name}:chat_ready`,
     );
 
-    await setTextarea(client, "$ ");
+    await setTextarea(client, "$ document-review");
     await client.waitFor(
       'Boolean(document.querySelector("[data-composer-skill-selector]"))',
       `${name}:picker_open`,
     );
+    const pickerA11y = await client.evaluate(`(() => {
+      const dialog = document.querySelector("[data-composer-skill-selector]");
+      const target = document.querySelector('[data-composer-skill-row="document-review"]');
+      const targetRect = target?.getBoundingClientRect();
+      const buttons = Array.from(dialog?.querySelectorAll("button") || []);
+      const byText = (text) => buttons.find((button) => button.textContent.trim().includes(text));
+      const height = (node) => node ? Math.round(node.getBoundingClientRect().height) : 0;
+      return {
+        role: dialog?.getAttribute("role"),
+        ariaModal: dialog?.getAttribute("aria-modal"),
+        labelled: Boolean(dialog?.getAttribute("aria-labelledby") && document.getElementById(dialog.getAttribute("aria-labelledby"))),
+        targetVisible: Boolean(targetRect && targetRect.top >= 0 && targetRect.bottom <= innerHeight),
+        touchTargetHeights: {
+          close: height(dialog?.querySelector('button[aria-label="Close"], button[aria-label="关闭"]')),
+          manage: height(byText("Manage") || byText("管理")),
+          done: height(byText("Done") || byText("完成")),
+        },
+      };
+    })()`);
     const pickerScreenshot = await screenshot(client, `${name}-picker-open`);
+    await client.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+    await client.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape" });
+    await client.waitFor(
+      '!document.querySelector("[data-composer-skill-selector]")',
+      `${name}:picker_escape_closed`,
+    );
+    await client.waitFor(
+      'document.activeElement === document.querySelector("textarea")',
+      `${name}:picker_focus_restored`,
+    );
+    const focusRestored = true;
+    await click(
+      client,
+      'button[aria-label^="Open commands"], button[aria-label^="打开命令"]',
+    );
+    await clickText(client, ["Skills", "技能"]);
+    await client.waitFor(
+      'Boolean(document.querySelector("[data-composer-skill-selector]"))',
+      `${name}:picker_reopened_after_escape`,
+    );
     await click(client, '[data-composer-skill-row="document-review"]');
     await client.waitFor(
       'document.querySelector(\'[data-composer-chip-kind="skill"]\')?.getAttribute("data-composer-chip-reference") === "aaaaaaaa"',
@@ -412,6 +447,9 @@ async function runViewport(name, viewport) {
       `${name}:file_required`,
     );
     const requiredScreenshot = await screenshot(client, `${name}-file-required`);
+    const selectedDetails = await client.evaluate(`Array.from(
+      document.querySelectorAll("[data-composer-skill-visible-detail]")
+    ).map((node) => node.textContent.trim())`);
 
     tempFile = await attachFile(client);
     await client.waitFor(
@@ -483,6 +521,9 @@ async function runViewport(name, viewport) {
     return {
       name,
       viewport,
+      pickerA11y,
+      focusRestored,
+      selectedDetails,
       staleState,
       requestEvidence,
       layout,
@@ -495,7 +536,6 @@ async function runViewport(name, viewport) {
 }
 
 async function main() {
-  globalThis.__nodeFs = await import("node:fs");
   const results = [];
   results.push(await runViewport("desktop", { width: 1440, height: 1100, mobile: false }));
   results.push(await runViewport("mobile", { width: 390, height: 844, mobile: true }));
@@ -503,9 +543,17 @@ async function main() {
     const [staleSubmission, acceptedSubmission] = result.requestEvidence.submissions;
     return (
       result.staleState.prompt === "Review the attached evidence" &&
+      result.pickerA11y.role === "dialog" &&
+      result.pickerA11y.ariaModal === "true" &&
+      result.pickerA11y.labelled === true &&
+      result.pickerA11y.targetVisible === true &&
+      result.focusRestored === true &&
+      result.selectedDetails.includes("vaaaaaaaa") &&
+      result.selectedDetails.includes("File required") &&
+      (result.name !== "mobile" || Object.values(result.pickerA11y.touchTargetHeights).every((height) => height >= 44)) &&
       result.staleState.attachmentVisible === true &&
       result.staleState.selectedReference === "aaaaaaaa" &&
-      result.staleState.skillListReads >= 2 &&
+      result.staleState.skillListReads >= 4 &&
       result.requestEvidence.allApiCredentialsIncluded === true &&
       result.requestEvidence.errors.length === 0 &&
       staleSubmission?.body?.selected_skill?.skill_id === "document-review" &&

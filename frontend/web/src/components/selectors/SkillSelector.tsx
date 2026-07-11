@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -44,6 +44,10 @@ export function SkillSelector({
   const isOpen = externalIsOpen ?? internalOpen;
   const setIsOpen = externalOnOpenChange ?? setInternalOpen;
   const [searchQuery, setSearchQuery] = useState("");
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const titleId = useId();
   const swipeRef = useSwipeToClose({
     onClose: () => setIsOpen(false),
     enabled: isOpen,
@@ -51,11 +55,16 @@ export function SkillSelector({
 
   useEffect(() => {
     if (!isOpen) return;
+    const priorOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    requestAnimationFrame(() => searchInputRef.current?.focus());
     return () => {
-      document.body.style.overflow = "";
+      document.body.style.overflow = priorOverflow;
+      if (!externalOnOpenChange) {
+        requestAnimationFrame(() => triggerRef.current?.focus());
+      }
     };
-  }, [isOpen]);
+  }, [externalOnOpenChange, isOpen]);
 
   useEffect(() => {
     if (isOpen && searchSeed !== undefined) setSearchQuery(searchSeed);
@@ -66,12 +75,49 @@ export function SkillSelector({
     [searchQuery, skills],
   );
 
+  const handleDialogKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setIsOpen(false);
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const focusable = Array.from(
+      dialogRef.current?.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      ) ?? [],
+    ).filter((element) => element.getClientRects().length > 0);
+    if (focusable.length === 0) {
+      event.preventDefault();
+      dialogRef.current?.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
   const modal = (
     <div
-      ref={swipeRef as React.RefObject<HTMLDivElement>}
+      ref={(node) => {
+        dialogRef.current = node;
+        swipeRef.current = node;
+      }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      tabIndex={-1}
       className="flex min-h-[40vh] max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-lg border border-[var(--theme-border)] bg-[var(--theme-workbench-panel)] shadow-[0_8px_24px_rgba(18,38,63,0.12)] sm:min-h-0 sm:w-[min(640px,calc(100vw-2rem))] sm:max-h-[80vh] sm:rounded-lg"
       data-composer-skill-selector
       onClick={(event) => event.stopPropagation()}
+      onKeyDown={handleDialogKeyDown}
     >
       <div className="relative flex items-center justify-between border-b border-[var(--theme-border)] px-4 py-3 sm:px-5 sm:py-4">
         <div className="absolute left-1/2 top-2 h-1 w-10 -translate-x-1/2 rounded-full bg-[var(--theme-border)] sm:hidden" />
@@ -80,7 +126,10 @@ export function SkillSelector({
             <Sparkles size={17} className="text-[var(--theme-text-secondary)]" />
           </div>
           <div className="min-w-0">
-            <h2 className="truncate text-sm font-semibold text-[var(--theme-text)] sm:text-base">
+            <h2
+              id={titleId}
+              className="truncate text-sm font-semibold text-[var(--theme-text)] sm:text-base"
+            >
               {t("skillSelector.taskTitle", "Choose a Skill")}
             </h2>
             <p className="truncate text-xs text-[var(--theme-text-secondary)]">
@@ -93,7 +142,7 @@ export function SkillSelector({
         <button
           type="button"
           onClick={() => setIsOpen(false)}
-          className="rounded-lg p-2 text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]"
+          className="inline-flex size-11 items-center justify-center rounded-lg text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)] sm:size-9"
           aria-label={t("common.close", "Close")}
         >
           <X size={18} />
@@ -107,7 +156,7 @@ export function SkillSelector({
             className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--theme-text-secondary)]"
           />
           <input
-            autoFocus
+            ref={searchInputRef}
             type="search"
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
@@ -138,11 +187,12 @@ export function SkillSelector({
                 }}
                 className={`flex w-full items-start gap-3 rounded-lg border px-3 py-3 text-left transition-colors ${
                   selected
-                    ? "border-[var(--theme-primary)] bg-[var(--theme-primary)]/[0.08]"
+                    ? "border-[var(--theme-info-ring)] bg-[var(--theme-info-soft)]"
                     : "border-transparent hover:border-[var(--theme-border)] hover:bg-[var(--theme-bg-sidebar)]"
                 }`}
                 data-composer-skill-row={skill.name}
                 data-composer-skill-state={selected ? "selected" : "available"}
+                aria-pressed={selected}
               >
                 <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--theme-bg-sidebar)] ring-1 ring-[var(--theme-border)]">
                   <Sparkles size={15} className="text-[var(--theme-text-secondary)]" />
@@ -197,7 +247,7 @@ export function SkillSelector({
             setIsOpen(false);
             navigate("/skills");
           }}
-          className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)]"
+          className="inline-flex h-11 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)] sm:h-9"
         >
           <Settings2 size={14} />
           {t("skillSelector.manage", "Manage")}
@@ -205,7 +255,7 @@ export function SkillSelector({
         <button
           type="button"
           onClick={() => setIsOpen(false)}
-          className="rounded-lg bg-[var(--theme-primary)] px-3 py-1.5 text-xs font-medium text-[var(--theme-primary-foreground)] transition-colors hover:bg-[var(--theme-primary-hover)]"
+          className="h-11 rounded-lg bg-[var(--theme-primary)] px-3 text-xs font-medium text-[var(--theme-primary-foreground)] transition-colors hover:bg-[var(--theme-primary-hover)] sm:h-9"
         >
           {t("skillSelector.done", "Done")}
         </button>
@@ -236,6 +286,7 @@ export function SkillSelector({
 
   return (
     <button
+      ref={triggerRef}
       type="button"
       onClick={() => setIsOpen(true)}
       className="chat-tool-btn"

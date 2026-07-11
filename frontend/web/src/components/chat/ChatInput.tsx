@@ -54,8 +54,7 @@ import type {
   PublicSkillResponse,
 } from "../../types";
 import {
-  getSelectedSkillPreflightError,
-  toSelectedSkillRequest,
+  prepareSelectedSkillSubmission,
 } from "../../hooks/useSelectedSkillTask";
 import {
   LibreChatComposerBox,
@@ -352,24 +351,21 @@ export const ChatInput = memo(function ChatInput({
     if (handleComposerCommandSubmit(input)) return;
     if (input.trim() && !isLoading && !disabled && !isSubmittingRef.current) {
       const trimmed = input.trim();
-      const preflightError = selectedSkillState
-        ? getSelectedSkillPreflightError(selectedSkillState, attachments)
-        : null;
-      if (preflightError) {
-        await onSelectedSkillRecoverable?.(preflightError);
+      const selectedSkillSubmission = selectedSkillState
+        ? prepareSelectedSkillSubmission(selectedSkillState, attachments)
+        : { error: null, request: null };
+      if (selectedSkillSubmission.error) {
+        await onSelectedSkillRecoverable?.(selectedSkillSubmission.error);
         return;
       }
 
       isSubmittingRef.current = true;
       try {
-        const selectedSkill = selectedSkillState
-          ? toSelectedSkillRequest(selectedSkillState)
-          : null;
         const outcome = await onSend(
           trimmed,
           agentOptionValues,
           attachments,
-          selectedSkill,
+          selectedSkillSubmission.request,
         );
         if (outcome.status === "recoverable_error") {
           await onSelectedSkillRecoverable?.(outcome.code);
@@ -778,6 +774,12 @@ export const ChatInput = memo(function ChatInput({
   const handlePanelChange = useCallback(
     (panel: FeaturePanel) => {
       setCommandSearchSeed(null);
+      if (panel === null) {
+        setActivePanel(null);
+        closeSlashMenu();
+        requestAnimationFrame(() => textareaRef.current?.focus());
+        return;
+      }
       if (panel === "file") {
         openFileCommandRef.current?.();
         return;
@@ -859,6 +861,10 @@ export const ChatInput = memo(function ChatInput({
         state,
         referenceId: selectedSkill.expected_version.slice(0, 8),
         description: `v${selectedSkill.expected_version.slice(0, 8)} · ${fileRequirement}`,
+        visibleDetails: [
+          `v${selectedSkill.expected_version.slice(0, 8)}`,
+          fileRequirement,
+        ],
       },
     });
   }, [selectedSkillState, t]);
