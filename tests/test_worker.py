@@ -126,6 +126,24 @@ def default_cancel_not_requested(monkeypatch):
 
     monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested, raising=False)
 
+    async def validate_run_skill_snapshots_for_dispatch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.worker.repositories.validate_run_skill_snapshots_for_dispatch",
+        validate_run_skill_snapshots_for_dispatch,
+        raising=False,
+    )
+
+    async def validate_replay_skill_manifests(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.worker.repositories.validate_replay_skill_manifests",
+        validate_replay_skill_manifests,
+        raising=False,
+    )
+
     async def get_context_snapshot_for_worker(conn, **kwargs):
         return {
             "id": kwargs["context_snapshot_id"],
@@ -260,6 +278,7 @@ def default_cancel_not_requested(monkeypatch):
         return "audit-default"
 
     monkeypatch.setattr("app.worker.repositories.resolve_agent_skill", resolve_agent_skill, raising=False)
+    monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", resolve_agent_skill, raising=False)
     monkeypatch.setattr(
         "app.worker.repositories.get_capability_distribution_row",
         get_capability_distribution_row,
@@ -5959,6 +5978,7 @@ def _install_task6_worker_fakes(
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.resolve_agent_skill", resolve_agent_skill, raising=False)
+    monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", resolve_agent_skill, raising=False)
     monkeypatch.setattr(
         "app.worker.repositories.get_capability_distribution_row",
         get_capability_distribution_row,
@@ -6053,6 +6073,60 @@ async def test_worker_capability_distribution_allows_current_skill_after_enqueue
     assert ("skill_lookup", "tenant-a", "qa-word-review", "qa-file-reviewer") in calls
     assert ("distribution", "tenant-a", "skill", "qa-file-reviewer") in calls
     assert any(call[0] == "adapter" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_immutable_skill_snapshot_mismatch_blocks_before_stage_or_adapter(monkeypatch):
+    raw, registry, _, calls = _install_task6_worker_fakes(monkeypatch)
+
+    async def mismatch(*args, **kwargs):
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+
+    monkeypatch.setattr(
+        "app.worker.repositories.validate_run_skill_snapshots_for_dispatch",
+        mismatch,
+        raising=False,
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    _task6_assert_no_executor_calls(calls)
+    assert not any(call[0] == "skill_lookup" for call in calls)
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["payload"]["reason"] == "skill_snapshot_identity_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_worker_revoked_historical_pin_blocks_before_stage_or_adapter(monkeypatch):
+    raw, registry, _, calls = _install_task6_worker_fakes(monkeypatch)
+
+    async def revoked(*args, **kwargs):
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    monkeypatch.setattr(
+        "app.worker.repositories.validate_replay_skill_manifests",
+        revoked,
+        raising=False,
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    _task6_assert_no_executor_calls(calls)
+    assert not any(call[0] == "skill_lookup" for call in calls)
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["payload"]["reason"] == "skill_historical_pin_revoked"
 
 
 @pytest.mark.parametrize(

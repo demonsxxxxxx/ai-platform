@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
 from app.capability_distribution import CapabilityAuthorizationDenial
-from app.models import CreateRunRequest, QueueRunPayload
+from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload
 from app.repositories import RepositoryConflictError
 from app.routes import runs as runs_module
 from app.routes.health import admin_status
@@ -43,6 +43,7 @@ RUN_SCHEMA_FIELDS = {
 EVENT_SCHEMA_FIELDS = {"schema_version": "ai-platform.event-envelope.v1"}
 _ORIGINAL_RESOLVE_AGENT_SKILL = repository_module.resolve_agent_skill
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
+_ORIGINAL_AUTHORIZE_REPLAY_RUN_CAPABILITIES = repository_module.authorize_replay_run_capabilities
 
 
 @pytest.fixture(autouse=True)
@@ -70,6 +71,43 @@ def principal(**overrides):
     }
     values.update(overrides)
     return AuthPrincipal(**values)
+
+
+def test_selected_skill_contract_is_shared_nested_and_strict():
+    run_request = CreateRunRequest(
+        workspace_id="workspace-a",
+        agent_id="general-agent",
+        selected_skill={"skill_id": "department-review", "expected_version": "hash-v1"},
+    )
+    chat_request = ChatStreamRequest(
+        message="review this",
+        selected_skill={"skill_id": "department-review", "expected_version": "hash-v1"},
+    )
+
+    assert run_request.selected_skill.skill_id == "department-review"
+    assert run_request.selected_skill.expected_version == "hash-v1"
+    assert chat_request.selected_skill == run_request.selected_skill
+
+    with pytest.raises(ValueError):
+        CreateRunRequest(
+            workspace_id="workspace-a",
+            agent_id="general-agent",
+            selected_skill={
+                "skill_id": "department-review",
+                "expected_version": "hash-v1",
+                "skill_id_internal": "forged",
+            },
+        )
+
+
+def test_resolve_run_selector_uses_selected_skill_without_opening_raw_selector():
+    request = CreateRunRequest(
+        workspace_id="workspace-a",
+        agent_id="general-agent",
+        selected_skill={"skill_id": "department-review", "expected_version": "hash-v1"},
+    )
+
+    assert resolve_run_selector(request, principal()) == ("general-agent", "department-review")
 
 
 def capability_denial_error() -> repository_module.RepositoryAuthorizationError:
@@ -127,7 +165,26 @@ def allow_existing_run_route_tests_through_enqueue_authorization(monkeypatch):
         return None
 
     monkeypatch.setattr(repository_module, "authorize_run_capabilities", allow, raising=False)
+    monkeypatch.setattr(repository_module, "authorize_replay_run_capabilities", allow, raising=False)
     monkeypatch.setattr(repository_module, "update_run_auth_snapshot", update_auth_snapshot, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def allow_existing_run_route_tests_through_creation_snapshot(monkeypatch):
+    async def insert_creation_snapshots(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        repository_module,
+        "insert_run_skill_snapshots_at_creation",
+        insert_creation_snapshots,
+        raising=False,
+    )
+
+    async def authorize_files(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(repository_module, "authorize_files_for_run", authorize_files, raising=False)
 
 
 def snapshot_manifest(skill_id, *, description="Pinned skill", source=None):
@@ -158,6 +215,13 @@ def snapshot_manifest(skill_id, *, description="Pinned skill", source=None):
         "staged": False,
         "used": False,
     }
+
+
+def replay_manifest(skill_id: str, version: str, *, source_kind: str = "builtin") -> dict:
+    manifest = snapshot_manifest(skill_id, source={"kind": source_kind, "asset_dir": skill_id})
+    manifest["version"] = version
+    manifest["content_hash"] = version
+    return manifest
 
 
 @pytest.fixture(autouse=True)
@@ -2951,7 +3015,11 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
     async def fake_bind_files_to_run(conn, **kwargs):
         calls.append(("bind_files_to_run", kwargs["user_id"]))
 
-    async def noop(*args, **kwargs):
+    async def fake_insert_creation_snapshots(conn, **kwargs):
+        calls.append(("creation_snapshots", kwargs["run_id"], kwargs["skill_manifests"][0]["skill_id"]))
+
+    async def fake_append_event(*args, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
         return None
 
     async def fake_enqueue_run(payload):
@@ -2964,7 +3032,11 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
     monkeypatch.setattr("app.routes.runs.repositories.create_session", fake_create_session)
     monkeypatch.setattr("app.routes.runs.repositories.create_run", fake_create_run)
     monkeypatch.setattr("app.routes.runs.repositories.bind_files_to_run", fake_bind_files_to_run)
-    monkeypatch.setattr("app.routes.runs.repositories.append_event", noop)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.insert_run_skill_snapshots_at_creation",
+        fake_insert_creation_snapshots,
+    )
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
 
     response = await create_run(
@@ -2992,7 +3064,75 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
     ]
     assert ("bind_files_to_run", "phaseb-smoke") in calls
     assert ("auth_snapshot", ["qa_operator"], "qa", "session-token") in calls
+    snapshot_index = next(index for index, item in enumerate(calls) if item[0] == "creation_snapshots")
+    event_index = next(index for index, item in enumerate(calls) if item[0] == "event")
+    enqueue_index = next(index for index, item in enumerate(calls) if item[0] == "enqueue")
+    assert snapshot_index < event_index < enqueue_index
     assert any(item[0:3] == ("enqueue", "phaseb-smoke", "default") and item[3].startswith("run_") for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_create_run_selected_skill_maps_stale_lock_to_stable_409_before_writes(monkeypatch):
+    calls = []
+
+    async def stale(*args, **kwargs):
+        calls.append(("selected_authorize", kwargs["skill_id"], kwargs["expected_version"]))
+        raise RepositoryConflictError("skill_selection_stale")
+
+    async def forbidden_write(*args, **kwargs):
+        raise AssertionError("stale selected Skill must not create a run or event")
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "authorize_selected_run_capabilities", stale, raising=False)
+    monkeypatch.setattr(repository_module, "create_run", forbidden_write)
+    monkeypatch.setattr(repository_module, "append_event", forbidden_write)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="workspace-a",
+                agent_id="general-agent",
+                selected_skill={"skill_id": "department-review", "expected_version": "hash-v1"},
+            ),
+            principal=principal(department_id="qa", roles=["reviewer"]),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "skill_selection_stale"
+    assert calls == [("selected_authorize", "department-review", "hash-v1")]
+
+
+@pytest.mark.asyncio
+async def test_create_run_file_admission_denial_precedes_identity_and_run_writes(monkeypatch):
+    writes = []
+
+    async def deny_files(*args, **kwargs):
+        raise RepositoryConflictError("file_scope_mismatch")
+
+    async def record_write(*args, **kwargs):
+        writes.append(kwargs)
+        raise AssertionError("file admission must precede writes")
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "authorize_files_for_run", deny_files, raising=False)
+    monkeypatch.setattr(repository_module, "ensure_user", record_write)
+    monkeypatch.setattr(repository_module, "create_session", record_write)
+    monkeypatch.setattr(repository_module, "create_run", record_write)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="workspace-a",
+                agent_id="general-agent",
+                capability_id="general_chat",
+                file_ids=["file-forged"],
+            ),
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "file_scope_mismatch"
+    assert writes == []
 
 
 @pytest.mark.asyncio
@@ -3196,7 +3336,7 @@ async def test_prepare_copied_run_for_queue_reauthorizes_before_any_queue_prepar
         calls.append(("manifest", kwargs))
         raise AssertionError("revoked run must fail before queue preparation")
 
-    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr(repository_module, "authorize_replay_run_capabilities", deny)
     monkeypatch.setattr(runs_module, "_governed_skill_manifest_pins", fail_manifest)
 
     with pytest.raises(repository_module.RepositoryAuthorizationError, match="capability_not_authorized"):
@@ -3246,7 +3386,7 @@ async def test_prepare_copied_direct_ragflow_without_explicit_selector_uses_unif
     async def fail_manifest(*args, **kwargs):
         raise AssertionError("direct ragflow denial must precede queue preparation")
 
-    monkeypatch.setattr(repository_module, "authorize_run_capabilities", deny)
+    monkeypatch.setattr(repository_module, "authorize_replay_run_capabilities", deny)
     monkeypatch.setattr(runs_module, "_governed_skill_manifest_pins", fail_manifest)
 
     with pytest.raises(repository_module.RepositoryAuthorizationError, match="capability_not_authorized"):
@@ -3464,11 +3604,11 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
     monkeypatch.setattr(repository_module, "get_active_retry_for_source_run", no_active_run)
     monkeypatch.setattr(repository_module, "get_active_resume_for_source_run", no_active_run)
     monkeypatch.setattr(repository_module, "_completed_steps_for_resume", completed_steps)
-    monkeypatch.setattr(repository_module, "resolve_agent_skill", reject_selector)
+    monkeypatch.setattr(repository_module, "resolve_selected_skill", reject_selector)
     monkeypatch.setattr(
         repository_module,
-        "authorize_run_capabilities",
-        _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES,
+        "authorize_replay_run_capabilities",
+        _ORIGINAL_AUTHORIZE_REPLAY_RUN_CAPABILITIES,
     )
     monkeypatch.setattr(repository_module, "append_capability_authorization_denial_audit", record_audit)
 
@@ -3505,7 +3645,9 @@ async def test_persisted_owner_capability_authorization_uses_run_snapshot(monkey
                 "multi_agent_steps": [
                     {"step_key": "inspect", "mcp_tool_ids": ["qa-search"]},
                 ]
-            }
+            },
+            "skill_version": "hash-v1",
+            "skill_manifests": [replay_manifest("general-chat", "hash-v1")],
         },
     }
 
@@ -3513,7 +3655,7 @@ async def test_persisted_owner_capability_authorization_uses_run_snapshot(monkey
         calls.append(kwargs)
         return {"skill_id": kwargs["skill_id"]}
 
-    monkeypatch.setattr(repository_module, "authorize_run_capabilities", fake_authorize)
+    monkeypatch.setattr(repository_module, "authorize_replay_run_capabilities", fake_authorize)
 
     authorized_run, owner = await runs_module._authorize_persisted_run_for_queue(
         object(),
@@ -3530,9 +3672,11 @@ async def test_persisted_owner_capability_authorization_uses_run_snapshot(monkey
     assert calls == [
         {
             "tenant_id": "tenant-a",
-            "agent_id": "general-agent",
-            "skill_id": "general-chat",
-            "normalized_input": run["input_json"]["input"],
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "pinned_version": "hash-v1",
+                "skill_manifests": [replay_manifest("general-chat", "hash-v1")],
+                "normalized_input": run["input_json"]["input"],
             "principal_department_id": "qa",
             "principal_roles": ["qa_operator", "user"],
             "is_admin": False,
@@ -4676,7 +4820,7 @@ async def test_create_run_rejects_invalid_snapshot_governance_manifest_as_materi
 
 
 @pytest.mark.asyncio
-async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatch):
+async def test_copy_run_preserves_source_v1_pin_after_current_release_moves_to_v2(monkeypatch):
     calls = {}
     source_release_decision = {
         "schema_version": "ai-platform.skill-release-decision.v1",
@@ -4684,7 +4828,19 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
         "selected_version": "db-version",
         "selected_track": "catalog",
     }
-    source_skill_manifests = [{"skill_id": "qa-file-reviewer", "content_hash": "db-version"}]
+    source_skill_manifests = [
+        {
+            "skill_id": "qa-file-reviewer",
+            "version": "db-version",
+            "content_hash": "db-version",
+            "source": {"kind": "uploaded"},
+            "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+            "dependency_ids": [],
+            "allowed": True,
+            "staged": False,
+            "used": False,
+        }
+    ]
     persisted_input_json = {
         "input": {"message": "继续审核", "copied_from_run_id": "run_source"},
         "file_ids": ["file_1"],
@@ -4708,6 +4864,7 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
             "executor_type": "claude-agent-worker",
             "skill_version": "db-version",
             "release_decision": dict(source_release_decision),
+            "skill_manifests": list(source_skill_manifests),
             "model_id": "model-catalog-copy",
             "model_value": "provider-model-copy",
         }
@@ -4755,22 +4912,8 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
     async def fake_queue_insight_for_status(status, tenant_id, **_kwargs):
         return {"status": status, "tenant_id": tenant_id}
 
-    def fake_skill_manifest_pins(skill_id, input_payload):
-        assert skill_id == "qa-file-reviewer"
-        assert input_payload == {"message": "继续审核", "copied_from_run_id": "run_source"}
-        return [
-            {
-                "skill_id": "qa-file-reviewer",
-                "version": "hash-pin",
-                "content_hash": "hash-pin",
-                "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer"},
-                "files": [],
-                "dependency_ids": [],
-                "allowed": True,
-                "staged": False,
-                "used": False,
-            }
-        ]
+    def fail_skill_manifest_pins(*args, **kwargs):
+        raise AssertionError("replay must not rematerialize the current release")
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
@@ -4784,14 +4927,14 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
     monkeypatch.setattr("app.routes.runs.seed_copied_run_steps", fake_seed_copied_run_steps)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fake_enqueue_run)
     monkeypatch.setattr("app.routes.runs.queue_insight_for_status", fake_queue_insight_for_status)
-    monkeypatch.setattr("app.routes.runs._skill_manifest_pins", fake_skill_manifest_pins)
+    monkeypatch.setattr("app.routes.runs._skill_manifest_pins", fail_skill_manifest_pins)
 
     response = await copy_run("run_source", principal=principal())
 
     assert response.run_id == "run_copy"
     assert calls["update"]["execution_snapshot"] == repository_module.copied_run_execution_snapshot(calls["queue"])
-    assert calls["update"]["execution_snapshot"]["release_decision"] != source_release_decision
-    assert calls["update"]["execution_snapshot"]["skill_manifests"] != source_skill_manifests
+    assert calls["update"]["execution_snapshot"]["release_decision"] == source_release_decision
+    assert calls["update"]["execution_snapshot"]["skill_manifests"] == source_skill_manifests
     assert calls["context"]["source"] == "copy_run"
     assert calls["context"]["source_run_id"] == "run_source"
     assert calls["context"]["tenant_id"] == "tenant-a"
@@ -4806,11 +4949,11 @@ async def test_copy_run_uses_primary_pin_hash_as_locked_skill_version(monkeypatc
     assert calls["context"]["file_ids"] == ["file_1"]
     assert calls["queue"]["context_snapshot_id"] == "ctx_copy"
     assert calls["queue"]["context_snapshot"]["source"] == "copy_run"
-    assert calls["queue"]["skill_version"] == "hash-pin"
-    assert calls["queue"]["skill_manifests"][0]["content_hash"] == "hash-pin"
+    assert calls["queue"]["skill_version"] == "db-version"
+    assert calls["queue"]["skill_manifests"][0]["content_hash"] == "db-version"
     assert calls["queue"]["model_id"] == "model-catalog-copy"
     assert calls["queue"]["model_value"] == "provider-model-copy"
-    assert any(event["payload"]["skill_version"] == "hash-pin" for event in calls["events"])
+    assert any(event["payload"]["skill_version"] == "db-version" for event in calls["events"])
     locked_payload = QueueRunPayload.model_validate(
         {
             "tenant_id": "tenant-a",
@@ -4850,13 +4993,14 @@ async def test_copy_run_ignores_unsafe_source_run_id_for_followup_context(monkey
             },
             "executor_type": "claude-agent-worker",
             "skill_version": "db-version",
-            "release_decision": {
+                "release_decision": {
                 "schema_version": "ai-platform.skill-release-decision.v1",
                 "policy_active": False,
                 "selected_version": "db-version",
-                "selected_track": "manifest_pin",
-            },
-        }
+                    "selected_track": "manifest_pin",
+                },
+                "skill_manifests": [replay_manifest("qa-file-reviewer", "db-version")],
+            }
 
     async def fake_update_run_input_execution_snapshot(
         conn, *, tenant_id, run_id, execution_snapshot
@@ -4909,7 +5053,7 @@ async def test_copy_run_ignores_unsafe_source_run_id_for_followup_context(monkey
     assert calls["context"]["source"] == "copy_run"
     assert calls["context"]["source_run_id"] == "run_source"
     assert calls["queue"]["context_snapshot_id"] == "ctx_copy"
-    assert calls["queue"]["skill_version"] == "hash-pin"
+    assert calls["queue"]["skill_version"] == "db-version"
 
 
 @pytest.mark.asyncio
@@ -4927,13 +5071,14 @@ async def test_copy_run_uses_authorized_route_source_when_copied_input_lacks_sou
             "input": {"message": "继续审核"},
             "executor_type": "claude-agent-worker",
             "skill_version": "db-version",
-            "release_decision": {
+                "release_decision": {
                 "schema_version": "ai-platform.skill-release-decision.v1",
                 "policy_active": False,
                 "selected_version": "db-version",
-                "selected_track": "manifest_pin",
-            },
-        }
+                    "selected_track": "manifest_pin",
+                },
+                "skill_manifests": [replay_manifest("qa-file-reviewer", "db-version")],
+            }
 
     async def fake_update_run_input_execution_snapshot(
         conn, *, tenant_id, run_id, execution_snapshot
@@ -5003,13 +5148,14 @@ async def test_copy_run_prefers_authorized_route_source_over_payload_source_id(m
             "input": {"message": "继续审核", "copied_from_run_id": "run_older_ancestor"},
             "executor_type": "claude-agent-worker",
             "skill_version": "db-version",
-            "release_decision": {
+                "release_decision": {
                 "schema_version": "ai-platform.skill-release-decision.v1",
                 "policy_active": False,
                 "selected_version": "db-version",
-                "selected_track": "manifest_pin",
-            },
-        }
+                    "selected_track": "manifest_pin",
+                },
+                "skill_manifests": [replay_manifest("qa-file-reviewer", "db-version")],
+            }
 
     async def fake_update_run_input_execution_snapshot(
         conn, *, tenant_id, run_id, execution_snapshot
@@ -5182,18 +5328,19 @@ async def test_copy_run_uses_uploaded_release_policy_manifest(monkeypatch):
             "executor_type": "claude-agent-worker",
             "skill_version": "hash-uploaded",
             "release_policy_version": "hash-uploaded",
-            "release_decision": {
+                "release_decision": {
                 "schema_version": "ai-platform.skill-release-decision.v1",
                 "policy_active": False,
                 "selected_version": "hash-uploaded",
-                "selected_track": "manifest_pin",
-            },
-        }
+                    "selected_track": "manifest_pin",
+                },
+                "skill_manifests": [
+                    replay_manifest("qa-file-reviewer", "hash-uploaded", source_kind="uploaded")
+                ],
+            }
 
     async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
-        assert skill_id == "qa-file-reviewer"
-        assert version == "hash-uploaded"
-        return uploaded_skill_version_row(skill_id=skill_id, version=version)
+        raise AssertionError("replay must not resolve the current release policy")
 
     async def fake_update_run_input_execution_snapshot(
         conn, *, tenant_id, run_id, execution_snapshot
@@ -5259,34 +5406,18 @@ async def test_copy_run_rejects_when_original_skill_version_cannot_be_materializ
             "release_policy_version": "old-release-version",
         }
 
-    def fake_skill_manifest_pins(skill_id, input_payload):
-        return [
-            {
-                "skill_id": "qa-file-reviewer",
-                "version": "current-hash",
-                "content_hash": "current-hash",
-                "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer"},
-                "files": [],
-                "dependency_ids": [],
-                "allowed": True,
-                "staged": False,
-                "used": False,
-            }
-        ]
-
-    async def fake_get_effective_skill_version_for_policy(conn, *, skill_id, version):
-        return None
+    async def reject_replay(*args, **kwargs):
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
 
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.copy_run_as_new_task", fake_copy_run_as_new_task)
     monkeypatch.setattr(
-        "app.routes.runs.repositories.get_effective_skill_version_for_policy",
-        fake_get_effective_skill_version_for_policy,
+        "app.routes.runs.repositories.authorize_replay_run_capabilities",
+        reject_replay,
     )
-    monkeypatch.setattr("app.routes.runs._skill_manifest_pins", fake_skill_manifest_pins)
 
     with pytest.raises(Exception) as exc_info:
         await copy_run("run_source", principal=principal())
 
-    assert getattr(exc_info.value, "status_code", None) == 409
-    assert getattr(exc_info.value, "detail", None) == "skill_version_not_materializable"
+    assert getattr(exc_info.value, "status_code", None) == 403
+    assert getattr(exc_info.value, "detail", None) == "capability_not_authorized"

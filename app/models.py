@@ -106,6 +106,20 @@ class CapabilityDistributionWriteResponse(BaseModel):
     audit_action: Literal["capability_distribution.updated", "capability_distribution.toggled"]
 
 
+class SelectedSkillRequest(BaseModel):
+    """Ordinary-user Skill selection locked to one projected package hash."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    skill_id: str
+    expected_version: str
+
+    @field_validator("skill_id", "expected_version")
+    @classmethod
+    def validate_selection_identity(cls, value: str, info):
+        return assert_safe_id(value, info.field_name)
+
+
 class CreateRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -115,6 +129,7 @@ class CreateRunRequest(BaseModel):
     agent_id: str
     capability_id: str | None = None
     skill_id: str | None = None
+    selected_skill: SelectedSkillRequest | None = None
     session_id: str | None = None
     title: str = ""
     input: dict[str, Any] = Field(default_factory=dict)
@@ -649,6 +664,7 @@ class ChatStreamRequest(BaseModel):
     session_id: str | None = None
     agent_id: str | None = None
     skill_id: str | None = None
+    selected_skill: SelectedSkillRequest | None = None
     message: str = Field(min_length=1)
     file_ids: list[str] = Field(default_factory=list)
     input: dict[str, Any] = Field(default_factory=dict)

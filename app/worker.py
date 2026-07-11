@@ -863,15 +863,7 @@ def _attach_payload_snapshot_governance(
 
 
 def _source_json_from_skill_manifest(item: dict[str, Any]) -> dict[str, Any]:
-    source = sanitize_public_payload(item.get("source") if isinstance(item.get("source"), dict) else {})
-    if not isinstance(source, dict):
-        source = {}
-    source.pop("version", None)
-    source = _without_skill_snapshot_files(source)
-    governance = item.get("snapshot_governance")
-    if isinstance(governance, dict):
-        source["snapshot_governance"] = governance
-    return source
+    return repositories.run_skill_snapshot_source_json(item)
 
 
 def _without_skill_snapshot_files(value: Any) -> Any:
@@ -1083,10 +1075,39 @@ async def _reauthorize_worker_capabilities(
     context = _worker_capability_context(principal)
     decisions: list[_WorkerCapabilityDecision] = []
 
+    try:
+        await repositories.validate_run_skill_snapshots_for_dispatch(
+            conn,
+            tenant_id=run_identity["tenant_id"],
+            run_id=run_identity["run_id"],
+            skill_manifests=payload.skill_manifests,
+        )
+    except repositories.RepositoryConflictError:
+        denial = _worker_capability_record(
+            "skill",
+            run_identity["skill_id"],
+            _denied_capability_decision("skill_snapshot_identity_mismatch"),
+        )
+        return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
+    try:
+        await repositories.validate_replay_skill_manifests(
+            conn,
+            skill_id=run_identity["skill_id"],
+            pinned_version=str(payload.skill_version or ""),
+            skill_manifests=payload.skill_manifests,
+        )
+    except (repositories.RepositoryAuthorizationError, repositories.RepositoryConflictError):
+        denial = _worker_capability_record(
+            "skill",
+            run_identity["skill_id"],
+            _denied_capability_decision("skill_historical_pin_revoked"),
+        )
+        return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
+
     skill: dict[str, Any] = {}
     skill_lifecycle_status = "disabled"
     try:
-        skill = await repositories.resolve_agent_skill(
+        skill = await repositories.resolve_selected_skill(
             conn,
             tenant_id=run_identity["tenant_id"],
             agent_id=run_identity["agent_id"],

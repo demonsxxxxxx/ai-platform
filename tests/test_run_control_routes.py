@@ -10,6 +10,38 @@ from app.models import QueueRunPayload
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError
 
 
+def replay_manifest(skill_id: str, version: str = "hash-v1") -> dict:
+    return {
+        "skill_id": skill_id,
+        "version": version,
+        "content_hash": version,
+        "source": {"kind": "uploaded"},
+        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        "dependency_ids": [],
+        "snapshot_governance": {
+            "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
+            "snapshot_source": "platform_release_lock",
+            "does_not_close_b4_or_211": True,
+        },
+        "allowed": True,
+        "staged": False,
+        "used": False,
+    }
+
+
+def replay_provenance(skill_id: str, version: str = "hash-v1", *, selected_track: str = "current") -> dict:
+    return {
+        "skill_version": version,
+        "release_decision": {
+            "schema_version": "ai-platform.skill-release-decision.v1",
+            "policy_active": True,
+            "selected_version": version,
+            "selected_track": selected_track,
+        },
+        "skill_manifests": [replay_manifest(skill_id, version)],
+    }
+
+
 def auth_settings():
     return type("S", (), {"trusted_principal_secret": "test-secret", "frontend_poc_auth_enabled": False})()
 
@@ -45,6 +77,25 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     async def authorize_capabilities(*_args, **kwargs):
         return {"skill_id": kwargs["skill_id"], "executor_type": "claude-agent-worker"}
 
+    async def authorize_replay_capabilities(*_args, **kwargs):
+        pinned_version = str(kwargs.get("pinned_version") or "")
+        manifests = kwargs.get("skill_manifests") or []
+        if not pinned_version or not manifests:
+            raise RepositoryAuthorizationError("capability_not_authorized")
+        primary = next(
+            (item for item in manifests if item.get("skill_id") == kwargs.get("skill_id")),
+            None,
+        )
+        assert primary is not None
+        assert primary["version"] == pinned_version
+        assert primary["content_hash"] == pinned_version
+        return {"skill_id": kwargs["skill_id"], "executor_type": "claude-agent-worker", "skill_version": "hash-v2"}
+
+    async def insert_creation_snapshots(*_args, **kwargs):
+        manifests = kwargs["skill_manifests"]
+        assert manifests
+        assert all(item["version"] == item["content_hash"] for item in manifests)
+
     async def authorize_persisted_run(*_args, **_kwargs):
         return None
 
@@ -59,6 +110,16 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     monkeypatch.setattr(
         "app.routes.runs.repositories.authorize_run_capabilities",
         authorize_capabilities,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.repositories.authorize_replay_run_capabilities",
+        authorize_replay_capabilities,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.repositories.insert_run_skill_snapshots_at_creation",
+        insert_creation_snapshots,
         raising=False,
     )
     monkeypatch.setattr(
@@ -239,6 +300,7 @@ def test_copy_run_creates_new_queued_run(monkeypatch):
                 "selected_version": "hash-old",
                 "selected_track": "manifest_pin",
             },
+            "skill_manifests": [replay_manifest("general-chat", "hash-old")],
             "model_id": "model-catalog-copy",
             "model_value": "provider-model-copy",
         }
@@ -514,6 +576,7 @@ def test_retry_run_creates_queued_retry_from_failed_source(monkeypatch):
                 "selected_version": "hash-a",
                 "selected_track": "manifest_pin",
             },
+            "skill_manifests": [replay_manifest("general-chat", "hash-a")],
             "model_id": "model-catalog-retry",
             "model_value": "provider-model-retry",
         }
@@ -777,6 +840,7 @@ def test_resume_run_creates_queued_resume_from_checkpointed_source(monkeypatch):
                 "selected_version": "hash-a",
                 "selected_track": "manifest_pin",
             },
+            "skill_manifests": [replay_manifest("general-chat", "hash-a")],
             "model_id": "model-catalog-resume",
             "model_value": "provider-model-resume",
         }
@@ -2218,6 +2282,7 @@ def test_multi_agent_dispatch_tick_routes_child_through_atomic_execution_snapsho
                 "selected_version": "hash-parent",
                 "selected_track": "catalog",
             },
+            "skill_manifests": [replay_manifest("general-chat", "hash-parent")],
             "model_id": "model-catalog-tick-child",
             "model_value": "provider-model-tick-child",
             "event_id": "evt-handoff",
@@ -2521,7 +2586,7 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
         "selected_version": "hash-parent",
         "selected_track": "catalog",
     }
-    parent_skill_manifests = [{"skill_id": "general-chat", "content_hash": "hash-parent"}]
+    parent_skill_manifests = [replay_manifest("general-chat", "hash-parent")]
     persisted_input_json = {}
 
     async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by, active_run_admission_limit):
@@ -2567,6 +2632,7 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
             "skill_version": "hash-parent",
             "release_policy_version": "",
             "release_decision": dict(parent_release_decision),
+            "skill_manifests": list(parent_skill_manifests),
             "model_id": "model-catalog-handoff-child",
             "model_value": "provider-model-handoff-child",
             "event_id": "evt-handoff",
@@ -2672,8 +2738,8 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
     assert calls["queue"][0]["run_id"] == "run-child"
     assert calls["queue"][0]["context_snapshot_id"] == "ctx-child"
     assert calls["queue"][0]["context_snapshot"]["source"] == "multi_agent_dispatch_handoff"
-    assert calls["queue"][0]["skill_version"] == "hash-child-current"
-    assert calls["queue"][0]["release_decision"]["selected_version"] == "hash-child-current"
+    assert calls["queue"][0]["skill_version"] == "hash-parent"
+    assert calls["queue"][0]["release_decision"]["selected_version"] == "hash-parent"
     assert calls["queue"][0]["model_id"] == "model-catalog-handoff-child"
     assert calls["queue"][0]["model_value"] == "provider-model-handoff-child"
     assert calls["execution_snapshot"] == [
@@ -2683,8 +2749,8 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
             "execution_snapshot": repository_module.copied_run_execution_snapshot(calls["queue"][0]),
         }
     ]
-    assert calls["execution_snapshot"][0]["execution_snapshot"]["release_decision"] != parent_release_decision
-    assert calls["execution_snapshot"][0]["execution_snapshot"]["skill_manifests"] != parent_skill_manifests
+    assert calls["execution_snapshot"][0]["execution_snapshot"]["release_decision"] == parent_release_decision
+    assert calls["execution_snapshot"][0]["execution_snapshot"]["skill_manifests"] == parent_skill_manifests
     locked_payload = QueueRunPayload.model_validate(
         {
             "tenant_id": "default",
@@ -3922,6 +3988,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
                     ],
                 },
                 "executor_type": "embedded-poco-kernel",
+                **replay_provenance("general-chat", "hash-v1"),
                 "model_id": "model-catalog-a",
                 "model_value": "provider-model-a",
             },
@@ -3955,8 +4022,8 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     assert copied["input"]["execution_mode"] == "multi_agent"
     assert copied["input"]["multi_agent_steps"][1]["step_key"] == "verify"
     assert copied["input"]["copied_from_run_id"] == "run_old"
-    assert copied["executor_type"] == "claude-agent-worker"
-    assert copied["skill_version"] == "2.0.0"
+    assert copied["executor_type"] == "embedded-poco-kernel"
+    assert copied["skill_version"] == "hash-v1"
     assert copied["release_policy_version"] == ""
     assert copied["model_id"] == "model-catalog-a"
     assert copied["model_value"] == "provider-model-a"
@@ -4015,7 +4082,11 @@ async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monke
             "session_id": "ses_old",
             "agent_id": "general-agent",
             "skill_id": "general-chat",
-            "input_json": {"input": {"message": "retry"}, "executor_type": "embedded-poco-kernel"},
+            "input_json": {
+                "input": {"message": "retry"},
+                "executor_type": "embedded-poco-kernel",
+                **replay_provenance("general-chat", "hash-old", selected_track="previous"),
+            },
         }
 
     async def fake_resolve_rollout_agent_skill(conn, *, tenant_id, agent_id, skill_id):
@@ -4049,7 +4120,7 @@ async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monke
     )
 
     assert copied["skill_version"] == "hash-old"
-    assert copied["release_policy_version"] == "hash-old"
+    assert copied["release_policy_version"] == ""
     assert copied["release_decision"]["selected_version"] == "hash-old"
     assert copied["release_decision"]["selected_track"] == "previous"
     persisted_json = next(
@@ -4093,7 +4164,11 @@ async def test_copy_run_as_new_task_auth_snapshot_persists_trace_contract_and_pr
             "principal_roles": ["qa_operator", "user"],
             "principal_department_id": "qa",
             "auth_source": "session-token",
-            "input_json": {"input": {"message": "retry"}, "executor_type": "embedded-poco-kernel"},
+            "input_json": {
+                "input": {"message": "retry"},
+                "executor_type": "embedded-poco-kernel",
+                **replay_provenance("general-chat", "hash-v1"),
+            },
         }
 
     monkeypatch.setattr("app.repositories.get_authorized_run", fake_get_authorized_run)
@@ -4164,6 +4239,7 @@ async def test_copy_run_as_new_task_adds_session_message_anchor_for_history(monk
                     ],
                 },
                 "executor_type": "embedded-poco-kernel",
+                **replay_provenance("general-chat", "hash-v1"),
             },
         }
 
@@ -4246,6 +4322,7 @@ async def test_copy_run_as_new_task_adds_completed_step_outputs_to_resume(monkey
                     ],
                 },
                 "executor_type": "embedded-poco-kernel",
+                **replay_provenance("general-chat", "hash-v1"),
             },
         }
 
@@ -4571,6 +4648,7 @@ async def test_copy_run_as_new_task_drops_user_controlled_resume_when_no_verifie
                     },
                 },
                 "executor_type": "embedded-poco-kernel",
+                **replay_provenance("general-chat", "hash-v1"),
             },
         }
 
@@ -4636,6 +4714,7 @@ async def test_copy_run_as_new_task_preserves_chained_checkpoint_producer_lineag
                     "multi_agent_steps": [{"step_key": "code", "role": "coding"}],
                 },
                 "executor_type": "embedded-poco-kernel",
+                **replay_provenance("general-chat", "hash-v1"),
             },
         }
 
@@ -4846,6 +4925,27 @@ async def test_create_multi_agent_dispatch_child_run_records_parent_child_events
                 ],
             },
             "file_ids": ["file-a"],
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-v1",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": True,
+                "selected_version": "hash-v1",
+                "selected_track": "current",
+            },
+            "skill_manifests": [
+                {
+                    "skill_id": "general-chat",
+                    "version": "hash-v1",
+                    "content_hash": "hash-v1",
+                    "source": {"kind": "uploaded"},
+                    "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+                    "dependency_ids": [],
+                    "allowed": True,
+                    "staged": False,
+                    "used": False,
+                }
+            ],
             "model_id": "model-catalog-child",
             "model_value": "provider-model-child",
         },
@@ -4912,9 +5012,14 @@ async def test_create_multi_agent_dispatch_child_run_records_parent_child_events
                 return Cursor()
             raise AssertionError(f"unexpected sql: {normalized}")
 
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        assert (tenant_id, agent_id, skill_id) == ("default", "general-agent", "general-chat")
-        return {"executor_type": "claude-agent-worker", "skill_version": "hash-a"}
+    async def fake_authorize_replay(conn, **kwargs):
+        calls.append(("replay_authorize", kwargs))
+        assert kwargs["pinned_version"] == "hash-v1"
+        assert kwargs["skill_manifests"][0]["content_hash"] == "hash-v1"
+        return {"executor_type": "claude-agent-worker", "skill_version": "hash-v2"}
+
+    async def fake_insert_creation_snapshots(conn, **kwargs):
+        calls.append(("creation_snapshots", kwargs))
 
     async def fake_append_event(conn, **kwargs):
         calls.append(("event", kwargs))
@@ -4928,7 +5033,8 @@ async def test_create_multi_agent_dispatch_child_run_records_parent_child_events
         calls.append(("admission", tenant_id, (user_id, limit)))
         return 0
 
-    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.repositories.authorize_replay_run_capabilities", fake_authorize_replay)
+    monkeypatch.setattr("app.repositories.insert_run_skill_snapshots_at_creation", fake_insert_creation_snapshots)
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
     monkeypatch.setattr("app.repositories.enforce_user_active_run_admission", fake_enforce_user_active_run_admission)
@@ -4947,7 +5053,11 @@ async def test_create_multi_agent_dispatch_child_run_records_parent_child_events
     assert copied["user_id"] == "user-a"
     assert copied["session_id"] == "ses-owner"
     assert ("admission", "default", ("user-a", 0)) in calls
-    insert_sql, insert_params = next((sql, params) for kind, sql, params in calls if kind == "sql" and sql.startswith("insert into runs"))
+    insert_sql, insert_params = next(
+        (item[1], item[2])
+        for item in calls
+        if len(item) == 3 and item[0] == "sql" and item[1].startswith("insert into runs")
+    )
     assert "copied_from_run_id" in insert_sql
     assert "principal_roles, principal_department_id, auth_source" in insert_sql
     assert json.dumps(["qa_operator", "user"], ensure_ascii=False) in insert_params
@@ -4982,9 +5092,16 @@ async def test_create_multi_agent_dispatch_child_run_records_parent_child_events
     assert copied["input"]["mcp_tool_ids"] == ["tool-global"]
     assert copied["input"]["multi_agent_steps"][0]["mcp_tool_ids"] == ["tool-code"]
     assert "tool-plan" not in json.dumps(copied["input"], ensure_ascii=False)
+    assert copied["skill_version"] == "hash-v1"
+    assert copied["skill_manifests"][0]["content_hash"] == "hash-v1"
+    assert next(item[1]["skill_manifests"] for item in calls if item[0] == "creation_snapshots") == copied["skill_manifests"]
     child_snapshot = repositories.copied_run_execution_snapshot(persisted_input)
     assert {field: copied[field] for field in child_snapshot} == child_snapshot
-    update_sql, update_params = next((sql, params) for kind, sql, params in calls if kind == "sql" and sql.startswith("update run_steps"))
+    update_sql, update_params = next(
+        (item[1], item[2])
+        for item in calls
+        if len(item) == 3 and item[0] == "sql" and item[1].startswith("update run_steps")
+    )
     assert "payload_json = payload_json || %s::jsonb" in update_sql
     update_payload = json.loads(update_params[0])
     assert update_payload["dispatch_child_run_id"] == copied["child_run_id"]
@@ -5124,7 +5241,30 @@ async def test_create_multi_agent_dispatch_child_run_builds_single_step_resume_i
                                     {"step_key": "code", "role": "coder", "depends_on": ["plan"]},
                                     {"step_key": "verify", "role": "verifier", "depends_on": ["code"]},
                                 ],
-                            }
+                            },
+                            "executor_type": "claude-agent-worker",
+                            "skill_version": "hash-v1",
+                            "release_decision": {
+                                "schema_version": "ai-platform.skill-release-decision.v1",
+                                "policy_active": True,
+                                "selected_version": "hash-v1",
+                                "selected_track": "current",
+                            },
+                            "skill_manifests": [
+                                {
+                                    "skill_id": "general-chat",
+                                    "version": "hash-v1",
+                                    "content_hash": "hash-v1",
+                                    "source": {"kind": "uploaded"},
+                                    "files": [
+                                        {"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}
+                                    ],
+                                    "dependency_ids": [],
+                                    "allowed": True,
+                                    "staged": False,
+                                    "used": False,
+                                }
+                            ],
                         },
                     }
                 )
@@ -5165,8 +5305,12 @@ async def test_create_multi_agent_dispatch_child_run_builds_single_step_resume_i
                 )
             return Cursor()
 
-    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
-        return {"executor_type": "claude-agent-worker", "skill_version": "hash-a"}
+    async def fake_authorize_replay(conn, **kwargs):
+        assert kwargs["pinned_version"] == "hash-v1"
+        return {"executor_type": "claude-agent-worker", "skill_version": "hash-v2"}
+
+    async def fake_insert_creation_snapshots(conn, **kwargs):
+        assert kwargs["skill_manifests"][0]["content_hash"] == "hash-v1"
 
     async def fake_append_event(conn, **kwargs):
         return f"evt-{kwargs['event_type']}"
@@ -5177,7 +5321,8 @@ async def test_create_multi_agent_dispatch_child_run_builds_single_step_resume_i
     async def fake_enforce_user_active_run_admission(conn, *, tenant_id, user_id, limit):
         return 0
 
-    monkeypatch.setattr("app.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.repositories.authorize_replay_run_capabilities", fake_authorize_replay)
+    monkeypatch.setattr("app.repositories.insert_run_skill_snapshots_at_creation", fake_insert_creation_snapshots)
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
     monkeypatch.setattr("app.repositories.enforce_user_active_run_admission", fake_enforce_user_active_run_admission)
@@ -5195,6 +5340,87 @@ async def test_create_multi_agent_dispatch_child_run_builds_single_step_resume_i
     assert copied["input"]["multi_agent_steps"][0]["depends_on"] == ["plan"]
     assert copied["input"]["resume"]["completed_step_outputs"] == {"plan": "plan output"}
     assert "verify" not in str(copied["input"])
+    assert copied["skill_version"] == "hash-v1"
+
+
+@pytest.mark.asyncio
+async def test_create_multi_agent_dispatch_child_run_rejects_parent_without_pinned_provenance(monkeypatch):
+    from app import repositories
+
+    calls = []
+    parent = {
+        "id": "run-parent",
+        "tenant_id": "default",
+        "workspace_id": "default",
+        "session_id": "ses-owner",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "status": "running",
+        "input_json": {"input": {"message": "legacy parent"}},
+    }
+    step = {
+        "id": "step-code",
+        "run_id": "run-parent",
+        "step_key": "code",
+        "step_kind": "agent",
+        "status": "running",
+        "title": "Code",
+        "role": "coder",
+        "sequence": 1,
+        "payload_json": {
+            "depends_on": [],
+            "dispatch_state": "claimed",
+            "dispatch_id": "dispatch-code",
+            "dispatch_lease_expires_at": "2999-01-01T00:00:00+00:00",
+        },
+    }
+
+    class Cursor:
+        def __init__(self, *, row=None, rows=None):
+            self.row = row
+            self.rows = rows or []
+
+        async def fetchone(self):
+            return self.row
+
+        async def fetchall(self):
+            return self.rows
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append(normalized)
+            if normalized.startswith("select id, tenant_id, workspace_id") and "from runs" in normalized:
+                return Cursor(row=parent)
+            if "from run_steps" in normalized and "payload_json->>'dispatch_id'" in normalized:
+                return Cursor(row=step)
+            if normalized.startswith("select id, run_id, step_key"):
+                return Cursor(rows=[])
+            raise AssertionError(f"unexpected write before provenance denial: {normalized}")
+
+    async def allow_admission(*args, **kwargs):
+        return 0
+
+    async def reject_missing_pin(conn, **kwargs):
+        assert kwargs["pinned_version"] == ""
+        assert kwargs["skill_manifests"] == []
+        raise RepositoryAuthorizationError("capability_not_authorized")
+
+    monkeypatch.setattr("app.repositories.enforce_user_active_run_admission", allow_admission)
+    monkeypatch.setattr("app.repositories.authorize_replay_run_capabilities", reject_missing_pin)
+
+    with pytest.raises(RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.create_multi_agent_dispatch_child_run(
+            FakeConnection(),
+            tenant_id="default",
+            parent_run_id="run-parent",
+            dispatch_id="dispatch-code",
+            handed_off_by="admin-a",
+            active_run_admission_limit=3,
+        )
+
+    assert not any(sql.startswith("insert into runs") for sql in calls)
 
 
 @pytest.mark.asyncio

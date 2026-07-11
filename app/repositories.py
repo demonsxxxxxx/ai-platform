@@ -221,12 +221,13 @@ def _result_observability_values(result_json: dict[str, Any] | None) -> tuple[in
     return latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor
 
 
-async def resolve_agent_skill(
+async def _resolve_executable_skill(
     conn: AsyncConnection,
     *,
     tenant_id: str,
     agent_id: str,
     skill_id: str,
+    require_default_skill: bool,
 ) -> dict[str, Any]:
     cursor = await conn.execute(
         """
@@ -237,6 +238,7 @@ async def resolve_agent_skill(
           skills.id as skill_id,
           skills.status as skill_status,
           coalesce(skill_release_policies.current_version, skills.version) as skill_version,
+          coalesce(skill_versions.content_hash, coalesce(skill_release_policies.current_version, skills.version)) as skill_content_hash,
           coalesce(skill_versions.status, 'active') as skill_version_status,
           skill_release_policies.current_version as release_policy_version,
           skill_release_policies.previous_version as release_policy_previous_version,
@@ -282,11 +284,51 @@ async def resolve_agent_skill(
         raise RepositoryConflictError("skill_inactive")
     if not is_user_runnable_status(row.get("skill_version_status", "active")):
         raise RepositoryConflictError("skill_version_not_released")
+    skill_version = str(row.get("skill_version") or "")
+    skill_content_hash = str(row.get("skill_content_hash") or skill_version)
+    if not skill_version or skill_content_hash != skill_version:
+        raise RepositoryConflictError("skill_version_not_materializable")
     if row["executor_type"] not in DEFAULT_RUN_EXECUTOR_TYPES:
         raise RepositoryConflictError("executor_type_not_allowed")
-    if row["default_skill_id"] != skill_id:
+    if require_default_skill and row["default_skill_id"] != skill_id:
         raise RepositoryConflictError("agent_skill_mismatch")
     return row
+
+
+async def resolve_agent_skill(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    skill_id: str,
+) -> dict[str, Any]:
+    """Resolve an active fixed capability Skill bound as the Agent default."""
+
+    return await _resolve_executable_skill(
+        conn,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        skill_id=skill_id,
+        require_default_skill=True,
+    )
+
+
+async def resolve_selected_skill(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    skill_id: str,
+) -> dict[str, Any]:
+    """Resolve an active ordinary-user selected Skill without default binding."""
+
+    return await _resolve_executable_skill(
+        conn,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        skill_id=skill_id,
+        require_default_skill=False,
+    )
 
 
 async def ensure_mcp_tool_active(conn: AsyncConnection, *, tenant_id: str, tool_id: str) -> dict[str, Any]:
@@ -1632,7 +1674,7 @@ def normalize_run_input_for_enqueue(input_payload: object, *, redact_public: boo
     return normalized
 
 
-async def authorize_run_capabilities(
+async def _authorize_run_capabilities(
     conn: AsyncConnection,
     *,
     tenant_id: str,
@@ -1643,8 +1685,9 @@ async def authorize_run_capabilities(
     principal_roles: list[str] | None,
     is_admin: bool,
     permissions: list[str] | None,
+    skill_resolver,
 ) -> dict[str, Any]:
-    """Authorize the selected Skill and explicit MCP tools before run creation."""
+    """Apply shared distribution and MCP admission to one Skill resolver."""
 
     context = CapabilityAccessContext(
         tenant_id=tenant_id,
@@ -1654,7 +1697,7 @@ async def authorize_run_capabilities(
         permissions=[str(item) for item in permissions or [] if str(item)],
     )
     try:
-        skill = await resolve_agent_skill(
+        skill = await skill_resolver(
             conn,
             tenant_id=tenant_id,
             agent_id=agent_id,
@@ -1770,6 +1813,169 @@ async def authorize_run_capabilities(
                 decision=tool_decision,
             )
     return skill
+
+
+async def authorize_run_capabilities(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    skill_id: str,
+    normalized_input: dict[str, Any],
+    principal_department_id: str,
+    principal_roles: list[str] | None,
+    is_admin: bool,
+    permissions: list[str] | None,
+) -> dict[str, Any]:
+    """Authorize a fixed Agent/default Skill and its explicit MCP tools."""
+
+    return await _authorize_run_capabilities(
+        conn,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        skill_id=skill_id,
+        normalized_input=normalized_input,
+        principal_department_id=principal_department_id,
+        principal_roles=principal_roles,
+        is_admin=is_admin,
+        permissions=permissions,
+        skill_resolver=resolve_agent_skill,
+    )
+
+
+async def authorize_selected_run_capabilities(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    skill_id: str,
+    expected_version: str,
+    rollout_key: str,
+    normalized_input: dict[str, Any],
+    principal_department_id: str,
+    principal_roles: list[str] | None,
+    is_admin: bool,
+    permissions: list[str] | None,
+) -> dict[str, Any]:
+    """Authorize an ordinary selected Skill and validate its optimistic hash lock."""
+
+    skill = await _authorize_run_capabilities(
+        conn,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        skill_id=skill_id,
+        normalized_input=normalized_input,
+        principal_department_id=principal_department_id,
+        principal_roles=principal_roles,
+        is_admin=is_admin,
+        permissions=permissions,
+        skill_resolver=resolve_selected_skill,
+    )
+    release_decision = resolve_rollout_skill_decision(
+        skill,
+        tenant_id=tenant_id,
+        skill_id=skill_id,
+        rollout_key=rollout_key,
+    )
+    selected_version = str(release_decision.selected_version or "")
+    if release_decision.policy_active:
+        exact_version = await get_effective_skill_version_for_policy(
+            conn,
+            skill_id=skill_id,
+            version=selected_version,
+        )
+        if exact_version is None or not is_user_runnable_status(exact_version.get("status")):
+            raise _capability_not_authorized()
+        content_hash = str(exact_version.get("content_hash") or "")
+        materialized_version = str(exact_version.get("version") or "")
+    else:
+        materialized_version = str(skill.get("skill_version") or "")
+        content_hash = str(skill.get("skill_content_hash") or materialized_version)
+    if not materialized_version or materialized_version != selected_version or content_hash != materialized_version:
+        raise _capability_not_authorized()
+    if expected_version != selected_version:
+        raise RepositoryConflictError("skill_selection_stale")
+    return {**skill, "skill_version": selected_version, "skill_content_hash": content_hash}
+
+
+async def authorize_replay_run_capabilities(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    skill_id: str,
+    pinned_version: str,
+    skill_manifests: list[dict[str, Any]],
+    normalized_input: dict[str, Any],
+    principal_department_id: str,
+    principal_roles: list[str] | None,
+    is_admin: bool,
+    permissions: list[str] | None,
+) -> dict[str, Any]:
+    """Reauthorize current access while preserving an exact historical Skill pin."""
+
+    skill = await _authorize_run_capabilities(
+        conn,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        skill_id=skill_id,
+        normalized_input=normalized_input,
+        principal_department_id=principal_department_id,
+        principal_roles=principal_roles,
+        is_admin=is_admin,
+        permissions=permissions,
+        skill_resolver=resolve_selected_skill,
+    )
+    await validate_replay_skill_manifests(
+        conn,
+        skill_id=skill_id,
+        pinned_version=pinned_version,
+        skill_manifests=skill_manifests,
+    )
+    return skill
+
+
+async def validate_replay_skill_manifests(
+    conn: AsyncConnection,
+    *,
+    skill_id: str,
+    pinned_version: str,
+    skill_manifests: list[dict[str, Any]],
+) -> None:
+    """Validate an exact historical package while allowing ordinary deprecation."""
+
+    primary_found = False
+    for manifest in skill_manifests:
+        manifest_skill_id = str(manifest.get("skill_id") or "")
+        version = str(manifest.get("version") or manifest.get("skill_version") or "")
+        content_hash = str(manifest.get("content_hash") or "")
+        files = manifest.get("files")
+        dependencies = manifest.get("dependency_ids")
+        if (
+            not manifest_skill_id
+            or not version
+            or version != content_hash
+            or not isinstance(files, list)
+            or not files
+            or not isinstance(dependencies, list)
+        ):
+            raise _capability_not_authorized()
+        if manifest_skill_id == skill_id:
+            primary_found = version == pinned_version
+        exact_version = await get_skill_version(conn, skill_id=manifest_skill_id, version=version)
+        if exact_version is None:
+            source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+            if str(source.get("kind") or "") != "builtin":
+                raise _capability_not_authorized()
+            continue
+        if (
+            str(exact_version.get("version") or "") != version
+            or str(exact_version.get("content_hash") or "") != content_hash
+            or str(exact_version.get("status") or "").lower() not in {"active", "released", "deprecated"}
+        ):
+            raise _capability_not_authorized()
+    if not primary_found:
+        raise _capability_not_authorized()
 
 
 async def list_mcp_server_registry(
@@ -4441,7 +4647,7 @@ async def upsert_run_skill_snapshot(
     used_skills_source: str = "",
     inferred_used: bool = False,
 ) -> None:
-    await conn.execute(
+    cursor = await conn.execute(
         """
         insert into run_skill_snapshots(
           id, tenant_id, run_id, skill_id, skill_version, content_hash,
@@ -4450,10 +4656,6 @@ async def upsert_run_skill_snapshot(
         values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s)
         on conflict (tenant_id, run_id, skill_id)
         do update set
-          skill_version = excluded.skill_version,
-          content_hash = excluded.content_hash,
-          source_json = excluded.source_json,
-          dependency_ids = excluded.dependency_ids,
           allowed = run_skill_snapshots.allowed or excluded.allowed,
           staged = run_skill_snapshots.staged or excluded.staged,
           used = run_skill_snapshots.used or excluded.used,
@@ -4467,6 +4669,11 @@ async def upsert_run_skill_snapshot(
             when run_skill_snapshots.used or excluded.used then false
             else run_skill_snapshots.inferred_used or excluded.inferred_used
           end
+        where run_skill_snapshots.skill_version = excluded.skill_version
+          and run_skill_snapshots.content_hash = excluded.content_hash
+          and run_skill_snapshots.source_json = excluded.source_json
+          and run_skill_snapshots.dependency_ids = excluded.dependency_ids
+        returning id
         """,
         (
             new_id("rss"),
@@ -4484,6 +4691,81 @@ async def upsert_run_skill_snapshot(
             inferred_used,
         ),
     )
+    if await cursor.fetchone() is None:
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+
+
+def _without_snapshot_private_material(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_snapshot_private_material(item)
+            for key, item in value.items()
+            if str(key) not in {"files", "storage_key", "host_path", "local_path"}
+        }
+    if isinstance(value, list):
+        return [_without_snapshot_private_material(item) for item in value]
+    return value
+
+
+def run_skill_snapshot_source_json(skill_manifest: dict[str, Any]) -> dict[str, Any]:
+    """Project immutable, non-secret Skill source identity for run provenance."""
+
+    source = sanitize_public_payload(
+        skill_manifest.get("source") if isinstance(skill_manifest.get("source"), dict) else {}
+    )
+    projected = _without_snapshot_private_material(source if isinstance(source, dict) else {})
+    projected.pop("version", None)
+    governance = skill_manifest.get("snapshot_governance")
+    if isinstance(governance, dict):
+        projected["snapshot_governance"] = _without_snapshot_private_material(governance)
+    return projected
+
+
+async def insert_run_skill_snapshots_at_creation(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    skill_manifests: list[dict[str, Any]],
+) -> None:
+    """Insert exact run Skill provenance before any execution-side mutation."""
+
+    for manifest in skill_manifests:
+        skill_id = str(manifest.get("skill_id") or "")
+        skill_version = str(manifest.get("version") or manifest.get("skill_version") or "")
+        content_hash = str(manifest.get("content_hash") or "")
+        dependency_ids = manifest.get("dependency_ids")
+        if (
+            not skill_id
+            or not skill_version
+            or skill_version != content_hash
+            or not isinstance(dependency_ids, list)
+            or any(not isinstance(item, str) or not item for item in dependency_ids)
+        ):
+            raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+        cursor = await conn.execute(
+            """
+            insert into run_skill_snapshots(
+              id, tenant_id, run_id, skill_id, skill_version, content_hash,
+              source_json, dependency_ids, allowed, staged, used, used_skills_source, inferred_used
+            )
+            values (%s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, true, false, false, '', false)
+            on conflict (tenant_id, run_id, skill_id) do nothing
+            returning id
+            """,
+            (
+                new_id("rss"),
+                tenant_id,
+                run_id,
+                skill_id,
+                skill_version,
+                content_hash,
+                dumps_json(run_skill_snapshot_source_json(manifest)),
+                json.dumps(dependency_ids, ensure_ascii=False),
+            ),
+        )
+        if await cursor.fetchone() is None:
+            raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
 
 
 async def list_run_skill_snapshots(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> list[dict[str, Any]]:
@@ -4535,6 +4817,71 @@ async def list_run_skill_snapshots(conn: AsyncConnection, *, tenant_id: str, run
             snapshot["usage"] = usage
         snapshots.append(snapshot)
     return snapshots
+
+
+async def validate_run_skill_snapshots_for_dispatch(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    skill_manifests: list[dict[str, Any]],
+) -> None:
+    """Require locked manifests to match immutable creation-time snapshot rows."""
+
+    cursor = await conn.execute(
+        """
+        select skill_id, skill_version, content_hash, source_json, dependency_ids
+        from run_skill_snapshots
+        where tenant_id = %s and run_id = %s
+        order by skill_id asc
+        """,
+        (tenant_id, run_id),
+    )
+    rows = [dict(row) for row in await cursor.fetchall()]
+    expected: dict[str, dict[str, Any]] = {}
+    for manifest in skill_manifests:
+        skill_id = str(manifest.get("skill_id") or "")
+        version = str(manifest.get("version") or manifest.get("skill_version") or "")
+        content_hash = str(manifest.get("content_hash") or "")
+        dependency_ids = manifest.get("dependency_ids")
+        if (
+            not skill_id
+            or skill_id in expected
+            or not version
+            or version != content_hash
+            or not isinstance(dependency_ids, list)
+        ):
+            raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+        expected[skill_id] = {
+            "skill_version": version,
+            "content_hash": content_hash,
+            "source_json": run_skill_snapshot_source_json(manifest),
+            "dependency_ids": dependency_ids,
+        }
+    if len(rows) != len(expected):
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+    for row in rows:
+        skill_id = str(row.get("skill_id") or "")
+        locked = expected.get(skill_id)
+        source_json = row.get("source_json")
+        dependency_ids = row.get("dependency_ids")
+        if isinstance(source_json, str):
+            try:
+                source_json = json.loads(source_json)
+            except json.JSONDecodeError:
+                source_json = None
+        if isinstance(dependency_ids, str):
+            try:
+                dependency_ids = json.loads(dependency_ids)
+            except json.JSONDecodeError:
+                dependency_ids = None
+        if locked is None or {
+            "skill_version": str(row.get("skill_version") or ""),
+            "content_hash": str(row.get("content_hash") or ""),
+            "source_json": source_json,
+            "dependency_ids": dependency_ids,
+        } != locked:
+            raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
 
 
 def _sanitize_skill_snapshot_source(source_json: object) -> dict[str, Any]:
@@ -5709,26 +6056,32 @@ async def create_multi_agent_dispatch_child_run(
         "copied_from_run_id": parent_run_id,
     }
 
-    skill = await resolve_agent_skill(
+    source_execution_snapshot = copied_run_execution_snapshot(source_input)
+    skill_version = str(source_execution_snapshot.get("skill_version") or "")
+    skill_manifests = source_execution_snapshot.get("skill_manifests") or []
+    release_decision_payload = source_execution_snapshot.get("release_decision") or {}
+    inherited_roles = normalize_roles(parent.get("principal_roles") or [])
+    inherited_department_id = str(parent.get("principal_department_id") or "")
+    inherited_auth_source = parent.get("auth_source")
+    skill = await authorize_replay_run_capabilities(
         conn,
         tenant_id=tenant_id,
         agent_id=str(parent["agent_id"]),
         skill_id=str(parent["skill_id"]),
+        pinned_version=skill_version,
+        skill_manifests=skill_manifests,
+        normalized_input=child_execution_input,
+        principal_department_id=inherited_department_id,
+        principal_roles=inherited_roles,
+        is_admin=bool(set(inherited_roles).intersection(ADMIN_ROLE_ALIASES)),
+        permissions=[],
     )
-    executor_type = str(skill["executor_type"])
-    release_decision = resolve_rollout_skill_decision(
-        skill,
-        tenant_id=tenant_id,
-        skill_id=str(parent["skill_id"]),
-        rollout_key=str(parent["user_id"]),
-    )
-    skill_version = release_decision.selected_version
-    release_decision_payload = release_decision.to_payload()
-    release_policy_version = skill_version if release_decision.policy_active else ""
+    executor_type = str(source_execution_snapshot.get("executor_type") or skill["executor_type"])
     child_input_json.update(
         executor_type=executor_type,
         skill_version=skill_version,
         release_decision=release_decision_payload,
+        skill_manifests=skill_manifests,
         context_snapshot_id=None,
         context_snapshot={},
         schema_version=RUN_PAYLOAD_SCHEMA_VERSION,
@@ -5737,9 +6090,6 @@ async def create_multi_agent_dispatch_child_run(
     child_input_json.update(child_execution_snapshot)
 
     child_run_id = new_id("run")
-    inherited_roles = normalize_roles(parent.get("principal_roles") or [])
-    inherited_department_id = str(parent.get("principal_department_id") or "")
-    inherited_auth_source = parent.get("auth_source")
     await conn.execute(
         """
         insert into runs(
@@ -5767,6 +6117,12 @@ async def create_multi_agent_dispatch_child_run(
             dumps_json(child_input_json),
             parent_run_id,
         ),
+    )
+    await insert_run_skill_snapshots_at_creation(
+        conn,
+        tenant_id=tenant_id,
+        run_id=child_run_id,
+        skill_manifests=skill_manifests,
     )
     handed_off_at = datetime.now(timezone.utc).isoformat()
     await conn.execute(
@@ -5856,7 +6212,7 @@ async def create_multi_agent_dispatch_child_run(
         "principal_roles": inherited_roles,
         "principal_department_id": inherited_department_id,
         "auth_source": inherited_auth_source,
-        "release_policy_version": release_policy_version,
+        "release_policy_version": "",
         **child_execution_snapshot,
         "event_id": event_id,
         "child_event_id": child_event_id,
@@ -7333,27 +7689,24 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         source_execution_input.pop("resume", None)
     else:
         source_execution_input = {}
-    skill = await authorize_run_capabilities(
+    source_execution_snapshot = copied_run_execution_snapshot(source_input)
+    skill_version = str(source_execution_snapshot.get("skill_version") or "")
+    skill_manifests = source_execution_snapshot.get("skill_manifests") or []
+    release_decision_payload = source_execution_snapshot.get("release_decision") or {}
+    skill = await authorize_replay_run_capabilities(
         conn,
         tenant_id=tenant_id,
         agent_id=source["agent_id"],
         skill_id=source["skill_id"],
+        pinned_version=skill_version,
+        skill_manifests=skill_manifests,
         normalized_input=source_execution_input,
         principal_department_id=inherited_department_id,
         principal_roles=inherited_roles,
         is_admin=bool(set(inherited_roles).intersection(ADMIN_ROLE_ALIASES)),
         permissions=[],
     )
-    executor_type = str(skill["executor_type"])
-    release_decision = resolve_rollout_skill_decision(
-        skill,
-        tenant_id=tenant_id,
-        skill_id=str(source["skill_id"]),
-        rollout_key=user_id,
-    )
-    skill_version = release_decision.selected_version
-    release_decision_payload = release_decision.to_payload()
-    release_policy_version = skill_version if release_decision.policy_active else ""
+    executor_type = str(source_execution_snapshot.get("executor_type") or skill["executor_type"])
     new_run_id = new_id("run")
     copied_execution_input = {**source_execution_input, "copied_from_run_id": run_id}
     completed_step_outputs, completed_step_checkpoints = await _completed_steps_for_resume(
@@ -7378,6 +7731,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         executor_type=executor_type,
         skill_version=skill_version,
         release_decision=release_decision_payload,
+        skill_manifests=skill_manifests,
         context_snapshot_id=None,
         context_snapshot={},
         schema_version=RUN_PAYLOAD_SCHEMA_VERSION,
@@ -7412,6 +7766,12 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
             run_id,
         ),
     )
+    await insert_run_skill_snapshots_at_creation(
+        conn,
+        tenant_id=tenant_id,
+        run_id=new_run_id,
+        skill_manifests=skill_manifests,
+    )
     await append_event(
         conn,
         tenant_id=tenant_id,
@@ -7444,7 +7804,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         "principal_roles": inherited_roles,
         "principal_department_id": inherited_department_id,
         "auth_source": inherited_auth_source,
-        "release_policy_version": release_policy_version,
+        "release_policy_version": "",
         **copied_execution_snapshot,
     }
 
@@ -7710,7 +8070,7 @@ async def create_file(
     )
 
 
-async def bind_files_to_run(
+async def authorize_files_for_run(
     conn: AsyncConnection,
     *,
     tenant_id: str,
@@ -7719,13 +8079,17 @@ async def bind_files_to_run(
     session_id: str,
     run_id: str,
     file_ids: list[str],
-) -> None:
+) -> list[dict[str, Any]]:
+    """Lock and validate run input files before any run creation side effect."""
+
+    rows: list[dict[str, Any]] = []
     for file_id in file_ids:
         cursor = await conn.execute(
             """
             select id, tenant_id, workspace_id, user_id, session_id, run_id
             from files
             where id = %s
+            for update
             """,
             (file_id,),
         )
@@ -7740,6 +8104,30 @@ async def bind_files_to_run(
             raise RepositoryConflictError("file_session_mismatch")
         if row["run_id"] and row["run_id"] != run_id:
             raise RepositoryConflictError("file_already_bound")
+        rows.append(dict(row))
+    return rows
+
+
+async def bind_files_to_run(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+    file_ids: list[str],
+) -> None:
+    await authorize_files_for_run(
+        conn,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        session_id=session_id,
+        run_id=run_id,
+        file_ids=file_ids,
+    )
+    for file_id in file_ids:
         await conn.execute(
             """
             update files

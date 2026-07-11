@@ -238,6 +238,366 @@ async def test_resolve_agent_skill_uses_global_skill_lifecycle_and_canonical_bac
 
 
 @pytest.mark.asyncio
+async def test_resolve_selected_skill_allows_active_non_default_skill():
+    conn = SingleRowConnection(
+        {
+            "agent_id": "general-agent",
+            "agent_status": "active",
+            "default_skill_id": "general-chat",
+            "skill_id": "department-review",
+            "skill_status": "active",
+            "skill_version": "hash-review-v1",
+            "skill_content_hash": "hash-review-v1",
+            "skill_version_status": "active",
+            "release_policy_version": "hash-review-v1",
+            "release_policy_previous_version": None,
+            "release_policy_rollout_percent": 100,
+            "executor_type": "claude-agent-worker",
+            "backing_mcp_tool_id": None,
+            "input_modes": ["docx"],
+        }
+    )
+
+    row = await repositories.resolve_selected_skill(
+        conn,
+        tenant_id="tenant-a",
+        agent_id="general-agent",
+        skill_id="department-review",
+    )
+
+    assert row["skill_id"] == "department-review"
+    assert row["default_skill_id"] == "general-chat"
+
+
+@pytest.mark.asyncio
+async def test_resolve_selected_skill_rejects_non_materializable_version_identity():
+    conn = SingleRowConnection(
+        {
+            "agent_id": "general-agent",
+            "agent_status": "active",
+            "default_skill_id": "general-chat",
+            "skill_id": "department-review",
+            "skill_status": "active",
+            "skill_version": "hash-review-v1",
+            "skill_content_hash": "different-content-hash",
+            "skill_version_status": "active",
+            "release_policy_version": "hash-review-v1",
+            "release_policy_previous_version": None,
+            "release_policy_rollout_percent": 100,
+            "executor_type": "claude-agent-worker",
+            "backing_mcp_tool_id": None,
+            "input_modes": ["docx"],
+        }
+    )
+
+    with pytest.raises(RepositoryConflictError, match="skill_version_not_materializable"):
+        await repositories.resolve_selected_skill(
+            conn,
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            skill_id="department-review",
+        )
+
+
+@pytest.mark.asyncio
+async def test_authorize_selected_run_capabilities_returns_stable_stale_conflict_without_current_version(
+    monkeypatch,
+):
+    async def resolve_selected(conn, *, tenant_id, agent_id, skill_id):
+        return {
+            "agent_id": agent_id,
+            "agent_status": "active",
+            "skill_id": skill_id,
+            "skill_status": "active",
+            "skill_version": "hash-v2",
+            "skill_content_hash": "hash-v2",
+            "skill_version_status": "active",
+            "release_policy_version": "hash-v2",
+            "release_policy_previous_version": None,
+            "release_policy_rollout_percent": 100,
+            "executor_type": "claude-agent-worker",
+            "input_modes": [],
+        }
+
+    async def distribution(conn, **kwargs):
+        return {
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": ["qa"],
+            "allowed_roles": ["reviewer"],
+        }
+
+    async def exact_version(conn, *, skill_id, version):
+        return {"skill_id": skill_id, "version": version, "content_hash": version, "status": "active"}
+
+    monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected, raising=False)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
+    monkeypatch.setattr(repositories, "get_effective_skill_version_for_policy", exact_version)
+
+    with pytest.raises(RepositoryConflictError) as exc_info:
+        await repositories.authorize_selected_run_capabilities(
+            object(),
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            skill_id="department-review",
+            expected_version="hash-v1",
+            rollout_key="user-a",
+            normalized_input={},
+            principal_department_id="qa",
+            principal_roles=["reviewer"],
+            is_admin=False,
+            permissions=[],
+        )
+
+    assert str(exc_info.value) == "skill_selection_stale"
+    assert "hash-v2" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_authorize_selected_run_capabilities_rejects_version_content_hash_invariant(
+    monkeypatch,
+):
+    async def resolve_selected(conn, *, tenant_id, agent_id, skill_id):
+        return {
+            "agent_id": agent_id,
+            "agent_status": "active",
+            "skill_id": skill_id,
+            "skill_status": "active",
+            "skill_version": "hash-v1",
+            "skill_content_hash": "different-hash",
+            "skill_version_status": "active",
+            "release_policy_version": None,
+            "release_policy_previous_version": None,
+            "release_policy_rollout_percent": 100,
+            "executor_type": "claude-agent-worker",
+            "input_modes": [],
+        }
+
+    async def distribution(conn, **kwargs):
+        return {
+            "status": "active",
+            "visible_to_user": True,
+            "scope_mode": "allowlist",
+            "department_ids": [],
+            "allowed_roles": [],
+        }
+
+    monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected, raising=False)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.authorize_selected_run_capabilities(
+            object(),
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            skill_id="department-review",
+            expected_version="hash-v1",
+            rollout_key="user-a",
+            normalized_input={},
+            principal_department_id="qa",
+            principal_roles=["reviewer"],
+            is_admin=False,
+            permissions=[],
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("historical_status", ["active", "released", "deprecated"])
+async def test_authorize_replay_run_capabilities_keeps_exact_v1_after_current_v2(
+    monkeypatch,
+    historical_status,
+):
+    async def resolve_selected(conn, *, tenant_id, agent_id, skill_id):
+        return {
+            "agent_id": agent_id,
+            "agent_status": "active",
+            "skill_id": skill_id,
+            "skill_status": "active",
+            "skill_version": "hash-v2",
+            "skill_content_hash": "hash-v2",
+            "skill_version_status": "active",
+            "release_policy_version": "hash-v2",
+            "release_policy_previous_version": "hash-v1",
+            "release_policy_rollout_percent": 100,
+            "executor_type": "claude-agent-worker",
+            "input_modes": [],
+        }
+
+    async def distribution(conn, **kwargs):
+        return {"status": "active", "visible_to_user": True, "department_ids": [], "allowed_roles": []}
+
+    async def historical_version(conn, *, skill_id, version):
+        assert version == "hash-v1"
+        return {"skill_id": skill_id, "version": "hash-v1", "content_hash": "hash-v1", "status": historical_status}
+
+    monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected, raising=False)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
+    monkeypatch.setattr(repositories, "get_skill_version", historical_version)
+
+    skill = await repositories.authorize_replay_run_capabilities(
+        object(),
+        tenant_id="tenant-a",
+        agent_id="general-agent",
+        skill_id="department-review",
+        pinned_version="hash-v1",
+        skill_manifests=[
+            {
+                "skill_id": "department-review",
+                "version": "hash-v1",
+                "content_hash": "hash-v1",
+                "source": {"kind": "uploaded"},
+                "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+                "dependency_ids": [],
+            }
+        ],
+        normalized_input={},
+        principal_department_id="qa",
+        principal_roles=["reviewer"],
+        is_admin=False,
+        permissions=[],
+    )
+
+    assert skill["skill_version"] == "hash-v2"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("historical_status", ["disabled", "security_revoked"])
+async def test_authorize_replay_run_capabilities_blocks_revoked_historical_pin(
+    monkeypatch,
+    historical_status,
+):
+    async def resolve_selected(conn, *, tenant_id, agent_id, skill_id):
+        return {
+            "agent_id": agent_id,
+            "agent_status": "active",
+            "skill_id": skill_id,
+            "skill_status": "active",
+            "skill_version": "hash-v2",
+            "skill_content_hash": "hash-v2",
+            "skill_version_status": "active",
+            "release_policy_version": "hash-v2",
+            "release_policy_previous_version": None,
+            "release_policy_rollout_percent": 100,
+            "executor_type": "claude-agent-worker",
+            "input_modes": [],
+        }
+
+    async def distribution(conn, **kwargs):
+        return {"status": "active", "visible_to_user": True, "department_ids": [], "allowed_roles": []}
+
+    async def historical_version(conn, *, skill_id, version):
+        return {"skill_id": skill_id, "version": version, "content_hash": version, "status": historical_status}
+
+    monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected, raising=False)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", distribution)
+    monkeypatch.setattr(repositories, "get_skill_version", historical_version)
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.authorize_replay_run_capabilities(
+            object(),
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            skill_id="department-review",
+            pinned_version="hash-v1",
+            skill_manifests=[
+                {
+                    "skill_id": "department-review",
+                    "version": "hash-v1",
+                    "content_hash": "hash-v1",
+                    "source": {"kind": "uploaded"},
+                    "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+                    "dependency_ids": [],
+                }
+            ],
+            normalized_input={},
+            principal_department_id="qa",
+            principal_roles=["reviewer"],
+            is_admin=False,
+            permissions=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenance(monkeypatch):
+    source_manifest = {
+        "skill_id": "department-review",
+        "version": "hash-v1",
+        "content_hash": "hash-v1",
+        "source": {"kind": "uploaded"},
+        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        "dependency_ids": [],
+        "allowed": True,
+        "staged": False,
+        "used": False,
+    }
+    source_release = {
+        "schema_version": "ai-platform.skill-release-decision.v1",
+        "policy_active": True,
+        "selected_version": "hash-v1",
+        "selected_track": "current",
+    }
+    source = {
+        "id": "run-source",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "session_id": "session-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "skill_id": "department-review",
+        "principal_roles": ["reviewer"],
+        "principal_department_id": "qa",
+        "auth_source": "session-token",
+        "input_json": {
+            "input": {"message": "retry"},
+            "file_ids": [],
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-v1",
+            "release_decision": source_release,
+            "skill_manifests": [source_manifest],
+        },
+    }
+    calls = {}
+
+    async def get_source(*args, **kwargs):
+        return source
+
+    async def authorize_replay(conn, **kwargs):
+        calls["authorize"] = kwargs
+        return {"executor_type": "claude-agent-worker", "skill_version": "hash-v2"}
+
+    async def no_completed(*args, **kwargs):
+        return {}, {}
+
+    async def no_write(*args, **kwargs):
+        return None
+
+    async def insert_snapshots(conn, **kwargs):
+        calls["snapshots"] = kwargs
+
+    monkeypatch.setattr(repositories, "get_authorized_run", get_source)
+    monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", authorize_replay)
+    monkeypatch.setattr(repositories, "_completed_steps_for_resume", no_completed)
+    monkeypatch.setattr(repositories, "append_event", no_write)
+    monkeypatch.setattr(repositories, "append_message", no_write)
+    monkeypatch.setattr(repositories, "insert_run_skill_snapshots_at_creation", insert_snapshots)
+
+    copied = await repositories.copy_run_as_new_task(
+        RecordingConnection(),
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-source",
+    )
+
+    assert calls["authorize"]["pinned_version"] == "hash-v1"
+    assert calls["authorize"]["skill_manifests"] == [source_manifest]
+    assert calls["snapshots"]["skill_manifests"] == [source_manifest]
+    assert copied["skill_version"] == "hash-v1"
+    assert copied["release_decision"] == source_release
+    assert copied["skill_manifests"] == [source_manifest]
+
+
+@pytest.mark.asyncio
 async def test_capability_distribution_list_and_get_normalize_array_and_json_projections():
     list_rows = getattr(repositories, "list_capability_distribution_rows", None)
     get_row = getattr(repositories, "get_capability_distribution_row", None)
@@ -5690,6 +6050,161 @@ async def test_upsert_run_skill_snapshot_is_tenant_and_run_scoped():
     assert "inferred_used" in sql
     assert "executor_hook" in params
     assert False in params
+
+
+@pytest.mark.asyncio
+async def test_upsert_run_skill_snapshot_preserves_immutable_provenance_identity():
+    conn = RecordingConnection()
+
+    await repositories.upsert_run_skill_snapshot(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        skill_id="department-review",
+        skill_version="hash-v1",
+        content_hash="hash-v1",
+        source_json={"kind": "uploaded", "snapshot_governance": {"schema_version": "v1"}},
+        dependency_ids=["dependency-a"],
+        allowed=True,
+        staged=True,
+        used=False,
+    )
+
+    sql, _params = conn.calls[0]
+    update_clause = sql.split("do update set", 1)[1].split("where", 1)[0]
+    assert "skill_version" not in update_clause
+    assert "content_hash" not in update_clause
+    assert "source_json" not in update_clause
+    assert "dependency_ids" not in update_clause
+    assert "run_skill_snapshots.skill_version = excluded.skill_version" in sql
+    assert "run_skill_snapshots.content_hash = excluded.content_hash" in sql
+    assert "run_skill_snapshots.source_json = excluded.source_json" in sql
+    assert "run_skill_snapshots.dependency_ids = excluded.dependency_ids" in sql
+    assert "returning id" in sql
+
+
+@pytest.mark.asyncio
+async def test_upsert_run_skill_snapshot_fails_closed_on_immutable_identity_mismatch():
+    class ConflictCursor:
+        async def fetchone(self):
+            return None
+
+    class ConflictConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return ConflictCursor()
+
+    with pytest.raises(RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
+        await repositories.upsert_run_skill_snapshot(
+            ConflictConnection(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            skill_id="department-review",
+            skill_version="hash-v2",
+            content_hash="hash-v2",
+            source_json={"kind": "uploaded"},
+            dependency_ids=[],
+            allowed=True,
+            staged=True,
+            used=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_insert_run_skill_snapshots_at_creation_is_insert_only_and_exact():
+    conn = RecordingConnection()
+    manifests = [
+        {
+            "skill_id": "department-review",
+            "version": "hash-v1",
+            "content_hash": "hash-v1",
+            "source": {"kind": "uploaded", "storage_key": "must-not-persist"},
+            "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+            "dependency_ids": ["dependency-a"],
+            "snapshot_governance": {
+                "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
+                "selected_files": [{"relative_path": "SKILL.md", "size_bytes": 5, "sha256": "hash-file"}],
+            },
+            "allowed": True,
+            "staged": False,
+            "used": False,
+        }
+    ]
+
+    await repositories.insert_run_skill_snapshots_at_creation(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        skill_manifests=manifests,
+    )
+
+    sql, params = conn.calls[0]
+    assert "insert into run_skill_snapshots" in sql
+    assert "on conflict (tenant_id, run_id, skill_id) do nothing" in sql
+    assert "returning id" in sql
+    assert params[1:6] == ("tenant-a", "run-a", "department-review", "hash-v1", "hash-v1")
+    serialized_params = str(params)
+    assert "dependency-a" in serialized_params
+    assert "snapshot_governance" in serialized_params
+    assert "content_base64" not in serialized_params
+    assert "storage_key" not in serialized_params
+
+
+@pytest.mark.asyncio
+async def test_insert_run_skill_snapshots_at_creation_rejects_non_materializable_identity():
+    with pytest.raises(RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
+        await repositories.insert_run_skill_snapshots_at_creation(
+            RecordingConnection(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            skill_manifests=[
+                {
+                    "skill_id": "department-review",
+                    "version": "hash-v1",
+                    "content_hash": "different-hash",
+                    "source": {"kind": "uploaded"},
+                    "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+                    "dependency_ids": [],
+                }
+            ],
+        )
+
+
+@pytest.mark.asyncio
+async def test_authorize_files_for_run_locks_and_validates_without_writing():
+    class FileCursor:
+        async def fetchone(self):
+            return {
+                "id": "file-a",
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": None,
+                "run_id": None,
+            }
+
+    class FileConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return FileCursor()
+
+    conn = FileConnection()
+    await repositories.authorize_files_for_run(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        file_ids=["file-a"],
+    )
+
+    assert len(conn.calls) == 1
+    sql, params = conn.calls[0]
+    assert "select id, tenant_id, workspace_id, user_id, session_id, run_id" in sql
+    assert "for update" in sql
+    assert "update files" not in sql
+    assert params == ("file-a",)
 
 
 @pytest.mark.asyncio
