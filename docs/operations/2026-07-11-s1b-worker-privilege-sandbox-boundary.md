@@ -28,9 +28,9 @@ The worker no longer creates `sdk_only_lifecycle_placeholder` leases for any adm
 
 ## Tool Permission Boundary
 
-The sandbox executor invokes the Claude SDK runner with `execution_policy=sandbox_brokered`. This policy overrides a global `bypassPermissions` setting. Only the fixed local read-only allowlist `Read`, `Glob`, and `LS` bypasses the platform permission callback.
+The sandbox executor invokes the Claude SDK runner with `execution_policy=sandbox_brokered`. This policy overrides a global `bypassPermissions` setting. The fixed local read-only allowlist `Read`, `Glob`, and `LS` bypasses the platform permission callback. Two already-governed capabilities also avoid a redundant generic permission request: Skills in the immutable run allowlist, and the exact internal context-retrieval tools exposed by a run/session/workspace-scoped context server. Unknown Skills fail closed before execution, and the context server retains its own scope enforcement.
 
-A single catch-all `PreToolUse` hook uses `HookMatcher(matcher=None)` so every other tool, including Bash, Write/Edit variants, Agent, network tools, dynamic `mcp__server__tool` names, and future names, reaches the lease-bound platform broker exactly once. Bash command canonicalization remains in that hook. Missing callbacks, callback exceptions/timeouts, malformed responses, and explicit denial all fail closed. The executor continues to derive its callback token from the lease-bound task request and uses the validated fixed callback origin.
+A single catch-all `PreToolUse` hook uses `HookMatcher(matcher=None)` so every non-governed tool, including Bash, Write/Edit variants, Agent, network tools, arbitrary dynamic `mcp__server__tool` names, and future names, reaches the lease-bound platform broker exactly once. Bash command canonicalization remains in that hook. Pinned Skill validation occurs in PreToolUse, while existing `PostToolUse` and `PostToolUseFailure` hooks record attempted Skill use only after the SDK attempts the allowed Skill. Missing callbacks, callback exceptions/timeouts, malformed responses, and explicit denial all fail closed. The executor continues to derive its callback token from the lease-bound task request and uses the validated fixed callback origin.
 
 ## Lease Evidence
 
