@@ -2,19 +2,20 @@
 
 Status:
 
-- [x] Phase 0 - revision-11 envelope, scope fingerprint, worktree fingerprint, predecessor head, and exact `origin/main=c289b024e12b103ecc7eccd99fc95a6978b98dac` verified.
+- [x] Phase 0 - revision-13 review-fix envelope, scope fingerprint, worktree fingerprint, predecessor head, and exact `origin/main=c289b024e12b103ecc7eccd99fc95a6978b98dac` verified.
 - [x] Phase 1 - live failure traced to the worker adapter passing a keyword-only `ExecutorEventSink` directly to `SandboxRuntime`, whose event contract calls `sink(AgentEvent)` positionally.
 - [x] Phase 2 - focused RED reproduced `event_sink() takes 0 positional arguments but 1 was given` on an ordinary sandbox-required `general-chat` path.
 - [x] Phase 3 - minimal local bridge reuses `agent_event_to_executor_event` and the focused regression is GREEN.
 - [x] Phase 4 - focused regression passed (`1 passed`); affected worker/runtime tests passed (`125 passed, 3 skipped`); repository-root artifact count remained zero. Compile, diff, scope, and secret checks passed before commit.
 - [x] Phase 5 - source repair commit created; the final documentation commit, push, clean status, and exact fixed head are recorded in the controller handoff because a commit cannot self-record its own SHA.
+- [x] Phase 6 - revision-12 Important cancellation-test finding reproduced and fixed with a positional `AgentEvent`; focused review regressions passed (`2 passed`).
 - [~] 211 runtime verification - retained by the controller; this lane must not access or mutate 211.
 
 ## Subject
 
 - Controller epoch: `controller-20260711-1945`
-- Board revision: `11`
-- Dispatch: `dispatch-s1b-c-runtime-event-bridge-fix-20260711-g3-p2`
+- Board revision: `13`
+- Dispatch: `dispatch-s1b-c-runtime-event-bridge-review-fix-20260711-g3-p4`
 - Branch: `codex/397-s1bc-runtime-event-bridge`
 - Base: `c289b024e12b103ecc7eccd99fc95a6978b98dac`
 - Runtime evidence ceiling on entry: `runtime partial`
@@ -37,6 +38,10 @@ The regression uses an ordinary sandbox-required selected-Skill path. Its fake r
 - original payload plus `visible_to_user=false` and `admin_only=true`
 
 The regression now overrides `sandbox_workspace_root` to a child of its own pytest `tmp_path`, so skill staging cannot create a repository-root `s-*` directory. The exact lane-owned `s-ff88d70e` artifact from the original RED run was resolved inside this worktree and removed under revision-11 cleanup authority. A first fresh-child rerun used an overlong Windows basetemp path and failed during directory creation with `WinError 206`; a shorter fresh child under `.pytest-tmp` then passed, as did the affected suite, with no repository-root artifact recreated.
+
+## Review Follow-Up
+
+The revision-12 reviewer found that the cancellation regression could pass before entering `SandboxRuntime.submit()`: its worker sink cancelled the earlier `skills_staged` event, while its unreachable runtime fake still called the sink using obsolete executor kwargs. The review-fix RED added a runtime-entry assertion and failed with `runtime_submit_calls == 0`. The corrected test lets `skills_staged` pass, has the fake emit a positional `AgentEvent(type="assistant_delta")`, and raises a sentinel `WorkerRunCancelled` only from the keyword-only worker sink after conversion. It asserts the identical exception object propagates, the runtime does not continue after awaiting the sink, both expected event types are observed in order, and staging remains below pytest `tmp_path`. The focused cancellation and event-bridge regressions passed together (`2 passed`) with zero repository-root `s-*` artifacts.
 
 ## Boundaries
 

@@ -2410,22 +2410,34 @@ async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch, tmp_path):
-    async def event_sink(**event):
-        raise WorkerRunCancelled("platform cancel requested")
+    runtime_submit_calls = 0
+    runtime_continued = False
+    received_event_types = []
+    cancellation = WorkerRunCancelled("platform cancel requested")
+
+    async def event_sink(*, event_type, stage, message, payload):
+        received_event_types.append(event_type)
+        if event_type == "assistant_delta":
+            raise cancellation
 
     class CancellingRuntime:
         provider = object.__new__(DockerContainerProvider)
 
         async def submit(self, request, event_sink=None):
+            nonlocal runtime_submit_calls, runtime_continued
+            runtime_submit_calls += 1
             await event_sink(
-                event_type="message_delta",
-                stage="executor",
-                message="partial",
-                payload={"visible_to_user": True},
+                AgentEvent(
+                    type="assistant_delta",
+                    message="partial",
+                    payload={"visible_to_user": True},
+                )
             )
-            raise AssertionError("cancel must stop runtime result mapping")
+            runtime_continued = True
+            raise AssertionError("cancel must propagate before runtime result mapping")
 
     current_settings = settings(tmp_path, sdk_enabled=True)
+    current_settings.sandbox_workspace_root = str(tmp_path / "sandbox")
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.SandboxRuntime",
@@ -2433,13 +2445,18 @@ async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch
     )
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
 
-    with pytest.raises(WorkerRunCancelled, match="platform cancel requested"):
+    with pytest.raises(WorkerRunCancelled) as exc_info:
         await adapter.submit_run(
             sandbox_writing_payload(
                 agent_id="general-agent", skill_id="general-chat", file_ids=[], input={"message": "hello"}
             ),
             event_sink=event_sink,
         )
+
+    assert exc_info.value is cancellation
+    assert runtime_submit_calls == 1
+    assert runtime_continued is False
+    assert received_event_types == ["skills_staged", "assistant_delta"]
 
 
 @pytest.mark.asyncio
