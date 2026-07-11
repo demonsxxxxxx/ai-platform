@@ -1,7 +1,7 @@
-import { getRefreshToken } from "./token";
+import { getAccessToken, getRefreshToken } from "./token";
 import {
-  getValidAccessToken,
   redirectToLogin,
+  rememberRedirectPathForLogin,
   refreshAccessToken,
 } from "./tokenManager";
 
@@ -12,12 +12,9 @@ interface AuthenticatedRequestOptions extends RequestInit {
 export async function createAuthHeaders(
   headers: HeadersInit = {},
 ): Promise<Headers> {
-  const finalHeaders = new Headers(headers);
-  const token = await getValidAccessToken();
-  if (token) {
-    finalHeaders.set("Authorization", `Bearer ${token}`);
-  }
-  return finalHeaders;
+  const authHeaders = new Headers(headers);
+  authHeaders.delete("Authorization");
+  return authHeaders;
 }
 
 /**
@@ -29,9 +26,11 @@ export async function authenticatedRequest(
   init: AuthenticatedRequestOptions = {},
 ): Promise<Response> {
   const { retryOn401 = true, headers = {}, ...rest } = init;
+  getAccessToken();
   const finalHeaders = await createAuthHeaders(headers);
   const response = await fetch(input, {
     ...rest,
+    credentials: rest.credentials ?? "include",
     headers: finalHeaders,
   });
 
@@ -44,16 +43,21 @@ export async function authenticatedRequest(
     throw new Error("Unauthorized: no refresh token");
   }
 
-  try {
-    await refreshAccessToken();
-  } catch (error) {
+try {
+  await refreshAccessToken();
+} catch (error) {
+  if (error instanceof Error && /Unauthorized/i.test(error.message)) {
+    rememberRedirectPathForLogin();
+  } else {
     redirectToLogin();
-    throw error;
   }
+  throw error;
+}
 
   const retryHeaders = await createAuthHeaders(headers);
   const retryResponse = await fetch(input, {
     ...rest,
+    credentials: rest.credentials ?? "include",
     headers: retryHeaders,
   });
 

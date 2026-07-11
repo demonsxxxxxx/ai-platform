@@ -3,10 +3,10 @@
  */
 
 import i18n from "i18next";
-import { getRefreshToken } from "./token";
+import { getAccessToken, getRefreshToken } from "./token";
 import {
-  getValidAccessToken,
   redirectToLogin,
+  rememberRedirectPathForLogin,
   refreshAccessToken,
   clearAuthState,
 } from "./tokenManager";
@@ -23,7 +23,7 @@ interface FetchOptions extends RequestInit {
 
 /**
  * 带认证的 fetch 封装
- * 自动添加 Authorization header（使用 getValidAccessToken 主动刷新过期 token）
+ * 浏览器生产路径只依赖同源 cookie session，不再附带脚本可读 bearer token。
  * 处理 401 响应
  */
 export async function authFetch<T>(
@@ -37,26 +37,21 @@ export async function authFetch<T>(
     ...restOptions
   } = options;
 
-  const finalHeaders: HeadersInit = {
-    ...(restOptions.body instanceof FormData
-      ? {}
-      : { "Content-Type": "application/json" }),
-    "Accept-Language": i18n.language || "en",
-    ...headers,
-  };
+  const finalHeaders = new Headers(headers);
+  if (!(restOptions.body instanceof FormData)) {
+    finalHeaders.set("Content-Type", "application/json");
+  }
+  finalHeaders.set("Accept-Language", i18n.language || "en");
+  finalHeaders.delete("Authorization");
 
-  // Use getValidAccessToken to proactively refresh expired tokens,
-  // avoiding unnecessary 401 round-trips.
   if (!skipAuth) {
-    const token = await getValidAccessToken();
-    if (token) {
-      (finalHeaders as Record<string, string>)["Authorization"] =
-        `Bearer ${token}`;
-    }
+    // Touch the marker path so legacy bearer keys are eagerly scrubbed.
+    getAccessToken();
   }
 
   const response = await fetch(url, {
     ...restOptions,
+    credentials: restOptions.credentials ?? "include",
     headers: finalHeaders,
   });
 
@@ -68,13 +63,15 @@ export async function authFetch<T>(
 
   // 处理 401 未授权响应
   if (response.status === 401 && !skipAuth) {
-    const refreshToken = getRefreshToken();
-
-    if (refreshToken && !_retry) {
+    if (getRefreshToken() && !_retry) {
       try {
         await refreshAccessToken();
       } catch (error) {
-        redirectToLogin();
+        if (error instanceof Error && /Unauthorized/i.test(error.message)) {
+          rememberRedirectPathForLogin();
+        } else {
+          redirectToLogin();
+        }
         throw error;
       }
       return authFetch<T>(url, { ...options, skipAuth: false, _retry: true });
@@ -110,7 +107,7 @@ export async function authFetch<T>(
   try {
     return JSON.parse(text) as T;
   } catch {
-    console.warn("[authFetch] Failed to parse response as JSON:", text);
+    console.warn("[authFetch] Failed to parse response as JSON");
     return null as T;
   }
 }

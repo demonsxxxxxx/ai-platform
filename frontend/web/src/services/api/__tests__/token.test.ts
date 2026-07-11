@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { getRedirectPath, isSafeRedirectPath } from "../token.ts";
+import {
+  getAccessToken,
+  getRedirectPath,
+  getRefreshToken,
+  isSafeRedirectPath,
+  parseAuthStorageEvent,
+  setTokens,
+} from "../token.ts";
 
 function installSessionStorage() {
   const store = new Map<string, string>();
@@ -32,6 +39,37 @@ function installSessionStorage() {
   };
 }
 
+function installLocalStorage(initial: Record<string, string> = {}) {
+  const store = new Map<string, string>(Object.entries(initial));
+  const removedKeys: string[] = [];
+  const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => store.get(key) ?? null,
+      removeItem: (key: string) => {
+        removedKeys.push(key);
+        store.delete(key);
+      },
+      setItem: (key: string, value: string) => {
+        store.set(key, value);
+      },
+    },
+  });
+
+  return {
+    removedKeys,
+    restore() {
+      if (original) {
+        Object.defineProperty(globalThis, "localStorage", original);
+      } else {
+        delete (globalThis as { localStorage?: Storage }).localStorage;
+      }
+    },
+  };
+}
+
 test("auth routes are not valid post-login redirect targets", () => {
   assert.equal(isSafeRedirectPath("/auth/callback"), false);
   assert.equal(isSafeRedirectPath("/auth/login"), false);
@@ -50,4 +88,73 @@ test("getRedirectPath discards stale OAuth callback redirects", () => {
   } finally {
     restore();
   }
+});
+
+test("legacy localStorage bearer tokens are ignored as browser auth sources", () => {
+  const restore = installLocalStorage({
+    access_token: "legacy-access-token",
+    refresh_token: "legacy-refresh-token",
+  });
+
+  try {
+    assert.equal(getAccessToken(), null);
+    assert.equal(getRefreshToken(), null);
+    assert.deepEqual(restore.removedKeys, ["access_token", "refresh_token"]);
+  } finally {
+    restore.restore();
+  }
+});
+
+test("setTokens writes a fresh non-secret session marker and clears legacy bearer keys", () => {
+  const storage = installLocalStorage({
+    access_token: "legacy-access-token",
+    refresh_token: "legacy-refresh-token",
+  });
+
+  try {
+    setTokens("new-access-token", "new-refresh-token");
+
+    assert.match(
+      localStorage.getItem("ai_platform_session_present") ?? "",
+      /^\d+-[a-z0-9]+$/i,
+    );
+    assert.deepEqual(storage.removedKeys, ["access_token", "refresh_token"]);
+  } finally {
+    storage.restore();
+  }
+});
+
+test("cross-tab auth storage parsing treats session marker removal as logout", () => {
+  assert.equal(
+    parseAuthStorageEvent({
+      key: "ai_platform_session_present",
+      oldValue: "prior-marker",
+      newValue: null,
+    }),
+    "logout",
+  );
+  assert.equal(
+    parseAuthStorageEvent({
+      key: "ai_platform_session_present",
+      oldValue: null,
+      newValue: "new-marker",
+    }),
+    "login",
+  );
+  assert.equal(
+    parseAuthStorageEvent({
+      key: "ai_platform_session_present",
+      oldValue: "old-marker",
+      newValue: "new-marker",
+    }),
+    "login",
+  );
+  assert.equal(
+    parseAuthStorageEvent({
+      key: "access_token",
+      oldValue: "legacy",
+      newValue: null,
+    }),
+    null,
+  );
 });

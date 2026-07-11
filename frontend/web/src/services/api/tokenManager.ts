@@ -1,14 +1,14 @@
 import { API_BASE } from "./config";
+import i18n from "../../i18n";
 import {
   clearTokens,
   getAccessToken,
   getRefreshToken,
   isSafeRedirectPath,
-  isTokenExpired,
+  setRedirectPath,
   setTokens,
 } from "./token";
 import { clearAuthScopedCaches } from "./authCacheInvalidation";
-import i18n from "../../i18n";
 
 let refreshPromise: Promise<string> | null = null;
 
@@ -21,6 +21,16 @@ function notifyLogout(): void {
   window.dispatchEvent(new CustomEvent("auth:logout"));
 }
 
+export function rememberRedirectPathForLogin(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const currentPath = window.location.pathname + window.location.search;
+  if (isSafeRedirectPath(currentPath)) {
+    setRedirectPath(currentPath);
+  }
+}
+
 export function clearAuthState(): void {
   clearTokens();
   clearAuthScopedCaches();
@@ -28,10 +38,7 @@ export function clearAuthState(): void {
 }
 
 export function redirectToLogin(): void {
-  const currentPath = window.location.pathname + window.location.search;
-  if (isSafeRedirectPath(currentPath)) {
-    sessionStorage.setItem("redirect_after_login", currentPath);
-  }
+  rememberRedirectPathForLogin();
   clearAuthState();
 }
 
@@ -39,30 +46,13 @@ export function redirectToLogin(): void {
  * Get a valid (non-expired) access token.
  *
  * Returns `null` when no token exists — the caller decides what to do.
- * When the access token is expired, attempts a silent refresh.
- * Does NOT call redirectToLogin — callers handle redirect themselves.
+ * Browser production auth is cookie-based, so no bearer token is returned.
  */
 export async function getValidAccessToken(): Promise<string | null> {
-  const accessToken = getAccessToken();
-  if (!accessToken) {
+  if (!getAccessToken()) {
     return null;
   }
-
-  if (!isTokenExpired(accessToken)) {
-    return accessToken;
-  }
-
-  // Access token expired — try refresh
-  const refreshToken = getRefreshToken();
-  if (!refreshToken || isTokenExpired(refreshToken)) {
-    return null;
-  }
-
-  try {
-    return await refreshAccessToken();
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 /**
@@ -74,8 +64,6 @@ export async function getValidAccessToken(): Promise<string | null> {
  */
 export async function refreshTokens(): Promise<RefreshedTokens> {
   if (refreshPromise) {
-    // Wait for the in-flight refresh — do NOT return early with just access_token.
-    // The caller may need the refresh_token too.
     const access_token = await refreshPromise;
     return {
       access_token,
@@ -84,28 +72,29 @@ export async function refreshTokens(): Promise<RefreshedTokens> {
   }
 
   refreshPromise = (async () => {
-    const refreshToken = getRefreshToken();
-    if (!refreshToken) {
-      throw new Error("No refresh token available");
+    if (!getRefreshToken()) {
+      throw new Error("No browser session marker available");
     }
 
-    const response = await fetch(`${API_BASE}/api/auth/refresh`, {
-      method: "POST",
+    const response = await fetch(`${API_BASE}/api/ai/auth/me`, {
+      method: "GET",
+      credentials: "include",
       headers: {
-        "Content-Type": "application/json",
         "Accept-Language": i18n.language || "en",
       },
-      body: JSON.stringify({ refresh_token: refreshToken }),
     });
 
     if (!response.ok) {
-      throw new Error("Token refresh failed");
+      if (response.status === 401 || response.status === 403) {
+        clearAuthState();
+        throw new Error("Unauthorized");
+      }
+      throw new Error("Cookie session probe failed");
     }
 
-    const tokenResponse = (await response.json()) as RefreshedTokens;
     clearAuthScopedCaches();
-    setTokens(tokenResponse.access_token, tokenResponse.refresh_token);
-    return tokenResponse.access_token;
+    setTokens("cookie-session");
+    return "cookie-session";
   })();
 
   try {
