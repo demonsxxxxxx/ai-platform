@@ -126,6 +126,8 @@ def _resolve_executor_published_endpoint(raw_host: str) -> _ExecutorPublishedEnd
     if literal is not None:
         if literal.version != 4 or literal.is_unspecified:
             raise ContainerStartFailedError("executor published endpoint is invalid")
+        if not literal.is_loopback and not literal.is_private:
+            raise ContainerStartFailedError("executor published endpoint is invalid")
         return _ExecutorPublishedEndpoint(published_host=host, bind_ip=str(literal))
     try:
         addresses = {
@@ -137,7 +139,10 @@ def _resolve_executor_published_endpoint(raw_host: str) -> _ExecutorPublishedEnd
     if len(addresses) != 1:
         raise ContainerStartFailedError("executor published endpoint is invalid")
     bind_ip = next(iter(addresses))
-    if ipaddress.IPv4Address(bind_ip).is_loopback and host.lower() != "localhost":
+    resolved_ip = ipaddress.IPv4Address(bind_ip)
+    if not resolved_ip.is_loopback and not resolved_ip.is_private:
+        raise ContainerStartFailedError("executor published endpoint is invalid")
+    if resolved_ip.is_loopback and host.lower() != "localhost":
         raise ContainerStartFailedError("executor published endpoint is invalid")
     return _ExecutorPublishedEndpoint(published_host=host, bind_ip=bind_ip)
 
@@ -148,18 +153,28 @@ def _published_executor_url_from_container(
 ) -> str | None:
     ports = getattr(container, "attrs", {}).get("NetworkSettings", {}).get("Ports", {})
     bindings = ports.get("18000/tcp") or []
-    if bindings:
-        host_port = bindings[0].get("HostPort")
-        if host_port:
-            host = str(bindings[0].get("HostIp") or "").strip()
-            if endpoint is not None:
-                if host != endpoint.bind_ip:
-                    raise ContainerStartFailedError("executor published endpoint mismatch")
-                return f"http://{endpoint.published_host}:{host_port}"
-            if host in {"", "0.0.0.0", "::"}:
-                return None
-            return f"http://{host}:{host_port}"
-    return None
+    if len(bindings) != 1:
+        if endpoint is not None and bindings:
+            raise ContainerStartFailedError("executor published endpoint mismatch")
+        return None
+    binding = bindings[0]
+    host_port = str(binding.get("HostPort") or "").strip()
+    try:
+        port_number = int(host_port)
+    except ValueError:
+        port_number = 0
+    if not 1 <= port_number <= 65535:
+        if endpoint is not None:
+            raise ContainerStartFailedError("executor published endpoint mismatch")
+        return None
+    host = str(binding.get("HostIp") or "").strip()
+    if endpoint is not None:
+        if host != endpoint.bind_ip:
+            raise ContainerStartFailedError("executor published endpoint mismatch")
+        return f"http://{endpoint.published_host}:{port_number}"
+    if host in {"", "0.0.0.0", "::"}:
+        return None
+    return f"http://{host}:{port_number}"
 
 
 def _lease_from_request(

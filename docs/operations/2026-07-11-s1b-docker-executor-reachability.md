@@ -84,3 +84,13 @@ This is preferred over separate bind-host and published-host settings because tw
 ## 211 Reverification Handoff
 
 After merge and deployment by the main controller, submit an ordinary authenticated run using nested `selected_skill={general-chat,0.1.0}`. Confirm Docker inspect reports the exact host-gateway IP rather than loopback or wildcard, the worker health and authenticated runtime-identity probes use `http://host.docker.internal:<random-port>`, a lease is written, and the run advances beyond executor creation. Re-run cancellation and cleanup checks, then remove unreferenced old deployment images and dangling images under the repository's deployment rules.
+
+## Independent Security Review
+
+Fixed-SHA review of `0747af3615eeb0fdd2fc7956b08903cf7b23dc11` found no Critical issues and three Important issues:
+
+- [x] Reject public/global bind addresses; loopback or private IPv4 only.
+- [x] Require exactly one inspected binding with an exact HostIp and numeric port in `1..65535`.
+- [ ] Ensure authenticated health, identity, and later executor task connections use the pinned IP while preserving the configured logical hostname. This requires an explicit scope decision because `app/runtime/sandbox/executor_client.py` or the shared lease endpoint contract is outside this slice's authorized changed-file set.
+
+The first two findings are implemented as a separate follow-up change with RED observed for all eight adversarial cases. Phase 5 remains open until the third finding is fixed or rejected with evidence and a fresh independent re-review finds no unhandled Critical or Important issues.
