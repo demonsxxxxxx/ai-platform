@@ -162,6 +162,23 @@ test("collectAllAuthorizedSkills aggregates beyond 200 and preserves catalog pro
   assert.equal(result.catalog_read_resolved, true);
 });
 
+test("collectAllAuthorizedSkills accepts an authorized empty catalog", async () => {
+  const result = await collectAllAuthorizedSkills(async ({ skip = 0 }) => ({
+    skills: [],
+    total: 0,
+    skip,
+    limit: 200,
+    available_tags: [],
+    effective_permissions: ["skill:read"],
+    effective_permissions_known: true,
+    catalog_read_resolved: true,
+  }));
+
+  assert.deepEqual(result.skills, []);
+  assert.equal(result.total, 0);
+  assert.deepEqual(result.effective_permissions, ["skill:read"]);
+});
+
 test("collectAllAuthorizedSkills refreshes a second-page Skill version without duplicates", async () => {
   let version = "hash-old";
   const listPage = async (params: { skip?: number; limit?: number }) => {

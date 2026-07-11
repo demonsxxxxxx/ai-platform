@@ -66,7 +66,7 @@ multi-agent product authority, deployment, or 211 runtime state.
   request builder, recoverable admission outcome, single-select picker/chip,
   required-file preflight, explicit refresh/reconfirm, and draft lifting are
   wired into the real composer.
-- [x] Phase 3 - focused frontend run passed 176/176 tests, including default
+- [x] Phase 3 - focused frontend run passed 177/177 tests, including default
   preference fallback, true run cancel, event/artifact projection, cookie auth,
   full authorized-catalog pagination/fail-closed behavior, and composer visual
   contract regressions. A broader exploratory test found one unrelated base
@@ -88,7 +88,7 @@ multi-agent product authority, deployment, or 211 runtime state.
   precommit focused tests passed 165/165; 26 slice files produced 0
   forbidden-path, secret, personal-path, root-gitignore, or diff-check hits.
   After the #393 rebase, the review-fix baseline was `541dcf1`. Focused tests
-  then passed 176/176, Python compile and `ci:verify` again exited 0, and the
+  then passed 177/177, Python compile and `ci:verify` again exited 0, and the
   desktop/mobile mock browser evidence was regenerated with status `passed`.
 - [ ] Phase 6 - fixed SHA `696e551` independent code and UX reviews found four
   Important and three Minor findings. A first rebased exact-head review at
@@ -109,8 +109,11 @@ multi-agent product authority, deployment, or 211 runtime state.
   cleanup. The public wire boundary now enforces positive limit and coherent
   page bounds while keeping name-based deduplication, and every local terminal
   exit dismisses the queue toast. Focused tests, compile, and `ci:verify` were
-  rerun after these fixes. Final fixed-SHA code and UX re-review remains
-  pending.
+  rerun after these fixes. Code re-review at `41d2a7f` found that the legal
+  `total=0, skills=[]` first page was still classified as incomplete; the
+  collector now accepts an authorized empty catalog while continuing to reject
+  an empty page before its declared total. UX re-review at that SHA reported no
+  findings. Final fixed-SHA code confirmation remains pending.
 - [ ] Phase 7 - ready PR, exact-head review/validation comments, and required
   CI. No merge or 211 deployment is authorized in this lane.
 

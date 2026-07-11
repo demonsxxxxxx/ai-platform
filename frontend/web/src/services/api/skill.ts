@@ -200,6 +200,7 @@ export async function collectAllAuthorizedSkills(
     catalogReadResolved &&= page.catalog_read_resolved;
 
     if (page.skills.length === 0) {
+      if (collectedItemCount >= expectedTotal) break;
       throw new Error("authorized_skill_catalog_incomplete");
     }
     if (skillsByName.size === priorUniqueCount) {
