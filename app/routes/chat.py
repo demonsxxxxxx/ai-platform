@@ -466,12 +466,18 @@ async def chat_stream(
         raise HTTPException(status_code=400, detail="invalid_principal_user_id") from exc
     query_agent_id = _normalized_query_agent_id(agent_id)
     requested_agent_id = request.agent_id or query_agent_id or "general-agent"
+    if request.skill_id and not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="raw_skill_selector_forbidden")
     requested_skill_id = request.skill_id if is_ai_admin(principal) else None
+    if request.selected_skill is not None and request.skill_id:
+        raise HTTPException(status_code=400, detail="skill_selector_conflict")
     requested_agent_id, requested_skill_id = _normalize_request_selector(
         requested_agent_id,
         requested_skill_id,
         allow_raw_skill_agent_id=is_ai_admin(principal),
     )
+    if request.selected_skill is not None:
+        requested_skill_id = request.selected_skill.skill_id
     requested_model_selection = _requested_model_selection(request)
     requested_model_id = requested_model_selection["id"] if requested_model_selection is not None else None
     requested_model_value = requested_model_selection["value"] if requested_model_selection is not None else None
@@ -530,17 +536,28 @@ async def chat_stream(
                 decision_payload = explicit_payload
                 resolved_agent_id = str(decision_payload["agent_id"])
                 resolved_skill_id = str(decision_payload["skill_id"])
-            skill = await repositories.authorize_run_capabilities(
-                conn,
-                tenant_id=principal.tenant_id,
-                agent_id=resolved_agent_id,
-                skill_id=resolved_skill_id,
-                normalized_input=run_input,
-                principal_department_id=principal.department_id,
-                principal_roles=principal.roles,
-                is_admin=is_ai_admin(principal),
-                permissions=principal.permissions,
-            )
+            authorization_kwargs = {
+                "tenant_id": principal.tenant_id,
+                "agent_id": resolved_agent_id,
+                "skill_id": resolved_skill_id,
+                "normalized_input": run_input,
+                "principal_department_id": principal.department_id,
+                "principal_roles": principal.roles,
+                "is_admin": is_ai_admin(principal),
+                "permissions": principal.permissions,
+            }
+            if request.selected_skill is not None:
+                skill = await repositories.authorize_selected_run_capabilities(
+                    conn,
+                    expected_version=request.selected_skill.expected_version,
+                    rollout_key=principal.user_id,
+                    **authorization_kwargs,
+                )
+            else:
+                skill = await repositories.authorize_run_capabilities(
+                    conn,
+                    **authorization_kwargs,
+                )
             if "docx" in (skill.get("input_modes") or []) and not resolved_file_ids:
                 raise RepositoryConflictError("file_required_for_skill")
             await enforce_user_active_run_limit(conn, tenant_id=principal.tenant_id, user_id=principal.user_id)
@@ -573,6 +590,11 @@ async def chat_stream(
                 skill_manifests,
                 release_decision=release_decision_payload,
             )
+            skill_manifests = repositories.pin_primary_skill_mcp_tool_ids(
+                skill_manifests,
+                skill_id=resolved_skill_id,
+                mcp_tool_ids=repositories.run_mcp_tool_ids_for_skill(skill, run_input),
+            )
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
             queue_payload = _validate_queue_payload_for_enqueue(
@@ -593,6 +615,20 @@ async def chat_stream(
                     "model_id": requested_model_id,
                     "model_value": requested_model_value,
                 }
+            )
+            await repositories.ensure_workspace_belongs_to_tenant(
+                conn,
+                tenant_id=principal.tenant_id,
+                workspace_id=request.workspace_id,
+            )
+            await repositories.authorize_files_for_run(
+                conn,
+                tenant_id=principal.tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+                run_id=run_id,
+                file_ids=resolved_file_ids,
             )
             await repositories.ensure_user(
                 conn,
@@ -631,6 +667,13 @@ async def chat_stream(
                 principal_roles=principal.roles,
                 principal_department_id=principal.department_id,
                 auth_source=principal.source,
+            )
+            await repositories.insert_run_skill_snapshots_at_creation(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=run_id,
+                skill_manifests=queue_payload["skill_manifests"],
+                release_decision=release_decision_payload,
             )
             message_id = await repositories.append_message(
                 conn,

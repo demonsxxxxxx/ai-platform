@@ -61,7 +61,19 @@ def release_decision(version: str) -> dict:
 
 
 def primary_manifest(skill_id: str, version: str) -> dict:
-    return {"skill_id": skill_id, "content_hash": version}
+    return {
+        "skill_id": skill_id,
+        "version": version,
+        "content_hash": version,
+        "source": {"kind": "builtin", "asset_dir": skill_id},
+        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        "dependency_ids": [],
+        "mcp_tool_ids": [skill_id] if skill_id == "ragflow-knowledge-search" else [],
+        "snapshot_governance": snapshot_governance(version),
+        "allowed": True,
+        "staged": False,
+        "used": False,
+    }
 
 
 def snapshot_governance(digest: str = "hash-a") -> dict:
@@ -125,6 +137,29 @@ def default_cancel_not_requested(monkeypatch):
         return False
 
     monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested, raising=False)
+
+    async def validate_run_skill_snapshots_for_dispatch(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.worker.repositories.validate_run_skill_snapshots_for_dispatch",
+        validate_run_skill_snapshots_for_dispatch,
+        raising=False,
+    )
+
+    async def validate_replay_skill_manifests(*_args, **kwargs):
+        manifests = kwargs.get("skill_manifests") or []
+        primary = next(
+            (item for item in manifests if item.get("skill_id") == kwargs.get("skill_id")),
+            {},
+        )
+        return list(primary.get("mcp_tool_ids") or [])
+
+    monkeypatch.setattr(
+        "app.worker.repositories.validate_replay_skill_manifests",
+        validate_replay_skill_manifests,
+        raising=False,
+    )
 
     async def get_context_snapshot_for_worker(conn, **kwargs):
         return {
@@ -260,6 +295,7 @@ def default_cancel_not_requested(monkeypatch):
         return "audit-default"
 
     monkeypatch.setattr("app.worker.repositories.resolve_agent_skill", resolve_agent_skill, raising=False)
+    monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", resolve_agent_skill, raising=False)
     monkeypatch.setattr(
         "app.worker.repositories.get_capability_distribution_row",
         get_capability_distribution_row,
@@ -3087,10 +3123,8 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
         base_payload(
             skill_manifests=[
                 {
-                    "skill_id": "qa-file-reviewer",
-                    "content_hash": "hash-a",
-                    "source": {"kind": "builtin"},
-                    "snapshot_governance": snapshot_governance("hash-a"),
+                    **primary_manifest("qa-file-reviewer", "hash-a"),
+                    "dependency_ids": ["minimax-docx"],
                 }
             ]
         ),
@@ -3105,7 +3139,13 @@ async def test_worker_persists_run_skill_snapshots(monkeypatch):
             "skill_id": "qa-file-reviewer",
             "skill_version": "hash-a",
             "content_hash": "hash-a",
-            "source_json": {"kind": "builtin", "snapshot_governance": snapshot_governance("hash-a")},
+            "source_json": repository_module.run_skill_snapshot_source_json(
+                {
+                    **primary_manifest("qa-file-reviewer", "hash-a"),
+                    "dependency_ids": ["minimax-docx"],
+                },
+                release_decision=release_decision("hash-a"),
+            ),
             "dependency_ids": ["minimax-docx"],
             "allowed": True,
             "staged": True,
@@ -3174,17 +3214,24 @@ async def test_worker_drops_executor_returned_snapshot_governance_without_payloa
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
     outcome = await process_run_payload(
-        base_payload(skill_manifests=[{"skill_id": "qa-file-reviewer", "content_hash": "hash-a"}]),
+        base_payload(skill_manifests=[primary_manifest("qa-file-reviewer", "hash-a")]),
         AdapterRegistry({"fake": UntrustedGovernanceAdapter()}),
     )
 
     assert outcome.status == "succeeded"
     assert snapshots[0]["skill_version"] == "hash-a"
     assert snapshots[0]["content_hash"] == "hash-a"
-    assert snapshots[0]["source_json"] == {}
+    assert snapshots[0]["source_json"] == repository_module.run_skill_snapshot_source_json(
+        primary_manifest("qa-file-reviewer", "hash-a"),
+        release_decision=release_decision("hash-a"),
+    )
     serialized = json.dumps(snapshots[0]["source_json"], ensure_ascii=False)
-    assert "snapshot_governance" not in serialized
-    assert "release_decision" not in serialized
+    assert snapshots[0]["source_json"]["snapshot_governance"] == repository_module.run_skill_snapshot_source_json(
+        primary_manifest("qa-file-reviewer", "hash-a"),
+        release_decision=release_decision("hash-a"),
+    )["snapshot_governance"]
+    assert "selected_version" not in serialized
+    assert "hash-evil" not in serialized
     assert "storage_key" not in serialized
     assert "content_hash" not in serialized
     assert "content_base64" not in serialized
@@ -3245,12 +3292,10 @@ async def test_worker_uses_payload_source_instead_of_executor_returned_source(mo
     outcome = await process_run_payload(
         base_payload(
             skill_manifests=[
-                {
-                    "skill_id": "qa-file-reviewer",
-                    "content_hash": "hash-a",
-                    "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer", "version": "hash-a"},
-                    "snapshot_governance": snapshot_governance("hash-a"),
-                }
+                    {
+                        **primary_manifest("qa-file-reviewer", "hash-a"),
+                        "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer", "version": "hash-a"},
+                    }
             ]
         ),
         AdapterRegistry({"fake": UntrustedSourceAdapter()}),
@@ -3259,11 +3304,13 @@ async def test_worker_uses_payload_source_instead_of_executor_returned_source(mo
     assert outcome.status == "succeeded"
     assert snapshots[0]["skill_version"] == "hash-a"
     assert snapshots[0]["content_hash"] == "hash-a"
-    assert snapshots[0]["source_json"] == {
-        "kind": "builtin",
-        "asset_dir": "qa-file-reviewer",
-        "snapshot_governance": snapshot_governance("hash-a"),
-    }
+    assert snapshots[0]["source_json"] == repository_module.run_skill_snapshot_source_json(
+        {
+            **primary_manifest("qa-file-reviewer", "hash-a"),
+            "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer", "version": "hash-a"},
+        },
+        release_decision=release_decision("hash-a"),
+    )
     serialized = json.dumps(snapshots[0]["source_json"], ensure_ascii=False)
     assert "uploaded" not in serialized
     assert "executor-controlled" not in serialized
@@ -3331,7 +3378,7 @@ async def test_worker_drops_executor_skill_manifest_without_payload_match(monkey
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
     outcome = await process_run_payload(
-        base_payload(skill_manifests=[{"skill_id": "qa-file-reviewer", "content_hash": "hash-a"}]),
+        base_payload(skill_manifests=[primary_manifest("qa-file-reviewer", "hash-a")]),
         AdapterRegistry({"fake": UnmatchedSkillAdapter()}),
     )
 
@@ -3408,8 +3455,11 @@ async def test_worker_persists_platform_controlled_runner_skill_as_used(monkeypa
     outcome = await process_run_payload(
         base_payload(
             skill_manifests=[
-                {"skill_id": "qa-file-reviewer", "content_hash": "hash-reviewer"},
-                {"skill_id": "minimax-docx", "content_hash": "hash-docx"},
+                {
+                    **primary_manifest("qa-file-reviewer", "hash-reviewer"),
+                    "dependency_ids": ["minimax-docx"],
+                },
+                primary_manifest("minimax-docx", "hash-docx"),
             ]
         ),
         AdapterRegistry({"fake": ControlledRunnerSkillAdapter()}),
@@ -5186,17 +5236,7 @@ async def test_worker_audits_read_only_ragflow_tool_call(monkeypatch):
             skill_id="ragflow-knowledge-search",
             executor_type="ragflow",
             skill_version="hash-ragflow",
-            skill_manifests=[
-                {
-                    "skill_id": "ragflow-knowledge-search",
-                    "version": "hash-ragflow",
-                    "content_hash": "hash-ragflow",
-                    "source": {"kind": "builtin", "asset_dir": "ragflow-knowledge-search"},
-                    "dependency_ids": [],
-                    "allowed": True,
-                    "staged": False,
-                }
-            ],
+            skill_manifests=[primary_manifest("ragflow-knowledge-search", "hash-ragflow")],
         ),
         registry=Registry(),
         worker_id="worker-ragflow",
@@ -5222,7 +5262,10 @@ async def test_worker_audits_read_only_ragflow_tool_call(monkeypatch):
             "skill_id": "ragflow-knowledge-search",
             "skill_version": "hash-ragflow",
             "content_hash": "hash-ragflow",
-            "source_json": {"kind": "builtin", "asset_dir": "ragflow-knowledge-search"},
+            "source_json": repository_module.run_skill_snapshot_source_json(
+                primary_manifest("ragflow-knowledge-search", "hash-ragflow"),
+                release_decision=release_decision("hash-ragflow"),
+            ),
             "dependency_ids": [],
             "allowed": True,
             "staged": True,
@@ -5285,17 +5328,7 @@ async def test_worker_does_not_mark_failed_ragflow_result_as_native_used(monkeyp
             skill_id="ragflow-knowledge-search",
             executor_type="ragflow",
             skill_version="hash-ragflow",
-            skill_manifests=[
-                {
-                    "skill_id": "ragflow-knowledge-search",
-                    "version": "hash-ragflow",
-                    "content_hash": "hash-ragflow",
-                    "source": {"kind": "builtin", "asset_dir": "ragflow-knowledge-search"},
-                    "dependency_ids": [],
-                    "allowed": True,
-                    "staged": False,
-                }
-            ],
+            skill_manifests=[primary_manifest("ragflow-knowledge-search", "hash-ragflow")],
         ),
         registry=Registry(),
         worker_id="worker-ragflow",
@@ -5310,7 +5343,10 @@ async def test_worker_does_not_mark_failed_ragflow_result_as_native_used(monkeyp
             "skill_id": "ragflow-knowledge-search",
             "skill_version": "hash-ragflow",
             "content_hash": "hash-ragflow",
-            "source_json": {"kind": "builtin", "asset_dir": "ragflow-knowledge-search"},
+            "source_json": repository_module.run_skill_snapshot_source_json(
+                primary_manifest("ragflow-knowledge-search", "hash-ragflow"),
+                release_decision=release_decision("hash-ragflow"),
+            ),
             "dependency_ids": [],
             "allowed": True,
             "staged": True,
@@ -5959,6 +5995,7 @@ def _install_task6_worker_fakes(
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.resolve_agent_skill", resolve_agent_skill, raising=False)
+    monkeypatch.setattr("app.worker.repositories.resolve_selected_skill", resolve_agent_skill, raising=False)
     monkeypatch.setattr(
         "app.worker.repositories.get_capability_distribution_row",
         get_capability_distribution_row,
@@ -6053,6 +6090,60 @@ async def test_worker_capability_distribution_allows_current_skill_after_enqueue
     assert ("skill_lookup", "tenant-a", "qa-word-review", "qa-file-reviewer") in calls
     assert ("distribution", "tenant-a", "skill", "qa-file-reviewer") in calls
     assert any(call[0] == "adapter" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_immutable_skill_snapshot_mismatch_blocks_before_stage_or_adapter(monkeypatch):
+    raw, registry, _, calls = _install_task6_worker_fakes(monkeypatch)
+
+    async def mismatch(*args, **kwargs):
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+
+    monkeypatch.setattr(
+        "app.worker.repositories.validate_run_skill_snapshots_for_dispatch",
+        mismatch,
+        raising=False,
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    _task6_assert_no_executor_calls(calls)
+    assert not any(call[0] == "skill_lookup" for call in calls)
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["payload"]["reason"] == "skill_snapshot_identity_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_worker_revoked_historical_pin_blocks_before_stage_or_adapter(monkeypatch):
+    raw, registry, _, calls = _install_task6_worker_fakes(monkeypatch)
+
+    async def revoked(*args, **kwargs):
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    monkeypatch.setattr(
+        "app.worker.repositories.validate_replay_skill_manifests",
+        revoked,
+        raising=False,
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    _task6_assert_no_executor_calls(calls)
+    assert not any(call[0] == "skill_lookup" for call in calls)
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["payload"]["reason"] == "skill_historical_pin_revoked"
 
 
 @pytest.mark.parametrize(
@@ -6212,6 +6303,38 @@ async def test_worker_direct_ragflow_rechecks_permission_policy_after_enqueue(mo
     assert len([call for call in calls if call[0] == "permission_lookup"]) == 1
     assert not any(call[0] == "permission_consume" for call in calls)
     _task6_assert_no_executor_calls(calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_reauthorizes_historical_ragflow_mcp_after_current_skill_changes_executor(monkeypatch):
+    raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch, locked_input={"mode": "file"})
+    historical_manifest = primary_manifest("qa-file-reviewer", "hash-qa-file-reviewer")
+    historical_manifest["mcp_tool_ids"] = ["historical-search"]
+    state["locked_run"]["input_json"]["executor_type"] = "ragflow"
+    state["locked_run"]["input_json"]["skill_manifests"] = [historical_manifest]
+    state["skill"].update(executor_type="capture", backing_mcp_tool_id=None)
+    state["tools"]["historical-search"] = _task6_tool(
+        "historical-search",
+        "historical-server",
+    )
+    state["distributions"][("mcp_server", "historical-server")] = _task6_distribution(
+        "mcp_server",
+        "historical-server",
+        status="disabled",
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    assert ("tool_lookup", "tenant-a", "historical-search") in calls
+    _task6_assert_no_executor_calls(calls)
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["payload"]["reason"] == "distribution_disabled"
 
 
 @pytest.mark.parametrize(

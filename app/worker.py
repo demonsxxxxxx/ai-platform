@@ -833,7 +833,6 @@ def _attach_payload_snapshot_governance(
             continue
         for key in ("version", "skill_version", "content_hash"):
             manifest.pop(key, None)
-        payload_source = payload_manifest.get("source") if isinstance(payload_manifest, dict) else None
         payload_version = ""
         payload_hash = ""
         if isinstance(payload_manifest, dict):
@@ -849,10 +848,12 @@ def _attach_payload_snapshot_governance(
             manifest["skill_version"] = payload_version
         if payload_hash:
             manifest["content_hash"] = payload_hash
-        if isinstance(payload_source, dict):
-            manifest["source"] = payload_source
-        else:
-            manifest.pop("source", None)
+        for field in ("source", "files", "dependency_ids", "mcp_tool_ids"):
+            payload_value = payload_manifest.get(field)
+            if isinstance(payload_value, (dict, list)):
+                manifest[field] = payload_value
+            else:
+                manifest.pop(field, None)
         payload_governance = governance_by_skill.get(skill_id)
         if isinstance(payload_governance, dict):
             manifest["snapshot_governance"] = payload_governance
@@ -862,16 +863,12 @@ def _attach_payload_snapshot_governance(
     return attached
 
 
-def _source_json_from_skill_manifest(item: dict[str, Any]) -> dict[str, Any]:
-    source = sanitize_public_payload(item.get("source") if isinstance(item.get("source"), dict) else {})
-    if not isinstance(source, dict):
-        source = {}
-    source.pop("version", None)
-    source = _without_skill_snapshot_files(source)
-    governance = item.get("snapshot_governance")
-    if isinstance(governance, dict):
-        source["snapshot_governance"] = governance
-    return source
+def _source_json_from_skill_manifest(
+    item: dict[str, Any],
+    *,
+    release_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return repositories.run_skill_snapshot_source_json(item, release_decision=release_decision)
 
 
 def _without_skill_snapshot_files(value: Any) -> Any:
@@ -1083,10 +1080,41 @@ async def _reauthorize_worker_capabilities(
     context = _worker_capability_context(principal)
     decisions: list[_WorkerCapabilityDecision] = []
 
+    try:
+        await repositories.validate_run_skill_snapshots_for_dispatch(
+            conn,
+            tenant_id=run_identity["tenant_id"],
+            run_id=run_identity["run_id"],
+            skill_manifests=payload.skill_manifests,
+            release_decision=payload.release_decision,
+        )
+    except repositories.RepositoryConflictError:
+        denial = _worker_capability_record(
+            "skill",
+            run_identity["skill_id"],
+            _denied_capability_decision("skill_snapshot_identity_mismatch"),
+        )
+        return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
+    try:
+        pinned_mcp_tool_ids = await repositories.validate_replay_skill_manifests(
+            conn,
+            skill_id=run_identity["skill_id"],
+            pinned_version=str(payload.skill_version or ""),
+            pinned_executor_type=payload.executor_type,
+            skill_manifests=payload.skill_manifests,
+        )
+    except (repositories.RepositoryAuthorizationError, repositories.RepositoryConflictError):
+        denial = _worker_capability_record(
+            "skill",
+            run_identity["skill_id"],
+            _denied_capability_decision("skill_historical_pin_revoked"),
+        )
+        return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
+
     skill: dict[str, Any] = {}
     skill_lifecycle_status = "disabled"
     try:
-        skill = await repositories.resolve_agent_skill(
+        skill = await repositories.resolve_selected_skill(
             conn,
             tenant_id=run_identity["tenant_id"],
             agent_id=run_identity["agent_id"],
@@ -1126,6 +1154,9 @@ async def _reauthorize_worker_capabilities(
 
     try:
         requested_tool_ids = repositories.run_mcp_tool_ids_for_skill(skill, payload.input)
+        for tool_id in pinned_mcp_tool_ids or []:
+            if tool_id not in requested_tool_ids:
+                requested_tool_ids.append(tool_id)
     except repositories.RepositoryAuthorizationError:
         denial = _worker_capability_record(
             "mcp_tool",
@@ -2450,7 +2481,10 @@ async def process_run_payload(
                     skill_id=skill_id,
                     skill_version=str(item.get("version") or item.get("skill_version") or ""),
                     content_hash=str(item.get("content_hash") or item.get("version") or ""),
-                    source_json=_source_json_from_skill_manifest(item),
+                    source_json=_source_json_from_skill_manifest(
+                        item,
+                        release_decision=payload.release_decision,
+                    ),
                     dependency_ids=_dependency_ids_from_manifest(item),
                     allowed=bool(item.get("allowed")),
                     staged=bool(item.get("staged")),

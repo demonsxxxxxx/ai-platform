@@ -731,11 +731,17 @@ async def _authorize_persisted_run_for_queue(
     if persisted_run is None:
         raise RepositoryNotFoundError("run_not_found")
     owner_principal = _persisted_owner_principal(persisted_run, tenant_id=tenant_id)
-    await repositories.authorize_run_capabilities(
+    execution_snapshot = repositories.copied_run_execution_snapshot(
+        persisted_run.get("input_json") if isinstance(persisted_run.get("input_json"), dict) else {}
+    )
+    await repositories.authorize_replay_run_capabilities(
         conn,
         tenant_id=tenant_id,
         agent_id=str(persisted_run.get("agent_id") or ""),
         skill_id=str(persisted_run.get("skill_id") or ""),
+        pinned_version=str(execution_snapshot.get("skill_version") or ""),
+        pinned_executor_type=str(execution_snapshot.get("executor_type") or ""),
+        skill_manifests=execution_snapshot.get("skill_manifests") or [],
         normalized_input=_run_execution_input(persisted_run),
         principal_department_id=owner_principal.department_id,
         principal_roles=owner_principal.roles,
@@ -760,38 +766,23 @@ async def prepare_copied_run_for_queue(
     copied_input = copied_snapshot["input"]
     source_run_id = _copied_run_source_run_id(authorized_source_run_id)
     copied_skill_version = str(copied_snapshot["skill_version"] or "")
-    await repositories.authorize_run_capabilities(
+    skill_manifests = copied_snapshot["skill_manifests"]
+    await repositories.authorize_replay_run_capabilities(
         conn,
         tenant_id=effective_principal.tenant_id,
         agent_id=str(copied["agent_id"]),
         skill_id=str(copied["skill_id"]),
+        pinned_version=copied_skill_version,
+        pinned_executor_type=str(copied_snapshot.get("executor_type") or ""),
+        skill_manifests=skill_manifests,
         normalized_input=copied_input,
         principal_department_id=effective_principal.department_id,
         principal_roles=effective_principal.roles,
         is_admin=is_ai_admin(effective_principal),
         permissions=effective_principal.permissions,
     )
-    skill_manifests = await _governed_skill_manifest_pins(
-        conn,
-        skill_id=str(copied["skill_id"]),
-        input_payload=copied_input,
-        release_policy_version=copied.get("release_policy_version"),
-    )
-    copied_skill_version = governed_locked_skill_version(
-        skill_id=str(copied["skill_id"]),
-        skill_manifests=skill_manifests,
-        fallback_version=copied_skill_version,
-        release_policy_version=copied.get("release_policy_version"),
-    )
     copied["skill_version"] = copied_skill_version
-    copied["release_decision"] = release_decision_payload_for_locked_version(
-        copied_snapshot["release_decision"],
-        locked_version=copied_skill_version,
-    )
-    skill_manifests = attach_skill_snapshot_governance(
-        skill_manifests,
-        release_decision=copied.get("release_decision") if isinstance(copied.get("release_decision"), dict) else {},
-    )
+    copied["release_decision"] = copied_snapshot["release_decision"]
     await repositories.update_run_auth_snapshot(
         conn,
         tenant_id=effective_principal.tenant_id,
@@ -886,6 +877,10 @@ async def prepare_copied_run_for_queue(
 
 def resolve_run_selector(request: CreateRunRequest, principal: AuthPrincipal) -> tuple[str, str]:
     requested_agent_id = internal_agent_id_for_request(request.agent_id) or request.agent_id
+    if request.selected_skill is not None:
+        if request.skill_id:
+            raise HTTPException(status_code=400, detail="skill_selector_conflict")
+        return requested_agent_id, request.selected_skill.skill_id
     if request.skill_id and not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="raw_skill_selector_forbidden")
     if request.skill_id:
@@ -919,17 +914,28 @@ async def create_run(
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     try:
         async with transaction() as conn:
-            skill = await repositories.authorize_run_capabilities(
-                conn,
-                tenant_id=tenant_id,
-                agent_id=resolved_agent_id,
-                skill_id=resolved_skill_id,
-                normalized_input=run_input,
-                principal_department_id=principal.department_id,
-                principal_roles=principal.roles,
-                is_admin=is_ai_admin(principal),
-                permissions=principal.permissions,
-            )
+            authorization_kwargs = {
+                "tenant_id": tenant_id,
+                "agent_id": resolved_agent_id,
+                "skill_id": resolved_skill_id,
+                "normalized_input": run_input,
+                "principal_department_id": principal.department_id,
+                "principal_roles": principal.roles,
+                "is_admin": is_ai_admin(principal),
+                "permissions": principal.permissions,
+            }
+            if request.selected_skill is not None:
+                skill = await repositories.authorize_selected_run_capabilities(
+                    conn,
+                    expected_version=request.selected_skill.expected_version,
+                    rollout_key=user_id,
+                    **authorization_kwargs,
+                )
+            else:
+                skill = await repositories.authorize_run_capabilities(
+                    conn,
+                    **authorization_kwargs,
+                )
             input_modes = skill.get("input_modes") or []
             if "docx" in input_modes and not request.file_ids:
                 raise RepositoryConflictError("file_required_for_skill")
@@ -963,6 +969,11 @@ async def create_run(
                 skill_manifests,
                 release_decision=release_decision_payload,
             )
+            skill_manifests = repositories.pin_primary_skill_mcp_tool_ids(
+                skill_manifests,
+                skill_id=resolved_skill_id,
+                mcp_tool_ids=repositories.run_mcp_tool_ids_for_skill(skill, run_input),
+            )
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
             base_queue_payload = {
@@ -985,6 +996,15 @@ async def create_run(
                 conn,
                 tenant_id=tenant_id,
                 workspace_id=request.workspace_id,
+            )
+            await repositories.authorize_files_for_run(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=request.workspace_id,
+                user_id=user_id,
+                session_id=session_id,
+                run_id=run_id,
+                file_ids=request.file_ids,
             )
             await repositories.ensure_user(
                 conn,
@@ -1021,6 +1041,13 @@ async def create_run(
                 principal_department_id=principal.department_id,
                 auth_source=principal.source,
                 run_id=run_id,
+            )
+            await repositories.insert_run_skill_snapshots_at_creation(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                skill_manifests=queue_payload["skill_manifests"],
+                release_decision=release_decision_payload,
             )
             await repositories.bind_files_to_run(
                 conn,
