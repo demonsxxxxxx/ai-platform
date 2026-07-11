@@ -31,14 +31,19 @@ test("stopGeneration fails closed when no trusted current run id exists", () => 
   const currentRunRead = source.indexOf("const currentRunId = currentRunIdRef.current");
   const missingRunGuard = source.indexOf("if (!currentRunId)", currentRunRead);
   const clearLoading = source.indexOf("setIsLoading(false)");
+  const dismissQueueToast = source.indexOf('toast.dismiss("chat-queue")');
   const cancelCall = source.indexOf("sessionApi.cancelRun(currentRunId)", currentRunRead);
 
   assert.notEqual(currentRunRead, -1);
   assert.notEqual(missingRunGuard, -1);
   assert.notEqual(clearLoading, -1);
+  assert.notEqual(dismissQueueToast, -1);
   assert.notEqual(cancelCall, -1);
   assert.ok(
-    currentRunRead < missingRunGuard && missingRunGuard < clearLoading && clearLoading < cancelCall,
+    currentRunRead < missingRunGuard &&
+      missingRunGuard < clearLoading &&
+      clearLoading < dismissQueueToast &&
+      dismissQueueToast < cancelCall,
     "stopGeneration must not guess session-to-run when current run id is missing",
   );
 });

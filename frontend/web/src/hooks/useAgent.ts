@@ -783,6 +783,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           ctx,
         )
           .catch(() => {
+            toast.dismiss("chat-queue");
             const streamError = i18n.t("chat.requestFailed");
             setError(streamError);
             setMessages((prev) =>
@@ -808,6 +809,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           });
         return { status: "accepted" };
       } catch (err) {
+        toast.dismiss("chat-queue");
         if (err instanceof Error && err.name === "AbortError") {
           setIsLoading(false);
           isSendingRef.current = false;
@@ -865,6 +867,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
     isSendingRef.current = false;
     setIsLoading(false);
+    toast.dismiss("chat-queue");
     setIsInitializingSandbox(false);
     setSandboxError(null);
 

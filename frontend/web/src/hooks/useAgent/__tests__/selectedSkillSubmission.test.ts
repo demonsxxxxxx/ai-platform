@@ -43,4 +43,9 @@ test("accepted fire-and-forget stream handles setup rejection before cleanup", (
     /void connectToSSE\([\s\S]*?\)\s*\.catch\([\s\S]*?\)\s*\.finally\(/,
   );
   assert.match(source, /setConnectionStatus\("disconnected"\)/);
+  const streamCatch = source.slice(
+    source.indexOf("void connectToSSE("),
+    source.indexOf(".finally(() =>", source.indexOf("void connectToSSE(")),
+  );
+  assert.match(streamCatch, /toast\.dismiss\("chat-queue"\)/);
 });

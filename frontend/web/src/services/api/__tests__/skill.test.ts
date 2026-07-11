@@ -49,7 +49,7 @@ test("normalizeSkillListResponse preserves projected PR177 skill permissions", (
   assert.deepEqual(
     normalizeSkillListResponse({
       skills: [userSkill],
-      total: 7,
+      total: 21,
       skip: 20,
       limit: 10,
       available_tags: ["planning", "review"],
@@ -57,7 +57,7 @@ test("normalizeSkillListResponse preserves projected PR177 skill permissions", (
     }),
     {
       skills: [userSkill],
-      total: 7,
+      total: 21,
       skip: 20,
       limit: 10,
       available_tags: ["planning", "review"],
@@ -95,8 +95,12 @@ test("normalizeSkillListResponse rejects null and malformed pagination metadata"
     null,
     { ...validEnvelope, total: -1 },
     { ...validEnvelope, total: "1" },
+    { ...validEnvelope, total: 0 },
     { ...validEnvelope, skip: -1 },
+    { ...validEnvelope, skip: 1, total: 1 },
+    { ...validEnvelope, limit: 0 },
     { ...validEnvelope, limit: "200" },
+    { ...validEnvelope, limit: 1, total: 2, skills: [userSkill, { ...userSkill, skill_name: "reviewer" }] },
   ]) {
     assert.throws(
       () => normalizeSkillListResponse(response as never),
@@ -172,7 +176,7 @@ test("collectAllAuthorizedSkills refreshes a second-page Skill version without d
     ];
     return {
       skills: skip === 0 ? firstPage : skip === 200 ? secondPage : [],
-      total: 201,
+      total: 202,
       skip,
       limit: 200,
       available_tags: ["planning"],

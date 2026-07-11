@@ -103,7 +103,14 @@ multi-agent product authority, deployment, or 211 runtime state.
   regressions and local fixes. The browser harness also asserts the terminal
   toast is absent and captures readable desktop/mobile succeeded artifact
   panels without `captureBeyondViewport` dropping the fixed portal layer.
-  Final fixed-SHA code and UX re-review remains pending.
+  Re-review at `a11bade` then found two remaining Important gaps: catalog page
+  metadata did not reject semantically impossible totals/limits, and local SSE
+  setup failure/direct cancel exits could bypass the parsed-event toast
+  cleanup. The public wire boundary now enforces positive limit and coherent
+  page bounds while keeping name-based deduplication, and every local terminal
+  exit dismisses the queue toast. Focused tests, compile, and `ci:verify` were
+  rerun after these fixes. Final fixed-SHA code and UX re-review remains
+  pending.
 - [ ] Phase 7 - ready PR, exact-head review/validation comments, and required
   CI. No merge or 211 deployment is authorized in this lane.
 

@@ -130,6 +130,9 @@ export function normalizeSkillListResponse(response: unknown): SkillsResponse {
     !isNonNegativeInteger(response.total) ||
     !isNonNegativeInteger(response.skip) ||
     !isNonNegativeInteger(response.limit) ||
+    response.limit < 1 ||
+    skills.length > response.limit ||
+    response.skip + skills.length > response.total ||
     !isStringArray(response.available_tags) ||
     !isStringArray(response.effective_permissions) ||
     (response.catalog_read_resolved !== undefined &&
@@ -169,6 +172,7 @@ export async function collectAllAuthorizedSkills(
   let effectivePermissionsKnown = true;
   let catalogReadResolved = true;
   let expectedTotal = 0;
+  let collectedItemCount = 0;
   let skip = 0;
   let pageCount = 0;
 
@@ -186,6 +190,7 @@ export async function collectAllAuthorizedSkills(
     }
     const priorUniqueCount = skillsByName.size;
     expectedTotal = Math.max(expectedTotal, page.total);
+    collectedItemCount += page.skills.length;
     page.skills.forEach((skill) => skillsByName.set(skill.skill_name, skill));
     page.available_tags.forEach((tag) => availableTags.add(tag));
     page.effective_permissions.forEach((permission) =>
@@ -194,13 +199,13 @@ export async function collectAllAuthorizedSkills(
     effectivePermissionsKnown &&= page.effective_permissions_known;
     catalogReadResolved &&= page.catalog_read_resolved;
 
-    if (skillsByName.size >= expectedTotal) break;
     if (page.skills.length === 0) {
       throw new Error("authorized_skill_catalog_incomplete");
     }
     if (skillsByName.size === priorUniqueCount) {
       throw new Error("authorized_skill_catalog_no_progress");
     }
+    if (collectedItemCount >= expectedTotal) break;
     skip += page.skills.length;
   }
 
