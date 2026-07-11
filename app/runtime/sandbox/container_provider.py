@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import ipaddress
 import json
 import os
 import secrets
 import shlex
+import socket
 import stat
 import time
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -31,6 +34,10 @@ from app.runtime.sandbox.contracts import (
     build_trusted_callback_target,
 )
 from app.settings import get_settings
+from app.runtime.sandbox.executor_client import (
+    EXECUTOR_CONNECT_BASE_URL_METADATA,
+    prepare_executor_http_request,
+)
 from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
 
 
@@ -106,17 +113,72 @@ def _executor_url() -> str:
     return f"http://{host}:18000"
 
 
-def _published_executor_url_from_container(container: Any) -> str | None:
+@dataclass(frozen=True)
+class _ExecutorPublishedEndpoint:
+    published_host: str
+    bind_ip: str
+
+
+def _resolve_executor_published_endpoint(raw_host: str) -> _ExecutorPublishedEndpoint:
+    host = str(raw_host or "").strip()
+    if not host or host in {"0.0.0.0", "::"}:
+        raise ContainerStartFailedError("executor published endpoint is invalid")
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if literal.version != 4 or literal.is_unspecified:
+            raise ContainerStartFailedError("executor published endpoint is invalid")
+        if not literal.is_loopback and not literal.is_private:
+            raise ContainerStartFailedError("executor published endpoint is invalid")
+        return _ExecutorPublishedEndpoint(published_host=host, bind_ip=str(literal))
+    try:
+        addresses = {
+            str(ipaddress.IPv4Address(result[4][0]))
+            for result in socket.getaddrinfo(host, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
+        }
+    except (OSError, ValueError, IndexError, TypeError) as exc:
+        raise ContainerStartFailedError("executor published endpoint is invalid") from exc
+    if len(addresses) != 1:
+        raise ContainerStartFailedError("executor published endpoint is invalid")
+    bind_ip = next(iter(addresses))
+    resolved_ip = ipaddress.IPv4Address(bind_ip)
+    if not resolved_ip.is_loopback and not resolved_ip.is_private:
+        raise ContainerStartFailedError("executor published endpoint is invalid")
+    if resolved_ip.is_loopback and host.lower() != "localhost":
+        raise ContainerStartFailedError("executor published endpoint is invalid")
+    return _ExecutorPublishedEndpoint(published_host=host, bind_ip=bind_ip)
+
+
+def _published_executor_url_from_container(
+    container: Any,
+    endpoint: _ExecutorPublishedEndpoint | None = None,
+) -> str | None:
     ports = getattr(container, "attrs", {}).get("NetworkSettings", {}).get("Ports", {})
     bindings = ports.get("18000/tcp") or []
-    if bindings:
-        host_port = bindings[0].get("HostPort")
-        if host_port:
-            host = str(bindings[0].get("HostIp") or "").strip()
-            if host in {"", "0.0.0.0", "::"}:
-                host = get_settings().sandbox_executor_published_host
-            return f"http://{host}:{host_port}"
-    return None
+    if len(bindings) != 1:
+        if endpoint is not None and bindings:
+            raise ContainerStartFailedError("executor published endpoint mismatch")
+        return None
+    binding = bindings[0]
+    host_port = str(binding.get("HostPort") or "").strip()
+    try:
+        port_number = int(host_port)
+    except ValueError:
+        port_number = 0
+    if not 1 <= port_number <= 65535:
+        if endpoint is not None:
+            raise ContainerStartFailedError("executor published endpoint mismatch")
+        return None
+    host = str(binding.get("HostIp") or "").strip()
+    if endpoint is not None:
+        if host != endpoint.bind_ip:
+            raise ContainerStartFailedError("executor published endpoint mismatch")
+        return f"http://{endpoint.published_host}:{port_number}"
+    if host in {"", "0.0.0.0", "::"}:
+        return None
+    return f"http://{host}:{port_number}"
 
 
 def _lease_from_request(
@@ -763,8 +825,8 @@ def default_executor_health_probe(
     executor_headers: dict[str, str] | None = None,
 ) -> bool:
     deadline = time.monotonic() + max(timeout_seconds, 1)
-    health_url = f"{executor_url.rstrip('/')}/health"
-    request_headers = dict(executor_headers or {})
+    logical_health_url = f"{executor_url.rstrip('/')}/health"
+    health_url, request_headers = prepare_executor_http_request(logical_health_url, executor_headers)
     while time.monotonic() <= deadline:
         try:
             with httpx.Client(timeout=1.0) as client:
@@ -787,8 +849,8 @@ def default_executor_identity_probe(
     """Read the effective executor process identity over its lease credential."""
 
     deadline = time.monotonic() + max(timeout_seconds, 1)
-    identity_url = f"{executor_url.rstrip('/')}/health/runtime-identity"
-    request_headers = dict(executor_headers)
+    logical_identity_url = f"{executor_url.rstrip('/')}/health/runtime-identity"
+    identity_url, request_headers = prepare_executor_http_request(logical_identity_url, executor_headers)
     if not request_headers.get(EXECUTOR_AUTH_HEADER):
         raise ContainerStartFailedError("executor identity credential unavailable")
     while time.monotonic() <= deadline:
@@ -889,10 +951,28 @@ def _generate_executor_auth_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def _executor_auth_headers(executor_auth_token: str, headers: dict[str, str] | None = None) -> dict[str, str]:
+def _executor_auth_headers(
+    executor_auth_token: str,
+    headers: dict[str, str] | None = None,
+    *,
+    connect_base_url: str = "",
+) -> dict[str, str]:
     resolved = dict(headers or {})
     resolved[EXECUTOR_AUTH_HEADER] = executor_auth_token
+    if connect_base_url:
+        resolved[EXECUTOR_CONNECT_BASE_URL_METADATA] = connect_base_url
     return resolved
+
+
+def _executor_connect_base_url(executor_url: str, endpoint: _ExecutorPublishedEndpoint) -> str:
+    parsed = urlsplit(executor_url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ContainerStartFailedError("executor published endpoint mismatch") from exc
+    if parsed.scheme != "http" or not port:
+        raise ContainerStartFailedError("executor published endpoint mismatch")
+    return f"http://{endpoint.bind_ip}:{port}"
 
 
 def _container_environment(container: Any) -> dict[str, str]:
@@ -984,12 +1064,17 @@ class DockerContainerProvider:
         self._client = docker.from_env()
         return self._client
 
-    async def _wait_for_executor_url(self, container: Any, timeout_seconds: int) -> str:
+    async def _wait_for_executor_url(
+        self,
+        container: Any,
+        timeout_seconds: int,
+        endpoint: _ExecutorPublishedEndpoint,
+    ) -> str:
         deadline = time.monotonic() + max(timeout_seconds, 1)
         while time.monotonic() <= deadline:
             if hasattr(container, "reload"):
                 container.reload()
-            executor_url = _published_executor_url_from_container(container)
+            executor_url = _published_executor_url_from_container(container, endpoint)
             if getattr(container, "status", None) == "running" and executor_url:
                 return executor_url
             await asyncio.sleep(0.25)
@@ -1008,6 +1093,7 @@ class DockerContainerProvider:
         self,
         lease: ContainerLease,
         timeout_seconds: int,
+        endpoint: _ExecutorPublishedEndpoint,
     ) -> ContainerLease | None:
         try:
             container = self._get_client().containers.get(lease.container_name)
@@ -1030,22 +1116,26 @@ class DockerContainerProvider:
             self._cleanup_container_or_track(container, lease)
             return None
         try:
-            executor_url = await self._wait_for_executor_url(container, timeout_seconds)
-            executor_headers = _executor_auth_headers(executor_auth_token)
+            executor_url = await self._wait_for_executor_url(container, timeout_seconds, endpoint)
+            executor_headers = _executor_auth_headers(
+                executor_auth_token,
+                connect_base_url=_executor_connect_base_url(executor_url, endpoint),
+            )
+            probe_url, probe_headers = prepare_executor_http_request(executor_url, executor_headers)
             healthy = await asyncio.to_thread(
                 _call_executor_health_probe,
                 self._health_probe,
-                executor_url,
+                probe_url,
                 timeout_seconds,
-                executor_headers,
+                probe_headers,
             )
             if not healthy:
                 raise ExecutorHealthTimeoutError()
             identity = await asyncio.to_thread(
                 self._identity_probe,
-                executor_url,
+                probe_url,
                 timeout_seconds,
-                executor_headers,
+                probe_headers,
             )
             _require_expected_executor_identity(identity)
         except asyncio.CancelledError as exc:
@@ -1094,6 +1184,7 @@ class DockerContainerProvider:
         workspace: WorkspaceLease,
     ) -> ContainerLease:
         settings = get_settings()
+        endpoint = _resolve_executor_published_endpoint(settings.sandbox_executor_published_host)
         client = self._get_client()
         container_id = f"exec-{request.run_id}"
         try:
@@ -1116,6 +1207,7 @@ class DockerContainerProvider:
             recovered_existing = await self._reuse_existing_container(
                 existing,
                 settings.sandbox_container_start_timeout_seconds,
+                endpoint,
             )
             if recovered_existing is None:
                 self._leases.pop(container_id, None)
@@ -1128,6 +1220,7 @@ class DockerContainerProvider:
         recovered = await self._reuse_existing_container(
             bootstrap_lease,
             settings.sandbox_container_start_timeout_seconds,
+            endpoint,
         )
         if recovered is not None:
             self._leases[recovered.container_id] = recovered
@@ -1153,7 +1246,7 @@ class DockerContainerProvider:
                     executor_auth_token=executor_auth_token,
                     workspace_container_path=workspace.workspace_container_path,
                 ),
-                ports={"18000/tcp": ("127.0.0.1", None)},
+                ports={"18000/tcp": (endpoint.bind_ip, None)},
                 **_docker_egress_network_kwargs(client, settings),
                 **_docker_security_kwargs(),
                 user=workspace_user,
@@ -1179,7 +1272,11 @@ class DockerContainerProvider:
             raise ContainerStartFailedError() from exc
 
         try:
-            executor_url = await self._wait_for_executor_url(container, settings.sandbox_container_start_timeout_seconds)
+            executor_url = await self._wait_for_executor_url(
+                container,
+                settings.sandbox_container_start_timeout_seconds,
+                endpoint,
+            )
             bootstrap_lease.executor_url = executor_url
         except asyncio.CancelledError as exc:
             try:
@@ -1193,16 +1290,28 @@ class DockerContainerProvider:
             except ContainerCleanupFailedError as cleanup_exc:
                 raise cleanup_exc from exc
             raise
+        except Exception as exc:
+            try:
+                self._cleanup_container_or_track(container, bootstrap_lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
+            if isinstance(exc, ContainerStartFailedError):
+                raise
+            raise ContainerStartFailedError() from exc
         sandbox_container_cold_start_latency_ms = self._elapsed_ms(cold_start_started_at)
         healthcheck_started_at = self._monotonic()
-        executor_headers = _executor_auth_headers(executor_auth_token)
+        executor_headers = _executor_auth_headers(
+            executor_auth_token,
+            connect_base_url=_executor_connect_base_url(executor_url, endpoint),
+        )
+        probe_url, probe_headers = prepare_executor_http_request(executor_url, executor_headers)
         try:
             healthy = await asyncio.to_thread(
                 _call_executor_health_probe,
                 self._health_probe,
-                executor_url,
+                probe_url,
                 settings.sandbox_executor_health_timeout_seconds,
-                executor_headers,
+                probe_headers,
             )
         except asyncio.CancelledError as exc:
             try:
@@ -1223,9 +1332,9 @@ class DockerContainerProvider:
         try:
             identity = await asyncio.to_thread(
                 self._identity_probe,
-                executor_url,
+                probe_url,
                 settings.sandbox_executor_health_timeout_seconds,
-                executor_headers,
+                probe_headers,
             )
             _require_expected_executor_identity(identity)
         except asyncio.CancelledError as exc:
