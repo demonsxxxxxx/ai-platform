@@ -1158,6 +1158,19 @@ def test_default_compose_uses_current_repo_context_and_no_docker_socket():
     assert "/var/run/docker.sock:/var/run/docker.sock" not in compose_text
 
 
+def test_nonroot_runtime_source_contract_does_not_claim_runtime_acceptance():
+    dockerfile = read(BACKEND_DOCKERFILE)
+    compose_text = read(COMPOSE)
+    phase_text = read(ROOT / "docs/operations/2026-07-11-s1b-nonroot-runtime-identity.md")
+
+    assert "USER 10001:10001" in dockerfile
+    assert 'user: "10001:10001"' in compose_text
+    assert "/var/run/docker.sock:/var/run/docker.sock" not in compose_text
+    assert "Status: `source design approved`" in phase_text or "Status: `local partial`" in phase_text
+    assert "does not claim S1B, B2, G7, 211, deployment" in phase_text
+    assert "211 verified" not in phase_text
+
+
 def test_backend_dockerfile_defines_source_authority_label_contract():
     dockerfile = read(BACKEND_DOCKERFILE)
     compose_text = read(COMPOSE)

@@ -3,12 +3,17 @@ services:
     environment:
       SANDBOX_CONTAINER_PROVIDER: docker
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - ${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}:${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}
+
+  workspace-init:
+    volumes:
+      - ${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}:/runtime-workspaces
 
   worker:
     environment:
       SANDBOX_CONTAINER_PROVIDER: docker
+    group_add:
+      - ${DOCKER_SOCKET_GID:?set DOCKER_SOCKET_GID}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}:${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}

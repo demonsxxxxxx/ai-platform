@@ -434,6 +434,23 @@ def create_executor_app(
     async def health() -> dict[str, str]:
         return {"status": "ready"}
 
+    @app.get("/health/runtime-identity")
+    async def runtime_identity(
+        executor_credential: str | None = Header(default=None, alias=EXECUTOR_AUTH_HEADER),
+    ) -> dict[str, int]:
+        """Return the authenticated executor process identity without runtime metadata."""
+
+        _require_executor_credential(executor_credential, configured_executor_auth_token)
+        try:
+            uid = int(os.geteuid())
+            gid = int(os.getegid())
+        except (AttributeError, OSError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="executor_runtime_identity_unavailable",
+            ) from exc
+        return {"uid": uid, "gid": gid}
+
     @app.post("/v1/tasks/execute")
     async def execute_task(
         request: ExecutorTaskRequest,

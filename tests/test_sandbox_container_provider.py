@@ -10,6 +10,23 @@ import pytest
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
 
 
+@pytest.fixture(autouse=True)
+def fixed_runtime_identity_test_seams(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    stat_result = type(
+        "RuntimeWorkspaceStat",
+        (),
+        {"st_uid": 10001, "st_gid": 10001, "st_mode": 0o40700},
+    )()
+    monkeypatch.setattr(container_provider, "_workspace_owner_stat", lambda _path: stat_result, raising=False)
+    monkeypatch.setattr(
+        container_provider,
+        "default_executor_identity_probe",
+        lambda executor_url, timeout_seconds, executor_headers: {"uid": 10001, "gid": 10001},
+        raising=False,
+    )
+
+
 def request(**overrides) -> SandboxRuntimeRequest:
     values = {
         "tenant_id": "tenant-a",
@@ -389,7 +406,7 @@ class OpenSandboxSettings:
     opensandbox_allowed_egress_hosts = ""
 
 
-def opensandbox_provider(*, health_probe=None):
+def opensandbox_provider(*, health_probe=None, identity_probe=None):
     from app.runtime.sandbox.container_provider import OpenSandboxContainerProvider
 
     return OpenSandboxContainerProvider(
@@ -402,6 +419,8 @@ def opensandbox_provider(*, health_probe=None):
         network_policy_class=FakeOpenSandboxNetworkPolicy,
         network_rule_class=FakeOpenSandboxNetworkRule,
         health_probe=health_probe or (lambda executor_url, timeout_seconds: True),
+        identity_probe=identity_probe
+        or (lambda executor_url, timeout_seconds, executor_headers: {"uid": 10001, "gid": 10001}),
     )
 
 
@@ -771,6 +790,7 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
 
     created = FakeOpenSandbox.created[0]
     assert created["image"] == "ai-platform:local"
+    assert "user" not in created
     assert created["entrypoint"] == ["/app/docker-entrypoint.sh", "uvicorn"]
     assert created["metadata"]["ai-platform.owner"] == "sandbox-runtime"
     assert created["metadata"]["ai-platform.tenant_id"] == "tenant-a"
@@ -1177,6 +1197,7 @@ def test_opensandbox_sdk_symbols_match_adapter_contract():
     assert "metadata" in inspect.signature(symbols["sandbox_class"].create).parameters
     assert "network_policy" in inspect.signature(symbols["sandbox_class"].create).parameters
     assert "volumes" in inspect.signature(symbols["sandbox_class"].create).parameters
+    assert "user" not in inspect.signature(symbols["sandbox_class"].create).parameters
     assert "port" in inspect.signature(symbols["sandbox_class"].get_endpoint).parameters
     assert "mountPath" in inspect.signature(symbols["volume_class"]).parameters
     assert "readOnly" in inspect.signature(symbols["volume_class"]).parameters
@@ -1519,7 +1540,10 @@ async def test_docker_provider_sets_default_security_options_without_docker_sock
     assert created["security_opt"] == ["no-new-privileges:true"]
     assert created["cap_drop"] == ["ALL"]
     assert created["read_only"] is True
-    assert created["tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=64m"}
+    assert created["tmpfs"] == {
+        "/tmp": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m",
+        "/home/ai-platform": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=128m",
+    }
     assert created["ports"] == {"18000/tcp": ("127.0.0.1", None)}
     assert created["volumes"] == {
         leased_workspace.workspace_host_path: {
@@ -1532,94 +1556,243 @@ async def test_docker_provider_sets_default_security_options_without_docker_sock
 
 
 @pytest.mark.asyncio
-async def test_docker_provider_runs_executor_as_workspace_owner_when_host_path_is_local(monkeypatch):
-    from app.runtime.sandbox import container_provider
+async def test_docker_provider_runs_executor_as_fixed_runtime_identity(monkeypatch):
     from app.runtime.sandbox.container_provider import DockerContainerProvider
-
-    class FakePath:
-        def __init__(self, value: str) -> None:
-            self.value = value
-
-        def stat(self):
-            class StatResult:
-                st_uid = 1003
-                st_gid = 1003
-
-            return StatResult()
 
     fake = FakeDockerClient()
     provider = DockerContainerProvider(
         docker_client_factory=lambda: fake,
         health_probe=lambda executor_url, timeout_seconds: True,
     )
-    monkeypatch.setattr(container_provider, "Path", FakePath)
-    monkeypatch.setattr(container_provider.os, "name", "posix")
-
     await provider.create_or_reuse(request(), workspace())
 
     created = fake.created[0]
-    assert created["user"] == "1003:1003"
+    assert created["user"] == "10001:10001"
     assert created["privileged"] is False
     assert created["security_opt"] == ["no-new-privileges:true"]
     assert created["cap_drop"] == ["ALL"]
     assert created["read_only"] is True
-    assert created["tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=64m"}
+    assert created["tmpfs"] == {
+        "/tmp": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m",
+        "/home/ai-platform": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=128m",
+    }
     assert created["ports"] == {"18000/tcp": ("127.0.0.1", None)}
     assert "/var/run/docker.sock" not in str(created).lower()
 
 
 @pytest.mark.asyncio
-async def test_docker_provider_omits_workspace_owner_user_when_stat_is_unavailable(monkeypatch):
+async def test_docker_provider_fails_closed_when_workspace_owner_stat_is_unavailable(monkeypatch):
     from app.runtime.sandbox import container_provider
-    from app.runtime.sandbox.container_provider import DockerContainerProvider
-
-    class FakePath:
-        def __init__(self, value: str) -> None:
-            self.value = value
-
-        def stat(self):
-            raise OSError("not available")
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
 
     fake = FakeDockerClient()
     provider = DockerContainerProvider(
         docker_client_factory=lambda: fake,
         health_probe=lambda executor_url, timeout_seconds: True,
     )
-    monkeypatch.setattr(container_provider, "Path", FakePath)
-    monkeypatch.setattr(container_provider.os, "name", "posix")
+    monkeypatch.setattr(container_provider, "_workspace_owner_stat", lambda _path: (_ for _ in ()).throw(OSError("not available")))
 
-    await provider.create_or_reuse(request(), workspace())
+    with pytest.raises(ContainerStartFailedError, match="workspace ownership unavailable"):
+        await provider.create_or_reuse(request(), workspace())
 
-    assert "user" not in fake.created[0]
+    assert fake.created == []
 
 
 @pytest.mark.asyncio
-async def test_docker_provider_omits_workspace_owner_user_on_windows(monkeypatch):
+async def test_docker_provider_fails_closed_when_host_owner_semantics_are_unavailable_on_windows(monkeypatch):
     from app.runtime.sandbox import container_provider
-    from app.runtime.sandbox.container_provider import DockerContainerProvider
-
-    class FakePath:
-        def __init__(self, value: str) -> None:
-            self.value = value
-
-        def stat(self):
-            class StatResult:
-                st_uid = 1003
-                st_gid = 1003
-
-            return StatResult()
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
 
     fake = FakeDockerClient()
     provider = DockerContainerProvider(
         docker_client_factory=lambda: fake,
         health_probe=lambda executor_url, timeout_seconds: True,
     )
-    monkeypatch.setattr(container_provider, "Path", FakePath)
-    monkeypatch.setattr(container_provider.os, "name", "nt")
+    monkeypatch.setattr(container_provider, "_workspace_owner_stat", lambda _path: (_ for _ in ()).throw(OSError("POSIX unavailable")))
 
-    await provider.create_or_reuse(request(), workspace())
+    with pytest.raises(ContainerStartFailedError, match="workspace ownership unavailable"):
+        await provider.create_or_reuse(request(), workspace())
 
-    assert "user" not in fake.created[0]
+    assert fake.created == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("uid", "gid"), [(0, 10001), (10001, 0), (10001, -1), (1000, 1000)])
+async def test_docker_provider_rejects_non_target_workspace_owner_before_create(monkeypatch, uid, gid):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=lambda executor_url, timeout_seconds, executor_headers: {"uid": 10001, "gid": 10001},
+    )
+    monkeypatch.setattr(
+        container_provider,
+        "_workspace_owner_stat",
+        lambda _path: type("StatResult", (), {"st_uid": uid, "st_gid": gid, "st_mode": 0o40700})(),
+    )
+
+    with pytest.raises(ContainerStartFailedError, match="workspace owner must be 10001:10001"):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert fake.created == []
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_uses_and_verifies_exact_runtime_identity(monkeypatch):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    probes = []
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=lambda executor_url, timeout_seconds, executor_headers: probes.append(
+            (executor_url, executor_headers)
+        ) or {"uid": 10001, "gid": 10001},
+    )
+
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    assert fake.created[0]["user"] == "10001:10001"
+    assert fake.containers_by_name[lease.container_name].attrs["Config"]["User"] == "10001:10001"
+    assert probes[0][1]["X-AI-Platform-Executor-Credential"]
+    assert lease.labels["ai-platform.executor.uid"] == "10001"
+    assert lease.labels["ai-platform.executor.gid"] == "10001"
+    assert lease.labels["ai-platform.executor.identity_evidence"] == "authenticated-runtime-endpoint"
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_cleans_up_when_actual_executor_identity_mismatches(monkeypatch):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=lambda executor_url, timeout_seconds, executor_headers: {"uid": 0, "gid": 0},
+    )
+
+    with pytest.raises(ContainerStartFailedError, match="executor identity mismatch"):
+        await provider.create_or_reuse(request(), workspace())
+
+    container = fake.containers_by_name["executor-exec-run-a"]
+    assert container.stopped is True
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_cleans_up_when_identity_probe_is_cancelled():
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    def cancel_identity_probe(executor_url, timeout_seconds, executor_headers):
+        raise asyncio.CancelledError()
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=cancel_identity_probe,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await provider.create_or_reuse(request(), workspace())
+
+    container = fake.containers_by_name["executor-exec-run-a"]
+    assert container.stopped is True
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_cleans_up_when_executor_url_wait_is_cancelled(monkeypatch):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    async def cancel_wait(container, timeout_seconds):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(provider, "_wait_for_executor_url", cancel_wait)
+
+    with pytest.raises(asyncio.CancelledError):
+        await provider.create_or_reuse(request(), workspace())
+
+    container = fake.containers_by_name["executor-exec-run-a"]
+    assert container.stopped is True
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_fails_closed_without_exact_executor_identity(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider(
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=lambda executor_url, timeout_seconds, executor_headers: {"uid": 0, "gid": 0},
+    )
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="executor identity mismatch"):
+        await provider.create_or_reuse(request(), workspace())
+
+    sandbox = FakeOpenSandbox.instances["osb-run-a"]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_denies_when_runtime_identity_endpoint_is_unsupported(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    def unsupported_identity_probe(executor_url, timeout_seconds, executor_headers):
+        raise container_provider.ContainerStartFailedError("executor identity unavailable")
+
+    provider = opensandbox_provider(identity_probe=unsupported_identity_probe)
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="executor identity unavailable"):
+        await provider.create_or_reuse(request(), workspace())
+
+    sandbox = FakeOpenSandbox.instances["osb-run-a"]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_cached_reuse_cleans_up_when_identity_probe_is_cancelled(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    calls = 0
+
+    def identity_probe(executor_url, timeout_seconds, executor_headers):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise asyncio.CancelledError()
+        return {"uid": 10001, "gid": 10001}
+
+    provider = opensandbox_provider(identity_probe=identity_probe)
+    first = await provider.create_or_reuse(request(), workspace())
+
+    with pytest.raises(asyncio.CancelledError):
+        await provider.create_or_reuse(request(), workspace())
+
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
 
 
 @pytest.mark.asyncio

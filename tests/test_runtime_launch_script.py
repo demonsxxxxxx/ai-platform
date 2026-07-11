@@ -225,6 +225,82 @@ def test_docker_entrypoint_does_not_double_append_uvicorn_app_when_cmd_already_h
     assert 'exec "$@" "$APP_MODULE" --factory --host 0.0.0.0 --port "$APP_PORT"' in content
 
 
+def test_backend_image_and_compose_fix_runtime_identity_without_env_override():
+    import yaml
+
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
+    compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
+    compose = yaml.safe_load(compose_text)
+    env_example = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+
+    assert "groupadd --gid 10001 ai-platform" in dockerfile
+    assert "useradd --uid 10001 --gid 10001" in dockerfile
+    assert "USER 10001:10001" in dockerfile
+    assert "ENV HOME=/home/ai-platform" in dockerfile
+    assert "ENV TMPDIR=/home/ai-platform/tmp" in dockerfile
+    assert "ENV XDG_CACHE_HOME=/home/ai-platform/.cache" in dockerfile
+    assert compose["services"]["api"]["user"] == "10001:10001"
+    assert compose["services"]["worker"]["user"] == "10001:10001"
+    assert "AI_PLATFORM_RUNTIME_UID" not in compose_text
+    assert "AI_PLATFORM_RUNTIME_GID" not in compose_text
+    assert "AI_PLATFORM_RUNTIME_UID" not in env_example
+    assert "AI_PLATFORM_RUNTIME_GID" not in env_example
+
+
+def test_compose_workspace_init_is_narrow_and_blocks_api_and_worker_until_success():
+    import yaml
+
+    compose = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))
+    init = compose["services"]["workspace-init"]
+
+    assert init["user"] == "0:0"
+    assert init["network_mode"] == "none"
+    assert init["read_only"] is True
+    assert init["restart"] == "no"
+    assert init["cap_drop"] == ["ALL"]
+    assert set(init["cap_add"]) == {"CHOWN", "DAC_READ_SEARCH", "SETUID", "SETGID"}
+    assert init["entrypoint"] == ["python", "-m", "app.runtime.sandbox.workspace_permissions"]
+    assert init["command"] == []
+    assert init["volumes"] == ["ai_platform_sandbox_workspaces:/runtime-workspaces"]
+    for service_name in ("api", "worker"):
+        assert compose["services"][service_name]["depends_on"]["workspace-init"]["condition"] == "service_completed_successfully"
+
+
+def test_sandbox_overlay_grants_socket_and_group_only_to_worker():
+    import yaml
+
+    overlay_text = SANDBOX_COMPOSE_FILE.read_text(encoding="utf-8")
+    overlay = yaml.safe_load(overlay_text)
+
+    api = overlay["services"]["api"]
+    assert "/var/run/docker.sock:/var/run/docker.sock" not in str(api)
+    assert "group_add" not in api
+    assert api["volumes"] == [
+        "${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}:${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}"
+    ]
+    worker = overlay["services"]["worker"]
+    assert "/var/run/docker.sock:/var/run/docker.sock" in worker["volumes"]
+    assert worker["group_add"] == ["${DOCKER_SOCKET_GID:?set DOCKER_SOCKET_GID}"]
+    assert overlay["services"]["workspace-init"]["volumes"] == [
+        "${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}:/runtime-workspaces"
+    ]
+    env_example = ENV_EXAMPLE_FILE.read_text(encoding="utf-8")
+    assert "DOCKER_SOCKET_GID=" in env_example
+
+
+def test_runtime_entrypoint_fails_closed_before_exec_when_identity_is_wrong():
+    content = Path("docker-entrypoint.sh").read_text(encoding="utf-8")
+
+    assert "id -u" in content
+    assert "id -g" in content
+    assert '"$runtime_uid" != "10001"' in content
+    assert '"$runtime_gid" != "10001"' in content
+    assert "id -G" in content
+    assert "Runtime supplementary groups must not include GID 0" in content
+    assert "exec \"$@\"" in content
+    assert "workspace_permissions" not in content
+
+
 def test_compose_exposes_sandbox_runtime_configuration():
     compose_text = COMPOSE_FILE.read_text(encoding="utf-8")
     sandbox_text = SANDBOX_COMPOSE_FILE.read_text(encoding="utf-8")

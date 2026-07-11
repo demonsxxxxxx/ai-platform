@@ -84,6 +84,25 @@ def test_executor_health_returns_ready(tmp_path):
     assert response.json() == {"status": "ready"}
 
 
+def test_executor_runtime_identity_requires_lease_credential_and_returns_only_effective_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.os.geteuid", lambda: 10001, raising=False)
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.os.getegid", lambda: 10001, raising=False)
+    client = TestClient(create_executor_app(workspace_root=tmp_path, executor_auth_token="lease-secret"))
+
+    assert client.get("/health/runtime-identity").status_code == 401
+    assert client.get(
+        "/health/runtime-identity",
+        headers={"X-AI-Platform-Executor-Credential": "wrong"},
+    ).status_code == 401
+    response = client.get(
+        "/health/runtime-identity",
+        headers={"X-AI-Platform-Executor-Credential": "lease-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"uid": 10001, "gid": 10001}
+
+
 def test_executor_execute_posts_running_and_completed_callbacks(tmp_path, monkeypatch):
     callbacks = []
 

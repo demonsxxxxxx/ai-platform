@@ -53,9 +53,31 @@ services:
       timeout: 5s
       retries: 10
 
+  workspace-init:
+    image: ${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}
+    container_name: ai-platform-workspace-init
+    user: "0:0"
+    entrypoint: ["python", "-m", "app.runtime.sandbox.workspace_permissions"]
+    command: []
+    restart: "no"
+    network_mode: none
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_READ_SEARCH
+      - SETUID
+      - SETGID
+    volumes:
+      - ai_platform_sandbox_workspaces:/runtime-workspaces
+
   api:
     image: ${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}
     container_name: ai-platform-api
+    user: "10001:10001"
     labels:
       ai-platform.source-commit: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
       ai-platform.source-dirty: "false"
@@ -148,6 +170,8 @@ services:
     volumes:
       - ai_platform_sandbox_workspaces:/tmp/ai-platform-sandbox-workspaces
     depends_on:
+      workspace-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -158,6 +182,7 @@ services:
   worker:
     image: ${AI_PLATFORM_IMAGE:?set AI_PLATFORM_IMAGE}
     container_name: ai-platform-worker
+    user: "10001:10001"
     labels:
       ai-platform.source-commit: ${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}
       ai-platform.source-dirty: "false"
@@ -259,6 +284,8 @@ services:
     volumes:
       - ai_platform_sandbox_workspaces:/tmp/ai-platform-sandbox-workspaces
     depends_on:
+      workspace-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
