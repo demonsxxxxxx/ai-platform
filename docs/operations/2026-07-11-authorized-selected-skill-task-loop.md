@@ -11,8 +11,8 @@ Status: `local partial`
 - [x] Phase 2 - TDD RED/GREEN for ordinary selected-Skill admission and durable creation-time provenance.
 - [x] Phase 3 - TDD RED/GREEN for copy/retry/resume/existing child pin preservation and worker reauthorization.
 - [x] Phase 4 - affected backend tests, compile, diff, secret/scope checks, and large-feature checklist passed.
-- [ ] Phase 5 - first review findings fixed; re-review found and fixed one dependency-manifest regression; final exact-head re-review remains.
-- [ ] Phase 6 - ready PR, exact-head review substitute and validation evidence, required CI.
+- [x] Phase 5 - all broad-review findings fixed; final code head exact-SHA re-review found no Critical or Important issues.
+- [x] Phase 6 - ready PR #386, exact-head review substitute and validation evidence comments posted; required CI passed on the reviewed code head.
 
 This document records a backend source slice only. It does not claim frontend completion, B1-B6 closure, B2 sandbox closure, 211 verification, deployment, or a closable product gate.
 
@@ -103,10 +103,17 @@ Files: `app/repositories.py`, `app/routes/runs.py`, `app/worker.py`, `tests/test
 Files: all changed backend/tests and this document.
 
 - [x] Run affected backend tests only, each pytest invocation using a fresh unique child under `.pytest-tmp/` (`tests/test_run_control_routes.py`: `129 passed`; complete six-file affected suite: `682 passed`).
-- [ ] Run `python -m compileall -q app tools scripts` and `git diff --check`.
-- [ ] Verify changed-file scope, no secrets/real `.env`/personal paths, public docstrings, happy/error coverage, and milestone documentation state.
-- [ ] Commit and push a fixed head, dispatch an independent broad review against base/head, fix all Critical/Important findings, and re-review the new fixed SHA.
-- [ ] Open a ready PR linked to #385, post exact-head review substitute and validation evidence comments, and observe required CI.
+- [x] Run `python -m compileall -q app tools scripts` and `git diff --check`.
+- [x] Verify changed-file scope, no secrets/real `.env`/personal paths, public docstrings, happy/error coverage, and milestone documentation state.
+- [x] Commit and push a fixed head, dispatch an independent broad review against base/head, fix all Critical/Important findings, and re-review the new fixed SHA.
+- [x] Open a ready PR linked to #385, post exact-head review substitute and validation evidence comments, and observe required CI.
+
+## Source Closeout
+
+- PR #386 merged the reviewed code head `e32e4b84707db77a4979f6a811b49bac540e3fa1` into `main` as merge commit `c59c2194bf57718ffb4308cc22da39f3aae46654`.
+- GitHub issue #385 is closed.
+- GitHub readback for merge commit `c59c2194bf57718ffb4308cc22da39f3aae46654` reports all four checks green: `backend required`, `projection audit, lint, build, trace`, `packaged image build`, and `frontend required`.
+- This closes the reviewed backend source slice only. Frontend implementation and browser acceptance, 211 runtime verification, and B1-B6 remain open; this document does not claim deployment, 211 verification, or a closable product gate.
 
 ## PostgreSQL Gate
 
@@ -125,6 +132,9 @@ No PostgreSQL integration test was added or run because this source slice's orde
 - Fixed-SHA `d07cb86862d72757db8ba4451e94aeedbcf906a3` re-review: I1/I2/I3 closed; one new Important found because dependency manifests lacked the primary-only MCP pin field.
 - Dependency-manifest regression RED: multi-manifest creation raised `run_skill_snapshot_identity_mismatch`; GREEN: `3 passed` with primary MCP pin retained and dependency MCP identity normalized to an explicit empty set.
 - Complete affected suite after the dependency fix: `687 passed` using `.pytest-tmp/selected-skill-affected-20260711-04`.
+- Final code head `e32e4b84707db77a4979f6a811b49bac540e3fa1` exact-head re-review: no Critical or Important findings.
+- Ready PR: #386. Exact-head `sub-agent review substitute` and `validation evidence` comments were posted.
+- Required CI on the reviewed code head: `backend required`, `projection audit, lint, build, trace`, `packaged image build`, and `frontend required` all passed.
 - `python -m compileall -q app tools scripts`: exit 0.
 - `git diff --check`: exit 0.
 - Changed-file allowlist and added-line secret/real `.env`/personal-path scan: pass.
