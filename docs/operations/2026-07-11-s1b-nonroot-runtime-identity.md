@@ -6,6 +6,8 @@ Authoritative source base: `c854085f916748ca3c34c8a01bfc6a505b8dca5b` (`origin/m
 
 Tracking issue: [#394](https://github.com/demonsxxxxxx/ai-platform/issues/394)
 
+Pull request: [#395](https://github.com/demonsxxxxxx/ai-platform/pull/395) (draft while fresh fixed-head review is pending)
+
 This document tracks only S1B-B. It does not claim S1B, B2, G7, 211, deployment,
 runtime acceptance, or gate closure.
 
@@ -14,10 +16,10 @@ runtime acceptance, or gate closure.
 - [x] Phase 1 - Fresh fetch/readback and current source investigation completed in an isolated clean worktree.
 - [x] Phase 2 - Fixed `10001:10001` design approved; formal design and implementation plan recorded.
 - [x] Phase 3 - TDD RED captured missing workspace module, image/compose identity, authenticated executor identity endpoint, Docker fail-closed ownership, OpenSandbox identity denial, workspace hard-link/mode, and worker TMPDIR contracts.
-- [x] Phase 4 - GREEN implementation and focused affected tests completed locally: `533 passed, 3 skipped`.
+- [x] Phase 4 - GREEN implementation and focused affected tests completed locally: `541 passed, 3 skipped`.
 - [x] Phase 5 - Compile, diff, 18-file scope, new-line secret, and forbidden-config gates completed locally.
-- [ ] Phase 6 - Independent security and evidence reviews completed on fixed SHA `4dc438f`; two Important findings were fixed and fresh fixed-head re-review is pending.
-- [ ] Phase 7 - Ready PR, exact-head GitHub evidence comments, and required CI pending.
+- [ ] Phase 6 - Reviews of `4dc438f` and `a527611` completed; cached cleanup evidence/retention follow-up is implemented and fresh fixed-head re-review is pending.
+- [ ] Phase 7 - Draft PR #395 exists; ready state, exact-head GitHub evidence comments, and required final-head CI are pending.
 - [~] Docker-capable image/runtime and 211 acceptance are controller-owned and deferred until source stabilizes.
 
 ## Approved Contract
@@ -47,19 +49,47 @@ Observed RED boundaries:
 - OpenSandbox accepted a root identity probe;
 - unsafe mode/hard-link metadata and runtime-owned worker TMPDIR were not enforced.
 
+The first fixed-SHA review regressions were replayed against implementation SHA
+`4dc438f` using the committed regression tests from `a527611`. From the detached
+`s1b-b-red-source` worktree, the exact command was:
+
+```text
+$env:PYTHONPATH = (Get-Location).Path; python -m pytest ..\s1b-b-red-tests\tests\test_runtime_workspace_permissions.py::test_workspace_migration_uses_verified_inode_handle_not_name ..\s1b-b-red-tests\tests\test_runtime_workspace_permissions.py::test_workspace_migration_rejects_link_count_change_before_fchown ..\s1b-b-red-tests\tests\test_sandbox_container_provider.py::test_docker_provider_rejects_cached_reuse_for_same_run_under_different_current_scope ..\s1b-b-red-tests\tests\test_sandbox_container_provider.py::test_docker_cached_reuse_cleans_up_when_executor_url_wait_is_cancelled ..\s1b-b-red-tests\tests\test_sandbox_container_provider.py::test_opensandbox_rejects_cached_reuse_for_same_run_under_different_current_scope ..\s1b-b-red-tests\tests\test_sandbox_container_provider.py::test_opensandbox_cached_reuse_revalidates_remote_scope_metadata -q --rootdir . --basetemp .pytest-tmp\s1b-b-fixed-sha-review-red-002
+```
+
+It produced `6 failed`: name-based chown was invoked, link-count change did not
+raise, Docker and OpenSandbox current-scope mismatches did not raise, cached
+Docker cancellation did not stop the container, and OpenSandbox remote metadata
+mismatch did not raise. Both detached replay worktrees were then removed.
+
+The evidence re-review's cleanup-retention finding was captured with these
+exact local RED commands before implementation:
+
+```text
+python -m pytest tests/test_sandbox_container_provider.py::test_docker_cached_scope_mismatch_retains_tracking_when_cleanup_cannot_be_confirmed tests/test_sandbox_container_provider.py::test_opensandbox_cached_scope_mismatch_retains_tracking_when_cleanup_cannot_be_confirmed -q --basetemp .pytest-tmp\s1b-b-cleanup-red-002
+python -m pytest tests/test_sandbox_container_provider.py::test_docker_cached_identity_mismatch_retains_tracking_when_cleanup_cannot_be_confirmed tests/test_sandbox_container_provider.py::test_opensandbox_cached_identity_mismatch_retains_tracking_when_cleanup_cannot_be_confirmed -q --basetemp .pytest-tmp\s1b-b-cleanup-identity-red-001
+```
+
+Each command produced `2 failed`: cleanup failures were downgraded to ordinary
+start failures and cached lease/sandbox tracking was discarded. The fixed
+provider now returns a verifiable cleanup result, raises typed
+`container_cleanup_failed`, and retains maintenance-visible tracking when
+termination cannot be confirmed. Cached scope/identity, cold identity, and
+explicit stop failure paths have Docker and OpenSandbox regressions.
+
 Observed focused GREEN results so far:
 
 - workspace/launch/provider/executor/contracts: `140 passed`;
 - worker-main heartbeat and maintenance tests: `27 passed`.
 - pre-review affected provider/runtime/launch/worker/source-authority slice: `514 passed, 3 skipped`.
 
-The final post-review-fix affected command was:
+The final post-cleanup-review affected command was:
 
 ```text
-python -m pytest tests/test_runtime_workspace_permissions.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py tests/test_sandbox_container_provider.py tests/test_sandbox_executor_app.py tests/test_sandbox_contracts.py tests/test_sandbox_workspace_manager.py tests/test_sandbox_runtime.py tests/test_sandbox_runtime_cleanup.py tests/test_execution_boundary.py tests/test_claude_agent_worker_adapter.py tests/test_worker.py tests/test_worker_main.py tests/test_admin_runtime_routes.py -q --basetemp .pytest-tmp\s1b-b-post-review-final-001
+python -m pytest tests/test_runtime_workspace_permissions.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py tests/test_sandbox_container_provider.py tests/test_sandbox_executor_app.py tests/test_sandbox_contracts.py tests/test_sandbox_workspace_manager.py tests/test_sandbox_runtime.py tests/test_sandbox_runtime_cleanup.py tests/test_execution_boundary.py tests/test_claude_agent_worker_adapter.py tests/test_worker.py tests/test_worker_main.py tests/test_admin_runtime_routes.py -q --basetemp .pytest-tmp\s1b-b-post-cleanup-final-001
 ```
 
-It completed with `533 passed, 3 skipped`. The accompanying
+It completed with `541 passed, 3 skipped`. The accompanying
 `python -m compileall -q app tools scripts` completed with exit code 0.
 
 The fixed-SHA `4dc438f` security and evidence reviews found no Critical issue.
@@ -71,7 +101,10 @@ cleans up cancelled cached Docker URL discovery, and holds/fstats/fchowns each
 validated inode. Regression coverage also exercises malformed cached identity,
 missing cached OpenSandbox credentials, target-owned migration no-op, and the
 initializer's migrate/drop/probe/close ordering. Fresh review of the resulting
-fixed branch head remains required before Phase 6 can complete.
+fixed branch head found the source fixes sound, while evidence review identified
+that failed cleanup could discard local tracking. That path is now typed, fail
+closed, and covered as described above. Fresh review of the new fixed branch
+head remains required before Phase 6 can complete.
 
 `python -m compileall -q app tools scripts` exited 0. `git diff --check`,
 the approved changed-file scope check, new-line secret scan, and checks forbidding

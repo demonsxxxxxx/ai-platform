@@ -62,6 +62,13 @@ class ContainerStartFailedError(SandboxRuntimeError):
         super().__init__("container_start_failed", message)
 
 
+class ContainerCleanupFailedError(SandboxRuntimeError):
+    """Raised when a rejected executor cannot be confirmed stopped and removed."""
+
+    def __init__(self, message: str = "Container cleanup failed") -> None:
+        super().__init__("container_cleanup_failed", message)
+
+
 class ExecutorHealthTimeoutError(SandboxRuntimeError):
     def __init__(self, message: str = "Executor health timeout") -> None:
         super().__init__("executor_health_timeout", message)
@@ -845,17 +852,22 @@ def _opensandbox_executor_url(raw_url: str, settings: Any) -> str:
     return url
 
 
-def _stop_and_remove_container(container: Any) -> None:
+def _stop_and_remove_container(container: Any) -> bool:
+    stop_succeeded = not hasattr(container, "stop")
     if hasattr(container, "stop"):
         try:
             container.stop()
+            stop_succeeded = True
         except Exception:
             pass
+    remove_succeeded = not hasattr(container, "remove")
     if hasattr(container, "remove"):
         try:
             container.remove(force=True)
+            remove_succeeded = True
         except Exception:
             pass
+    return remove_succeeded or (stop_succeeded and not hasattr(container, "remove"))
 
 
 def _generate_executor_auth_token() -> str:
@@ -971,6 +983,12 @@ class DockerContainerProvider:
     def _elapsed_ms(self, started_at: float) -> int:
         return max(int(round((self._monotonic() - started_at) * 1000)), 0)
 
+    def _cleanup_container_or_track(self, container: Any, lease: ContainerLease) -> None:
+        if _stop_and_remove_container(container):
+            return
+        self._leases[lease.container_id] = lease
+        raise ContainerCleanupFailedError("container cleanup could not be confirmed")
+
     async def _reuse_existing_container(
         self,
         lease: ContainerLease,
@@ -987,11 +1005,11 @@ class DockerContainerProvider:
             return None
         expected_user = lease.labels.get("ai-platform.executor.user", "")
         if expected_user != f"{RUNTIME_UID}:{RUNTIME_GID}" or _container_config_user(container) != expected_user:
-            _stop_and_remove_container(container)
+            self._cleanup_container_or_track(container, lease)
             return None
         executor_auth_token = _container_executor_auth_token(container)
         if not executor_auth_token:
-            _stop_and_remove_container(container)
+            self._cleanup_container_or_track(container, lease)
             return None
         try:
             executor_url = await self._wait_for_executor_url(container, timeout_seconds)
@@ -1012,11 +1030,17 @@ class DockerContainerProvider:
                 executor_headers,
             )
             _require_expected_executor_identity(identity)
-        except asyncio.CancelledError:
-            _stop_and_remove_container(container)
+        except asyncio.CancelledError as exc:
+            try:
+                self._cleanup_container_or_track(container, lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             raise
-        except Exception:
-            _stop_and_remove_container(container)
+        except Exception as exc:
+            try:
+                self._cleanup_container_or_track(container, lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             return None
         return ContainerLease(
             container_id=lease.container_id,
@@ -1036,14 +1060,15 @@ class DockerContainerProvider:
             labels=lease.labels,
         )
 
-    def _remove_owned_cached_container(self, lease: ContainerLease) -> None:
+    def _remove_owned_cached_container(self, lease: ContainerLease) -> bool:
         try:
             container = self._get_client().containers.get(lease.container_name)
-        except Exception:
-            return
+        except Exception as exc:
+            return _is_not_found_error(exc)
         status = _container_status_from_labels(container)
         if status is not None and _status_matches_lease(status, lease):
-            _stop_and_remove_container(container)
+            return _stop_and_remove_container(container)
+        return True
 
     async def create_or_reuse(
         self,
@@ -1065,7 +1090,8 @@ class DockerContainerProvider:
         existing = self._leases.get(container_id)
         if existing is not None:
             if not _lease_matches_request_workspace(existing, request, workspace):
-                self._remove_owned_cached_container(existing)
+                if not self._remove_owned_cached_container(existing):
+                    raise ContainerCleanupFailedError("cached container cleanup could not be confirmed")
                 self._leases.pop(container_id, None)
                 raise ContainerStartFailedError("cached lease scope mismatch")
             existing.labels.update(expected_egress_labels)
@@ -1092,6 +1118,7 @@ class DockerContainerProvider:
             return recovered
         cold_start_started_at = self._monotonic()
         executor_auth_token = _generate_executor_auth_token()
+        bootstrap_lease.executor_headers = _executor_auth_headers(executor_auth_token)
         try:
             container = client.containers.create(
                 image=settings.sandbox_executor_image,
@@ -1123,25 +1150,32 @@ class DockerContainerProvider:
             if isinstance(normalized_exc, DockerPermissionDeniedError):
                 raise normalized_exc from exc
             if "container" in locals():
-                _stop_and_remove_container(container)
+                self._cleanup_container_or_track(container, bootstrap_lease)
             raise ContainerStartFailedError() from exc
         try:
             if hasattr(container, "start"):
                 container.start()
         except Exception as exc:
             normalized_exc = _normalize_docker_availability_error(exc)
+            self._cleanup_container_or_track(container, bootstrap_lease)
             if isinstance(normalized_exc, DockerPermissionDeniedError):
                 raise normalized_exc from exc
-            _stop_and_remove_container(container)
             raise ContainerStartFailedError() from exc
 
         try:
             executor_url = await self._wait_for_executor_url(container, settings.sandbox_container_start_timeout_seconds)
-        except asyncio.CancelledError:
-            _stop_and_remove_container(container)
+            bootstrap_lease.executor_url = executor_url
+        except asyncio.CancelledError as exc:
+            try:
+                self._cleanup_container_or_track(container, bootstrap_lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             raise
-        except ExecutorHealthTimeoutError:
-            _stop_and_remove_container(container)
+        except ExecutorHealthTimeoutError as exc:
+            try:
+                self._cleanup_container_or_track(container, bootstrap_lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             raise
         sandbox_container_cold_start_latency_ms = self._elapsed_ms(cold_start_started_at)
         healthcheck_started_at = self._monotonic()
@@ -1154,18 +1188,21 @@ class DockerContainerProvider:
                 settings.sandbox_executor_health_timeout_seconds,
                 executor_headers,
             )
-        except asyncio.CancelledError:
-            _stop_and_remove_container(container)
+        except asyncio.CancelledError as exc:
+            try:
+                self._cleanup_container_or_track(container, bootstrap_lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             raise
         except Exception as exc:
-            _stop_and_remove_container(container)
+            self._cleanup_container_or_track(container, bootstrap_lease)
             raise ExecutorHealthTimeoutError() from exc
         sandbox_healthcheck_latency_ms = self._elapsed_ms(healthcheck_started_at)
         if not healthy:
-            _stop_and_remove_container(container)
+            self._cleanup_container_or_track(container, bootstrap_lease)
             raise ExecutorHealthTimeoutError()
         if _container_config_user(container) != workspace_user:
-            _stop_and_remove_container(container)
+            self._cleanup_container_or_track(container, bootstrap_lease)
             raise ContainerStartFailedError("executor Config.User mismatch")
         try:
             identity = await asyncio.to_thread(
@@ -1175,11 +1212,14 @@ class DockerContainerProvider:
                 executor_headers,
             )
             _require_expected_executor_identity(identity)
-        except asyncio.CancelledError:
-            _stop_and_remove_container(container)
+        except asyncio.CancelledError as exc:
+            try:
+                self._cleanup_container_or_track(container, bootstrap_lease)
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             raise
         except Exception as exc:
-            _stop_and_remove_container(container)
+            self._cleanup_container_or_track(container, bootstrap_lease)
             if isinstance(exc, ContainerStartFailedError):
                 raise
             raise ContainerStartFailedError("executor identity unavailable") from exc
@@ -1201,20 +1241,22 @@ class DockerContainerProvider:
         return lease
 
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
-        self._leases.pop(lease.container_id, None)
         try:
             container = self._get_client().containers.get(lease.container_name)
             status = _container_status_from_labels(container)
             if status is None or not _status_matches_lease(status, lease):
+                self._leases.pop(lease.container_id, None)
                 return StopResult(container_id=lease.container_id, status="not_found", message=reason)
-            if hasattr(container, "stop"):
-                container.stop()
-            if hasattr(container, "remove"):
-                container.remove(force=True)
+            if not _stop_and_remove_container(container):
+                self._leases.setdefault(lease.container_id, lease)
+                return StopResult(container_id=lease.container_id, status="failed", message="Container stop failed")
         except Exception as exc:
             if _is_not_found_error(exc):
+                self._leases.pop(lease.container_id, None)
                 return StopResult(container_id=lease.container_id, status="not_found", message=reason)
+            self._leases.setdefault(lease.container_id, lease)
             return StopResult(container_id=lease.container_id, status="failed", message="Container stop failed")
+        self._leases.pop(lease.container_id, None)
         return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
     async def list_runtime_containers(self, filters: dict[str, str]) -> list[ContainerStatus]:
@@ -1415,17 +1457,73 @@ class OpenSandboxContainerProvider:
             raise ContainerStartFailedError("OpenSandbox executor endpoint unavailable")
         return _opensandbox_executor_url(url, settings), headers
 
-    async def _cleanup_started_sandbox(self, sandbox: Any | None) -> None:
+    async def _cleanup_started_sandbox(self, sandbox: Any | None) -> bool:
         if sandbox is None:
-            return
+            return True
+        killed = False
         try:
             await self._call_kill(sandbox)
+            killed = True
         except Exception:
             pass
         try:
             await self._call_close(sandbox)
         except Exception:
             pass
+        return killed
+
+    def _track_cleanup_pending_sandbox(
+        self,
+        sandbox: Any,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+        *,
+        metadata: dict[str, str],
+        executor_auth_token: str,
+    ) -> None:
+        sandbox_id = str(getattr(sandbox, "id", "") or "")
+        if not sandbox_id:
+            return
+        lease = ContainerLease(
+            container_id=sandbox_id,
+            container_name=f"opensandbox-{request.run_id}",
+            provider="opensandbox",
+            executor_url="",
+            executor_headers=_executor_auth_headers(executor_auth_token),
+            tenant_id=request.tenant_id,
+            workspace_id=request.workspace_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            run_id=request.run_id,
+            sandbox_mode=request.sandbox_mode,
+            browser_enabled=request.browser_enabled,
+            workspace_host_path=workspace.workspace_host_path,
+            workspace_container_path=workspace.workspace_container_path,
+            labels=dict(metadata),
+        )
+        self._sandboxes[sandbox_id] = sandbox
+        self._leases[f"opensandbox-{request.run_id}"] = lease
+
+    async def _cleanup_new_sandbox_or_track(
+        self,
+        sandbox: Any | None,
+        request: SandboxRuntimeRequest,
+        workspace: WorkspaceLease,
+        *,
+        metadata: dict[str, str],
+        executor_auth_token: str,
+    ) -> None:
+        if await self._cleanup_started_sandbox(sandbox):
+            return
+        if sandbox is not None:
+            self._track_cleanup_pending_sandbox(
+                sandbox,
+                request,
+                workspace,
+                metadata=metadata,
+                executor_auth_token=executor_auth_token,
+            )
+        raise ContainerCleanupFailedError("sandbox cleanup could not be confirmed")
 
     async def create_or_reuse(
         self,
@@ -1438,7 +1536,8 @@ class OpenSandboxContainerProvider:
         if cached is not None and cached.container_id in self._sandboxes:
             sandbox = self._sandboxes[cached.container_id]
             if not _lease_matches_request_workspace(cached, request, workspace):
-                await self._cleanup_started_sandbox(sandbox)
+                if not await self._cleanup_started_sandbox(sandbox):
+                    raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed")
                 self._sandboxes.pop(cached.container_id, None)
                 self._leases.pop(f"opensandbox-{request.run_id}", None)
                 raise ContainerStartFailedError("cached lease scope mismatch")
@@ -1482,13 +1581,15 @@ class OpenSandboxContainerProvider:
                     executor_headers,
                 )
                 _require_expected_executor_identity(identity)
-            except asyncio.CancelledError:
-                await self._cleanup_started_sandbox(sandbox)
+            except asyncio.CancelledError as exc:
+                if not await self._cleanup_started_sandbox(sandbox):
+                    raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
                 self._leases.pop(f"opensandbox-{request.run_id}", None)
                 raise
             except Exception as exc:
-                await self._cleanup_started_sandbox(sandbox)
+                if not await self._cleanup_started_sandbox(sandbox):
+                    raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed") from exc
                 self._sandboxes.pop(cached.container_id, None)
                 self._leases.pop(f"opensandbox-{request.run_id}", None)
                 if isinstance(exc, ContainerStartFailedError):
@@ -1554,14 +1655,41 @@ class OpenSandboxContainerProvider:
                 _executor_auth_headers(executor_auth_token, executor_headers),
             )
             _require_expected_executor_identity(identity)
-        except asyncio.CancelledError:
-            await self._cleanup_started_sandbox(sandbox)
+        except asyncio.CancelledError as exc:
+            try:
+                await self._cleanup_new_sandbox_or_track(
+                    sandbox,
+                    request,
+                    workspace,
+                    metadata=metadata,
+                    executor_auth_token=executor_auth_token,
+                )
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             raise
-        except SandboxRuntimeError:
-            await self._cleanup_started_sandbox(sandbox)
+        except SandboxRuntimeError as exc:
+            try:
+                await self._cleanup_new_sandbox_or_track(
+                    sandbox,
+                    request,
+                    workspace,
+                    metadata=metadata,
+                    executor_auth_token=executor_auth_token,
+                )
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             raise
         except Exception as exc:
-            await self._cleanup_started_sandbox(sandbox)
+            try:
+                await self._cleanup_new_sandbox_or_track(
+                    sandbox,
+                    request,
+                    workspace,
+                    metadata=metadata,
+                    executor_auth_token=executor_auth_token,
+                )
+            except ContainerCleanupFailedError as cleanup_exc:
+                raise cleanup_exc from exc
             raise ContainerStartFailedError("OpenSandbox sandbox start failed") from exc
 
         lease = ContainerLease(
@@ -1592,8 +1720,7 @@ class OpenSandboxContainerProvider:
 
     async def stop(self, lease: ContainerLease, *, reason: str) -> StopResult:
         settings = get_settings()
-        self._leases.pop(f"opensandbox-{lease.run_id}", None)
-        sandbox = self._sandboxes.pop(lease.container_id, None)
+        sandbox = self._sandboxes.get(lease.container_id)
         try:
             if sandbox is None:
                 sandbox = await self._connect(
@@ -1607,16 +1734,24 @@ class OpenSandboxContainerProvider:
                 info = sandbox
             status = _opensandbox_status_from_info(info)
             if status is None or not _status_matches_lease(status, lease):
+                self._leases.pop(f"opensandbox-{lease.run_id}", None)
+                self._sandboxes.pop(lease.container_id, None)
                 return StopResult(container_id=lease.container_id, status="not_found", message=reason)
-            await self._call_kill(sandbox)
+            if not await self._cleanup_started_sandbox(sandbox):
+                self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+                self._sandboxes[lease.container_id] = sandbox
+                return StopResult(container_id=lease.container_id, status="failed", message="OpenSandbox sandbox stop failed")
         except Exception as exc:
             if _is_not_found_error(exc):
+                self._leases.pop(f"opensandbox-{lease.run_id}", None)
+                self._sandboxes.pop(lease.container_id, None)
                 return StopResult(container_id=lease.container_id, status="not_found", message=reason)
+            self._leases.setdefault(f"opensandbox-{lease.run_id}", lease)
+            if sandbox is not None:
+                self._sandboxes[lease.container_id] = sandbox
             return StopResult(container_id=lease.container_id, status="failed", message="OpenSandbox sandbox stop failed")
-        try:
-            await self._call_close(sandbox)
-        except Exception:
-            pass
+        self._leases.pop(f"opensandbox-{lease.run_id}", None)
+        self._sandboxes.pop(lease.container_id, None)
         return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
     async def _list_remote_statuses(self, filters: dict[str, str]) -> list[ContainerStatus]:
