@@ -242,8 +242,12 @@ def _public_skill_item(row: dict[str, Any]) -> PublicSkillResponse:
     files = _file_paths(row)
     status = str(row.get("status") or "active")
     skill_name = str(row.get("skill_id") or "")
+    input_modes = [str(mode) for mode in row.get("input_modes") or []]
     return PublicSkillResponse(
         skill_name=skill_name,
+        expected_version=str(row.get("expected_version") or ""),
+        input_modes=input_modes,
+        requires_file="docx" in input_modes,
         description=str(row.get("description") or ""),
         tags=_tags_from_row(row),
         files=files,
@@ -264,6 +268,9 @@ def _skill_detail(row: dict[str, Any]) -> PublicSkillDetailResponse:
         files=item.files,
         enabled=item.enabled,
         skill_name=item.skill_name,
+        expected_version=item.expected_version,
+        input_modes=item.input_modes,
+        requires_file=item.requires_file,
         description=item.description,
         tags=item.tags,
         is_published=item.is_published,

@@ -756,6 +756,9 @@ class PublicSkillResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     skill_name: str
+    expected_version: str
+    input_modes: list[str] = Field(default_factory=list)
+    requires_file: bool
     description: str = ""
     tags: list[str] = Field(default_factory=list)
     files: list[str] = Field(default_factory=list)
@@ -790,6 +793,9 @@ class PublicSkillDetailResponse(BaseModel):
     files: list[str] = Field(default_factory=list)
     enabled: bool = True
     skill_name: str
+    expected_version: str
+    input_modes: list[str] = Field(default_factory=list)
+    requires_file: bool
     description: str = ""
     tags: list[str] = Field(default_factory=list)
     is_published: bool = True

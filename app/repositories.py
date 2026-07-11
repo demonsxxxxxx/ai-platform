@@ -825,7 +825,9 @@ async def list_public_skill_catalog(
           skills.id as skill_id,
           skills.name,
           coalesce(skill_release_policies.current_version, skills.version) as version,
+          skill_versions.content_hash as expected_version,
           coalesce(skill_versions.description, skills.description) as description,
+          skills.input_modes,
           skills.status as lifecycle_status,
           coalesce(tenant_capability_distributions.status, 'disabled') as status,
           coalesce(tenant_capability_distributions.visible_to_user, false) as visible_to_user,
@@ -836,6 +838,7 @@ async def list_public_skill_catalog(
           skill_release_policies.previous_version as release_policy_previous_version,
           skill_release_policies.rollout_percent as release_policy_rollout_percent,
           previous_skill_versions.status as release_policy_previous_version_status,
+          previous_skill_versions.content_hash as release_policy_previous_content_hash,
           previous_skill_versions.description as release_policy_previous_description,
           previous_skill_versions.source_json as release_policy_previous_source_json,
           previous_skill_versions.dependency_ids as release_policy_previous_dependency_ids,
@@ -881,6 +884,7 @@ async def list_public_skill_catalog(
             )
             if release_decision.selected_track == "previous":
                 projected["version"] = release_decision.selected_version
+                projected["expected_version"] = projected.get("release_policy_previous_content_hash")
                 projected["version_status"] = projected.get("release_policy_previous_version_status")
                 projected["description"] = projected.get("release_policy_previous_description") or ""
                 projected["source_json"] = projected.get("release_policy_previous_source_json") or {}
@@ -892,6 +896,7 @@ async def list_public_skill_catalog(
             "release_policy_previous_version",
             "release_policy_rollout_percent",
             "release_policy_previous_version_status",
+            "release_policy_previous_content_hash",
             "release_policy_previous_description",
             "release_policy_previous_source_json",
             "release_policy_previous_dependency_ids",
@@ -899,10 +904,16 @@ async def list_public_skill_catalog(
             "release_policy_previous_created_at",
         ):
             projected.pop(field, None)
+        selected_version = str(projected.get("version") or "")
+        expected_version = str(projected.get("expected_version") or "")
+        if not selected_version or expected_version != selected_version:
+            continue
+        projected["expected_version"] = expected_version
         if not include_disabled and not is_user_runnable_status(projected.get("version_status")):
             continue
         projected["source"] = _json_dict(projected.pop("source_json", {}))
         projected["dependency_ids"] = _json_list(projected.get("dependency_ids"))
+        projected["input_modes"] = _json_list(projected.get("input_modes"))
         rows.append(projected)
     return rows
 
