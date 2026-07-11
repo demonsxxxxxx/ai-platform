@@ -2,7 +2,10 @@
 
 Status: `local partial`
 
-Authoritative source base: `c854085f916748ca3c34c8a01bfc6a505b8dca5b` (`origin/main`, PR #393 merge)
+Initial authoritative source base: `c854085f916748ca3c34c8a01bfc6a505b8dca5b` (PR #393 merge)
+
+Current rebased source base: `b7c8d058b9e6dc5626cc71e97b36b4db9fe4126a`
+(`origin/main`, PR #396 merge of exact frontend head `1d6b88f06ac902aaff96d3d5573e5ee3ce6fb4af`)
 
 Tracking issue: [#394](https://github.com/demonsxxxxxx/ai-platform/issues/394)
 
@@ -91,6 +94,17 @@ python -m pytest tests/test_runtime_workspace_permissions.py tests/test_runtime_
 
 It completed with `541 passed, 3 skipped`. The accompanying
 `python -m compileall -q app tools scripts` completed with exit code 0.
+
+After PR #396 moved `origin/main`, the clean local head `4c11f9e` was rebased
+without conflict onto `b7c8d058`. The rebased affected command was:
+
+```text
+python -m pytest tests/test_runtime_workspace_permissions.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py tests/test_sandbox_container_provider.py tests/test_sandbox_executor_app.py tests/test_sandbox_contracts.py tests/test_sandbox_workspace_manager.py tests/test_sandbox_runtime.py tests/test_sandbox_runtime_cleanup.py tests/test_execution_boundary.py tests/test_claude_agent_worker_adapter.py tests/test_worker.py tests/test_worker_main.py tests/test_admin_runtime_routes.py -q --basetemp .pytest-tmp\s1b-b-rebase-final-001
+```
+
+It completed with `541 passed, 3 skipped`; the parallel compile command exited
+0. This is rebased local source evidence only, before final exact-head review,
+PR comments, and required final-head CI.
 
 The fixed-SHA `4dc438f` security and evidence reviews found no Critical issue.
 They identified two Important gaps: cached lease reuse was not bound to the
