@@ -7,7 +7,7 @@ Status:
 - [x] Phase 2 - focused RED reproduced `event_sink() takes 0 positional arguments but 1 was given` on an ordinary sandbox-required `general-chat` path.
 - [x] Phase 3 - minimal local bridge reuses `agent_event_to_executor_event` and the focused regression is GREEN.
 - [x] Phase 4 - focused regression passed (`1 passed`); affected worker/runtime tests passed (`125 passed, 3 skipped`); repository-root artifact count remained zero. Compile, diff, scope, and secret checks passed before commit.
-- [ ] Phase 5 - exact fixed head committed, pushed, clean, and handed to the controller for a separately authorized independent review.
+- [x] Phase 5 - source repair commit created; the final documentation commit, push, clean status, and exact fixed head are recorded in the controller handoff because a commit cannot self-record its own SHA.
 - [~] 211 runtime verification - retained by the controller; this lane must not access or mutate 211.
 
 ## Subject
