@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- Base: `origin/main` at `5b4b6ef6536c0cf8b53528b55520e5005caeb508`.
+- Base: originally `origin/main` at `5b4b6ef6536c0cf8b53528b55520e5005caeb508`; after S2B-FE merged, rebased cleanly onto `origin/main=1210f034cf198cd414a8b6b7ea290aa8d0551cc7`.
 - Do not deploy 211 and do not claim S0/security closure, B2, Authorized Skill Task Loop, or gate closable.
 - Every local pytest command uses a unique fresh child under `.pytest-tmp`.
 - PostgreSQL-specific schema tests are gated by an explicit environment variable and clean-skip without DSN.
@@ -141,5 +141,6 @@
 - [x] Run `python -m compileall -q app tools scripts`.
 - [x] Run `git diff --check`.
 - [x] Run scope and secret review.
+- [x] Rebase onto current `origin/main=1210f034cf198cd414a8b6b7ea290aa8d0551cc7` and rerun affected backend/frontend/compile/diff/scope/secret gates.
 - [x] Run independent inherited-configuration review; fix Critical/Important findings and rerun affected gates. The latest exact-head review must still be launched after the final commit SHA is fixed.
 - [ ] Commit, push, open ready PR, observe required CI, and report PostgreSQL gate truthfully.
