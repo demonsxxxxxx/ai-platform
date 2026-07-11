@@ -90,7 +90,7 @@ multi-agent product authority, deployment, or 211 runtime state.
   After the #393 rebase, the review-fix baseline was `541dcf1`. Focused tests
   then passed 177/177, Python compile and `ci:verify` again exited 0, and the
   desktop/mobile mock browser evidence was regenerated with status `passed`.
-- [ ] Phase 6 - fixed SHA `696e551` independent code and UX reviews found four
+- [x] Phase 6 - fixed SHA `696e551` independent code and UX reviews found four
   Important and three Minor findings. A first rebased exact-head review at
   `541dcf1` found five further Important findings: catalog refresh failure
   could erase stale identity, malformed pagination could return partial data
@@ -113,7 +113,8 @@ multi-agent product authority, deployment, or 211 runtime state.
   `total=0, skills=[]` first page was still classified as incomplete; the
   collector now accepts an authorized empty catalog while continuing to reject
   an empty page before its declared total. UX re-review at that SHA reported no
-  findings. Final fixed-SHA code confirmation remains pending.
+  findings. Exact-head code and UX confirmation at
+  `e7064971ccbbfc7ebb7122dacb8ac68a67507573` reported no findings.
 - [ ] Phase 7 - ready PR, exact-head review/validation comments, and required
   CI. No merge or 211 deployment is authorized in this lane.
 
