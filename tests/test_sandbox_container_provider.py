@@ -12,7 +12,7 @@ from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
 
 
 @pytest.fixture(autouse=True)
-def fixed_runtime_identity_test_seams(monkeypatch):
+def fixed_runtime_identity_test_seams(monkeypatch, request):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     stat_result = type(
         "RuntimeWorkspaceStat",
@@ -20,12 +20,13 @@ def fixed_runtime_identity_test_seams(monkeypatch):
         {"st_uid": 10001, "st_gid": 10001, "st_mode": 0o40700},
     )()
     monkeypatch.setattr(container_provider, "_workspace_owner_stat", lambda _path: stat_result, raising=False)
-    monkeypatch.setattr(
-        container_provider,
-        "default_executor_identity_probe",
-        lambda executor_url, timeout_seconds, executor_headers: {"uid": 10001, "gid": 10001},
-        raising=False,
-    )
+    if request.node.name != "test_default_executor_probes_connect_to_pinned_ip_without_transmitting_private_metadata":
+        monkeypatch.setattr(
+            container_provider,
+            "default_executor_identity_probe",
+            lambda executor_url, timeout_seconds, executor_headers: {"uid": 10001, "gid": 10001},
+            raising=False,
+        )
 
 
 def request(**overrides) -> SandboxRuntimeRequest:
@@ -595,6 +596,63 @@ def test_default_executor_health_probe_returns_false_after_timeout(monkeypatch):
 
     assert container_provider.default_executor_health_probe("http://executor.test", 1) is False
     assert sleep_calls
+
+
+def test_default_executor_probes_connect_to_pinned_ip_without_transmitting_private_metadata(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"uid": 10001, "gid": 10001}
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def get(self, url, headers=None):
+            calls.append((url, dict(headers or {})))
+            return FakeResponse()
+
+    monkeypatch.setattr(container_provider.httpx, "Client", FakeClient)
+    private_metadata_key = "X-AI-Platform-Internal-Executor-Connect-Base-Url"
+    headers = {
+        "X-AI-Platform-Executor-Credential": "executor-secret",
+        private_metadata_key: "http://172.17.0.1:43123",
+    }
+    logical_url = "http://host.docker.internal:43123"
+
+    assert container_provider.default_executor_health_probe(logical_url, 1, headers) is True
+    assert container_provider.default_executor_identity_probe(logical_url, 1, headers) == {
+        "uid": 10001,
+        "gid": 10001,
+    }
+    assert calls == [
+        (
+            "http://172.17.0.1:43123/health",
+            {
+                "X-AI-Platform-Executor-Credential": "executor-secret",
+                "Host": "host.docker.internal:43123",
+            },
+        ),
+        (
+            "http://172.17.0.1:43123/health/runtime-identity",
+            {
+                "X-AI-Platform-Executor-Credential": "executor-secret",
+                "Host": "host.docker.internal:43123",
+            },
+        ),
+    ]
+    assert all(private_metadata_key not in outgoing_headers for _, outgoing_headers in calls)
 
 
 @pytest.mark.asyncio
@@ -2610,8 +2668,12 @@ async def test_docker_provider_binds_pinned_host_gateway_and_publishes_configure
     assert resolution_calls == 1
     assert created["ports"] == {"18000/tcp": ("172.17.0.1", None)}
     assert lease.executor_url == "http://host.docker.internal:43123"
-    assert [url for url, _headers in probes] == [lease.executor_url, lease.executor_url]
+    assert [url for url, _headers in probes] == ["http://172.17.0.1:43123", "http://172.17.0.1:43123"]
     assert all(headers[EXECUTOR_AUTH_HEADER] == lease.executor_headers[EXECUTOR_AUTH_HEADER] for _, headers in probes)
+    assert all(headers["Host"] == "host.docker.internal:43123" for _, headers in probes)
+    assert all(container_provider.EXECUTOR_CONNECT_BASE_URL_METADATA not in headers for _, headers in probes)
+    assert lease.executor_headers[container_provider.EXECUTOR_CONNECT_BASE_URL_METADATA] == "http://172.17.0.1:43123"
+    assert container_provider.EXECUTOR_CONNECT_BASE_URL_METADATA not in str(lease.model_dump())
     assert created["privileged"] is False
     assert created["read_only"] is True
     assert created["cap_drop"] == ["ALL"]

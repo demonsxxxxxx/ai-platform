@@ -170,6 +170,93 @@ async def test_executor_client_posts_task_request(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_executor_client_connects_to_pinned_ip_without_transmitting_private_metadata():
+    calls = []
+
+    async def post_json(url, payload, timeout, headers=None):
+        calls.append((url, dict(headers or {})))
+        return {"status": "accepted"}
+
+    client = SandboxExecutorClient(post_json=post_json, timeout_seconds=3.0)
+    request = ExecutorTaskRequest(
+        session_id="session-a",
+        run_id="run-a",
+        prompt="hello",
+        callback_url="http://callback",
+        callback_token_id="cbt_run-a",
+        callback_token="secret",
+        callback_base_url="http://callback-base",
+        config={"model": "deepseek-v4-flash"},
+    )
+    private_metadata_key = "X-AI-Platform-Internal-Executor-Connect-Base-Url"
+
+    await client.execute(
+        "http://host.docker.internal:43123",
+        request,
+        executor_headers={
+            "X-AI-Platform-Executor-Credential": "executor-secret",
+            private_metadata_key: "http://172.17.0.1:43123",
+        },
+    )
+
+    assert calls == [
+        (
+            "http://172.17.0.1:43123/v1/tasks/execute",
+            {
+                "X-AI-Platform-Executor-Credential": "executor-secret",
+                "Host": "host.docker.internal:43123",
+            },
+        )
+    ]
+    assert private_metadata_key not in calls[0][1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("logical_url", "connect_base_url"),
+    [
+        ("https://host.docker.internal:43123", "https://172.17.0.1:43123"),
+        ("http://user@host.docker.internal:43123", "http://172.17.0.1:43123"),
+        ("http://host.docker.internal:43123", "http://8.8.8.8:43123"),
+        ("http://host.docker.internal:43123", "http://0.0.0.0:43123"),
+    ],
+)
+async def test_executor_client_rejects_unsafe_private_connect_metadata_without_dispatch(
+    logical_url,
+    connect_base_url,
+):
+    calls = []
+
+    async def post_json(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"status": "accepted"}
+
+    client = SandboxExecutorClient(post_json=post_json, timeout_seconds=3.0)
+    request = ExecutorTaskRequest(
+        session_id="session-a",
+        run_id="run-a",
+        prompt="hello",
+        callback_url="http://callback",
+        callback_token_id="cbt_run-a",
+        callback_token="secret",
+        callback_base_url="http://callback-base",
+        config={"model": "deepseek-v4-flash"},
+    )
+
+    with pytest.raises(ValueError, match="invalid executor connect metadata"):
+        await client.execute(
+            logical_url,
+            request,
+            executor_headers={
+                "X-AI-Platform-Executor-Credential": "executor-secret",
+                "X-AI-Platform-Internal-Executor-Connect-Base-Url": connect_base_url,
+            },
+        )
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_executor_client_allows_explicit_timeout_override():
     calls = []
 

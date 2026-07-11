@@ -34,6 +34,10 @@ from app.runtime.sandbox.contracts import (
     build_trusted_callback_target,
 )
 from app.settings import get_settings
+from app.runtime.sandbox.executor_client import (
+    EXECUTOR_CONNECT_BASE_URL_METADATA,
+    prepare_executor_http_request,
+)
 from app.runtime.sandbox.workspace_permissions import RUNTIME_GID, RUNTIME_UID
 
 
@@ -821,8 +825,8 @@ def default_executor_health_probe(
     executor_headers: dict[str, str] | None = None,
 ) -> bool:
     deadline = time.monotonic() + max(timeout_seconds, 1)
-    health_url = f"{executor_url.rstrip('/')}/health"
-    request_headers = dict(executor_headers or {})
+    logical_health_url = f"{executor_url.rstrip('/')}/health"
+    health_url, request_headers = prepare_executor_http_request(logical_health_url, executor_headers)
     while time.monotonic() <= deadline:
         try:
             with httpx.Client(timeout=1.0) as client:
@@ -845,8 +849,8 @@ def default_executor_identity_probe(
     """Read the effective executor process identity over its lease credential."""
 
     deadline = time.monotonic() + max(timeout_seconds, 1)
-    identity_url = f"{executor_url.rstrip('/')}/health/runtime-identity"
-    request_headers = dict(executor_headers)
+    logical_identity_url = f"{executor_url.rstrip('/')}/health/runtime-identity"
+    identity_url, request_headers = prepare_executor_http_request(logical_identity_url, executor_headers)
     if not request_headers.get(EXECUTOR_AUTH_HEADER):
         raise ContainerStartFailedError("executor identity credential unavailable")
     while time.monotonic() <= deadline:
@@ -947,10 +951,28 @@ def _generate_executor_auth_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-def _executor_auth_headers(executor_auth_token: str, headers: dict[str, str] | None = None) -> dict[str, str]:
+def _executor_auth_headers(
+    executor_auth_token: str,
+    headers: dict[str, str] | None = None,
+    *,
+    connect_base_url: str = "",
+) -> dict[str, str]:
     resolved = dict(headers or {})
     resolved[EXECUTOR_AUTH_HEADER] = executor_auth_token
+    if connect_base_url:
+        resolved[EXECUTOR_CONNECT_BASE_URL_METADATA] = connect_base_url
     return resolved
+
+
+def _executor_connect_base_url(executor_url: str, endpoint: _ExecutorPublishedEndpoint) -> str:
+    parsed = urlsplit(executor_url)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ContainerStartFailedError("executor published endpoint mismatch") from exc
+    if parsed.scheme != "http" or not port:
+        raise ContainerStartFailedError("executor published endpoint mismatch")
+    return f"http://{endpoint.bind_ip}:{port}"
 
 
 def _container_environment(container: Any) -> dict[str, str]:
@@ -1095,21 +1117,25 @@ class DockerContainerProvider:
             return None
         try:
             executor_url = await self._wait_for_executor_url(container, timeout_seconds, endpoint)
-            executor_headers = _executor_auth_headers(executor_auth_token)
+            executor_headers = _executor_auth_headers(
+                executor_auth_token,
+                connect_base_url=_executor_connect_base_url(executor_url, endpoint),
+            )
+            probe_url, probe_headers = prepare_executor_http_request(executor_url, executor_headers)
             healthy = await asyncio.to_thread(
                 _call_executor_health_probe,
                 self._health_probe,
-                executor_url,
+                probe_url,
                 timeout_seconds,
-                executor_headers,
+                probe_headers,
             )
             if not healthy:
                 raise ExecutorHealthTimeoutError()
             identity = await asyncio.to_thread(
                 self._identity_probe,
-                executor_url,
+                probe_url,
                 timeout_seconds,
-                executor_headers,
+                probe_headers,
             )
             _require_expected_executor_identity(identity)
         except asyncio.CancelledError as exc:
@@ -1274,14 +1300,18 @@ class DockerContainerProvider:
             raise ContainerStartFailedError() from exc
         sandbox_container_cold_start_latency_ms = self._elapsed_ms(cold_start_started_at)
         healthcheck_started_at = self._monotonic()
-        executor_headers = _executor_auth_headers(executor_auth_token)
+        executor_headers = _executor_auth_headers(
+            executor_auth_token,
+            connect_base_url=_executor_connect_base_url(executor_url, endpoint),
+        )
+        probe_url, probe_headers = prepare_executor_http_request(executor_url, executor_headers)
         try:
             healthy = await asyncio.to_thread(
                 _call_executor_health_probe,
                 self._health_probe,
-                executor_url,
+                probe_url,
                 settings.sandbox_executor_health_timeout_seconds,
-                executor_headers,
+                probe_headers,
             )
         except asyncio.CancelledError as exc:
             try:
@@ -1302,9 +1332,9 @@ class DockerContainerProvider:
         try:
             identity = await asyncio.to_thread(
                 self._identity_probe,
-                executor_url,
+                probe_url,
                 settings.sandbox_executor_health_timeout_seconds,
-                executor_headers,
+                probe_headers,
             )
             _require_expected_executor_identity(identity)
         except asyncio.CancelledError as exc:

@@ -2,11 +2,12 @@
 
 Status:
 
+- [x] Generation 2 scope envelope - controller `controller-20260711-1945`, board revision 5, dispatch `dispatch-s1b-c-executor-endpoint-20260711-g2-p2`, and both declared fingerprints recomputed exactly before expansion.
 - [x] Phase 0 - authoritative base read back as `d5dfa8a340008dfa8fa4fd44102facaed8c42b95`; `HEAD` equals current `origin/main`.
 - [x] Phase 1 - root cause and endpoint-contract design confirmed from source plus the main controller's 211 reproduction evidence.
 - [x] Phase 2 - RED observed for missing resolver/pinned endpoint (9 failures) and wildcard fallback/env-template gaps (1 failure each).
 - [x] Phase 3 - GREEN implementation pins one validated endpoint contract through Docker create, inspect, and probe; provider tests: 105 passed.
-- [x] Phase 4 - focused provider/runtime-launch/source-authority tests: 182 passed; compile and diff checks exit 0; scope and added-lines secret/path scans clean. Ruff was unavailable in the repository Python environment and is not claimed.
+- [x] Phase 4 - generation 2 affected provider/client/runtime/runtime-launch/source-authority tests: 223 passed; compile and diff checks exit 0; scope and added-lines secret/path scans clean. Ruff was unavailable in the repository Python environment and is not claimed.
 - [ ] Phase 5 - fixed-SHA independent security review and fresh re-review pass.
 - [ ] Phase 6 - ready PR carries exact-head review substitute, validation evidence, and required green CI.
 - [~] 211 runtime verification - deferred to the main controller; this worktree must not connect to or modify 211.
@@ -91,6 +92,6 @@ Fixed-SHA review of `0747af3615eeb0fdd2fc7956b08903cf7b23dc11` found no Critical
 
 - [x] Reject public/global bind addresses; loopback or private IPv4 only.
 - [x] Require exactly one inspected binding with an exact HostIp and numeric port in `1..65535`.
-- [ ] Ensure authenticated health, identity, and later executor task connections use the pinned IP while preserving the configured logical hostname. This requires an explicit scope decision because `app/runtime/sandbox/executor_client.py` or the shared lease endpoint contract is outside this slice's authorized changed-file set.
+- [x] Ensure authenticated health, identity, and later executor task connections use the pinned IP while preserving the configured logical hostname. Generation 2 authorized `app/runtime/sandbox/executor_client.py` and its direct tests without changing runtime or shared lease contracts.
 
-The first two findings are implemented as a separate follow-up change with RED observed for all eight adversarial cases. Phase 5 remains open until the third finding is fixed or rejected with evidence and a fresh independent re-review finds no unhandled Critical or Important issues.
+The first two findings were implemented as a separate follow-up change with RED observed for all eight adversarial cases. The third uses private, non-persisted executor header metadata to carry the pinned connect base URL: request preparation pops that metadata before constructing outgoing headers, connects to the private IP, and sets only the logical hostname and port as HTTP `Host`. RED was observed independently for health, runtime identity, and task dispatch, plus unsafe metadata rejection with zero dispatch. Phase 5 remains open until a fresh fixed-head independent re-review finds no unhandled Critical or Important issues.
