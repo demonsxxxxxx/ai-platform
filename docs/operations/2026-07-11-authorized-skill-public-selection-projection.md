@@ -19,8 +19,9 @@ frontend code, admin APIs, deployment, or 211 runtime state.
   `c59c2194bf57718ffb4308cc22da39f3aae46654`.
 - [x] Fetch/readback observed `origin/main` advance to
   `c4f24aadfeb96dda4c854f4a2312fb3e3da9957d` through docs-only PR #387.
-- [ ] Before fixed-SHA review, fetch/readback and non-interactively rebase onto
-  `c4f24aadfeb96dda4c854f4a2312fb3e3da9957d`; stop on any conflict.
+- [x] Before fixed-SHA review, fetch/readback confirmed `origin/main` at
+  `c4f24aadfeb96dda4c854f4a2312fb3e3da9957d`; non-interactive rebase completed
+  without conflict.
 
 ## Contract
 
