@@ -161,6 +161,10 @@ export function buildSessionRunsUrl(
   }`;
 }
 
+export function buildRunCancelUrl(runId: string): string {
+  return `${API_BASE}/api/ai/runs/${runId}/cancel`;
+}
+
 export const sessionApi = {
   /**
    * List all sessions with pagination
@@ -308,13 +312,14 @@ export const sessionApi = {
   },
 
   /**
-   * Cancel running task for a session
+   * Cancel a queued or running platform run.
    */
-  async cancel(sessionId: string): Promise<{
-    success: boolean;
-    message: string;
+  async cancelRun(runId: string): Promise<{
+    run_id: string;
+    session_id?: string | null;
+    status: string;
   }> {
-    return authFetch(`${API_BASE}/api/chat/sessions/${sessionId}/cancel`, {
+    return authFetch(buildRunCancelUrl(runId), {
       method: "POST",
     });
   },

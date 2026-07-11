@@ -574,7 +574,7 @@ async def mark_read(session_id: str) -> dict[str, bool]:
 
 @router.post("/chat/sessions/{session_id}/cancel")
 async def cancel_session(session_id: str) -> dict[str, object]:
-    return {"success": False, "message": "cancel_not_supported_in_poc", "session_id": session_id}
+    raise HTTPException(status_code=410, detail="session_cancel_unsupported_use_run_cancel")
 
 
 @router.get("/chat/sessions/{session_id}/status")

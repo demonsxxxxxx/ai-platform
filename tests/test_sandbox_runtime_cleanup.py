@@ -17,6 +17,11 @@ def expired_lease_row(**overrides):
         "provider": "docker",
         "status": "active",
         "browser_enabled": False,
+        "runtime_container_id": f"exec-{overrides.get('run_id', 'run-a')}",
+        "runtime_container_name": f"executor-exec-{overrides.get('run_id', 'run-a')}",
+        "runtime_executor_url": "http://executor.test",
+        "runtime_workspace_container_path": "/workspace",
+        "runtime_handle_verified_at": "2026-07-11T00:00:00Z",
     }
     row.update(overrides)
     return row
@@ -66,18 +71,22 @@ async def test_cleanup_expired_sandbox_runtime_leases_stops_runtime_before_relea
 
 
 @pytest.mark.asyncio
-async def test_cleanup_expired_sandbox_runtime_leases_reconstructs_opensandbox_from_lease_payload(monkeypatch):
+async def test_cleanup_expired_sandbox_runtime_leases_uses_verified_handle_not_lease_payload(monkeypatch):
     from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
 
     calls = []
     row = expired_lease_row(
         provider="opensandbox",
+        runtime_container_id="osb-run-a",
+        runtime_container_name="opensandbox-run-a",
+        runtime_executor_url="http://opensandbox-executor.test:18000",
+        runtime_workspace_container_path="/workspace",
         lease_payload_json={
-            "container_id": "osb-run-a",
-            "container_name": "opensandbox-run-a",
-            "executor_url": "http://opensandbox-executor.test:18000",
+            "container_id": "attacker-container",
+            "container_name": "attacker-container",
+            "executor_url": "http://attacker.invalid",
             "workspace_host_path": "/tmp/private/workspace",
-            "workspace_container_path": "/workspace",
+            "workspace_container_path": "/attacker-workspace",
             "labels": {
                 "ai-platform.provider_backend": "opensandbox",
                 "ai-platform.egress.policy": "opensandbox-network-policy",
@@ -99,13 +108,14 @@ async def test_cleanup_expired_sandbox_runtime_leases_reconstructs_opensandbox_f
                     "stop",
                     lease.provider,
                     lease.container_id,
-                    lease.container_name,
-                    lease.executor_url,
-                    lease.workspace_host_path,
-                    lease.labels["ai-platform.provider_backend"],
-                    reason,
+                        lease.container_name,
+                        lease.executor_url,
+                        lease.workspace_host_path,
+                        lease.workspace_container_path,
+                        lease.labels,
+                        reason,
+                    )
                 )
-            )
             return StopResult(container_id=lease.container_id, status="stopped", message=reason)
 
     monkeypatch.setattr(
@@ -132,7 +142,8 @@ async def test_cleanup_expired_sandbox_runtime_leases_reconstructs_opensandbox_f
             "opensandbox-run-a",
             "http://opensandbox-executor.test:18000",
             "",
-            "opensandbox",
+            "/workspace",
+            {},
             "expired",
         ),
         ("release", "tenant-a", "expired", ["lease-a"], None),

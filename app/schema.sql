@@ -13,6 +13,9 @@ create table if not exists workspaces (
   created_at timestamptz not null default now()
 );
 
+create unique index if not exists idx_workspaces_tenant_scope
+  on workspaces(tenant_id, id);
+
 create table if not exists users (
   id text primary key,
   tenant_id text not null references tenants(id),
@@ -371,6 +374,63 @@ create unique index if not exists idx_runs_context_scope
   on runs(tenant_id, workspace_id, user_id, session_id, id);
 create unique index if not exists idx_sessions_run_scope
   on sessions(tenant_id, workspace_id, user_id, id, agent_id);
+
+do $$
+begin
+  if exists (
+    select 1
+    from sessions
+    left join workspaces
+      on workspaces.tenant_id = sessions.tenant_id
+     and workspaces.id = sessions.workspace_id
+    where workspaces.id is null
+    limit 1
+  ) then
+    raise exception 'sessions_workspace_tenant_scope_mismatch';
+  end if;
+  if exists (
+    select 1
+    from runs
+    left join workspaces
+      on workspaces.tenant_id = runs.tenant_id
+     and workspaces.id = runs.workspace_id
+    where workspaces.id is null
+    limit 1
+  ) then
+    raise exception 'runs_workspace_tenant_scope_mismatch';
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'fk_sessions_workspace_scope'
+      and conrelid = 'sessions'::regclass
+  ) then
+    alter table sessions
+      add constraint fk_sessions_workspace_scope
+      foreign key (tenant_id, workspace_id)
+      references workspaces(tenant_id, id);
+  end if;
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'fk_runs_workspace_scope'
+      and conrelid = 'runs'::regclass
+  ) then
+    alter table runs
+      add constraint fk_runs_workspace_scope
+      foreign key (tenant_id, workspace_id)
+      references workspaces(tenant_id, id);
+  end if;
+end $$;
+
+-- Rollback for the additive workspace guard:
+-- alter table runs drop constraint if exists fk_runs_workspace_scope;
+-- alter table sessions drop constraint if exists fk_sessions_workspace_scope;
+-- drop index if exists idx_workspaces_tenant_scope;
 
 do $$
 begin
@@ -810,6 +870,11 @@ create table if not exists sandbox_leases (
   resource_limits_json jsonb not null default '{}'::jsonb,
   user_visible_payload_json jsonb not null default '{}'::jsonb,
   lease_payload_json jsonb not null default '{}'::jsonb,
+  runtime_container_id text,
+  runtime_container_name text,
+  runtime_executor_url text,
+  runtime_workspace_container_path text,
+  runtime_handle_verified_at timestamptz,
   heartbeat_at timestamptz,
   expires_at timestamptz,
   released_at timestamptz,
@@ -822,6 +887,19 @@ create index if not exists idx_sandbox_leases_run
   on sandbox_leases(tenant_id, run_id, created_at desc);
 create index if not exists idx_sandbox_leases_status
   on sandbox_leases(tenant_id, status, expires_at);
+
+alter table sandbox_leases add column if not exists runtime_container_id text;
+alter table sandbox_leases add column if not exists runtime_container_name text;
+alter table sandbox_leases add column if not exists runtime_executor_url text;
+alter table sandbox_leases add column if not exists runtime_workspace_container_path text;
+alter table sandbox_leases add column if not exists runtime_handle_verified_at timestamptz;
+
+-- Rollback for the additive runtime handle columns:
+-- alter table sandbox_leases drop column if exists runtime_handle_verified_at;
+-- alter table sandbox_leases drop column if exists runtime_workspace_container_path;
+-- alter table sandbox_leases drop column if exists runtime_executor_url;
+-- alter table sandbox_leases drop column if exists runtime_container_name;
+-- alter table sandbox_leases drop column if exists runtime_container_id;
 
 create table if not exists files (
   id text primary key,

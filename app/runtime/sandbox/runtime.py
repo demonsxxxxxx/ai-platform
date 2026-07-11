@@ -130,14 +130,25 @@ class SandboxRuntime:
         request: SandboxRuntimeRequest,
         workspace: WorkspaceLease,
     ) -> str | None:
+        runtime_container_id = str(lease.container_id or "").strip()
+        runtime_container_name = str(lease.container_name or "").strip()
+        runtime_executor_url = str(lease.executor_url or "").strip()
+        runtime_workspace_container_path = str(lease.workspace_container_path or "").strip()
+        if not (
+            runtime_container_id
+            and runtime_container_name
+            and runtime_executor_url
+            and runtime_workspace_container_path
+        ):
+            raise ValueError("incomplete_runtime_handle")
         lease_payload = {
             "source": "sandbox_runtime",
             "evidence_class": "runtime_lease_projection",
-            "container_id": lease.container_id,
-            "container_name": lease.container_name,
-            "executor_url": lease.executor_url,
+            "container_id": runtime_container_id,
+            "container_name": runtime_container_name,
+            "executor_url": runtime_executor_url,
             "workspace_host_path": lease.workspace_host_path,
-            "workspace_container_path": lease.workspace_container_path,
+            "workspace_container_path": runtime_workspace_container_path,
             "labels": dict(lease.labels),
         }
         async with transaction() as conn:
@@ -156,6 +167,10 @@ class SandboxRuntime:
                 resource_limits_json=request.resource_limits,
                 user_visible_payload_json=workspace.user_visible_payload(),
                 lease_payload_json=lease_payload,
+                runtime_container_id=runtime_container_id,
+                runtime_container_name=runtime_container_name,
+                runtime_executor_url=runtime_executor_url,
+                runtime_workspace_container_path=runtime_workspace_container_path,
             )
         return str(row.get("id")) if isinstance(row, dict) and row.get("id") else None
 

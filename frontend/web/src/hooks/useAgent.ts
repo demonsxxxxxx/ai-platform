@@ -798,6 +798,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   );
 
   const stopGeneration = useCallback(async () => {
+    const currentRunId = currentRunIdRef.current;
+    if (!currentRunId) {
+      return;
+    }
+
     isSendingRef.current = false;
     setIsLoading(false);
     setIsInitializingSandbox(false);
@@ -815,16 +820,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       })),
     );
 
-    const currentSessionId = sessionIdRef.current;
-    if (currentSessionId) {
-      try {
-        await sessionApi.cancel(currentSessionId);
-      } catch (error) {
-        console.error(
-          "[stopGeneration] Failed to call backend cancel API:",
-          error,
-        );
-      }
+    try {
+      await sessionApi.cancelRun(currentRunId);
+    } catch (error) {
+      console.error(
+        "[stopGeneration] Failed to call backend cancel API:",
+        error,
+      );
     }
   }, [options]);
 

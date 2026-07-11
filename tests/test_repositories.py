@@ -1808,6 +1808,90 @@ async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_prog
 
 
 @pytest.mark.asyncio
+async def test_terminal_run_writes_do_not_overwrite_existing_terminal_status():
+    conn = RecordingConnection()
+
+    await complete_run(conn, tenant_id="tenant-a", run_id="run-a", result_json={"message": "done"})
+    await fail_run(conn, tenant_id="tenant-a", run_id="run-b", error_code="executor_failure", error_message="boom")
+    await cancel_run(conn, tenant_id="tenant-a", run_id="run-c", result_json={"message": "cancelled"})
+
+    update_runs_sql = [sql for sql, _params in conn.calls if sql.startswith("update runs")]
+    assert len(update_runs_sql) == 3
+    assert all("status not in ('succeeded', 'failed', 'cancelled')" in sql for sql in update_runs_sql)
+
+
+@pytest.mark.asyncio
+async def test_record_sandbox_runtime_cleanup_outcome_writes_event_and_audit(monkeypatch):
+    calls = []
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-cleanup"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-cleanup"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    await repositories.record_sandbox_runtime_cleanup_outcome(
+        object(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        trace_id="trace-a",
+        user_id="user-a",
+        requested_by_role="owner",
+        reason="cancel_requested",
+        status="failed",
+        lease_ids=["lease-a"],
+        failures=[{"container_id": "lease-a", "message": "runtime handle missing"}],
+    )
+
+    assert calls == [
+        (
+            "event",
+            {
+                "tenant_id": "tenant-a",
+                "run_id": "run-a",
+                "trace_id": "trace-a",
+                "event_type": "sandbox_runtime_cleanup_failed",
+                "stage": "sandbox",
+                "message": "Sandbox runtime cleanup failed",
+                "payload": {
+                    "visible_to_user": False,
+                    "reason": "cancel_requested",
+                    "status": "failed",
+                    "lease_ids": ["lease-a"],
+                    "failure_count": 1,
+                    "requested_by_role": "owner",
+                    "failures": [{"container_id": "lease-a", "message": "runtime handle missing"}],
+                },
+            },
+        ),
+        (
+            "audit",
+            {
+                "tenant_id": "tenant-a",
+                "user_id": "user-a",
+                "action": "sandbox.runtime.cleanup.failed",
+                "target_type": "run",
+                "target_id": "run-a",
+                "trace_id": "trace-a",
+                "payload_json": {
+                    "run_id": "run-a",
+                    "reason": "cancel_requested",
+                    "status": "failed",
+                    "lease_ids": ["lease-a"],
+                    "failures": [{"container_id": "lease-a", "message": "runtime handle missing"}],
+                    "requested_by_role": "owner",
+                },
+            },
+        ),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_create_run_persists_g2_contract_fields():
     conn = RecordingConnection()
 
@@ -1822,7 +1906,7 @@ async def test_create_run_persists_g2_contract_fields():
         input_json={},
     )
 
-    sql, params = conn.calls[0]
+    sql, params = conn.calls[-1]
     assert run_id.startswith("run_")
     assert "trace_id" in sql
     assert "schema_version" in sql
@@ -1851,11 +1935,98 @@ async def test_create_run_binds_normalized_auth_snapshot():
         auth_source="trusted-header",
     )
 
-    sql, params = conn.calls[0]
+    sql, params = conn.calls[-1]
     assert "principal_roles, principal_department_id, auth_source" in sql
     assert json.dumps(["qa-operator", "qa operator", "user"], ensure_ascii=False) in params
     assert "qa" in params
     assert "trusted-header" in params
+
+
+@pytest.mark.asyncio
+async def test_create_session_validates_workspace_tenant_before_insert(monkeypatch):
+    calls = []
+
+    async def ensure_workspace_belongs_to_tenant(conn, *, tenant_id, workspace_id):
+        calls.append(("ensure_workspace", tenant_id, workspace_id, len(conn.calls)))
+
+    monkeypatch.setattr(
+        repositories,
+        "ensure_workspace_belongs_to_tenant",
+        ensure_workspace_belongs_to_tenant,
+        raising=False,
+    )
+    conn = RecordingConnection()
+
+    await repositories.create_session(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        agent_id="general-agent",
+        title="General",
+    )
+
+    assert calls == [("ensure_workspace", "tenant-a", "workspace-a", 0)]
+    assert conn.calls[-1][0].startswith("insert into sessions")
+
+
+@pytest.mark.asyncio
+async def test_create_run_validates_workspace_tenant_before_insert(monkeypatch):
+    calls = []
+
+    async def ensure_workspace_belongs_to_tenant(conn, *, tenant_id, workspace_id):
+        calls.append(("ensure_workspace", tenant_id, workspace_id, len(conn.calls)))
+
+    monkeypatch.setattr(
+        repositories,
+        "ensure_workspace_belongs_to_tenant",
+        ensure_workspace_belongs_to_tenant,
+        raising=False,
+    )
+    conn = RecordingConnection()
+
+    await repositories.create_run(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        session_id="session-a",
+        user_id="user-a",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input_json={},
+    )
+
+    assert calls == [("ensure_workspace", "tenant-a", "workspace-a", 0)]
+    assert conn.calls[-1][0].startswith("insert into runs")
+
+
+@pytest.mark.asyncio
+async def test_ensure_workspace_belongs_to_tenant_raises_for_missing_workspace():
+    ensure_workspace = getattr(repositories, "ensure_workspace_belongs_to_tenant", None)
+    assert callable(ensure_workspace), "ensure_workspace_belongs_to_tenant missing"
+
+    class EmptyCursor:
+        async def fetchone(self):
+            return None
+
+    class WorkspaceConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return EmptyCursor()
+
+    conn = WorkspaceConnection()
+
+    with pytest.raises(RepositoryNotFoundError, match="workspace_not_found"):
+        await ensure_workspace(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-b",
+        )
+
+    assert conn.calls[0][1] == ("tenant-a", "workspace-b")
 
 
 @pytest.mark.asyncio
@@ -1871,7 +2042,7 @@ async def test_update_run_auth_snapshot_normalizes_roles_and_scopes_update():
         auth_source="trusted-header",
     )
 
-    sql, params = conn.calls[0]
+    sql, params = conn.calls[-1]
     assert "update runs" in sql
     assert "principal_roles = %s::jsonb" in sql
     assert "principal_department_id = %s" in sql
@@ -1908,7 +2079,10 @@ async def test_create_run_rejects_session_scope_mismatch_before_insert_returns()
             self.calls = []
 
         async def execute(self, sql, params):
-            self.calls.append((" ".join(sql.split()), params))
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if normalized.startswith("select id, tenant_id, status from workspaces"):
+                return SingleRowCursor({"id": "workspace-a", "tenant_id": "tenant-a", "status": "active"})
             return EmptyCursor()
 
     conn = RunConnection()
@@ -1925,7 +2099,7 @@ async def test_create_run_rejects_session_scope_mismatch_before_insert_returns()
             input_json={},
         )
 
-    sql, params = conn.calls[0]
+    sql, params = conn.calls[-1]
     assert "insert into runs" in sql
     assert "from sessions" in sql
     assert "sessions.tenant_id = %s" in sql
@@ -6885,8 +7059,19 @@ async def test_admin_run_detail_projects_g2_trace_event_artifact_and_audit_contr
                             },
                             "lease_payload_json": {
                                 "source": "foundation_runtime_lifecycle_probe",
+                                "container_id": "exec-run-a",
+                                "container_name": "executor-exec-run-a",
+                                "executor_url": "http://executor.internal",
+                                "workspace_host_path": "/var/lib/ai-platform/run-a",
+                                "workspace_container_path": "/workspace",
+                                "labels": {"runtime": "private"},
                                 "client_secret": "lease-secret",
                             },
+                            "runtime_container_id": "exec-run-a",
+                            "runtime_container_name": "executor-exec-run-a",
+                            "runtime_executor_url": "http://executor.internal",
+                            "runtime_workspace_container_path": "/workspace",
+                            "runtime_handle_verified_at": "2026-07-11T00:00:00Z",
                             "heartbeat_at": None,
                             "expires_at": None,
                             "released_at": None,
@@ -6931,6 +7116,9 @@ async def test_admin_run_detail_projects_g2_trace_event_artifact_and_audit_contr
     assert "lease-secret" not in serialized_leases
     assert "secret-limit" not in serialized_leases
     assert "/var/lib/ai-platform" not in serialized_leases
+    assert "exec-run-a" not in serialized_leases
+    assert "executor.internal" not in serialized_leases
+    assert "runtime_handle_verified_at" not in serialized_leases
     assert detail["skill_snapshots"] == [
         {
             "skill_id": "qa-file-reviewer",

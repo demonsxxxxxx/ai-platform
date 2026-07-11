@@ -548,6 +548,45 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_worker_does_not_append_success_terminal_events_when_run_is_already_terminal(monkeypatch):
+    calls = []
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-stale"
+
+    async def create_artifact(conn, **kwargs):
+        calls.append(("artifact", kwargs["artifact_type"]))
+
+    async def complete_run(conn, *, tenant_id, run_id, result_json):
+        calls.append(("complete", run_id))
+        return False
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("release", kwargs["reason"]))
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+
+    assert outcome.status == "skipped"
+    assert outcome.error_code == "stale_terminal_state"
+    assert ("complete", "run-a") in calls
+    assert not any(item[0] == "event" and item[1] in {"run_succeeded", "status"} for item in calls)
+    assert not any(item == ("release", "run_succeeded") for item in calls)
+
+
+@pytest.mark.asyncio
 async def test_worker_passes_locked_run_model_id_to_adapter(monkeypatch):
     calls = []
     locked_run = locked_run_from_payload(
@@ -901,6 +940,40 @@ async def test_worker_releases_runtime_sandbox_lease_when_adapter_reports_failur
 
 
 @pytest.mark.asyncio
+async def test_worker_does_not_append_failure_terminal_events_when_run_is_already_terminal(monkeypatch):
+    calls = []
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-stale"
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", run_id, error_code))
+        return False
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("release", kwargs["reason"]))
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeFailureAdapter()}))
+
+    assert outcome.status == "skipped"
+    assert outcome.error_code == "stale_terminal_state"
+    assert ("fail", "run-a", "fake_failure") in calls
+    assert not any(item[0] == "event" and item[1] in {"run_failed", "error"} for item in calls)
+    assert not any(item == ("release", "run_failed") for item in calls)
+
+
+@pytest.mark.asyncio
 async def test_worker_releases_runtime_sandbox_lease_when_cancelled_on_event_boundary(monkeypatch):
     calls = []
     cancel_checks = 0
@@ -1058,6 +1131,96 @@ async def test_worker_prefers_cancelled_after_executor_failure_when_cancel_reque
     assert outcome.status == "cancelled"
     assert any(item[0] == "cancel" for item in calls)
     assert ("event", "run_cancelled", "control") in calls
+
+
+@pytest.mark.asyncio
+async def test_worker_prefers_cancelled_when_executor_raises_after_cancel_request(monkeypatch):
+    calls = []
+    cancel_checks = 0
+
+    class RaisingAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise RuntimeError("executor failed after accepted cancel")
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def is_cancel_requested(conn, *, tenant_id, run_id):
+        nonlocal cancel_checks
+        cancel_checks += 1
+        return cancel_checks >= 2
+
+    async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
+        calls.append(("cancel", run_id, result_json))
+
+    async def fail_run(conn, **kwargs):
+        raise AssertionError("accepted cancel must not be overwritten by executor_failure")
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-cancelled"
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": RaisingAdapter()}))
+
+    assert outcome.status == "cancelled"
+    assert any(item[0] == "cancel" for item in calls)
+    assert ("event", "run_cancelled", "control") in calls
+
+
+@pytest.mark.asyncio
+async def test_worker_does_not_append_cancel_terminal_event_when_cancel_update_is_stale(monkeypatch):
+    calls = []
+    cancel_checks = 0
+
+    class RaisingAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise RuntimeError("executor failed after accepted cancel")
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def is_cancel_requested(conn, *, tenant_id, run_id):
+        nonlocal cancel_checks
+        cancel_checks += 1
+        return cancel_checks >= 2
+
+    async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
+        calls.append(("cancel", run_id, result_json))
+        return False
+
+    async def fail_run(conn, **kwargs):
+        raise AssertionError("accepted cancel must not be overwritten by executor_failure")
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-stale-cancel"
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("release", kwargs["reason"]))
+        return {"id": kwargs["lease_id"], "status": "released", **kwargs}
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": RaisingAdapter()}))
+
+    assert outcome.status == "skipped"
+    assert outcome.error_code == "stale_terminal_state"
+    assert any(item[0] == "cancel" for item in calls)
+    assert ("event", "run_cancelled", "control") not in calls
+    assert not any(item == ("release", "run_cancelled") for item in calls)
 
 
 @pytest.mark.asyncio
