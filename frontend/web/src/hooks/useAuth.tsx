@@ -19,7 +19,8 @@ import {
   clearRedirectPath,
   isAuthenticated,
 } from "../services/api";
-import { parseAuthStorageEvent, setTokens } from "../services/api/token";
+import { setTokens } from "../services/api/token";
+import { handleBrowserAuthStorageEvent } from "./browserAuthStorage";
 import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../components/layout/AppContent/useAgentOptions";
 import {
   hasAllEffectivePermissions,
@@ -205,14 +206,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
 
     const handleStorage = (event: StorageEvent) => {
-      const authEvent = parseAuthStorageEvent(event);
-      if (authEvent === "logout") {
-        clearLocalAuthView();
-        return;
-      }
-      if (authEvent === "login") {
-        void refreshUser();
-      }
+      handleBrowserAuthStorageEvent(event, refreshUser);
     };
 
     window.addEventListener("auth:logout", handleLogout);

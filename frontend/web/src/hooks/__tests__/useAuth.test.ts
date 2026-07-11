@@ -22,14 +22,9 @@ test("useAuth bootstraps browser auth from the backend cookie session probe", ()
 
 test("useAuth listens for cross-tab cookie-session marker changes", () => {
   assert.match(useAuthSource, /window\.addEventListener\("storage", handleStorage\)/);
-  assert.match(useAuthSource, /const authEvent = parseAuthStorageEvent\(event\);/);
   assert.match(
     useAuthSource,
-    /if \(authEvent === "logout"\) \{[\s\S]*clearLocalAuthView\(\);[\s\S]*return;[\s\S]*}/,
-  );
-  assert.match(
-    useAuthSource,
-    /if \(authEvent === "login"\) \{[\s\S]*void refreshUser\(\);[\s\S]*}/,
+    /const handleStorage = \(event: StorageEvent\) => \{[\s\S]*handleBrowserAuthStorageEvent\(event, refreshUser\);[\s\S]*};/,
   );
   const applyAuthenticatedUserBlock = useAuthSource.match(
     /const applyAuthenticatedUser = useCallback\(\(currentUser: User\) => \{[\s\S]*?\}, \[\]\);/,
