@@ -810,6 +810,10 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     assert created["metadata"]["ai-platform.owner"] == "sandbox-runtime"
     assert created["metadata"]["ai-platform.tenant_id"] == "tenant-a"
     assert created["metadata"]["ai-platform.run_id"] == "run-a"
+    assert created["metadata"]["ai-platform.executor.user"] == "10001:10001"
+    assert created["metadata"]["ai-platform.executor.uid"] == "10001"
+    assert created["metadata"]["ai-platform.executor.gid"] == "10001"
+    assert created["metadata"]["ai-platform.executor.identity_evidence"] == "authenticated-runtime-endpoint"
     assert created["env"]["APP_MODULE"] == "app.runtime.sandbox.executor_app:create_executor_app"
     assert created["env"]["AI_PLATFORM_RUN_ID"] == "run-a"
     assert created["resource"] == {"cpu": "2", "memory": "512Mi", "pids": "64"}
@@ -831,6 +835,7 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     assert lease.workspace_container_path == "/workspace"
     assert lease.labels["ai-platform.provider_backend"] == "opensandbox"
     assert lease.labels["ai-platform.egress.policy"] == "opensandbox-network-policy"
+    assert not any(key.startswith("ai-platform.executor.") for key in lease.labels)
 
 
 @pytest.mark.asyncio
@@ -1769,9 +1774,32 @@ async def test_docker_provider_uses_and_verifies_exact_runtime_identity(monkeypa
     assert fake.created[0]["user"] == "10001:10001"
     assert fake.containers_by_name[lease.container_name].attrs["Config"]["User"] == "10001:10001"
     assert probes[0][1]["X-AI-Platform-Executor-Credential"]
-    assert lease.labels["ai-platform.executor.uid"] == "10001"
-    assert lease.labels["ai-platform.executor.gid"] == "10001"
-    assert lease.labels["ai-platform.executor.identity_evidence"] == "authenticated-runtime-endpoint"
+    remote_labels = fake.containers_by_name[lease.container_name].attrs["Config"]["Labels"]
+    assert remote_labels["ai-platform.executor.user"] == "10001:10001"
+    assert remote_labels["ai-platform.executor.uid"] == "10001"
+    assert remote_labels["ai-platform.executor.gid"] == "10001"
+    assert remote_labels["ai-platform.executor.identity_evidence"] == "authenticated-runtime-endpoint"
+    assert not any(key.startswith("ai-platform.executor.") for key in lease.labels)
+
+
+@pytest.mark.asyncio
+async def test_docker_cached_reuse_rejects_remote_identity_label_mismatch():
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    first = await provider.create_or_reuse(request(), workspace())
+    container = fake.containers_by_name[first.container_name]
+    container.labels["ai-platform.executor.uid"] = "0"
+
+    with pytest.raises(ContainerStartFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert container.stopped is True
+    assert container.removed is True
 
 
 @pytest.mark.asyncio
@@ -2145,6 +2173,24 @@ async def test_opensandbox_cached_reuse_revalidates_remote_scope_metadata(monkey
     first = await provider.create_or_reuse(request(), workspace())
     sandbox = FakeOpenSandbox.instances[first.container_id]
     sandbox.metadata["ai-platform.tenant_id"] = "tenant-b"
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="cached sandbox metadata mismatch"):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_cached_reuse_rejects_remote_identity_label_mismatch(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    first = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    sandbox.metadata["ai-platform.executor.gid"] = "0"
 
     with pytest.raises(container_provider.ContainerStartFailedError, match="cached sandbox metadata mismatch"):
         await provider.create_or_reuse(request(), workspace())

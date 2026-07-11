@@ -330,6 +330,21 @@ def _executor_identity_labels() -> dict[str, str]:
     }
 
 
+def _provider_lease_labels(labels: dict[str, str]) -> dict[str, str]:
+    return {
+        str(key): str(value)
+        for key, value in labels.items()
+        if not str(key).startswith("ai-platform.executor.")
+    }
+
+
+def _status_has_expected_executor_identity_labels(status: ContainerStatus) -> bool:
+    labels = status.detail.get("labels")
+    if not isinstance(labels, dict):
+        return False
+    return all(str(labels.get(key) or "") == expected for key, expected in _executor_identity_labels().items())
+
+
 def _env_bool(value: object) -> str:
     return "true" if value is True or str(value).strip().lower() in {"1", "true", "yes", "on"} else "false"
 
@@ -1003,8 +1018,11 @@ class DockerContainerProvider:
             return None
         if not _status_matches_lease(status, lease):
             return None
-        expected_user = lease.labels.get("ai-platform.executor.user", "")
-        if expected_user != f"{RUNTIME_UID}:{RUNTIME_GID}" or _container_config_user(container) != expected_user:
+        if not _status_has_expected_executor_identity_labels(status):
+            self._cleanup_container_or_track(container, lease)
+            return None
+        expected_user = f"{RUNTIME_UID}:{RUNTIME_GID}"
+        if _container_config_user(container) != expected_user:
             self._cleanup_container_or_track(container, lease)
             return None
         executor_auth_token = _container_executor_auth_token(container)
@@ -1095,7 +1113,6 @@ class DockerContainerProvider:
                 self._leases.pop(container_id, None)
                 raise ContainerStartFailedError("cached lease scope mismatch")
             existing.labels.update(expected_egress_labels)
-            existing.labels.update(_executor_identity_labels())
             recovered_existing = await self._reuse_existing_container(
                 existing,
                 settings.sandbox_container_start_timeout_seconds,
@@ -1108,7 +1125,6 @@ class DockerContainerProvider:
 
         bootstrap_lease = _lease_from_request("docker", request, workspace, executor_url=_executor_url())
         bootstrap_lease.labels.update(expected_egress_labels)
-        bootstrap_lease.labels.update(_executor_identity_labels())
         recovered = await self._reuse_existing_container(
             bootstrap_lease,
             settings.sandbox_container_start_timeout_seconds,
@@ -1124,7 +1140,7 @@ class DockerContainerProvider:
                 image=settings.sandbox_executor_image,
                 name=bootstrap_lease.container_name,
                 detach=True,
-                labels=bootstrap_lease.platform_labels(),
+                labels={**bootstrap_lease.platform_labels(), **_executor_identity_labels()},
                 volumes={
                     workspace.workspace_host_path: {
                         "bind": workspace.workspace_container_path,
@@ -1499,7 +1515,7 @@ class OpenSandboxContainerProvider:
             browser_enabled=request.browser_enabled,
             workspace_host_path=workspace.workspace_host_path,
             workspace_container_path=workspace.workspace_container_path,
-            labels=dict(metadata),
+            labels=_provider_lease_labels(metadata),
         )
         self._sandboxes[sandbox_id] = sandbox
         self._leases[f"opensandbox-{request.run_id}"] = lease
@@ -1707,7 +1723,7 @@ class OpenSandboxContainerProvider:
             browser_enabled=request.browser_enabled,
             workspace_host_path=workspace.workspace_host_path,
             workspace_container_path=workspace.workspace_container_path,
-            labels=metadata,
+            labels=_provider_lease_labels(metadata),
             timings={
                 "sandbox_container_start_latency_ms": self._elapsed_ms(started_at),
                 "sandbox_container_cold_start_latency_ms": self._elapsed_ms(started_at),

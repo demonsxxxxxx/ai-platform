@@ -19,10 +19,10 @@ runtime acceptance, or gate closure.
 - [x] Phase 1 - Fresh fetch/readback and current source investigation completed in an isolated clean worktree.
 - [x] Phase 2 - Fixed `10001:10001` design approved; formal design and implementation plan recorded.
 - [x] Phase 3 - TDD RED captured missing workspace module, image/compose identity, authenticated executor identity endpoint, Docker fail-closed ownership, OpenSandbox identity denial, workspace hard-link/mode, and worker TMPDIR contracts.
-- [x] Phase 4 - GREEN implementation and focused affected tests completed locally: `541 passed, 3 skipped`.
-- [x] Phase 5 - Compile, diff, 18-file scope, new-line secret, and forbidden-config gates completed locally.
-- [ ] Phase 6 - Reviews of `4dc438f` and `a527611` completed; cached cleanup evidence/retention follow-up is implemented and fresh fixed-head re-review is pending.
-- [ ] Phase 7 - Draft PR #395 exists; ready state, exact-head GitHub evidence comments, and required final-head CI are pending.
+- [x] Phase 4 - GREEN implementation and focused affected tests completed locally: `543 passed, 3 skipped`.
+- [x] Phase 5 - Compile, diff, 20-file approved projection-fix scope, new-line secret, and forbidden-config gates completed locally.
+- [ ] Phase 6 - Reviews through rebased head `8a46a69` completed; its projection-leak Important is fixed and fresh fixed-head re-review is pending.
+- [ ] Phase 7 - Draft PR #395 exists; `8a46a69` review/CI is historical, and current exact-head comments, required CI, and ready state are pending.
 - [~] Docker-capable image/runtime and 211 acceptance are controller-owned and deferred until source stabilizes.
 
 ## Approved Contract
@@ -80,6 +80,20 @@ provider now returns a verifiable cleanup result, raises typed
 termination cannot be confirmed. Cached scope/identity, cold identity, and
 explicit stop failure paths have Docker and OpenSandbox regressions.
 
+The rebased `8a46a69` evidence review found that provider identity evidence was
+also copied into persisted lease labels. The exact RED command was:
+
+```text
+python -m pytest tests/test_sandbox_container_provider.py::test_docker_provider_uses_and_verifies_exact_runtime_identity tests/test_sandbox_container_provider.py::test_opensandbox_provider_maps_lease_and_platform_controls tests/test_sandbox_runtime.py::test_runtime_default_db_record_persists_trusted_opensandbox_runtime_handle -q --basetemp .pytest-tmp\s1b-b-projection-red-001
+```
+
+It produced `3 failed`: Docker and OpenSandbox returned identity labels in the
+lease, and runtime persistence copied all four identity fields. Provider leases
+and runtime persistence now filter `ai-platform.executor.*`, while Docker and
+OpenSandbox remote metadata retain exact identity labels for reuse validation.
+The focused GREEN command added both remote-label mismatch regressions and
+completed with `5 passed` under `.pytest-tmp\s1b-b-projection-green-001`.
+
 Observed focused GREEN results so far:
 
 - workspace/launch/provider/executor/contracts: `140 passed`;
@@ -105,6 +119,11 @@ python -m pytest tests/test_runtime_workspace_permissions.py tests/test_runtime_
 It completed with `541 passed, 3 skipped`; the parallel compile command exited
 0. This is rebased local source evidence only, before final exact-head review,
 PR comments, and required final-head CI.
+
+After the projection fix, the same affected file list was run with basetemp
+`.pytest-tmp\s1b-b-projection-final-001` and completed with
+`543 passed, 3 skipped`; compile again exited 0. All review and CI evidence for
+`8a46a69` is historical and cannot satisfy the resulting fixed head.
 
 The fixed-SHA `4dc438f` security and evidence reviews found no Critical issue.
 They identified two Important gaps: cached lease reuse was not bound to the
