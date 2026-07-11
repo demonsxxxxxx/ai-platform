@@ -15,7 +15,7 @@ This document covers only the S1B-A source slice. It does not claim complete S1B
 - [x] Phase 3 - S1B-A execution-boundary implementation completed locally.
 - [x] Phase 4 - Focused affected tests completed locally: `317 passed, 3 skipped`.
 - [x] Phase 5 - Fixed-SHA independent review completed with no blocking findings at `18febbfaaf0096cf4754cbff6cf2ca2428f2f395`.
-- [ ] Phase 6 - Ready PR, exact-head review/validation comments, and required CI pending.
+- [ ] Phase 6 - Ready PR [#393](https://github.com/demonsxxxxxx/ai-platform/pull/393) created; exact-head review/validation comments and required CI pending.
 - [~] S1B-B - Worker/runtime non-root execution deferred; blocker recorded below.
 - [~] 211 deployment and runtime verification explicitly out of scope for this source slice.
 
