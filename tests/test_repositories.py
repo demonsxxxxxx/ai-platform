@@ -441,6 +441,7 @@ async def test_authorize_replay_run_capabilities_keeps_exact_v1_after_current_v2
         agent_id="general-agent",
         skill_id="department-review",
         pinned_version="hash-v1",
+        pinned_executor_type="claude-agent-worker",
         skill_manifests=[
             {
                 "skill_id": "department-review",
@@ -449,6 +450,7 @@ async def test_authorize_replay_run_capabilities_keeps_exact_v1_after_current_v2
                 "source": {"kind": "uploaded"},
                 "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
                 "dependency_ids": [],
+                "mcp_tool_ids": [],
             }
         ],
         normalized_input={},
@@ -500,6 +502,7 @@ async def test_authorize_replay_run_capabilities_blocks_revoked_historical_pin(
             agent_id="general-agent",
             skill_id="department-review",
             pinned_version="hash-v1",
+            pinned_executor_type="claude-agent-worker",
             skill_manifests=[
                 {
                     "skill_id": "department-review",
@@ -508,6 +511,7 @@ async def test_authorize_replay_run_capabilities_blocks_revoked_historical_pin(
                     "source": {"kind": "uploaded"},
                     "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
                     "dependency_ids": [],
+                    "mcp_tool_ids": [],
                 }
             ],
             normalized_input={},
@@ -515,6 +519,142 @@ async def test_authorize_replay_run_capabilities_blocks_revoked_historical_pin(
             principal_roles=["reviewer"],
             is_admin=False,
             permissions=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_authorize_replay_run_capabilities_reauthorizes_pinned_historical_mcp(monkeypatch):
+    calls = []
+
+    async def shared_authorizer(conn, **kwargs):
+        calls.append(kwargs["normalized_input"])
+        return {
+            "skill_id": kwargs["skill_id"],
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-v2",
+        }
+
+    async def historical_version(conn, *, skill_id, version):
+        return {
+            "skill_id": skill_id,
+            "version": version,
+            "content_hash": version,
+            "status": "active",
+        }
+
+    monkeypatch.setattr(repositories, "_authorize_run_capabilities", shared_authorizer)
+    monkeypatch.setattr(repositories, "get_skill_version", historical_version)
+
+    await repositories.authorize_replay_run_capabilities(
+        object(),
+        tenant_id="tenant-a",
+        agent_id="general-agent",
+        skill_id="knowledge-v1",
+        pinned_version="hash-v1",
+        pinned_executor_type="ragflow",
+        skill_manifests=[
+            {
+                "skill_id": "knowledge-v1",
+                "version": "hash-v1",
+                "content_hash": "hash-v1",
+                "source": {"kind": "uploaded"},
+                "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+                "dependency_ids": [],
+                "mcp_tool_ids": ["historical-search"],
+            }
+        ],
+        normalized_input={"message": "search"},
+        principal_department_id="qa",
+        principal_roles=["reviewer"],
+        is_admin=False,
+        permissions=[],
+    )
+
+    assert calls == [{"message": "search", "mcp_tool_ids": ["historical-search"]}]
+
+
+def test_run_skill_snapshot_source_recomputes_file_and_release_identity():
+    manifest = {
+        "skill_id": "department-review",
+        "version": "hash-v1",
+        "content_hash": "hash-v1",
+        "source": {"kind": "uploaded", "storage_key": "private/package.zip"},
+        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        "dependency_ids": [],
+        "mcp_tool_ids": [],
+        "mcp_tool_ids": [],
+        "snapshot_governance": {"selected_files": [{"sha256": "caller-controlled"}]},
+    }
+
+    locked = repositories.run_skill_snapshot_source_json(
+        manifest,
+        release_decision={"selected_version": "hash-v1", "selected_track": "current"},
+    )
+    changed_file = repositories.run_skill_snapshot_source_json(
+        {
+            **manifest,
+            "files": [{"relative_path": "SKILL.md", "content_base64": "ZHJpZnQ=", "size_bytes": 5}],
+        },
+        release_decision={"selected_version": "hash-v1", "selected_track": "current"},
+    )
+    changed_release = repositories.run_skill_snapshot_source_json(
+        manifest,
+        release_decision={"selected_version": "hash-v1", "selected_track": "previous"},
+    )
+
+    assert locked["snapshot_governance"]["selected_files"][0]["sha256"] != "caller-controlled"
+    assert locked != changed_file
+    assert locked["release_decision_sha256"] != changed_release["release_decision_sha256"]
+    assert "files" not in locked
+    assert "storage_key" not in locked
+
+
+@pytest.mark.asyncio
+async def test_copy_run_as_new_task_rejects_source_snapshot_mismatch_before_writes(monkeypatch):
+    source_manifest = {
+        "skill_id": "department-review",
+        "version": "hash-v1",
+        "content_hash": "hash-v1",
+        "source": {"kind": "uploaded"},
+        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        "dependency_ids": [],
+        "mcp_tool_ids": [],
+    }
+
+    async def source_run(conn, **kwargs):
+        return {
+            "id": "run-source",
+            "workspace_id": "default",
+            "session_id": "ses-source",
+            "agent_id": "general-agent",
+            "skill_id": "department-review",
+            "principal_roles": ["reviewer"],
+            "principal_department_id": "qa",
+            "input_json": {
+                "input": {"message": "review"},
+                "executor_type": "claude-agent-worker",
+                "skill_version": "hash-v1",
+                "release_decision": {"selected_version": "hash-v1", "selected_track": "current"},
+                "skill_manifests": [source_manifest],
+            },
+        }
+
+    async def mismatch(*args, **kwargs):
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+
+    async def forbidden_replay(*args, **kwargs):
+        raise AssertionError("source snapshot mismatch must deny before replay authorization or writes")
+
+    monkeypatch.setattr(repositories, "get_authorized_run", source_run)
+    monkeypatch.setattr(repositories, "validate_run_skill_snapshots_for_dispatch", mismatch)
+    monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", forbidden_replay)
+
+    with pytest.raises(RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
+        await repositories.copy_run_as_new_task(
+            object(),
+            tenant_id="tenant-a",
+            user_id="user-a",
+            run_id="run-source",
         )
 
 
@@ -527,6 +667,7 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
         "source": {"kind": "uploaded"},
         "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
         "dependency_ids": [],
+        "mcp_tool_ids": [],
         "allowed": True,
         "staged": False,
         "used": False,
@@ -566,6 +707,9 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
         calls["authorize"] = kwargs
         return {"executor_type": "claude-agent-worker", "skill_version": "hash-v2"}
 
+    async def validate_source(conn, **kwargs):
+        calls["source_snapshot"] = kwargs
+
     async def no_completed(*args, **kwargs):
         return {}, {}
 
@@ -577,6 +721,7 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
 
     monkeypatch.setattr(repositories, "get_authorized_run", get_source)
     monkeypatch.setattr(repositories, "authorize_replay_run_capabilities", authorize_replay)
+    monkeypatch.setattr(repositories, "validate_run_skill_snapshots_for_dispatch", validate_source)
     monkeypatch.setattr(repositories, "_completed_steps_for_resume", no_completed)
     monkeypatch.setattr(repositories, "append_event", no_write)
     monkeypatch.setattr(repositories, "append_message", no_write)
@@ -590,7 +735,10 @@ async def test_copy_run_as_new_task_reauthorizes_but_persists_source_v1_provenan
     )
 
     assert calls["authorize"]["pinned_version"] == "hash-v1"
+    assert calls["authorize"]["pinned_executor_type"] == "claude-agent-worker"
     assert calls["authorize"]["skill_manifests"] == [source_manifest]
+    assert calls["source_snapshot"]["run_id"] == "run-source"
+    assert calls["source_snapshot"]["release_decision"] == source_release
     assert calls["snapshots"]["skill_manifests"] == [source_manifest]
     assert copied["skill_version"] == "hash-v1"
     assert copied["release_decision"] == source_release
@@ -6121,6 +6269,7 @@ async def test_insert_run_skill_snapshots_at_creation_is_insert_only_and_exact()
             "source": {"kind": "uploaded", "storage_key": "must-not-persist"},
             "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
             "dependency_ids": ["dependency-a"],
+            "mcp_tool_ids": [],
             "snapshot_governance": {
                 "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
                 "selected_files": [{"relative_path": "SKILL.md", "size_bytes": 5, "sha256": "hash-file"}],
@@ -6136,6 +6285,7 @@ async def test_insert_run_skill_snapshots_at_creation_is_insert_only_and_exact()
         tenant_id="tenant-a",
         run_id="run-a",
         skill_manifests=manifests,
+        release_decision={"selected_version": "hash-v1", "selected_track": "current"},
     )
 
     sql, params = conn.calls[0]
@@ -6165,8 +6315,10 @@ async def test_insert_run_skill_snapshots_at_creation_rejects_non_materializable
                     "source": {"kind": "uploaded"},
                     "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
                     "dependency_ids": [],
+                    "mcp_tool_ids": [],
                 }
             ],
+            release_decision={"selected_version": "hash-v1", "selected_track": "current"},
         )
 
 

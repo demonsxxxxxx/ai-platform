@@ -590,6 +590,11 @@ async def chat_stream(
                 skill_manifests,
                 release_decision=release_decision_payload,
             )
+            skill_manifests = repositories.pin_primary_skill_mcp_tool_ids(
+                skill_manifests,
+                skill_id=resolved_skill_id,
+                mcp_tool_ids=repositories.run_mcp_tool_ids_for_skill(skill, run_input),
+            )
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
             queue_payload = _validate_queue_payload_for_enqueue(
@@ -668,6 +673,7 @@ async def chat_stream(
                 tenant_id=principal.tenant_id,
                 run_id=run_id,
                 skill_manifests=queue_payload["skill_manifests"],
+                release_decision=release_decision_payload,
             )
             message_id = await repositories.append_message(
                 conn,

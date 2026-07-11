@@ -11,7 +11,7 @@ Status: `local partial`
 - [x] Phase 2 - TDD RED/GREEN for ordinary selected-Skill admission and durable creation-time provenance.
 - [x] Phase 3 - TDD RED/GREEN for copy/retry/resume/existing child pin preservation and worker reauthorization.
 - [x] Phase 4 - affected backend tests, compile, diff, secret/scope checks, and large-feature checklist passed.
-- [ ] Phase 5 - fixed-SHA independent broad review, fixes, and re-review.
+- [ ] Phase 5 - fixed-SHA broad review found three Important issues; all fixes are locally green and exact-head re-review remains.
 - [ ] Phase 6 - ready PR, exact-head review substitute and validation evidence, required CI.
 
 This document records a backend source slice only. It does not claim frontend completion, B1-B6 closure, B2 sandbox closure, 211 verification, deployment, or a closable product gate.
@@ -51,7 +51,7 @@ The create transaction orders work as follows:
 3. Authorize Skill and MCP dependencies and validate the expected exact version.
 4. Materialize exact Skill/dependency manifests and release decision.
 5. Create session/run records.
-6. Insert immutable `run_skill_snapshots` for every manifest with `allowed=true`, `staged=false`, `used=false`; the run input remains the durable exact file-content source. A later write may only update monotonic authorization/staging/usage flags when identity, version, hash, source, and dependencies match exactly.
+6. Insert immutable `run_skill_snapshots` for every manifest with `allowed=true`, `staged=false`, `used=false`; canonical file digests, dependency/MCP IDs, source identity, and a release-decision hash bind the exact run-input content without storing file bytes or private storage paths in the snapshot row. A later write may only update monotonic authorization/staging/usage flags when the complete identity matches exactly.
 7. Bind already-admitted files, write initial events/context, commit, then enqueue.
 
 Worker dispatch reloads the locked run snapshot, rejects queue identity or immutable snapshot mismatch, reauthorizes current Skill distribution and MCP dependencies, and only then resolves an adapter or creates/stages runtime state. Denials write a sanitized error/event/audit and never call the adapter. Worker persistence must never overwrite historical identity/version/hash/source/dependencies.
@@ -117,7 +117,11 @@ No PostgreSQL integration test was added or run because this source slice's orde
 - `tests/test_run_control_routes.py`: `129 passed` using `.pytest-tmp/selected-skill-run-control-20260711-02`.
 - Selected resolver materialization invariant: RED (`DID NOT RAISE`), then GREEN (`2 passed`) using fresh resolver-specific children.
 - Chat raw internal selector: RED (`DID NOT RAISE`), then GREEN; complete chat slice `53 passed`.
-- Complete affected suite: `682 passed` using `.pytest-tmp/selected-skill-affected-20260711-02`.
+- Complete affected suite before independent review: `682 passed` using `.pytest-tmp/selected-skill-affected-20260711-02`.
+- Fixed-SHA `b9fb1f965293ed345cda56421e12fbc3879a64db` independent broad review: no Critical; three Important findings for file/release snapshot identity, source snapshot readback before replay, and historical MCP reauthorization.
+- Review-fix RED: three focused failures for missing release/file identity, missing source readback, and missing pinned historical MCP injection.
+- Review-fix GREEN: focused repository `3 passed`, repository file `227 passed`, route/run-control fixture slice `26 passed`, worker MCP/identity slices `12 passed` and `4 passed`.
+- Complete affected suite after review fixes: `686 passed` using `.pytest-tmp/selected-skill-affected-20260711-03`.
 - `python -m compileall -q app tools scripts`: exit 0.
 - `git diff --check`: exit 0.
 - Changed-file allowlist and added-line secret/real `.env`/personal-path scan: pass.

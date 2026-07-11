@@ -221,6 +221,7 @@ def replay_manifest(skill_id: str, version: str, *, source_kind: str = "builtin"
     manifest = snapshot_manifest(skill_id, source={"kind": source_kind, "asset_dir": skill_id})
     manifest["version"] = version
     manifest["content_hash"] = version
+    manifest["mcp_tool_ids"] = []
     return manifest
 
 
@@ -3559,7 +3560,18 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
         "agent_id": "general-agent",
         "skill_id": "general-chat",
         "status": "failed",
-        "input_json": {"input": {"message": "retry"}},
+        "input_json": {
+            "input": {"message": "retry"},
+            "executor_type": "claude-agent-worker",
+            "skill_version": "hash-v1",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": "hash-v1",
+                "selected_track": "manifest_pin",
+            },
+            "skill_manifests": [replay_manifest("general-chat", "hash-v1")],
+        },
         "principal_roles": ["user"],
         "principal_department_id": "qa",
         "auth_source": "session-token",
@@ -3590,6 +3602,9 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
         )
         return "aud-denied"
 
+    async def validate_source_snapshot(*args, **kwargs):
+        return None
+
     async def fail_prepare(*args, **kwargs):
         raise AssertionError("selector denial must precede copied-run queue preparation")
 
@@ -3605,6 +3620,11 @@ async def test_copy_retry_resume_real_authorizer_hides_selector_state_and_audits
     monkeypatch.setattr(repository_module, "get_active_resume_for_source_run", no_active_run)
     monkeypatch.setattr(repository_module, "_completed_steps_for_resume", completed_steps)
     monkeypatch.setattr(repository_module, "resolve_selected_skill", reject_selector)
+    monkeypatch.setattr(
+        repository_module,
+        "validate_run_skill_snapshots_for_dispatch",
+        validate_source_snapshot,
+    )
     monkeypatch.setattr(
         repository_module,
         "authorize_replay_run_capabilities",
@@ -3647,6 +3667,13 @@ async def test_persisted_owner_capability_authorization_uses_run_snapshot(monkey
                 ]
             },
             "skill_version": "hash-v1",
+            "executor_type": "claude-agent-worker",
+            "release_decision": {
+                "schema_version": "ai-platform.skill-release-decision.v1",
+                "policy_active": False,
+                "selected_version": "hash-v1",
+                "selected_track": "manifest_pin",
+            },
             "skill_manifests": [replay_manifest("general-chat", "hash-v1")],
         },
     }
@@ -3675,6 +3702,7 @@ async def test_persisted_owner_capability_authorization_uses_run_snapshot(monkey
                 "agent_id": "general-agent",
                 "skill_id": "general-chat",
                 "pinned_version": "hash-v1",
+                "pinned_executor_type": "claude-agent-worker",
                 "skill_manifests": [replay_manifest("general-chat", "hash-v1")],
                 "normalized_input": run["input_json"]["input"],
             "principal_department_id": "qa",

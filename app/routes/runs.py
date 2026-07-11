@@ -740,6 +740,7 @@ async def _authorize_persisted_run_for_queue(
         agent_id=str(persisted_run.get("agent_id") or ""),
         skill_id=str(persisted_run.get("skill_id") or ""),
         pinned_version=str(execution_snapshot.get("skill_version") or ""),
+        pinned_executor_type=str(execution_snapshot.get("executor_type") or ""),
         skill_manifests=execution_snapshot.get("skill_manifests") or [],
         normalized_input=_run_execution_input(persisted_run),
         principal_department_id=owner_principal.department_id,
@@ -772,6 +773,7 @@ async def prepare_copied_run_for_queue(
         agent_id=str(copied["agent_id"]),
         skill_id=str(copied["skill_id"]),
         pinned_version=copied_skill_version,
+        pinned_executor_type=str(copied_snapshot.get("executor_type") or ""),
         skill_manifests=skill_manifests,
         normalized_input=copied_input,
         principal_department_id=effective_principal.department_id,
@@ -967,6 +969,11 @@ async def create_run(
                 skill_manifests,
                 release_decision=release_decision_payload,
             )
+            skill_manifests = repositories.pin_primary_skill_mcp_tool_ids(
+                skill_manifests,
+                skill_id=resolved_skill_id,
+                mcp_tool_ids=repositories.run_mcp_tool_ids_for_skill(skill, run_input),
+            )
             session_id = request.session_id or repositories.new_id("ses")
             run_id = repositories.new_id("run")
             base_queue_payload = {
@@ -1040,6 +1047,7 @@ async def create_run(
                 tenant_id=tenant_id,
                 run_id=run_id,
                 skill_manifests=queue_payload["skill_manifests"],
+                release_decision=release_decision_payload,
             )
             await repositories.bind_files_to_run(
                 conn,

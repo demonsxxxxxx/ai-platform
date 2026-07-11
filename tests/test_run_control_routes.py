@@ -18,6 +18,7 @@ def replay_manifest(skill_id: str, version: str = "hash-v1") -> dict:
         "source": {"kind": "uploaded"},
         "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
         "dependency_ids": [],
+        "mcp_tool_ids": [],
         "snapshot_governance": {
             "schema_version": "ai-platform.skill-pinned-snapshot-governance.v1",
             "snapshot_source": "platform_release_lock",
@@ -31,6 +32,7 @@ def replay_manifest(skill_id: str, version: str = "hash-v1") -> dict:
 
 def replay_provenance(skill_id: str, version: str = "hash-v1", *, selected_track: str = "current") -> dict:
     return {
+        "executor_type": "claude-agent-worker",
         "skill_version": version,
         "release_decision": {
             "schema_version": "ai-platform.skill-release-decision.v1",
@@ -96,6 +98,10 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
         assert manifests
         assert all(item["version"] == item["content_hash"] for item in manifests)
 
+    async def validate_source_snapshots(*_args, **kwargs):
+        assert kwargs["skill_manifests"]
+        assert kwargs["release_decision"]
+
     async def authorize_persisted_run(*_args, **_kwargs):
         return None
 
@@ -120,6 +126,11 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     monkeypatch.setattr(
         "app.repositories.insert_run_skill_snapshots_at_creation",
         insert_creation_snapshots,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.repositories.validate_run_skill_snapshots_for_dispatch",
+        validate_source_snapshots,
         raising=False,
     )
     monkeypatch.setattr(
@@ -4022,7 +4033,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
     assert copied["input"]["execution_mode"] == "multi_agent"
     assert copied["input"]["multi_agent_steps"][1]["step_key"] == "verify"
     assert copied["input"]["copied_from_run_id"] == "run_old"
-    assert copied["executor_type"] == "embedded-poco-kernel"
+    assert copied["executor_type"] == "claude-agent-worker"
     assert copied["skill_version"] == "hash-v1"
     assert copied["release_policy_version"] == ""
     assert copied["model_id"] == "model-catalog-a"

@@ -35,6 +35,7 @@ from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_
 from app.projection_redaction import sanitize_user_control_input, strip_server_owned_control_metadata
 from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, is_workbench_skill_public
 from app.skills.lifecycle import is_user_runnable_status
+from app.skills.pinning import SkillVersionMaterializationError, build_skill_snapshot_governance
 from app.skills.release_policy import resolve_rollout_skill_decision
 from app.tool_policy import max_risk
 
@@ -1905,6 +1906,7 @@ async def authorize_replay_run_capabilities(
     agent_id: str,
     skill_id: str,
     pinned_version: str,
+    pinned_executor_type: str,
     skill_manifests: list[dict[str, Any]],
     normalized_input: dict[str, Any],
     principal_department_id: str,
@@ -1914,12 +1916,21 @@ async def authorize_replay_run_capabilities(
 ) -> dict[str, Any]:
     """Reauthorize current access while preserving an exact historical Skill pin."""
 
+    pinned_mcp_tool_ids = pinned_replay_mcp_tool_ids(
+        skill_id=skill_id,
+        pinned_version=pinned_version,
+        pinned_executor_type=pinned_executor_type,
+        skill_manifests=skill_manifests,
+    )
+    replay_input = dict(normalized_input)
+    if pinned_mcp_tool_ids:
+        replay_input["mcp_tool_ids"] = pinned_mcp_tool_ids
     skill = await _authorize_run_capabilities(
         conn,
         tenant_id=tenant_id,
         agent_id=agent_id,
         skill_id=skill_id,
-        normalized_input=normalized_input,
+        normalized_input=replay_input,
         principal_department_id=principal_department_id,
         principal_roles=principal_roles,
         is_admin=is_admin,
@@ -1930,9 +1941,43 @@ async def authorize_replay_run_capabilities(
         conn,
         skill_id=skill_id,
         pinned_version=pinned_version,
+        pinned_executor_type=pinned_executor_type,
         skill_manifests=skill_manifests,
     )
     return skill
+
+
+def pinned_replay_mcp_tool_ids(
+    *,
+    skill_id: str,
+    pinned_version: str,
+    pinned_executor_type: str,
+    skill_manifests: list[dict[str, Any]],
+) -> list[str]:
+    """Extract the historical MCP authorization set without consulting mutable release state."""
+
+    if pinned_executor_type not in DEFAULT_RUN_EXECUTOR_TYPES or not pinned_version:
+        raise _capability_not_authorized()
+    primary = next(
+        (
+            manifest
+            for manifest in skill_manifests
+            if str(manifest.get("skill_id") or "") == skill_id
+            and str(manifest.get("version") or manifest.get("skill_version") or "") == pinned_version
+        ),
+        None,
+    )
+    if primary is None:
+        raise _capability_not_authorized()
+    raw_mcp_tool_ids = primary.get("mcp_tool_ids")
+    if not isinstance(raw_mcp_tool_ids, list) or any(
+        not isinstance(item, str) or not item for item in raw_mcp_tool_ids
+    ):
+        raise _capability_not_authorized()
+    pinned_mcp_tool_ids = list(dict.fromkeys(raw_mcp_tool_ids))
+    if pinned_executor_type == "ragflow" and not pinned_mcp_tool_ids:
+        raise _capability_not_authorized()
+    return pinned_mcp_tool_ids
 
 
 async def validate_replay_skill_manifests(
@@ -1940,10 +1985,17 @@ async def validate_replay_skill_manifests(
     *,
     skill_id: str,
     pinned_version: str,
+    pinned_executor_type: str,
     skill_manifests: list[dict[str, Any]],
-) -> None:
+) -> list[str]:
     """Validate an exact historical package while allowing ordinary deprecation."""
 
+    pinned_mcp_tool_ids = pinned_replay_mcp_tool_ids(
+        skill_id=skill_id,
+        pinned_version=pinned_version,
+        pinned_executor_type=pinned_executor_type,
+        skill_manifests=skill_manifests,
+    )
     primary_found = False
     for manifest in skill_manifests:
         manifest_skill_id = str(manifest.get("skill_id") or "")
@@ -1975,6 +2027,25 @@ async def validate_replay_skill_manifests(
         ):
             raise _capability_not_authorized()
     if not primary_found:
+        raise _capability_not_authorized()
+    return pinned_mcp_tool_ids
+
+
+def require_replay_source_identity(
+    *,
+    pinned_version: str,
+    pinned_executor_type: str,
+    release_decision: dict[str, Any],
+    skill_manifests: list[dict[str, Any]],
+) -> None:
+    """Fail closed when a source run lacks the immutable replay contract."""
+
+    if (
+        not pinned_version
+        or pinned_executor_type not in DEFAULT_RUN_EXECUTOR_TYPES
+        or not release_decision
+        or not skill_manifests
+    ):
         raise _capability_not_authorized()
 
 
@@ -4707,7 +4778,43 @@ def _without_snapshot_private_material(value: Any) -> Any:
     return value
 
 
-def run_skill_snapshot_source_json(skill_manifest: dict[str, Any]) -> dict[str, Any]:
+def _release_decision_sha256(release_decision: dict[str, Any] | None) -> str:
+    canonical = json.dumps(
+        release_decision if isinstance(release_decision, dict) else {},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def pin_primary_skill_mcp_tool_ids(
+    skill_manifests: list[dict[str, Any]],
+    *,
+    skill_id: str,
+    mcp_tool_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Attach the authorized MCP execution set to the primary immutable Skill pin."""
+
+    normalized_tool_ids = list(dict.fromkeys(str(item) for item in mcp_tool_ids if str(item)))
+    pinned: list[dict[str, Any]] = []
+    primary_found = False
+    for manifest in skill_manifests:
+        item = dict(manifest)
+        if str(item.get("skill_id") or "") == skill_id:
+            item["mcp_tool_ids"] = normalized_tool_ids
+            primary_found = True
+        pinned.append(item)
+    if not primary_found:
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+    return pinned
+
+
+def run_skill_snapshot_source_json(
+    skill_manifest: dict[str, Any],
+    *,
+    release_decision: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Project immutable, non-secret Skill source identity for run provenance."""
 
     source = sanitize_public_payload(
@@ -4715,9 +4822,21 @@ def run_skill_snapshot_source_json(skill_manifest: dict[str, Any]) -> dict[str, 
     )
     projected = _without_snapshot_private_material(source if isinstance(source, dict) else {})
     projected.pop("version", None)
-    governance = skill_manifest.get("snapshot_governance")
-    if isinstance(governance, dict):
-        projected["snapshot_governance"] = _without_snapshot_private_material(governance)
+    try:
+        governance = build_skill_snapshot_governance(
+            skill_manifest,
+            release_decision=release_decision,
+        )
+    except SkillVersionMaterializationError as exc:
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch") from exc
+    projected["snapshot_governance"] = _without_snapshot_private_material(governance)
+    projected["release_decision_sha256"] = _release_decision_sha256(release_decision)
+    raw_mcp_tool_ids = skill_manifest.get("mcp_tool_ids")
+    if not isinstance(raw_mcp_tool_ids, list) or any(
+        not isinstance(item, str) or not item for item in raw_mcp_tool_ids
+    ):
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+    projected["mcp_tool_ids"] = list(dict.fromkeys(raw_mcp_tool_ids))
     return projected
 
 
@@ -4727,6 +4846,7 @@ async def insert_run_skill_snapshots_at_creation(
     tenant_id: str,
     run_id: str,
     skill_manifests: list[dict[str, Any]],
+    release_decision: dict[str, Any],
 ) -> None:
     """Insert exact run Skill provenance before any execution-side mutation."""
 
@@ -4760,7 +4880,7 @@ async def insert_run_skill_snapshots_at_creation(
                 skill_id,
                 skill_version,
                 content_hash,
-                dumps_json(run_skill_snapshot_source_json(manifest)),
+                dumps_json(run_skill_snapshot_source_json(manifest, release_decision=release_decision)),
                 json.dumps(dependency_ids, ensure_ascii=False),
             ),
         )
@@ -4825,6 +4945,7 @@ async def validate_run_skill_snapshots_for_dispatch(
     tenant_id: str,
     run_id: str,
     skill_manifests: list[dict[str, Any]],
+    release_decision: dict[str, Any],
 ) -> None:
     """Require locked manifests to match immutable creation-time snapshot rows."""
 
@@ -4855,7 +4976,7 @@ async def validate_run_skill_snapshots_for_dispatch(
         expected[skill_id] = {
             "skill_version": version,
             "content_hash": content_hash,
-            "source_json": run_skill_snapshot_source_json(manifest),
+            "source_json": run_skill_snapshot_source_json(manifest, release_decision=release_decision),
             "dependency_ids": dependency_ids,
         }
     if len(rows) != len(expected):
@@ -6060,15 +6181,30 @@ async def create_multi_agent_dispatch_child_run(
     skill_version = str(source_execution_snapshot.get("skill_version") or "")
     skill_manifests = source_execution_snapshot.get("skill_manifests") or []
     release_decision_payload = source_execution_snapshot.get("release_decision") or {}
+    executor_type = str(source_execution_snapshot.get("executor_type") or "")
     inherited_roles = normalize_roles(parent.get("principal_roles") or [])
     inherited_department_id = str(parent.get("principal_department_id") or "")
     inherited_auth_source = parent.get("auth_source")
+    require_replay_source_identity(
+        pinned_version=skill_version,
+        pinned_executor_type=executor_type,
+        release_decision=release_decision_payload,
+        skill_manifests=skill_manifests,
+    )
+    await validate_run_skill_snapshots_for_dispatch(
+        conn,
+        tenant_id=tenant_id,
+        run_id=parent_run_id,
+        skill_manifests=skill_manifests,
+        release_decision=release_decision_payload,
+    )
     skill = await authorize_replay_run_capabilities(
         conn,
         tenant_id=tenant_id,
         agent_id=str(parent["agent_id"]),
         skill_id=str(parent["skill_id"]),
         pinned_version=skill_version,
+        pinned_executor_type=executor_type,
         skill_manifests=skill_manifests,
         normalized_input=child_execution_input,
         principal_department_id=inherited_department_id,
@@ -6076,7 +6212,6 @@ async def create_multi_agent_dispatch_child_run(
         is_admin=bool(set(inherited_roles).intersection(ADMIN_ROLE_ALIASES)),
         permissions=[],
     )
-    executor_type = str(source_execution_snapshot.get("executor_type") or skill["executor_type"])
     child_input_json.update(
         executor_type=executor_type,
         skill_version=skill_version,
@@ -6123,6 +6258,7 @@ async def create_multi_agent_dispatch_child_run(
         tenant_id=tenant_id,
         run_id=child_run_id,
         skill_manifests=skill_manifests,
+        release_decision=release_decision_payload,
     )
     handed_off_at = datetime.now(timezone.utc).isoformat()
     await conn.execute(
@@ -7693,12 +7829,27 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     skill_version = str(source_execution_snapshot.get("skill_version") or "")
     skill_manifests = source_execution_snapshot.get("skill_manifests") or []
     release_decision_payload = source_execution_snapshot.get("release_decision") or {}
+    executor_type = str(source_execution_snapshot.get("executor_type") or "")
+    require_replay_source_identity(
+        pinned_version=skill_version,
+        pinned_executor_type=executor_type,
+        release_decision=release_decision_payload,
+        skill_manifests=skill_manifests,
+    )
+    await validate_run_skill_snapshots_for_dispatch(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        skill_manifests=skill_manifests,
+        release_decision=release_decision_payload,
+    )
     skill = await authorize_replay_run_capabilities(
         conn,
         tenant_id=tenant_id,
         agent_id=source["agent_id"],
         skill_id=source["skill_id"],
         pinned_version=skill_version,
+        pinned_executor_type=executor_type,
         skill_manifests=skill_manifests,
         normalized_input=source_execution_input,
         principal_department_id=inherited_department_id,
@@ -7706,7 +7857,6 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         is_admin=bool(set(inherited_roles).intersection(ADMIN_ROLE_ALIASES)),
         permissions=[],
     )
-    executor_type = str(source_execution_snapshot.get("executor_type") or skill["executor_type"])
     new_run_id = new_id("run")
     copied_execution_input = {**source_execution_input, "copied_from_run_id": run_id}
     completed_step_outputs, completed_step_checkpoints = await _completed_steps_for_resume(
@@ -7771,6 +7921,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
         tenant_id=tenant_id,
         run_id=new_run_id,
         skill_manifests=skill_manifests,
+        release_decision=release_decision_payload,
     )
     await append_event(
         conn,
