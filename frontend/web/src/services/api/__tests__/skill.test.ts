@@ -277,22 +277,21 @@ test("collectAllAuthorizedSkills continues until declared total is unique", asyn
         ? firstPage
         : skip === 200
           ? [firstPage[0], { ...userSkill, skill_name: "skill-200" }]
-          : skip === 202
+          : skip === 201
             ? [{ ...userSkill, skill_name: "skill-201" }]
             : [];
-    return {
+    return normalizeSkillListResponse({
       skills,
       total: 202,
       skip,
       limit: 200,
       available_tags: ["planning"],
       effective_permissions: ["skill:read"],
-      effective_permissions_known: true,
       catalog_read_resolved: true,
-    };
+    });
   });
 
-  assert.deepEqual(calls, [0, 200, 202]);
+  assert.deepEqual(calls, [0, 200, 201]);
   assert.equal(result.skills.length, 202);
   assert.equal(result.skills.at(-1)?.skill_name, "skill-201");
 });
@@ -313,20 +312,40 @@ test("collectAllAuthorizedSkills fails closed when duplicates stop unique progre
           : skip === 200
             ? [firstPage[0], { ...userSkill, skill_name: "skill-200" }]
             : [firstPage[0]];
-      return {
+      return normalizeSkillListResponse({
         skills,
         total: 202,
         skip,
         limit: 200,
         available_tags: ["planning"],
         effective_permissions: ["skill:read"],
-        effective_permissions_known: true,
         catalog_read_resolved: true,
-      };
+      });
     }),
     /authorized_skill_catalog_no_progress/,
   );
   assert.equal(calls, 3);
+});
+
+test("collectAllAuthorizedSkills bounds pagination when every page progresses", async () => {
+  let calls = 0;
+
+  await assert.rejects(
+    collectAllAuthorizedSkills(async ({ skip = 0 }) => {
+      calls += 1;
+      return normalizeSkillListResponse({
+        skills: [{ ...userSkill, skill_name: `skill-${skip}` }],
+        total: 2_000,
+        skip,
+        limit: 200,
+        available_tags: ["planning"],
+        effective_permissions: ["skill:read"],
+        catalog_read_resolved: true,
+      });
+    }),
+    /authorized_skill_catalog_page_limit/,
+  );
+  assert.equal(calls, 1_000);
 });
 
 test("collectAllAuthorizedSkills rejects a repeated page with no unique progress", async () => {

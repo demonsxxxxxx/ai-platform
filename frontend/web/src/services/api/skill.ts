@@ -205,7 +205,7 @@ export async function collectAllAuthorizedSkills(
       throw new Error("authorized_skill_catalog_no_progress");
     }
     if (skillsByName.size >= expectedTotal) break;
-    skip += page.skills.length;
+    skip = skillsByName.size;
   }
 
   const skills = Array.from(skillsByName.values());
