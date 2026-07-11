@@ -9,7 +9,7 @@ Current rebased source base: `b7c8d058b9e6dc5626cc71e97b36b4db9fe4126a`
 
 Tracking issue: [#394](https://github.com/demonsxxxxxx/ai-platform/issues/394)
 
-Pull request: [#395](https://github.com/demonsxxxxxx/ai-platform/pull/395) (draft while fresh fixed-head review is pending)
+Pull request: [#395](https://github.com/demonsxxxxxx/ai-platform/pull/395) (ready for review; not merged)
 
 This document tracks only S1B-B. It does not claim S1B, B2, G7, 211, deployment,
 runtime acceptance, or gate closure.
@@ -21,8 +21,8 @@ runtime acceptance, or gate closure.
 - [x] Phase 3 - TDD RED captured missing workspace module, image/compose identity, authenticated executor identity endpoint, Docker fail-closed ownership, OpenSandbox identity denial, workspace hard-link/mode, and worker TMPDIR contracts.
 - [x] Phase 4 - GREEN implementation and focused affected tests completed locally: `543 passed, 3 skipped`.
 - [x] Phase 5 - Compile, diff, 20-file approved projection-fix scope, new-line secret, and forbidden-config gates completed locally.
-- [ ] Phase 6 - Reviews through rebased head `8a46a69` completed; its projection-leak Important is fixed and fresh fixed-head re-review is pending.
-- [ ] Phase 7 - Draft PR #395 exists; `8a46a69` review/CI is historical, and current exact-head comments, required CI, and ready state are pending.
+- [x] Phase 6 - Fresh security and evidence reviews of `06ed6c7` found no Critical, Important, or Minor blocker after the projection fix.
+- [x] Phase 7 - PR #395 is ready; exact-head review and validation comments plus required CI completed on `06ed6c7`. This final Phase-only refresh requires its own exact-head review/comment/CI readback.
 - [~] Docker-capable image/runtime and 211 acceptance are controller-owned and deferred until source stabilizes.
 
 ## Approved Contract
@@ -144,5 +144,19 @@ the approved changed-file scope check, new-line secret scan, and checks forbiddi
 default Docker socket, privileged mode, runtime UID/GID environment overrides,
 and `chmod 777` exited 0.
 
-These are local source results only. Fresh fixed-head re-review, PR evidence, required CI,
-Docker-capable runtime evidence, and 211 acceptance remain pending.
+These are local source results only. PR-side review and CI do not replace the
+pending Docker-capable runtime evidence or 211 acceptance.
+
+## PR Evidence
+
+On exact head `06ed6c7a680097fe193aab58093150f14ecc76a2`, both independent
+read-only reviews reported no blocker. The review substitute is recorded in
+[PR comment 4945071696](https://github.com/demonsxxxxxx/ai-platform/pull/395#issuecomment-4945071696),
+and local/CI validation evidence is recorded in
+[PR comment 4945071789](https://github.com/demonsxxxxxx/ai-platform/pull/395#issuecomment-4945071789).
+Backend required, projection audit/lint/build/trace, packaged image build, and
+frontend required all passed on that head before the ready transition.
+
+The documentation-only commit containing this Phase refresh must not reuse the
+`06ed6c7` exact-head claim. It requires a fresh SHA readback, review addendum,
+and required CI result before handoff is complete.
