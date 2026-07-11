@@ -32,6 +32,7 @@ from app.runtime.sandbox.container_provider import (
 )
 from app.runtime.sandbox.contracts import ContextRetrievalScope, SandboxRuntimeRequest
 from app.runtime.sandbox.runtime import SandboxRuntime
+from app.runtime.event_bridge import agent_event_to_executor_event
 from app.settings import get_settings
 from app.session_continuity import SessionContinuity
 from app.skills.pinning import MAX_SKILL_SNAPSHOT_FILE_BYTES, MAX_SKILL_SNAPSHOT_TOTAL_BYTES
@@ -1048,8 +1049,14 @@ class ClaudeAgentWorkerAdapter:
             sdk_session_id=continuity.sdk_session_id,
         )
         runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
+        runtime_event_sink = None
+        if event_sink is not None:
+
+            async def runtime_event_sink(agent_event):
+                await event_sink(**agent_event_to_executor_event(agent_event))
+
         async with self._session_continuity.sdk_session_lock(continuity.lock_key):
-            runtime_result = await runtime.submit(request, event_sink=event_sink)
+            runtime_result = await runtime.submit(request, event_sink=runtime_event_sink)
         return self._executor_result_from_sandbox_runtime(payload, prepared, runtime_result)
 
     def _sandbox_provider_required_result(

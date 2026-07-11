@@ -24,6 +24,7 @@ from app.runtime.sandbox.container_provider import (
     FakeContainerProvider,
     OpenSandboxContainerProvider,
 )
+from app.runtime.kernel_contracts import AgentEvent
 from app.skills.pinning import build_skill_manifest_pins
 from app.skills.registry import BuiltinSkillRegistry
 from app.worker import WorkerRunCancelled
@@ -2292,6 +2293,88 @@ async def test_general_chat_with_files_stays_on_sdk_path(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sandbox_required_general_chat_bridges_agent_event_to_keyword_worker_sink(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    current_settings.sandbox_workspace_root = str(tmp_path / "sandbox")
+    received_events = []
+
+    async def no_files(payload, workspace):
+        return []
+
+    async def event_sink(*, event_type, stage, message, payload):
+        received_events.append(
+            {
+                "event_type": event_type,
+                "stage": stage,
+                "message": message,
+                "payload": payload,
+            }
+        )
+
+    class PositionalAgentEventRuntime:
+        provider = object.__new__(DockerContainerProvider)
+
+        async def submit(self, request, event_sink=None):
+            await event_sink(
+                AgentEvent(
+                    type="runtime_container_started",
+                    message="Sandbox executor container started",
+                    admin_only=True,
+                    payload={"container_id": "exec-run-1", "provider": "docker"},
+                )
+            )
+            return types.SimpleNamespace(
+                status="accepted",
+                provider="docker",
+                session_id=request.session_id,
+                run_id=request.run_id,
+                executor_response={
+                    "status": "accepted",
+                    "message": "sandbox completed",
+                    "sdk_used": True,
+                    "used_skills": [],
+                    "used_skills_source": "",
+                },
+                timings={},
+            )
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.SandboxRuntime",
+        lambda *args, **kwargs: PositionalAgentEventRuntime(),
+    )
+
+    result = await adapter.submit_run(
+        sandbox_writing_payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            file_ids=[],
+            input={"message": "hello"},
+        ),
+        event_sink=event_sink,
+    )
+
+    assert result.status == "succeeded"
+    assert [event["event_type"] for event in received_events] == [
+        "skills_staged",
+        "runtime_container_started",
+    ]
+    assert received_events[-1] == {
+        "event_type": "runtime_container_started",
+        "stage": "runtime",
+        "message": "Sandbox executor container started",
+        "payload": {
+            "container_id": "exec-run-1",
+            "provider": "docker",
+            "visible_to_user": False,
+            "admin_only": True,
+        },
+    }
+
+
+@pytest.mark.asyncio
 async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
 
@@ -2327,22 +2410,34 @@ async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch, tmp_path):
-    async def event_sink(**event):
-        raise WorkerRunCancelled("platform cancel requested")
+    runtime_submit_calls = 0
+    runtime_continued = False
+    received_event_types = []
+    cancellation = WorkerRunCancelled("platform cancel requested")
+
+    async def event_sink(*, event_type, stage, message, payload):
+        received_event_types.append(event_type)
+        if event_type == "assistant_delta":
+            raise cancellation
 
     class CancellingRuntime:
         provider = object.__new__(DockerContainerProvider)
 
         async def submit(self, request, event_sink=None):
+            nonlocal runtime_submit_calls, runtime_continued
+            runtime_submit_calls += 1
             await event_sink(
-                event_type="message_delta",
-                stage="executor",
-                message="partial",
-                payload={"visible_to_user": True},
+                AgentEvent(
+                    type="assistant_delta",
+                    message="partial",
+                    payload={"visible_to_user": True},
+                )
             )
-            raise AssertionError("cancel must stop runtime result mapping")
+            runtime_continued = True
+            raise AssertionError("cancel must propagate before runtime result mapping")
 
     current_settings = settings(tmp_path, sdk_enabled=True)
+    current_settings.sandbox_workspace_root = str(tmp_path / "sandbox")
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(
         "app.executors.claude_agent_worker.SandboxRuntime",
@@ -2350,13 +2445,18 @@ async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch
     )
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
 
-    with pytest.raises(WorkerRunCancelled, match="platform cancel requested"):
+    with pytest.raises(WorkerRunCancelled) as exc_info:
         await adapter.submit_run(
             sandbox_writing_payload(
                 agent_id="general-agent", skill_id="general-chat", file_ids=[], input={"message": "hello"}
             ),
             event_sink=event_sink,
         )
+
+    assert exc_info.value is cancellation
+    assert runtime_submit_calls == 1
+    assert runtime_continued is False
+    assert received_event_types == ["skills_staged", "assistant_delta"]
 
 
 @pytest.mark.asyncio
