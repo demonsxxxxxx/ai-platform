@@ -398,6 +398,13 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
                     "provider": "opensandbox",
                     "executor_url": "http://opensandbox-executor.test",
                     "workspace_container_path": "/sandbox-workspace",
+                    "labels": {
+                        **lease.labels,
+                        "ai-platform.executor.user": "10001:10001",
+                        "ai-platform.executor.uid": "10001",
+                        "ai-platform.executor.gid": "10001",
+                        "ai-platform.executor.identity_evidence": "authenticated-runtime-endpoint",
+                    },
                 }
             )
 
@@ -434,6 +441,7 @@ async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_ha
     assert create_kwargs["runtime_workspace_container_path"] == "/sandbox-workspace"
     assert create_kwargs["lease_payload_json"]["container_id"] == "osb-run-a"
     assert "executor_headers" not in create_kwargs["lease_payload_json"]
+    assert create_kwargs["lease_payload_json"]["labels"] == {"ai-platform.run_id": "run-a"}
     assert calls[1] == ("release", "lease-created-a", "dispatch_completed")
 
 

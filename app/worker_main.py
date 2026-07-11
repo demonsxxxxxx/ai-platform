@@ -23,12 +23,17 @@ from app.worker import WorkerOutcome, process_run_payload
 
 
 _next_memory_cleanup_at = 0.0
-WORKER_RUNTIME_HEARTBEAT_PATH = Path("/tmp/ai-platform-worker-runtime-heartbeat.json")
 logger = logging.getLogger(__name__)
 
 
 def default_worker_id() -> str:
     return f"{socket.gethostname()}:{uuid.uuid4().hex[:12]}"
+
+
+def worker_runtime_heartbeat_path() -> Path:
+    """Return the heartbeat path under the runtime-owned temporary directory."""
+
+    return Path(os.environ.get("TMPDIR") or "/tmp") / "ai-platform-worker-runtime-heartbeat.json"
 
 
 def write_worker_runtime_heartbeat(worker_id: str) -> None:
@@ -39,9 +44,10 @@ def write_worker_runtime_heartbeat(worker_id: str) -> None:
         "pid": os.getpid(),
         "observed_at": datetime.now(timezone.utc).isoformat(),
     }
-    temporary = WORKER_RUNTIME_HEARTBEAT_PATH.with_suffix(".tmp")
+    heartbeat_path = worker_runtime_heartbeat_path()
+    temporary = heartbeat_path.with_suffix(".tmp")
     temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
-    temporary.replace(WORKER_RUNTIME_HEARTBEAT_PATH)
+    temporary.replace(heartbeat_path)
 
 
 async def _worker_runtime_heartbeat_until_done(worker_id: str, interval_seconds: float = 5.0) -> None:

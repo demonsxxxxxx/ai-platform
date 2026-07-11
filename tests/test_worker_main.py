@@ -17,7 +17,7 @@ def test_write_worker_runtime_heartbeat_records_process_commit(monkeypatch, tmp_
     commit = "8" * 40
     heartbeat = tmp_path / "worker-runtime-heartbeat.json"
     monkeypatch.setenv("AI_PLATFORM_RUNTIME_COMMIT", commit)
-    monkeypatch.setattr("app.worker_main.WORKER_RUNTIME_HEARTBEAT_PATH", heartbeat)
+    monkeypatch.setattr("app.worker_main.worker_runtime_heartbeat_path", lambda: heartbeat)
 
     worker_main.write_worker_runtime_heartbeat("worker-a")
 
@@ -27,6 +27,13 @@ def test_write_worker_runtime_heartbeat_records_process_commit(monkeypatch, tmp_
     assert payload["runtime_commit"] == commit
     assert payload["pid"] > 0
     assert payload["observed_at"]
+
+
+def test_worker_runtime_heartbeat_uses_runtime_owned_tmpdir(monkeypatch, tmp_path):
+    runtime_tmp = tmp_path / "runtime-tmp"
+    monkeypatch.setenv("TMPDIR", str(runtime_tmp))
+
+    assert worker_main.worker_runtime_heartbeat_path() == runtime_tmp / "ai-platform-worker-runtime-heartbeat.json"
 
 
 @pytest.mark.asyncio

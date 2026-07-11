@@ -10,6 +10,23 @@ import pytest
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
 
 
+@pytest.fixture(autouse=True)
+def fixed_runtime_identity_test_seams(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    stat_result = type(
+        "RuntimeWorkspaceStat",
+        (),
+        {"st_uid": 10001, "st_gid": 10001, "st_mode": 0o40700},
+    )()
+    monkeypatch.setattr(container_provider, "_workspace_owner_stat", lambda _path: stat_result, raising=False)
+    monkeypatch.setattr(
+        container_provider,
+        "default_executor_identity_probe",
+        lambda executor_url, timeout_seconds, executor_headers: {"uid": 10001, "gid": 10001},
+        raising=False,
+    )
+
+
 def request(**overrides) -> SandboxRuntimeRequest:
     values = {
         "tenant_id": "tenant-a",
@@ -31,19 +48,21 @@ def request(**overrides) -> SandboxRuntimeRequest:
     return SandboxRuntimeRequest(**values)
 
 
-def workspace() -> WorkspaceLease:
-    return WorkspaceLease(
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        session_id="session-a",
-        run_id="run-a",
-        host_root="/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a",
-        workspace_host_path="/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/workspace",
-        workspace_container_path="/workspace",
-        inputs_host_path="/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/inputs",
-        logs_host_path="/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/logs",
-    )
+def workspace(**overrides) -> WorkspaceLease:
+    values = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "host_root": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a",
+        "workspace_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/workspace",
+        "workspace_container_path": "/workspace",
+        "inputs_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/inputs",
+        "logs_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/logs",
+    }
+    values.update(overrides)
+    return WorkspaceLease(**values)
 
 
 class FakeDockerContainer:
@@ -59,6 +78,7 @@ class FakeDockerContainer:
         ports: dict[str, Any],
         start_error: Exception | None = None,
         stop_error: Exception | None = None,
+        remove_error: Exception | None = None,
         host_port: str | None = "18000",
         **docker_kwargs: Any,
     ) -> None:
@@ -77,6 +97,7 @@ class FakeDockerContainer:
         self.removed = False
         self._start_error = start_error
         self._stop_error = stop_error
+        self._remove_error = remove_error
         published_host = "0.0.0.0"
         port_binding = ports.get("18000/tcp")
         if isinstance(port_binding, tuple) and len(port_binding) == 2:
@@ -110,6 +131,8 @@ class FakeDockerContainer:
         self.status = "exited"
 
     def remove(self, force: bool = False) -> None:
+        if self._remove_error is not None:
+            raise self._remove_error
         self.removed = True
         self.status = "removed"
 
@@ -130,6 +153,7 @@ class FakeDockerContainers:
         container = FakeDockerContainer(
             start_error=self._client.start_error,
             stop_error=self._client.stop_error,
+            remove_error=self._client.remove_error,
             host_port=self._client.host_port,
             **kwargs,
         )
@@ -173,6 +197,7 @@ class FakeDockerClient:
         create_error: Exception | None = None,
         start_error: Exception | None = None,
         stop_error: Exception | None = None,
+        remove_error: Exception | None = None,
         list_error: Exception | None = None,
         host_port: str | None = "18000",
     ) -> None:
@@ -180,6 +205,7 @@ class FakeDockerClient:
         self.create_error = create_error
         self.start_error = start_error
         self.stop_error = stop_error
+        self.remove_error = remove_error
         self.list_error = list_error
         self.host_port = host_port
         self.created: list[dict[str, Any]] = []
@@ -296,6 +322,8 @@ class FakeOpenSandbox:
         self.commands = FakeOpenSandboxCommands(self)
         self.killed = False
         self.closed = False
+        self.kill_error: Exception | None = None
+        self.close_error: Exception | None = None
 
     @classmethod
     def reset(cls) -> None:
@@ -333,10 +361,14 @@ class FakeOpenSandbox:
         }
 
     def kill(self) -> None:
+        if self.kill_error is not None:
+            raise self.kill_error
         self.killed = True
         self.status.state = "TERMINATED"
 
     def close(self) -> None:
+        if self.close_error is not None:
+            raise self.close_error
         self.closed = True
 
 
@@ -389,7 +421,7 @@ class OpenSandboxSettings:
     opensandbox_allowed_egress_hosts = ""
 
 
-def opensandbox_provider(*, health_probe=None):
+def opensandbox_provider(*, health_probe=None, identity_probe=None):
     from app.runtime.sandbox.container_provider import OpenSandboxContainerProvider
 
     return OpenSandboxContainerProvider(
@@ -402,6 +434,8 @@ def opensandbox_provider(*, health_probe=None):
         network_policy_class=FakeOpenSandboxNetworkPolicy,
         network_rule_class=FakeOpenSandboxNetworkRule,
         health_probe=health_probe or (lambda executor_url, timeout_seconds: True),
+        identity_probe=identity_probe
+        or (lambda executor_url, timeout_seconds, executor_headers: {"uid": 10001, "gid": 10001}),
     )
 
 
@@ -771,10 +805,15 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
 
     created = FakeOpenSandbox.created[0]
     assert created["image"] == "ai-platform:local"
+    assert "user" not in created
     assert created["entrypoint"] == ["/app/docker-entrypoint.sh", "uvicorn"]
     assert created["metadata"]["ai-platform.owner"] == "sandbox-runtime"
     assert created["metadata"]["ai-platform.tenant_id"] == "tenant-a"
     assert created["metadata"]["ai-platform.run_id"] == "run-a"
+    assert created["metadata"]["ai-platform.executor.user"] == "10001:10001"
+    assert created["metadata"]["ai-platform.executor.uid"] == "10001"
+    assert created["metadata"]["ai-platform.executor.gid"] == "10001"
+    assert created["metadata"]["ai-platform.executor.identity_evidence"] == "authenticated-runtime-endpoint"
     assert created["env"]["APP_MODULE"] == "app.runtime.sandbox.executor_app:create_executor_app"
     assert created["env"]["AI_PLATFORM_RUN_ID"] == "run-a"
     assert created["resource"] == {"cpu": "2", "memory": "512Mi", "pids": "64"}
@@ -796,6 +835,7 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     assert lease.workspace_container_path == "/workspace"
     assert lease.labels["ai-platform.provider_backend"] == "opensandbox"
     assert lease.labels["ai-platform.egress.policy"] == "opensandbox-network-policy"
+    assert not any(key.startswith("ai-platform.executor.") for key in lease.labels)
 
 
 @pytest.mark.asyncio
@@ -1177,6 +1217,7 @@ def test_opensandbox_sdk_symbols_match_adapter_contract():
     assert "metadata" in inspect.signature(symbols["sandbox_class"].create).parameters
     assert "network_policy" in inspect.signature(symbols["sandbox_class"].create).parameters
     assert "volumes" in inspect.signature(symbols["sandbox_class"].create).parameters
+    assert "user" not in inspect.signature(symbols["sandbox_class"].create).parameters
     assert "port" in inspect.signature(symbols["sandbox_class"].get_endpoint).parameters
     assert "mountPath" in inspect.signature(symbols["volume_class"]).parameters
     assert "readOnly" in inspect.signature(symbols["volume_class"]).parameters
@@ -1252,6 +1293,100 @@ async def test_docker_provider_cached_lease_revalidates_container_scope_labels()
         await provider.create_or_reuse(request(), workspace())
 
     assert len(fake.created) == 1
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_rejects_cached_reuse_for_same_run_under_different_current_scope():
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    first = await provider.create_or_reuse(request(), workspace())
+
+    with pytest.raises(ContainerStartFailedError, match="cached lease scope mismatch"):
+        await provider.create_or_reuse(
+            request(tenant_id="tenant-b", workspace_id="workspace-b", user_id="user-b", session_id="session-b"),
+            workspace(
+                tenant_id="tenant-b",
+                workspace_id="workspace-b",
+                user_id="user-b",
+                session_id="session-b",
+                host_root="/runtime/tenants/tenant-b/runs/run-a",
+                workspace_host_path="/runtime/tenants/tenant-b/runs/run-a/workspace",
+                inputs_host_path="/runtime/tenants/tenant-b/runs/run-a/inputs",
+                logs_host_path="/runtime/tenants/tenant-b/runs/run-a/logs",
+            ),
+        )
+
+    container = fake.containers_by_name[first.container_name]
+    assert container.stopped is True
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
+async def test_docker_cached_scope_mismatch_retains_tracking_when_cleanup_cannot_be_confirmed():
+    from app.runtime.sandbox.container_provider import ContainerCleanupFailedError, DockerContainerProvider
+
+    fake = FakeDockerClient(
+        stop_error=RuntimeError("stop unavailable"),
+        remove_error=RuntimeError("remove unavailable"),
+    )
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    first = await provider.create_or_reuse(request(), workspace())
+
+    with pytest.raises(ContainerCleanupFailedError) as exc_info:
+        await provider.create_or_reuse(
+            request(tenant_id="tenant-b", workspace_id="workspace-b", user_id="user-b", session_id="session-b"),
+            workspace(
+                tenant_id="tenant-b",
+                workspace_id="workspace-b",
+                user_id="user-b",
+                session_id="session-b",
+                host_root="/runtime/tenants/tenant-b/runs/run-a",
+                workspace_host_path="/runtime/tenants/tenant-b/runs/run-a/workspace",
+                inputs_host_path="/runtime/tenants/tenant-b/runs/run-a/inputs",
+                logs_host_path="/runtime/tenants/tenant-b/runs/run-a/logs",
+            ),
+        )
+
+    assert exc_info.value.error_code == "container_cleanup_failed"
+    assert provider._leases[first.container_id] is first
+    container = fake.containers_by_name[first.container_name]
+    assert container.removed is False
+
+
+@pytest.mark.asyncio
+async def test_docker_cached_identity_mismatch_retains_tracking_when_cleanup_cannot_be_confirmed():
+    from app.runtime.sandbox.container_provider import ContainerCleanupFailedError, DockerContainerProvider
+
+    calls = 0
+
+    def identity_probe(executor_url, timeout_seconds, executor_headers):
+        nonlocal calls
+        calls += 1
+        return {"uid": 10001, "gid": 10001} if calls == 1 else {"uid": 0, "gid": 0}
+
+    fake = FakeDockerClient(
+        stop_error=RuntimeError("stop unavailable"),
+        remove_error=RuntimeError("remove unavailable"),
+    )
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=identity_probe,
+    )
+    first = await provider.create_or_reuse(request(), workspace())
+
+    with pytest.raises(ContainerCleanupFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert provider._leases[first.container_id] is first
 
 
 @pytest.mark.asyncio
@@ -1519,7 +1654,10 @@ async def test_docker_provider_sets_default_security_options_without_docker_sock
     assert created["security_opt"] == ["no-new-privileges:true"]
     assert created["cap_drop"] == ["ALL"]
     assert created["read_only"] is True
-    assert created["tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=64m"}
+    assert created["tmpfs"] == {
+        "/tmp": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m",
+        "/home/ai-platform": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=128m",
+    }
     assert created["ports"] == {"18000/tcp": ("127.0.0.1", None)}
     assert created["volumes"] == {
         leased_workspace.workspace_host_path: {
@@ -1532,94 +1670,533 @@ async def test_docker_provider_sets_default_security_options_without_docker_sock
 
 
 @pytest.mark.asyncio
-async def test_docker_provider_runs_executor_as_workspace_owner_when_host_path_is_local(monkeypatch):
-    from app.runtime.sandbox import container_provider
+async def test_docker_provider_runs_executor_as_fixed_runtime_identity(monkeypatch):
     from app.runtime.sandbox.container_provider import DockerContainerProvider
-
-    class FakePath:
-        def __init__(self, value: str) -> None:
-            self.value = value
-
-        def stat(self):
-            class StatResult:
-                st_uid = 1003
-                st_gid = 1003
-
-            return StatResult()
 
     fake = FakeDockerClient()
     provider = DockerContainerProvider(
         docker_client_factory=lambda: fake,
         health_probe=lambda executor_url, timeout_seconds: True,
     )
-    monkeypatch.setattr(container_provider, "Path", FakePath)
-    monkeypatch.setattr(container_provider.os, "name", "posix")
-
     await provider.create_or_reuse(request(), workspace())
 
     created = fake.created[0]
-    assert created["user"] == "1003:1003"
+    assert created["user"] == "10001:10001"
     assert created["privileged"] is False
     assert created["security_opt"] == ["no-new-privileges:true"]
     assert created["cap_drop"] == ["ALL"]
     assert created["read_only"] is True
-    assert created["tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=64m"}
+    assert created["tmpfs"] == {
+        "/tmp": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=64m",
+        "/home/ai-platform": "rw,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0700,size=128m",
+    }
     assert created["ports"] == {"18000/tcp": ("127.0.0.1", None)}
     assert "/var/run/docker.sock" not in str(created).lower()
 
 
 @pytest.mark.asyncio
-async def test_docker_provider_omits_workspace_owner_user_when_stat_is_unavailable(monkeypatch):
+async def test_docker_provider_fails_closed_when_workspace_owner_stat_is_unavailable(monkeypatch):
     from app.runtime.sandbox import container_provider
-    from app.runtime.sandbox.container_provider import DockerContainerProvider
-
-    class FakePath:
-        def __init__(self, value: str) -> None:
-            self.value = value
-
-        def stat(self):
-            raise OSError("not available")
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
 
     fake = FakeDockerClient()
     provider = DockerContainerProvider(
         docker_client_factory=lambda: fake,
         health_probe=lambda executor_url, timeout_seconds: True,
     )
-    monkeypatch.setattr(container_provider, "Path", FakePath)
-    monkeypatch.setattr(container_provider.os, "name", "posix")
+    monkeypatch.setattr(container_provider, "_workspace_owner_stat", lambda _path: (_ for _ in ()).throw(OSError("not available")))
 
-    await provider.create_or_reuse(request(), workspace())
+    with pytest.raises(ContainerStartFailedError, match="workspace ownership unavailable"):
+        await provider.create_or_reuse(request(), workspace())
 
-    assert "user" not in fake.created[0]
+    assert fake.created == []
 
 
 @pytest.mark.asyncio
-async def test_docker_provider_omits_workspace_owner_user_on_windows(monkeypatch):
+async def test_docker_provider_fails_closed_when_host_owner_semantics_are_unavailable_on_windows(monkeypatch):
     from app.runtime.sandbox import container_provider
-    from app.runtime.sandbox.container_provider import DockerContainerProvider
-
-    class FakePath:
-        def __init__(self, value: str) -> None:
-            self.value = value
-
-        def stat(self):
-            class StatResult:
-                st_uid = 1003
-                st_gid = 1003
-
-            return StatResult()
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
 
     fake = FakeDockerClient()
     provider = DockerContainerProvider(
         docker_client_factory=lambda: fake,
         health_probe=lambda executor_url, timeout_seconds: True,
     )
-    monkeypatch.setattr(container_provider, "Path", FakePath)
-    monkeypatch.setattr(container_provider.os, "name", "nt")
+    monkeypatch.setattr(container_provider, "_workspace_owner_stat", lambda _path: (_ for _ in ()).throw(OSError("POSIX unavailable")))
 
-    await provider.create_or_reuse(request(), workspace())
+    with pytest.raises(ContainerStartFailedError, match="workspace ownership unavailable"):
+        await provider.create_or_reuse(request(), workspace())
 
-    assert "user" not in fake.created[0]
+    assert fake.created == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("uid", "gid"), [(0, 10001), (10001, 0), (10001, -1), (1000, 1000)])
+async def test_docker_provider_rejects_non_target_workspace_owner_before_create(monkeypatch, uid, gid):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=lambda executor_url, timeout_seconds, executor_headers: {"uid": 10001, "gid": 10001},
+    )
+    monkeypatch.setattr(
+        container_provider,
+        "_workspace_owner_stat",
+        lambda _path: type("StatResult", (), {"st_uid": uid, "st_gid": gid, "st_mode": 0o40700})(),
+    )
+
+    with pytest.raises(ContainerStartFailedError, match="workspace owner must be 10001:10001"):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert fake.created == []
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_uses_and_verifies_exact_runtime_identity(monkeypatch):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    probes = []
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=lambda executor_url, timeout_seconds, executor_headers: probes.append(
+            (executor_url, executor_headers)
+        ) or {"uid": 10001, "gid": 10001},
+    )
+
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    assert fake.created[0]["user"] == "10001:10001"
+    assert fake.containers_by_name[lease.container_name].attrs["Config"]["User"] == "10001:10001"
+    assert probes[0][1]["X-AI-Platform-Executor-Credential"]
+    remote_labels = fake.containers_by_name[lease.container_name].attrs["Config"]["Labels"]
+    assert remote_labels["ai-platform.executor.user"] == "10001:10001"
+    assert remote_labels["ai-platform.executor.uid"] == "10001"
+    assert remote_labels["ai-platform.executor.gid"] == "10001"
+    assert remote_labels["ai-platform.executor.identity_evidence"] == "authenticated-runtime-endpoint"
+    assert not any(key.startswith("ai-platform.executor.") for key in lease.labels)
+
+
+@pytest.mark.asyncio
+async def test_docker_cached_reuse_rejects_remote_identity_label_mismatch():
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    first = await provider.create_or_reuse(request(), workspace())
+    container = fake.containers_by_name[first.container_name]
+    container.labels["ai-platform.executor.uid"] = "0"
+
+    with pytest.raises(ContainerStartFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert container.stopped is True
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_cleans_up_when_actual_executor_identity_mismatches(monkeypatch):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=lambda executor_url, timeout_seconds, executor_headers: {"uid": 0, "gid": 0},
+    )
+
+    with pytest.raises(ContainerStartFailedError, match="executor identity mismatch"):
+        await provider.create_or_reuse(request(), workspace())
+
+    container = fake.containers_by_name["executor-exec-run-a"]
+    assert container.stopped is True
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
+async def test_docker_cold_identity_mismatch_tracks_container_when_cleanup_cannot_be_confirmed():
+    from app.runtime.sandbox.container_provider import ContainerCleanupFailedError, DockerContainerProvider
+
+    fake = FakeDockerClient(
+        stop_error=RuntimeError("stop unavailable"),
+        remove_error=RuntimeError("remove unavailable"),
+    )
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=lambda executor_url, timeout_seconds, executor_headers: {"uid": 0, "gid": 0},
+    )
+
+    with pytest.raises(ContainerCleanupFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert provider._leases["exec-run-a"].run_id == "run-a"
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_cleans_up_when_identity_probe_is_cancelled():
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    def cancel_identity_probe(executor_url, timeout_seconds, executor_headers):
+        raise asyncio.CancelledError()
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=cancel_identity_probe,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await provider.create_or_reuse(request(), workspace())
+
+    container = fake.containers_by_name["executor-exec-run-a"]
+    assert container.stopped is True
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_cleans_up_when_executor_url_wait_is_cancelled(monkeypatch):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+
+    async def cancel_wait(container, timeout_seconds):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(provider, "_wait_for_executor_url", cancel_wait)
+
+    with pytest.raises(asyncio.CancelledError):
+        await provider.create_or_reuse(request(), workspace())
+
+    container = fake.containers_by_name["executor-exec-run-a"]
+    assert container.stopped is True
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
+async def test_docker_cached_reuse_cleans_up_when_executor_url_wait_is_cancelled(monkeypatch):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    first = await provider.create_or_reuse(request(), workspace())
+
+    async def cancel_wait(container, timeout_seconds):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(provider, "_wait_for_executor_url", cancel_wait)
+
+    with pytest.raises(asyncio.CancelledError):
+        await provider.create_or_reuse(request(), workspace())
+
+    container = fake.containers_by_name[first.container_name]
+    assert container.stopped is True
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "identity",
+    [None, {}, {"uid": 10001}, {"uid": True, "gid": 10001}, {"uid": 10001, "gid": "10001"}],
+)
+async def test_docker_cached_reuse_rejects_malformed_runtime_identity(identity):
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    calls = 0
+
+    def identity_probe(executor_url, timeout_seconds, executor_headers):
+        nonlocal calls
+        calls += 1
+        return {"uid": 10001, "gid": 10001} if calls == 1 else identity
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=identity_probe,
+    )
+    first = await provider.create_or_reuse(request(), workspace())
+
+    with pytest.raises(ContainerStartFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    container = fake.containers_by_name[first.container_name]
+    assert container.stopped is True
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_fails_closed_without_exact_executor_identity(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider(
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=lambda executor_url, timeout_seconds, executor_headers: {"uid": 0, "gid": 0},
+    )
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="executor identity mismatch"):
+        await provider.create_or_reuse(request(), workspace())
+
+    sandbox = FakeOpenSandbox.instances["osb-run-a"]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_cold_identity_mismatch_tracks_sandbox_when_cleanup_cannot_be_confirmed(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    def mismatched_identity(executor_url, timeout_seconds, executor_headers):
+        sandbox = FakeOpenSandbox.instances["osb-run-a"]
+        sandbox.kill_error = RuntimeError("kill unavailable")
+        sandbox.close_error = RuntimeError("close unavailable")
+        return {"uid": 0, "gid": 0}
+
+    provider = opensandbox_provider(identity_probe=mismatched_identity)
+
+    with pytest.raises(container_provider.ContainerCleanupFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    tracked = provider._leases["opensandbox-run-a"]
+    assert tracked.container_id == "osb-run-a"
+    assert provider._sandboxes[tracked.container_id] is FakeOpenSandbox.instances["osb-run-a"]
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_denies_when_runtime_identity_endpoint_is_unsupported(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+
+    def unsupported_identity_probe(executor_url, timeout_seconds, executor_headers):
+        raise container_provider.ContainerStartFailedError("executor identity unavailable")
+
+    provider = opensandbox_provider(identity_probe=unsupported_identity_probe)
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="executor identity unavailable"):
+        await provider.create_or_reuse(request(), workspace())
+
+    sandbox = FakeOpenSandbox.instances["osb-run-a"]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_cached_reuse_cleans_up_when_identity_probe_is_cancelled(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    calls = 0
+
+    def identity_probe(executor_url, timeout_seconds, executor_headers):
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise asyncio.CancelledError()
+        return {"uid": 10001, "gid": 10001}
+
+    provider = opensandbox_provider(identity_probe=identity_probe)
+    first = await provider.create_or_reuse(request(), workspace())
+
+    with pytest.raises(asyncio.CancelledError):
+        await provider.create_or_reuse(request(), workspace())
+
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "identity",
+    [None, {}, {"uid": 10001}, {"uid": True, "gid": 10001}, {"uid": 10001, "gid": "10001"}],
+)
+async def test_opensandbox_cached_reuse_rejects_malformed_runtime_identity(monkeypatch, identity):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    calls = 0
+
+    def identity_probe(executor_url, timeout_seconds, executor_headers):
+        nonlocal calls
+        calls += 1
+        return {"uid": 10001, "gid": 10001} if calls == 1 else identity
+
+    provider = opensandbox_provider(identity_probe=identity_probe)
+    first = await provider.create_or_reuse(request(), workspace())
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="executor identity mismatch"):
+        await provider.create_or_reuse(request(), workspace())
+
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_cached_reuse_rejects_missing_lease_credential(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    first = await provider.create_or_reuse(request(), workspace())
+    first.executor_headers.clear()
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="executor identity credential unavailable"):
+        await provider.create_or_reuse(request(), workspace())
+
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_rejects_cached_reuse_for_same_run_under_different_current_scope(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    first = await provider.create_or_reuse(request(), workspace())
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="cached lease scope mismatch"):
+        await provider.create_or_reuse(
+            request(tenant_id="tenant-b", workspace_id="workspace-b", user_id="user-b", session_id="session-b"),
+            workspace(
+                tenant_id="tenant-b",
+                workspace_id="workspace-b",
+                user_id="user-b",
+                session_id="session-b",
+                host_root="/runtime/tenants/tenant-b/runs/run-a",
+                workspace_host_path="/runtime/tenants/tenant-b/runs/run-a/workspace",
+                inputs_host_path="/runtime/tenants/tenant-b/runs/run-a/inputs",
+                logs_host_path="/runtime/tenants/tenant-b/runs/run-a/logs",
+            ),
+        )
+
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_cached_scope_mismatch_retains_tracking_when_cleanup_cannot_be_confirmed(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    first = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    sandbox.kill_error = RuntimeError("kill unavailable")
+    sandbox.close_error = RuntimeError("close unavailable")
+
+    with pytest.raises(container_provider.ContainerCleanupFailedError) as exc_info:
+        await provider.create_or_reuse(
+            request(tenant_id="tenant-b", workspace_id="workspace-b", user_id="user-b", session_id="session-b"),
+            workspace(
+                tenant_id="tenant-b",
+                workspace_id="workspace-b",
+                user_id="user-b",
+                session_id="session-b",
+                host_root="/runtime/tenants/tenant-b/runs/run-a",
+                workspace_host_path="/runtime/tenants/tenant-b/runs/run-a/workspace",
+                inputs_host_path="/runtime/tenants/tenant-b/runs/run-a/inputs",
+                logs_host_path="/runtime/tenants/tenant-b/runs/run-a/logs",
+            ),
+        )
+
+    assert exc_info.value.error_code == "container_cleanup_failed"
+    assert provider._leases["opensandbox-run-a"] is first
+    assert provider._sandboxes[first.container_id] is sandbox
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_cached_identity_mismatch_retains_tracking_when_cleanup_cannot_be_confirmed(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    calls = 0
+
+    def identity_probe(executor_url, timeout_seconds, executor_headers):
+        nonlocal calls
+        calls += 1
+        return {"uid": 10001, "gid": 10001} if calls == 1 else {"uid": 0, "gid": 0}
+
+    provider = opensandbox_provider(identity_probe=identity_probe)
+    first = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    sandbox.kill_error = RuntimeError("kill unavailable")
+    sandbox.close_error = RuntimeError("close unavailable")
+
+    with pytest.raises(container_provider.ContainerCleanupFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert provider._leases["opensandbox-run-a"] is first
+    assert provider._sandboxes[first.container_id] is sandbox
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_cached_reuse_revalidates_remote_scope_metadata(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    first = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    sandbox.metadata["ai-platform.tenant_id"] = "tenant-b"
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="cached sandbox metadata mismatch"):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_cached_reuse_rejects_remote_identity_label_mismatch(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    first = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    sandbox.metadata["ai-platform.executor.gid"] = "0"
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="cached sandbox metadata mismatch"):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert sandbox.killed is True
+    assert sandbox.closed is True
 
 
 @pytest.mark.asyncio
@@ -1948,6 +2525,44 @@ async def test_docker_provider_stop_maps_sdk_not_found_to_not_found():
 
     assert result.status == "not_found"
     assert result.container_id == "exec-run-a"
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_stop_retains_lease_when_removal_cannot_be_confirmed():
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    lease = await provider.create_or_reuse(request(), workspace())
+    container = fake.containers_by_name[lease.container_name]
+    container._stop_error = RuntimeError("stop unavailable")
+    container._remove_error = RuntimeError("remove unavailable")
+
+    result = await provider.stop(lease, reason="cancel_requested")
+
+    assert result.status == "failed"
+    assert provider._leases[lease.container_id] is lease
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_stop_retains_lease_when_kill_cannot_be_confirmed(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    lease = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[lease.container_id]
+    sandbox.kill_error = RuntimeError("kill unavailable")
+
+    result = await provider.stop(lease, reason="cancel_requested")
+
+    assert result.status == "failed"
+    assert provider._leases["opensandbox-run-a"] is lease
+    assert provider._sandboxes[lease.container_id] is sandbox
 
 
 @pytest.mark.asyncio

@@ -149,7 +149,11 @@ class SandboxRuntime:
             "executor_url": runtime_executor_url,
             "workspace_host_path": lease.workspace_host_path,
             "workspace_container_path": runtime_workspace_container_path,
-            "labels": dict(lease.labels),
+            "labels": {
+                str(key): str(value)
+                for key, value in lease.labels.items()
+                if not str(key).startswith("ai-platform.executor.")
+            },
         }
         async with transaction() as conn:
             row = await repositories.create_sandbox_lease(
