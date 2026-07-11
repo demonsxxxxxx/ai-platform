@@ -37,15 +37,6 @@ export interface AdminSkillUploadResponse {
   };
 }
 
-type SkillListWireResponse =
-  | UserSkill[]
-  | (Omit<
-      SkillsResponse,
-      "effective_permissions_known" | "catalog_read_resolved"
-    > & {
-      catalog_read_resolved?: boolean;
-    });
-
 export interface SkillListParams {
   skip?: number;
   limit?: number;
@@ -80,10 +71,45 @@ export function buildAdminSkillPreviewUrl(): string {
   return `${API_BASE}/api/ai/admin/skills/upload/preview`;
 }
 
-export function normalizeSkillListResponse(
-  response: SkillListWireResponse,
-): SkillsResponse {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0;
+}
+
+function isUserSkill(value: unknown): value is UserSkill {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.skill_name === "string" &&
+    value.skill_name.trim().length > 0 &&
+    typeof value.expected_version === "string" &&
+    value.expected_version.trim().length > 0 &&
+    isStringArray(value.input_modes) &&
+    typeof value.requires_file === "boolean" &&
+    typeof value.description === "string" &&
+    isStringArray(value.tags) &&
+    isStringArray(value.files) &&
+    typeof value.enabled === "boolean" &&
+    isNonNegativeInteger(value.file_count) &&
+    (value.installed_from === "manual" || value.installed_from === "marketplace") &&
+    typeof value.is_published === "boolean" &&
+    typeof value.marketplace_is_active === "boolean"
+  );
+}
+
+function invalidSkillCatalog(): never {
+  throw new Error("authorized_skill_catalog_invalid");
+}
+
+export function normalizeSkillListResponse(response: unknown): SkillsResponse {
   if (Array.isArray(response)) {
+    if (!response.every(isUserSkill)) invalidSkillCatalog();
     return {
       skills: response,
       total: response.length,
@@ -96,7 +122,21 @@ export function normalizeSkillListResponse(
     };
   }
 
-  const skills = response.skills ?? [];
+  if (!isRecord(response)) invalidSkillCatalog();
+  const skills = response.skills;
+  if (
+    !Array.isArray(skills) ||
+    !skills.every(isUserSkill) ||
+    !isNonNegativeInteger(response.total) ||
+    !isNonNegativeInteger(response.skip) ||
+    !isNonNegativeInteger(response.limit) ||
+    !isStringArray(response.available_tags) ||
+    !isStringArray(response.effective_permissions) ||
+    (response.catalog_read_resolved !== undefined &&
+      typeof response.catalog_read_resolved !== "boolean")
+  ) {
+    invalidSkillCatalog();
+  }
   const catalogReadResolved =
     typeof response.catalog_read_resolved === "boolean"
       ? response.catalog_read_resolved
@@ -104,12 +144,12 @@ export function normalizeSkillListResponse(
 
   return {
     skills,
-    total: response.total ?? skills.length,
-    skip: response.skip ?? 0,
-    limit: response.limit ?? skills.length,
-    available_tags: response.available_tags ?? [],
-    effective_permissions: response.effective_permissions ?? [],
-    effective_permissions_known: Array.isArray(response.effective_permissions),
+    total: response.total,
+    skip: response.skip,
+    limit: response.limit,
+    available_tags: response.available_tags,
+    effective_permissions: response.effective_permissions,
+    effective_permissions_known: true,
     catalog_read_resolved: catalogReadResolved,
   };
 }
@@ -178,10 +218,8 @@ export async function collectAllAuthorizedSkills(
 }
 
 async function listSkills(params: SkillListParams = {}): Promise<SkillsResponse> {
-  const response = await authFetch<SkillListWireResponse>(
-    buildSkillListUrl(params),
-  );
-  return normalizeSkillListResponse(response ?? []);
+  const response = await authFetch<unknown>(buildSkillListUrl(params));
+  return normalizeSkillListResponse(response);
 }
 
 async function listAllAuthorizedSkills(): Promise<SkillsResponse> {

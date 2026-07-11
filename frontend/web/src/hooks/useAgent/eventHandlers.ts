@@ -37,6 +37,17 @@ export interface EventHandlerContext {
   setConnectionStatus: (status: string) => void;
   setIsInitializingSandbox: (loading: boolean) => void;
   setSandboxError: (error: string | null) => void;
+  dismissQueueToast?: () => void;
+}
+
+function dismissQueueToast(ctx: EventHandlerContext): void {
+  if (ctx.dismissQueueToast) {
+    ctx.dismissQueueToast();
+    return;
+  }
+  void import("react-hot-toast").then(({ default: toast }) => {
+    toast.dismiss("chat-queue");
+  });
 }
 
 /**
@@ -120,12 +131,14 @@ export function handleStreamEvent(
     }
 
     case "user:cancel": {
+      dismissQueueToast(ctx);
       handleError(data, messageId, ctx, true, { keepConnectionOpen: true });
       return;
     }
 
     case "complete":
     case "done": {
+      dismissQueueToast(ctx);
       ctx.setMessages((prev) =>
         prev.map((m) =>
           m.id === messageId
@@ -283,6 +296,7 @@ export function handleStreamEvent(
 
   // Error side effects
   if (eventType === "error") {
+    dismissQueueToast(ctx);
     ctx.setConnectionStatus("disconnected");
     ctx.setIsInitializingSandbox(false);
     ctx.options?.onClearApprovals?.();

@@ -66,7 +66,7 @@ multi-agent product authority, deployment, or 211 runtime state.
   request builder, recoverable admission outcome, single-select picker/chip,
   required-file preflight, explicit refresh/reconfirm, and draft lifting are
   wired into the real composer.
-- [x] Phase 3 - focused frontend run passed 169/169 tests, including default
+- [x] Phase 3 - focused frontend run passed 176/176 tests, including default
   preference fallback, true run cancel, event/artifact projection, cookie auth,
   full authorized-catalog pagination/fail-closed behavior, and composer visual
   contract regressions. A broader exploratory test found one unrelated base
@@ -88,7 +88,7 @@ multi-agent product authority, deployment, or 211 runtime state.
   precommit focused tests passed 165/165; 26 slice files produced 0
   forbidden-path, secret, personal-path, root-gitignore, or diff-check hits.
   After the #393 rebase, the review-fix baseline was `541dcf1`. Focused tests
-  then passed 169/169, Python compile and `ci:verify` again exited 0, and the
+  then passed 176/176, Python compile and `ci:verify` again exited 0, and the
   desktop/mobile mock browser evidence was regenerated with status `passed`.
 - [ ] Phase 6 - fixed SHA `696e551` independent code and UX reviews found four
   Important and three Minor findings. A first rebased exact-head review at
@@ -96,8 +96,14 @@ multi-agent product authority, deployment, or 211 runtime state.
   could erase stale identity, malformed pagination could return partial data
   or loop, terminal SSE setup failures were swallowed, stale picker summary
   copy implied a current selection, and the selected-Skill removal action was
-  not task-specific/mobile-sized. Each finding now has a focused regression
-  and local fix; final fixed-SHA code and UX re-review remains pending.
+  not task-specific/mobile-sized. Re-review at `44ef250` closed those findings
+  and found two further Important issues: malformed/null public catalog wire
+  responses were not fully rejected, and terminal completion could leave the
+  infinite queued toast visible over succeeded playback. Both now have focused
+  regressions and local fixes. The browser harness also asserts the terminal
+  toast is absent and captures readable desktop/mobile succeeded artifact
+  panels without `captureBeyondViewport` dropping the fixed portal layer.
+  Final fixed-SHA code and UX re-review remains pending.
 - [ ] Phase 7 - ready PR, exact-head review/validation comments, and required
   CI. No merge or 211 deployment is authorized in this lane.
 

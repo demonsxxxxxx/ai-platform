@@ -314,7 +314,6 @@ async function screenshot(client, name) {
   mkdirSync(screenshotDir, { recursive: true });
   const result = await client.send("Page.captureScreenshot", {
     format: "png",
-    captureBeyondViewport: true,
   });
   const path = join(screenshotDir, `${name}.png`);
   writeFileSync(path, Buffer.from(result.data, "base64"));
@@ -533,7 +532,35 @@ async function runViewport(name, viewport) {
 
     await click(client, 'button[title="Menu"]');
     await clickText(client, ["Run playback", "运行回放"]);
-    await client.waitFor('document.body.innerText.includes("result.txt")', `${name}:artifact_entry`);
+    await client.waitFor(
+      `(() => {
+        const panel = document.querySelector('[data-run-playback-panel][data-run-playback-state="ready"]');
+        if (!panel || !panel.innerText.includes("result.txt")) return false;
+        const rect = panel.getBoundingClientRect();
+        return rect.left < innerWidth && rect.right > 0 && rect.top < innerHeight && rect.bottom > 0;
+      })()`,
+      `${name}:artifact_entry`,
+    );
+    await client.waitFor(
+      '!document.body.innerText.includes("Queued (position 1)")',
+      `${name}:terminal_queue_cleared`,
+    );
+    await delay(250);
+    const artifactState = await client.evaluate(`(() => {
+      const panel = document.querySelector('[data-run-playback-panel][data-run-playback-state="ready"]');
+      const rect = panel?.getBoundingClientRect();
+      return {
+        visible: Boolean(rect && rect.width > 0 && rect.height > 0 && rect.left < innerWidth && rect.right > 0 && rect.top < innerHeight && rect.bottom > 0),
+        rect: rect ? { left: Math.round(rect.left), top: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) } : null,
+        hostRect: panel?.parentElement?.parentElement ? (() => {
+          const hostRect = panel.parentElement.parentElement.getBoundingClientRect();
+          return { left: Math.round(hostRect.left), top: Math.round(hostRect.top), width: Math.round(hostRect.width), height: Math.round(hostRect.height) };
+        })() : null,
+        artifactVisible: Boolean(panel?.innerText.includes("result.txt")),
+        succeededVisible: Boolean(panel?.innerText.toLowerCase().includes("succeeded") || panel?.innerText.toLowerCase().includes("success")),
+        queuedToastVisible: document.body.innerText.includes("Queued (position 1)"),
+      };
+    })()`);
     const artifactScreenshot = await screenshot(client, `${name}-artifact-entry`);
     const requestEvidence = await client.evaluate(`(() => {
       const requests = window.__authorizedSkillSmoke.requests;
@@ -569,6 +596,7 @@ async function runViewport(name, viewport) {
       staleState,
       stalePickerSummary,
       deniedState,
+      artifactState,
       requestEvidence,
       layout,
       screenshots: [
@@ -627,6 +655,10 @@ async function main() {
       deniedSubmission?.body?.disabled_skills === undefined &&
       acceptedSubmission?.body?.selected_skill?.skill_id === "document-review" &&
       acceptedSubmission?.body?.selected_skill?.expected_version === "cccccccc33333333" &&
+      result.artifactState.visible === true &&
+      result.artifactState.artifactVisible === true &&
+      result.artifactState.succeededVisible === true &&
+      result.artifactState.queuedToastVisible === false &&
       result.layout.bodyScrollWidth <= result.layout.viewport.width &&
       result.layout.overlaps === false
     );

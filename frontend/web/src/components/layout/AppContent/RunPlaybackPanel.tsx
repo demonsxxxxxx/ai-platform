@@ -86,7 +86,11 @@ export function RunPlaybackPanel({ runId, panelKey }: RunPlaybackPanelProps) {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[var(--theme-bg-card)] text-[var(--theme-text)] dark:bg-stone-900">
+    <div
+      className="flex h-full min-h-0 flex-col bg-[var(--theme-bg-card)] text-[var(--theme-text)] dark:bg-stone-900"
+      data-run-playback-panel
+      data-run-playback-state={viewModel.state}
+    >
       <SummaryBlock summary={viewModel.summary} />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">

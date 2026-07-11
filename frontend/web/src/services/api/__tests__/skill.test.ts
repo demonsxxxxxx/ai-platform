@@ -81,6 +81,47 @@ test("normalizeSkillListResponse keeps legacy arrays readable but permission-unk
   });
 });
 
+test("normalizeSkillListResponse rejects null and malformed pagination metadata", () => {
+  const validEnvelope = {
+    skills: [userSkill],
+    total: 1,
+    skip: 0,
+    limit: 200,
+    available_tags: ["planning"],
+    effective_permissions: ["skill:read"],
+  };
+
+  for (const response of [
+    null,
+    { ...validEnvelope, total: -1 },
+    { ...validEnvelope, total: "1" },
+    { ...validEnvelope, skip: -1 },
+    { ...validEnvelope, limit: "200" },
+  ]) {
+    assert.throws(
+      () => normalizeSkillListResponse(response as never),
+      /authorized_skill_catalog_invalid/,
+    );
+  }
+});
+
+test("normalizeSkillListResponse rejects missing authorized selector fields", () => {
+  const { expected_version: _expectedVersion, ...missingVersion } = userSkill;
+
+  assert.throws(
+    () =>
+      normalizeSkillListResponse({
+        skills: [missingVersion],
+        total: 1,
+        skip: 0,
+        limit: 200,
+        available_tags: ["planning"],
+        effective_permissions: ["skill:read"],
+      } as never),
+    /authorized_skill_catalog_invalid/,
+  );
+});
+
 test("collectAllAuthorizedSkills aggregates beyond 200 and preserves catalog projection", async () => {
   const calls: Array<{ skip?: number; limit?: number }> = [];
   const allSkills = Array.from({ length: 205 }, (_, index) => ({
