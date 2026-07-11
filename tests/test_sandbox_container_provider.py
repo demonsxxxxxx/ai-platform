@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import importlib
+import socket
 import threading
 import time
 from typing import Any
@@ -1874,7 +1875,7 @@ async def test_docker_provider_cleans_up_when_executor_url_wait_is_cancelled(mon
         health_probe=lambda executor_url, timeout_seconds: True,
     )
 
-    async def cancel_wait(container, timeout_seconds):
+    async def cancel_wait(container, timeout_seconds, endpoint):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(provider, "_wait_for_executor_url", cancel_wait)
@@ -1898,7 +1899,7 @@ async def test_docker_cached_reuse_cleans_up_when_executor_url_wait_is_cancelled
     )
     first = await provider.create_or_reuse(request(), workspace())
 
-    async def cancel_wait(container, timeout_seconds):
+    async def cancel_wait(container, timeout_seconds, endpoint):
         raise asyncio.CancelledError()
 
     monkeypatch.setattr(provider, "_wait_for_executor_url", cancel_wait)
@@ -2397,6 +2398,191 @@ async def test_docker_provider_uses_loopback_executor_url_and_private_auth_heade
     assert lease.executor_headers[EXECUTOR_AUTH_HEADER] == created["environment"]["AI_PLATFORM_EXECUTOR_AUTH_TOKEN"]
     assert lease.executor_headers[EXECUTOR_AUTH_HEADER] not in str(lease.platform_labels())
     assert "AI_PLATFORM_EXECUTOR_AUTH_TOKEN" not in str(lease.platform_labels())
+
+
+def test_executor_published_endpoint_resolves_one_pinned_host_gateway_ipv4(monkeypatch):
+    from app.runtime.sandbox import container_provider
+
+    calls: list[tuple[object, ...]] = []
+
+    def getaddrinfo(host, port, *, family, type):
+        calls.append((host, port, family, type))
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("172.17.0.1", 0))]
+
+    monkeypatch.setattr(container_provider.socket, "getaddrinfo", getaddrinfo)
+
+    endpoint = container_provider._resolve_executor_published_endpoint("host.docker.internal")
+
+    assert endpoint.published_host == "host.docker.internal"
+    assert endpoint.bind_ip == "172.17.0.1"
+    assert calls == [("host.docker.internal", None, socket.AF_INET, socket.SOCK_STREAM)]
+
+
+@pytest.mark.parametrize("published_host", ["", "0.0.0.0", "::"])
+def test_executor_published_endpoint_rejects_empty_or_wildcard_host(published_host):
+    from app.runtime.sandbox import container_provider
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="published endpoint"):
+        container_provider._resolve_executor_published_endpoint(published_host)
+
+
+def test_executor_published_endpoint_rejects_unresolvable_host(monkeypatch):
+    from app.runtime.sandbox import container_provider
+
+    def fail_resolution(*_args, **_kwargs):
+        raise socket.gaierror("resolver detail must stay private")
+
+    monkeypatch.setattr(container_provider.socket, "getaddrinfo", fail_resolution)
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="published endpoint") as exc_info:
+        container_provider._resolve_executor_published_endpoint("missing.internal")
+
+    assert "resolver detail" not in str(exc_info.value)
+
+
+def test_executor_published_endpoint_rejects_multiple_resolved_addresses(monkeypatch):
+    from app.runtime.sandbox import container_provider
+
+    monkeypatch.setattr(
+        container_provider.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("172.17.0.1", 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("172.18.0.1", 0)),
+        ],
+    )
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="published endpoint"):
+        container_provider._resolve_executor_published_endpoint("host.docker.internal")
+
+
+def test_executor_published_endpoint_rejects_hostname_resolving_to_loopback(monkeypatch):
+    from app.runtime.sandbox import container_provider
+
+    monkeypatch.setattr(
+        container_provider.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))],
+    )
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="published endpoint"):
+        container_provider._resolve_executor_published_endpoint("host.docker.internal")
+
+
+def test_published_executor_url_does_not_fallback_from_wildcard_inspect_binding(monkeypatch):
+    from app.runtime.sandbox import container_provider
+
+    settings = type("StubSettings", (), {"sandbox_executor_published_host": "host.docker.internal"})()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    container = type(
+        "StubContainer",
+        (),
+        {
+            "attrs": {
+                "NetworkSettings": {
+                    "Ports": {"18000/tcp": [{"HostIp": "0.0.0.0", "HostPort": "43123"}]}
+                }
+            }
+        },
+    )()
+
+    assert container_provider._published_executor_url_from_container(container) is None
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_binds_pinned_host_gateway_and_publishes_configured_hostname(monkeypatch):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.contracts import EXECUTOR_AUTH_HEADER
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    settings = type(
+        "StubSettings",
+        (),
+        {
+            "sandbox_executor_published_host": "host.docker.internal",
+            "sandbox_executor_image": "ai-platform-executor:dev",
+            "sandbox_callback_base_url": "http://platform.test",
+            "sandbox_callback_host_gateway": "host.docker.internal",
+            "sandbox_egress_policy_enabled": False,
+            "sandbox_container_start_timeout_seconds": 5,
+            "sandbox_executor_health_timeout_seconds": 5,
+        },
+    )()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    resolution_calls = 0
+
+    def getaddrinfo(*_args, **_kwargs):
+        nonlocal resolution_calls
+        resolution_calls += 1
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("172.17.0.1", 0))]
+
+    monkeypatch.setattr(container_provider.socket, "getaddrinfo", getaddrinfo)
+    probes: list[tuple[str, dict[str, str]]] = []
+    fake = FakeDockerClient(host_port="43123")
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds, executor_headers: probes.append(
+            (executor_url, executor_headers)
+        )
+        or True,
+        identity_probe=lambda executor_url, timeout_seconds, executor_headers: probes.append(
+            (executor_url, executor_headers)
+        )
+        or {"uid": 10001, "gid": 10001},
+    )
+
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    created = fake.created[0]
+    assert resolution_calls == 1
+    assert created["ports"] == {"18000/tcp": ("172.17.0.1", None)}
+    assert lease.executor_url == "http://host.docker.internal:43123"
+    assert [url for url, _headers in probes] == [lease.executor_url, lease.executor_url]
+    assert all(headers[EXECUTOR_AUTH_HEADER] == lease.executor_headers[EXECUTOR_AUTH_HEADER] for _, headers in probes)
+    assert created["privileged"] is False
+    assert created["read_only"] is True
+    assert created["cap_drop"] == ["ALL"]
+    assert "network_mode" not in created
+
+
+@pytest.mark.asyncio
+async def test_docker_provider_rebuilds_instead_of_reusing_when_inspected_bind_ip_drifted(monkeypatch):
+    from app.runtime.sandbox import container_provider
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    settings = type(
+        "StubSettings",
+        (),
+        {
+            "sandbox_executor_published_host": "host.docker.internal",
+            "sandbox_executor_image": "ai-platform-executor:dev",
+            "sandbox_callback_base_url": "http://platform.test",
+            "sandbox_callback_host_gateway": "host.docker.internal",
+            "sandbox_egress_policy_enabled": False,
+            "sandbox_container_start_timeout_seconds": 5,
+            "sandbox_executor_health_timeout_seconds": 5,
+        },
+    )()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        container_provider.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("172.17.0.1", 0))],
+    )
+    fake = FakeDockerClient(host_port="43123")
+    first = DockerContainerProvider(docker_client_factory=lambda: fake, health_probe=lambda *_args, **_kwargs: True)
+    lease = await first.create_or_reuse(request(), workspace())
+    container = fake.containers_by_name[lease.container_name]
+    container.attrs["NetworkSettings"]["Ports"]["18000/tcp"][0]["HostIp"] = "127.0.0.1"
+    restarted = DockerContainerProvider(docker_client_factory=lambda: fake, health_probe=lambda *_args, **_kwargs: True)
+
+    replacement = await restarted.create_or_reuse(request(), workspace())
+
+    assert container.stopped is True
+    assert container.removed is True
+    assert len(fake.created) == 2
+    assert fake.created[1]["ports"] == {"18000/tcp": ("172.17.0.1", None)}
+    assert replacement.executor_url == "http://host.docker.internal:43123"
 
 
 @pytest.mark.asyncio

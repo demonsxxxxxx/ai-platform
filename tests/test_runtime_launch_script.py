@@ -354,6 +354,7 @@ def test_env_example_documents_sandbox_egress_policy_defaults():
     for expected in [
         "SANDBOX_CONTAINER_PROVIDER=fake",
         "SANDBOX_EXECUTOR_IMAGE=ai-platform:local",
+        "SANDBOX_EXECUTOR_PUBLISHED_HOST=host.docker.internal",
         "SANDBOX_WORKSPACE_ROOT=/tmp/ai-platform-sandbox-workspaces",
         "SANDBOX_CALLBACK_BASE_URL=http://host.docker.internal:8020",
         "SANDBOX_EGRESS_POLICY_ENABLED=false",
