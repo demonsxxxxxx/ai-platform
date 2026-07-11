@@ -31,6 +31,9 @@ test("buildAdminSkillPreviewUrl targets global-catalog admin ZIP preview", () =>
 
 const userSkill = {
   skill_name: "planner",
+  expected_version: "hash-planner-v1",
+  input_modes: ["chat"],
+  requires_file: false,
   description: "Planning workflow",
   tags: ["planning"],
   files: ["SKILL.md"],

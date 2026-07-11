@@ -56,7 +56,8 @@ import type {
   PendingApproval,
   ToolState,
   SkillResponse,
-  SkillSource,
+  PublicSkillResponse,
+  SelectedSkillRequest,
   ToolCategory,
   AgentOption,
   MessageAttachment,
@@ -64,6 +65,11 @@ import type {
   PersonaPreset,
   PersonaPresetSnapshot,
 } from "../../../types";
+import type { SubmissionOutcome } from "../../../hooks/useAgent/types";
+import type {
+  SelectedSkillRecoverableCode,
+  SelectedSkillTaskState,
+} from "../../../hooks/useSelectedSkillTask";
 import type { RevealPreviewRequest } from "../../chat/ChatMessage/items/revealPreviewData";
 import { clearFileRevealAutoOpenState } from "../../chat/ChatMessage/items/fileRevealAutoOpen";
 import { clearProjectRevealAutoOpenState } from "../../chat/ChatMessage/items/projectRevealAutoOpen";
@@ -107,15 +113,15 @@ interface ChatViewProps {
   enabledToolsCount: number;
   totalToolsCount: number;
   skills: SkillResponse[];
-  onToggleSkill: (name: string) => Promise<boolean>;
-  onToggleSkillCategory: (
-    category: SkillSource,
-    enabled: boolean,
-  ) => Promise<boolean>;
-  onToggleAllSkills: (enabled: boolean) => Promise<boolean>;
+  taskSkills: PublicSkillResponse[];
+  selectedSkillState: SelectedSkillTaskState;
+  onSelectSkill: (skill: PublicSkillResponse) => void;
+  onClearSelectedSkill: () => void;
+  onSelectedSkillRecoverable: (
+    code: SelectedSkillRecoverableCode,
+  ) => Promise<unknown>;
+  onSelectedSkillFilesReady: () => void;
   skillsLoading: boolean;
-  pendingSkillNames: string[];
-  skillsMutating: boolean;
   enabledSkillsCount: number;
   totalSkillsCount: number;
   enableSkills: boolean;
@@ -128,7 +134,6 @@ interface ChatViewProps {
   selectedPersonaPresetId: string | null;
   selectedPersonaName: string | null;
   selectedPersonaSnapshot: PersonaPresetSnapshot | null;
-  personaSkillsControlled: boolean;
   personaPresetsLoading: boolean;
   personaPresetsMutating: boolean;
   onUsePersonaPreset: (
@@ -168,7 +173,12 @@ interface ChatViewProps {
     approved: boolean,
   ) => void;
   approvalLoading: boolean;
-  onSendMessage: (content: string) => void;
+  onSendMessage: (
+    content: string,
+    options?: Record<string, boolean | string | number>,
+    attachments?: MessageAttachment[],
+    selectedSkill?: SelectedSkillRequest | null,
+  ) => Promise<SubmissionOutcome>;
   onStopGeneration: () => void;
   attachments: MessageAttachment[];
   onAttachmentsChange: React.Dispatch<
@@ -203,12 +213,13 @@ export function ChatView({
   enabledToolsCount,
   totalToolsCount,
   skills,
-  onToggleSkill,
-  onToggleSkillCategory,
-  onToggleAllSkills,
+  taskSkills,
+  selectedSkillState,
+  onSelectSkill,
+  onClearSelectedSkill,
+  onSelectedSkillRecoverable,
+  onSelectedSkillFilesReady,
   skillsLoading,
-  pendingSkillNames,
-  skillsMutating,
   enabledSkillsCount,
   totalSkillsCount,
   enableSkills,
@@ -220,7 +231,6 @@ export function ChatView({
   onPersonaPresetsTagChange,
   selectedPersonaPresetId,
   selectedPersonaName,
-  personaSkillsControlled,
   personaPresetsLoading,
   personaPresetsMutating,
   onUsePersonaPreset,
@@ -256,6 +266,7 @@ export function ChatView({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const [composerDraft, setComposerDraft] = useState("");
   const sessionRunning = isSessionRunning(messages, isLoading);
   const hasVisibleStreamingMessage = messages.some(
     (message) => message.role === "assistant" && message.isStreaming,
@@ -657,6 +668,8 @@ export function ChatView({
 
   // Shared ChatInput props to avoid duplication
   const chatInputProps = {
+    draft: composerDraft,
+    onDraftChange: setComposerDraft,
     onSend: onSendMessage,
     onStop: onStopGeneration,
     isLoading: sessionRunning,
@@ -668,13 +681,13 @@ export function ChatView({
     toolsLoading,
     enabledToolsCount,
     totalToolsCount,
-    skills,
-    onToggleSkill,
-    onToggleSkillCategory,
-    onToggleAllSkills,
+    skills: taskSkills,
+    selectedSkillState,
+    onSelectSkill,
+    onClearSelectedSkill,
+    onSelectedSkillRecoverable,
+    onSelectedSkillFilesReady,
     skillsLoading,
-    pendingSkillNames,
-    skillsMutating,
     enabledSkillsCount,
     totalSkillsCount,
     enableSkills,
@@ -686,7 +699,6 @@ export function ChatView({
     onPersonaPresetsTagChange,
     selectedPersonaPresetId,
     selectedPersonaName,
-    personaSkillsControlled,
     personaPresetsLoading,
     personaPresetsMutating,
     onUsePersonaPreset,

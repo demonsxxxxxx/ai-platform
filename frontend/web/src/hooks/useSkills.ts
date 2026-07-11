@@ -11,6 +11,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { skillApi } from "../services/api/skill";
 import type { SkillListParams } from "../services/api/skill";
 import type {
+  PublicSkillResponse,
   SkillResponse,
   SkillSource,
   UserSkill,
@@ -37,7 +38,7 @@ function composeSkillResponse(
   detail?: UserSkillDetail,
   filesContent?: Record<string, string>,
   binaryFiles?: Record<string, BinaryFileInfo>,
-): SkillResponse {
+): PublicSkillResponse {
   // Use description from API directly (extracted from SKILL.md by backend)
   const description =
     detail?.description || userSkill.description || userSkill.skill_name;
@@ -50,6 +51,10 @@ function composeSkillResponse(
 
   return {
     name: userSkill.skill_name,
+    expected_version:
+      detail?.expected_version || userSkill.expected_version,
+    input_modes: detail?.input_modes ?? userSkill.input_modes,
+    requires_file: detail?.requires_file ?? userSkill.requires_file,
     description,
     tags,
     enabled: userSkill.enabled,
@@ -93,7 +98,7 @@ export function useSkills(options?: {
 }) {
   const enabled = options?.enabled !== false; // Default to true
   const listParams = options?.listParams;
-  const [skills, setSkills] = useState<SkillResponse[]>([]);
+  const [skills, setSkills] = useState<PublicSkillResponse[]>([]);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [effectivePermissions, setEffectivePermissions] = useState<string[]>(
     [],
@@ -183,6 +188,9 @@ export function useSkills(options?: {
         if (cached) {
           userSkill = {
             skill_name: cached.name,
+            expected_version: cached.expected_version,
+            input_modes: cached.input_modes,
+            requires_file: cached.requires_file,
             description: cached.description,
             tags: cached.tags,
             files: cached.filePaths || [],
@@ -198,6 +206,9 @@ export function useSkills(options?: {
         } else {
           userSkill = {
             skill_name: detail.skill_name || name,
+            expected_version: detail.expected_version || "",
+            input_modes: detail.input_modes || [],
+            requires_file: detail.requires_file ?? false,
             description: detail.description || name,
             tags: detail.tags || [],
             files: detail.files || [],
@@ -235,6 +246,9 @@ export function useSkills(options?: {
         if (cached) {
           userSkill = {
             skill_name: cached.name,
+            expected_version: cached.expected_version,
+            input_modes: cached.input_modes,
+            requires_file: cached.requires_file,
             description: cached.description,
             tags: cached.tags,
             files: cached.filePaths || [],
@@ -250,6 +264,9 @@ export function useSkills(options?: {
         } else {
           userSkill = {
             skill_name: detail.skill_name || name,
+            expected_version: detail.expected_version || "",
+            input_modes: detail.input_modes || [],
+            requires_file: detail.requires_file ?? false,
             description: detail.description || name,
             tags: detail.tags || [],
             files: detail.files || [],

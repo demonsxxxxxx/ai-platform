@@ -139,6 +139,7 @@ export async function connectToSSE(
     await fetchEventSource(
       `/api/chat/sessions/${targetSessionId}/stream?run_id=${targetRunId}`,
       {
+        credentials: "include",
         headers,
         signal: abortControllerRef.current.signal,
         openWhenHidden: true,

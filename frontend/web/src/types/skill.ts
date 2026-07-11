@@ -12,6 +12,9 @@ export type SkillSource = "marketplace" | "manual";
 // User skill from API list response
 export interface UserSkill {
   skill_name: string;
+  expected_version: string;
+  input_modes: string[];
+  requires_file: boolean;
   description: string;
   tags: string[];
   files: string[];
@@ -30,6 +33,9 @@ export interface UserSkillDetail {
   files?: string[];
   enabled?: boolean;
   skill_name?: string;
+  expected_version?: string;
+  input_modes?: string[];
+  requires_file?: boolean;
   description?: string;
   tags?: string[];
   is_published?: boolean;
@@ -74,6 +80,9 @@ export interface PublishToMarketplaceRequest {
 // Full skill used in frontend components
 export interface SkillResponse {
   name: string;
+  expected_version?: string;
+  input_modes?: string[];
+  requires_file?: boolean;
   description: string;
   tags: string[];
   enabled: boolean;
@@ -89,6 +98,18 @@ export interface SkillResponse {
   updated_at?: string;
   is_published: boolean;
   marketplace_is_active: boolean;
+}
+
+/** Authorized public catalog item returned by GET /api/skills/. */
+export interface PublicSkillResponse extends SkillResponse {
+  expected_version: string;
+  input_modes: string[];
+  requires_file: boolean;
+}
+
+export interface SelectedSkillRequest {
+  skill_id: string;
+  expected_version: string;
 }
 
 // Skills list response

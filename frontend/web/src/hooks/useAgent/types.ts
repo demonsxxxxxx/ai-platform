@@ -5,7 +5,14 @@ import type {
   FormField,
   MessageAttachment,
   PersonaPresetSnapshot,
+  SelectedSkillRequest,
 } from "../../types";
+import type { SelectedSkillRecoverableCode } from "../useSelectedSkillTask";
+
+export type SubmissionOutcome =
+  | { status: "accepted" }
+  | { status: "recoverable_error"; code: SelectedSkillRecoverableCode }
+  | { status: "failed" };
 
 // Event types from backend
 export type EventType =
@@ -236,7 +243,8 @@ export interface UseAgentReturn {
     content: string,
     agentOptions?: Record<string, boolean | string | number>,
     attachments?: MessageAttachment[],
-  ) => Promise<void>;
+    selectedSkill?: SelectedSkillRequest | null,
+  ) => Promise<SubmissionOutcome>;
   stopGeneration: () => Promise<void>;
   clearMessages: () => void;
   selectAgent: (agentId: string) => void;

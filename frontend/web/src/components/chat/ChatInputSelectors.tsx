@@ -11,8 +11,7 @@ import type { ModelOption } from "../../services/api/modelPublic";
 import type {
   ToolState,
   ToolCategory,
-  SkillResponse,
-  SkillSource,
+  PublicSkillResponse,
   AgentOption,
   PersonaPreset,
   PersonaPresetSnapshot,
@@ -34,20 +33,11 @@ export interface ChatInputSelectorsProps {
   enabledToolsCount?: number;
   totalToolsCount?: number;
   // Skills
-  skills?: SkillResponse[];
-  onToggleSkill?: (name: string) => Promise<boolean>;
-  onToggleSkillCategory?: (
-    category: SkillSource,
-    enabled: boolean,
-  ) => Promise<boolean>;
-  onToggleAllSkills?: (enabled: boolean) => Promise<boolean>;
-  pendingSkillNames?: string[];
-  skillsMutating?: boolean;
-  enabledSkillsCount?: number;
-  totalSkillsCount?: number;
+  skills?: PublicSkillResponse[];
+  selectedSkill?: PublicSkillResponse | null;
+  onSelectSkill?: (skill: PublicSkillResponse) => void;
+  skillsLoading?: boolean;
   enableSkills?: boolean;
-  personaSkillsControlled?: boolean;
-  selectedPersonaName?: string | null;
   // Persona presets
   personaPresets?: PersonaPreset[];
   personaPresetsTotal?: number;
@@ -93,16 +83,10 @@ export function ChatInputSelectors({
   enabledToolsCount = 0,
   totalToolsCount = 0,
   skills = [],
-  onToggleSkill,
-  onToggleSkillCategory,
-  onToggleAllSkills,
-  pendingSkillNames = [],
-  skillsMutating = false,
-  enabledSkillsCount = 0,
-  totalSkillsCount = 0,
+  selectedSkill,
+  onSelectSkill,
+  skillsLoading = false,
   enableSkills = true,
-  personaSkillsControlled = false,
-  selectedPersonaName,
   personaPresets = [],
   personaPresetsTotal,
   personaPresetsPage,
@@ -150,23 +134,13 @@ export function ChatInputSelectors({
           />
         </LibreChatSelectorModal>
       )}
-      {enableSkills &&
-        onToggleSkill &&
-        onToggleSkillCategory &&
-        onToggleAllSkills && (
+      {enableSkills && onSelectSkill && (
           <LibreChatSelectorModal panel="skills">
             <SkillSelector
               skills={skills}
-              onToggleSkill={onToggleSkill}
-              onToggleCategory={onToggleSkillCategory}
-              onToggleAll={onToggleAllSkills}
-              pendingSkillNames={pendingSkillNames}
-              isMutating={skillsMutating}
-              enabledCount={enabledSkillsCount}
-              totalCount={totalSkillsCount}
-              controlledByPersonaName={
-                personaSkillsControlled ? selectedPersonaName : null
-              }
+              selectedSkill={selectedSkill}
+              onSelectSkill={onSelectSkill}
+              isLoading={skillsLoading}
               isOpen={activePanel === "skills"}
               onOpenChange={(open) => onActivePanelChange(open ? "skills" : null)}
               searchSeed={

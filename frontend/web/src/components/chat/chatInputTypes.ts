@@ -1,22 +1,31 @@
+import type { Dispatch, SetStateAction } from "react";
 import type { FeaturePanel } from "../selectors/FeatureMenu";
 import type { ModelOption } from "../../services/api/modelPublic";
 import type {
   ToolState,
   ToolCategory,
-  SkillResponse,
-  SkillSource,
+  PublicSkillResponse,
+  SelectedSkillRequest,
   AgentOption,
   MessageAttachment,
   PersonaPreset,
   PersonaPresetSnapshot,
 } from "../../types";
+import type { SubmissionOutcome } from "../../hooks/useAgent/types";
+import type {
+  SelectedSkillRecoverableCode,
+  SelectedSkillTaskState,
+} from "../../hooks/useSelectedSkillTask";
 
 export interface ChatInputProps {
+  draft?: string;
+  onDraftChange?: Dispatch<SetStateAction<string>>;
   onSend: (
     message: string,
     options?: Record<string, boolean | string | number>,
     attachments?: MessageAttachment[],
-  ) => void;
+    selectedSkill?: SelectedSkillRequest | null,
+  ) => Promise<SubmissionOutcome>;
   onStop: () => void;
   isLoading: boolean;
   disabled?: boolean;
@@ -28,16 +37,15 @@ export interface ChatInputProps {
   toolsLoading?: boolean;
   enabledToolsCount?: number;
   totalToolsCount?: number;
-  skills?: SkillResponse[];
-  onToggleSkill?: (name: string) => Promise<boolean>;
-  onToggleSkillCategory?: (
-    category: SkillSource,
-    enabled: boolean,
-  ) => Promise<boolean>;
-  onToggleAllSkills?: (enabled: boolean) => Promise<boolean>;
+  skills?: PublicSkillResponse[];
+  selectedSkillState?: SelectedSkillTaskState;
+  onSelectSkill?: (skill: PublicSkillResponse) => void;
+  onClearSelectedSkill?: () => void;
+  onSelectedSkillRecoverable?: (
+    code: SelectedSkillRecoverableCode,
+  ) => Promise<unknown>;
+  onSelectedSkillFilesReady?: () => void;
   skillsLoading?: boolean;
-  pendingSkillNames?: string[];
-  skillsMutating?: boolean;
   enabledSkillsCount?: number;
   totalSkillsCount?: number;
   enableSkills?: boolean;
@@ -49,7 +57,6 @@ export interface ChatInputProps {
   onPersonaPresetsTagChange?: (tag: string | null) => void;
   selectedPersonaPresetId?: string | null;
   selectedPersonaName?: string | null;
-  personaSkillsControlled?: boolean;
   personaPresetsLoading?: boolean;
   personaPresetsMutating?: boolean;
   onUsePersonaPreset?: (
