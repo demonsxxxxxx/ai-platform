@@ -8,6 +8,7 @@ from app.observability_readiness import build_observability_readiness
 from app import repositories
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 from app.db import get_pool_status, transaction
+from app.execution_boundary import is_accepted_runtime_lease
 from app.queue import get_queue_insight, get_queue_status
 from app.runtime.sandbox.container_provider import (
     DockerPermissionDeniedError,
@@ -575,8 +576,16 @@ async def admin_runtime_containers(
             if include_lease_history
             else []
         )
-    visible_leases = [lease for lease in leases if lease.get("tenant_id") == principal.tenant_id]
-    visible_lease_history = [lease for lease in lease_history if lease.get("tenant_id") == principal.tenant_id]
+    visible_leases = [
+        lease
+        for lease in leases
+        if lease.get("tenant_id") == principal.tenant_id and is_accepted_runtime_lease(lease)
+    ]
+    visible_lease_history = [
+        lease
+        for lease in lease_history
+        if lease.get("tenant_id") == principal.tenant_id and is_accepted_runtime_lease(lease)
+    ]
     containers = await provider.list_runtime_containers({"tenant_id": principal.tenant_id})
     active_containers = [container for container in containers if container.status == "running"]
 
@@ -629,8 +638,16 @@ async def admin_runtime_overview(
         leases = await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
         lease_history = await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status=None)
 
-    visible_leases = [lease for lease in leases if lease.get("tenant_id") == principal.tenant_id]
-    visible_lease_history = [lease for lease in lease_history if lease.get("tenant_id") == principal.tenant_id]
+    visible_leases = [
+        lease
+        for lease in leases
+        if lease.get("tenant_id") == principal.tenant_id and is_accepted_runtime_lease(lease)
+    ]
+    visible_lease_history = [
+        lease
+        for lease in lease_history
+        if lease.get("tenant_id") == principal.tenant_id and is_accepted_runtime_lease(lease)
+    ]
     containers, container_observation_degraded = await _list_runtime_containers_for_overview(
         provider,
         principal.tenant_id,

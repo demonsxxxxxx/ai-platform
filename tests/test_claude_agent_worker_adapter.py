@@ -6,14 +6,16 @@ import json
 import subprocess
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
 import app.skills.dependencies as dependency_policy
 from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
-from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
+from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter, PreparedSdkRun
 from app.executors.claude_agent_worker import _allowed_skill_names
 from app.executors.claude_agent_worker import _inferred_used_skill_names
+from app.executors.claude_agent_worker import _ordinary_run_requires_sandbox
 from app.storage import StoredObject
 from app.executors.claude_agent_sdk_runner import build_sdk_env, build_skill_prompt, run_claude_agent_sdk
 from app.executors.registry import AdapterRegistry
@@ -190,17 +192,105 @@ def payload(**overrides):
 
 
 def settings(tmp_path, *, sdk_enabled=True, legacy_fallback=False):
+    short_id = hashlib.sha256(str(tmp_path).encode("utf-8")).hexdigest()[:8]
     return type(
         "S",
         (),
         {
             "claude_agent_sdk_enabled": sdk_enabled,
             "claude_agent_workspace_root": str(tmp_path / "workspaces"),
+            "sandbox_workspace_root": str(tmp_path.parents[1] / f"s-{short_id}"),
+            "sandbox_container_provider": "docker",
+            "sandbox_callback_base_url": "http://platform.test",
+            "claude_agent_model": "deepseek-v4-flash",
             "platform_skills_root": str(tmp_path / "skills"),
             "skill_staging_subdir": ".claude/skills",
             "enable_legacy_runtime211_fallback": legacy_fallback,
         },
     )()
+
+
+def sandbox_writing_payload(**overrides):
+    tier = str(overrides.pop("execution_tier", "document_worker"))
+    overrides.setdefault("context_snapshot", {"execution_tier": tier})
+    overrides.setdefault("context_pack", {"execution_tier": tier})
+    return payload(**overrides)
+
+
+def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="accepted", provider="docker"):
+    requests = []
+
+    class FakeSandboxRuntime:
+        async def submit(self, request, event_sink=None):
+            requests.append(request)
+            response = executor_response(request) if callable(executor_response) else executor_response
+            if asyncio.iscoroutine(response):
+                response = await response
+            return types.SimpleNamespace(
+                status=status,
+                provider=provider,
+                session_id=request.session_id,
+                run_id=request.run_id,
+                executor_response=dict(
+                    response
+                    or {
+                        "status": status,
+                        "message": "sandbox completed",
+                        "sdk_used": True,
+                        "used_skills": [],
+                        "used_skills_source": "",
+                    }
+                ),
+                timings={},
+            )
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.SandboxRuntime",
+        lambda *args, **kwargs: FakeSandboxRuntime(),
+    )
+    return requests
+
+
+def sandbox_workspace_path(current_settings, *, run_id="run_1"):
+    return (
+        Path(current_settings.sandbox_workspace_root)
+        / "tenants"
+        / "default"
+        / "workspaces"
+        / "default"
+        / "users"
+        / "user-a"
+        / "sessions"
+        / "ses_1"
+        / "runs"
+        / run_id
+        / "workspace"
+    )
+
+
+async def prepare_controlled_runner_case(adapter, run_payload, current_settings, *, event_sink=None):
+    prepared, failure = await adapter._prepare_sdk_run(
+        run_payload,
+        event_sink=event_sink,
+        workspace=sandbox_workspace_path(current_settings, run_id=run_payload.run_id),
+        workspace_root=current_settings.sandbox_workspace_root,
+    )
+    assert failure is None
+    assert prepared is not None
+    return prepared
+
+
+async def call_controlled_runner_helper(adapter, run_payload, prepared, sdk_result, *, event_sink=None):
+    return await adapter._try_controlled_runner(
+        run_payload,
+        event_sink=event_sink,
+        workspace=prepared.workspace,
+        file_names=prepared.file_names,
+        staged_skill_names=prepared.staged_skill_names,
+        selected_skills=prepared.selected_skills,
+        pinned_manifests=prepared.pinned_manifests,
+        sdk_result=sdk_result,
+    )
 
 
 def write_skill(root, name="qa-file-reviewer", description="Review Word documents."):
@@ -455,22 +545,16 @@ def test_allowed_skill_names_prefers_pinned_manifest_dependency_graph(monkeypatc
 async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     current_policy_helper = write_skill(tmp_path / "skills", name="minimax-docx", description="Current DOCX helper.")
-    calls = {}
-
-    async def fake_try_run_sdk(payload, event_sink=None, **kwargs):
-        calls["staged_skill_names"] = kwargs["staged_skill_names"]
-        return FakeQueryResult()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fake_try_run_sdk)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
-        payload(
+        sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             skill_manifests=[
@@ -482,7 +566,7 @@ async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, t
 
     assert current_policy_helper.is_dir()
     assert result.status == "succeeded"
-    assert calls["staged_skill_names"] == ["qa-file-reviewer", "legacy-helper"]
+    assert runtime_requests[0].skill_ids == ["qa-file-reviewer", "legacy-helper"]
     assert result.executor_payload["skill_manifests"][0]["dependency_ids"] == ["legacy-helper"]
 
 
@@ -503,7 +587,7 @@ async def test_legacy_delegate_is_not_used_even_when_flag_enabled(monkeypatch, t
         lambda: settings(tmp_path, sdk_enabled=False, legacy_fallback=True),
     )
 
-    result = await adapter.submit_run(payload())
+    result = await adapter.submit_run(sandbox_writing_payload())
 
     result.validate()
     assert result.executor_type == "claude-agent-worker"
@@ -526,7 +610,9 @@ async def test_sdk_disabled_fails_without_legacy_delegate(monkeypatch, tmp_path)
         lambda: settings(tmp_path, sdk_enabled=False, legacy_fallback=False),
     )
 
-    result = await adapter.submit_run(payload(skill_id="qa-file-reviewer", agent_id="qa-word-review"))
+    result = await adapter.submit_run(
+        sandbox_writing_payload(skill_id="qa-file-reviewer", agent_id="qa-word-review")
+    )
 
     assert result.status == "failed"
     assert result.result["error_code"] == "claude_agent_sdk_disabled"
@@ -538,21 +624,13 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     write_skill(tmp_path / "skills")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
     pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload={"message": "审核一下"})
-    calls = {}
-
-    async def fake_try_run_sdk(payload, event_sink=None, **kwargs):
-        calls["workspace"] = kwargs["workspace"]
-        calls["staged_skill_names"] = kwargs["staged_skill_names"]
-        calls["prompt"] = kwargs["prompt"]
-        return FakeQueryResult()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fake_try_run_sdk)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
         payload(
@@ -598,34 +676,43 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
     assert manifest["allowed"] is True
     assert manifest["staged"] is True
     assert manifest["used"] is False
-    assert calls["staged_skill_names"] == ["qa-file-reviewer", "minimax-docx"]
-    assert (calls["workspace"] / ".claude" / "skills" / "qa-file-reviewer" / "SKILL.md").is_file()
-    assert (calls["workspace"] / ".claude" / "skills" / "minimax-docx" / "SKILL.md").is_file()
-    assert "Skill: qa-file-reviewer" not in calls["prompt"]
-    assert "Office context pack:" in calls["prompt"]
-    assert "Context pack: 1 message(s), 1 file(s), 1 artifact(s), 0 long-term memory record(s)" in calls["prompt"]
-    assert "Latest artifact version: v4" in calls["prompt"]
-    assert "raw_storage_key" not in calls["prompt"]
-    assert "s3://private" not in calls["prompt"]
+    runtime_request = runtime_requests[0]
+    workspace = (
+        Path(current_settings.sandbox_workspace_root)
+        / "tenants"
+        / "default"
+        / "workspaces"
+        / "default"
+        / "users"
+        / "user-a"
+        / "sessions"
+        / "ses_1"
+        / "runs"
+        / "run_1"
+        / "workspace"
+    )
+    assert runtime_request.skill_ids == ["qa-file-reviewer", "minimax-docx"]
+    assert (workspace / ".claude" / "skills" / "qa-file-reviewer" / "SKILL.md").is_file()
+    assert (workspace / ".claude" / "skills" / "minimax-docx" / "SKILL.md").is_file()
+    assert "Skill: qa-file-reviewer" not in runtime_request.input_message
+    assert "Office context pack:" in runtime_request.input_message
+    assert "Context pack: 1 message(s), 1 file(s), 1 artifact(s), 0 long-term memory record(s)" in runtime_request.input_message
+    assert "Latest artifact version: v4" in runtime_request.input_message
+    assert "raw_storage_key" not in runtime_request.input_message
+    assert "s3://private" not in runtime_request.input_message
 
 
 @pytest.mark.asyncio
 async def test_agent_run_prefers_worker_context_pack_over_snapshot_reparse(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills")
-    calls = {}
-
-    async def fake_try_run_sdk(payload, event_sink=None, **kwargs):
-        calls["prompt"] = kwargs["prompt"]
-        return FakeQueryResult()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fake_try_run_sdk)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
         payload(
@@ -656,16 +743,18 @@ async def test_agent_run_prefers_worker_context_pack_over_snapshot_reparse(monke
                     "Execution tier: document_worker. Context pack version: v4."
                 ),
                 "context_pack_generated_at": "2026-06-12T01:23:45Z",
+                "execution_tier": "document_worker",
             },
         )
     )
 
     assert result.status == "succeeded"
-    assert "Context pack: 1 message(s), 0 file(s), 0 artifact(s)" in calls["prompt"]
-    assert "Context pack version: v4" in calls["prompt"]
-    assert "99 message(s)" not in calls["prompt"]
-    assert "raw_storage_key" not in calls["prompt"]
-    assert "s3://private" not in calls["prompt"]
+    prompt = runtime_requests[0].input_message
+    assert "Context pack: 1 message(s), 0 file(s), 0 artifact(s)" in prompt
+    assert "Context pack version: v4" in prompt
+    assert "99 message(s)" not in prompt
+    assert "raw_storage_key" not in prompt
+    assert "s3://private" not in prompt
 
 
 @pytest.mark.asyncio
@@ -677,6 +766,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
                 "claude_agent_sdk_enabled": True,
                 "claude_agent_workspace_root": str(tmp_path / "a"),
                 "sandbox_workspace_root": str(tmp_path / "s"),
+                "sandbox_container_provider": "docker",
                 "platform_skills_root": str(tmp_path / "k"),
                 "skill_staging_subdir": ".claude/skills",
                 "sandbox_callback_base_url": "http://platform.test",
@@ -690,6 +780,7 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
             runtime_calls.append(request)
             return types.SimpleNamespace(
                 status="accepted",
+                provider="docker",
                 session_id=request.session_id,
                 run_id=request.run_id,
                 executor_response={
@@ -788,6 +879,194 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
     assert result.executor_payload["sandbox_provider"] == "docker"
 
 
+@pytest.mark.parametrize(
+    ("execution_tier", "skill_id"),
+    [
+        ("sdk_only_writing", "general-chat"),
+        ("document_worker", "qa-file-reviewer"),
+        ("sdk_only_writing", "tenant-selected-writing-skill"),
+    ],
+)
+def test_single_run_claude_writing_tiers_require_real_sandbox(execution_tier, skill_id):
+    assert _ordinary_run_requires_sandbox(
+        payload(
+            agent_id="general-agent",
+            skill_id=skill_id,
+            input={"message": "write the requested result"},
+            context_snapshot={"execution_tier": execution_tier},
+            context_pack={"execution_tier": execution_tier},
+        )
+    ) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("execution_tier", "agent_id", "skill_id"),
+    [
+        ("sdk_only_writing", "general-agent", "general-chat"),
+        ("document_worker", "qa-word-review", "qa-file-reviewer"),
+        ("sdk_only_writing", "general-agent", "tenant-selected-writing-skill"),
+    ],
+)
+async def test_single_run_writing_entrypoint_never_calls_worker_local_helpers(
+    monkeypatch,
+    tmp_path,
+    execution_tier,
+    agent_id,
+    skill_id,
+):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+
+    async def fail_local_helper(*args, **kwargs):
+        raise AssertionError("ordinary writing entrypoint must not call worker-local execution helpers")
+
+    async def no_files(payload, workspace):
+        return []
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    monkeypatch.setattr(adapter, "_try_run_sdk", fail_local_helper)
+    monkeypatch.setattr(adapter, "_try_controlled_runner", fail_local_helper)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
+
+    result = await adapter.submit_run(
+        sandbox_writing_payload(
+            execution_tier=execution_tier,
+            agent_id=agent_id,
+            skill_id=skill_id,
+            file_ids=[],
+            input={"message": "write the requested result"},
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert len(runtime_requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_claude_execution_tier_fails_before_any_execution_helper(monkeypatch):
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+
+    async def fail_execution(*args, **kwargs):
+        raise AssertionError("unknown Claude execution tier must fail before execution")
+
+    monkeypatch.setattr(adapter, "_run_with_staged_skills", fail_execution)
+    result = await adapter.submit_run(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            context_snapshot={"execution_tier": "future_untrusted_tier"},
+            context_pack={"execution_tier": "future_untrusted_tier"},
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "untrusted_claude_execution_tier"
+
+
+def test_sandbox_runtime_fake_provider_result_fails_closed(monkeypatch, tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
+    prepared = PreparedSdkRun(
+        workspace=tmp_path,
+        file_names=[],
+        selected_skills=[],
+        pinned_manifests={},
+        allowed_skill_names=["general-chat"],
+        staged_skill_names=["general-chat"],
+        prompt="write the requested result",
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: type("S", (), {"sandbox_container_provider": "fake"})(),
+    )
+
+    result = adapter._executor_result_from_sandbox_runtime(
+        payload(agent_id="general-agent", skill_id="general-chat"),
+        prepared,
+        types.SimpleNamespace(
+            status="accepted",
+            provider="fake",
+            executor_response={"status": "accepted", "message": "fake completed", "sdk_used": True},
+            timings={},
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "sandbox_real_provider_required"
+
+
+@pytest.mark.asyncio
+async def test_fake_provider_fails_before_runtime_or_worker_local_side_effects(monkeypatch):
+    adapter = ClaudeAgentWorkerAdapter()
+    calls = {"prepare": 0, "runtime": 0}
+
+    async def fail_prepare(*args, **kwargs):
+        calls["prepare"] += 1
+        raise AssertionError("fake provider must fail before workspace or SDK preparation")
+
+    class FailRuntime:
+        def __init__(self, *args, **kwargs):
+            calls["runtime"] += 1
+            raise AssertionError("fake provider must fail before SandboxRuntime construction")
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: type("S", (), {"sandbox_container_provider": "fake"})(),
+    )
+    monkeypatch.setattr(adapter, "_run_with_staged_skills", fail_prepare)
+    monkeypatch.setattr("app.executors.claude_agent_worker.SandboxRuntime", FailRuntime)
+
+    result = await adapter.submit_run(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            context_snapshot={"execution_tier": "sdk_only_writing"},
+            context_pack={"execution_tier": "sdk_only_writing"},
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "sandbox_real_provider_required"
+    assert calls == {"prepare": 0, "runtime": 0}
+
+
+def test_sandbox_runtime_missing_provider_does_not_fallback_to_settings(monkeypatch, tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
+    prepared = PreparedSdkRun(
+        workspace=tmp_path,
+        file_names=[],
+        selected_skills=[],
+        pinned_manifests={},
+        allowed_skill_names=["general-chat"],
+        staged_skill_names=["general-chat"],
+        prompt="write the requested result",
+    )
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: type("S", (), {"sandbox_container_provider": "docker"})(),
+    )
+
+    result = adapter._executor_result_from_sandbox_runtime(
+        payload(
+            agent_id="general-agent",
+            skill_id="general-chat",
+            context_snapshot={"execution_tier": "sdk_only_writing"},
+            context_pack={"execution_tier": "sdk_only_writing"},
+        ),
+        prepared,
+        types.SimpleNamespace(
+            status="accepted",
+            executor_response={"status": "accepted", "message": "completed", "sdk_used": True},
+            timings={},
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "sandbox_real_provider_required"
+    assert result.executor_payload["sandbox_provider"] == ""
+
+
 @pytest.mark.asyncio
 async def test_general_chat_preserves_cancelled_runtime_terminal_status(monkeypatch, tmp_path):
     current_settings = type(
@@ -797,6 +1076,7 @@ async def test_general_chat_preserves_cancelled_runtime_terminal_status(monkeypa
             "claude_agent_sdk_enabled": True,
             "claude_agent_workspace_root": str(tmp_path / "a"),
             "sandbox_workspace_root": str(tmp_path / "s"),
+            "sandbox_container_provider": "docker",
             "platform_skills_root": str(tmp_path / "k"),
             "skill_staging_subdir": ".claude/skills",
             "sandbox_callback_base_url": "http://platform.test",
@@ -808,6 +1088,7 @@ async def test_general_chat_preserves_cancelled_runtime_terminal_status(monkeypa
         async def submit(self, request, event_sink=None):
             return types.SimpleNamespace(
                 status="cancelled",
+                provider="docker",
                 session_id=request.session_id,
                 run_id=request.run_id,
                 executor_response={
@@ -900,6 +1181,7 @@ async def test_general_chat_heavy_sandbox_request_carries_context_retrieval_scop
             "claude_agent_sdk_enabled": True,
             "claude_agent_workspace_root": str(tmp_path / "a"),
             "sandbox_workspace_root": str(tmp_path / "s"),
+            "sandbox_container_provider": "docker",
             "platform_skills_root": str(tmp_path / "k"),
             "skill_staging_subdir": ".claude/skills",
             "sandbox_callback_base_url": "http://platform.test",
@@ -913,6 +1195,7 @@ async def test_general_chat_heavy_sandbox_request_carries_context_retrieval_scop
             runtime_calls.append(request)
             return types.SimpleNamespace(
                 status="accepted",
+                provider="docker",
                 session_id=request.session_id,
                 run_id=request.run_id,
                 executor_response={"status": "accepted", "message": "sandbox completed", "sdk_used": True},
@@ -972,6 +1255,7 @@ async def test_general_chat_heavy_sandbox_fails_when_runtime_reports_sdk_disable
             "claude_agent_sdk_enabled": True,
             "claude_agent_workspace_root": str(tmp_path / "a"),
             "sandbox_workspace_root": str(tmp_path / "s"),
+            "sandbox_container_provider": "docker",
             "platform_skills_root": str(tmp_path / "k"),
             "skill_staging_subdir": ".claude/skills",
             "sandbox_callback_base_url": "http://platform.test",
@@ -983,6 +1267,7 @@ async def test_general_chat_heavy_sandbox_fails_when_runtime_reports_sdk_disable
         async def submit(self, request, event_sink=None):
             return types.SimpleNamespace(
                 status="failed",
+                provider="docker",
                 session_id=request.session_id,
                 run_id=request.run_id,
                 executor_response={
@@ -1065,13 +1350,21 @@ async def test_file_skill_uses_controlled_runner_when_sdk_tool_schema_loops(monk
     monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
     monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
 
-    result = await adapter.submit_run(
-        payload(
+    run_payload = sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             input={"message": "审核一下"},
             skill_manifests=pins,
-        ),
+    )
+    prepared = await prepare_controlled_runner_case(
+        adapter, run_payload, current_settings, event_sink=event_sink
+    )
+    write_empty_bash_loop_transcript(prepared.workspace)
+    result = await call_controlled_runner_helper(
+        adapter,
+        run_payload,
+        prepared,
+        FakeSdkMaxTurnsWithSkillUse(),
         event_sink=event_sink,
     )
 
@@ -1122,13 +1415,16 @@ async def test_baoyu_translate_uses_controlled_runner_when_sdk_tool_schema_loops
     monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
     monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
 
-    result = await adapter.submit_run(
-        payload(
+    run_payload = sandbox_writing_payload(
             skill_id="baoyu-translate",
             agent_id="baoyu-translate",
             input={"message": "翻译一下"},
             skill_manifests=pins,
-        )
+    )
+    prepared = await prepare_controlled_runner_case(adapter, run_payload, current_settings)
+    write_empty_bash_loop_transcript(prepared.workspace)
+    result = await call_controlled_runner_helper(
+        adapter, run_payload, prepared, FakeSdkMaxTurnsWithSkillUse()
     )
 
     assert result.status == "succeeded"
@@ -1164,19 +1460,25 @@ async def test_controlled_runner_failure_keeps_sdk_failure(monkeypatch, tmp_path
     monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
     monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
 
-    result = await adapter.submit_run(
-        payload(
+    run_payload = sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             input={"message": "审核一下"},
             skill_manifests=pins,
-        ),
+    )
+    prepared = await prepare_controlled_runner_case(
+        adapter, run_payload, current_settings, event_sink=event_sink
+    )
+    write_empty_bash_loop_transcript(prepared.workspace)
+    result = await call_controlled_runner_helper(
+        adapter,
+        run_payload,
+        prepared,
+        FakeSdkMaxTurnsWithSkillUse(),
         event_sink=event_sink,
     )
 
-    assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
-    assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
+    assert result is None
     assert any(event["event_type"] == "controlled_runner_failed" for event in events)
 
 
@@ -1213,19 +1515,25 @@ async def test_controlled_runner_success_without_artifacts_keeps_sdk_failure(mon
     monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
     monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
 
-    result = await adapter.submit_run(
-        payload(
+    run_payload = sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             input={"message": "审核一下"},
             skill_manifests=pins,
-        ),
+    )
+    prepared = await prepare_controlled_runner_case(
+        adapter, run_payload, current_settings, event_sink=event_sink
+    )
+    write_empty_bash_loop_transcript(prepared.workspace)
+    result = await call_controlled_runner_helper(
+        adapter,
+        run_payload,
+        prepared,
+        FakeSdkMaxTurnsWithSkillUse(),
         event_sink=event_sink,
     )
 
-    assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
-    assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
+    assert result is None
     assert any(event["event_type"] == "controlled_runner_failed" for event in events)
 
 
@@ -1257,19 +1565,25 @@ async def test_controlled_runner_launch_timeout_keeps_sdk_failure(monkeypatch, t
     monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
     monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
 
-    result = await adapter.submit_run(
-        payload(
+    run_payload = sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             input={"message": "审核一下"},
             skill_manifests=pins,
-        ),
+    )
+    prepared = await prepare_controlled_runner_case(
+        adapter, run_payload, current_settings, event_sink=event_sink
+    )
+    write_empty_bash_loop_transcript(prepared.workspace)
+    result = await call_controlled_runner_helper(
+        adapter,
+        run_payload,
+        prepared,
+        FakeSdkMaxTurnsWithSkillUse(),
         event_sink=event_sink,
     )
 
-    assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
-    assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
+    assert result is None
     assert any(event["event_type"] == "controlled_runner_failed" for event in events)
 
 
@@ -1301,19 +1615,25 @@ async def test_controlled_runner_launch_oserror_keeps_sdk_failure(monkeypatch, t
     monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
     monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
 
-    result = await adapter.submit_run(
-        payload(
+    run_payload = sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             input={"message": "审核一下"},
             skill_manifests=pins,
-        ),
+    )
+    prepared = await prepare_controlled_runner_case(
+        adapter, run_payload, current_settings, event_sink=event_sink
+    )
+    write_empty_bash_loop_transcript(prepared.workspace)
+    result = await call_controlled_runner_helper(
+        adapter,
+        run_payload,
+        prepared,
+        FakeSdkMaxTurnsWithSkillUse(),
         event_sink=event_sink,
     )
 
-    assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
-    assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
+    assert result is None
     assert any(event["event_type"] == "controlled_runner_failed" for event in events)
 
 
@@ -1336,19 +1656,18 @@ async def test_controlled_runner_does_not_mask_gateway_failures(monkeypatch, tmp
     monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
     monkeypatch.setattr(adapter, "_try_run_sdk", sdk_gateway_failed)
 
-    result = await adapter.submit_run(
-        payload(
+    run_payload = sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             input={"message": "审核一下"},
             skill_manifests=pins,
-        )
+    )
+    prepared = await prepare_controlled_runner_case(adapter, run_payload, current_settings)
+    result = await call_controlled_runner_helper(
+        adapter, run_payload, prepared, FakeSdkRuntimeErrorWithSkillUse()
     )
 
-    assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
-    assert result.result["sdk_error"] == "model gateway timeout"
-    assert "controlled_runner_used" not in result.result
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -1370,19 +1689,18 @@ async def test_controlled_runner_does_not_mask_max_turns_without_transcript(monk
     monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
     monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
 
-    result = await adapter.submit_run(
-        payload(
+    run_payload = sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             input={"message": "审核一下"},
             skill_manifests=pins,
-        )
+    )
+    prepared = await prepare_controlled_runner_case(adapter, run_payload, current_settings)
+    result = await call_controlled_runner_helper(
+        adapter, run_payload, prepared, FakeSdkMaxTurnsWithSkillUse()
     )
 
-    assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
-    assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
-    assert "controlled_runner_used" not in result.result
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -1406,19 +1724,20 @@ async def test_controlled_runner_does_not_mask_max_turns_with_bash_command(monke
     monkeypatch.setattr(adapter, "_materialize_files", materialize_file)
     monkeypatch.setattr(adapter, "_try_run_sdk", sdk_turn_exhausted)
 
-    result = await adapter.submit_run(
-        payload(
+    run_payload = sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             input={"message": "审核一下"},
             skill_manifests=pins,
-        )
+    )
+    prepared = await prepare_controlled_runner_case(adapter, run_payload, current_settings)
+    write_empty_bash_loop_transcript(prepared.workspace)
+    write_bash_command_transcript(prepared.workspace)
+    result = await call_controlled_runner_helper(
+        adapter, run_payload, prepared, FakeSdkMaxTurnsWithSkillUse()
     )
 
-    assert result.status == "failed"
-    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
-    assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
-    assert "controlled_runner_used" not in result.result
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -1427,17 +1746,10 @@ async def test_agent_run_clears_stale_workspace_before_sdk(monkeypatch, tmp_path
     write_skill(tmp_path / "skills")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
     pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer")
-    stale_workspace = tmp_path / "workspaces" / "default" / "run_1"
+    stale_workspace = sandbox_workspace_path(current_settings)
     stale_output = stale_workspace / "output"
     stale_output.mkdir(parents=True)
     (stale_output / "stale.txt").write_text("old artifact", encoding="utf-8")
-
-    async def fake_try_run_sdk(payload, event_sink=None, **kwargs):
-        workspace = kwargs["workspace"]
-        assert not (workspace / "output" / "stale.txt").exists()
-        assert (workspace / ".claude" / "skills" / "qa-file-reviewer" / "SKILL.md").is_file()
-        assert (workspace / ".claude" / "skills" / "minimax-docx" / "SKILL.md").is_file()
-        return FakeQueryResult()
 
     async def no_files(payload, workspace):
         return []
@@ -1445,13 +1757,17 @@ async def test_agent_run_clears_stale_workspace_before_sdk(monkeypatch, tmp_path
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fake_try_run_sdk)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
-        payload(skill_id="qa-file-reviewer", agent_id="qa-word-review", skill_manifests=pins)
+        sandbox_writing_payload(skill_id="qa-file-reviewer", agent_id="qa-word-review", skill_manifests=pins)
     )
 
     assert result.status == "succeeded"
+    assert runtime_requests
+    assert not (stale_workspace / "output" / "stale.txt").exists()
+    assert (stale_workspace / ".claude" / "skills" / "qa-file-reviewer" / "SKILL.md").is_file()
+    assert (stale_workspace / ".claude" / "skills" / "minimax-docx" / "SKILL.md").is_file()
     assert result.result["artifact_count"] == 0
 
 
@@ -1463,19 +1779,16 @@ async def test_qa_file_reviewer_manifest_records_available_dependency(monkeypatc
     input_payload = {"message": "审核一下"}
     pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload=input_payload)
 
-    async def fake_try_run_sdk(payload, event_sink=None, **kwargs):
-        return FakeQueryResult()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fake_try_run_sdk)
+    install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
-        payload(
+        sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             input=input_payload,
@@ -1503,19 +1816,25 @@ async def test_agent_run_prefers_sdk_reported_used_skills_over_inference(monkeyp
     input_payload = {"message": "审核一下"}
     pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload=input_payload)
 
-    async def fake_try_run_sdk(payload, event_sink=None, **kwargs):
-        return FakeSdkNativeSkillUse()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fake_try_run_sdk)
+    install_sandbox_runtime(
+        monkeypatch,
+        executor_response={
+            "status": "accepted",
+            "message": "reviewed with native skill telemetry",
+            "sdk_used": True,
+            "used_skills": ["qa-file-reviewer"],
+            "used_skills_source": "executor_hook",
+        },
+    )
 
     result = await adapter.submit_run(
-        payload(
+        sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             input=input_payload,
@@ -1540,19 +1859,28 @@ async def test_agent_run_preserves_sdk_reported_used_skills_on_sdk_error(monkeyp
     input_payload = {"message": "审核一下"}
     pins = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer", input_payload=input_payload)
 
-    async def fake_try_run_sdk(payload, event_sink=None, **kwargs):
-        return FakeSdkRuntimeErrorWithSkillUse()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fake_try_run_sdk)
+    install_sandbox_runtime(
+        monkeypatch,
+        status="failed",
+        executor_response={
+            "status": "failed",
+            "message": "model gateway timeout",
+            "error_code": "model_gateway_timeout",
+            "error_message": "model gateway timeout",
+            "sdk_used": True,
+            "used_skills": ["qa-file-reviewer"],
+            "used_skills_source": "executor_hook",
+        },
+    )
 
     result = await adapter.submit_run(
-        payload(
+        sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             input=input_payload,
@@ -1585,28 +1913,23 @@ async def test_agent_run_stages_pinned_skill_snapshot_after_filesystem_drift(mon
         "---\nname: qa-file-reviewer\ndescription: Changed.\n---\n\n# changed\n",
         encoding="utf-8",
     )
-    calls = {}
-
-    async def fake_try_run_sdk(payload, event_sink=None, **kwargs):
-        calls["workspace"] = kwargs["workspace"]
-        calls["staged_skill_names"] = kwargs["staged_skill_names"]
-        return FakeQueryResult()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fake_try_run_sdk)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
-        payload(skill_id="qa-file-reviewer", agent_id="qa-word-review", input={}, skill_manifests=pins)
+        sandbox_writing_payload(
+            skill_id="qa-file-reviewer", agent_id="qa-word-review", input={}, skill_manifests=pins
+        )
     )
 
-    staged_skill = calls["workspace"] / ".claude" / "skills" / "qa-file-reviewer"
+    staged_skill = sandbox_workspace_path(current_settings) / ".claude" / "skills" / "qa-file-reviewer"
     assert result.status == "succeeded"
-    assert calls["staged_skill_names"] == ["qa-file-reviewer", "minimax-docx"]
+    assert runtime_requests[0].skill_ids == ["qa-file-reviewer", "minimax-docx"]
     assert "Review Word documents." in (staged_skill / "SKILL.md").read_text(encoding="utf-8")
     assert (staged_skill / "references" / "guide.md").read_text(encoding="utf-8") == "review guide"
     assert result.executor_payload["skill_manifests"][0]["content_hash"] == pins[0]["content_hash"]
@@ -1623,23 +1946,16 @@ async def test_agent_run_fails_closed_when_dependency_pin_is_missing(monkeypatch
         builtin_skills=BuiltinSkillRegistry(tmp_path / "skills").list_builtin_skills(),
     )
     primary_pin = [item for item in pins if item["skill_id"] == "qa-file-reviewer"]
-    called = False
-
-    async def fail_if_called(payload, event_sink=None, **kwargs):
-        nonlocal called
-        called = True
-        return FakeQueryResult()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fail_if_called)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
-        payload(
+        sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             input={},
@@ -1658,7 +1974,7 @@ async def test_agent_run_fails_closed_when_dependency_pin_is_missing(monkeypatch
     assert result.result["error_code"] == "skill_version_pin_mismatch"
     assert result.executor_payload["pin_mismatches"][0]["skill_id"] == "minimax-docx"
     assert result.executor_payload["pin_mismatches"][0]["reason"] == "missing_pinned_manifest"
-    assert called is False
+    assert runtime_requests == []
 
 
 @pytest.mark.asyncio
@@ -1666,23 +1982,16 @@ async def test_agent_run_fails_closed_when_snapshotless_pin_hash_drifted(monkeyp
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer", description="Review Word documents.")
     write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
-    called = False
-
-    async def fail_if_called(payload, event_sink=None, **kwargs):
-        nonlocal called
-        called = True
-        return FakeQueryResult()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fail_if_called)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
-        payload(
+        sandbox_writing_payload(
             skill_id="qa-file-reviewer",
             agent_id="qa-word-review",
             input={},
@@ -1701,28 +2010,20 @@ async def test_agent_run_fails_closed_when_snapshotless_pin_hash_drifted(monkeyp
 
     assert result.status == "failed"
     assert result.result["error_code"] == "skill_version_pin_mismatch"
-    assert called is False
-    assert not (tmp_path / "workspaces" / "default" / "run_1" / ".claude" / "skills" / "qa-file-reviewer").exists()
+    assert runtime_requests == []
+    assert not (sandbox_workspace_path(current_settings) / ".claude" / "skills" / "qa-file-reviewer").exists()
 
 
 @pytest.mark.asyncio
 async def test_agent_run_fails_closed_when_snapshotless_pin_missing_hash(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer", description="Review Word documents.")
-    called = False
-
-    async def fail_if_called(payload, event_sink=None, **kwargs):
-        nonlocal called
-        called = True
-        return FakeQueryResult()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fail_if_called)
 
     with pytest.raises(ValueError, match="release_decision_primary_manifest_mismatch"):
         payload(
@@ -1740,7 +2041,6 @@ async def test_agent_run_fails_closed_when_snapshotless_pin_missing_hash(monkeyp
                 }
             ],
         )
-    assert called is False
 
 
 @pytest.mark.asyncio
@@ -1772,18 +2072,20 @@ async def test_agent_run_rejects_tampered_pinned_skill_snapshot_hash(monkeypatch
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fail_if_called)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
-        payload(skill_id="qa-file-reviewer", agent_id="qa-word-review", input={}, skill_manifests=pins)
+        sandbox_writing_payload(
+            skill_id="qa-file-reviewer", agent_id="qa-word-review", input={}, skill_manifests=pins
+        )
     )
 
     assert result.status == "failed"
     assert result.result["error_code"] == "skill_version_pin_mismatch"
     assert result.executor_payload["pin_mismatches"][0]["expected_content_hash"] == pins[0]["content_hash"]
     assert result.executor_payload["pin_mismatches"][0]["actual_content_hash"]
-    assert called is False
-    assert not (tmp_path / "workspaces" / "default" / "run_1" / ".claude" / "skills" / "qa-file-reviewer").exists()
+    assert runtime_requests == []
+    assert not (sandbox_workspace_path(current_settings) / ".claude" / "skills" / "qa-file-reviewer").exists()
 
 
 @pytest.mark.asyncio
@@ -1797,29 +2099,24 @@ async def test_agent_run_rejects_pinned_skill_snapshot_size_mismatch(monkeypatch
         builtin_skills=BuiltinSkillRegistry(tmp_path / "skills").list_builtin_skills(),
     )
     pins[0]["files"][0]["size_bytes"] = int(pins[0]["files"][0]["size_bytes"]) + 1
-    called = False
-
-    async def fail_if_called(payload, event_sink=None, **kwargs):
-        nonlocal called
-        called = True
-        return FakeQueryResult()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fail_if_called)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
-        payload(skill_id="qa-file-reviewer", agent_id="qa-word-review", input={}, skill_manifests=pins)
+        sandbox_writing_payload(
+            skill_id="qa-file-reviewer", agent_id="qa-word-review", input={}, skill_manifests=pins
+        )
     )
 
     assert result.status == "failed"
     assert result.result["error_code"] == "skill_version_pin_mismatch"
     assert "size" in result.executor_payload["pin_mismatches"][0]["reason"]
-    assert called is False
+    assert runtime_requests == []
 
 
 @pytest.mark.asyncio
@@ -1833,29 +2130,24 @@ async def test_agent_run_rejects_pinned_skill_snapshot_file_over_worker_cap(monk
         builtin_skills=BuiltinSkillRegistry(tmp_path / "skills").list_builtin_skills(),
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.MAX_SKILL_SNAPSHOT_FILE_BYTES", 8)
-    called = False
-
-    async def fail_if_called(payload, event_sink=None, **kwargs):
-        nonlocal called
-        called = True
-        return FakeQueryResult()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fail_if_called)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
 
     result = await adapter.submit_run(
-        payload(skill_id="qa-file-reviewer", agent_id="qa-word-review", input={}, skill_manifests=pins)
+        sandbox_writing_payload(
+            skill_id="qa-file-reviewer", agent_id="qa-word-review", input={}, skill_manifests=pins
+        )
     )
 
     assert result.status == "failed"
     assert result.result["error_code"] == "skill_version_pin_mismatch"
     assert "too large" in result.executor_payload["pin_mismatches"][0]["reason"]
-    assert called is False
+    assert runtime_requests == []
 
 
 @pytest.mark.asyncio
@@ -1866,22 +2158,25 @@ async def test_general_chat_with_files_stays_on_sdk_path(monkeypatch, tmp_path):
         async def submit_run(self, payload, event_sink=None):
             raise AssertionError("general chat files must not delegate to runtime211")
 
-    calls = {}
-
-    async def fake_try_run_sdk(payload, event_sink=None, **kwargs):
-        calls["staged_skill_names"] = kwargs["staged_skill_names"]
-        return FakeQueryResult()
-
     async def one_file(payload, workspace):
         return ["sample.docx"]
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FailingDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", one_file)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fake_try_run_sdk)
+    runtime_requests = install_sandbox_runtime(
+        monkeypatch,
+        executor_response={
+            "status": "accepted",
+            "message": "hello from sdk",
+            "sdk_used": True,
+            "used_skills": [],
+            "used_skills_source": "",
+        },
+    )
 
     result = await adapter.submit_run(
-        payload(
+        sandbox_writing_payload(
             agent_id="general-agent",
             skill_id="general-chat",
             file_ids=["file_1"],
@@ -1893,7 +2188,7 @@ async def test_general_chat_with_files_stays_on_sdk_path(monkeypatch, tmp_path):
     assert result.result["message"] == "hello from sdk"
     assert result.result["delegate_used"] is False
     assert result.result["allowed_skills"] == ["general-chat"]
-    assert calls["staged_skill_names"] == ["general-chat"]
+    assert runtime_requests[0].skill_ids == ["general-chat"]
     assert result.result["staged_skills"] == ["general-chat"]
     assert result.result["used_skills"] == []
 
@@ -1902,19 +2197,28 @@ async def test_general_chat_with_files_stays_on_sdk_path(monkeypatch, tmp_path):
 async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
 
-    async def fake_try_run_sdk(payload, event_sink=None, **kwargs):
-        return FakeSdkRuntimeError()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
-    monkeypatch.setattr(adapter, "_try_run_sdk", fake_try_run_sdk)
+    install_sandbox_runtime(
+        monkeypatch,
+        status="failed",
+        executor_response={
+            "status": "failed",
+            "message": "model gateway timeout",
+            "error_code": "claude_agent_sdk_runtime_error",
+            "error_message": "model gateway timeout",
+            "sdk_used": True,
+        },
+    )
 
     result = await adapter.submit_run(
-        payload(agent_id="general-agent", skill_id="general-chat", file_ids=[], input={"message": "hello"})
+        sandbox_writing_payload(
+            agent_id="general-agent", skill_id="general-chat", file_ids=[], input={"message": "hello"}
+        )
     )
 
     assert result.status == "failed"
@@ -1925,21 +2229,32 @@ async def test_sdk_runtime_error_is_reported_without_delegate(monkeypatch, tmp_p
 
 @pytest.mark.asyncio
 async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch, tmp_path):
-    async def fake_run_claude_agent_sdk(*, prompt, cwd, skill_id, skills, model_id=None, session_id=None, on_text, on_skill_use=None):
-        await on_text("partial")
-        return FakeQueryResult()
-
     async def event_sink(**event):
         raise WorkerRunCancelled("platform cancel requested")
 
+    class CancellingRuntime:
+        async def submit(self, request, event_sink=None):
+            await event_sink(
+                event_type="message_delta",
+                stage="executor",
+                message="partial",
+                payload={"visible_to_user": True},
+            )
+            raise AssertionError("cancel must stop runtime result mapping")
+
     current_settings = settings(tmp_path, sdk_enabled=True)
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.SandboxRuntime",
+        lambda *args, **kwargs: CancellingRuntime(),
+    )
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
 
     with pytest.raises(WorkerRunCancelled, match="platform cancel requested"):
         await adapter.submit_run(
-            payload(agent_id="general-agent", skill_id="general-chat", file_ids=[], input={"message": "hello"}),
+            sandbox_writing_payload(
+                agent_id="general-agent", skill_id="general-chat", file_ids=[], input={"message": "hello"}
+            ),
             event_sink=event_sink,
         )
 
@@ -1948,45 +2263,28 @@ async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch
 async def test_worker_passes_session_continuity_resume_key_to_sdk_runner(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer")
-    captured_session_ids: list[str | None] = []
-
-    async def fake_run_claude_agent_sdk(
-        *,
-        prompt,
-        cwd,
-        skill_id,
-        skills,
-        model_id=None,
-        session_id=None,
-        on_text,
-        on_skill_use,
-        on_tool_permission,
-    ):
-        captured_session_ids.append(session_id)
-        return FakeQueryResult()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
 
-    base_payload = payload(
+    base_payload = sandbox_writing_payload(
         agent_id="qa-word-review",
         skill_id="qa-file-reviewer",
         file_ids=[],
         input={"message": "review"},
     )
-    second_payload = payload(
+    second_payload = sandbox_writing_payload(
         agent_id="qa-word-review",
         skill_id="qa-file-reviewer",
         file_ids=[],
         input={"message": "continue"},
         run_id="run_2",
     )
-    fork_payload = payload(
+    fork_payload = sandbox_writing_payload(
         agent_id="qa-word-review",
         skill_id="qa-file-reviewer",
         file_ids=[],
@@ -1998,6 +2296,7 @@ async def test_worker_passes_session_continuity_resume_key_to_sdk_runner(monkeyp
     await adapter.submit_run(second_payload)
     await adapter.submit_run(fork_payload)
 
+    captured_session_ids = [request.sdk_session_id for request in runtime_requests]
     assert captured_session_ids[0]
     assert captured_session_ids[0] == captured_session_ids[1]
     assert captured_session_ids[2] != captured_session_ids[0]
@@ -2007,42 +2306,23 @@ async def test_worker_passes_session_continuity_resume_key_to_sdk_runner(monkeyp
 async def test_worker_passes_scoped_context_retrieval_to_sdk_runner_for_manifest(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer")
-    captured = {}
-
-    async def fake_run_claude_agent_sdk(
-        *,
-        prompt,
-        cwd,
-        skill_id,
-        skills,
-        model_id=None,
-        session_id=None,
-        context_retrieval=None,
-        context_retrieval_identity=None,
-        on_text,
-        on_skill_use,
-        on_tool_permission,
-    ):
-        captured["context_retrieval"] = context_retrieval
-        captured["context_retrieval_identity"] = context_retrieval_identity
-        return FakeQueryResult()
-
     async def no_files(payload, workspace):
         return []
 
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
     monkeypatch.setattr(adapter, "_materialize_files", no_files)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
 
     await adapter.submit_run(
-        payload(
+        sandbox_writing_payload(
             agent_id="qa-word-review",
             skill_id="qa-file-reviewer",
             file_ids=[],
             input={"message": "review"},
             context_pack={
                 "schema_version": "ai-platform.executor-context-pack.v1",
+                "execution_tier": "document_worker",
                 "context_manifest": {
                     "schema_version": "ai-platform.context-manifest.v1",
                     "available_retrieval_tools": ["read_context_file"],
@@ -2051,11 +2331,12 @@ async def test_worker_passes_scoped_context_retrieval_to_sdk_runner_for_manifest
         )
     )
 
-    assert captured["context_retrieval"] is not None
-    assert captured["context_retrieval_identity"].tenant_id == "default"
-    assert captured["context_retrieval_identity"].workspace_id == "default"
-    assert captured["context_retrieval_identity"].user_id == "user-a"
-    assert captured["context_retrieval_identity"].session_id == "ses_1"
+    scope = runtime_requests[0].context_retrieval_scope
+    assert scope is not None
+    assert scope.tenant_id == "default"
+    assert scope.workspace_id == "default"
+    assert scope.user_id == "user-a"
+    assert scope.session_id == "ses_1"
 
 
 @pytest.mark.asyncio
@@ -2120,7 +2401,7 @@ async def test_qa_file_reviewer_multi_agent_plan_emits_steps_and_runs_staged_sdk
         },
     )
 
-    result = await adapter.submit_run(qa_payload, event_sink=event_sink)
+    result = await adapter._run_multi_agent_file_skill(qa_payload, event_sink=event_sink)
 
     assert result.status == "succeeded"
     assert result.capabilities["multi_agent"] is True
@@ -2147,6 +2428,26 @@ async def test_qa_file_reviewer_multi_agent_plan_emits_steps_and_runs_staged_sdk
     assert step_events[3]["payload"]["artifact_count"] == 1
     assert step_events[3]["payload"]["checkpoint_id"] == "checkpoint-run_1-step-2"
     assert step_events[5]["payload"]["checkpoint_id"] == "checkpoint-run_1-step-3"
+
+
+@pytest.mark.asyncio
+async def test_multi_agent_product_entrypoint_fails_closed_before_feature_gated_helper(monkeypatch):
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+
+    async def fail_helper(*args, **kwargs):
+        raise AssertionError("multi-agent product entrypoint must not enter the feature-gated helper")
+
+    monkeypatch.setattr(adapter, "_run_multi_agent_file_skill", fail_helper)
+    result = await adapter.submit_run(
+        payload(
+            agent_id="qa-word-review",
+            skill_id="qa-file-reviewer",
+            input={"message": "review", "execution_mode": "multi_agent"},
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "multi_agent_adapter_execution_disabled"
 
 
 @pytest.mark.asyncio
@@ -2206,7 +2507,7 @@ async def test_multi_agent_file_skill_resume_reuses_completed_steps_without_reru
         },
     )
 
-    result = await adapter.submit_run(qa_payload, event_sink=event_sink)
+    result = await adapter._run_multi_agent_file_skill(qa_payload, event_sink=event_sink)
 
     assert result.status == "succeeded"
     assert result.capabilities["multi_agent"] is True
@@ -2251,7 +2552,7 @@ async def test_multi_agent_resume_validates_pinned_snapshot_before_reuse(monkeyp
     monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
     monkeypatch.setattr(adapter, "_run_with_staged_skills", fail_staged_sdk)
 
-    result = await adapter.submit_run(
+    result = await adapter._run_multi_agent_file_skill(
         payload(
             tenant_id="default",
             workspace_id="default",
@@ -2541,7 +2842,6 @@ async def test_sdk_runner_deduplicates_result_message(monkeypatch, tmp_path):
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
-
     result = await run_claude_agent_sdk(prompt="hello", cwd=tmp_path, skill_id="general-chat")
 
     assert result.message == "hello from sdk"
@@ -2600,7 +2900,6 @@ async def test_sdk_runner_passes_staged_skill_names(monkeypatch, tmp_path):
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
-
     result = await run_claude_agent_sdk(
         prompt="hello",
         cwd=tmp_path,
@@ -4887,6 +5186,164 @@ async def test_sdk_runner_honors_explicit_full_access_tool_policy_override(monke
 
 
 @pytest.mark.asyncio
+async def test_sandbox_brokered_policy_overrides_bypass_and_brokers_every_side_effect_tool(monkeypatch, tmp_path):
+    captured = {}
+    permission_calls = []
+
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class AssistantMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = {}
+        model_usage = {}
+        result = "ok"
+        is_error = False
+        errors = []
+        stop_reason = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class HookMatcher:
+        def __init__(self, matcher=None, hooks=None, timeout=None):
+            self.matcher = matcher
+            self.hooks = hooks or []
+            self.timeout = timeout
+
+    class PermissionResultDeny:
+        def __init__(self, behavior="deny", message="", interrupt=False):
+            self.behavior = behavior
+            self.message = message
+            self.interrupt = interrupt
+
+    async def query(prompt, options):
+        yield AssistantMessage([TextBlock("ok")])
+        yield ResultMessage()
+
+    async def on_tool_permission(request):
+        permission_calls.append(request)
+        if request["tool_name"] == "WebFetch":
+            raise TimeoutError("callback timed out")
+        if request["tool_name"] == "WebSearch":
+            return "malformed"
+        return {
+            "allowed": request["tool_name"] in {"Bash", "mcp__knowledge__search"},
+            "reason": f"broker_{request['tool_name']}",
+        }
+
+    current_settings = type(
+        "S",
+        (),
+        {
+            "claude_agent_sdk_enabled": True,
+            "anthropic_base_url": "",
+            "anthropic_auth_token": "",
+            "anthropic_model": "",
+            "openai_api_key": "",
+            "claude_agent_model": "deepseek-v4-flash",
+            "claude_agent_sdk_skills": "",
+            "claude_agent_sdk_timeout_seconds": 5,
+            "claude_agent_sdk_max_turns": 12,
+            "claude_agent_permission_mode": "bypassPermissions",
+            "claude_agent_allowed_tools": "Read,Write,Bash",
+            "claude_agent_disallowed_tools": "Edit",
+        },
+    )()
+    fake_sdk = types.SimpleNamespace(
+        AssistantMessage=AssistantMessage,
+        ClaudeAgentOptions=ClaudeAgentOptions,
+        HookMatcher=HookMatcher,
+        PermissionResultDeny=PermissionResultDeny,
+        ResultMessage=ResultMessage,
+        TextBlock=TextBlock,
+        query=query,
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_sdk_runner._build_context_retrieval_mcp_server",
+        lambda *args, **kwargs: object(),
+    )
+
+    result = await run_claude_agent_sdk(
+        prompt="hello",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        skills=[],
+        on_tool_permission=on_tool_permission,
+        execution_policy="sandbox_brokered",
+    )
+
+    assert result.message == "ok"
+    assert captured["permission_mode"] == "dontAsk"
+    assert captured["allowed_tools"] == ["Read", "Glob", "LS"]
+    assert captured["disallowed_tools"] == []
+    side_effect_tools = ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "WebFetch", "WebSearch"]
+    assert captured["tools"] == ["Read", "Glob", "LS", *side_effect_tools]
+    pre_tool_matchers = captured["hooks"]["PreToolUse"]
+    assert len(pre_tool_matchers) == 1
+    assert pre_tool_matchers[0].matcher is None
+    broker_hook = pre_tool_matchers[0].hooks[0]
+
+    decisions = {}
+    brokered_tools = [*side_effect_tools, "mcp__knowledge__search"]
+    for tool_name in brokered_tools:
+        tool_input = {"command": "python .claude/skills/qa-file-reviewer/scripts/run_qa_review.py inputs/a.docx"} if tool_name == "Bash" else {"value": "x"}
+        decisions[tool_name] = await broker_hook(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+                "tool_use_id": f"tool-{tool_name}",
+            },
+            f"tool-{tool_name}",
+            {},
+        )
+
+    assert [request["tool_name"] for request in permission_calls] == brokered_tools
+    mcp_request = permission_calls[-1]
+    assert mcp_request["tool_name"] == "mcp__knowledge__search"
+    assert mcp_request["tool_call_id"] == "tool-mcp__knowledge__search"
+    assert mcp_request["tool_input"] == {"value": "x"}
+    assert sum(1 for request in permission_calls if request["tool_call_id"] == mcp_request["tool_call_id"]) == 1
+    assert decisions["Bash"]["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert decisions["mcp__knowledge__search"]["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert decisions["Write"]["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert decisions["WebFetch"]["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_broker_failed"
+    assert decisions["WebSearch"]["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_malformed_response"
+    denied = await captured["can_use_tool"]("Bash", {"command": "echo local"}, None)
+    assert denied.behavior == "deny"
+
+    captured.clear()
+    await run_claude_agent_sdk(
+        prompt="hello",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        skills=[],
+        execution_policy="sandbox_brokered",
+    )
+    missing_broker_hook = captured["hooks"]["PreToolUse"][0].hooks[0]
+    missing_broker = await missing_broker_hook(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "mcp__knowledge__search",
+            "tool_input": {"value": "x"},
+            "tool_use_id": "tool-mcp-missing",
+        },
+        "tool-mcp-missing",
+        {},
+    )
+    assert missing_broker["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.asyncio
 async def test_legacy_delegate_does_not_emit_fallback_marker_when_enabled(monkeypatch, tmp_path):
     events = []
     adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
@@ -4898,7 +5355,7 @@ async def test_legacy_delegate_does_not_emit_fallback_marker_when_enabled(monkey
     async def event_sink(**event):
         events.append(event)
 
-    result = await adapter.submit_run(payload(), event_sink=event_sink)
+    result = await adapter.submit_run(sandbox_writing_payload(), event_sink=event_sink)
 
     assert result.status == "failed"
     assert result.result["error_code"] == "claude_agent_sdk_disabled"

@@ -344,6 +344,7 @@ async def _default_executor_runner(
             on_text=on_text,
             on_skill_use=on_skill_use,
             on_tool_permission=on_tool_permission,
+            execution_policy="sandbox_brokered",
         )
     except ClaudeAgentSdkNotAvailable as exc:
         return {

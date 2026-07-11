@@ -364,15 +364,16 @@ def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeyp
 
     async def fake_run_claude_agent_sdk(**kwargs):
         calls["cwd"] = kwargs["cwd"]
+        calls["execution_policy"] = kwargs.get("execution_policy")
         permission = await kwargs["on_tool_permission"](
             {
-                "tool_name": "Bash",
-                "tool_input": {"command": "python write_business_system.py"},
-                "tool_call_id": "tool-a",
+                "tool_name": "mcp__knowledge__search",
+                "tool_input": {"query": "approved knowledge"},
+                "tool_call_id": "tool-mcp-a",
                 "risk_level": "high",
                 "write_capable": True,
                 "action": "execute",
-                "reason": "needs shell",
+                "reason": "needs governed MCP access",
             }
         )
         calls["permission"] = permission
@@ -414,6 +415,7 @@ def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeyp
     body = response.json()
     assert body["status"] == "accepted"
     assert calls["cwd"] == Path(tmp_path)
+    assert calls["execution_policy"] == "sandbox_brokered"
     assert calls["permission"] == {
         "allowed": True,
         "reason": "tool_permission_allowed",
@@ -423,11 +425,12 @@ def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeyp
         "permission_request_id": "tpr-sdk",
     }
     broker_call = next(item for item in callbacks if item[0].endswith("/api/ai/runtime/callbacks/tool-permission"))
+    assert sum(1 for item in callbacks if item[0].endswith("/api/ai/runtime/callbacks/tool-permission")) == 1
     assert broker_call[1]["run_id"] == "run-a"
     assert broker_call[1]["callback_token_id"] == "cbt_run-a"
-    assert broker_call[1]["tool_name"] == "Bash"
-    assert broker_call[1]["tool_input"] == {"command": "python write_business_system.py"}
-    assert broker_call[1]["tool_call_id"] == "tool-a"
+    assert broker_call[1]["tool_name"] == "mcp__knowledge__search"
+    assert broker_call[1]["tool_input"] == {"query": "approved knowledge"}
+    assert broker_call[1]["tool_call_id"] == "tool-mcp-a"
 
 
 def test_executor_execute_reports_platform_timeout_probe_as_failed_callback(tmp_path):
