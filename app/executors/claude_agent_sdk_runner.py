@@ -42,6 +42,13 @@ _SDK_BROKERED_BUILTIN_TOOLS = (
     "WebFetch",
     "WebSearch",
 )
+_SDK_INTERNAL_CONTEXT_TOOLS = (
+    "read_session_messages",
+    "read_context_file",
+    "read_run_artifact",
+    "stage_context_file_to_workspace",
+    "search_memory",
+)
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
 _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS = 1800.0
 _SHELL_UNSAFE_CHARS = set("$`;&|<>{}[]*?!\n\r")
@@ -919,14 +926,9 @@ async def run_claude_agent_sdk(
         identity=context_retrieval_identity,
         workspace_root=cwd,
     )
-    if context_retrieval_server is not None and not sandbox_brokered:
-        for tool_name in (
-            "read_session_messages",
-            "read_context_file",
-            "read_run_artifact",
-            "stage_context_file_to_workspace",
-            "search_memory",
-        ):
+    internal_context_tools = set(_SDK_INTERNAL_CONTEXT_TOOLS) if context_retrieval_server is not None else set()
+    if context_retrieval_server is not None:
+        for tool_name in _SDK_INTERNAL_CONTEXT_TOOLS:
             if tool_name not in allowed_tools:
                 allowed_tools.append(tool_name)
     disallowed_tools = (
@@ -952,8 +954,16 @@ async def run_claude_agent_sdk(
 
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
         if sandbox_brokered:
-            if tool_name in _SDK_LOCAL_READ_ONLY_TOOLS:
+            if tool_name in _SDK_LOCAL_READ_ONLY_TOOLS or tool_name in internal_context_tools:
                 return PermissionResultAllow()
+            if tool_name.lower() == "skill":
+                selected = (
+                    _extract_skill_names_from_tool_input(tool_input, allowed_skill_names)
+                    if allowed_skill_names
+                    else []
+                )
+                if selected:
+                    return PermissionResultAllow()
             return PermissionResultDeny(message="Tool use requires the platform sandbox permission broker")
         if full_access and tool_name in _sdk_tools_for_mode(full_access=True):
             return PermissionResultAllow()
@@ -975,7 +985,9 @@ async def run_claude_agent_sdk(
                 }
             }
         tool_name = str(hook_input.get("tool_name") or "")
-        if sandbox_brokered and tool_name in _SDK_LOCAL_READ_ONLY_TOOLS:
+        if sandbox_brokered and (
+            tool_name in _SDK_LOCAL_READ_ONLY_TOOLS or tool_name in internal_context_tools
+        ):
             return {}
         brokered_tool = sandbox_brokered and bool(tool_name)
         if tool_name != "Bash" and not brokered_tool:
@@ -987,6 +999,27 @@ async def run_claude_agent_sdk(
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
                     "permissionDecisionReason": reason,
+                }
+            }
+        if sandbox_brokered and tool_name.lower() == "skill":
+            selected_skills = (
+                _extract_skill_names_from_tool_input(tool_input, allowed_skill_names)
+                if allowed_skill_names
+                else []
+            )
+            if not selected_skills:
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": "Skill is not permitted by the pinned run allowlist",
+                    }
+                }
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "Skill is permitted by the pinned run allowlist",
                 }
             }
         permitted = (
@@ -1056,16 +1089,19 @@ async def run_claude_agent_sdk(
                 permission = {"allowed": False, "reason": "tool_permission_broker_failed"}
             if not isinstance(permission, dict):
                 permission = {"allowed": False, "reason": "tool_permission_malformed_response"}
+            elif not isinstance(permission.get("allowed"), bool):
+                permission = {"allowed": False, "reason": "tool_permission_malformed_response"}
+            permission_allowed = permission.get("allowed") is True
             permission_reason = str(permission.get("reason") or reason)
             output = {
                 "hookEventName": "PreToolUse",
-                "permissionDecision": "allow" if bool(permission.get("allowed")) else "deny",
+                "permissionDecision": "allow" if permission_allowed else "deny",
                 "permissionDecisionReason": permission_reason,
             }
             permission_request_id = str(permission.get("permission_request_id") or "")
             if permission_request_id:
                 output["permission_request_id"] = permission_request_id
-            if bool(permission.get("allowed")) and permitted:
+            if permission_allowed and permitted:
                 output["updatedInput"] = {**tool_input, "command": permitted[0]}
             return {"hookSpecificOutput": output}
         return {

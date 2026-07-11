@@ -25,6 +25,11 @@ from app.executors.claude_agent_sdk_runner import (
     run_claude_agent_sdk,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
+from app.runtime.sandbox.container_provider import (
+    DockerContainerProvider,
+    FakeContainerProvider,
+    OpenSandboxContainerProvider,
+)
 from app.runtime.sandbox.contracts import ContextRetrievalScope, SandboxRuntimeRequest
 from app.runtime.sandbox.runtime import SandboxRuntime
 from app.settings import get_settings
@@ -38,6 +43,7 @@ from app.tool_policy import evaluate_tool_policy
 
 NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
 _CONTROLLED_RUNNER_SKILLS = {"qa-file-reviewer", "baoyu-translate"}
+_SANDBOX_SUCCESS_TERMINAL_STATUSES = {"accepted", "completed", "succeeded"}
 
 
 @dataclass(frozen=True)
@@ -322,6 +328,17 @@ def _runtime_provider(result: object) -> str:
     return str(getattr(result, "provider", "") or "").strip()
 
 
+def _sandbox_runtime_provider(runtime: object) -> str:
+    provider = getattr(runtime, "provider", None)
+    if isinstance(provider, DockerContainerProvider):
+        return "docker"
+    if isinstance(provider, OpenSandboxContainerProvider):
+        return "opensandbox"
+    if isinstance(provider, FakeContainerProvider):
+        return "fake"
+    return ""
+
+
 def _context_manifest_from_pack(context_pack: dict[str, Any]) -> dict[str, Any] | None:
     manifest = context_pack.get("context_manifest")
     if not isinstance(manifest, dict) or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
@@ -403,14 +420,28 @@ class ClaudeAgentWorkerAdapter:
                     "execution_boundary": decision.reason,
                 },
             )
-        configured_provider = str(getattr(get_settings(), "sandbox_container_provider", "") or "").strip()
+        settings = get_settings()
+        configured_provider = str(getattr(settings, "sandbox_container_provider", "") or "").strip()
         if decision.requires_real_sandbox and configured_provider not in decision.accepted_providers:
             return self._sandbox_provider_required_result(
                 sandbox_provider=configured_provider,
                 runtime_started=False,
             )
+        if not bool(getattr(settings, "claude_agent_sdk_enabled", False)):
+            return self._sdk_required_result(payload, sdk_result=None)
+        sandbox_runtime = SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
+        actual_provider = _sandbox_runtime_provider(sandbox_runtime)
+        if actual_provider not in decision.accepted_providers:
+            return self._sandbox_provider_required_result(
+                sandbox_provider=actual_provider,
+                runtime_started=False,
+            )
 
-        sdk_result = await self._run_with_staged_skills(payload, event_sink=event_sink)
+        sdk_result = await self._run_with_staged_skills(
+            payload,
+            event_sink=event_sink,
+            sandbox_runtime=sandbox_runtime,
+        )
         if sdk_result is not None:
             return sdk_result
 
@@ -976,6 +1007,7 @@ class ClaudeAgentWorkerAdapter:
         prepared: PreparedSdkRun,
         *,
         event_sink: ExecutorEventSink | None = None,
+        sandbox_runtime: SandboxRuntime | None = None,
     ) -> ExecutorResult:
         settings = get_settings()
         context_pack = self._executor_context_pack(payload)
@@ -1015,7 +1047,7 @@ class ClaudeAgentWorkerAdapter:
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             sdk_session_id=continuity.sdk_session_id,
         )
-        runtime = SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
+        runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
         async with self._session_continuity.sdk_session_lock(continuity.lock_key):
             runtime_result = await runtime.submit(request, event_sink=event_sink)
         return self._executor_result_from_sandbox_runtime(payload, prepared, runtime_result)
@@ -1059,7 +1091,9 @@ class ClaudeAgentWorkerAdapter:
             if isinstance(getattr(runtime_result, "executor_response", {}), dict)
             else {}
         )
-        runtime_status = str(executor_response.get("status") or getattr(runtime_result, "status", "") or "accepted")
+        runtime_status = str(
+            executor_response.get("status") or getattr(runtime_result, "status", "") or ""
+        ).strip().lower()
         sandbox_provider = _runtime_provider(runtime_result)
         decision = decide_execution_boundary(
             executor_type=self.executor_type,
@@ -1108,7 +1142,7 @@ class ClaudeAgentWorkerAdapter:
             "sandbox_runtime_used": True,
             "sandbox_timings": sandbox_timings,
         }
-        if runtime_status in {"failed", "cancelled", "canceled"}:
+        if runtime_status not in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
             error_code = str(executor_response.get("error_code") or "")
             if not error_code and runtime_status in {"cancelled", "canceled"}:
                 error_code = "executor_cancelled"
@@ -1176,6 +1210,8 @@ class ClaudeAgentWorkerAdapter:
         self,
         payload: RunPayload,
         event_sink: ExecutorEventSink | None = None,
+        *,
+        sandbox_runtime: SandboxRuntime | None = None,
     ) -> ExecutorResult | None:
         settings = get_settings()
         if not settings.claude_agent_sdk_enabled:
@@ -1196,6 +1232,7 @@ class ClaudeAgentWorkerAdapter:
                 payload,
                 prepared,
                 event_sink=event_sink,
+                sandbox_runtime=sandbox_runtime,
             )
 
         sdk_result = await self._try_run_sdk(

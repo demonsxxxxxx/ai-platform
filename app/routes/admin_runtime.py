@@ -8,7 +8,7 @@ from app.observability_readiness import build_observability_readiness
 from app import repositories
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text
 from app.db import get_pool_status, transaction
-from app.execution_boundary import is_accepted_runtime_lease
+from app.execution_boundary import REAL_SANDBOX_PROVIDERS, is_accepted_runtime_lease
 from app.queue import get_queue_insight, get_queue_status
 from app.runtime.sandbox.container_provider import (
     DockerPermissionDeniedError,
@@ -476,6 +476,36 @@ def _provider_cleanup_failed(cleanup_results: object) -> bool:
     return False
 
 
+def _only_placeholder_cleanup_failures(exc: SandboxRuntimeCleanupError) -> bool:
+    failures = getattr(exc, "failures", None)
+    return bool(failures) and all(
+        str(failure.get("message") or "") == "Unsupported sandbox provider: fake"
+        for failure in failures
+        if isinstance(failure, dict)
+    ) and all(isinstance(failure, dict) for failure in failures)
+
+
+def _accepted_runtime_containers(
+    containers: list[object],
+    active_leases: list[dict[str, object]],
+) -> list[object]:
+    accepted_run_keys = {
+        (str(lease.get("tenant_id") or ""), str(lease.get("run_id") or ""))
+        for lease in active_leases
+        if is_accepted_runtime_lease(lease)
+    }
+    return [
+        container
+        for container in containers
+        if str(getattr(container, "provider", "") or "") in REAL_SANDBOX_PROVIDERS
+        and (
+            str(getattr(container, "tenant_id", "") or ""),
+            str(getattr(container, "run_id", "") or ""),
+        )
+        in accepted_run_keys
+    ]
+
+
 def _sandbox_overview(containers: list[object], leases: list[dict[str, object]], lease_history: list[dict[str, object]]) -> dict[str, object]:
     tenant_leases = [lease for lease in leases if lease.get("tenant_id")]
     tenant_lease_history = [lease for lease in lease_history if lease.get("tenant_id")]
@@ -569,7 +599,8 @@ async def admin_runtime_containers(
             )
             await repositories.cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
         except SandboxRuntimeCleanupError as exc:
-            raise HTTPException(status_code=500, detail="sandbox_runtime_cleanup_failed") from exc
+            if not _only_placeholder_cleanup_failures(exc):
+                raise HTTPException(status_code=500, detail="sandbox_runtime_cleanup_failed") from exc
         leases = await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
         lease_history = (
             await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status=None)
@@ -586,7 +617,10 @@ async def admin_runtime_containers(
         for lease in lease_history
         if lease.get("tenant_id") == principal.tenant_id and is_accepted_runtime_lease(lease)
     ]
-    containers = await provider.list_runtime_containers({"tenant_id": principal.tenant_id})
+    containers = _accepted_runtime_containers(
+        await provider.list_runtime_containers({"tenant_id": principal.tenant_id}),
+        visible_leases,
+    )
     active_containers = [container for container in containers if container.status == "running"]
 
     payload = {
@@ -634,7 +668,8 @@ async def admin_runtime_overview(
                 )
                 await repositories.cleanup_expired_sandbox_leases(conn, tenant_id=principal.tenant_id)
             except SandboxRuntimeCleanupError as exc:
-                raise HTTPException(status_code=500, detail="sandbox_runtime_cleanup_failed") from exc
+                if not _only_placeholder_cleanup_failures(exc):
+                    raise HTTPException(status_code=500, detail="sandbox_runtime_cleanup_failed") from exc
         leases = await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status="active")
         lease_history = await repositories.list_sandbox_leases(conn, tenant_id=principal.tenant_id, status=None)
 
@@ -652,6 +687,7 @@ async def admin_runtime_overview(
         provider,
         principal.tenant_id,
     )
+    containers = _accepted_runtime_containers(containers, visible_leases)
 
     async with transaction() as conn:
         run_summary = await repositories.get_admin_runtime_run_summary(conn, tenant_id=principal.tenant_id, limit=10)

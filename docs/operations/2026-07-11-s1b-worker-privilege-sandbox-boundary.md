@@ -67,10 +67,20 @@ Additional local gates:
 - `python -m compileall -q app tools scripts` exited 0.
 - Runtime launch/script integration: `90 passed in 6.13s`.
 - Combined changed-scope plus launch/script pre-commit gate: `407 passed, 3 skipped in 33.86s`.
+- Post-review changed-scope, context, and launch/script gate: `427 passed, 3 skipped in 41.53s`.
 - `git diff --check`, changed-scope validation, and secret-pattern scan exited 0.
 - Local Docker is unavailable on this workstation; no Docker command was retried and no container/runtime acceptance is claimed.
 
 The retained private local SDK and controlled-runner helpers are tested directly as helper behavior only. Ordinary `submit_run` routing has explicit drift tests that fail if either helper is invoked. Removing those helpers is a separate cleanup decision and is not part of S1B-A.
+
+Fixed-SHA review of `8d91ee7` found and the follow-up source now addresses:
+
+- actual runtime-provider verification before Skill/workspace preparation and `runtime.submit`;
+- strict boolean permission normalization and terminal permission outcome events;
+- governed pinned Skill and scoped internal context-tool exemptions without generic permission requests;
+- explicit sandbox success-status allowlisting;
+- placeholder cleanup degradation without deleting history;
+- evidence-backed Admin container projections and counts.
 
 ## S1B-B Non-Root Blocker
 

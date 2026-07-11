@@ -19,6 +19,11 @@ from app.executors.claude_agent_worker import _ordinary_run_requires_sandbox
 from app.storage import StoredObject
 from app.executors.claude_agent_sdk_runner import build_sdk_env, build_skill_prompt, run_claude_agent_sdk
 from app.executors.registry import AdapterRegistry
+from app.runtime.sandbox.container_provider import (
+    DockerContainerProvider,
+    FakeContainerProvider,
+    OpenSandboxContainerProvider,
+)
 from app.skills.pinning import build_skill_manifest_pins
 from app.skills.registry import BuiltinSkillRegistry
 from app.worker import WorkerRunCancelled
@@ -221,6 +226,14 @@ def install_sandbox_runtime(monkeypatch, *, executor_response=None, status="acce
     requests = []
 
     class FakeSandboxRuntime:
+        def __init__(self):
+            provider_type = {
+                "docker": DockerContainerProvider,
+                "opensandbox": OpenSandboxContainerProvider,
+                "fake": FakeContainerProvider,
+            }[provider]
+            self.provider = object.__new__(provider_type)
+
         async def submit(self, request, event_sink=None):
             requests.append(request)
             response = executor_response(request) if callable(executor_response) else executor_response
@@ -776,6 +789,8 @@ async def test_general_chat_routes_heavy_sandbox_runs_to_sandbox_runtime(monkeyp
     runtime_calls = []
 
     class FakeRuntime:
+        provider = object.__new__(DockerContainerProvider)
+
         async def submit(self, request, event_sink=None):
             runtime_calls.append(request)
             return types.SimpleNamespace(
@@ -1031,6 +1046,54 @@ async def test_fake_provider_fails_before_runtime_or_worker_local_side_effects(m
     assert calls == {"prepare": 0, "runtime": 0}
 
 
+@pytest.mark.asyncio
+async def test_actual_runtime_provider_mismatch_fails_before_workspace_preparation(monkeypatch, tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
+    calls = {"prepare": 0, "submit": 0}
+
+    async def fail_prepare(*args, **kwargs):
+        calls["prepare"] += 1
+        raise AssertionError("actual provider mismatch must fail before workspace preparation")
+
+    class MismatchedRuntime:
+        provider = object.__new__(FakeContainerProvider)
+
+        async def submit(self, request, event_sink=None):
+            calls["submit"] += 1
+            raise AssertionError("actual provider mismatch must fail before runtime.submit")
+
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.get_settings",
+        lambda: type(
+            "S",
+            (),
+            {
+                "claude_agent_sdk_enabled": True,
+                "sandbox_container_provider": "docker",
+                "sandbox_workspace_root": str(tmp_path),
+            },
+        )(),
+    )
+    monkeypatch.setattr(adapter, "_run_with_staged_skills", fail_prepare)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.SandboxRuntime",
+        lambda *args, **kwargs: MismatchedRuntime(),
+    )
+
+    result = await adapter.submit_run(
+        sandbox_writing_payload(
+            execution_tier="sdk_only_writing",
+            agent_id="general-agent",
+            skill_id="general-chat",
+        )
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "sandbox_real_provider_required"
+    assert result.executor_payload["sandbox_provider"] == "fake"
+    assert calls == {"prepare": 0, "submit": 0}
+
+
 def test_sandbox_runtime_missing_provider_does_not_fallback_to_settings(monkeypatch, tmp_path):
     adapter = ClaudeAgentWorkerAdapter()
     prepared = PreparedSdkRun(
@@ -1067,6 +1130,35 @@ def test_sandbox_runtime_missing_provider_does_not_fallback_to_settings(monkeypa
     assert result.executor_payload["sandbox_provider"] == ""
 
 
+@pytest.mark.parametrize("runtime_status", ["error", "timeout", "future_unknown_status"])
+def test_sandbox_runtime_unknown_or_error_terminal_status_fails_closed(runtime_status, tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
+    prepared = PreparedSdkRun(
+        workspace=tmp_path,
+        file_names=[],
+        selected_skills=[],
+        pinned_manifests={},
+        allowed_skill_names=["general-chat"],
+        staged_skill_names=["general-chat"],
+        prompt="write the requested result",
+    )
+
+    result = adapter._executor_result_from_sandbox_runtime(
+        sandbox_writing_payload(agent_id="general-agent", skill_id="general-chat"),
+        prepared,
+        types.SimpleNamespace(
+            status=runtime_status,
+            provider="docker",
+            executor_response={"status": runtime_status, "message": "runtime did not complete"},
+            timings={},
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "executor_reported_failure"
+    assert result.executor_payload["runtime_terminal_status"] == runtime_status
+
+
 @pytest.mark.asyncio
 async def test_general_chat_preserves_cancelled_runtime_terminal_status(monkeypatch, tmp_path):
     current_settings = type(
@@ -1085,6 +1177,8 @@ async def test_general_chat_preserves_cancelled_runtime_terminal_status(monkeypa
     )()
 
     class FakeRuntime:
+        provider = object.__new__(DockerContainerProvider)
+
         async def submit(self, request, event_sink=None):
             return types.SimpleNamespace(
                 status="cancelled",
@@ -1191,6 +1285,8 @@ async def test_general_chat_heavy_sandbox_request_carries_context_retrieval_scop
     runtime_calls = []
 
     class FakeRuntime:
+        provider = object.__new__(DockerContainerProvider)
+
         async def submit(self, request, event_sink=None):
             runtime_calls.append(request)
             return types.SimpleNamespace(
@@ -1264,6 +1360,8 @@ async def test_general_chat_heavy_sandbox_fails_when_runtime_reports_sdk_disable
     )()
 
     class FakeRuntime:
+        provider = object.__new__(DockerContainerProvider)
+
         async def submit(self, request, event_sink=None):
             return types.SimpleNamespace(
                 status="failed",
@@ -2233,6 +2331,8 @@ async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch
         raise WorkerRunCancelled("platform cancel requested")
 
     class CancellingRuntime:
+        provider = object.__new__(DockerContainerProvider)
+
         async def submit(self, request, event_sink=None):
             await event_sink(
                 event_type="message_delta",
@@ -5186,9 +5286,10 @@ async def test_sdk_runner_honors_explicit_full_access_tool_policy_override(monke
 
 
 @pytest.mark.asyncio
-async def test_sandbox_brokered_policy_overrides_bypass_and_brokers_every_side_effect_tool(monkeypatch, tmp_path):
+async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_other_tools(monkeypatch, tmp_path):
     captured = {}
     permission_calls = []
+    used_skill_events = []
 
     class TextBlock:
         def __init__(self, text):
@@ -5232,11 +5333,14 @@ async def test_sandbox_brokered_policy_overrides_bypass_and_brokers_every_side_e
         if request["tool_name"] == "WebFetch":
             raise TimeoutError("callback timed out")
         if request["tool_name"] == "WebSearch":
-            return "malformed"
+            return {"allowed": "false", "reason": "malformed truthy scalar"}
         return {
             "allowed": request["tool_name"] in {"Bash", "mcp__knowledge__search"},
             "reason": f"broker_{request['tool_name']}",
         }
+
+    async def on_skill_use(skill_name, metadata):
+        used_skill_events.append((skill_name, metadata["tool_use_id"]))
 
     current_settings = type(
         "S",
@@ -5276,20 +5380,31 @@ async def test_sandbox_brokered_policy_overrides_bypass_and_brokers_every_side_e
         prompt="hello",
         cwd=tmp_path,
         skill_id="general-chat",
-        skills=[],
+        skills=["qa-file-reviewer"],
+        on_skill_use=on_skill_use,
         on_tool_permission=on_tool_permission,
         execution_policy="sandbox_brokered",
     )
 
     assert result.message == "ok"
     assert captured["permission_mode"] == "dontAsk"
-    assert captured["allowed_tools"] == ["Read", "Glob", "LS"]
+    internal_context_tools = [
+        "read_session_messages",
+        "read_context_file",
+        "read_run_artifact",
+        "stage_context_file_to_workspace",
+        "search_memory",
+    ]
+    assert captured["allowed_tools"] == ["Read", "Glob", "LS", *internal_context_tools]
     assert captured["disallowed_tools"] == []
     side_effect_tools = ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "WebFetch", "WebSearch"]
     assert captured["tools"] == ["Read", "Glob", "LS", *side_effect_tools]
     pre_tool_matchers = captured["hooks"]["PreToolUse"]
     assert len(pre_tool_matchers) == 1
     assert pre_tool_matchers[0].matcher is None
+    assert set(captured["hooks"]) == {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
+    assert len(captured["hooks"]["PostToolUse"]) == 1
+    assert captured["hooks"]["PostToolUse"][0].matcher == "Skill"
     broker_hook = pre_tool_matchers[0].hooks[0]
 
     decisions = {}
@@ -5318,8 +5433,65 @@ async def test_sandbox_brokered_policy_overrides_bypass_and_brokers_every_side_e
     assert decisions["Write"]["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert decisions["WebFetch"]["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_broker_failed"
     assert decisions["WebSearch"]["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_malformed_response"
+
+    permission_count_before_governed_tools = len(permission_calls)
+    allowed_skill = await broker_hook(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "qa-file-reviewer"},
+            "tool_use_id": "tool-Skill-allow",
+        },
+        "tool-Skill-allow",
+        {},
+    )
+    unknown_skill = await broker_hook(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "unknown-skill"},
+            "tool_use_id": "tool-Skill-unknown",
+        },
+        "tool-Skill-unknown",
+        {},
+    )
+    internal_context_read = await broker_hook(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "read_context_file",
+            "tool_input": {"file_id": "file-a"},
+            "tool_use_id": "tool-context-read",
+        },
+        "tool-context-read",
+        {},
+    )
+    assert allowed_skill["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert unknown_skill["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert internal_context_read == {}
+    assert used_skill_events == []
+    assert len(permission_calls) == permission_count_before_governed_tools
+    post_skill_hook = captured["hooks"]["PostToolUse"][0].hooks[0]
+    await post_skill_hook(
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Skill",
+            "tool_input": {"skill": "qa-file-reviewer"},
+            "tool_use_id": "tool-Skill-allow",
+        },
+        "tool-Skill-allow",
+        {},
+    )
+    assert used_skill_events == [("qa-file-reviewer", "tool-Skill-allow")]
     denied = await captured["can_use_tool"]("Bash", {"command": "echo local"}, None)
     assert denied.behavior == "deny"
+    context_allowed = await captured["can_use_tool"]("read_context_file", {"file_id": "file-a"}, None)
+    assert context_allowed.behavior == "allow"
+    pinned_skill_allowed = await captured["can_use_tool"](
+        "Skill", {"skill": "qa-file-reviewer"}, None
+    )
+    assert pinned_skill_allowed.behavior == "allow"
+    unknown_skill_denied = await captured["can_use_tool"]("Skill", {"skill": "unknown-skill"}, None)
+    assert unknown_skill_denied.behavior == "deny"
 
     captured.clear()
     await run_claude_agent_sdk(
