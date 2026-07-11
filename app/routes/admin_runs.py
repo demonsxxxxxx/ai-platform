@@ -171,6 +171,7 @@ async def admin_run_cancel(
             provider_factory=create_container_provider,
         )
     except SandboxRuntimeCleanupError as exc:
+        stopped_lease_ids = [str(lease["id"]) for lease in exc.stopped_leases if lease.get("id")]
         if exc.stopped_leases:
             async with transaction() as conn:
                 await _release_stopped_admin_cancel_leases(
@@ -180,8 +181,35 @@ async def admin_run_cancel(
                     leases=exc.stopped_leases,
                     trace_id=result.get("trace_id"),
                 )
+                await repositories.record_sandbox_runtime_cleanup_outcome(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=str(result["run_id"]),
+                    trace_id=result.get("trace_id"),
+                    user_id=principal.user_id,
+                    requested_by_role="admin",
+                    reason="admin_cancel_requested",
+                    status="failed",
+                    lease_ids=stopped_lease_ids,
+                    failures=exc.failures,
+                )
+        else:
+            async with transaction() as conn:
+                await repositories.record_sandbox_runtime_cleanup_outcome(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    run_id=str(result["run_id"]),
+                    trace_id=result.get("trace_id"),
+                    user_id=principal.user_id,
+                    requested_by_role="admin",
+                    reason="admin_cancel_requested",
+                    status="failed",
+                    lease_ids=[],
+                    failures=exc.failures,
+                )
         raise HTTPException(status_code=502, detail="sandbox_runtime_cleanup_failed") from exc
     if stopped_sandbox_leases:
+        stopped_lease_ids = [str(lease["id"]) for lease in stopped_sandbox_leases if lease.get("id")]
         async with transaction() as conn:
             await _release_stopped_admin_cancel_leases(
                 conn,
@@ -189,6 +217,18 @@ async def admin_run_cancel(
                 reason="admin_cancel_requested",
                 leases=stopped_sandbox_leases,
                 trace_id=result.get("trace_id"),
+            )
+            await repositories.record_sandbox_runtime_cleanup_outcome(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=str(result["run_id"]),
+                trace_id=result.get("trace_id"),
+                user_id=principal.user_id,
+                requested_by_role="admin",
+                reason="admin_cancel_requested",
+                status="succeeded",
+                lease_ids=stopped_lease_ids,
+                failures=[],
             )
     if queue_cleanup_failures:
         raise HTTPException(status_code=502, detail="queue_cleanup_failed") from queue_cleanup_failures[0]

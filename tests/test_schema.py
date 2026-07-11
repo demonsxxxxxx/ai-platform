@@ -219,6 +219,35 @@ def test_schema_declares_runs_session_scope_guard():
     assert "references sessions(tenant_id, workspace_id, user_id, id, agent_id)" in schema
 
 
+def test_schema_declares_tenant_scoped_workspace_guards_for_sessions_and_runs():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "create unique index if not exists idx_workspaces_tenant_scope" in schema
+    assert "on workspaces(tenant_id, id)" in schema
+    assert "raise exception 'sessions_workspace_tenant_scope_mismatch'" in schema
+    assert "raise exception 'runs_workspace_tenant_scope_mismatch'" in schema
+    assert "fk_sessions_workspace_scope" in schema
+    assert "fk_runs_workspace_scope" in schema
+    assert "foreign key (tenant_id, workspace_id)" in schema
+    assert "references workspaces(tenant_id, id)" in schema
+
+
+def test_schema_declares_platform_verified_sandbox_runtime_handle_columns():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    for column in [
+        "runtime_container_id text",
+        "runtime_container_name text",
+        "runtime_executor_url text",
+        "runtime_workspace_container_path text",
+        "runtime_handle_verified_at timestamptz",
+    ]:
+        assert column in schema
+
+    assert "alter table sandbox_leases add column if not exists runtime_container_id text" in schema
+    assert "alter table sandbox_leases add column if not exists runtime_handle_verified_at timestamptz" in schema
+
+
 def test_schema_declares_context_snapshot_run_scope_guard():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 

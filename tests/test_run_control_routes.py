@@ -48,6 +48,9 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     async def authorize_persisted_run(*_args, **_kwargs):
         return None
 
+    async def record_sandbox_runtime_cleanup_outcome(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(
         "app.routes.runs.repositories.update_run_auth_snapshot",
         update_auth_snapshot,
@@ -61,6 +64,16 @@ def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypa
     monkeypatch.setattr(
         "app.routes.runs._authorize_persisted_run_for_queue",
         authorize_persisted_run,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        record_sandbox_runtime_cleanup_outcome,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.admin_runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
 
@@ -90,6 +103,10 @@ def sandbox_lease_row(
     user_id: str = "user-a",
     provider: str = "fake",
     lease_payload_json: dict[str, object] | None = None,
+    runtime_container_id: str | None = None,
+    runtime_container_name: str | None = None,
+    runtime_executor_url: str | None = None,
+    runtime_workspace_container_path: str | None = None,
 ) -> dict[str, object]:
     payload = lease_payload_json or {
         "container_id": f"exec-{run_id}",
@@ -111,6 +128,11 @@ def sandbox_lease_row(
         "status": "active",
         "browser_enabled": False,
         "lease_payload_json": payload,
+        "runtime_container_id": runtime_container_id or f"exec-{run_id}",
+        "runtime_container_name": runtime_container_name or f"executor-exec-{run_id}",
+        "runtime_executor_url": runtime_executor_url or "http://executor.test",
+        "runtime_workspace_container_path": runtime_workspace_container_path or "/workspace",
+        "runtime_handle_verified_at": "2026-07-11T00:00:00Z",
     }
 
 
@@ -6948,6 +6970,7 @@ def test_cancel_run_finalizes_multi_agent_parent_after_cancel_propagation(monkey
 def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
     calls = []
     release_calls = []
+    cleanup_outcomes = []
 
     async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
         return {
@@ -6978,12 +7001,20 @@ def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
         )
         return []
 
+    async def fake_record_sandbox_runtime_cleanup_outcome(conn, **kwargs):
+        cleanup_outcomes.append(kwargs)
+
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
     monkeypatch.setattr(
         "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
         fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        fake_record_sandbox_runtime_cleanup_outcome,
         raising=False,
     )
     monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
@@ -7008,6 +7039,19 @@ def test_cancel_run_stops_active_sandbox_runtime_before_db_release(monkeypatch):
             "lease_ids": ["lease-run_active"],
             "trace_id": None,
             "requested_by_role": None,
+        }
+    ]
+    assert cleanup_outcomes == [
+        {
+            "tenant_id": "default",
+            "run_id": "run_active",
+            "trace_id": None,
+            "user_id": "user-a",
+            "requested_by_role": "owner",
+            "reason": "cancel_requested",
+            "status": "succeeded",
+            "lease_ids": ["lease-run_active"],
+            "failures": [],
         }
     ]
 
@@ -7055,9 +7099,130 @@ def test_cancel_run_ignores_user_controlled_sandbox_container_payload(monkeypatc
     _, lease, _ = calls[0]
     assert lease.container_id == "exec-run_active"
     assert lease.container_name == "executor-exec-run_active"
-    assert lease.executor_url == "http://sandbox-runtime.invalid"
+    assert lease.executor_url == "http://executor.test"
     assert lease.workspace_host_path == ""
     assert lease.labels == {}
+
+
+def test_cancel_run_uses_platform_verified_runtime_handle_not_user_payload(monkeypatch):
+    calls = []
+
+    async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
+        return {
+            "run_id": run_id,
+            "status": "cancel_requested",
+            "active_sandbox_leases": [
+                sandbox_lease_row(
+                    run_id=run_id,
+                    user_id=user_id,
+                    runtime_container_id="platform-runtime-container",
+                    runtime_container_name="platform-runtime-name",
+                    runtime_executor_url="http://platform-runtime.test",
+                    runtime_workspace_container_path="/verified-workspace",
+                    lease_payload_json={
+                        "container_id": "ai-platform-api",
+                        "container_name": "ai-platform-api",
+                        "executor_url": "http://attacker.invalid",
+                        "workspace_container_path": "/attacker",
+                        "labels": {"controlled": "by-request"},
+                    },
+                )
+            ],
+        }
+
+    async def fake_release_stopped_sandbox_leases_for_cancel(conn, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
+
+    assert response.status_code == 200
+    _, lease, _ = calls[0]
+    assert lease.container_id == "platform-runtime-container"
+    assert lease.container_name == "platform-runtime-name"
+    assert lease.executor_url == "http://platform-runtime.test"
+    assert lease.workspace_container_path == "/verified-workspace"
+    assert lease.labels == {}
+
+
+def test_cancel_run_rejects_active_lease_without_platform_verified_runtime_handle(monkeypatch):
+    calls = []
+    release_calls = []
+    cleanup_outcomes = []
+
+    forged_row = sandbox_lease_row(
+        run_id="run_active",
+        user_id="user-a",
+        lease_payload_json={
+            "container_id": "ai-platform-api",
+            "container_name": "ai-platform-api",
+            "executor_url": "http://attacker.invalid",
+        },
+    )
+    for key in (
+        "runtime_container_id",
+        "runtime_container_name",
+        "runtime_executor_url",
+        "runtime_workspace_container_path",
+        "runtime_handle_verified_at",
+    ):
+        forged_row.pop(key, None)
+
+    async def fake_request_run_cancel(conn, *, tenant_id, user_id, run_id):
+        return {"run_id": run_id, "status": "cancel_requested", "active_sandbox_leases": [forged_row]}
+
+    async def fake_release_stopped_sandbox_leases_for_cancel(conn, **kwargs):
+        release_calls.append(kwargs)
+        return []
+
+    async def fake_record_sandbox_runtime_cleanup_outcome(conn, **kwargs):
+        cleanup_outcomes.append(kwargs)
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.request_run_cancel", fake_request_run_cancel)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.release_stopped_sandbox_leases_for_cancel",
+        fake_release_stopped_sandbox_leases_for_cancel,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.record_sandbox_runtime_cleanup_outcome",
+        fake_record_sandbox_runtime_cleanup_outcome,
+        raising=False,
+    )
+    monkeypatch.setattr("app.routes.runs.create_container_provider", lambda provider_name=None: RecordingSandboxProvider(calls), raising=False)
+    client = TestClient(create_app())
+
+    response = client.post("/api/ai/runs/run_active/cancel", headers=headers())
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "sandbox_runtime_cleanup_failed"
+    assert calls == []
+    assert release_calls == []
+    assert cleanup_outcomes == [
+        {
+            "tenant_id": "default",
+            "run_id": "run_active",
+            "trace_id": None,
+            "user_id": "user-a",
+            "requested_by_role": "owner",
+            "reason": "cancel_requested",
+            "status": "failed",
+            "lease_ids": [],
+            "failures": [{"container_id": "lease-run_active", "message": "Unsupported sandbox provider: fake"}],
+        }
+    ]
 
 
 def test_cancel_run_surfaces_sandbox_runtime_stop_failure(monkeypatch):
@@ -7634,6 +7799,8 @@ async def test_request_run_cancel_closes_pending_steps_when_owner_cancels_queued
                 return FakeCursor()
             if normalized.startswith("select * from sandbox_leases"):
                 return FakeCursor()
+            if normalized.startswith("insert into audit_logs"):
+                return FakeCursor()
             raise AssertionError(f"unexpected sql: {normalized}")
 
     async def fake_append_event(conn, **kwargs):
@@ -7680,6 +7847,8 @@ async def test_request_run_cancel_defers_active_sandbox_lease_release_until_clea
                 return LeaseCursor()
             if normalized.startswith("update sandbox_leases"):
                 raise AssertionError("cancel request must not release sandbox leases before runtime cleanup")
+            if normalized.startswith("insert into audit_logs"):
+                return RunCursor()
             raise AssertionError(f"unexpected sql: {normalized}")
 
     async def fake_append_event(conn, **kwargs):
@@ -7739,6 +7908,8 @@ async def test_request_run_cancel_allows_cancelled_run_with_active_sandbox_lease
                 return EmptyCursor()
             if normalized.startswith("select * from sandbox_leases"):
                 return LeaseCursor()
+            if normalized.startswith("insert into audit_logs"):
+                return EmptyCursor()
             raise AssertionError(f"unexpected sql: {normalized}")
 
     async def fake_append_event(conn, **kwargs):
@@ -8043,6 +8214,68 @@ async def test_request_admin_run_cancel_does_not_filter_target_user_and_audits(m
                 "run_id": "run_active",
                 "target_user_id": "target-user",
                 "result_status": "cancel_requested",
+            },
+        },
+    ) in calls
+
+
+@pytest.mark.asyncio
+async def test_request_run_cancel_owner_cancel_writes_structured_audit(monkeypatch):
+    from app import repositories
+
+    calls = []
+
+    class FakeCursor:
+        async def fetchone(self):
+            return {"id": "run_active", "status": "running", "trace_id": "trace_run_active"}
+
+        async def fetchall(self):
+            return []
+
+    class FakeConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            calls.append((normalized, params))
+            if normalized.startswith("update runs"):
+                assert "and user_id = %s" in normalized
+                assert params == ("user-a", "default", "run_active", "user-a")
+                return FakeCursor()
+            if normalized.startswith("select * from sandbox_leases"):
+                return FakeCursor()
+            raise AssertionError(f"unexpected sql: {normalized}")
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-a"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    result = await repositories.request_run_cancel(
+        FakeConnection(),
+        tenant_id="default",
+        user_id="user-a",
+        run_id="run_active",
+    )
+
+    assert result == {"run_id": "run_active", "status": "cancel_requested"}
+    assert (
+        "audit",
+        {
+            "tenant_id": "default",
+            "user_id": "user-a",
+            "action": "run.cancel",
+            "target_type": "run",
+            "target_id": "run_active",
+            "trace_id": "trace_run_active",
+            "payload_json": {
+                "run_id": "run_active",
+                "result_status": "cancel_requested",
+                "requested_by_role": "owner",
             },
         },
     ) in calls

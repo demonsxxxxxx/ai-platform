@@ -220,7 +220,29 @@ async def _fail_run_and_reconcile(
     error_message: str,
     result_json: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    await repositories.fail_run(
+    terminal_written, reconciled = await _fail_run_and_reconcile_with_write(
+        conn,
+        payload=payload,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        error_code=error_code,
+        error_message=error_message,
+        result_json=result_json,
+    )
+    return reconciled if terminal_written else None
+
+
+async def _fail_run_and_reconcile_with_write(
+    conn,
+    *,
+    payload: QueueRunPayload,
+    tenant_id: str,
+    run_id: str,
+    error_code: str,
+    error_message: str,
+    result_json: dict[str, Any] | None = None,
+) -> tuple[bool, dict[str, Any] | None]:
+    terminal_written = await repositories.fail_run(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
@@ -228,8 +250,10 @@ async def _fail_run_and_reconcile(
         error_message=error_message,
         result_json=result_json,
     )
+    if terminal_written is False:
+        return False, None
     if tenant_id == payload.tenant_id and run_id == payload.run_id:
-        return await _reconcile_multi_agent_child_terminal_state(
+        return True, await _reconcile_multi_agent_child_terminal_state(
             conn,
             payload=payload,
             child_status="failed",
@@ -237,7 +261,7 @@ async def _fail_run_and_reconcile(
             error_code=error_code,
             error_message=error_message,
         )
-    return None
+    return True, None
 
 
 def _mcp_tool_request_payload(payload: QueueRunPayload) -> dict[str, str]:
@@ -655,7 +679,7 @@ async def _fail_policy_denied_run(
     event_payload: dict[str, Any],
 ) -> WorkerOutcome:
     async with transaction() as conn:
-        await _fail_run_and_reconcile(
+        terminal_written, _ = await _fail_run_and_reconcile_with_write(
             conn,
             payload=payload,
             tenant_id=payload.tenant_id,
@@ -663,6 +687,13 @@ async def _fail_policy_denied_run(
             error_code=error_code,
             error_message=error_message,
         )
+        if terminal_written is False:
+            return WorkerOutcome(
+                "skipped",
+                payload.run_id,
+                "stale_terminal_state",
+                "Run already reached a terminal state",
+            )
         await repositories.append_event(
             conn,
             tenant_id=payload.tenant_id,
@@ -1405,7 +1436,7 @@ async def _fail_locked_run_snapshot(
         run_identity["skill_id"],
         _denied_capability_decision("locked_snapshot_invalid"),
     )
-    reconciled_parent = await _fail_run_and_reconcile(
+    terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
         conn,
         payload=payload,
         tenant_id=run_identity["tenant_id"],
@@ -1413,6 +1444,17 @@ async def _fail_locked_run_snapshot(
         error_code=error_code,
         error_message=error_message,
     )
+    if terminal_written is False:
+        return _WorkerTerminalAfterTransaction(
+            WorkerOutcome(
+                "skipped",
+                run_identity["run_id"],
+                "stale_terminal_state",
+                "Run already reached a terminal state",
+            ),
+            payload,
+            None,
+        )
     await _append_worker_capability_denial_evidence(
         conn,
         denial=denial,
@@ -1442,7 +1484,7 @@ async def _fail_worker_capability_authorization(
         raise RuntimeError("worker_capability_denial_missing")
     error_code = "capability_not_authorized"
     error_message = "Capability is not authorized for this run"
-    reconciled_parent = await _fail_run_and_reconcile(
+    terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
         conn,
         payload=payload,
         tenant_id=run_identity["tenant_id"],
@@ -1450,6 +1492,17 @@ async def _fail_worker_capability_authorization(
         error_code=error_code,
         error_message=error_message,
     )
+    if terminal_written is False:
+        return _WorkerTerminalAfterTransaction(
+            WorkerOutcome(
+                "skipped",
+                run_identity["run_id"],
+                "stale_terminal_state",
+                "Run already reached a terminal state",
+            ),
+            payload,
+            None,
+        )
     await _append_worker_capability_denial_evidence(
         conn,
         denial=denial,
@@ -1722,7 +1775,7 @@ async def process_run_payload(
                 if str(existing_run.get("status") or "") == "queued":
                     error_code = "queue_payload_identity_mismatch"
                     error_message = "Queued run identity is invalid"
-                    reconciled_parent = await _fail_run_and_reconcile(
+                    terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
                         conn,
                         payload=payload,
                         tenant_id=payload.tenant_id,
@@ -1730,6 +1783,18 @@ async def process_run_payload(
                         error_code=error_code,
                         error_message=error_message,
                     )
+                    if terminal_written is False:
+                        terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                            WorkerOutcome(
+                                "skipped",
+                                payload.run_id,
+                                "stale_terminal_state",
+                                "Run already reached a terminal state",
+                            ),
+                            payload,
+                            None,
+                        )
+                        return terminal_after_transaction.outcome
                     await repositories.append_event(
                         conn,
                         tenant_id=payload.tenant_id,
@@ -1759,7 +1824,7 @@ async def process_run_payload(
             if mismatch_fields:
                 error_code = "queue_payload_identity_mismatch"
                 error_message = "Queue payload identity does not match run record"
-                reconciled_parent = await _fail_run_and_reconcile(
+                terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
                     conn,
                     payload=payload,
                     tenant_id=run_identity["tenant_id"],
@@ -1767,6 +1832,18 @@ async def process_run_payload(
                     error_code=error_code,
                     error_message=error_message,
                 )
+                if terminal_written is False:
+                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                        WorkerOutcome(
+                            "skipped",
+                            run_identity["run_id"],
+                            "stale_terminal_state",
+                            "Run already reached a terminal state",
+                        ),
+                        payload,
+                        None,
+                    )
+                    return terminal_after_transaction.outcome
                 await repositories.append_event(
                     conn,
                     tenant_id=run_identity["tenant_id"],
@@ -1840,12 +1917,24 @@ async def process_run_payload(
             )
             if await repositories.is_cancel_requested(conn, tenant_id=run_identity["tenant_id"], run_id=run_identity["run_id"]):
                 cancel_result = {"message": "任务已取消"}
-                await repositories.cancel_run(
+                terminal_written = await repositories.cancel_run(
                     conn,
                     tenant_id=run_identity["tenant_id"],
                     run_id=run_identity["run_id"],
                     result_json=cancel_result,
                 )
+                if terminal_written is False:
+                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                        WorkerOutcome(
+                            "skipped",
+                            run_identity["run_id"],
+                            "stale_terminal_state",
+                            "Run already reached a terminal state",
+                        ),
+                        payload,
+                        None,
+                    )
+                    return terminal_after_transaction.outcome
                 reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
                     conn,
                     payload=payload,
@@ -1896,7 +1985,7 @@ async def process_run_payload(
                         "Multi-agent parent parked for dispatcher",
                     )
             if payload.executor_type == "runtime211":
-                reconciled_parent = await _fail_run_and_reconcile(
+                terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
                     conn,
                     payload=payload,
                     tenant_id=run_identity["tenant_id"],
@@ -1904,6 +1993,18 @@ async def process_run_payload(
                     error_code="legacy_runtime211_direct_executor_disabled",
                     error_message="Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
                 )
+                if terminal_written is False:
+                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                        WorkerOutcome(
+                            "skipped",
+                            run_identity["run_id"],
+                            "stale_terminal_state",
+                            "Run already reached a terminal state",
+                        ),
+                        payload,
+                        None,
+                    )
+                    return terminal_after_transaction.outcome
                 await repositories.append_event(
                     conn,
                     tenant_id=run_identity["tenant_id"],
@@ -1936,7 +2037,7 @@ async def process_run_payload(
             try:
                 adapter = adapter_registry.get(payload.executor_type)
             except KeyError as exc:
-                reconciled_parent = await _fail_run_and_reconcile(
+                terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
                     conn,
                     payload=payload,
                     tenant_id=payload.tenant_id,
@@ -1944,6 +2045,18 @@ async def process_run_payload(
                     error_code="unknown_executor_type",
                     error_message=str(exc),
                 )
+                if terminal_written is False:
+                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                        WorkerOutcome(
+                            "skipped",
+                            payload.run_id,
+                            "stale_terminal_state",
+                            "Run already reached a terminal state",
+                        ),
+                        payload,
+                        None,
+                    )
+                    return terminal_after_transaction.outcome
                 await repositories.append_event(
                     conn,
                     tenant_id=payload.tenant_id,
@@ -2125,12 +2238,19 @@ async def process_run_payload(
         reconciled_parent = None
         async with transaction() as conn:
             cancel_result = {"message": "任务已取消"}
-            await repositories.cancel_run(
+            terminal_written = await repositories.cancel_run(
                 conn,
                 tenant_id=payload.tenant_id,
                 run_id=payload.run_id,
                 result_json=cancel_result,
             )
+            if terminal_written is False:
+                return WorkerOutcome(
+                    "skipped",
+                    payload.run_id,
+                    "stale_terminal_state",
+                    "Run already reached a terminal state",
+                )
             reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
                 conn,
                 payload=payload,
@@ -2151,36 +2271,79 @@ async def process_run_payload(
         return WorkerOutcome("cancelled", payload.run_id)
     except Exception as exc:
         reconciled_parent = None
+        outcome_after_exception = WorkerOutcome("failed", payload.run_id, "executor_failure", str(exc))
         async with transaction() as conn:
-            reconciled_parent = await _fail_run_and_reconcile(
-                conn,
-                payload=payload,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                error_code="executor_failure",
-                error_message=str(exc),
-            )
-            await append_user_event(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                event_type="run_failed",
-                stage="executor",
-                message="Executor failed",
-                payload={"error": str(exc), "executor_type": payload.executor_type, "severity": "error"},
-            )
-            await repositories.append_event(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                event_type="error",
-                stage="executor",
-                message="Executor failed",
-                payload={"error": str(exc), "executor_type": payload.executor_type, "visible_to_user": False},
-            )
-            await release_runtime_sandbox_lease(conn, reason="run_failed")
+            if await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id):
+                cancel_result = {"message": "任务已取消"}
+                terminal_written = await repositories.cancel_run(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    result_json=cancel_result,
+                )
+                if terminal_written is False:
+                    outcome_after_exception = WorkerOutcome(
+                        "skipped",
+                        payload.run_id,
+                        "stale_terminal_state",
+                        "Run already reached a terminal state",
+                    )
+                else:
+                    reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
+                        conn,
+                        payload=payload,
+                        child_status="cancelled",
+                        result_json=cancel_result,
+                    )
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="run_cancelled",
+                        stage="control",
+                        message="任务已取消",
+                        payload={"severity": "warning"},
+                    )
+                    await release_runtime_sandbox_lease(conn, reason="run_cancelled")
+                    outcome_after_exception = WorkerOutcome("cancelled", payload.run_id)
+            else:
+                terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
+                    conn,
+                    payload=payload,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    error_code="executor_failure",
+                    error_message=str(exc),
+                )
+                if terminal_written is False:
+                    outcome_after_exception = WorkerOutcome(
+                        "skipped",
+                        payload.run_id,
+                        "stale_terminal_state",
+                        "Run already reached a terminal state",
+                    )
+                else:
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="run_failed",
+                        stage="executor",
+                        message="Executor failed",
+                        payload={"error": str(exc), "executor_type": payload.executor_type, "severity": "error"},
+                    )
+                    await repositories.append_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="error",
+                        stage="executor",
+                        message="Executor failed",
+                        payload={"error": str(exc), "executor_type": payload.executor_type, "visible_to_user": False},
+                    )
+                    await release_runtime_sandbox_lease(conn, reason="run_failed")
         await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
-        return WorkerOutcome("failed", payload.run_id, "executor_failure", str(exc))
+        return outcome_after_exception
 
     observability = _executor_observability(result.executor_payload, latency_ms=latency_ms)
     event_observability_kwargs = _event_observability_kwargs(observability, result.executor_payload)
@@ -2336,39 +2499,47 @@ async def process_run_payload(
                         message="取消请求已记录，但任务已完成",
                         payload={"severity": "warning"},
                     )
-                await repositories.complete_run(
+                terminal_written = await repositories.complete_run(
                     conn,
                     tenant_id=payload.tenant_id,
                     run_id=payload.run_id,
                     result_json=result_payload,
                 )
-                reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
-                    conn,
-                    payload=payload,
-                    child_status="succeeded",
-                    result_json=result_payload,
-                )
-                await append_user_event(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    event_type="run_succeeded",
-                    stage="worker",
-                    message="Run succeeded",
-                    payload={"artifact_count": len(result.artifacts), "skills": skill_snapshot},
-                    **terminal_event_kwargs,
-                )
-                await repositories.append_event(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    event_type="status",
-                    stage="worker",
-                    message="Run succeeded",
-                    payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
-                )
-                await release_runtime_sandbox_lease(conn, reason="run_succeeded")
-                terminal_outcome = WorkerOutcome("succeeded", payload.run_id)
+                if terminal_written is False:
+                    terminal_outcome = WorkerOutcome(
+                        "skipped",
+                        payload.run_id,
+                        "stale_terminal_state",
+                        "Run already reached a terminal state",
+                    )
+                else:
+                    reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
+                        conn,
+                        payload=payload,
+                        child_status="succeeded",
+                        result_json=result_payload,
+                    )
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="run_succeeded",
+                        stage="worker",
+                        message="Run succeeded",
+                        payload={"artifact_count": len(result.artifacts), "skills": skill_snapshot},
+                        **terminal_event_kwargs,
+                    )
+                    await repositories.append_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="status",
+                        stage="worker",
+                        message="Run succeeded",
+                        payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
+                    )
+                    await release_runtime_sandbox_lease(conn, reason="run_succeeded")
+                    terminal_outcome = WorkerOutcome("succeeded", payload.run_id)
             else:
                 reported_error_code = str(result.result.get("error_code") or "executor_reported_failure")
                 reported_error_message = _public_executor_failure_message(result)
@@ -2381,31 +2552,39 @@ async def process_run_payload(
                 )
                 if cancel_requested and _result_prefers_cancelled_after_failure(result):
                     cancel_result = {"message": "任务已取消"}
-                    await repositories.cancel_run(
+                    terminal_written = await repositories.cancel_run(
                         conn,
                         tenant_id=payload.tenant_id,
                         run_id=payload.run_id,
                         result_json=cancel_result,
                     )
-                    reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
-                        conn,
-                        payload=payload,
-                        child_status="cancelled",
-                        result_json=cancel_result,
-                    )
-                    await append_user_event(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        event_type="run_cancelled",
-                        stage="control",
-                        message="任务已取消",
-                        payload={"severity": "warning"},
-                    )
-                    await release_runtime_sandbox_lease(conn, reason="run_cancelled")
-                    terminal_outcome = WorkerOutcome("cancelled", payload.run_id)
+                    if terminal_written is False:
+                        terminal_outcome = WorkerOutcome(
+                            "skipped",
+                            payload.run_id,
+                            "stale_terminal_state",
+                            "Run already reached a terminal state",
+                        )
+                    else:
+                        reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
+                            conn,
+                            payload=payload,
+                            child_status="cancelled",
+                            result_json=cancel_result,
+                        )
+                        await append_user_event(
+                            conn,
+                            tenant_id=payload.tenant_id,
+                            run_id=payload.run_id,
+                            event_type="run_cancelled",
+                            stage="control",
+                            message="任务已取消",
+                            payload={"severity": "warning"},
+                        )
+                        await release_runtime_sandbox_lease(conn, reason="run_cancelled")
+                        terminal_outcome = WorkerOutcome("cancelled", payload.run_id)
                 else:
-                    reconciled_parent = await _fail_run_and_reconcile(
+                    terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
                         conn,
                         payload=payload,
                         tenant_id=payload.tenant_id,
@@ -2414,27 +2593,35 @@ async def process_run_payload(
                         error_message=reported_error_message,
                         result_json=result_payload,
                     )
-                    await append_user_event(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        event_type="run_failed",
-                        stage="worker",
-                        message="Run failed",
-                        payload={"artifact_count": len(result.artifacts), "severity": "error"},
-                        **terminal_event_kwargs,
-                    )
-                    await repositories.append_event(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        event_type="error",
-                        stage="worker",
-                        message="Run failed",
-                        payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
-                    )
-                    await release_runtime_sandbox_lease(conn, reason="run_failed")
-                    terminal_outcome = WorkerOutcome("failed", payload.run_id, reported_error_code, reported_error_message)
+                    if terminal_written is False:
+                        terminal_outcome = WorkerOutcome(
+                            "skipped",
+                            payload.run_id,
+                            "stale_terminal_state",
+                            "Run already reached a terminal state",
+                        )
+                    else:
+                        await append_user_event(
+                            conn,
+                            tenant_id=payload.tenant_id,
+                            run_id=payload.run_id,
+                            event_type="run_failed",
+                            stage="worker",
+                            message="Run failed",
+                            payload={"artifact_count": len(result.artifacts), "severity": "error"},
+                            **terminal_event_kwargs,
+                        )
+                        await repositories.append_event(
+                            conn,
+                            tenant_id=payload.tenant_id,
+                            run_id=payload.run_id,
+                            event_type="error",
+                            stage="worker",
+                            message="Run failed",
+                            payload={"artifact_count": len(result.artifacts), "visible_to_user": False},
+                        )
+                        await release_runtime_sandbox_lease(conn, reason="run_failed")
+                        terminal_outcome = WorkerOutcome("failed", payload.run_id, reported_error_code, reported_error_message)
     finally:
         await cleanup_runtime_sandbox_lease_after_interruption()
     await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)

@@ -24,16 +24,18 @@ def _container_lease_from_row(row: dict[str, Any]) -> ContainerLease | None:
     if provider not in {"fake", "docker", "opensandbox"}:
         return None
     run_id = str(row["run_id"])
-    raw_payload = row.get("lease_payload_json")
-    lease_payload = raw_payload if isinstance(raw_payload, dict) else {}
-    container_id = str(lease_payload.get("container_id") or f"exec-{run_id}")
-    if provider == "opensandbox" and not lease_payload.get("container_id"):
+    container_id = str(row.get("runtime_container_id") or "").strip()
+    container_name = str(row.get("runtime_container_name") or "").strip()
+    executor_url = str(row.get("runtime_executor_url") or "").strip()
+    workspace_container_path = str(row.get("runtime_workspace_container_path") or "").strip()
+    if not (
+        container_id
+        and container_name
+        and executor_url
+        and workspace_container_path
+        and row.get("runtime_handle_verified_at")
+    ):
         return None
-    container_name = str(lease_payload.get("container_name") or f"executor-{container_id}")
-    executor_url = str(lease_payload.get("executor_url") or "http://sandbox-runtime.invalid")
-    workspace_container_path = str(lease_payload.get("workspace_container_path") or "/workspace")
-    labels_payload = lease_payload.get("labels")
-    labels = {str(key): str(value) for key, value in labels_payload.items()} if isinstance(labels_payload, dict) else {}
     return ContainerLease(
         container_id=container_id,
         container_name=container_name,
@@ -48,7 +50,7 @@ def _container_lease_from_row(row: dict[str, Any]) -> ContainerLease | None:
         browser_enabled=bool(row.get("browser_enabled")),
         workspace_host_path="",
         workspace_container_path=workspace_container_path,
-        labels=labels,
+        labels={},
     )
 
 

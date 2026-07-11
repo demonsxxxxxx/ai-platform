@@ -299,7 +299,20 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
         return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
 
     async def create_sandbox_lease(conn, **kwargs):
-        calls.append(("create", kwargs["run_id"], kwargs["trace_id"], kwargs["lease_payload_json"]))
+        calls.append(
+            (
+                "create",
+                kwargs["run_id"],
+                kwargs["trace_id"],
+                kwargs["lease_payload_json"],
+                {
+                    "runtime_container_id": kwargs.get("runtime_container_id"),
+                    "runtime_container_name": kwargs.get("runtime_container_name"),
+                    "runtime_executor_url": kwargs.get("runtime_executor_url"),
+                    "runtime_workspace_container_path": kwargs.get("runtime_workspace_container_path"),
+                },
+            )
+        )
         return {"id": "lease-created-a"}
 
     async def release_sandbox_lease(conn, **kwargs):
@@ -355,9 +368,122 @@ async def test_runtime_default_db_release_targets_created_lease_id(tmp_path, mon
                     "workspace_container_path": "/workspace",
                     "labels": {"ai-platform.run_id": "run-a"},
                 },
+                {
+                    "runtime_container_id": "exec-run-a",
+                    "runtime_container_name": "executor-exec-run-a",
+                    "runtime_executor_url": "http://executor.test",
+                    "runtime_workspace_container_path": "/workspace",
+                },
         ),
         ("release_one", "lease-created-a", "dispatch_completed"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_default_db_record_persists_trusted_opensandbox_runtime_handle(tmp_path, monkeypatch):
+    calls = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    class OpenSandboxProvider(FakeContainerProvider):
+        async def create_or_reuse(self, request, workspace):
+            lease = await super().create_or_reuse(request, workspace)
+            return ContainerLease(
+                **{
+                    **lease.model_dump(),
+                    "container_id": "osb-run-a",
+                    "container_name": "opensandbox-run-a",
+                    "provider": "opensandbox",
+                    "executor_url": "http://opensandbox-executor.test",
+                    "workspace_container_path": "/sandbox-workspace",
+                }
+            )
+
+    async def execute(executor_url, task_request):
+        return {"status": "accepted", "session_id": task_request.session_id, "run_id": task_request.run_id}
+
+    async def create_sandbox_lease(conn, **kwargs):
+        calls.append(("create", kwargs))
+        return {"id": "lease-created-a"}
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("release", kwargs["lease_id"], kwargs["reason"]))
+        return {"id": kwargs["lease_id"], "status": "released"}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.release_sandbox_lease", release_sandbox_lease)
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=OpenSandboxProvider(executor_url="http://unused.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+    )
+
+    await runtime.submit(request(sandbox_mode="ephemeral", trace_id="trace-run-a"))
+
+    create_kwargs = calls[0][1]
+    assert create_kwargs["provider"] == "opensandbox"
+    assert create_kwargs["runtime_container_id"] == "osb-run-a"
+    assert create_kwargs["runtime_container_name"] == "opensandbox-run-a"
+    assert create_kwargs["runtime_executor_url"] == "http://opensandbox-executor.test"
+    assert create_kwargs["runtime_workspace_container_path"] == "/sandbox-workspace"
+    assert create_kwargs["lease_payload_json"]["container_id"] == "osb-run-a"
+    assert "executor_headers" not in create_kwargs["lease_payload_json"]
+    assert calls[1] == ("release", "lease-created-a", "dispatch_completed")
+
+
+@pytest.mark.asyncio
+async def test_runtime_default_db_record_rejects_incomplete_trusted_runtime_handle(tmp_path, monkeypatch):
+    calls = []
+
+    class StubSettings:
+        sandbox_callback_base_url = "http://platform.test"
+        sandbox_callback_token = "settings-token"
+
+    class IncompleteProvider(FakeContainerProvider):
+        async def create_or_reuse(self, request, workspace):
+            lease = await super().create_or_reuse(request, workspace)
+            return ContainerLease(
+                **{
+                    **lease.model_dump(),
+                    "container_id": "osb-run-a",
+                    "container_name": "",
+                    "provider": "opensandbox",
+                    "executor_url": "http://opensandbox-executor.test",
+                }
+            )
+
+    async def execute(executor_url, task_request):
+        raise AssertionError("incomplete runtime handle must fail before executor dispatch")
+
+    async def create_sandbox_lease(conn, **kwargs):
+        raise AssertionError("incomplete runtime handle must not be persisted")
+
+    async def release_sandbox_lease(conn, **kwargs):
+        calls.append(("release", kwargs["lease_id"], kwargs["reason"]))
+        return {"id": kwargs["lease_id"], "status": "released"}
+
+    monkeypatch.setattr("app.runtime.sandbox.runtime.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.runtime.transaction", fake_transaction)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.create_sandbox_lease", create_sandbox_lease)
+    monkeypatch.setattr("app.runtime.sandbox.runtime.repositories.release_sandbox_lease", release_sandbox_lease)
+
+    runtime = SandboxRuntime(
+        workspace_root=tmp_path,
+        provider=IncompleteProvider(executor_url="http://unused.test"),
+        execute_task=execute,
+        callback_token_resolver=lambda token_id: "secret-token",
+    )
+
+    with pytest.raises(ValueError, match="incomplete_runtime_handle"):
+        await runtime.submit(request(sandbox_mode="ephemeral"))
+
+    assert calls == []
 
 
 @pytest.mark.asyncio

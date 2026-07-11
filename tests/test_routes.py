@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 import base64
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -42,6 +43,18 @@ RUN_SCHEMA_FIELDS = {
 EVENT_SCHEMA_FIELDS = {"schema_version": "ai-platform.event-envelope.v1"}
 _ORIGINAL_RESOLVE_AGENT_SKILL = repository_module.resolve_agent_skill
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
+
+
+@pytest.fixture(autouse=True)
+def default_create_run_workspace_guard(monkeypatch):
+    async def ensure_workspace_belongs_to_tenant(conn, *, tenant_id, workspace_id):
+        return {"id": workspace_id, "tenant_id": tenant_id, "status": "active"}
+
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.ensure_workspace_belongs_to_tenant",
+        ensure_workspace_belongs_to_tenant,
+        raising=False,
+    )
 
 
 @asynccontextmanager
@@ -2065,6 +2078,22 @@ async def test_get_run_includes_queue_insight_while_queued(monkeypatch):
 
     assert response.queue_insight == {"tenant_id": "tenant-a", "reason": "worker_capacity_full"}
     assert response.queue_position == 4
+
+
+def test_create_run_route_validates_workspace_tenant_before_session_or_run_insert():
+    source = Path("app/routes/runs.py").read_text(encoding="utf-8")
+    route_start = source.index("async def create_run(")
+    route_end = source.index("@router.get(\"/runs/", route_start)
+    route_source = source[route_start:route_end]
+
+    workspace_guard = route_source.index("repositories.ensure_workspace_belongs_to_tenant")
+    ensure_user = route_source.index("repositories.ensure_user")
+    create_session_call = route_source.index("repositories.create_session")
+    create_run_call = route_source.index("repositories.create_run")
+
+    assert workspace_guard < ensure_user
+    assert workspace_guard < create_session_call
+    assert workspace_guard < create_run_call
 
 
 @pytest.mark.asyncio

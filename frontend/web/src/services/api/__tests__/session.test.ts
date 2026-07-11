@@ -4,6 +4,7 @@ import {
   buildCheckpointForkUrl,
   buildMessageCheckpointUrl,
   buildMessageForkUrl,
+  buildRunCancelUrl,
   buildSessionRunsUrl,
   buildSubmitChatBody,
   isChatStreamNeedsConfirmation,
@@ -22,6 +23,13 @@ test("builds the default session runs url", () => {
   assert.equal(
     buildSessionRunsUrl("session-1"),
     "/api/sessions/session-1/runs",
+  );
+});
+
+test("builds the canonical run cancel url", () => {
+  assert.equal(
+    buildRunCancelUrl("run-1"),
+    "/api/ai/runs/run-1/cancel",
   );
 });
 

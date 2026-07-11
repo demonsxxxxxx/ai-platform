@@ -2418,6 +2418,28 @@ async def get_agent(conn: AsyncConnection, *, tenant_id: str, agent_id: str) -> 
     return dict(row) if row else None
 
 
+async def ensure_workspace_belongs_to_tenant(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+) -> dict[str, Any]:
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, status
+        from workspaces
+        where tenant_id = %s
+          and id = %s
+          and status = 'active'
+        """,
+        (tenant_id, workspace_id),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise RepositoryNotFoundError("workspace_not_found")
+    return dict(row)
+
+
 async def create_session(
     conn: AsyncConnection,
     *,
@@ -2429,6 +2451,7 @@ async def create_session(
     session_id: str | None = None,
 ) -> str:
     resolved_id = session_id or new_id("ses")
+    await ensure_workspace_belongs_to_tenant(conn, tenant_id=tenant_id, workspace_id=workspace_id)
     if session_id:
         cursor = await conn.execute(
             """
@@ -2473,6 +2496,7 @@ async def create_run(
 ) -> str:
     resolved_run_id = run_id or new_id("run")
     trace_id = standard_trace_id(resolved_run_id)
+    await ensure_workspace_belongs_to_tenant(conn, tenant_id=tenant_id, workspace_id=workspace_id)
     cursor = await conn.execute(
         """
         insert into runs(
@@ -2536,7 +2560,8 @@ async def update_run_auth_snapshot(
         set principal_roles = %s::jsonb,
             principal_department_id = %s,
             auth_source = %s
-        where tenant_id = %s and id = %s
+        where tenant_id = %s
+          and id = %s
         """,
         (
             dumps_json(normalize_roles(principal_roles or [])),
@@ -2924,7 +2949,8 @@ async def update_run_context_snapshot_ref(
           %s::jsonb,
           true
         )
-        where tenant_id = %s and id = %s
+        where tenant_id = %s
+          and id = %s
         """,
         (
             json.dumps(context_snapshot_id, ensure_ascii=False),
@@ -3924,18 +3950,42 @@ async def create_sandbox_lease(
     resource_limits_json: dict[str, Any],
     user_visible_payload_json: dict[str, Any],
     lease_payload_json: dict[str, Any],
+    runtime_container_id: str | None = None,
+    runtime_container_name: str | None = None,
+    runtime_executor_url: str | None = None,
+    runtime_workspace_container_path: str | None = None,
 ) -> dict[str, Any]:
     lease_id = new_id("lease")
+    platform_runtime_container_id = runtime_container_id
+    platform_runtime_container_name = runtime_container_name
+    platform_runtime_executor_url = runtime_executor_url
+    platform_runtime_workspace_container_path = runtime_workspace_container_path
+    if provider == "fake" and not platform_runtime_container_id:
+        platform_runtime_container_id = f"exec-{run_id}"
+        platform_runtime_container_name = f"executor-{platform_runtime_container_id}"
+        platform_runtime_executor_url = "http://sandbox-runtime.invalid"
+        platform_runtime_workspace_container_path = "/workspace"
+    runtime_handle_verified = bool(
+        platform_runtime_container_id
+        and platform_runtime_container_name
+        and platform_runtime_executor_url
+        and platform_runtime_workspace_container_path
+    )
     cursor = await conn.execute(
         """
         insert into sandbox_leases(
           id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
           sandbox_mode, provider, browser_enabled, resource_limits_json,
-          user_visible_payload_json, lease_payload_json, heartbeat_at, expires_at
+          user_visible_payload_json, lease_payload_json,
+          runtime_container_id, runtime_container_name, runtime_executor_url,
+          runtime_workspace_container_path, runtime_handle_verified_at,
+          heartbeat_at, expires_at
         )
         values (
           %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-          %s::jsonb, %s::jsonb, %s::jsonb, now(), now() + (%s * interval '1 second')
+          %s::jsonb, %s::jsonb, %s::jsonb, %s, %s, %s, %s,
+          case when %s then now() else null end,
+          now(), now() + (%s * interval '1 second')
         )
         returning *
         """,
@@ -3953,6 +4003,11 @@ async def create_sandbox_lease(
             dumps_json(resource_limits_json),
             dumps_json(user_visible_payload_json),
             dumps_json(lease_payload_json),
+            platform_runtime_container_id,
+            platform_runtime_container_name,
+            platform_runtime_executor_url,
+            platform_runtime_workspace_container_path,
+            runtime_handle_verified,
             int(ttl_seconds),
         ),
     )
@@ -3972,6 +4027,11 @@ async def create_sandbox_lease(
         "resource_limits_json": resource_limits_json,
         "user_visible_payload_json": user_visible_payload_json,
         "lease_payload_json": lease_payload_json,
+        "runtime_container_id": platform_runtime_container_id,
+        "runtime_container_name": platform_runtime_container_name,
+        "runtime_executor_url": platform_runtime_executor_url,
+        "runtime_workspace_container_path": platform_runtime_workspace_container_path,
+        "runtime_handle_verified_at": "platform-verified" if runtime_handle_verified else None,
     }
 
 
@@ -4163,6 +4223,61 @@ async def release_stopped_sandbox_leases_for_cancel(
             payload=payload,
         )
     return released_leases
+
+
+async def record_sandbox_runtime_cleanup_outcome(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    trace_id: str | None = None,
+    user_id: str | None = None,
+    requested_by_role: str | None = None,
+    reason: str,
+    status: str,
+    lease_ids: list[str] | None = None,
+    failures: list[dict[str, str]] | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "visible_to_user": False,
+        "reason": reason,
+        "status": status,
+        "lease_ids": lease_ids or [],
+        "failure_count": len(failures or []),
+    }
+    if requested_by_role:
+        payload["requested_by_role"] = requested_by_role
+    if failures:
+        payload["failures"] = failures
+    event_type = "sandbox_runtime_cleanup_failed" if status == "failed" else "sandbox_runtime_cleanup_succeeded"
+    message = "Sandbox runtime cleanup failed" if status == "failed" else "Sandbox runtime cleanup succeeded"
+    await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        trace_id=trace_id,
+        event_type=event_type,
+        stage="sandbox",
+        message=message,
+        payload=payload,
+    )
+    await append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action=f"sandbox.runtime.cleanup.{status}",
+        target_type="run",
+        target_id=run_id,
+        trace_id=trace_id,
+        payload_json={
+            "run_id": run_id,
+            "reason": reason,
+            "status": status,
+            "lease_ids": lease_ids or [],
+            "failures": failures or [],
+            "requested_by_role": requested_by_role,
+        },
+    )
 
 
 def _sandbox_lease_release_message(reason: str) -> str:
@@ -5518,7 +5633,8 @@ async def create_multi_agent_dispatch_child_run(
                trace_id, principal_roles, principal_department_id, auth_source,
                status, input_json
         from runs
-        where tenant_id = %s and id = %s
+        where tenant_id = %s
+          and id = %s
         for update
         """,
         (tenant_id, parent_run_id),
@@ -6013,7 +6129,8 @@ async def finalize_multi_agent_parent_run_if_ready(
         """
         select id, tenant_id, copied_from_run_id, trace_id, status, cancel_requested_at, input_json
         from runs
-        where tenant_id = %s and id = %s
+        where tenant_id = %s
+          and id = %s
         for update skip locked
         """,
         (tenant_id, parent_run_id),
@@ -6170,7 +6287,8 @@ async def reconcile_multi_agent_child_run_terminal_state(
         """
         select id, tenant_id, copied_from_run_id, trace_id, status, input_json
         from runs
-        where tenant_id = %s and id = %s
+        where tenant_id = %s
+          and id = %s
         for update
         """,
         (tenant_id, child_run_id),
@@ -6780,6 +6898,34 @@ async def get_admin_runtime_observability_summary(
     }
 
 
+_SANDBOX_LEASE_RUNTIME_HANDLE_PROJECTION_KEYS = {
+    "container_id",
+    "container_name",
+    "executor_url",
+    "workspace_host_path",
+    "workspace_container_path",
+    "labels",
+    "runtime_container_id",
+    "runtime_container_name",
+    "runtime_executor_url",
+    "runtime_workspace_container_path",
+    "runtime_handle_verified_at",
+}
+
+
+def _sandbox_lease_payload_projection(row: dict[str, Any]) -> dict[str, Any]:
+    payload = sanitize_public_payload(
+        row.get("lease_payload_json") if isinstance(row.get("lease_payload_json"), dict) else {}
+    )
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        key: value
+        for key, value in payload.items()
+        if str(key) not in _SANDBOX_LEASE_RUNTIME_HANDLE_PROJECTION_KEYS
+    }
+
+
 def _sandbox_lease_admin_projection(row: dict[str, Any]) -> dict[str, Any]:
     resource_limits = sanitize_public_payload(
         row.get("resource_limits_json") if isinstance(row.get("resource_limits_json"), dict) else {}
@@ -6787,9 +6933,7 @@ def _sandbox_lease_admin_projection(row: dict[str, Any]) -> dict[str, Any]:
     user_visible_payload = sanitize_public_payload(
         row.get("user_visible_payload_json") if isinstance(row.get("user_visible_payload_json"), dict) else {}
     )
-    lease_payload = sanitize_public_payload(
-        row.get("lease_payload_json") if isinstance(row.get("lease_payload_json"), dict) else {}
-    )
+    lease_payload = _sandbox_lease_payload_projection(row)
     return {
         "lease_id": str(row["id"]),
         "tenant_id": str(row["tenant_id"]),
@@ -6804,7 +6948,7 @@ def _sandbox_lease_admin_projection(row: dict[str, Any]) -> dict[str, Any]:
         "browser_enabled": bool(row.get("browser_enabled")),
         "resource_limits": resource_limits if isinstance(resource_limits, dict) else {},
         "workspace": user_visible_payload if isinstance(user_visible_payload, dict) else {},
-        "lease_payload": lease_payload if isinstance(lease_payload, dict) else {},
+        "lease_payload": lease_payload,
         "heartbeat_at": row.get("heartbeat_at"),
         "expires_at": row.get("expires_at"),
         "released_at": row.get("released_at"),
@@ -7039,6 +7183,7 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
         message="已请求取消",
         payload={"visible_to_user": True, "severity": "warning", "requested_by": user_id},
     )
+    status = "cancelled" if row["status"] == "cancelled" else "cancel_requested"
     if row["status"] == "cancelled":
         await append_event(
             conn,
@@ -7050,7 +7195,20 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
             message="任务已取消",
             payload={"visible_to_user": True, "severity": "warning"},
         )
-    status = "cancelled" if row["status"] == "cancelled" else "cancel_requested"
+    await append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        action="run.cancel",
+        target_type="run",
+        target_id=run_id,
+        trace_id=row.get("trace_id"),
+        payload_json={
+            "run_id": run_id,
+            "result_status": status,
+            "requested_by_role": "owner",
+        },
+    )
     result = {"run_id": row["id"], "status": status}
     if active_sandbox_leases:
         result["trace_id"] = row.get("trace_id")
@@ -7452,7 +7610,8 @@ async def update_run_input_execution_snapshot(
         """
         update runs
         set input_json = coalesce(input_json, '{}'::jsonb) || %s::jsonb
-        where tenant_id = %s and id = %s
+        where tenant_id = %s
+          and id = %s
         """,
         (
             json.dumps(canonical_snapshot, ensure_ascii=False),
@@ -7655,9 +7814,9 @@ async def complete_run(
     tenant_id: str,
     run_id: str,
     result_json: dict[str, Any],
-) -> None:
+) -> bool:
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
-    await conn.execute(
+    cursor = await conn.execute(
         """
         update runs
         set
@@ -7671,7 +7830,10 @@ async def complete_run(
           output_token_count = %s,
           total_token_count = %s,
           estimated_cost_minor = %s
-        where tenant_id = %s and id = %s
+        where tenant_id = %s
+          and id = %s
+          and status not in ('succeeded', 'failed', 'cancelled')
+        returning id
         """,
         (
             dumps_json(result_json),
@@ -7684,6 +7846,8 @@ async def complete_run(
             run_id,
         ),
     )
+    row = await cursor.fetchone()
+    return row is not None
 
 
 async def fail_run(
@@ -7694,9 +7858,9 @@ async def fail_run(
     error_code: str,
     error_message: str,
     result_json: dict[str, Any] | None = None,
-) -> None:
+) -> bool:
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
-    await conn.execute(
+    cursor = await conn.execute(
         """
         update runs
         set
@@ -7710,7 +7874,10 @@ async def fail_run(
           output_token_count = %s,
           total_token_count = %s,
           estimated_cost_minor = %s
-        where tenant_id = %s and id = %s
+        where tenant_id = %s
+          and id = %s
+          and status not in ('succeeded', 'failed', 'cancelled')
+        returning id
         """,
         (
             dumps_json(result_json or {}),
@@ -7725,7 +7892,11 @@ async def fail_run(
             run_id,
         ),
     )
+    row = await cursor.fetchone()
+    if row is None:
+        return False
     await _fail_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+    return True
 
 
 async def cancel_run(
@@ -7734,16 +7905,23 @@ async def cancel_run(
     tenant_id: str,
     run_id: str,
     result_json: dict[str, Any] | None = None,
-) -> None:
-    await conn.execute(
+) -> bool:
+    cursor = await conn.execute(
         """
         update runs
         set status = 'cancelled', result_json = %s::jsonb, finished_at = now(), error_code = null, error_message = null
-        where tenant_id = %s and id = %s
+        where tenant_id = %s
+          and id = %s
+          and status not in ('succeeded', 'failed', 'cancelled')
+        returning id
         """,
         (dumps_json(result_json or {}), tenant_id, run_id),
     )
+    row = await cursor.fetchone()
+    if row is None:
+        return False
     await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+    return True
 
 
 async def _cancel_open_run_steps(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> None:
