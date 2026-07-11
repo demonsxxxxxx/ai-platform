@@ -6301,6 +6301,40 @@ async def test_insert_run_skill_snapshots_at_creation_is_insert_only_and_exact()
 
 
 @pytest.mark.asyncio
+async def test_insert_run_skill_snapshots_allows_dependency_manifest_without_execution_mcp_pin():
+    conn = RecordingConnection()
+    primary = {
+        "skill_id": "department-review",
+        "version": "hash-v1",
+        "content_hash": "hash-v1",
+        "source": {"kind": "uploaded"},
+        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        "dependency_ids": ["document-helper"],
+        "mcp_tool_ids": [],
+    }
+    dependency = {
+        "skill_id": "document-helper",
+        "version": "hash-helper",
+        "content_hash": "hash-helper",
+        "source": {"kind": "builtin", "asset_dir": "document-helper"},
+        "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
+        "dependency_ids": [],
+    }
+
+    await repositories.insert_run_skill_snapshots_at_creation(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        skill_manifests=[primary, dependency],
+        release_decision={"selected_version": "hash-v1", "selected_track": "current"},
+    )
+
+    assert len(conn.calls) == 2
+    dependency_source = json.loads(conn.calls[1][1][6])
+    assert dependency_source["mcp_tool_ids"] == []
+
+
+@pytest.mark.asyncio
 async def test_insert_run_skill_snapshots_at_creation_rejects_non_materializable_identity():
     with pytest.raises(RepositoryConflictError, match="run_skill_snapshot_identity_mismatch"):
         await repositories.insert_run_skill_snapshots_at_creation(

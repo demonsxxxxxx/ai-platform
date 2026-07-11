@@ -4832,6 +4832,8 @@ def run_skill_snapshot_source_json(
     projected["snapshot_governance"] = _without_snapshot_private_material(governance)
     projected["release_decision_sha256"] = _release_decision_sha256(release_decision)
     raw_mcp_tool_ids = skill_manifest.get("mcp_tool_ids")
+    if raw_mcp_tool_ids is None:
+        raw_mcp_tool_ids = []
     if not isinstance(raw_mcp_tool_ids, list) or any(
         not isinstance(item, str) or not item for item in raw_mcp_tool_ids
     ):

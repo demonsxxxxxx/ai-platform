@@ -11,7 +11,7 @@ Status: `local partial`
 - [x] Phase 2 - TDD RED/GREEN for ordinary selected-Skill admission and durable creation-time provenance.
 - [x] Phase 3 - TDD RED/GREEN for copy/retry/resume/existing child pin preservation and worker reauthorization.
 - [x] Phase 4 - affected backend tests, compile, diff, secret/scope checks, and large-feature checklist passed.
-- [ ] Phase 5 - fixed-SHA broad review found three Important issues; all fixes are locally green and exact-head re-review remains.
+- [ ] Phase 5 - first review findings fixed; re-review found and fixed one dependency-manifest regression; final exact-head re-review remains.
 - [ ] Phase 6 - ready PR, exact-head review substitute and validation evidence, required CI.
 
 This document records a backend source slice only. It does not claim frontend completion, B1-B6 closure, B2 sandbox closure, 211 verification, deployment, or a closable product gate.
@@ -122,6 +122,9 @@ No PostgreSQL integration test was added or run because this source slice's orde
 - Review-fix RED: three focused failures for missing release/file identity, missing source readback, and missing pinned historical MCP injection.
 - Review-fix GREEN: focused repository `3 passed`, repository file `227 passed`, route/run-control fixture slice `26 passed`, worker MCP/identity slices `12 passed` and `4 passed`.
 - Complete affected suite after review fixes: `686 passed` using `.pytest-tmp/selected-skill-affected-20260711-03`.
+- Fixed-SHA `d07cb86862d72757db8ba4451e94aeedbcf906a3` re-review: I1/I2/I3 closed; one new Important found because dependency manifests lacked the primary-only MCP pin field.
+- Dependency-manifest regression RED: multi-manifest creation raised `run_skill_snapshot_identity_mismatch`; GREEN: `3 passed` with primary MCP pin retained and dependency MCP identity normalized to an explicit empty set.
+- Complete affected suite after the dependency fix: `687 passed` using `.pytest-tmp/selected-skill-affected-20260711-04`.
 - `python -m compileall -q app tools scripts`: exit 0.
 - `git diff --check`: exit 0.
 - Changed-file allowlist and added-line secret/real `.env`/personal-path scan: pass.
