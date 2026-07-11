@@ -103,10 +103,17 @@ Files: `app/repositories.py`, `app/routes/runs.py`, `app/worker.py`, `tests/test
 Files: all changed backend/tests and this document.
 
 - [x] Run affected backend tests only, each pytest invocation using a fresh unique child under `.pytest-tmp/` (`tests/test_run_control_routes.py`: `129 passed`; complete six-file affected suite: `682 passed`).
-- [ ] Run `python -m compileall -q app tools scripts` and `git diff --check`.
-- [ ] Verify changed-file scope, no secrets/real `.env`/personal paths, public docstrings, happy/error coverage, and milestone documentation state.
-- [ ] Commit and push a fixed head, dispatch an independent broad review against base/head, fix all Critical/Important findings, and re-review the new fixed SHA.
-- [ ] Open a ready PR linked to #385, post exact-head review substitute and validation evidence comments, and observe required CI.
+- [x] Run `python -m compileall -q app tools scripts` and `git diff --check`.
+- [x] Verify changed-file scope, no secrets/real `.env`/personal paths, public docstrings, happy/error coverage, and milestone documentation state.
+- [x] Commit and push a fixed head, dispatch an independent broad review against base/head, fix all Critical/Important findings, and re-review the new fixed SHA.
+- [x] Open a ready PR linked to #385, post exact-head review substitute and validation evidence comments, and observe required CI.
+
+## Source Closeout
+
+- PR #386 merged the reviewed code head `e32e4b84707db77a4979f6a811b49bac540e3fa1` into `main` as merge commit `c59c2194bf57718ffb4308cc22da39f3aae46654`.
+- GitHub issue #385 is closed.
+- GitHub readback for merge commit `c59c2194bf57718ffb4308cc22da39f3aae46654` reports all four checks green: `backend required`, `projection audit, lint, build, trace`, `packaged image build`, and `frontend required`.
+- This closes the reviewed backend source slice only. Frontend implementation and browser acceptance, 211 runtime verification, and B1-B6 remain open; this document does not claim deployment, 211 verification, or a closable product gate.
 
 ## PostgreSQL Gate
 
