@@ -93,7 +93,7 @@ def _capture_workspace_tree(root: Path) -> tuple[int, list[_OpenWorkspaceNode]]:
     except OSError as exc:
         raise WorkspacePermissionError("runtime workspace root is unavailable") from exc
 
-    opened_directories: list[int] = [root_fd]
+    opened_fds: list[int] = [root_fd]
     root_stat = os.fstat(root_fd)
     handles = [_OpenWorkspaceNode(node=_node_from_stat(".", root_stat), parent_fd=None, name=None, fd=root_fd)]
 
@@ -117,30 +117,41 @@ def _capture_workspace_tree(root: Path) -> tuple[int, list[_OpenWorkspaceNode]]:
                     child_fd = os.open(name, _secure_open_flags(directory=True), dir_fd=directory_fd)
                 except OSError as exc:
                     raise WorkspacePermissionError(f"workspace directory cannot be opened safely: {relative_path}") from exc
-                opened_directories.append(child_fd)
+                opened_fds.append(child_fd)
                 verified = os.fstat(child_fd)
-                if (verified.st_dev, verified.st_ino) != (entry_stat.st_dev, entry_stat.st_ino):
+                if _node_from_stat(relative_path, verified) != node:
                     raise WorkspacePermissionError(f"workspace entry changed during validation: {relative_path}")
                 handles.append(_OpenWorkspaceNode(node=node, parent_fd=directory_fd, name=name, fd=child_fd))
                 walk(child_fd, relative_path)
             else:
-                handles.append(_OpenWorkspaceNode(node=node, parent_fd=directory_fd, name=name))
+                try:
+                    file_fd = os.open(
+                        name,
+                        _secure_open_flags() | getattr(os, "O_NONBLOCK", 0),
+                        dir_fd=directory_fd,
+                    )
+                except OSError as exc:
+                    raise WorkspacePermissionError(f"workspace file cannot be opened safely: {relative_path}") from exc
+                opened_fds.append(file_fd)
+                verified = os.fstat(file_fd)
+                if _node_from_stat(relative_path, verified) != node:
+                    raise WorkspacePermissionError(f"workspace entry changed during validation: {relative_path}")
+                handles.append(_OpenWorkspaceNode(node=node, parent_fd=directory_fd, name=name, fd=file_fd))
 
     try:
         walk(root_fd, ".")
         validate_workspace_snapshot(root_device=int(root_stat.st_dev), nodes=[handle.node for handle in handles])
         return root_fd, handles
     except BaseException:
-        for directory_fd in reversed(opened_directories):
-            os.close(directory_fd)
+        for opened_fd in reversed(opened_fds):
+            os.close(opened_fd)
         raise
 
 
 def _revalidate_node(handle: _OpenWorkspaceNode) -> os.stat_result:
-    if handle.parent_fd is None:
-        current = os.fstat(handle.fd)
-    else:
-        current = os.stat(handle.name, dir_fd=handle.parent_fd, follow_symlinks=False)
+    if handle.fd is None:
+        raise WorkspacePermissionError(f"workspace inode handle is unavailable: {handle.node.relative_path}")
+    current = os.fstat(handle.fd)
     expected = handle.node
     if (
         int(current.st_dev),
@@ -148,7 +159,8 @@ def _revalidate_node(handle: _OpenWorkspaceNode) -> os.stat_result:
         int(current.st_uid),
         int(current.st_gid),
         int(current.st_mode),
-    ) != (expected.device, expected.inode, expected.uid, expected.gid, expected.mode):
+        int(current.st_nlink),
+    ) != (expected.device, expected.inode, expected.uid, expected.gid, expected.mode, expected.link_count):
         raise WorkspacePermissionError(f"workspace entry changed during migration: {expected.relative_path}")
     return current
 
@@ -159,16 +171,7 @@ def _migrate_workspace_owners(handles: list[_OpenWorkspaceNode]) -> None:
         if (current.st_uid, current.st_gid) == (RUNTIME_UID, RUNTIME_GID):
             continue
         try:
-            if handle.parent_fd is None:
-                os.fchown(handle.fd, RUNTIME_UID, RUNTIME_GID)
-            else:
-                os.chown(
-                    handle.name,
-                    RUNTIME_UID,
-                    RUNTIME_GID,
-                    dir_fd=handle.parent_fd,
-                    follow_symlinks=False,
-                )
+            os.fchown(handle.fd, RUNTIME_UID, RUNTIME_GID)
         except OSError as exc:
             raise WorkspacePermissionError(f"workspace ownership migration failed: {handle.node.relative_path}") from exc
 

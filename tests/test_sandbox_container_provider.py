@@ -48,19 +48,21 @@ def request(**overrides) -> SandboxRuntimeRequest:
     return SandboxRuntimeRequest(**values)
 
 
-def workspace() -> WorkspaceLease:
-    return WorkspaceLease(
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        session_id="session-a",
-        run_id="run-a",
-        host_root="/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a",
-        workspace_host_path="/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/workspace",
-        workspace_container_path="/workspace",
-        inputs_host_path="/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/inputs",
-        logs_host_path="/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/logs",
-    )
+def workspace(**overrides) -> WorkspaceLease:
+    values = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "host_root": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a",
+        "workspace_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/workspace",
+        "workspace_container_path": "/workspace",
+        "inputs_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/inputs",
+        "logs_host_path": "/runtime/tenants/tenant-a/workspaces/workspace-a/users/user-a/sessions/session-a/runs/run-a/logs",
+    }
+    values.update(overrides)
+    return WorkspaceLease(**values)
 
 
 class FakeDockerContainer:
@@ -1276,6 +1278,37 @@ async def test_docker_provider_cached_lease_revalidates_container_scope_labels()
 
 
 @pytest.mark.asyncio
+async def test_docker_provider_rejects_cached_reuse_for_same_run_under_different_current_scope():
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    first = await provider.create_or_reuse(request(), workspace())
+
+    with pytest.raises(ContainerStartFailedError, match="cached lease scope mismatch"):
+        await provider.create_or_reuse(
+            request(tenant_id="tenant-b", workspace_id="workspace-b", user_id="user-b", session_id="session-b"),
+            workspace(
+                tenant_id="tenant-b",
+                workspace_id="workspace-b",
+                user_id="user-b",
+                session_id="session-b",
+                host_root="/runtime/tenants/tenant-b/runs/run-a",
+                workspace_host_path="/runtime/tenants/tenant-b/runs/run-a/workspace",
+                inputs_host_path="/runtime/tenants/tenant-b/runs/run-a/inputs",
+                logs_host_path="/runtime/tenants/tenant-b/runs/run-a/logs",
+            ),
+        )
+
+    container = fake.containers_by_name[first.container_name]
+    assert container.stopped is True
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
 async def test_docker_provider_rejects_reuse_when_workspace_owner_user_mismatches(monkeypatch):
     from app.runtime.sandbox import container_provider
     from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
@@ -1731,6 +1764,61 @@ async def test_docker_provider_cleans_up_when_executor_url_wait_is_cancelled(mon
 
 
 @pytest.mark.asyncio
+async def test_docker_cached_reuse_cleans_up_when_executor_url_wait_is_cancelled(monkeypatch):
+    from app.runtime.sandbox.container_provider import DockerContainerProvider
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+    )
+    first = await provider.create_or_reuse(request(), workspace())
+
+    async def cancel_wait(container, timeout_seconds):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(provider, "_wait_for_executor_url", cancel_wait)
+
+    with pytest.raises(asyncio.CancelledError):
+        await provider.create_or_reuse(request(), workspace())
+
+    container = fake.containers_by_name[first.container_name]
+    assert container.stopped is True
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "identity",
+    [None, {}, {"uid": 10001}, {"uid": True, "gid": 10001}, {"uid": 10001, "gid": "10001"}],
+)
+async def test_docker_cached_reuse_rejects_malformed_runtime_identity(identity):
+    from app.runtime.sandbox.container_provider import ContainerStartFailedError, DockerContainerProvider
+
+    calls = 0
+
+    def identity_probe(executor_url, timeout_seconds, executor_headers):
+        nonlocal calls
+        calls += 1
+        return {"uid": 10001, "gid": 10001} if calls == 1 else identity
+
+    fake = FakeDockerClient()
+    provider = DockerContainerProvider(
+        docker_client_factory=lambda: fake,
+        health_probe=lambda executor_url, timeout_seconds: True,
+        identity_probe=identity_probe,
+    )
+    first = await provider.create_or_reuse(request(), workspace())
+
+    with pytest.raises(ContainerStartFailedError):
+        await provider.create_or_reuse(request(), workspace())
+
+    container = fake.containers_by_name[first.container_name]
+    assert container.stopped is True
+    assert container.removed is True
+
+
+@pytest.mark.asyncio
 async def test_opensandbox_provider_fails_closed_without_exact_executor_identity(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()
@@ -1791,6 +1879,99 @@ async def test_opensandbox_cached_reuse_cleans_up_when_identity_probe_is_cancell
         await provider.create_or_reuse(request(), workspace())
 
     sandbox = FakeOpenSandbox.instances[first.container_id]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "identity",
+    [None, {}, {"uid": 10001}, {"uid": True, "gid": 10001}, {"uid": 10001, "gid": "10001"}],
+)
+async def test_opensandbox_cached_reuse_rejects_malformed_runtime_identity(monkeypatch, identity):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    calls = 0
+
+    def identity_probe(executor_url, timeout_seconds, executor_headers):
+        nonlocal calls
+        calls += 1
+        return {"uid": 10001, "gid": 10001} if calls == 1 else identity
+
+    provider = opensandbox_provider(identity_probe=identity_probe)
+    first = await provider.create_or_reuse(request(), workspace())
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="executor identity mismatch"):
+        await provider.create_or_reuse(request(), workspace())
+
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_cached_reuse_rejects_missing_lease_credential(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    first = await provider.create_or_reuse(request(), workspace())
+    first.executor_headers.clear()
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="executor identity credential unavailable"):
+        await provider.create_or_reuse(request(), workspace())
+
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_rejects_cached_reuse_for_same_run_under_different_current_scope(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    first = await provider.create_or_reuse(request(), workspace())
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="cached lease scope mismatch"):
+        await provider.create_or_reuse(
+            request(tenant_id="tenant-b", workspace_id="workspace-b", user_id="user-b", session_id="session-b"),
+            workspace(
+                tenant_id="tenant-b",
+                workspace_id="workspace-b",
+                user_id="user-b",
+                session_id="session-b",
+                host_root="/runtime/tenants/tenant-b/runs/run-a",
+                workspace_host_path="/runtime/tenants/tenant-b/runs/run-a/workspace",
+                inputs_host_path="/runtime/tenants/tenant-b/runs/run-a/inputs",
+                logs_host_path="/runtime/tenants/tenant-b/runs/run-a/logs",
+            ),
+        )
+
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    assert sandbox.killed is True
+    assert sandbox.closed is True
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_cached_reuse_revalidates_remote_scope_metadata(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    FakeOpenSandboxManager.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: OpenSandboxSettings())
+    provider = opensandbox_provider()
+    first = await provider.create_or_reuse(request(), workspace())
+    sandbox = FakeOpenSandbox.instances[first.container_id]
+    sandbox.metadata["ai-platform.tenant_id"] = "tenant-b"
+
+    with pytest.raises(container_provider.ContainerStartFailedError, match="cached sandbox metadata mismatch"):
+        await provider.create_or_reuse(request(), workspace())
+
     assert sandbox.killed is True
     assert sandbox.closed is True
 

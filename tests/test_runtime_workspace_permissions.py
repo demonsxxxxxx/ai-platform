@@ -7,7 +7,10 @@ from app.runtime.sandbox.workspace_permissions import (
     RUNTIME_UID,
     WorkspaceNode,
     WorkspacePermissionError,
+    _OpenWorkspaceNode,
+    _migrate_workspace_owners,
     _probe_runtime_workspace,
+    initialize_runtime_workspace,
     validate_workspace_snapshot,
 )
 
@@ -91,3 +94,125 @@ def test_runtime_workspace_probe_removes_its_sentinel_after_readback_failure(mon
         _probe_runtime_workspace(9)
 
     assert unlinked == [(".ai-platform-runtime-write-probe", 9)]
+
+
+def test_workspace_migration_uses_verified_inode_handle_not_name(monkeypatch):
+    from app.runtime.sandbox import workspace_permissions
+
+    original = node("payload.txt", link_count=1)
+    handle = _OpenWorkspaceNode(node=original, parent_fd=7, name="payload.txt", fd=41)
+    current = type(
+        "CurrentStat",
+        (),
+        {
+            "st_dev": original.device,
+            "st_ino": original.inode,
+            "st_uid": original.uid,
+            "st_gid": original.gid,
+            "st_mode": original.mode,
+            "st_nlink": original.link_count,
+        },
+    )()
+    fchown_calls = []
+    monkeypatch.setattr(workspace_permissions.os, "fstat", lambda fd: current)
+    monkeypatch.setattr(workspace_permissions.os, "stat", lambda *args, **kwargs: current)
+    monkeypatch.setattr(
+        workspace_permissions.os,
+        "fchown",
+        lambda fd, uid, gid: fchown_calls.append((fd, uid, gid)),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        workspace_permissions.os,
+        "chown",
+        lambda *args, **kwargs: pytest.fail("migration must not use name-based chown"),
+        raising=False,
+    )
+
+    _migrate_workspace_owners([handle])
+
+    assert fchown_calls == [(41, 10001, 10001)]
+
+
+def test_workspace_migration_rejects_link_count_change_before_fchown(monkeypatch):
+    from app.runtime.sandbox import workspace_permissions
+
+    original = node("payload.txt", link_count=1)
+    handle = _OpenWorkspaceNode(node=original, parent_fd=7, name="payload.txt", fd=41)
+    changed = type(
+        "ChangedStat",
+        (),
+        {
+            "st_dev": original.device,
+            "st_ino": original.inode,
+            "st_uid": original.uid,
+            "st_gid": original.gid,
+            "st_mode": original.mode,
+            "st_nlink": 2,
+        },
+    )()
+    monkeypatch.setattr(workspace_permissions.os, "fstat", lambda fd: changed)
+    monkeypatch.setattr(workspace_permissions.os, "stat", lambda *args, **kwargs: changed)
+    monkeypatch.setattr(
+        workspace_permissions.os,
+        "fchown",
+        lambda *args: pytest.fail("changed inode metadata must not be mutated"),
+        raising=False,
+    )
+    monkeypatch.setattr(workspace_permissions.os, "chown", lambda *args, **kwargs: None, raising=False)
+
+    with pytest.raises(WorkspacePermissionError, match="changed during migration"):
+        _migrate_workspace_owners([handle])
+
+
+def test_workspace_migration_does_not_chown_existing_target_owner(monkeypatch):
+    from app.runtime.sandbox import workspace_permissions
+
+    original = node("payload.txt", uid=RUNTIME_UID, gid=RUNTIME_GID)
+    handle = _OpenWorkspaceNode(node=original, parent_fd=7, name="payload.txt", fd=41)
+    current = type(
+        "CurrentStat",
+        (),
+        {
+            "st_dev": original.device,
+            "st_ino": original.inode,
+            "st_uid": original.uid,
+            "st_gid": original.gid,
+            "st_mode": original.mode,
+            "st_nlink": original.link_count,
+        },
+    )()
+    monkeypatch.setattr(workspace_permissions.os, "fstat", lambda fd: current)
+    monkeypatch.setattr(
+        workspace_permissions.os,
+        "fchown",
+        lambda *args: pytest.fail("target-owned inode must not be changed"),
+        raising=False,
+    )
+
+    _migrate_workspace_owners([handle])
+
+
+def test_workspace_initializer_orders_migration_drop_and_runtime_probe_and_closes_handles(monkeypatch):
+    from app.runtime.sandbox import workspace_permissions
+
+    handles = [
+        _OpenWorkspaceNode(node=node(".", mode=stat.S_IFDIR | 0o700), parent_fd=None, name=None, fd=40),
+        _OpenWorkspaceNode(node=node("payload.txt"), parent_fd=40, name="payload.txt", fd=41),
+    ]
+    events = []
+    monkeypatch.setattr(workspace_permissions, "_capture_workspace_tree", lambda root: (40, handles))
+    monkeypatch.setattr(workspace_permissions, "_migrate_workspace_owners", lambda value: events.append(("migrate", value)))
+    monkeypatch.setattr(workspace_permissions, "_drop_runtime_privileges", lambda: events.append(("drop", None)))
+    monkeypatch.setattr(workspace_permissions, "_probe_runtime_workspace", lambda fd: events.append(("probe", fd)))
+    monkeypatch.setattr(workspace_permissions.os, "close", lambda fd: events.append(("close", fd)))
+
+    initialize_runtime_workspace()
+
+    assert events == [
+        ("migrate", handles),
+        ("drop", None),
+        ("probe", 40),
+        ("close", 41),
+        ("close", 40),
+    ]

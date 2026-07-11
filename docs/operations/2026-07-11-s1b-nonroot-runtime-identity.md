@@ -14,9 +14,9 @@ runtime acceptance, or gate closure.
 - [x] Phase 1 - Fresh fetch/readback and current source investigation completed in an isolated clean worktree.
 - [x] Phase 2 - Fixed `10001:10001` design approved; formal design and implementation plan recorded.
 - [x] Phase 3 - TDD RED captured missing workspace module, image/compose identity, authenticated executor identity endpoint, Docker fail-closed ownership, OpenSandbox identity denial, workspace hard-link/mode, and worker TMPDIR contracts.
-- [x] Phase 4 - GREEN implementation and focused affected tests completed locally: `514 passed, 3 skipped`.
-- [x] Phase 5 - Compile, diff, 16-file scope, new-line secret, and forbidden-config gates completed locally.
-- [ ] Phase 6 - Fixed-SHA independent security and evidence reviews pending.
+- [x] Phase 4 - GREEN implementation and focused affected tests completed locally: `533 passed, 3 skipped`.
+- [x] Phase 5 - Compile, diff, 18-file scope, new-line secret, and forbidden-config gates completed locally.
+- [ ] Phase 6 - Independent security and evidence reviews completed on fixed SHA `4dc438f`; two Important findings were fixed and fresh fixed-head re-review is pending.
 - [ ] Phase 7 - Ready PR, exact-head GitHub evidence comments, and required CI pending.
 - [~] Docker-capable image/runtime and 211 acceptance are controller-owned and deferred until source stabilizes.
 
@@ -51,12 +51,32 @@ Observed focused GREEN results so far:
 
 - workspace/launch/provider/executor/contracts: `140 passed`;
 - worker-main heartbeat and maintenance tests: `27 passed`.
-- final affected provider/runtime/launch/worker/source-authority slice: `514 passed, 3 skipped`.
+- pre-review affected provider/runtime/launch/worker/source-authority slice: `514 passed, 3 skipped`.
+
+The final post-review-fix affected command was:
+
+```text
+python -m pytest tests/test_runtime_workspace_permissions.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py tests/test_sandbox_container_provider.py tests/test_sandbox_executor_app.py tests/test_sandbox_contracts.py tests/test_sandbox_workspace_manager.py tests/test_sandbox_runtime.py tests/test_sandbox_runtime_cleanup.py tests/test_execution_boundary.py tests/test_claude_agent_worker_adapter.py tests/test_worker.py tests/test_worker_main.py tests/test_admin_runtime_routes.py -q --basetemp .pytest-tmp\s1b-b-post-review-final-001
+```
+
+It completed with `533 passed, 3 skipped`. The accompanying
+`python -m compileall -q app tools scripts` completed with exit code 0.
+
+The fixed-SHA `4dc438f` security and evidence reviews found no Critical issue.
+They identified two Important gaps: cached lease reuse was not bound to the
+current request/workspace scope, and name-based ownership migration left a
+TOCTOU window after validation. The follow-up implementation now binds cached
+reuse to the full current scope, revalidates OpenSandbox remote metadata,
+cleans up cancelled cached Docker URL discovery, and holds/fstats/fchowns each
+validated inode. Regression coverage also exercises malformed cached identity,
+missing cached OpenSandbox credentials, target-owned migration no-op, and the
+initializer's migrate/drop/probe/close ordering. Fresh review of the resulting
+fixed branch head remains required before Phase 6 can complete.
 
 `python -m compileall -q app tools scripts` exited 0. `git diff --check`,
 the approved changed-file scope check, new-line secret scan, and checks forbidding
 default Docker socket, privileged mode, runtime UID/GID environment overrides,
 and `chmod 777` exited 0.
 
-These are local source results only. Fixed-SHA reviews, PR evidence, required CI,
+These are local source results only. Fresh fixed-head re-review, PR evidence, required CI,
 Docker-capable runtime evidence, and 211 acceptance remain pending.

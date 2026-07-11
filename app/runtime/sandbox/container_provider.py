@@ -220,6 +220,24 @@ def _status_matches_lease(status: ContainerStatus, lease: ContainerLease) -> boo
     return True
 
 
+def _lease_matches_request_workspace(
+    lease: ContainerLease,
+    request: SandboxRuntimeRequest,
+    workspace: WorkspaceLease,
+) -> bool:
+    return (
+        lease.tenant_id == request.tenant_id == workspace.tenant_id
+        and lease.workspace_id == request.workspace_id == workspace.workspace_id
+        and lease.user_id == request.user_id == workspace.user_id
+        and lease.session_id == request.session_id == workspace.session_id
+        and lease.run_id == request.run_id == workspace.run_id
+        and lease.sandbox_mode == request.sandbox_mode
+        and lease.browser_enabled == request.browser_enabled
+        and lease.workspace_host_path == workspace.workspace_host_path
+        and lease.workspace_container_path == workspace.workspace_container_path
+    )
+
+
 def _positive_int_limit(resource_limits: dict[str, Any], key: str) -> int | None:
     value = resource_limits.get(key)
     if value is None:
@@ -975,9 +993,9 @@ class DockerContainerProvider:
         if not executor_auth_token:
             _stop_and_remove_container(container)
             return None
-        executor_url = await self._wait_for_executor_url(container, timeout_seconds)
-        executor_headers = _executor_auth_headers(executor_auth_token)
         try:
+            executor_url = await self._wait_for_executor_url(container, timeout_seconds)
+            executor_headers = _executor_auth_headers(executor_auth_token)
             healthy = await asyncio.to_thread(
                 _call_executor_health_probe,
                 self._health_probe,
@@ -1018,6 +1036,15 @@ class DockerContainerProvider:
             labels=lease.labels,
         )
 
+    def _remove_owned_cached_container(self, lease: ContainerLease) -> None:
+        try:
+            container = self._get_client().containers.get(lease.container_name)
+        except Exception:
+            return
+        status = _container_status_from_labels(container)
+        if status is not None and _status_matches_lease(status, lease):
+            _stop_and_remove_container(container)
+
     async def create_or_reuse(
         self,
         request: SandboxRuntimeRequest,
@@ -1037,6 +1064,10 @@ class DockerContainerProvider:
         workspace_user = _docker_workspace_user_value(workspace.workspace_host_path)
         existing = self._leases.get(container_id)
         if existing is not None:
+            if not _lease_matches_request_workspace(existing, request, workspace):
+                self._remove_owned_cached_container(existing)
+                self._leases.pop(container_id, None)
+                raise ContainerStartFailedError("cached lease scope mismatch")
             existing.labels.update(expected_egress_labels)
             existing.labels.update(_executor_identity_labels())
             recovered_existing = await self._reuse_existing_container(
@@ -1406,7 +1437,27 @@ class OpenSandboxContainerProvider:
         cached = self._leases.get(f"opensandbox-{request.run_id}")
         if cached is not None and cached.container_id in self._sandboxes:
             sandbox = self._sandboxes[cached.container_id]
+            if not _lease_matches_request_workspace(cached, request, workspace):
+                await self._cleanup_started_sandbox(sandbox)
+                self._sandboxes.pop(cached.container_id, None)
+                self._leases.pop(f"opensandbox-{request.run_id}", None)
+                raise ContainerStartFailedError("cached lease scope mismatch")
             try:
+                info = await _maybe_await(sandbox.get_info())
+                expected_lease = _lease_from_request(
+                    "opensandbox",
+                    request,
+                    workspace,
+                    executor_url=cached.executor_url,
+                )
+                expected_lease.labels.update(_opensandbox_labels(settings, request))
+                remote_status = _opensandbox_status_from_info(info)
+                if (
+                    remote_status is None
+                    or remote_status.container_id != cached.container_id
+                    or not _status_matches_lease(remote_status, expected_lease)
+                ):
+                    raise ContainerStartFailedError("cached sandbox metadata mismatch")
                 executor_url, endpoint_headers = await self._executor_endpoint(sandbox, settings)
                 cached_auth_token = str(cached.executor_headers.get(EXECUTOR_AUTH_HEADER) or "")
                 if not cached_auth_token:
