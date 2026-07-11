@@ -62,6 +62,45 @@ def patch_empty_leases(monkeypatch):
     monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
 
 
+def patch_real_leases(monkeypatch, *run_ids):
+    async def fake_cleanup_expired_sandbox_runtime_leases(conn, *, tenant_id=None, reason="expired", **kwargs):
+        assert tenant_id == "default"
+        return []
+
+    async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
+        assert tenant_id == "default"
+        return [
+            {
+                "id": f"lease-{run_id}",
+                "tenant_id": tenant_id,
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": f"session-{run_id}",
+                "run_id": run_id,
+                "trace_id": f"trace-{run_id}",
+                "sandbox_mode": "ephemeral",
+                "provider": "docker",
+                "status": "active",
+                "browser_enabled": False,
+                "resource_limits_json": {},
+                "user_visible_payload_json": {"workspace": "/workspace"},
+                "lease_payload_json": {
+                    "source": "sandbox_runtime",
+                    "evidence_class": "runtime_lease_projection",
+                },
+            }
+            for run_id in run_ids
+        ]
+
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        fake_cleanup_expired_sandbox_runtime_leases,
+    )
+    patch_db_only_cleanup(monkeypatch)
+    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+
+
 def test_admin_runtime_containers_requires_admin(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     client = TestClient(create_app())
@@ -258,7 +297,7 @@ def test_admin_runtime_containers_returns_provider_status(monkeypatch):
     }
 
 
-def test_admin_runtime_containers_counts_provider_status(monkeypatch):
+def test_admin_runtime_containers_excludes_fake_unbacked_provider_status(monkeypatch):
     class FakeProvider:
         async def list_runtime_containers(self, filters):
             assert filters == {"tenant_id": "default"}
@@ -298,10 +337,10 @@ def test_admin_runtime_containers_counts_provider_status(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["total_active"] == 2
-    assert body["ephemeral_containers"] == 1
-    assert body["persistent_containers"] == 1
-    assert [container["run_id"] for container in body["containers"]] == ["run-a", "run-b"]
+    assert body["total_active"] == 0
+    assert body["ephemeral_containers"] == 0
+    assert body["persistent_containers"] == 0
+    assert body["containers"] == []
     assert body["sandbox_leases"] == []
 
 
@@ -338,7 +377,7 @@ def test_admin_runtime_total_active_excludes_stopped_containers(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
-    patch_empty_leases(monkeypatch)
+    patch_real_leases(monkeypatch, "run-a", "run-b")
     client = TestClient(create_app())
 
     response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
@@ -348,7 +387,7 @@ def test_admin_runtime_total_active_excludes_stopped_containers(monkeypatch):
     assert body["total_active"] == 1
     assert body["ephemeral_containers"] == 1
     assert len(body["containers"]) == 2
-    assert body["sandbox_leases"] == []
+    assert [lease["run_id"] for lease in body["sandbox_leases"]] == ["run-a", "run-b"]
 
 
 def test_admin_runtime_containers_includes_sandbox_leases(monkeypatch):
@@ -373,12 +412,35 @@ def test_admin_runtime_containers_includes_sandbox_leases(monkeypatch):
                 "run_id": "run-a",
                 "trace_id": "trace-a",
                 "sandbox_mode": "ephemeral",
-                "provider": "fake",
+                "provider": "docker",
                 "status": "active",
                 "browser_enabled": False,
                 "resource_limits_json": {},
                 "user_visible_payload_json": {"workspace": "/workspace"},
-                "lease_payload_json": {},
+                "lease_payload_json": {
+                    "source": "sandbox_runtime",
+                    "evidence_class": "runtime_lease_projection",
+                },
+                "release_reason": "",
+            },
+            {
+                "id": "lease-placeholder",
+                "tenant_id": "default",
+                "workspace_id": "default",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-placeholder",
+                "trace_id": "trace-placeholder",
+                "sandbox_mode": "ephemeral",
+                "provider": "docker",
+                "status": "active",
+                "browser_enabled": False,
+                "resource_limits_json": {},
+                "user_visible_payload_json": {"workspace": "/workspace"},
+                "lease_payload_json": {
+                    "source": "sdk_only_lifecycle_placeholder",
+                    "evidence_class": "sdk_only_lifecycle_placeholder",
+                },
                 "release_reason": "",
             }
         ]
@@ -403,8 +465,54 @@ def test_admin_runtime_containers_includes_sandbox_leases(monkeypatch):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["sandbox_leases"][0]["lease_id"] == "lease-a"
+    assert [lease["lease_id"] for lease in body["sandbox_leases"]] == ["lease-a"]
     assert body["sandbox_leases"][0]["status"] == "active"
+
+
+def test_admin_runtime_placeholder_cleanup_failure_does_not_break_real_projection(monkeypatch):
+    class FakeProvider:
+        async def list_runtime_containers(self, filters):
+            return []
+
+    @asynccontextmanager
+    async def lease_transaction():
+        yield object()
+
+    async def placeholder_cleanup_failure(*args, **kwargs):
+        raise SandboxRuntimeCleanupError(
+            [{"container_id": "lease-placeholder", "message": "Unsupported sandbox provider: fake"}]
+        )
+
+    async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
+        return [
+            {
+                "id": "lease-placeholder",
+                "tenant_id": tenant_id,
+                "run_id": "run-placeholder",
+                "provider": "fake",
+                "status": "active",
+                "lease_payload_json": {
+                    "source": "sdk_only_lifecycle_placeholder",
+                    "evidence_class": "sdk_only_lifecycle_placeholder",
+                },
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
+    monkeypatch.setattr("app.routes.admin_runtime.transaction", lease_transaction)
+    monkeypatch.setattr(
+        "app.routes.admin_runtime.cleanup_expired_sandbox_runtime_leases",
+        placeholder_cleanup_failure,
+    )
+    patch_db_only_cleanup(monkeypatch)
+    monkeypatch.setattr("app.routes.admin_runtime.repositories.list_sandbox_leases", fake_list_sandbox_leases)
+    client = TestClient(create_app())
+
+    response = client.get("/api/ai/admin/runtime/containers", headers=admin_headers())
+
+    assert response.status_code == 200
+    assert response.json()["sandbox_leases"] == []
 
 
 def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
@@ -427,20 +535,25 @@ def test_admin_runtime_containers_lists_only_active_sandbox_leases(monkeypatch):
         assert status == "active"
         return [
             {
-                "id": "lease-active",
-                "tenant_id": "default",
+                        "id": "lease-active",
+                        "tenant_id": "default",
+                        "run_id": "run-a",
                 "workspace_id": "default",
                 "user_id": "user-a",
                 "session_id": "session-a",
                 "run_id": "run-a",
                 "trace_id": "trace-a",
                 "sandbox_mode": "ephemeral",
-                "provider": "fake",
+                    "provider": "docker",
                 "status": "active",
                 "browser_enabled": False,
                 "resource_limits_json": {},
                 "user_visible_payload_json": {"workspace": "/workspace"},
-                "lease_payload_json": {"container_id": "exec-run-a"},
+                "lease_payload_json": {
+                    "container_id": "exec-run-a",
+                    "source": "sandbox_runtime",
+                    "evidence_class": "runtime_lease_projection",
+                },
                 "release_reason": "",
             }
         ]
@@ -477,12 +590,14 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
         assert reason == "expired"
         return []
 
+    repository_rows = []
+
     async def fake_list_sandbox_leases(conn, *, tenant_id, status=None, limit=100):
         assert tenant_id == "default"
         if status == "active":
             return []
         assert status is None
-        return [
+        rows = [
             {
                 "id": "lease-released",
                 "tenant_id": "default",
@@ -497,10 +612,37 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
                 "browser_enabled": False,
                 "resource_limits_json": {},
                 "user_visible_payload_json": {"workspace": "/workspace"},
-                "lease_payload_json": {"container_name": "executor-run-a", "token": "secret-token"},
+                "lease_payload_json": {
+                    "container_name": "executor-run-a",
+                    "token": "secret-token",
+                    "source": "sandbox_runtime",
+                    "evidence_class": "runtime_lease_projection",
+                },
                 "release_reason": "expired",
-            }
+            },
+            {
+                "id": "lease-placeholder-history",
+                "tenant_id": "default",
+                "workspace_id": "default",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-placeholder",
+                "trace_id": "trace-placeholder",
+                "sandbox_mode": "ephemeral",
+                "provider": "fake",
+                "status": "released",
+                "browser_enabled": False,
+                "resource_limits_json": {},
+                "user_visible_payload_json": {},
+                "lease_payload_json": {
+                    "source": "sdk_only_lifecycle_placeholder",
+                    "evidence_class": "sdk_only_lifecycle_placeholder",
+                },
+                "release_reason": "run_succeeded",
+            },
         ]
+        repository_rows.extend(rows)
+        return rows
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.admin_runtime.create_container_provider", lambda: FakeProvider())
@@ -521,6 +663,8 @@ def test_admin_runtime_containers_can_include_released_sandbox_lease_history(mon
     assert body["sandbox_leases"] == []
     assert body["sandbox_lease_history"][0]["lease_id"] == "lease-released"
     assert body["sandbox_lease_history"][0]["status"] == "released"
+    assert [row["id"] for row in repository_rows] == ["lease-released", "lease-placeholder-history"]
+    assert [lease["lease_id"] for lease in body["sandbox_lease_history"]] == ["lease-released"]
     assert "secret-token" not in str(body["sandbox_lease_history"])
 
 
@@ -550,12 +694,15 @@ def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypa
                 "run_id": "run-a",
                 "trace_id": "trace-a",
                 "sandbox_mode": "ephemeral",
-                "provider": "fake",
+                    "provider": "docker",
                 "status": "active",
                 "browser_enabled": False,
                 "resource_limits_json": {},
                 "user_visible_payload_json": {},
-                "lease_payload_json": {},
+                    "lease_payload_json": {
+                        "source": "sandbox_runtime",
+                        "evidence_class": "runtime_lease_projection",
+                    },
                 "release_reason": "",
             },
             {
@@ -567,12 +714,15 @@ def test_admin_runtime_containers_filters_foreign_tenant_sandbox_leases(monkeypa
                 "run_id": "run-b",
                 "trace_id": "trace-b",
                 "sandbox_mode": "ephemeral",
-                "provider": "fake",
+                    "provider": "docker",
                 "status": "active",
                 "browser_enabled": False,
                 "resource_limits_json": {},
                 "user_visible_payload_json": {},
-                "lease_payload_json": {},
+                    "lease_payload_json": {
+                        "source": "sandbox_runtime",
+                        "evidence_class": "runtime_lease_projection",
+                    },
                 "release_reason": "",
             },
         ]
@@ -861,13 +1011,61 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
         calls.append(("leases", tenant_id, status, limit))
         assert tenant_id == "default"
         if status == "active":
-            return [{"id": "lease-active", "tenant_id": "default", "status": "active"}]
+            return [
+                {
+                    "id": "lease-active",
+                    "tenant_id": "default",
+                    "run_id": "run-a",
+                    "provider": "docker",
+                    "status": "active",
+                    "lease_payload_json": {
+                        "source": "sandbox_runtime",
+                        "evidence_class": "runtime_lease_projection",
+                    },
+                }
+            ]
         return [
-            {"id": "lease-active", "tenant_id": "default", "status": "active"},
-            {"id": "lease-released", "tenant_id": "default", "status": "released"},
-            {"id": "lease-expired", "tenant_id": "default", "status": "expired"},
-            {"id": "lease-foreign", "tenant_id": "tenant-b", "status": "active"},
-        ]
+                {
+                    "id": "lease-active",
+                    "tenant_id": "default",
+                    "provider": "docker",
+                    "status": "active",
+                    "lease_payload_json": {
+                        "source": "sandbox_runtime",
+                        "evidence_class": "runtime_lease_projection",
+                    },
+                },
+                {
+                    "id": "lease-released",
+                    "tenant_id": "default",
+                    "provider": "docker",
+                    "status": "released",
+                    "lease_payload_json": {
+                        "source": "sandbox_runtime",
+                        "evidence_class": "runtime_lease_projection",
+                    },
+                },
+                {
+                    "id": "lease-expired",
+                    "tenant_id": "default",
+                    "provider": "opensandbox",
+                    "status": "expired",
+                    "lease_payload_json": {
+                        "source": "sandbox_runtime",
+                        "evidence_class": "runtime_lease_projection",
+                    },
+                },
+                {
+                    "id": "lease-foreign",
+                    "tenant_id": "tenant-b",
+                    "provider": "docker",
+                    "status": "active",
+                    "lease_payload_json": {
+                        "source": "sandbox_runtime",
+                        "evidence_class": "runtime_lease_projection",
+                    },
+                },
+            ]
 
     async def fake_get_queue_status():
         calls.append(("queue_status",))
@@ -1013,9 +1211,9 @@ def test_admin_runtime_overview_returns_same_tenant_snapshot(monkeypatch):
     assert body["queue"]["tenant_insight"]["reason"] == "workers_busy"
     assert body["runs"]["active"] == 2
     assert body["sandbox"]["containers"] == {
-        "total": 2,
+        "total": 1,
         "running": 1,
-        "by_status": {"running": 1, "exited": 1},
+        "by_status": {"running": 1},
         "ephemeral_running": 1,
         "persistent_running": 0,
     }

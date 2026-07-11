@@ -32,6 +32,23 @@ _SDK_SUBAGENT_TOOLS = ["Agent"]
 _SDK_AVAILABLE_TOOLS = [*_SDK_BASE_AVAILABLE_TOOLS, *_SDK_SUBAGENT_TOOLS]
 _SDK_AUTO_ALLOWED_TOOLS = {"Read", "Glob", "LS"}
 _SDK_PLATFORM_DISALLOWED_TOOLS = ["Write", "Edit", "NotebookEdit"]
+_SDK_LOCAL_READ_ONLY_TOOLS = ("Read", "Glob", "LS")
+_SDK_BROKERED_BUILTIN_TOOLS = (
+    "Bash",
+    "Write",
+    "Edit",
+    "NotebookEdit",
+    "Agent",
+    "WebFetch",
+    "WebSearch",
+)
+_SDK_INTERNAL_CONTEXT_TOOLS = (
+    "read_session_messages",
+    "read_context_file",
+    "read_run_artifact",
+    "stage_context_file_to_workspace",
+    "search_memory",
+)
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
 _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS = 1800.0
 _SHELL_UNSAFE_CHARS = set("$`;&|<>{}[]*?!\n\r")
@@ -860,6 +877,7 @@ async def run_claude_agent_sdk(
     on_text: Callable[[str], Awaitable[None]] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     on_tool_permission: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
+    execution_policy: str = "worker_local_legacy",
 ) -> ClaudeAgentSdkRunResult:
     settings = get_settings()
     if not settings.claude_agent_sdk_enabled:
@@ -884,14 +902,23 @@ async def run_claude_agent_sdk(
     configured_skills = skills if skills is not None else (_split_csv(settings.claude_agent_sdk_skills) or [skill_id])
     allowed_skill_names = set(configured_skills)
     used_skill_names: list[str] = []
-    full_access = _full_access_requested(settings)
-    permission_mode = _sdk_permission_mode(
-        getattr(settings, "claude_agent_permission_mode", "dontAsk"),
-        full_access=full_access,
+    sandbox_brokered = execution_policy == "sandbox_brokered"
+    full_access = _full_access_requested(settings) and not sandbox_brokered
+    permission_mode = (
+        "dontAsk"
+        if sandbox_brokered
+        else _sdk_permission_mode(
+            getattr(settings, "claude_agent_permission_mode", "dontAsk"),
+            full_access=full_access,
+        )
     )
-    allowed_tools = _safe_allowed_tools(
-        getattr(settings, "claude_agent_allowed_tools", "Read,Glob,LS"),
-        full_access=full_access,
+    allowed_tools = (
+        ["Read", "Glob", "LS"]
+        if sandbox_brokered
+        else _safe_allowed_tools(
+            getattr(settings, "claude_agent_allowed_tools", "Read,Glob,LS"),
+            full_access=full_access,
+        )
     )
     context_retrieval_server = _build_context_retrieval_mcp_server(
         sdk,
@@ -899,19 +926,18 @@ async def run_claude_agent_sdk(
         identity=context_retrieval_identity,
         workspace_root=cwd,
     )
+    internal_context_tools = set(_SDK_INTERNAL_CONTEXT_TOOLS) if context_retrieval_server is not None else set()
     if context_retrieval_server is not None:
-        for tool_name in (
-            "read_session_messages",
-            "read_context_file",
-            "read_run_artifact",
-            "stage_context_file_to_workspace",
-            "search_memory",
-        ):
+        for tool_name in _SDK_INTERNAL_CONTEXT_TOOLS:
             if tool_name not in allowed_tools:
                 allowed_tools.append(tool_name)
-    disallowed_tools = _safe_disallowed_tools(
-        getattr(settings, "claude_agent_disallowed_tools", ""),
-        full_access=full_access,
+    disallowed_tools = (
+        []
+        if sandbox_brokered
+        else _safe_disallowed_tools(
+            getattr(settings, "claude_agent_disallowed_tools", ""),
+            full_access=full_access,
+        )
     )
     timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0))
     if full_access:
@@ -927,6 +953,18 @@ async def run_claude_agent_sdk(
             await on_skill_use(skill_name, metadata)
 
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
+        if sandbox_brokered:
+            if tool_name in _SDK_LOCAL_READ_ONLY_TOOLS or tool_name in internal_context_tools:
+                return PermissionResultAllow()
+            if tool_name.lower() == "skill":
+                selected = (
+                    _extract_skill_names_from_tool_input(tool_input, allowed_skill_names)
+                    if allowed_skill_names
+                    else []
+                )
+                if selected:
+                    return PermissionResultAllow()
+            return PermissionResultDeny(message="Tool use requires the platform sandbox permission broker")
         if full_access and tool_name in _sdk_tools_for_mode(full_access=True):
             return PermissionResultAllow()
         if tool_name == "Bash" and isinstance(tool_input, dict):
@@ -936,7 +974,7 @@ async def run_claude_agent_sdk(
                 return PermissionResultAllow(updated_input={**tool_input, "command": permitted_command})
         return PermissionResultDeny(message="Tool use is not permitted by ai-platform runner policy")
 
-    async def enforce_bash_tool_policy(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
+    async def enforce_side_effect_tool_policy(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
         reason = "Tool use is not permitted by ai-platform runner policy"
         if not isinstance(hook_input, dict):
             return {
@@ -947,7 +985,12 @@ async def run_claude_agent_sdk(
                 }
             }
         tool_name = str(hook_input.get("tool_name") or "")
-        if tool_name != "Bash":
+        if sandbox_brokered and (
+            tool_name in _SDK_LOCAL_READ_ONLY_TOOLS or tool_name in internal_context_tools
+        ):
+            return {}
+        brokered_tool = sandbox_brokered and bool(tool_name)
+        if tool_name != "Bash" and not brokered_tool:
             return {}
         tool_input = hook_input.get("tool_input")
         if not isinstance(tool_input, dict):
@@ -958,8 +1001,33 @@ async def run_claude_agent_sdk(
                     "permissionDecisionReason": reason,
                 }
             }
-        permitted = _canonical_permitted_bash_command_with_kind(str(tool_input.get("command") or ""), cwd)
-        if permitted:
+        if sandbox_brokered and tool_name.lower() == "skill":
+            selected_skills = (
+                _extract_skill_names_from_tool_input(tool_input, allowed_skill_names)
+                if allowed_skill_names
+                else []
+            )
+            if not selected_skills:
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": "Skill is not permitted by the pinned run allowlist",
+                    }
+                }
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "Skill is permitted by the pinned run allowlist",
+                }
+            }
+        permitted = (
+            _canonical_permitted_bash_command_with_kind(str(tool_input.get("command") or ""), cwd)
+            if tool_name == "Bash"
+            else None
+        )
+        if permitted and not sandbox_brokered:
             permitted_command, command_kind = permitted
             if command_kind == "qa_review_runner":
                 await record_used_skill(
@@ -1004,27 +1072,37 @@ async def run_claude_agent_sdk(
                 }
             }
         if on_tool_permission is not None:
-            permission = await on_tool_permission(
-                {
-                    "tool_name": tool_name,
-                    "tool_call_id": str(hook_input.get("tool_use_id") or tool_use_id or ""),
-                    "tool_input_keys": sorted(str(key) for key in tool_input),
-                    "risk_level": "high",
-                    "write_capable": True,
-                    "action": "execute",
-                    "reason": "Claude SDK requested Bash outside ai-platform allowlist",
-                    "tool_input": tool_input,
-                }
-            )
+            try:
+                permission = await on_tool_permission(
+                    {
+                        "tool_name": tool_name,
+                        "tool_call_id": str(hook_input.get("tool_use_id") or tool_use_id or ""),
+                        "tool_input_keys": sorted(str(key) for key in tool_input),
+                        "risk_level": "high",
+                        "write_capable": True,
+                        "action": "execute",
+                        "reason": f"Claude SDK requested {tool_name} through the platform sandbox permission broker",
+                        "tool_input": tool_input,
+                    }
+                )
+            except Exception:
+                permission = {"allowed": False, "reason": "tool_permission_broker_failed"}
+            if not isinstance(permission, dict):
+                permission = {"allowed": False, "reason": "tool_permission_malformed_response"}
+            elif not isinstance(permission.get("allowed"), bool):
+                permission = {"allowed": False, "reason": "tool_permission_malformed_response"}
+            permission_allowed = permission.get("allowed") is True
             permission_reason = str(permission.get("reason") or reason)
             output = {
                 "hookEventName": "PreToolUse",
-                "permissionDecision": "allow" if bool(permission.get("allowed")) else "deny",
+                "permissionDecision": "allow" if permission_allowed else "deny",
                 "permissionDecisionReason": permission_reason,
             }
             permission_request_id = str(permission.get("permission_request_id") or "")
             if permission_request_id:
                 output["permission_request_id"] = permission_request_id
+            if permission_allowed and permitted:
+                output["updatedInput"] = {**tool_input, "command": permitted[0]}
             return {"hookSpecificOutput": output}
         return {
             "hookSpecificOutput": {
@@ -1059,9 +1137,13 @@ async def run_claude_agent_sdk(
 
     hooks = None
     if HookMatcher is not None:
-        bash_hook = HookMatcher(matcher="Bash", hooks=[enforce_bash_tool_policy])
         hooks = {
-            "PreToolUse": [bash_hook],
+            "PreToolUse": [
+                HookMatcher(
+                    matcher=None if sandbox_brokered else "Bash",
+                    hooks=[enforce_side_effect_tool_policy],
+                )
+            ],
         }
         if configured_skills:
             skill_hook = HookMatcher(matcher="Skill", hooks=[record_skill_tool_use])
@@ -1071,7 +1153,11 @@ async def run_claude_agent_sdk(
     options = ClaudeAgentOptions(
         cwd=str(cwd),
         model=model_id or settings.claude_agent_model or settings.anthropic_model or None,
-        tools=_sdk_tools_for_mode(full_access=full_access),
+        tools=(
+            [*_SDK_LOCAL_READ_ONLY_TOOLS, *_SDK_BROKERED_BUILTIN_TOOLS]
+            if sandbox_brokered
+            else _sdk_tools_for_mode(full_access=full_access)
+        ),
         mcp_servers={"ai-platform-context": context_retrieval_server} if context_retrieval_server is not None else {},
         permission_mode=permission_mode,
         allowed_tools=allowed_tools,

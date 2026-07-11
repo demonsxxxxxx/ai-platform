@@ -196,9 +196,12 @@ def _validate_executor_request_scope(
 
 def _normalize_tool_permission_response(result: CallbackResult, *, default_reason: str) -> dict[str, Any]:
     if not isinstance(result, dict):
-        return {"allowed": False, "reason": default_reason}
+        return {"allowed": False, "reason": "tool_permission_malformed_response"}
+    allowed = result.get("allowed")
+    if not isinstance(allowed, bool):
+        return {"allowed": False, "reason": "tool_permission_malformed_response"}
     return {
-        "allowed": bool(result.get("allowed")),
+        "allowed": allowed is True,
         "reason": str(result.get("reason") or default_reason),
         "risk_level": str(result.get("risk_level") or "high"),
         "write_capable": bool(result.get("write_capable", True)),
@@ -290,6 +293,23 @@ async def _default_executor_runner(
                 admin_only=True,
             )
         )
+
+        async def emit_permission_outcome(outcome: dict[str, Any]) -> None:
+            await emit_event(
+                AgentEvent(
+                    type="tool_call_completed",
+                    message=f"{tool_name} permission {'allowed' if outcome.get('allowed') is True else 'denied'}",
+                    payload={
+                        **payload,
+                        "allowed": outcome.get("allowed") is True,
+                        "reason": str(outcome.get("reason") or "tool_permission_denied"),
+                        "permission_request_id": str(outcome.get("permission_request_id") or ""),
+                        "source": "sandbox_permission_broker",
+                    },
+                    admin_only=True,
+                )
+            )
+
         broker_request = ExecutorToolPermissionRequest(
             session_id=request.session_id,
             run_id=request.run_id,
@@ -313,8 +333,12 @@ async def _default_executor_runner(
                 request.callback_token,
             )
         except Exception:
-            return {"allowed": False, "reason": "tool_permission_broker_failed"}
-        return _normalize_tool_permission_response(broker_result, default_reason=reason)
+            outcome = {"allowed": False, "reason": "tool_permission_broker_failed"}
+            await emit_permission_outcome(outcome)
+            return outcome
+        outcome = _normalize_tool_permission_response(broker_result, default_reason=reason)
+        await emit_permission_outcome(outcome)
+        return outcome
 
     async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
         await emit_event(
@@ -344,6 +368,7 @@ async def _default_executor_runner(
             on_text=on_text,
             on_skill_use=on_skill_use,
             on_tool_permission=on_tool_permission,
+            execution_policy="sandbox_brokered",
         )
     except ClaudeAgentSdkNotAvailable as exc:
         return {

@@ -754,7 +754,20 @@ async def test_worker_records_runtime_sandbox_lease_around_successful_executor_r
 
 
 @pytest.mark.asyncio
-async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ordinary_run(monkeypatch):
+@pytest.mark.parametrize(
+    ("execution_tier", "agent_id", "skill_id"),
+    [
+        ("sdk_only_writing", "general-agent", "general-chat"),
+        ("document_worker", "qa-word-review", "qa-file-reviewer"),
+        ("sdk_only_writing", "general-agent", "tenant-selected-writing-skill"),
+    ],
+)
+async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ordinary_run(
+    monkeypatch,
+    execution_tier,
+    agent_id,
+    skill_id,
+):
     calls = []
 
     class CaptureAdapter:
@@ -799,7 +812,7 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
                 "message_count": 0,
                 "file_count": 0,
                 "memory_record_count": 0,
-                "execution_tier": "heavy_sandbox",
+                "execution_tier": execution_tier,
             },
             "created_at": None,
         }
@@ -825,8 +838,8 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
     outcome = await process_run_payload(
         base_payload(
             executor_type="claude-agent-worker",
-            agent_id="general-agent",
-            skill_id="general-chat",
+            agent_id=agent_id,
+            skill_id=skill_id,
             file_ids=[],
             input={"message": "run code in sandbox", "sandbox_mode": "ephemeral"},
             context_snapshot_id="ctx-heavy",
@@ -835,7 +848,7 @@ async def test_worker_does_not_record_placeholder_lease_for_sandbox_required_ord
     )
 
     assert outcome.status == "succeeded"
-    assert ("adapter", "run-a", "heavy_sandbox") in calls
+    assert ("adapter", "run-a", execution_tier) in calls
 
 
 @pytest.mark.asyncio

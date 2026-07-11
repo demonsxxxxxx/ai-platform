@@ -33,6 +33,7 @@ from app.context_builder import (
 )
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, sanitize_context_manifest_payload
 from app.db import transaction
+from app.execution_boundary import decide_execution_boundary
 from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
@@ -1567,12 +1568,11 @@ def _ordinary_run_uses_runtime_sandbox(
     *,
     context_snapshot: dict[str, Any],
 ) -> bool:
-    return (
-        payload.executor_type == "claude-agent-worker"
-        and payload.agent_id == "general-agent"
-        and payload.skill_id == "general-chat"
-        and _context_execution_tier(context_snapshot) == "heavy_sandbox"
-    )
+    return decide_execution_boundary(
+        executor_type=payload.executor_type,
+        execution_mode=str(payload.input.get("execution_mode") or ""),
+        execution_tier=_context_execution_tier(context_snapshot),
+    ).requires_real_sandbox
 
 
 def _result_prefers_cancelled_after_failure(result: ExecutorResult) -> bool:

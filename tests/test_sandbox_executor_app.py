@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.runtime.kernel_contracts import AgentEvent
@@ -364,15 +365,16 @@ def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeyp
 
     async def fake_run_claude_agent_sdk(**kwargs):
         calls["cwd"] = kwargs["cwd"]
+        calls["execution_policy"] = kwargs.get("execution_policy")
         permission = await kwargs["on_tool_permission"](
             {
-                "tool_name": "Bash",
-                "tool_input": {"command": "python write_business_system.py"},
-                "tool_call_id": "tool-a",
+                "tool_name": "mcp__knowledge__search",
+                "tool_input": {"query": "approved knowledge"},
+                "tool_call_id": "tool-mcp-a",
                 "risk_level": "high",
                 "write_capable": True,
                 "action": "execute",
-                "reason": "needs shell",
+                "reason": "needs governed MCP access",
             }
         )
         calls["permission"] = permission
@@ -414,6 +416,7 @@ def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeyp
     body = response.json()
     assert body["status"] == "accepted"
     assert calls["cwd"] == Path(tmp_path)
+    assert calls["execution_policy"] == "sandbox_brokered"
     assert calls["permission"] == {
         "allowed": True,
         "reason": "tool_permission_allowed",
@@ -423,11 +426,95 @@ def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeyp
         "permission_request_id": "tpr-sdk",
     }
     broker_call = next(item for item in callbacks if item[0].endswith("/api/ai/runtime/callbacks/tool-permission"))
+    assert sum(1 for item in callbacks if item[0].endswith("/api/ai/runtime/callbacks/tool-permission")) == 1
     assert broker_call[1]["run_id"] == "run-a"
     assert broker_call[1]["callback_token_id"] == "cbt_run-a"
-    assert broker_call[1]["tool_name"] == "Bash"
-    assert broker_call[1]["tool_input"] == {"command": "python write_business_system.py"}
-    assert broker_call[1]["tool_call_id"] == "tool-a"
+    assert broker_call[1]["tool_name"] == "mcp__knowledge__search"
+    assert broker_call[1]["tool_input"] == {"query": "approved knowledge"}
+    assert broker_call[1]["tool_call_id"] == "tool-mcp-a"
+    permission_events = [
+        event
+        for _, callback_payload, _ in callbacks
+        for event in callback_payload.get("events", [])
+        if event.get("payload", {}).get("tool_call_id") == "tool-mcp-a"
+    ]
+    assert [event["type"] for event in permission_events] == ["tool_call_started", "tool_call_completed"]
+    assert permission_events[-1]["payload"]["allowed"] is True
+    assert permission_events[-1]["payload"]["reason"] == "tool_permission_allowed"
+
+
+@pytest.mark.parametrize(
+    ("broker_mode", "expected_reason"),
+    [
+        ("timeout", "tool_permission_broker_failed"),
+        ("malformed", "tool_permission_malformed_response"),
+    ],
+)
+def test_executor_permission_broker_failures_emit_controlled_denial_event(
+    tmp_path,
+    monkeypatch,
+    broker_mode,
+    expected_reason,
+):
+    callbacks = []
+    calls = {}
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_run_claude_agent_sdk(**kwargs):
+        permission = await kwargs["on_tool_permission"](
+            {
+                "tool_name": "mcp__knowledge__search",
+                "tool_input": {"query": "governed knowledge"},
+                "tool_call_id": "tool-mcp-denied",
+                "risk_level": "high",
+                "write_capable": True,
+                "action": "execute",
+                "reason": "needs governed MCP access",
+            }
+        )
+        calls["permission"] = permission
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "",
+                "session_id": "sdk-session-a",
+                "usage": {},
+                "error": permission["reason"],
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
+
+    def callback_sender(url, payload, token):
+        callbacks.append((url, payload, token))
+        if url.endswith("/api/ai/runtime/callbacks/tool-permission"):
+            if broker_mode == "timeout":
+                raise TimeoutError("permission callback timed out")
+            return {"allowed": "false", "reason": "truthy malformed value"}
+        return {"accepted": True}
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
+    client = create_test_client(tmp_path, callback_sender=callback_sender)
+
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert calls["permission"] == {"allowed": False, "reason": expected_reason}
+    permission_events = [
+        event
+        for _, callback_payload, _ in callbacks
+        for event in callback_payload.get("events", [])
+        if event.get("payload", {}).get("tool_call_id") == "tool-mcp-denied"
+    ]
+    assert [event["type"] for event in permission_events] == ["tool_call_started", "tool_call_completed"]
+    assert permission_events[-1]["payload"]["allowed"] is False
+    assert permission_events[-1]["payload"]["reason"] == expected_reason
 
 
 def test_executor_execute_reports_platform_timeout_probe_as_failed_callback(tmp_path):
