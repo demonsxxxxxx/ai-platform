@@ -172,7 +172,6 @@ export async function collectAllAuthorizedSkills(
   let effectivePermissionsKnown = true;
   let catalogReadResolved = true;
   let expectedTotal = 0;
-  let collectedItemCount = 0;
   let skip = 0;
   let pageCount = 0;
 
@@ -190,7 +189,6 @@ export async function collectAllAuthorizedSkills(
     }
     const priorUniqueCount = skillsByName.size;
     expectedTotal = Math.max(expectedTotal, page.total);
-    collectedItemCount += page.skills.length;
     page.skills.forEach((skill) => skillsByName.set(skill.skill_name, skill));
     page.available_tags.forEach((tag) => availableTags.add(tag));
     page.effective_permissions.forEach((permission) =>
@@ -200,13 +198,13 @@ export async function collectAllAuthorizedSkills(
     catalogReadResolved &&= page.catalog_read_resolved;
 
     if (page.skills.length === 0) {
-      if (collectedItemCount >= expectedTotal) break;
+      if (skillsByName.size >= expectedTotal) break;
       throw new Error("authorized_skill_catalog_incomplete");
     }
     if (skillsByName.size === priorUniqueCount) {
       throw new Error("authorized_skill_catalog_no_progress");
     }
-    if (collectedItemCount >= expectedTotal) break;
+    if (skillsByName.size >= expectedTotal) break;
     skip += page.skills.length;
   }
 

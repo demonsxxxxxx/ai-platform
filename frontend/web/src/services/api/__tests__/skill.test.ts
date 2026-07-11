@@ -189,11 +189,10 @@ test("collectAllAuthorizedSkills refreshes a second-page Skill version without d
     }));
     const secondPage = [
       { ...userSkill, skill_name: "target-skill", expected_version: version },
-      { ...userSkill, skill_name: "skill-0" },
     ];
     return {
       skills: skip === 0 ? firstPage : skip === 200 ? secondPage : [],
-      total: 202,
+      total: 201,
       skip,
       limit: 200,
       available_tags: ["planning"],
@@ -262,6 +261,72 @@ test("collectAllAuthorizedSkills rejects an empty page before declared total", a
     })),
     /authorized_skill_catalog_incomplete/,
   );
+});
+
+test("collectAllAuthorizedSkills continues until declared total is unique", async () => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => ({
+    ...userSkill,
+    skill_name: `skill-${index}`,
+  }));
+  const calls: number[] = [];
+
+  const result = await collectAllAuthorizedSkills(async ({ skip = 0 }) => {
+    calls.push(skip);
+    const skills =
+      skip === 0
+        ? firstPage
+        : skip === 200
+          ? [firstPage[0], { ...userSkill, skill_name: "skill-200" }]
+          : skip === 202
+            ? [{ ...userSkill, skill_name: "skill-201" }]
+            : [];
+    return {
+      skills,
+      total: 202,
+      skip,
+      limit: 200,
+      available_tags: ["planning"],
+      effective_permissions: ["skill:read"],
+      effective_permissions_known: true,
+      catalog_read_resolved: true,
+    };
+  });
+
+  assert.deepEqual(calls, [0, 200, 202]);
+  assert.equal(result.skills.length, 202);
+  assert.equal(result.skills.at(-1)?.skill_name, "skill-201");
+});
+
+test("collectAllAuthorizedSkills fails closed when duplicates stop unique progress", async () => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => ({
+    ...userSkill,
+    skill_name: `skill-${index}`,
+  }));
+  let calls = 0;
+
+  await assert.rejects(
+    collectAllAuthorizedSkills(async ({ skip = 0 }) => {
+      calls += 1;
+      const skills =
+        skip === 0
+          ? firstPage
+          : skip === 200
+            ? [firstPage[0], { ...userSkill, skill_name: "skill-200" }]
+            : [firstPage[0]];
+      return {
+        skills,
+        total: 202,
+        skip,
+        limit: 200,
+        available_tags: ["planning"],
+        effective_permissions: ["skill:read"],
+        effective_permissions_known: true,
+        catalog_read_resolved: true,
+      };
+    }),
+    /authorized_skill_catalog_no_progress/,
+  );
+  assert.equal(calls, 3);
 });
 
 test("collectAllAuthorizedSkills rejects a repeated page with no unique progress", async () => {
