@@ -1,6 +1,7 @@
 import { getAccessToken, getRefreshToken } from "./token";
 import {
   redirectToLogin,
+  rememberRedirectPathForLogin,
   refreshAccessToken,
 } from "./tokenManager";
 
@@ -42,14 +43,16 @@ export async function authenticatedRequest(
     throw new Error("Unauthorized: no refresh token");
   }
 
-  try {
-    await refreshAccessToken();
-  } catch (error) {
-    if (!(error instanceof Error) || !/Unauthorized/i.test(error.message)) {
-      redirectToLogin();
-    }
-    throw error;
+try {
+  await refreshAccessToken();
+} catch (error) {
+  if (error instanceof Error && /Unauthorized/i.test(error.message)) {
+    rememberRedirectPathForLogin();
+  } else {
+    redirectToLogin();
   }
+  throw error;
+}
 
   const retryHeaders = await createAuthHeaders(headers);
   const retryResponse = await fetch(input, {

@@ -21,6 +21,16 @@ function notifyLogout(): void {
   window.dispatchEvent(new CustomEvent("auth:logout"));
 }
 
+export function rememberRedirectPathForLogin(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const currentPath = window.location.pathname + window.location.search;
+  if (isSafeRedirectPath(currentPath)) {
+    setRedirectPath(currentPath);
+  }
+}
+
 export function clearAuthState(): void {
   clearTokens();
   clearAuthScopedCaches();
@@ -28,12 +38,7 @@ export function clearAuthState(): void {
 }
 
 export function redirectToLogin(): void {
-  if (typeof window !== "undefined") {
-    const currentPath = window.location.pathname + window.location.search;
-    if (isSafeRedirectPath(currentPath)) {
-      setRedirectPath(currentPath);
-    }
-  }
+  rememberRedirectPathForLogin();
   clearAuthState();
 }
 

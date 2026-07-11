@@ -6,6 +6,7 @@ import i18n from "i18next";
 import { getAccessToken, getRefreshToken } from "./token";
 import {
   redirectToLogin,
+  rememberRedirectPathForLogin,
   refreshAccessToken,
   clearAuthState,
 } from "./tokenManager";
@@ -66,7 +67,9 @@ export async function authFetch<T>(
       try {
         await refreshAccessToken();
       } catch (error) {
-        if (!(error instanceof Error) || !/Unauthorized/i.test(error.message)) {
+        if (error instanceof Error && /Unauthorized/i.test(error.message)) {
+          rememberRedirectPathForLogin();
+        } else {
           redirectToLogin();
         }
         throw error;

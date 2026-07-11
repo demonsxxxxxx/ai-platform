@@ -41,3 +41,10 @@ test("useAuth rolls back the backend session when login or OAuth hydration fails
     /const currentUser = await authApi\.getCurrentUser\(\);[\s\S]*} catch \(error\) \{[\s\S]*await rollbackServerSession\(\);[\s\S]*throw error;[\s\S]*}/,
   );
 });
+
+test("useAuth login resumes the redirect path saved by revoked-session handling", () => {
+  assert.match(
+    useAuthSource,
+    /const redirectPath = getRedirectPath\(\);[\s\S]*if \(redirectPath\) \{[\s\S]*clearRedirectPath\(\);[\s\S]*}[\s\S]*return redirectPath \?\? null;/,
+  );
+});

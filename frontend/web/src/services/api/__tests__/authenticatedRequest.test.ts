@@ -16,6 +16,8 @@ function installAuthenticatedRequestStubs(
     "sessionStorage",
   );
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const sessionStore = new Map<string, string>();
+  const events: string[] = [];
 
   Object.defineProperty(globalThis, "fetch", {
     configurable: true,
@@ -33,15 +35,20 @@ function installAuthenticatedRequestStubs(
   Object.defineProperty(globalThis, "sessionStorage", {
     configurable: true,
     value: {
-      getItem: () => null,
-      setItem: () => {},
-      removeItem: () => {},
+      getItem: (key: string) => sessionStore.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        sessionStore.set(key, value);
+      },
+      removeItem: (key: string) => {
+        sessionStore.delete(key);
+      },
     },
   });
   Object.defineProperty(globalThis, "window", {
     configurable: true,
     value: {
-      dispatchEvent() {
+      dispatchEvent(event: Event) {
+        events.push(event.type);
         return true;
       },
       location: {
@@ -52,6 +59,8 @@ function installAuthenticatedRequestStubs(
   });
 
   return {
+    events,
+    sessionStore,
     restore() {
       if (originalFetch) {
         Object.defineProperty(globalThis, "fetch", originalFetch);
@@ -97,6 +106,30 @@ test("authenticatedRequest strips caller Authorization headers in browser mode",
     assert.equal(headers.has("Authorization"), false);
     assert.equal(headers.get("X-Test"), "1");
     assert.equal(calls[0].init?.credentials, "include");
+  } finally {
+    stubs.restore();
+  }
+});
+
+test("authenticatedRequest preserves redirect path when cookie session probe is revoked", async () => {
+  const calls: string[] = [];
+  const stubs = installAuthenticatedRequestStubs(async (input) => {
+    const url = String(input);
+    calls.push(url);
+    return new Response(JSON.stringify({ detail: "unauthorized" }), {
+      status: 401,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+
+  try {
+    await assert.rejects(
+      () => authenticatedRequest("/api/sessions"),
+      /Unauthorized/,
+    );
+    assert.deepEqual(calls, ["/api/sessions", "/api/ai/auth/me"]);
+    assert.deepEqual(stubs.events, ["auth:logout"]);
+    assert.equal(stubs.sessionStore.get("redirect_after_login"), "/chat");
   } finally {
     stubs.restore();
   }

@@ -22,6 +22,7 @@ function installFetchAuthStubs({
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
 
   const store = new Map<string, string>(Object.entries(initialLocalStorage));
+  const sessionStore = new Map<string, string>();
   const removedKeys: string[] = [];
   const events: string[] = [];
 
@@ -45,9 +46,13 @@ function installFetchAuthStubs({
   Object.defineProperty(globalThis, "sessionStorage", {
     configurable: true,
     value: {
-      getItem: () => null,
-      setItem: () => {},
-      removeItem: () => {},
+      getItem: (key: string) => sessionStore.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        sessionStore.set(key, value);
+      },
+      removeItem: (key: string) => {
+        sessionStore.delete(key);
+      },
     },
   });
   Object.defineProperty(globalThis, "window", {
@@ -68,6 +73,7 @@ function installFetchAuthStubs({
     removedKeys,
     events,
     store,
+    sessionStore,
     restore() {
       if (originalFetch) {
         Object.defineProperty(globalThis, "fetch", originalFetch);
@@ -178,6 +184,7 @@ test("authFetch clears browser auth state after cookie session revocation return
     assert.deepEqual(calls, ["/api/sessions", "/api/ai/auth/me"]);
     assert.deepEqual(stubs.events, ["auth:logout"]);
     assert.deepEqual(stubs.removedKeys, ["ai_platform_session_present"]);
+    assert.equal(stubs.sessionStore.get("redirect_after_login"), "/chat");
   } finally {
     stubs.restore();
   }
