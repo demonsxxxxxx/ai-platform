@@ -70,6 +70,30 @@ test("stale selection survives refresh without silently upgrading", () => {
   assert.equal(reconfirmed.status, "confirmed");
 });
 
+test("catalog refresh failure preserves identity but blocks stale and confirmed selections", () => {
+  const selected = selectedSkillTask.selectedSkillTaskReducer(
+    selectedSkillTask.createSelectedSkillTaskState(),
+    { type: "select", skill: skill("review", "hash-old") },
+  );
+  const stale = selectedSkillTask.selectedSkillTaskReducer(selected, {
+    type: "recoverable_error",
+    code: "skill_selection_stale",
+  });
+
+  for (const state of [selected, stale]) {
+    const failed = selectedSkillTask.selectedSkillTaskReducer(state, {
+      type: "refresh_failed",
+    });
+    assert.equal(failed.selectedSkill?.expected_version, "hash-old");
+    assert.equal(failed.status, "stale");
+    assert.equal(failed.requiresReconfirmation, true);
+    assert.deepEqual(
+      selectedSkillTask.prepareSelectedSkillSubmission(failed, []),
+      { error: "skill_selection_stale", request: null },
+    );
+  }
+});
+
 test("unauthorized or hidden cached selection clears identity and blocks fallback", () => {
   const selected = selectedSkillTask.selectedSkillTaskReducer(
     selectedSkillTask.createSelectedSkillTaskState(),

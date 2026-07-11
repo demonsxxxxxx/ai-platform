@@ -115,6 +115,7 @@ export function normalizeSkillListResponse(
 }
 
 const AUTHORIZED_SKILL_PAGE_LIMIT = 200;
+const AUTHORIZED_SKILL_MAX_PAGES = 1_000;
 
 type SkillPageLoader = (params: SkillListParams) => Promise<SkillsResponse>;
 
@@ -129,12 +130,21 @@ export async function collectAllAuthorizedSkills(
   let catalogReadResolved = true;
   let expectedTotal = 0;
   let skip = 0;
+  let pageCount = 0;
 
   while (true) {
+    pageCount += 1;
+    if (pageCount > AUTHORIZED_SKILL_MAX_PAGES) {
+      throw new Error("authorized_skill_catalog_page_limit");
+    }
     const page = await listPage({
       skip,
       limit: AUTHORIZED_SKILL_PAGE_LIMIT,
     });
+    if (page.skip !== skip) {
+      throw new Error("authorized_skill_catalog_offset_mismatch");
+    }
+    const priorUniqueCount = skillsByName.size;
     expectedTotal = Math.max(expectedTotal, page.total);
     page.skills.forEach((skill) => skillsByName.set(skill.skill_name, skill));
     page.available_tags.forEach((tag) => availableTags.add(tag));
@@ -144,9 +154,14 @@ export async function collectAllAuthorizedSkills(
     effectivePermissionsKnown &&= page.effective_permissions_known;
     catalogReadResolved &&= page.catalog_read_resolved;
 
-    if (page.skills.length === 0) break;
-    skip += page.skills.length;
     if (skillsByName.size >= expectedTotal) break;
+    if (page.skills.length === 0) {
+      throw new Error("authorized_skill_catalog_incomplete");
+    }
+    if (skillsByName.size === priorUniqueCount) {
+      throw new Error("authorized_skill_catalog_no_progress");
+    }
+    skip += page.skills.length;
   }
 
   const skills = Array.from(skillsByName.values());

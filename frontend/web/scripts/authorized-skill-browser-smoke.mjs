@@ -279,6 +279,9 @@ function mockBootstrapSource() {
           state.staleReturned = true;
           return json({ detail: "skill_selection_stale" }, 409);
         }
+        if (state.submitMode === "denied") {
+          return json({ detail: "capability_not_authorized" }, 403);
+        }
         return json({ session_id: "session-smoke", run_id: "run-smoke", status: "queued", queue_position: 1 });
       }
       if (url.pathname === "/api/chat/sessions/session-smoke/stream") {
@@ -450,6 +453,13 @@ async function runViewport(name, viewport) {
     const selectedDetails = await client.evaluate(`Array.from(
       document.querySelectorAll("[data-composer-skill-visible-detail]")
     ).map((node) => node.textContent.trim())`);
+    const selectedSkillRemove = await client.evaluate(`(() => {
+      const button = document.querySelector("[data-task-selected-skill-remove]");
+      return {
+        height: button ? Math.round(button.getBoundingClientRect().height) : 0,
+        ariaLabel: button?.getAttribute("aria-label") || "",
+      };
+    })()`);
 
     tempFile = await attachFile(client);
     await client.waitFor(
@@ -481,6 +491,37 @@ async function runViewport(name, viewport) {
     await client.waitFor(
       'document.querySelector(\'[data-composer-skill-row="document-review"] [data-composer-skill-version]\')?.getAttribute("data-composer-skill-version") === "cccccccc33333333"',
       `${name}:current_version_visible`,
+    );
+    const stalePickerSummary = await client.evaluate(
+      'document.querySelector("[data-composer-skill-selection-summary]")?.getAttribute("data-composer-skill-selection-summary")',
+    );
+    const stalePickerScreenshot = await screenshot(client, `${name}-stale-picker`);
+    await click(client, '[data-composer-skill-row="document-review"]');
+    await client.evaluate('window.__authorizedSkillSmoke.submitMode = "denied"');
+    await client.evaluate('document.querySelector("form").requestSubmit()');
+    await client.waitFor(
+      'Boolean(document.querySelector(\'[data-selected-skill-error="capability_not_authorized"]\')) && !document.querySelector(\'[data-composer-chip-kind="skill"]\')',
+      `${name}:denied_visible`,
+    );
+    const deniedState = await client.evaluate(`(() => {
+      const error = document.querySelector('[data-selected-skill-error="capability_not_authorized"]');
+      return {
+        prompt: document.querySelector("textarea").value,
+        attachmentVisible: document.body.innerText.includes("authorized-skill-"),
+        selectedIdentityVisible: Boolean(document.querySelector('[data-composer-chip-kind="skill"]')),
+        errorText: error?.textContent.trim() || "",
+      };
+    })()`);
+    const deniedScreenshot = await screenshot(client, `${name}-denied-preserved`);
+
+    await click(
+      client,
+      'button[aria-label^="Open commands"], button[aria-label^="打开命令"]',
+    );
+    await clickText(client, ["Skills", "技能"]);
+    await client.waitFor(
+      'document.querySelector(\'[data-composer-skill-row="document-review"] [data-composer-skill-version]\')?.getAttribute("data-composer-skill-version") === "cccccccc33333333"',
+      `${name}:denied_picker_refreshed`,
     );
     await click(client, '[data-composer-skill-row="document-review"]');
     await client.evaluate('window.__authorizedSkillSmoke.submitMode = "success"');
@@ -524,10 +565,20 @@ async function runViewport(name, viewport) {
       pickerA11y,
       focusRestored,
       selectedDetails,
+      selectedSkillRemove,
       staleState,
+      stalePickerSummary,
+      deniedState,
       requestEvidence,
       layout,
-      screenshots: [pickerScreenshot, requiredScreenshot, staleScreenshot, artifactScreenshot],
+      screenshots: [
+        pickerScreenshot,
+        requiredScreenshot,
+        staleScreenshot,
+        stalePickerScreenshot,
+        deniedScreenshot,
+        artifactScreenshot,
+      ],
     };
   } finally {
     if (tempFile) rmSync(tempFile, { force: true });
@@ -540,7 +591,8 @@ async function main() {
   results.push(await runViewport("desktop", { width: 1440, height: 1100, mobile: false }));
   results.push(await runViewport("mobile", { width: 390, height: 844, mobile: true }));
   const ok = results.every((result) => {
-    const [staleSubmission, acceptedSubmission] = result.requestEvidence.submissions;
+    const [staleSubmission, deniedSubmission, acceptedSubmission] =
+      result.requestEvidence.submissions;
     return (
       result.staleState.prompt === "Review the attached evidence" &&
       result.pickerA11y.role === "dialog" &&
@@ -550,6 +602,8 @@ async function main() {
       result.focusRestored === true &&
       result.selectedDetails.includes("vaaaaaaaa") &&
       result.selectedDetails.includes("File required") &&
+      result.selectedSkillRemove.ariaLabel.includes("document-review") &&
+      (result.name !== "mobile" || result.selectedSkillRemove.height >= 44) &&
       (result.name !== "mobile" || Object.values(result.pickerA11y.touchTargetHeights).every((height) => height >= 44)) &&
       result.staleState.attachmentVisible === true &&
       result.staleState.selectedReference === "aaaaaaaa" &&
@@ -561,6 +615,16 @@ async function main() {
       staleSubmission?.body?.skill_id === undefined &&
       staleSubmission?.body?.enabled_skills === undefined &&
       staleSubmission?.body?.disabled_skills === undefined &&
+      result.stalePickerSummary === "reconfirm" &&
+      result.deniedState.prompt === "Review the attached evidence" &&
+      result.deniedState.attachmentVisible === true &&
+      result.deniedState.selectedIdentityVisible === false &&
+      !result.deniedState.errorText.includes("document-review") &&
+      deniedSubmission?.body?.selected_skill?.skill_id === "document-review" &&
+      deniedSubmission?.body?.selected_skill?.expected_version === "cccccccc33333333" &&
+      deniedSubmission?.body?.skill_id === undefined &&
+      deniedSubmission?.body?.enabled_skills === undefined &&
+      deniedSubmission?.body?.disabled_skills === undefined &&
       acceptedSubmission?.body?.selected_skill?.skill_id === "document-review" &&
       acceptedSubmission?.body?.selected_skill?.expected_version === "cccccccc33333333" &&
       result.layout.bodyScrollWidth <= result.layout.viewport.width &&

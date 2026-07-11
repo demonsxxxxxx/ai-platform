@@ -56,12 +56,13 @@ export function SkillSelector({
   useEffect(() => {
     if (!isOpen) return;
     const priorOverflow = document.body.style.overflow;
+    const internalTrigger = triggerRef.current;
     document.body.style.overflow = "hidden";
     requestAnimationFrame(() => searchInputRef.current?.focus());
     return () => {
       document.body.style.overflow = priorOverflow;
       if (!externalOnOpenChange) {
-        requestAnimationFrame(() => triggerRef.current?.focus());
+        requestAnimationFrame(() => internalTrigger?.focus());
       }
     };
   }, [externalOnOpenChange, isOpen]);
@@ -74,6 +75,23 @@ export function SkillSelector({
     () => skills.filter((skill) => skillMatchesQuery(skill, searchQuery)),
     [searchQuery, skills],
   );
+  const selectionIsCurrent = useMemo(
+    () =>
+      Boolean(
+        selectedSkill &&
+          skills.some(
+            (skill) =>
+              skill.name === selectedSkill.name &&
+              skill.expected_version === selectedSkill.expected_version,
+          ),
+      ),
+    [selectedSkill, skills],
+  );
+  const selectionSummary = !selectedSkill
+    ? "optional"
+    : selectionIsCurrent
+      ? "selected"
+      : "reconfirm";
 
   const handleDialogKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
@@ -132,10 +150,18 @@ export function SkillSelector({
             >
               {t("skillSelector.taskTitle", "Choose a Skill")}
             </h2>
-            <p className="truncate text-xs text-[var(--theme-text-secondary)]">
-              {selectedSkill
+            <p
+              className="truncate text-xs text-[var(--theme-text-secondary)]"
+              data-composer-skill-selection-summary={selectionSummary}
+            >
+              {selectionSummary === "selected"
                 ? t("skillSelector.taskSelected", "One Skill selected for this task")
-                : t("skillSelector.taskOptional", "Optional for this task")}
+                : selectionSummary === "reconfirm"
+                  ? t(
+                      "skillSelector.taskReconfirm",
+                      "Reconfirm the current Skill version",
+                    )
+                  : t("skillSelector.taskOptional", "Optional for this task")}
             </p>
           </div>
         </div>
@@ -158,6 +184,7 @@ export function SkillSelector({
           <input
             ref={searchInputRef}
             type="search"
+            aria-label={t("skills.searchPlaceholder", "Search Skills")}
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder={t("skills.searchPlaceholder", "Search Skills")}

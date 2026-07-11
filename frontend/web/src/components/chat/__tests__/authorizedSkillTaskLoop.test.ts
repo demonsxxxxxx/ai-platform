@@ -43,6 +43,8 @@ test("composer Skill selector is single-select and exposes version plus file req
   assert.match(selector, /aria-modal="true"/);
   assert.match(selector, /event\.key === "Escape"/);
   assert.match(selector, /aria-pressed=\{selected\}/);
+  assert.match(selector, /data-composer-skill-selection-summary/);
+  assert.match(selector, /reconfirm/i);
   assert.match(selector, /min-h-11|size-11/);
   assert.doesNotMatch(selector, /onToggleAll|onToggleCategory|Checkbox/);
   assert.match(inputSelectors, /onSelectSkill/);
@@ -57,6 +59,9 @@ test("task-specific selected Skill chip visibly exposes version and file require
   assert.match(input, /visibleDetails:/);
   assert.match(chips, /data-composer-skill-visible-detail/);
   assert.match(chips, /selection\.visibleDetails/);
+  assert.match(chips, /data-task-selected-skill-remove/);
+  assert.match(chips, /size-11/);
+  assert.match(chips, /Remove selected Skill/);
   assert.doesNotMatch(sharedChips, /visibleDetails|data-composer-skill-visible-detail/);
 });
 

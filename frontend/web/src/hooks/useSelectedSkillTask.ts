@@ -34,11 +34,13 @@ export type SelectedSkillTaskAction =
   | { type: "clear" }
   | { type: "files_ready" }
   | { type: "recoverable_error"; code: SelectedSkillRecoverableCode }
+  | { type: "refresh_failed" }
   | { type: "refresh_complete"; skills: PublicSkillResponse[] };
 
 export interface UseSelectedSkillTaskOptions {
   skills: PublicSkillResponse[];
   skillsLoading: boolean;
+  skillsError?: string | null;
   refreshSkills: () => Promise<unknown>;
 }
 
@@ -95,6 +97,15 @@ export function selectedSkillTaskReducer(
         status: "file_required",
         recoveryCode: action.code,
       };
+    case "refresh_failed":
+      return state.selectedSkill
+        ? {
+            ...state,
+            status: "stale",
+            recoveryCode: "skill_selection_stale",
+            requiresReconfirmation: true,
+          }
+        : state;
     case "refresh_complete": {
       if (!state.selectedSkill) return state;
       const current = action.skills.find(
@@ -167,6 +178,7 @@ export function prepareSelectedSkillSubmission(
 export function useSelectedSkillTask({
   skills,
   skillsLoading,
+  skillsError,
   refreshSkills,
 }: UseSelectedSkillTaskOptions) {
   const [state, dispatch] = useReducer(
@@ -177,9 +189,13 @@ export function useSelectedSkillTask({
 
   useEffect(() => {
     if (!skillsLoading) {
-      dispatch({ type: "refresh_complete", skills });
+      dispatch(
+        skillsError
+          ? { type: "refresh_failed" }
+          : { type: "refresh_complete", skills },
+      );
     }
-  }, [skills, skillsLoading]);
+  }, [skills, skillsError, skillsLoading]);
 
   const selectSkill = useCallback((skill: PublicSkillResponse) => {
     dispatch({ type: "select", skill });

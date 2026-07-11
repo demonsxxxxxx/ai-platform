@@ -53,6 +53,7 @@ export function clearReconnectTimeout(
 }
 
 export type SSECloseAction = "terminal" | "retry";
+export type SSEFetchEventSource = typeof fetchEventSource;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -99,6 +100,7 @@ export async function connectToSSE(
   messageId: string,
   ctx: SSEConnectionContext,
   hasRetried = false,
+  fetchStream: SSEFetchEventSource = fetchEventSource,
 ): Promise<void> {
   const {
     abortControllerRef,
@@ -136,7 +138,7 @@ export async function connectToSSE(
   retryCountRef.current = 0;
 
   try {
-    await fetchEventSource(
+    await fetchStream(
       `/api/chat/sessions/${targetSessionId}/stream?run_id=${targetRunId}`,
       {
         credentials: "include",
@@ -166,6 +168,7 @@ export async function connectToSSE(
               messageId,
               ctx,
               true,
+              fetchStream,
             );
             return;
           }
@@ -238,6 +241,7 @@ export async function connectToSSE(
     }
     console.error("[SSE] Connection error:", err);
     setConnectionStatus("disconnected");
+    throw err;
   } finally {
     isConnectingRef.current = false;
   }
@@ -325,7 +329,11 @@ export async function reconnectSSE(
       const lastMsg = msgs.find((m) => m.id === currentMsgId);
       if (lastMsg) {
         isReconnectFromHistoryRef.current = true;
-        await connectToSSE(currentSessId, currentRId, currentMsgId, ctx);
+        try {
+          await connectToSSE(currentSessId, currentRId, currentMsgId, ctx);
+        } catch {
+          await reconnectSSE(ctx);
+        }
       }
     }
   }, delay);

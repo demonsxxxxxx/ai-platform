@@ -131,7 +131,7 @@ test("collectAllAuthorizedSkills refreshes a second-page Skill version without d
     ];
     return {
       skills: skip === 0 ? firstPage : skip === 200 ? secondPage : [],
-      total: 202,
+      total: 201,
       skip,
       limit: 200,
       available_tags: ["planning"],
@@ -178,4 +178,52 @@ test("collectAllAuthorizedSkills fails closed instead of returning a partial pag
     }),
     /page unavailable/,
   );
+});
+
+test("collectAllAuthorizedSkills rejects an empty page before declared total", async () => {
+  await assert.rejects(
+    collectAllAuthorizedSkills(async ({ skip = 0 }) => ({
+      skills:
+        skip === 0
+          ? Array.from({ length: 200 }, (_, index) => ({
+              ...userSkill,
+              skill_name: `skill-${index}`,
+            }))
+          : [],
+      total: 201,
+      skip,
+      limit: 200,
+      available_tags: ["planning"],
+      effective_permissions: ["skill:read"],
+      effective_permissions_known: true,
+      catalog_read_resolved: true,
+    })),
+    /authorized_skill_catalog_incomplete/,
+  );
+});
+
+test("collectAllAuthorizedSkills rejects a repeated page with no unique progress", async () => {
+  const repeatedPage = Array.from({ length: 200 }, (_, index) => ({
+    ...userSkill,
+    skill_name: `skill-${index}`,
+  }));
+  let calls = 0;
+
+  await assert.rejects(
+    collectAllAuthorizedSkills(async ({ skip = 0 }) => {
+      calls += 1;
+      return {
+        skills: repeatedPage,
+        total: 201,
+        skip,
+        limit: 200,
+        available_tags: ["planning"],
+        effective_permissions: ["skill:read"],
+        effective_permissions_known: true,
+        catalog_read_resolved: true,
+      };
+    }),
+    /authorized_skill_catalog_no_progress/,
+  );
+  assert.equal(calls, 2);
 });

@@ -66,7 +66,7 @@ multi-agent product authority, deployment, or 211 runtime state.
   request builder, recoverable admission outcome, single-select picker/chip,
   required-file preflight, explicit refresh/reconfirm, and draft lifting are
   wired into the real composer.
-- [x] Phase 3 - focused frontend run passed 165/165 tests, including default
+- [x] Phase 3 - focused frontend run passed 169/169 tests, including default
   preference fallback, true run cancel, event/artifact projection, cookie auth,
   full authorized-catalog pagination/fail-closed behavior, and composer visual
   contract regressions. A broader exploratory test found one unrelated base
@@ -76,25 +76,28 @@ multi-agent product authority, deployment, or 211 runtime state.
 - [x] Phase 4 - mock-backed browser smoke passed on desktop `1440x1100` and
   mobile `390x844`: a 201-item authorized catalog placed the target Skill on
   page two; picker search/select, upload, file-required, stale full-catalog
-  refresh, exact payload, successful submit, and artifact entry passed. The
-  evidence also checks dialog labelling, Escape close/focus restore, visible
-  version/file metadata, 44px mobile actions, and no overlap or horizontal
-  overflow. Local screenshots/evidence are under the repository's existing
-  ignored `.codex-tmp/authorized-skill-browser-smoke/` root.
+  refresh, denied recovery, exact payload, successful submit, and artifact
+  entry passed. The evidence also checks dialog labelling, Escape close/focus
+  restore, explicit stale reconfirm copy, prompt/file preservation after stale
+  and denied responses, task-specific removal controls, visible version/file
+  metadata, 44px mobile actions, and no overlap or horizontal overflow. Local
+  screenshots/evidence are under the repository's existing ignored
+  `.codex-tmp/authorized-skill-browser-smoke/` root.
 - [x] Phase 5 - `ci:verify` passed projection audit, PRD source smoke, eslint,
   typecheck, Vite/PWA build, and provenance; Python compile exited 0. Exact
   precommit focused tests passed 165/165; 26 slice files produced 0
   forbidden-path, secret, personal-path, root-gitignore, or diff-check hits.
-  After the #393 rebase, focused tests again passed 165/165, Python compile and
-  `ci:verify` again exited 0, and the desktop/mobile mock browser evidence was
-  regenerated with status `passed`.
+  After the #393 rebase, the review-fix baseline was `541dcf1`. Focused tests
+  then passed 169/169, Python compile and `ci:verify` again exited 0, and the
+  desktop/mobile mock browser evidence was regenerated with status `passed`.
 - [ ] Phase 6 - fixed SHA `696e551` independent code and UX reviews found four
-  Important and three Minor findings. Full-catalog pagination, atomic
-  required-file submission, SSE setup rejection handling, real executable
-  discovery, visible selected metadata, dialog/focus semantics, and mobile
-  touch targets are fixed locally. The branch is now rebased onto the current
-  authoritative main; final rebased exact-head code and UX re-review remains
-  pending.
+  Important and three Minor findings. A first rebased exact-head review at
+  `541dcf1` found five further Important findings: catalog refresh failure
+  could erase stale identity, malformed pagination could return partial data
+  or loop, terminal SSE setup failures were swallowed, stale picker summary
+  copy implied a current selection, and the selected-Skill removal action was
+  not task-specific/mobile-sized. Each finding now has a focused regression
+  and local fix; final fixed-SHA code and UX re-review remains pending.
 - [ ] Phase 7 - ready PR, exact-head review/validation comments, and required
   CI. No merge or 211 deployment is authorized in this lane.
 

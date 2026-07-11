@@ -111,6 +111,7 @@ export function ChatAppContent({
   const {
     skills,
     isLoading: skillsLoading,
+    listError: skillsListError,
     fetchSkills,
     effectivePermissions: skillsEffectivePermissions,
     effectivePermissionsKnown: skillsEffectivePermissionsKnown,
@@ -127,6 +128,7 @@ export function ChatAppContent({
   } = useSelectedSkillTask({
     skills,
     skillsLoading,
+    skillsError: skillsListError,
     refreshSkills: fetchSkills,
   });
   const composerSkillsAvailability = resolveComposerSkillsAvailability({
