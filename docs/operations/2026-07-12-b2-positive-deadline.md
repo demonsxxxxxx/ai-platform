@@ -43,8 +43,10 @@ Status: `PR ready`
   - Bounded admin projection is retained only when an actual same-run failed callback supplies a projection that passes the existing safety contract; no redaction or error fields are fabricated.
   - Bool, malformed, NaN, and Infinity deadline inputs fail closed; non-finite elapsed observations are rejected by generator, verifier, and readiness.
   - Partial, async callable object, and wrapped async runners remain supported; runner-raised `TimeoutError` remains `executor_runner_failed`.
-- [ ] Phase 8 - Revision 38 publish
-  - Pending fresh compile, diff, changed-scope, added-line secret checks, follow-up commit, and push to existing draft PR #405.
+- [x] Phase 8 - Revision 38 publish
+  - Fresh compile, diff, eight-path scope, and added-line secret checks passed.
+  - Review-fix implementation commit: `a26997bfd6291dcf59f905622551b59b454e7db1`.
+  - The existing branch was pushed without force to draft PR #405; no merge, 211, deployment, or B2 closure was performed.
 
 ## Evidence Boundaries
 
