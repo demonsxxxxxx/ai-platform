@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import functools
 import hmac
 import inspect
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -113,16 +116,56 @@ def _safe_id_list(value: Any) -> list[str]:
 
 
 def _resource_limit_seconds(value: Any) -> float | None:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, int | float):
         return None
+    parsed = float(value)
+    return parsed if math.isfinite(parsed) else None
+
+
+def _is_async_callable(value: object) -> bool:
+    candidates = [value, getattr(value, "__call__", None)]
+    for candidate in candidates:
+        while isinstance(candidate, functools.partial):
+            candidate = candidate.func
+        if candidate is None:
+            continue
+        if inspect.iscoroutinefunction(candidate):
+            return True
+    return False
+
+
+def _cancel_without_waiting(task: asyncio.Future[Any]) -> None:
+    task.cancel()
+
+    def consume_exception(done_task: asyncio.Future[Any]) -> None:
+        if done_task.cancelled():
+            return
+        try:
+            done_task.exception()
+        except asyncio.CancelledError:
+            pass
+
+    task.add_done_callback(consume_exception)
+
+
+async def _await_with_deadline(awaitable: Awaitable[Any], *, timeout_seconds: float) -> tuple[Any, bool]:
+    task = asyncio.ensure_future(awaitable)
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+        done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+    except asyncio.CancelledError:
+        _cancel_without_waiting(task)
+        raise
+    if task in done:
+        return task.result(), False
+    _cancel_without_waiting(task)
+    return None, True
 
 
 def _elapsed_ms(started_at: float) -> int:
-    return max(int(round((time.monotonic() - started_at) * 1000)), 0)
+    elapsed = time.monotonic() - started_at
+    if not math.isfinite(elapsed):
+        return 0
+    return max(int(round(elapsed * 1000)), 0)
 
 
 def _timing_value(value: object) -> int:
@@ -480,16 +523,20 @@ def create_executor_app(
             state_patch={"stage": "accepted"},
         )
         resource_limits = request.config.get("resource_limits", {})
+        max_seconds_present = isinstance(resource_limits, dict) and "max_seconds" in resource_limits
         max_seconds = (
             _resource_limit_seconds(resource_limits.get("max_seconds"))
             if isinstance(resource_limits, dict)
             else None
         )
+        invalid_max_seconds = max_seconds_present and max_seconds is None
         timed_out = max_seconds is not None and max_seconds <= 0
         executor_started_at = time.monotonic()
+        deadline_started_at = executor_started_at
         executor_first_token_latency_ms: int | None = None
         executor_tool_call_latency_ms: int | None = None
         artifact_upload_latency_ms = 0
+        runner_events_open = {"value": True}
 
         async def dispatch_callback_event(event: ExecutorCallbackEvent) -> None:
             try:
@@ -504,6 +551,8 @@ def create_executor_app(
 
         async def emit_runner_event(event: AgentEvent) -> None:
             nonlocal artifact_upload_latency_ms, executor_first_token_latency_ms, executor_tool_call_latency_ms
+            if not runner_events_open["value"]:
+                return
             agent_event = event if isinstance(event, AgentEvent) else AgentEvent.model_validate(event)
             if agent_event.type == "assistant_delta" and executor_first_token_latency_ms is None:
                 executor_first_token_latency_ms = _elapsed_ms(executor_started_at)
@@ -527,28 +576,66 @@ def create_executor_app(
 
         await dispatch_callback_event(running_event)
         runner_result: dict[str, Any] = {}
-        if not timed_out:
-            try:
-                raw_runner_result = resolved_executor_runner(request, resolved_workspace_root, emit_runner_event)
-                if inspect.isawaitable(raw_runner_result):
-                    raw_runner_result = await raw_runner_result
-                runner_result = raw_runner_result if isinstance(raw_runner_result, dict) else {}
-            except Exception as exc:
+        if invalid_max_seconds:
+            runner_result = {
+                "status": "failed",
+                "error_code": "executor_invalid_max_seconds",
+                "error_message": "Executor max_seconds must be a finite number",
+            }
+        elif not timed_out:
+            if max_seconds is not None and not _is_async_callable(resolved_executor_runner):
                 runner_result = {
                     "status": "failed",
-                    "error_code": "executor_runner_failed",
-                    "error_message": str(exc),
+                    "error_code": "executor_deadline_requires_async_runner",
+                    "error_message": "Positive executor deadlines require an async runner",
                 }
+            else:
+                try:
+                    deadline_started_at = time.monotonic()
+                    raw_runner_result = resolved_executor_runner(request, resolved_workspace_root, emit_runner_event)
+                    if inspect.isawaitable(raw_runner_result):
+                        if max_seconds is not None:
+                            raw_runner_result, timed_out = await _await_with_deadline(
+                                raw_runner_result,
+                                timeout_seconds=max_seconds,
+                            )
+                        else:
+                            raw_runner_result = await raw_runner_result
+                    runner_result = raw_runner_result if isinstance(raw_runner_result, dict) else {}
+                except Exception as exc:
+                    runner_result = {
+                        "status": "failed",
+                        "error_code": "executor_runner_failed",
+                        "error_message": str(exc),
+                    }
+        runner_events_open["value"] = False
 
         runner_status = str(runner_result.get("status") or "completed")
         failed = timed_out or runner_status == "failed"
-        error_code = "executor_health_timeout" if timed_out else str(runner_result.get("error_code") or "")
+        positive_deadline_exceeded = timed_out and max_seconds is not None and max_seconds > 0
+        error_code = (
+            "executor_deadline_exceeded"
+            if positive_deadline_exceeded
+            else "executor_health_timeout"
+            if timed_out
+            else str(runner_result.get("error_code") or "")
+        )
         error_message = (
-            "Executor health timeout"
+            "Executor deadline exceeded"
+            if positive_deadline_exceeded
+            else "Executor health timeout"
             if timed_out
             else str(runner_result.get("error_message") or runner_result.get("message") or "Executor failed")
             if failed
             else None
+        )
+        timeout_observation = (
+            {
+                "requested_max_seconds": max_seconds,
+                "timeout_elapsed_ms": _elapsed_ms(deadline_started_at),
+            }
+            if timed_out
+            else {}
         )
         completed_event = ExecutorCallbackEvent(
             session_id=request.session_id,
@@ -557,7 +644,7 @@ def create_executor_app(
             status="failed" if failed else "completed",
             progress=100 if not failed else 5,
             state_patch=(
-                {"error_code": error_code}
+                {"error_code": error_code, **timeout_observation}
                 if failed
                 else {"marker_path": f"/workspace/runtime/{marker_path.name}"}
             ),
@@ -597,6 +684,7 @@ def create_executor_app(
         if failed:
             response["error_code"] = error_code or "executor_failed"
             response["error_message"] = error_message or "Executor failed"
+            response.update(timeout_observation)
         if callback_errors:
             response["callback_errors"] = callback_errors
         return response
