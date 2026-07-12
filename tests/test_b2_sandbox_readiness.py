@@ -731,6 +731,14 @@ def test_resource_limit_readiness_requires_observed_bound_deadline_evidence():
         assert b2_sandbox_readiness._resource_limits_runtime_verified(invalid, run_id="run-a") is False
 
 
+def test_resource_limit_readiness_uses_tight_elapsed_upper_bound():
+    assert b2_sandbox_readiness._deadline_elapsed_is_bounded(300, requested_max_seconds=0.05) is True
+    assert b2_sandbox_readiness._deadline_elapsed_is_bounded(301, requested_max_seconds=0.05) is False
+    assert b2_sandbox_readiness._deadline_elapsed_is_bounded(835, requested_max_seconds=0.05) is False
+    assert b2_sandbox_readiness._deadline_elapsed_is_bounded(2500, requested_max_seconds=2.0) is True
+    assert b2_sandbox_readiness._deadline_elapsed_is_bounded(2501, requested_max_seconds=2.0) is False
+
+
 def test_b2_runtime_delta_filter_treats_frontend_only_changes_as_b2_runtime_neutral(monkeypatch):
     monkeypatch.setattr(
         b2_sandbox_readiness,

@@ -42,7 +42,7 @@ SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]+")
 EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
 LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
 RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
-PLATFORM_DEADLINE_PROBE_SECONDS = 0.05
+PLATFORM_DEADLINE_PROBE_SECONDS = 2.0
 NON_EXPANSION_INVARIANTS = {
     "ordinary_user_high_risk_sandbox_allowed": False,
     "admin_or_allowlist_only": True,
@@ -566,10 +566,8 @@ def _deadline_elapsed_is_bounded(value: object, *, requested_max_seconds: object
         return False
     requested_ms = float(requested_max_seconds) * 1000
     elapsed_ms = float(value)
-    return math.isfinite(elapsed_ms) and max(requested_ms * 0.5, 1.0) <= elapsed_ms <= max(
-        requested_ms * 2,
-        requested_ms + 250,
-    )
+    elapsed_upper_bound_ms = requested_ms + max(250, requested_ms * 0.25)
+    return math.isfinite(elapsed_ms) and max(requested_ms * 0.5, 1.0) <= elapsed_ms <= elapsed_upper_bound_ms
 
 
 def _runtime_identity_from_docker_inspect(
