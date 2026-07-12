@@ -622,6 +622,58 @@ def test_executor_execute_enforces_fractional_positive_timeout_and_cancels_runne
     assert str(tmp_path) not in str(body)
 
 
+@pytest.mark.asyncio
+async def test_executor_deadline_returns_when_runner_swallows_cancellation_and_ignores_late_events(tmp_path):
+    callbacks = []
+    runner_cancelled = asyncio.Event()
+    release_runner = asyncio.Event()
+    payload = task_payload()
+    payload["config"]["resource_limits"] = {"max_seconds": 0.01}
+
+    async def executor_runner(request, workspace_root, emit_event):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            runner_cancelled.set()
+            await release_runner.wait()
+            await emit_event(AgentEvent(type="assistant_delta", message="late", payload={"delta": "late"}))
+            return {"status": "completed", "message": "late completion"}
+
+    async def callback_sender(url, callback_payload, token):
+        callbacks.append(callback_payload)
+        return {"accepted": True}
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+    )
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
+    request = ExecutorTaskRequest.model_validate(payload)
+    endpoint_task = asyncio.create_task(endpoint(request, executor_credential=EXECUTOR_AUTH_TOKEN))
+
+    done, _ = await asyncio.wait({endpoint_task}, timeout=0.15)
+    returned_before_runner_release = endpoint_task in done
+    assert runner_cancelled.is_set()
+
+    release_runner.set()
+    result = await asyncio.wait_for(endpoint_task, timeout=0.5)
+
+    assert returned_before_runner_release is True
+    assert result["status"] == "failed"
+    assert result["error_code"] == "executor_deadline_exceeded"
+    assert [callback["status"] for callback in callbacks] == ["running", "failed"]
+    assert all(
+        event.get("message") != "late"
+        for callback in callbacks
+        for event in callback.get("events", [])
+    )
+
+
 def test_executor_execute_allows_runner_with_larger_fractional_deadline(tmp_path):
     callbacks = []
     payload = task_payload()
@@ -716,8 +768,8 @@ def test_executor_execute_accepts_supported_async_callable_forms(tmp_path, runne
         executor_runner = AsyncRunner()
     else:
         @functools.wraps(async_runner)
-        def decorated_runner(request, workspace_root, emit_event):
-            return async_runner(request, workspace_root, emit_event)
+        async def decorated_runner(request, workspace_root, emit_event):
+            return await async_runner(request, workspace_root, emit_event)
 
         executor_runner = decorated_runner
 
@@ -733,13 +785,39 @@ def test_executor_execute_accepts_supported_async_callable_forms(tmp_path, runne
     assert response.json()["status"] == "accepted"
 
 
+def test_executor_execute_rejects_sync_wrapper_before_positive_deadline_control(tmp_path):
+    wrapper_called = False
+
+    async def async_runner(request, workspace_root, emit_event):
+        return {"status": "completed"}
+
+    @functools.wraps(async_runner)
+    def sync_wrapper(request, workspace_root, emit_event):
+        nonlocal wrapper_called
+        wrapper_called = True
+        return async_runner(request, workspace_root, emit_event)
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=lambda url, payload, token: {"accepted": True},
+        executor_runner=sync_wrapper,
+    )
+
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["error_code"] == "executor_deadline_requires_async_runner"
+    assert wrapper_called is False
+
+
 def test_executor_execute_classifies_decorated_runner_timeout_as_internal_failure(tmp_path):
     async def async_runner(request, workspace_root, emit_event):
         raise TimeoutError("decorated runner dependency timed out")
 
     @functools.wraps(async_runner)
-    def decorated_runner(request, workspace_root, emit_event):
-        return async_runner(request, workspace_root, emit_event)
+    async def decorated_runner(request, workspace_root, emit_event):
+        return await async_runner(request, workspace_root, emit_event)
 
     client = create_test_client(
         tmp_path,

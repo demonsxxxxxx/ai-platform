@@ -129,13 +129,23 @@ def _is_async_callable(value: object) -> bool:
             candidate = candidate.func
         if candidate is None:
             continue
-        try:
-            candidate = inspect.unwrap(candidate)
-        except (ValueError, TypeError):
-            continue
         if inspect.iscoroutinefunction(candidate):
             return True
     return False
+
+
+def _cancel_without_waiting(task: asyncio.Future[Any]) -> None:
+    task.cancel()
+
+    def consume_exception(done_task: asyncio.Future[Any]) -> None:
+        if done_task.cancelled():
+            return
+        try:
+            done_task.exception()
+        except asyncio.CancelledError:
+            pass
+
+    task.add_done_callback(consume_exception)
 
 
 async def _await_with_deadline(awaitable: Awaitable[Any], *, timeout_seconds: float) -> tuple[Any, bool]:
@@ -143,23 +153,11 @@ async def _await_with_deadline(awaitable: Awaitable[Any], *, timeout_seconds: fl
     try:
         done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
     except asyncio.CancelledError:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            pass
+        _cancel_without_waiting(task)
         raise
     if task in done:
         return task.result(), False
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    except Exception:
-        pass
+    _cancel_without_waiting(task)
     return None, True
 
 
@@ -538,6 +536,7 @@ def create_executor_app(
         executor_first_token_latency_ms: int | None = None
         executor_tool_call_latency_ms: int | None = None
         artifact_upload_latency_ms = 0
+        runner_events_open = {"value": True}
 
         async def dispatch_callback_event(event: ExecutorCallbackEvent) -> None:
             try:
@@ -552,6 +551,8 @@ def create_executor_app(
 
         async def emit_runner_event(event: AgentEvent) -> None:
             nonlocal artifact_upload_latency_ms, executor_first_token_latency_ms, executor_tool_call_latency_ms
+            if not runner_events_open["value"]:
+                return
             agent_event = event if isinstance(event, AgentEvent) else AgentEvent.model_validate(event)
             if agent_event.type == "assistant_delta" and executor_first_token_latency_ms is None:
                 executor_first_token_latency_ms = _elapsed_ms(executor_started_at)
@@ -607,6 +608,7 @@ def create_executor_app(
                         "error_code": "executor_runner_failed",
                         "error_message": str(exc),
                     }
+        runner_events_open["value"] = False
 
         runner_status = str(runner_result.get("status") or "completed")
         failed = timed_out or runner_status == "failed"

@@ -1,6 +1,6 @@
 # B2 Positive Executor Deadline
 
-Status: `PR ready`
+Status: `source slice; PR ready`
 
 - [x] Phase 1 - Freshness and RED
   - Controller epoch `controller-20260711-1945`, revision 35, lane generation 1.
@@ -47,6 +47,18 @@ Status: `PR ready`
   - Fresh compile, diff, eight-path scope, and added-line secret checks passed.
   - Review-fix implementation commit: `a26997bfd6291dcf59f905622551b59b454e7db1`.
   - The existing branch was pushed without force to draft PR #405; no merge, 211, deployment, or B2 closure was performed.
+- [x] Phase 9 - Revision 41 review fixes
+  - Controller epoch `controller-20260711-1945`, board revision 41, lane generation 1, phase sequence 5; starting head `974a20273fd7f0f6c5bf1eaf5e462f6a6ee14c08`.
+  - Executor RED proved that unbounded cancellation collection could hang the endpoint when a runner swallowed `CancelledError`, and that a synchronous wrapper could be misclassified through `__wrapped__`.
+  - Deadline handling now cancels without unboundedly awaiting the runner, consumes a later task exception nonblockingly, and closes the runner event gate before terminal callback delivery. `SandboxRuntime` stopping the per-run ephemeral container after endpoint return remains the hard outer boundary; in-process Python does not claim to kill a cancellation-swallowing coroutine.
+  - Positive deadlines reject synchronous wrappers before invocation. Partial async functions, async callable objects, and genuinely async decorated wrappers remain supported; runner-raised `TimeoutError` remains `executor_runner_failed`.
+  - Generator RED proved callback-supplied `bounded_error_projection` could be promoted as admin projection proof. Generator now derives deadline enforcement only from the observed executor response and keeps `bounded_error_projection_verified=false`; verifier and readiness remain blocked until a separate real admin projection observer exists.
+- [x] Phase 10 - Revision 41 local verification
+  - Executor focused GREEN: 5 passed; full executor GREEN: 39 passed.
+  - Generator/verifier/readiness GREEN: 102 passed.
+  - Full affected suite: 159 passed across executor, runtime, generator/verifier, and readiness tests.
+  - Fresh compile, diff, seven-code-path scope, and added-line secret/personal-path checks passed before publication readiness.
+  - This phase is a source slice only. No Docker, 211, deployment, runtime smoke, merge, CI wait, independent review claim, admin projection proof, or B2 gate closure was performed.
 
 ## Evidence Boundaries
 

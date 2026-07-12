@@ -735,20 +735,11 @@ def _resource_limits_hardening_error(section: dict[str, Any], *, run_id: str) ->
     for field in (
         "docker_inspection_verified",
         "over_limit_cleanup_verified",
-        "bounded_error_projection_verified",
         "max_seconds_enforced",
     ):
         if section.get(field) is not True:
             return f"hardening evidence missing: resource_limits.{field}"
-    projection_error = bounded_error_projection_error(
-        section.get("bounded_error_projection"),
-        run_id=run_id,
-    )
-    if projection_error:
-        return f"hardening evidence missing: {projection_error}"
-    if section.get("bounded_error_projection_source") != "executor_callback":
-        return "hardening evidence missing: resource_limits.bounded_error_projection_source"
-    return None
+    return "hardening evidence blocked: resource_limits.bounded_error_projection_observer"
 
 
 def _egress_policy_hardening_error(section: dict[str, Any]) -> str | None:

@@ -129,10 +129,6 @@ def _runtime_probe_section_error(section_name: str, section: dict[str, Any], *, 
             requested_max_seconds=section.get("requested_max_seconds"),
         ):
             return "runtime probe results missing: resource_limits.observed_timeout_elapsed_ms"
-        if safe_bounded_error_projection(section.get("bounded_error_projection"), run_id=run_id) is None:
-            return "runtime probe results missing: resource_limits.bounded_error_projection"
-        if section.get("bounded_error_projection_source") != "executor_callback":
-            return "runtime probe results missing: resource_limits.bounded_error_projection_source"
         return None
     if section_name == "egress_policy":
         for field in (
@@ -521,7 +517,6 @@ def _safe_platform_resource_probe_from_result(
     platform_resource_timeout_probe: bool,
     requested_max_seconds: float,
     runtime_identity: dict[str, Any],
-    callbacks: list[dict[str, object]] | None,
 ) -> dict[str, Any]:
     if not platform_resource_timeout_probe:
         return {}
@@ -561,10 +556,6 @@ def _safe_platform_resource_probe_from_result(
         "max_seconds_enforced": True,
         "over_limit_cleanup_verified": True,
     }
-    projection = _bounded_error_projection_from_callbacks(callbacks, run_id=run_id)
-    if projection is not None:
-        probe["bounded_error_projection"] = projection
-        probe["bounded_error_projection_source"] = "executor_callback"
     return probe
 
 
@@ -635,24 +626,6 @@ def _runtime_identity_matches_subject(identity: object, *, runtime_subject: str)
         and identity.get("source_tree_commit") == runtime_subject
         and identity.get("source_tree_dirty") is False
     )
-
-
-def _bounded_error_projection_from_callbacks(
-    callbacks: list[dict[str, object]] | None,
-    *,
-    run_id: str,
-) -> dict[str, Any] | None:
-    if not isinstance(callbacks, list):
-        return None
-    for callback in callbacks:
-        if not isinstance(callback, dict) or callback.get("run_id") != run_id or callback.get("status") != "failed":
-            continue
-        state_patch = callback.get("state_patch")
-        projection = state_patch.get("bounded_error_projection") if isinstance(state_patch, dict) else None
-        safe_projection = safe_bounded_error_projection(projection, run_id=run_id)
-        if safe_projection is not None:
-            return safe_projection
-    return None
 
 
 def _merge_current_runtime_probe_results(
@@ -934,10 +907,6 @@ def _platform_hardening_evidence(
             callbacks=callbacks,
         )
     security_options = _docker_security_options(docker_inspect)
-    bounded_error_projection = safe_bounded_error_projection(
-        resource_probe.get("bounded_error_projection"),
-        run_id=run_id,
-    )
     resource_limits_evidence: dict[str, object] = {
         "evidence_class": "live_platform_probe",
         "memory_limit_mb": int(limits.get("memory_mb") or 0),
@@ -950,11 +919,9 @@ def _platform_hardening_evidence(
             docker_inspect=docker_inspect,
         ),
         "over_limit_cleanup_verified": resource_probe.get("over_limit_cleanup_verified") is True,
-        "bounded_error_projection_verified": bounded_error_projection is not None,
+        "bounded_error_projection_verified": False,
         "max_seconds_enforced": resource_probe.get("max_seconds_enforced") is True,
     }
-    if bounded_error_projection is not None:
-        resource_limits_evidence["bounded_error_projection"] = bounded_error_projection
     if resource_probe.get("probe_kind") == "platform_executor_deadline":
         resource_limits_evidence.update(
             {
@@ -968,8 +935,6 @@ def _platform_hardening_evidence(
                 "timeout_probe_runtime_identity": resource_probe.get("runtime_identity"),
             }
         )
-        if resource_probe.get("bounded_error_projection_source") == "executor_callback":
-            resource_limits_evidence["bounded_error_projection_source"] = "executor_callback"
     return {
         "lease_isolation": {
             "evidence_class": "live_platform_probe",
@@ -1325,7 +1290,6 @@ def run_platform_runtime_probe(
             docker_inspect,
             requested_image=sandbox_executor_image,
         ),
-        callbacks=recorder.callbacks,
     )
     platform_egress_probe = _safe_platform_egress_probe_from_result(
         run_id=recorder.run_id,
@@ -1391,8 +1355,6 @@ def _runtime_probe_results_payload(*, run_id: str, hardening: dict[str, Any]) ->
             "requested_max_seconds": resource_limits.get("over_limit_requested_max_seconds"),
             "observed_timeout_elapsed_ms": resource_limits.get("over_limit_observed_timeout_elapsed_ms"),
             "max_seconds_enforced": resource_limits.get("max_seconds_enforced") is True,
-            "bounded_error_projection": resource_limits.get("bounded_error_projection"),
-            "bounded_error_projection_source": resource_limits.get("bounded_error_projection_source"),
         },
         "egress_policy": {
             "default_deny_outbound": egress_policy.get("default_deny_outbound") is True,

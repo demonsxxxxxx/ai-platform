@@ -512,8 +512,7 @@ def _resource_limits_runtime_verified(
         if not _positive_number(section.get(field)):
             return False
     requested = section.get("over_limit_requested_max_seconds")
-    projection = section.get("bounded_error_projection")
-    return (
+    deadline_observation_verified = (
         section.get("docker_inspection_verified") is True
         and section.get("over_limit_cleanup_verified") is True
         and section.get("over_limit_probe_kind") == "platform_executor_deadline"
@@ -535,10 +534,11 @@ def _resource_limits_runtime_verified(
             or section.get("timeout_probe_runtime_subject") == runtime_subject
         )
         and section.get("max_seconds_enforced") is True
-        and section.get("bounded_error_projection_verified") is True
-        and section.get("bounded_error_projection_source") == "executor_callback"
-        and bounded_error_projection_is_safe(projection, run_id=run_id)
     )
+    if not deadline_observation_verified:
+        return False
+    # Executor callbacks cannot prove the separate admin runtime projection.
+    return False
 
 
 def _egress_policy_runtime_verified(hardening: dict[str, Any]) -> bool:

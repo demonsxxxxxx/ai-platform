@@ -571,7 +571,7 @@ def test_b2_sandbox_readiness_accepts_smoke_with_open_hardening_verifier(tmp_pat
     assert smoke_evidence["does_not_close_b2_gate"] is True
 
 
-def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_closure(tmp_path):
+def test_b2_sandbox_readiness_keeps_hardening_open_without_projection_observer(tmp_path):
     write_future_reviewed_b2_smoke(tmp_path)
     evidence_path = (
         tmp_path
@@ -647,25 +647,21 @@ def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_cl
 
     readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
 
-    assert readiness["status"] == "runtime_hardening_acceptance_recorded"
+    assert readiness["status"] == "runtime_acceptance_recorded"
     assert readiness["status_label"] == "local partial"
     assert readiness["open_gaps"] == [
         "b2_issue_review_and_closure_evidence",
         "b2_runtime_evidence_review_against_merged_source",
-    ]
-    assert readiness["closed_runtime_gaps"] == [
-        "b2_211_real_sandbox_smoke",
-        "b2_reviewed_release_evidence",
         "resource_limits_policy_evidence",
         "egress_policy_evidence",
         "security_options_evidence",
     ]
+    assert readiness["closed_runtime_gaps"] == [
+        "b2_211_real_sandbox_smoke",
+        "b2_reviewed_release_evidence",
+    ]
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
-    assert smoke_evidence["hardening_runtime_evidence"] == {
-        "resource_limits_policy_evidence": "verified_211_runtime_acceptance",
-        "egress_policy_evidence": "verified_211_runtime_acceptance",
-        "security_options_evidence": "verified_211_runtime_acceptance",
-    }
+    assert smoke_evidence.get("hardening_runtime_evidence") is None
     assert "gate closable" not in json.dumps(readiness, ensure_ascii=False).lower()
 
 
@@ -720,7 +716,7 @@ def test_resource_limit_readiness_requires_observed_bound_deadline_evidence():
     }
 
     assert b2_sandbox_readiness._resource_limits_runtime_verified(source_only, run_id="run-a") is False
-    assert b2_sandbox_readiness._resource_limits_runtime_verified(observed, run_id="run-a") is True
+    assert b2_sandbox_readiness._resource_limits_runtime_verified(observed, run_id="run-a") is False
     assert (
         b2_sandbox_readiness._resource_limits_runtime_verified(
             observed,
