@@ -21,7 +21,6 @@ import { SessionItem } from "./SessionItem";
 import { ProjectMenu } from "./ProjectMenu";
 import { LoadingSpinner } from "../common/LoadingSpinner";
 import { DynamicIcon } from "../common/DynamicIcon";
-import { isSessionFavorite } from "./sessionFavorites";
 import { shouldAutoExpandProject } from "./autoExpandProject";
 import {
   formatUnreadCount,
@@ -42,17 +41,13 @@ export interface ProjectItemHandle {
 interface ProjectItemProps {
   project: Project;
   currentSessionId: string | null;
-  allProjects: Project[];
   onSelectSession: (sessionId: string) => void;
   onDeleteSession: (sessionId: string) => void;
-  onMoveSession: (sessionId: string, projectId: string | null) => void;
-  onToggleFavorite?: (sessionId: string) => void;
   onShareSession?: (sessionId: string) => void;
   onRenameProject: (projectId: string, name: string) => void;
   onDeleteProject: (projectId: string) => void;
   onUpdateIcon?: (projectId: string, icon: string) => void;
   scrollRoot?: Element | null;
-  draggingSessionId?: string | null;
   onNewSessionInProject?: (projectId: string) => void;
   forceExpandProjectId?: string | null;
   onConsumeAutoExpand?: (projectId: string) => void;
@@ -65,15 +60,11 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
     {
       project,
       currentSessionId,
-      allProjects,
       onSelectSession,
       onDeleteSession,
-      onMoveSession,
-      onToggleFavorite,
       onShareSession,
       onRenameProject,
       onDeleteProject,
-      draggingSessionId,
       onNewSessionInProject,
       forceExpandProjectId,
       onConsumeAutoExpand,
@@ -91,7 +82,6 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
     const [isSaving, setIsSaving] = useState(false);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
-    const [isDragOver, setIsDragOver] = useState(false);
 
     const inputRef = useRef<HTMLInputElement>(null);
     const menuButtonRef = useRef<HTMLButtonElement>(null);
@@ -268,52 +258,16 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
       }
     };
 
-    // Drag and drop handlers
-    const handleDragOver = (e: React.DragEvent) => {
-      if (favoritesOnly) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      setIsDragOver(true);
-    };
-
-    const handleDragLeave = (e: React.DragEvent) => {
-      if (favoritesOnly) return;
-      // Only set dragOver to false if we're leaving the project entirely
-      const relatedTarget = e.relatedTarget as Node;
-      if (!e.currentTarget.contains(relatedTarget)) {
-        setIsDragOver(false);
-      }
-    };
-
-    const handleDrop = (e: React.DragEvent) => {
-      if (favoritesOnly) return;
-      e.preventDefault();
-      setIsDragOver(false);
-
-      const sessionId = e.dataTransfer.getData("text/plain");
-      if (sessionId) {
-        onMoveSession(sessionId, project.id);
-      }
-    };
-
     return (
       <div>
         {/* Project header - ChatGPT style drop target */}
         <div
           onClick={handleToggle}
           onTouchStart={handleHeaderTouchStart}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          data-project-drop={favoritesOnly ? undefined : true}
-          data-project-id={favoritesOnly ? undefined : project.id}
           className={`group relative flex cursor-pointer items-center gap-3 h-10 rounded-lg px-[9px] transition-colors ${
-            (!favoritesOnly && isDragOver) ||
-            (!favoritesOnly && draggingSessionId)
-              ? "bg-[var(--theme-sidebar-panel-muted)] ring-1 ring-inset ring-[var(--theme-border-strong)]"
-              : isExpanded
-                ? "bg-[var(--theme-sidebar-panel-muted)]"
-                : "hover:bg-[var(--theme-sidebar-panel-muted)]"
+            isExpanded
+              ? "bg-[var(--theme-sidebar-panel-muted)]"
+              : "hover:bg-[var(--theme-sidebar-panel-muted)]"
           }`}
         >
           {/* Project icon - editable */}
@@ -402,27 +356,15 @@ export const ProjectItem = forwardRef<ProjectItemHandle, ProjectItemProps>(
                     key={session.id}
                     session={session}
                     isActive={session.id === currentSessionId}
-                    projects={allProjects}
                     onSelect={() => onSelectSession(session.id)}
                     onDelete={() => onDeleteSession(session.id)}
-                    onMoveToProject={(projectId) =>
-                      onMoveSession(session.id, projectId)
-                    }
-                    currentProjectId={project.id}
                     onShare={
                       onShareSession
                         ? () => onShareSession(session.id)
                         : undefined
                     }
-                    onToggleFavorite={
-                      onToggleFavorite
-                        ? () => onToggleFavorite(session.id)
-                        : undefined
-                    }
                     onSessionUpdate={updateSession}
-                    isFavorite={isSessionFavorite(session)}
                     onDragStartTouch={undefined}
-                    isDraggingTouch={draggingSessionId === session.id}
                   />
                 ))}
                 {hasMore && (

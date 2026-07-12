@@ -7,7 +7,6 @@ import { useTranslation } from "react-i18next";
 import { MoreHorizontal } from "lucide-react";
 import toast from "react-hot-toast";
 import type { BackendSession } from "../../services/api/session";
-import type { Project } from "../../types";
 import { sessionApi } from "../../services/api";
 import { SessionMenu } from "./SessionMenu";
 import { shouldBlockSessionSelection } from "../../utils/sessionSelectionGuard";
@@ -15,15 +14,10 @@ import { shouldBlockSessionSelection } from "../../utils/sessionSelectionGuard";
 interface SessionItemProps {
   session: BackendSession;
   isActive: boolean;
-  projects: Project[];
   onSelect: () => void;
   onDelete: () => void;
-  onMoveToProject: (projectId: string | null) => void;
   onShare?: () => void;
-  onToggleFavorite?: () => void;
   onSessionUpdate: (session: BackendSession) => void;
-  isFavorite?: boolean;
-  currentProjectId?: string | null;
   onDragStart?: (session: BackendSession) => void;
   onDragEnd?: () => void;
   onDragStartTouch?: (
@@ -37,15 +31,10 @@ interface SessionItemProps {
 export function SessionItem({
   session,
   isActive,
-  projects,
   onSelect,
   onDelete,
-  onMoveToProject,
   onShare,
-  onToggleFavorite,
   onSessionUpdate,
-  isFavorite = false,
-  currentProjectId,
   onDragStart,
   onDragEnd,
   onDragStartTouch,
@@ -301,17 +290,12 @@ export function SessionItem({
       {/* Context Menu */}
       <SessionMenu
         session={session}
-        projects={projects}
         isOpen={isMenuOpen}
         onClose={() => setIsMenuOpen(false)}
         onRename={handleStartEdit}
         onDelete={onDelete}
-        onMoveToProject={onMoveToProject}
         onShare={onShare}
-        onToggleFavorite={onToggleFavorite}
         anchorEl={menuAnchor}
-        isFavorite={isFavorite}
-        currentProjectId={currentProjectId}
       />
     </>
   );

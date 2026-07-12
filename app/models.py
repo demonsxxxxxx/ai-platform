@@ -639,6 +639,14 @@ class ChatSessionResponse(BaseModel):
     updated_at: Any | None = None
 
 
+class SessionRenameRequest(BaseModel):
+    """Public rename payload for an active Session."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+
+
 class ChatSessionsResponse(BaseModel):
     sessions: list[ChatSessionResponse]
 

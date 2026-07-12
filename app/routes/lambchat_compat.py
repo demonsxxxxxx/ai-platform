@@ -8,8 +8,8 @@ from fastapi.responses import StreamingResponse
 from app.auth import AuthPrincipal, is_ai_admin, require_principal, sign_principal_session, verify_principal_session
 from app.db import transaction
 from app.model_catalog import build_model_catalog
-from app.models import LoginRequest
-from app import repositories
+from app.models import LoginRequest, SessionRenameRequest
+from app import repositories, session_actions
 from app.routes.auth import _login_principal
 from app.routes.files import upload_file as upload_platform_file
 from app.projection_redaction import capability_id_from_skill, public_agent_id_for_projection, redact_raw_skill_references
@@ -430,6 +430,66 @@ async def get_session(session_id: str, principal: AuthPrincipal = Depends(requir
     if row is None:
         raise HTTPException(status_code=404, detail="session_not_found")
     return _session_payload(row)
+
+
+@router.patch("/sessions/{session_id}")
+async def rename_session(
+    session_id: str,
+    request: SessionRenameRequest,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    try:
+        async with transaction() as conn:
+            row = await session_actions.rename_session(
+                conn,
+                principal=principal,
+                session_id=session_id,
+                title=request.name,
+            )
+    except session_actions.SessionActionValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except session_actions.SessionActionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="session_not_found") from exc
+    return {"status": "updated", "session": _session_payload(row)}
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(
+    session_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    try:
+        async with transaction() as conn:
+            result = await session_actions.delete_session(conn, principal=principal, session_id=session_id)
+    except session_actions.SessionActionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="session_not_found") from exc
+    return {
+        "status": "deleted",
+        "already_deleted": result["already_deleted"],
+        "session": _session_payload(result["session"]),
+    }
+
+
+@router.post("/sessions/{session_id}/messages/{message_id}/fork")
+async def fork_session_message(
+    session_id: str,
+    message_id: str,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> dict[str, object]:
+    try:
+        async with transaction() as conn:
+            result = await session_actions.fork_session_message(
+                conn,
+                principal=principal,
+                session_id=session_id,
+                message_id=message_id,
+            )
+    except session_actions.SessionActionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="session_not_found") from exc
+    return {
+        "source_session_id": result["source_session_id"],
+        "session": _session_payload(result["session"]),
+    }
 
 
 @router.get("/sessions/{session_id}/runs")

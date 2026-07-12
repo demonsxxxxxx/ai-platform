@@ -18,14 +18,12 @@ import { useTranslation } from "react-i18next";
 import { sessionApi, type BackendSession } from "../../services/api";
 import { useAuth } from "../../hooks/useAuth";
 import { useProjectSessionList } from "../../hooks/useSession";
-import { useProjectManager } from "../../hooks/useProjectManager";
 import { ConfirmDialog } from "../common/ConfirmDialog";
 import { RecentChatsDialog } from "../sidebar/RecentChatsDialog";
 import {
   mergeUnreadUpdate,
   type UnreadBySession,
 } from "../sidebar/unreadCounts";
-import { isSessionFavorite } from "../sidebar/sessionFavorites";
 import { SearchDialog } from "./SearchDialog";
 import { ShareDialog } from "../share/ShareDialog";
 import {
@@ -70,7 +68,6 @@ export const SessionSidebar = forwardRef<
     currentSessionId,
     onSelectSession,
     onNewSession,
-    refreshKey,
     newSession,
     mobileOpen = false,
     onMobileOpen,
@@ -162,37 +159,6 @@ export const SessionSidebar = forwardRef<
     "desktop" | "mobile"
   >("desktop");
 
-  const projectManager = useProjectManager();
-  const { projects } = projectManager;
-
-  const handleMoveSession = useCallback(
-    async (sessionId: string, projectId: string | null) => {
-      try {
-        const response = await sessionApi.moveToProject(sessionId, projectId);
-        if (response.session) {
-          const favorite = isSessionFavorite(response.session);
-          uncategorizedList.updateSession(response.session);
-          setUnreadBySession((prev) =>
-            mergeUnreadUpdate(prev, {
-              sessionId,
-              unreadCount: response.session.unread_count ?? 0,
-              projectId:
-                (response.session.metadata?.project_id as
-                  | string
-                  | null
-                  | undefined) ?? null,
-              isFavorite: favorite,
-            }),
-          );
-        }
-      } catch (err) {
-        console.error("Failed to move session:", err);
-        toast.error(t("sidebar.sessionMoveFailed"));
-      }
-    },
-    [uncategorizedList, t],
-  );
-
   const handleShareSession = useCallback(
     (sessionId: string) => {
       const s = uncategorizedList.sessions.find((item) => item.id === sessionId);
@@ -206,35 +172,6 @@ export const SessionSidebar = forwardRef<
       setShareDialogSessionName(title || t("sidebar.newChat"));
     },
     [uncategorizedList, t],
-  );
-
-  const handleToggleFavorite = useCallback(
-    async (sessionId: string) => {
-      try {
-        const response = await sessionApi.toggleFavorite(sessionId);
-        const updatedSession = response.session;
-
-        if (uncategorizedList.sessions.some((s) => s.id === sessionId)) {
-          uncategorizedList.updateSession(updatedSession);
-        }
-        setUnreadBySession((prev) =>
-          mergeUnreadUpdate(prev, {
-            sessionId,
-            unreadCount: updatedSession.unread_count ?? 0,
-            projectId:
-              (updatedSession.metadata?.project_id as
-                | string
-                | null
-                | undefined) ?? null,
-            isFavorite: response.is_favorite,
-          }),
-        );
-      } catch (err) {
-        console.error("Failed to toggle favorite:", err);
-        toast.error(t("sidebar.favoriteToggleFailed", "收藏状态更新失败"));
-      }
-    },
-    [t, uncategorizedList],
   );
 
   // ─── Delete confirmation ────────────────────────────────────────
@@ -261,11 +198,6 @@ export const SessionSidebar = forwardRef<
   };
 
   // ─── Effects ────────────────────────────────────────────────────
-
-  useEffect(() => {
-    projectManager.loadProjects();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
 
   useEffect(() => {
     if (!currentSessionId) return;
@@ -333,9 +265,7 @@ export const SessionSidebar = forwardRef<
           | string
           | null
           | undefined) ?? null,
-        uncategorizedSession
-          ? isSessionFavorite(uncategorizedSession)
-          : undefined,
+        undefined,
       );
       onSelectSession(sessionId);
       onMobileClose?.();
@@ -349,14 +279,10 @@ export const SessionSidebar = forwardRef<
     () => ({
       onDeleteSession: (id) =>
         setDeleteConfirm({ isOpen: true, sessionId: id }),
-      onMoveSession: handleMoveSession,
-      onToggleFavorite: handleToggleFavorite,
       onShareSession: handleShareSession,
       onSelectSession: selectAndClose,
     }),
     [
-      handleMoveSession,
-      handleToggleFavorite,
       handleShareSession,
       selectAndClose,
     ],
@@ -406,7 +332,6 @@ export const SessionSidebar = forwardRef<
             isLoadingMoreUncategorized={uncategorizedList.isLoadingMore}
             loadMoreRef={uncategorizedList.loadMoreRef}
             onUpdateUncategorizedSession={uncategorizedList.updateSession}
-            projects={projects}
             currentSessionId={currentSessionId}
             unreadBySession={unreadBySession}
             sessionActions={sessionActions}
@@ -449,7 +374,6 @@ export const SessionSidebar = forwardRef<
               isLoadingMoreUncategorized={uncategorizedList.isLoadingMore}
               loadMoreRef={uncategorizedList.loadMoreRef}
               onUpdateUncategorizedSession={uncategorizedList.updateSession}
-              projects={projects}
               currentSessionId={currentSessionId}
               unreadBySession={unreadBySession}
               sessionActions={sessionActions}

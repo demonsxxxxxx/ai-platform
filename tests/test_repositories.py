@@ -98,6 +98,54 @@ class SingleRowConnection:
 
 
 @pytest.mark.asyncio
+async def test_session_action_repositories_bind_tenant_and_active_terminal_state():
+    conn = RecordingConnection()
+
+    await repositories.get_session_for_action(
+        conn,
+        tenant_id="tenant-a",
+        session_id="session-a",
+    )
+    get_sql, get_params = conn.calls[-1]
+    assert "from sessions" in get_sql
+    assert "tenant_id = %s and id = %s" in get_sql
+    assert "for update" in get_sql
+    assert get_params == ("tenant-a", "session-a")
+
+    await repositories.update_session_title(
+        conn,
+        tenant_id="tenant-a",
+        session_id="session-a",
+        title="Renamed",
+    )
+    rename_sql, rename_params = conn.calls[-1]
+    assert "update sessions" in rename_sql
+    assert "status = 'active'" in rename_sql
+    assert rename_params == ("Renamed", "tenant-a", "session-a")
+
+    await repositories.mark_session_deleted(
+        conn,
+        tenant_id="tenant-a",
+        session_id="session-a",
+    )
+    delete_sql, delete_params = conn.calls[-1]
+    assert "set status = 'deleted'" in delete_sql
+    assert "status = 'active'" in delete_sql
+    assert delete_params == ("tenant-a", "session-a")
+
+    await repositories.list_session_messages_for_fork(
+        conn,
+        tenant_id="tenant-a",
+        session_id="session-a",
+    )
+    messages_sql, messages_params = conn.calls[-1]
+    assert "from messages" in messages_sql
+    assert "tenant_id = %s and session_id = %s" in messages_sql
+    assert "order by created_at asc, id asc" in messages_sql
+    assert messages_params == ("tenant-a", "session-a")
+
+
+@pytest.mark.asyncio
 async def test_capability_distribution_backfill_marks_completion_and_never_recreates_after_rerun():
     backfill = getattr(repositories, "ensure_tenant_capability_distribution_backfill", None)
     assert callable(backfill), "ensure_tenant_capability_distribution_backfill missing"

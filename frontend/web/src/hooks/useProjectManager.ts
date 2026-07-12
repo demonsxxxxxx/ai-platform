@@ -5,7 +5,7 @@
 import { useState, useCallback } from "react";
 import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
-import { projectApi, sessionApi } from "../services/api";
+import { projectApi } from "../services/api";
 import type { Project } from "../types";
 
 interface UseProjectManagerReturn {
@@ -24,10 +24,6 @@ interface UseProjectManagerReturn {
     options?: { deleteSessions?: boolean; onAfter?: () => void },
   ) => Promise<void>;
   handleUpdateIcon: (projectId: string, icon: string) => Promise<void>;
-  handleMoveSession: (
-    sessionId: string,
-    projectId: string | null,
-  ) => Promise<void>;
 }
 
 export function useProjectManager(): UseProjectManagerReturn {
@@ -88,23 +84,6 @@ export function useProjectManager(): UseProjectManagerReturn {
     }
   };
 
-  const handleMoveSession = async (
-    sessionId: string,
-    projectId: string | null,
-  ) => {
-    try {
-      const response = await sessionApi.moveToProject(sessionId, projectId);
-      if (response.session) {
-        toast.success(
-          projectId ? t("sidebar.sessionMoved") : t("sidebar.sessionRemoved"),
-        );
-      }
-    } catch (err) {
-      console.error("Failed to move session:", err);
-      toast.error(t("sidebar.sessionMoveFailed"));
-    }
-  };
-
   const handleUpdateIcon = async (projectId: string, icon: string) => {
     try {
       const updated = await projectApi.update(projectId, { icon });
@@ -131,7 +110,6 @@ export function useProjectManager(): UseProjectManagerReturn {
     handleCreateProject,
     handleRenameProject,
     handleDeleteProject,
-    handleMoveSession,
     handleUpdateIcon,
   };
 }
