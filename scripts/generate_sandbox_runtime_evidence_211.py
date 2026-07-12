@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import re
 import subprocess
@@ -41,6 +42,7 @@ SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]+")
 EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
 LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
 RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
+PLATFORM_DEADLINE_PROBE_SECONDS = 0.05
 NON_EXPANSION_INVARIANTS = {
     "ordinary_user_high_risk_sandbox_allowed": False,
     "admin_or_allowlist_only": True,
@@ -103,12 +105,30 @@ def _runtime_probe_section_error(section_name: str, section: dict[str, Any], *, 
     if section_name == "resource_limits":
         if section.get("over_limit_cleanup_verified") is not True:
             return "runtime probe results missing: resource_limits.over_limit_cleanup_verified"
-        if section.get("probe_kind") != "platform_resource_timeout":
+        if section.get("probe_kind") != "platform_executor_deadline":
             return "runtime probe results missing: resource_limits.probe_kind"
-        if section.get("timeout_probe_seconds") != 0:
-            return "runtime probe results missing: resource_limits.timeout_probe_seconds"
-        if safe_bounded_error_projection(section.get("bounded_error_projection"), run_id=run_id) is None:
-            return "runtime probe results missing: resource_limits.bounded_error_projection"
+        if section.get("max_seconds_enforced") is not True:
+            return "runtime probe results missing: resource_limits.max_seconds_enforced"
+        if section.get("run_id") != run_id:
+            return "runtime probe results missing: resource_limits.run_id"
+        if section.get("probe_source") != "executor_response":
+            return "runtime probe results missing: resource_limits.probe_source"
+        if section.get("runtime_mode") != "platform":
+            return "runtime probe results missing: resource_limits.runtime_mode"
+        if not str(section.get("runtime_subject") or ""):
+            return "runtime probe results missing: resource_limits.runtime_subject"
+        if not _runtime_identity_matches_subject(
+            section.get("runtime_identity"),
+            runtime_subject=str(section.get("runtime_subject") or ""),
+        ):
+            return "runtime probe results missing: resource_limits.runtime_identity"
+        if not _positive_number(section.get("requested_max_seconds")):
+            return "runtime probe results missing: resource_limits.requested_max_seconds"
+        if not _deadline_elapsed_is_bounded(
+            section.get("observed_timeout_elapsed_ms"),
+            requested_max_seconds=section.get("requested_max_seconds"),
+        ):
+            return "runtime probe results missing: resource_limits.observed_timeout_elapsed_ms"
         return None
     if section_name == "egress_policy":
         for field in (
@@ -283,6 +303,11 @@ class EvidenceRecorder:
         progress = payload.get("progress")
         if isinstance(progress, int | float):
             event["progress"] = progress
+        state_patch = payload.get("state_patch")
+        projection = state_patch.get("bounded_error_projection") if isinstance(state_patch, dict) else None
+        safe_projection = safe_bounded_error_projection(projection, run_id=self.run_id)
+        if safe_projection is not None:
+            event["state_patch"] = {"bounded_error_projection": safe_projection}
         with self._lock:
             self._callback_auth_verified = True
             self.callbacks.append(event)
@@ -471,7 +496,7 @@ def _executor_evidence_from_result(result: object) -> dict[str, object]:
 def _positive_number(value: object) -> bool:
     if isinstance(value, bool):
         return False
-    return isinstance(value, int | float) and value > 0
+    return isinstance(value, int | float) and math.isfinite(float(value)) and value > 0
 
 
 def _runtime_probe_section(
@@ -490,6 +515,8 @@ def _safe_platform_resource_probe_from_result(
     result: object,
     release_reason: object,
     platform_resource_timeout_probe: bool,
+    requested_max_seconds: float,
+    runtime_identity: dict[str, Any],
 ) -> dict[str, Any]:
     if not platform_resource_timeout_probe:
         return {}
@@ -497,22 +524,123 @@ def _safe_platform_resource_probe_from_result(
     response = response if isinstance(response, dict) else {}
     status = str(getattr(result, "status", "") or response.get("status") or "")
     error_code = str(response.get("error_code") or "")
-    if status != "failed" or error_code != "executor_health_timeout" or release_reason != "run_failed":
+    response_run_id = str(response.get("run_id") or "")
+    response_requested = response.get("requested_max_seconds")
+    observed_elapsed_ms = response.get("timeout_elapsed_ms")
+    runtime_subject = str(runtime_identity.get("source_revision") or "")
+    if (
+        status != "failed"
+        or response.get("status") != "failed"
+        or error_code != "executor_deadline_exceeded"
+        or response_run_id != run_id
+        or not _positive_number(requested_max_seconds)
+        or not _positive_number(response_requested)
+        or abs(float(response_requested) - float(requested_max_seconds)) > 1e-9
+        or not _deadline_elapsed_is_bounded(
+            observed_elapsed_ms,
+            requested_max_seconds=requested_max_seconds,
+        )
+        or release_reason != "run_failed"
+        or not runtime_subject
+    ):
+        return {}
+    probe = {
+        "probe_kind": "platform_executor_deadline",
+        "run_id": run_id,
+        "probe_source": "executor_response",
+        "runtime_mode": "platform",
+        "runtime_subject": runtime_subject,
+        "runtime_identity": dict(runtime_identity),
+        "requested_max_seconds": float(requested_max_seconds),
+        "observed_timeout_elapsed_ms": int(observed_elapsed_ms),
+        "max_seconds_enforced": True,
+        "over_limit_cleanup_verified": True,
+    }
+    return probe
+
+
+def _deadline_elapsed_is_bounded(value: object, *, requested_max_seconds: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    if not _positive_number(requested_max_seconds):
+        return False
+    requested_ms = float(requested_max_seconds) * 1000
+    elapsed_ms = float(value)
+    return math.isfinite(elapsed_ms) and max(requested_ms * 0.5, 1.0) <= elapsed_ms <= max(
+        requested_ms * 2,
+        requested_ms + 250,
+    )
+
+
+def _runtime_identity_from_docker_inspect(
+    docker_inspect: dict[str, Any] | None,
+    *,
+    requested_image: str,
+) -> dict[str, object]:
+    if not isinstance(docker_inspect, dict) or not requested_image:
+        return {}
+    image_id = str(docker_inspect.get("Image") or "")
+    config = docker_inspect.get("Config")
+    if not image_id.startswith("sha256:") or not isinstance(config, dict):
+        return {}
+    observed_image = str(config.get("Image") or "")
+    if observed_image != requested_image:
+        return {}
+    labels = _docker_config_labels(docker_inspect)
+    source_revision = str(labels.get("ai-platform.source_revision") or "")
+    oci_revision = str(labels.get("org.opencontainers.image.revision") or "")
+    source_tree_commit = str(labels.get("ai-platform.source_tree_commit") or "")
+    if (
+        not source_revision
+        or source_revision == "unknown"
+        or source_revision != oci_revision
+        or source_revision != source_tree_commit
+        or str(labels.get("ai-platform.build-dirty") or "").lower() != "false"
+    ):
         return {}
     return {
-        "probe_kind": "platform_resource_timeout",
-        "timeout_probe_seconds": 0,
-        "over_limit_cleanup_verified": True,
-        "bounded_error_projection": {
-            "source": "admin_runtime_projection",
-            "run_id": run_id,
-            "status": "failed",
-            "error_code": "executor_health_timeout",
-            "host_paths_redacted": True,
-            "raw_docker_payload_absent": True,
-            "callback_token_absent": True,
-        },
+        "image_id": image_id,
+        "requested_image": requested_image,
+        "observed_image": observed_image,
+        "source_revision": source_revision,
+        "oci_revision": oci_revision,
+        "source_tree_commit": source_tree_commit,
+        "source_tree_dirty": False,
     }
+
+
+def _runtime_identity_matches_subject(identity: object, *, runtime_subject: str) -> bool:
+    if not isinstance(identity, dict) or not runtime_subject:
+        return False
+    image_id = identity.get("image_id")
+    requested_image = identity.get("requested_image")
+    observed_image = identity.get("observed_image")
+    return (
+        isinstance(image_id, str)
+        and image_id.startswith("sha256:")
+        and isinstance(requested_image, str)
+        and bool(requested_image)
+        and requested_image == observed_image
+        and identity.get("source_revision") == runtime_subject
+        and identity.get("oci_revision") == runtime_subject
+        and identity.get("source_tree_commit") == runtime_subject
+        and identity.get("source_tree_dirty") is False
+    )
+
+
+def _merge_current_runtime_probe_results(
+    *,
+    imported: dict[str, Any] | None,
+    current_resource_probe: dict[str, Any],
+    current_egress_probe: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(imported or {})
+    merged.pop("resource_limits", None)
+    if current_resource_probe:
+        merged["resource_limits"] = current_resource_probe
+    if current_egress_probe:
+        merged["egress_policy"] = current_egress_probe
+    return merged
 
 
 def _docker_host_config(docker_inspect: dict[str, Any] | None) -> dict[str, Any]:
@@ -779,10 +907,6 @@ def _platform_hardening_evidence(
             callbacks=callbacks,
         )
     security_options = _docker_security_options(docker_inspect)
-    bounded_error_projection = safe_bounded_error_projection(
-        resource_probe.get("bounded_error_projection"),
-        run_id=run_id,
-    )
     resource_limits_evidence: dict[str, object] = {
         "evidence_class": "live_platform_probe",
         "memory_limit_mb": int(limits.get("memory_mb") or 0),
@@ -795,14 +919,22 @@ def _platform_hardening_evidence(
             docker_inspect=docker_inspect,
         ),
         "over_limit_cleanup_verified": resource_probe.get("over_limit_cleanup_verified") is True,
-        "bounded_error_projection_verified": bounded_error_projection is not None,
+        "bounded_error_projection_verified": False,
+        "max_seconds_enforced": resource_probe.get("max_seconds_enforced") is True,
     }
-    if bounded_error_projection is not None:
-        resource_limits_evidence["bounded_error_projection"] = bounded_error_projection
-    if resource_probe.get("probe_kind") == "platform_resource_timeout":
-        resource_limits_evidence["over_limit_probe_kind"] = "platform_resource_timeout"
-    if resource_probe.get("timeout_probe_seconds") == 0:
-        resource_limits_evidence["over_limit_timeout_probe_seconds"] = 0
+    if resource_probe.get("probe_kind") == "platform_executor_deadline":
+        resource_limits_evidence.update(
+            {
+                "over_limit_probe_kind": "platform_executor_deadline",
+                "over_limit_requested_max_seconds": resource_probe.get("requested_max_seconds"),
+                "over_limit_observed_timeout_elapsed_ms": resource_probe.get("observed_timeout_elapsed_ms"),
+                "timeout_probe_run_id": str(resource_probe.get("run_id") or ""),
+                "timeout_probe_source": str(resource_probe.get("probe_source") or ""),
+                "timeout_probe_runtime_mode": str(resource_probe.get("runtime_mode") or ""),
+                "timeout_probe_runtime_subject": str(resource_probe.get("runtime_subject") or ""),
+                "timeout_probe_runtime_identity": resource_probe.get("runtime_identity"),
+            }
+        )
     return {
         "lease_isolation": {
             "evidence_class": "live_platform_probe",
@@ -830,14 +962,19 @@ def _platform_hardening_evidence(
             "active_lease_released": bool(recorded_lease_id and recorded_lease_id == released_lease_id),
         },
         "resource_timeout": {
-            "evidence_class": "source_regression_guard",
-            "max_seconds_enforced": True,
-            "timeout_error_code": "executor_health_timeout",
-            "failed_container_removed": True,
-            "source_regression_tests": [
-                "tests/test_sandbox_container_provider.py::test_docker_provider_maps_health_false_to_timeout",
-                "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout",
-            ],
+            "evidence_class": "live_platform_probe",
+            "max_seconds_enforced": resource_probe.get("max_seconds_enforced") is True,
+            "timeout_error_code": "executor_deadline_exceeded"
+            if resource_probe.get("max_seconds_enforced") is True
+            else "",
+            "failed_container_removed": resource_probe.get("over_limit_cleanup_verified") is True,
+            "requested_max_seconds": resource_probe.get("requested_max_seconds"),
+            "observed_timeout_elapsed_ms": resource_probe.get("observed_timeout_elapsed_ms"),
+            "run_id": str(resource_probe.get("run_id") or ""),
+            "probe_source": str(resource_probe.get("probe_source") or ""),
+            "runtime_mode": str(resource_probe.get("runtime_mode") or ""),
+            "runtime_subject": str(resource_probe.get("runtime_subject") or ""),
+            "runtime_identity": resource_probe.get("runtime_identity"),
         },
         "failure_fallback": {
             "evidence_class": "source_regression_guard",
@@ -888,7 +1025,7 @@ def _platform_hardening_evidence(
         "source": {
             "runtime_submit": "app.runtime.sandbox.runtime.SandboxRuntime.submit",
             "workspace_root": "[redacted-path]" if str(workspace_root) else "",
-            "resource_timeout_and_failure_fallback": "source_regression_tests_plus_live_platform_runtime_smoke",
+            "resource_timeout_and_failure_fallback": "observed_executor_deadline_plus_source_regression_fallback",
             "cached_lease_revalidation": "source_regression_tests_plus_live_platform_runtime_smoke",
         },
     }
@@ -1101,7 +1238,7 @@ def run_platform_runtime_probe(
             resource_limits = {"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128}
             if platform_resource_timeout_probe:
                 resource_limits = dict(resource_limits)
-                resource_limits["max_seconds"] = 0
+                resource_limits["max_seconds"] = PLATFORM_DEADLINE_PROBE_SECONDS
                 resource_limits["platform_timeout_probe"] = True
             request = SandboxRuntimeRequest(
                 tenant_id="tenant-a",
@@ -1142,15 +1279,18 @@ def run_platform_runtime_probe(
     )
     recorded_lease_id = captured.get("recorded_lease_id") or f"lease-{_safe_run_id(recorder.run_id)}"
     released_lease_id = captured.get("released_lease_id") or ""
-    derived_runtime_probe_results = dict(runtime_probe_results or {})
+    docker_inspect = captured.get("docker_inspect") if isinstance(captured.get("docker_inspect"), dict) else None
     platform_resource_probe = _safe_platform_resource_probe_from_result(
         run_id=recorder.run_id,
         result=result,
         release_reason=captured.get("release_reason"),
         platform_resource_timeout_probe=platform_resource_timeout_probe,
+        requested_max_seconds=PLATFORM_DEADLINE_PROBE_SECONDS,
+        runtime_identity=_runtime_identity_from_docker_inspect(
+            docker_inspect,
+            requested_image=sandbox_executor_image,
+        ),
     )
-    if platform_resource_probe:
-        derived_runtime_probe_results["resource_limits"] = platform_resource_probe
     platform_egress_probe = _safe_platform_egress_probe_from_result(
         run_id=recorder.run_id,
         egress_denial_probe=captured.get("egress_denial_probe")
@@ -1159,8 +1299,11 @@ def run_platform_runtime_probe(
         docker_inspect=captured.get("docker_inspect") if isinstance(captured.get("docker_inspect"), dict) else None,
         callbacks=recorder.callbacks,
     )
-    if platform_egress_probe:
-        derived_runtime_probe_results["egress_policy"] = platform_egress_probe
+    derived_runtime_probe_results = _merge_current_runtime_probe_results(
+        imported=runtime_probe_results,
+        current_resource_probe=platform_resource_probe,
+        current_egress_probe=platform_egress_probe,
+    )
     recorder.hardening = _platform_hardening_evidence(
         run_id=recorder.run_id,
         workspace_root=workspace_root,
@@ -1204,8 +1347,14 @@ def _runtime_probe_results_payload(*, run_id: str, hardening: dict[str, Any]) ->
         "resource_limits": {
             "over_limit_cleanup_verified": resource_limits.get("over_limit_cleanup_verified") is True,
             "probe_kind": str(resource_limits.get("over_limit_probe_kind") or ""),
-            "timeout_probe_seconds": resource_limits.get("over_limit_timeout_probe_seconds"),
-            "bounded_error_projection": resource_limits.get("bounded_error_projection"),
+            "run_id": str(resource_limits.get("timeout_probe_run_id") or ""),
+            "probe_source": str(resource_limits.get("timeout_probe_source") or ""),
+            "runtime_mode": str(resource_limits.get("timeout_probe_runtime_mode") or ""),
+            "runtime_subject": str(resource_limits.get("timeout_probe_runtime_subject") or ""),
+            "runtime_identity": resource_limits.get("timeout_probe_runtime_identity"),
+            "requested_max_seconds": resource_limits.get("over_limit_requested_max_seconds"),
+            "observed_timeout_elapsed_ms": resource_limits.get("over_limit_observed_timeout_elapsed_ms"),
+            "max_seconds_enforced": resource_limits.get("max_seconds_enforced") is True,
         },
         "egress_policy": {
             "default_deny_outbound": egress_policy.get("default_deny_outbound") is True,

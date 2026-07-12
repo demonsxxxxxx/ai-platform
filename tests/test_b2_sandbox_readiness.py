@@ -571,7 +571,7 @@ def test_b2_sandbox_readiness_accepts_smoke_with_open_hardening_verifier(tmp_pat
     assert smoke_evidence["does_not_close_b2_gate"] is True
 
 
-def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_closure(tmp_path):
+def test_b2_sandbox_readiness_keeps_hardening_open_without_projection_observer(tmp_path):
     write_future_reviewed_b2_smoke(tmp_path)
     evidence_path = (
         tmp_path
@@ -589,21 +589,37 @@ def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_cl
             "cpu_limit_count": 0.5,
             "pids_limit": 128,
             "process_timeout_seconds": 60,
-            "limit_source": "platform_request",
-            "docker_inspection_verified": True,
-            "over_limit_cleanup_verified": True,
-            "over_limit_probe_kind": "platform_resource_timeout",
-            "over_limit_timeout_probe_seconds": 0,
+                "limit_source": "platform_request",
+                "docker_inspection_verified": True,
+                "over_limit_cleanup_verified": True,
+                "over_limit_probe_kind": "platform_executor_deadline",
+                "over_limit_requested_max_seconds": 0.05,
+                "over_limit_observed_timeout_elapsed_ms": 51,
+                "timeout_probe_run_id": FUTURE_RUN_ID,
+                "timeout_probe_source": "executor_response",
+                "timeout_probe_runtime_mode": "platform",
+                    "timeout_probe_runtime_subject": FUTURE_RUNTIME_TAG,
+                    "timeout_probe_runtime_identity": {
+                        "image_id": "sha256:" + "a" * 64,
+                        "requested_image": "ai-platform:future",
+                        "observed_image": "ai-platform:future",
+                        "source_revision": FUTURE_RUNTIME_TAG,
+                        "oci_revision": FUTURE_RUNTIME_TAG,
+                        "source_tree_commit": FUTURE_RUNTIME_TAG,
+                        "source_tree_dirty": False,
+                    },
+                    "max_seconds_enforced": True,
             "bounded_error_projection_verified": True,
-            "bounded_error_projection": {
+                "bounded_error_projection": {
                 "source": "admin_runtime_projection",
                 "run_id": FUTURE_RUN_ID,
                 "status": "failed",
                 "error_code": "executor_health_timeout",
                 "host_paths_redacted": True,
                 "raw_docker_payload_absent": True,
-                "callback_token_absent": True,
-            },
+                    "callback_token_absent": True,
+                },
+                "bounded_error_projection_source": "executor_callback",
         },
         "egress_policy": {
             "evidence_class": "live_platform_probe",
@@ -631,26 +647,88 @@ def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_cl
 
     readiness = build_b2_sandbox_readiness(repo_root=tmp_path)
 
-    assert readiness["status"] == "runtime_hardening_acceptance_recorded"
+    assert readiness["status"] == "runtime_acceptance_recorded"
     assert readiness["status_label"] == "local partial"
     assert readiness["open_gaps"] == [
         "b2_issue_review_and_closure_evidence",
         "b2_runtime_evidence_review_against_merged_source",
-    ]
-    assert readiness["closed_runtime_gaps"] == [
-        "b2_211_real_sandbox_smoke",
-        "b2_reviewed_release_evidence",
         "resource_limits_policy_evidence",
         "egress_policy_evidence",
         "security_options_evidence",
     ]
+    assert readiness["closed_runtime_gaps"] == [
+        "b2_211_real_sandbox_smoke",
+        "b2_reviewed_release_evidence",
+    ]
     smoke_evidence = readiness["runtime_acceptance_evidence"]["b2_211_real_sandbox_smoke"]
-    assert smoke_evidence["hardening_runtime_evidence"] == {
-        "resource_limits_policy_evidence": "verified_211_runtime_acceptance",
-        "egress_policy_evidence": "verified_211_runtime_acceptance",
-        "security_options_evidence": "verified_211_runtime_acceptance",
-    }
+    assert smoke_evidence.get("hardening_runtime_evidence") is None
     assert "gate closable" not in json.dumps(readiness, ensure_ascii=False).lower()
+
+
+def test_resource_limit_readiness_requires_observed_bound_deadline_evidence():
+    source_only = {
+        "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "memory_limit_mb": 512,
+            "cpu_limit_count": 0.5,
+            "pids_limit": 128,
+            "process_timeout_seconds": 60,
+            "limit_source": "platform_request",
+            "docker_inspection_verified": True,
+            "over_limit_cleanup_verified": True,
+            "over_limit_probe_kind": "platform_resource_timeout",
+            "over_limit_timeout_probe_seconds": 0,
+            "bounded_error_projection_verified": True,
+            "bounded_error_projection": {
+                "source": "admin_runtime_projection",
+                "run_id": "run-a",
+                "status": "failed",
+                "error_code": "executor_health_timeout",
+                "host_paths_redacted": True,
+                "raw_docker_payload_absent": True,
+                "callback_token_absent": True,
+            },
+        }
+    }
+    observed = {
+        "resource_limits": {
+            **source_only["resource_limits"],
+            "over_limit_probe_kind": "platform_executor_deadline",
+            "over_limit_requested_max_seconds": 0.05,
+            "over_limit_observed_timeout_elapsed_ms": 51,
+            "timeout_probe_run_id": "run-a",
+            "timeout_probe_source": "executor_response",
+            "timeout_probe_runtime_mode": "platform",
+            "timeout_probe_runtime_subject": "runtime-sha",
+            "timeout_probe_runtime_identity": {
+                "image_id": "sha256:" + "a" * 64,
+                "requested_image": "ai-platform:local",
+                "observed_image": "ai-platform:local",
+                "source_revision": "runtime-sha",
+                "oci_revision": "runtime-sha",
+                "source_tree_commit": "runtime-sha",
+                "source_tree_dirty": False,
+            },
+            "max_seconds_enforced": True,
+            "bounded_error_projection": dict(source_only["resource_limits"]["bounded_error_projection"]),
+            "bounded_error_projection_source": "executor_callback",
+        }
+    }
+
+    assert b2_sandbox_readiness._resource_limits_runtime_verified(source_only, run_id="run-a") is False
+    assert b2_sandbox_readiness._resource_limits_runtime_verified(observed, run_id="run-a") is False
+    assert (
+        b2_sandbox_readiness._resource_limits_runtime_verified(
+            observed,
+            run_id="run-a",
+            runtime_subject="different-runtime",
+        )
+        is False
+    )
+
+    for non_finite in (float("nan"), float("inf"), float("-inf")):
+        invalid = {"resource_limits": {**observed["resource_limits"], "over_limit_observed_timeout_elapsed_ms": non_finite}}
+        assert b2_sandbox_readiness._resource_limits_runtime_verified(invalid, run_id="run-a") is False
 
 
 def test_b2_runtime_delta_filter_treats_frontend_only_changes_as_b2_runtime_neutral(monkeypatch):
@@ -1370,8 +1448,14 @@ def test_b2_sandbox_readiness_tracks_current_verifier_and_generator_contract():
     assert runtime["runtime_probe_results_required_section_fields"] == {
         "resource_limits": [
             "over_limit_cleanup_verified=true",
-            "probe_kind=platform_resource_timeout",
-            "timeout_probe_seconds=0",
+            "probe_kind=platform_executor_deadline",
+            "run_id",
+            "probe_source=executor_response",
+            "runtime_mode=platform",
+            "runtime_subject",
+            "requested_max_seconds>0",
+            "observed_timeout_elapsed_ms=bounded",
+            "max_seconds_enforced=true",
             "bounded_error_projection.safe_admin_runtime_projection",
         ],
         "egress_policy": [
