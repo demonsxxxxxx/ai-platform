@@ -1,6 +1,6 @@
 # Company Login Department Principal Phase Status
 
-Status: `local partial`
+Status: `PR ready`
 
 - [x] Phase 1: revision-35 freshness accepted on branch `codex/auth-department-principal` at base/head `6a30f23187609ed0c923d64c680994ce4d0df8b7`; scope fingerprint `sha256:9921f883469d6d31a24d3ba3877205a94f2b9f5c899cbaf427b498be4eb4a685` and clean worktree fingerprint `sha256:339be8db75120ba775d08e4855d8ab163cc643f5f27808b023aff5bc17208e25` matched.
 - [x] Phase 2: narrow tracking issue [#403](https://github.com/demonsxxxxxx/ai-platform/issues/403) opened without an auto-closing relationship.
@@ -8,7 +8,7 @@ Status: `local partial`
 - [x] Phase 4 GREEN: a strict extractor accepts only a top-level scalar `department`, applies `strip().casefold()` and the existing safe-ID validation, and passes the value into `AuthPrincipal` before session signing.
 - [x] Phase 5 focused integration: auth and Capability Distribution/public Skill tests reported `45 passed, 78 deselected`; the trusted `QA` department sees only the `qa` Skill while an empty or nonmatching department sees none.
 - [x] Phase 6: full auth routes reported `27 passed`; directly affected principal, resolver, repository authorization, and public Skill projection tests reported `30 passed`; compileall, diff, writable-scope, and added-line secret checks exited 0. Self-review found no Critical or Important issue.
-- [ ] Phase 7: commit, push, and draft PR pending.
+- [x] Phase 7: implementation commit `6fe43017` pushed and draft PR [#404](https://github.com/demonsxxxxxx/ai-platform/pull/404) opened with non-closing issue reference `Refs #403`.
 - [~] Browser runtime and real company-account acceptance deferred; Docker, deployment, 211, merge, review, and gate closure are outside this lane.
 
 ## Design Decision
