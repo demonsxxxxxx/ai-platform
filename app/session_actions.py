@@ -116,6 +116,12 @@ async def fork_session_message(
     if selected_index is None:
         raise SessionActionNotFoundError("session_not_found")
 
+    await repositories.ensure_user(
+        conn,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        display_name=principal.display_name,
+    )
     fork_id = await repositories.create_session(
         conn,
         tenant_id=principal.tenant_id,

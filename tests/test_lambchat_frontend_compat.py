@@ -143,6 +143,7 @@ async def test_session_action_fork_copies_only_authorized_message_prefix_without
     }
     copied = []
     created = []
+    ensured_users = []
 
     async def get_session_for_action(_conn, *, tenant_id, session_id):
         if (tenant_id, session_id) == ("default", "ses-source"):
@@ -160,12 +161,16 @@ async def test_session_action_fork_copies_only_authorized_message_prefix_without
         created.append(kwargs)
         return "ses-fork"
 
+    async def ensure_user(_conn, *, tenant_id, user_id, display_name=None):
+        ensured_users.append((tenant_id, user_id, display_name))
+
     async def append_message(_conn, **kwargs):
         copied.append(kwargs)
         return f"msg-copy-{len(copied)}"
 
     monkeypatch.setattr(session_actions.repositories, "get_session_for_action", get_session_for_action)
     monkeypatch.setattr(session_actions.repositories, "list_session_messages_for_fork", list_session_messages_for_fork)
+    monkeypatch.setattr(session_actions.repositories, "ensure_user", ensure_user)
     monkeypatch.setattr(session_actions.repositories, "create_session", create_session)
     monkeypatch.setattr(session_actions.repositories, "append_message", append_message)
 
@@ -179,10 +184,12 @@ async def test_session_action_fork_copies_only_authorized_message_prefix_without
     assert result["session"]["id"] == "ses-fork"
     assert created == [{"tenant_id": "default", "workspace_id": "workspace-a", "user_id": "user-a", "agent_id": "general-agent", "title": "Source (fork)"}]
     assert copied == [{"tenant_id": "default", "session_id": "ses-fork", "run_id": None, "role": "user", "content": "one", "metadata_json": {}}]
+    assert ensured_users == [("default", "user-a", "A")]
 
     await session_actions.fork_session_message(object(), principal=admin, session_id="ses-source", message_id="msg-2")
     assert created[-1]["user_id"] == "admin-a"
     assert [item["content"] for item in copied[-2:]] == ["one", "two"]
+    assert ensured_users[-1] == ("default", "admin-a", "Admin")
 
     for principal, session_id, message_id in (
         (other_user, "ses-source", "msg-1"),
