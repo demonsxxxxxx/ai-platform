@@ -8,6 +8,7 @@ from app.db import transaction
 from app.models import LoginRequest, PrincipalResponse
 from app.repositories import append_audit_log, ensure_user
 from app.settings import get_settings
+from app.validation import assert_safe_id
 
 router = APIRouter()
 
@@ -105,6 +106,30 @@ def _permissions_from_user_info(payload: dict[str, Any]) -> list[str]:
     return []
 
 
+def _department_from_user_info(payload: dict[str, Any]) -> str:
+    unsupported_aliases = (
+        "department_id",
+        "departmentId",
+        "departmentName",
+        "department_name",
+        "dept",
+        "dept_id",
+        "deptId",
+    )
+    if any(alias in payload for alias in unsupported_aliases):
+        return ""
+    value = payload.get("department")
+    if not isinstance(value, str):
+        return ""
+    candidate = value.strip().casefold()
+    if not candidate:
+        return ""
+    try:
+        return assert_safe_id(candidate, "department")
+    except ValueError:
+        return ""
+
+
 def _has_admin_role(roles: list[str]) -> bool:
     normalized = {role.strip().lower() for role in roles}
     return bool(normalized.intersection({"admin", "developer"}))
@@ -176,6 +201,7 @@ async def _login_principal(request: LoginRequest, response: Response) -> AuthPri
         user_id=work_id,
         display_name=str(login_payload.get("cnName") or login_payload.get("userName") or work_id),
         tenant_id=get_settings().default_tenant_id,
+        department_id=_department_from_user_info(user_info),
         roles=roles,
         permissions=_ai_permissions_for_login(user_info, roles),
         source="company-login",
