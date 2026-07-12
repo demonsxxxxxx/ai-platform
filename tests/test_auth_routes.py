@@ -176,6 +176,226 @@ def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
     assert me_response.json()["permissions"] == body["permissions"]
 
 
+def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_department_id="qa"):
+    from app.routes import skills_marketplace
+
+    async def fake_login(username, password):
+        assert username == "user001"
+        assert password == "pw"
+        return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
+
+    async def fake_user_info(work_id):
+        assert work_id == "user001"
+        return user_info
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def fake_list_catalog(conn, *, tenant_id, include_disabled=False, rollout_key=None):
+        assert tenant_id == "default"
+        return [
+            {
+                "skill_id": "qa-skill",
+                "name": "QA Skill",
+                "expected_version": "qa-v1",
+                "description": "QA only",
+                "input_modes": ["chat"],
+                "status": "active",
+                "source": {},
+            },
+            {
+                "skill_id": "rd-skill",
+                "name": "RD Skill",
+                "expected_version": "rd-v1",
+                "description": "RD only",
+                "input_modes": ["chat"],
+                "status": "active",
+                "source": {},
+            },
+        ]
+
+    async def fake_list_distributions(conn, *, tenant_id, capability_kind=None, include_disabled=True):
+        assert tenant_id == "default"
+        assert capability_kind == "skill"
+        return [
+            {
+                "capability_kind": "skill",
+                "capability_id": "qa-skill",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": [qa_department_id],
+                "allowed_roles": [],
+            },
+            {
+                "capability_kind": "skill",
+                "capability_id": "rd-skill",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": ["rd"],
+                "allowed_roles": [],
+            },
+        ]
+
+    async def fake_list_overlays(conn, *, tenant_id, user_id, skill_ids, include_content=False):
+        return []
+
+    settings = auth_settings()
+    monkeypatch.setattr("app.auth.get_settings", lambda: settings)
+    monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
+    monkeypatch.setattr("app.routes.auth.call_existing_login", fake_login)
+    monkeypatch.setattr("app.routes.auth.call_existing_user_info", fake_user_info)
+    monkeypatch.setattr("app.routes.auth.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.auth.ensure_user", noop)
+    monkeypatch.setattr("app.routes.auth.append_audit_log", noop)
+    monkeypatch.setattr(skills_marketplace, "transaction", fake_transaction)
+    monkeypatch.setattr(skills_marketplace.repositories, "list_public_skill_catalog", fake_list_catalog)
+    monkeypatch.setattr(
+        skills_marketplace.repositories,
+        "list_capability_distribution_rows",
+        fake_list_distributions,
+    )
+    monkeypatch.setattr(
+        skills_marketplace.repositories,
+        "list_user_skill_file_overlays",
+        fake_list_overlays,
+    )
+    return settings
+
+
+def test_company_login_trusted_department_reaches_session_and_skill_projection(monkeypatch):
+    settings = _install_company_department_login_fakes(
+        monkeypatch,
+        {"roles": ["user"], "department": " QA "},
+        qa_department_id="QA",
+    )
+    client = TestClient(create_app())
+
+    login_response = client.post(
+        "/api/ai/auth/login",
+        json={"user_name": "user001", "password": "pw"},
+        headers={"X-AI-Department-ID": "rd"},
+    )
+
+    assert login_response.status_code == 200
+    token = login_response.cookies[settings.ai_session_cookie_name]
+    principal = verify_principal_session(token)
+    assert principal.department_id == "QA"
+
+    skills_response = client.get("/api/skills/")
+
+    assert skills_response.status_code == 200
+    assert [item["skill_name"] for item in skills_response.json()["skills"]] == ["qa-skill"]
+
+
+def test_company_login_department_authorization_is_case_sensitive(monkeypatch):
+    settings = _install_company_department_login_fakes(
+        monkeypatch,
+        {"roles": ["user"], "department": " QA "},
+    )
+    client = TestClient(create_app())
+
+    login_response = client.post(
+        "/api/ai/auth/login",
+        json={"user_name": "user001", "password": "pw"},
+    )
+
+    assert login_response.status_code == 200
+    token = login_response.cookies[settings.ai_session_cookie_name]
+    assert verify_principal_session(token).department_id == "QA"
+
+    skills_response = client.get("/api/skills/")
+
+    assert skills_response.status_code == 200
+    assert skills_response.json()["skills"] == []
+
+
+@pytest.mark.parametrize(
+    "alias_metadata",
+    [
+        {"department_id": "QA"},
+        {"departmentId": "rd"},
+        {"departmentName": "   "},
+        {"department_name": None},
+    ],
+)
+def test_company_login_ignores_unsupported_alias_metadata_when_top_level_department_is_valid(
+    monkeypatch,
+    alias_metadata,
+):
+    user_info = {"roles": ["user"], "department": " QA ", **alias_metadata}
+    settings = _install_company_department_login_fakes(
+        monkeypatch,
+        user_info,
+        qa_department_id="QA",
+    )
+    client = TestClient(create_app())
+
+    login_response = client.post(
+        "/api/ai/auth/login",
+        json={"user_name": "user001", "password": "pw"},
+    )
+
+    assert login_response.status_code == 200
+    token = login_response.cookies[settings.ai_session_cookie_name]
+    assert verify_principal_session(token).department_id == "QA"
+
+    skills_response = client.get("/api/skills/")
+
+    assert skills_response.status_code == 200
+    assert [item["skill_name"] for item in skills_response.json()["skills"]] == ["qa-skill"]
+
+
+def test_company_login_rejects_client_department_field(monkeypatch):
+    _install_company_department_login_fakes(
+        monkeypatch,
+        {"roles": ["user"], "department": "qa"},
+    )
+
+    response = TestClient(create_app()).post(
+        "/api/ai/auth/login",
+        json={"user_name": "user001", "password": "pw", "department": "rd"},
+    )
+
+    assert response.status_code == 422
+    assert "ai_platform_session=" not in response.headers.get("set-cookie", "")
+
+
+@pytest.mark.parametrize(
+    "user_info",
+    [
+        {"roles": ["user"]},
+        {"roles": ["user"], "department": "   "},
+        {"roles": ["user"], "department": 42},
+        {"roles": ["user"], "department": ["qa"]},
+        {"roles": ["user"], "department": {"id": "qa"}},
+        {"roles": ["user"], "department": "qa,rd"},
+        {"roles": ["user"], "department_id": "qa"},
+        {"roles": ["user"], "departmentId": "qa"},
+        {"roles": ["user"], "departmentName": "qa"},
+    ],
+)
+def test_company_login_invalid_or_ambiguous_department_fails_closed(monkeypatch, user_info):
+    settings = _install_company_department_login_fakes(monkeypatch, user_info)
+    client = TestClient(create_app())
+
+    login_response = client.post(
+        "/api/ai/auth/login",
+        json={"user_name": "user001", "password": "pw"},
+        headers={"X-AI-Department-ID": "qa"},
+    )
+
+    assert login_response.status_code == 200
+    token = login_response.cookies[settings.ai_session_cookie_name]
+    assert verify_principal_session(token).department_id == ""
+
+    skills_response = client.get("/api/skills/")
+
+    assert skills_response.status_code == 200
+    assert skills_response.json()["skills"] == []
+
+
 def test_company_login_does_not_project_large_enterprise_permissions_into_session(monkeypatch):
     async def fake_login(username, password):
         return {"workId": "user001", "userName": "user001", "cnName": "Normal User"}
