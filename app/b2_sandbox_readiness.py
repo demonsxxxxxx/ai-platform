@@ -157,7 +157,7 @@ _HARDENING_EVIDENCE_CLASS = {
     "lease_isolation": "live_platform_probe",
     "workspace_isolation": "live_platform_probe",
     "cleanup": "live_platform_probe",
-    "resource_timeout": "source_regression_guard",
+    "resource_timeout": "live_platform_probe",
     "failure_fallback": "source_regression_guard",
     "cached_lease_revalidation": "source_regression_guard",
     "resource_limits": "live_platform_probe",
@@ -198,8 +198,14 @@ _RUNTIME_PROBE_RESULTS_REQUIRED_FIELDS = [
 _RUNTIME_PROBE_RESULTS_REQUIRED_SECTION_FIELDS = {
     "resource_limits": [
         "over_limit_cleanup_verified=true",
-        "probe_kind=platform_resource_timeout",
-        "timeout_probe_seconds=0",
+        "probe_kind=platform_executor_deadline",
+        "run_id",
+        "probe_source=executor_response",
+        "runtime_mode=platform",
+        "runtime_subject",
+        "requested_max_seconds>0",
+        "observed_timeout_elapsed_ms=bounded",
+        "max_seconds_enforced=true",
         "bounded_error_projection.safe_admin_runtime_projection",
     ],
     "egress_policy": [
@@ -451,7 +457,21 @@ def _positive_number(value: Any) -> bool:
     return value > 0
 
 
-def _resource_limits_runtime_verified(hardening: dict[str, Any], *, run_id: str) -> bool:
+def _deadline_elapsed_is_bounded(value: object, *, requested_max_seconds: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    if not _positive_number(requested_max_seconds):
+        return False
+    requested_ms = float(requested_max_seconds) * 1000
+    return max(requested_ms * 0.5, 1.0) <= float(value) <= max(requested_ms * 2, requested_ms + 250)
+
+
+def _resource_limits_runtime_verified(
+    hardening: dict[str, Any],
+    *,
+    run_id: str,
+    runtime_subject: str = "",
+) -> bool:
     section = hardening.get("resource_limits")
     if not isinstance(section, dict):
         return False
@@ -467,13 +487,28 @@ def _resource_limits_runtime_verified(hardening: dict[str, Any], *, run_id: str)
     ):
         if not _positive_number(section.get(field)):
             return False
+    requested = section.get("over_limit_requested_max_seconds")
+    projection = section.get("bounded_error_projection")
     return (
         section.get("docker_inspection_verified") is True
         and section.get("over_limit_cleanup_verified") is True
-        and section.get("over_limit_probe_kind") == "platform_resource_timeout"
-        and section.get("over_limit_timeout_probe_seconds") == 0
+        and section.get("over_limit_probe_kind") == "platform_executor_deadline"
+        and _positive_number(requested)
+        and _deadline_elapsed_is_bounded(
+            section.get("over_limit_observed_timeout_elapsed_ms"),
+            requested_max_seconds=requested,
+        )
+        and section.get("timeout_probe_run_id") == run_id
+        and section.get("timeout_probe_source") == "executor_response"
+        and section.get("timeout_probe_runtime_mode") == "platform"
+        and bool(str(section.get("timeout_probe_runtime_subject") or ""))
+        and (
+            not runtime_subject
+            or section.get("timeout_probe_runtime_subject") == runtime_subject
+        )
+        and section.get("max_seconds_enforced") is True
         and section.get("bounded_error_projection_verified") is True
-        and bounded_error_projection_is_safe(section.get("bounded_error_projection"), run_id=run_id)
+        and bounded_error_projection_is_safe(projection, run_id=run_id)
     )
 
 
@@ -531,9 +566,14 @@ def _security_options_runtime_verified(hardening: dict[str, Any]) -> bool:
     )
 
 
-def _hardening_runtime_evidence_status(hardening: dict[str, Any], *, run_id: str) -> dict[str, str]:
+def _hardening_runtime_evidence_status(
+    hardening: dict[str, Any],
+    *,
+    run_id: str,
+    runtime_subject: str,
+) -> dict[str, str]:
     if not (
-        _resource_limits_runtime_verified(hardening, run_id=run_id)
+        _resource_limits_runtime_verified(hardening, run_id=run_id, runtime_subject=runtime_subject)
         and _egress_policy_runtime_verified(hardening)
         and _security_options_runtime_verified(hardening)
     ):
@@ -648,7 +688,11 @@ def _b2_smoke_evidence_summary(
         "redaction_scan_status": evidence.get("redaction_scan_status"),
         "does_not_close_b2_gate": True,
     }
-    hardening_runtime_evidence = _hardening_runtime_evidence_status(hardening, run_id=run_id)
+    hardening_runtime_evidence = _hardening_runtime_evidence_status(
+        hardening,
+        run_id=run_id,
+        runtime_subject=_runtime_subject(payload),
+    )
     if hardening_runtime_evidence:
         summary["hardening_runtime_evidence"] = hardening_runtime_evidence
     return summary

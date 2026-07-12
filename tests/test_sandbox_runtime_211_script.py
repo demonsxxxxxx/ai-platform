@@ -24,6 +24,68 @@ def load_generator():
     return module
 
 
+def observed_resource_probe(*, run_id: str = "run-a", runtime_subject: str = "local") -> dict[str, object]:
+    return {
+        "over_limit_cleanup_verified": True,
+        "probe_kind": "platform_executor_deadline",
+        "run_id": run_id,
+        "probe_source": "executor_response",
+        "runtime_mode": "platform",
+        "runtime_subject": runtime_subject,
+        "requested_max_seconds": 0.05,
+        "observed_timeout_elapsed_ms": 51,
+        "max_seconds_enforced": True,
+        "bounded_error_projection": {
+            "source": "admin_runtime_projection",
+            "run_id": run_id,
+            "status": "failed",
+            "error_code": "executor_health_timeout",
+            "host_paths_redacted": True,
+            "raw_docker_payload_absent": True,
+            "callback_token_absent": True,
+        },
+    }
+
+
+def observed_resource_timeout_hardening(*, run_id: str = "run-a") -> dict[str, object]:
+    return {
+        "evidence_class": "live_platform_probe",
+        "max_seconds_enforced": True,
+        "timeout_error_code": "executor_deadline_exceeded",
+        "failed_container_removed": True,
+        "requested_max_seconds": 0.05,
+        "observed_timeout_elapsed_ms": 51,
+        "run_id": run_id,
+        "probe_source": "executor_response",
+        "runtime_mode": "platform",
+        "runtime_subject": "local",
+    }
+
+
+def observed_resource_limits_hardening(*, run_id: str = "run-a") -> dict[str, object]:
+    probe = observed_resource_probe(run_id=run_id)
+    return {
+        "evidence_class": "live_platform_probe",
+        "memory_limit_mb": 512,
+        "cpu_limit_count": 0.5,
+        "pids_limit": 128,
+        "process_timeout_seconds": 60,
+        "limit_source": "platform_request",
+        "docker_inspection_verified": True,
+        "over_limit_cleanup_verified": True,
+        "over_limit_probe_kind": probe["probe_kind"],
+        "over_limit_requested_max_seconds": probe["requested_max_seconds"],
+        "over_limit_observed_timeout_elapsed_ms": probe["observed_timeout_elapsed_ms"],
+        "timeout_probe_run_id": probe["run_id"],
+        "timeout_probe_source": probe["probe_source"],
+        "timeout_probe_runtime_mode": probe["runtime_mode"],
+        "timeout_probe_runtime_subject": probe["runtime_subject"],
+        "max_seconds_enforced": True,
+        "bounded_error_projection_verified": True,
+        "bounded_error_projection": probe["bounded_error_projection"],
+    }
+
+
 def test_check_result_to_dict():
     verifier = load_verifier()
 
@@ -575,16 +637,7 @@ def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evid
             "cancel_probe_container_removed": True,
             "active_lease_released": True,
         },
-        "resource_timeout": {
-            "evidence_class": "source_regression_guard",
-            "max_seconds_enforced": True,
-            "timeout_error_code": "executor_health_timeout",
-            "failed_container_removed": True,
-            "source_regression_tests": [
-                "tests/test_sandbox_container_provider.py::test_docker_provider_maps_health_false_to_timeout",
-                "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout"
-            ],
-        },
+        "resource_timeout": observed_resource_timeout_hardening(),
         "failure_fallback": {
             "evidence_class": "source_regression_guard",
             "dispatch_failure_stops_container": True,
@@ -605,28 +658,7 @@ def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evid
                 "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels"
             ],
         },
-        "resource_limits": {
-            "evidence_class": "live_platform_probe",
-            "memory_limit_mb": 512,
-            "cpu_limit_count": 0.5,
-            "pids_limit": 128,
-            "process_timeout_seconds": 60,
-            "limit_source": "platform_request",
-            "docker_inspection_verified": True,
-            "over_limit_cleanup_verified": True,
-            "over_limit_probe_kind": "platform_resource_timeout",
-            "over_limit_timeout_probe_seconds": 0,
-            "bounded_error_projection_verified": True,
-            "bounded_error_projection": {
-                "source": "admin_runtime_projection",
-                "run_id": "run-a",
-                "status": "failed",
-                "error_code": "executor_health_timeout",
-                "host_paths_redacted": True,
-                "raw_docker_payload_absent": True,
-                "callback_token_absent": True,
-            },
-        },
+        "resource_limits": observed_resource_limits_hardening(),
         "egress_policy": {
             "evidence_class": "live_platform_probe",
             "default_deny_outbound": True,
@@ -674,34 +706,32 @@ def test_platform_runtime_hardening_requires_isolation_cleanup_and_fallback_evid
     wrong_evidence_class = dict(hardening)
     wrong_evidence_class["resource_timeout"] = {
         **hardening["resource_timeout"],
-        "evidence_class": "live_platform_probe",
+        "evidence_class": "source_regression_guard",
     }
     evidence.write_text(json.dumps({"run_id": "run-a", "hardening": wrong_evidence_class}), encoding="utf-8")
     failed_class = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
     assert failed_class.passed is False
     assert "evidence_class" in failed_class.message
 
-    unknown_source_test = dict(hardening)
-    unknown_source_test["resource_timeout"] = {
+    missing_runtime_subject = dict(hardening)
+    missing_runtime_subject["resource_timeout"] = {
         **hardening["resource_timeout"],
-        "source_regression_tests": ["tests/test_unrelated.py::test_not_a_sandbox_guard"],
+        "runtime_subject": "",
     }
-    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": unknown_source_test}), encoding="utf-8")
-    failed_unknown_test = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
-    assert failed_unknown_test.passed is False
-    assert "source_regression_tests" in failed_unknown_test.message
+    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": missing_runtime_subject}), encoding="utf-8")
+    failed_runtime_subject = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+    assert failed_runtime_subject.passed is False
+    assert "runtime_subject" in failed_runtime_subject.message
 
-    incomplete_source_tests = dict(hardening)
-    incomplete_source_tests["resource_timeout"] = {
+    mismatched_timeout_run = dict(hardening)
+    mismatched_timeout_run["resource_timeout"] = {
         **hardening["resource_timeout"],
-        "source_regression_tests": [
-            "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout"
-        ],
+        "run_id": "run-b",
     }
-    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": incomplete_source_tests}), encoding="utf-8")
-    failed_incomplete_tests = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
-    assert failed_incomplete_tests.passed is False
-    assert "source_regression_tests" in failed_incomplete_tests.message
+    evidence.write_text(json.dumps({"run_id": "run-a", "hardening": mismatched_timeout_run}), encoding="utf-8")
+    failed_timeout_run = verifier.check_platform_hardening_evidence(evidence, run_id="run-a")
+    assert failed_timeout_run.passed is False
+    assert "resource_timeout.run_id" in failed_timeout_run.message
 
     missing_resource_limits = dict(hardening)
     missing_resource_limits.pop("resource_limits")
@@ -1280,6 +1310,7 @@ def test_run_platform_runtime_probe_records_timings_and_hardening(tmp_path):
         "docker_inspection_verified": False,
         "over_limit_cleanup_verified": False,
         "bounded_error_projection_verified": False,
+        "max_seconds_enforced": False,
     }
     assert recorder.hardening["egress_policy"] == {
         "evidence_class": "live_platform_probe",
@@ -1615,19 +1646,7 @@ def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_re
         ],
     }
     runtime_probe_results = {
-        "resource_limits": {
-            "over_limit_cleanup_verified": True,
-            "bounded_error_projection_verified": True,
-            "bounded_error_projection": {
-                "source": "admin_runtime_projection",
-                "run_id": "run-a",
-                "status": "failed",
-                "error_code": "executor_health_timeout",
-                "host_paths_redacted": True,
-                "raw_docker_payload_absent": True,
-                "callback_token_absent": True,
-            },
-        },
+        "resource_limits": observed_resource_probe(),
         "egress_policy": {
             "default_deny_outbound": True,
             "platform_allowlist_enforced": True,
@@ -1653,26 +1672,7 @@ def test_platform_hardening_evidence_maps_runtime_docker_inspection_and_probe_re
         runtime_probe_results=runtime_probe_results,
     )
 
-    assert hardening["resource_limits"] == {
-        "evidence_class": "live_platform_probe",
-        "memory_limit_mb": 512,
-        "cpu_limit_count": 0.5,
-        "pids_limit": 128,
-        "process_timeout_seconds": 60,
-        "limit_source": "platform_request",
-        "docker_inspection_verified": True,
-        "over_limit_cleanup_verified": True,
-        "bounded_error_projection_verified": True,
-        "bounded_error_projection": {
-            "source": "admin_runtime_projection",
-            "run_id": "run-a",
-            "status": "failed",
-            "error_code": "executor_health_timeout",
-            "host_paths_redacted": True,
-            "raw_docker_payload_absent": True,
-            "callback_token_absent": True,
-        },
-    }
+    assert hardening["resource_limits"] == observed_resource_limits_hardening()
     assert hardening["egress_policy"] == {
         "evidence_class": "live_platform_probe",
         "default_deny_outbound": True,
@@ -1914,7 +1914,9 @@ def test_platform_resource_probe_derivation_requires_explicit_timeout_probe():
             "executor_response": {
                 "status": "failed",
                 "run_id": "run-a",
-                "error_code": "executor_health_timeout",
+                "error_code": "executor_deadline_exceeded",
+                "requested_max_seconds": 0.05,
+                "timeout_elapsed_ms": 51,
             },
         },
     )()
@@ -1924,15 +1926,25 @@ def test_platform_resource_probe_derivation_requires_explicit_timeout_probe():
         result=result,
         release_reason="run_failed",
         platform_resource_timeout_probe=False,
+        requested_max_seconds=0.05,
+        runtime_subject="runtime-sha",
     ) == {}
     assert generator._safe_platform_resource_probe_from_result(
         run_id="run-a",
         result=result,
         release_reason="run_failed",
         platform_resource_timeout_probe=True,
+        requested_max_seconds=0.05,
+        runtime_subject="runtime-sha",
     ) == {
-        "probe_kind": "platform_resource_timeout",
-        "timeout_probe_seconds": 0,
+        "probe_kind": "platform_executor_deadline",
+        "run_id": "run-a",
+        "probe_source": "executor_response",
+        "runtime_mode": "platform",
+        "runtime_subject": "runtime-sha",
+        "requested_max_seconds": 0.05,
+        "observed_timeout_elapsed_ms": 51,
+        "max_seconds_enforced": True,
         "over_limit_cleanup_verified": True,
         "bounded_error_projection": {
             "source": "admin_runtime_projection",
@@ -1944,6 +1956,35 @@ def test_platform_resource_probe_derivation_requires_explicit_timeout_probe():
             "callback_token_absent": True,
         },
     }
+
+
+def test_platform_resource_probe_rejects_unbound_or_generic_timeout_claims():
+    generator = load_generator()
+    for response_patch in (
+        {"error_code": "executor_health_timeout"},
+        {"run_id": "run-b"},
+        {"requested_max_seconds": 0.5},
+        {"timeout_elapsed_ms": None},
+        {"timeout_elapsed_ms": 5000},
+    ):
+        response = {
+            "status": "failed",
+            "run_id": "run-a",
+            "error_code": "executor_deadline_exceeded",
+            "requested_max_seconds": 0.05,
+            "timeout_elapsed_ms": 51,
+            **response_patch,
+        }
+        result = type("SandboxRuntimeResult", (), {"status": "failed", "executor_response": response})()
+
+        assert generator._safe_platform_resource_probe_from_result(
+            run_id="run-a",
+            result=result,
+            release_reason="run_failed",
+            platform_resource_timeout_probe=True,
+            requested_max_seconds=0.05,
+            runtime_subject="runtime-sha",
+        ) == {}
 
 
 def test_generated_default_hardening_payload_does_not_pass_full_runtime_hardening_verifier(tmp_path):
@@ -1973,7 +2014,8 @@ def test_generated_default_hardening_payload_does_not_pass_full_runtime_hardenin
 
     assert failed.passed is False
     assert (
-        "resource_limits.docker_inspection_verified" in failed.message
+        "resource_timeout.max_seconds_enforced" in failed.message
+        or "resource_limits.docker_inspection_verified" in failed.message
         or "resource_limits.over_limit_probe_kind" in failed.message
         or "egress_policy.default_deny_outbound" in failed.message
         or "security_options.no_new_privileges" in failed.message
@@ -2152,20 +2194,7 @@ def test_main_can_generate_runtime_probe_results_file(tmp_path, monkeypatch, cap
                     "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
                     "run_id": kwargs["recorder"].run_id,
                     "source": "platform_runtime_probe",
-                    "resource_limits": {
-                        "over_limit_cleanup_verified": True,
-                        "probe_kind": "platform_resource_timeout",
-                        "timeout_probe_seconds": 0,
-                        "bounded_error_projection": {
-                            "source": "admin_runtime_projection",
-                            "run_id": kwargs["recorder"].run_id,
-                            "status": "failed",
-                            "error_code": "executor_health_timeout",
-                            "host_paths_redacted": True,
-                            "raw_docker_payload_absent": True,
-                            "callback_token_absent": True,
-                        },
-                    },
+                    "resource_limits": observed_resource_probe(run_id=kwargs["recorder"].run_id),
                     "egress_policy": {
                         "default_deny_outbound": True,
                         "platform_allowlist_enforced": True,
@@ -2314,8 +2343,10 @@ def test_main_generate_runtime_probe_results_uses_callback_server(tmp_path, monk
                     "executor_response": {
                         "status": "failed",
                         "run_id": request.run_id,
-                        "error_code": "executor_health_timeout",
-                        "error_message": "Executor health timeout",
+                        "error_code": "executor_deadline_exceeded",
+                        "error_message": "Executor deadline exceeded",
+                        "requested_max_seconds": generator.PLATFORM_DEADLINE_PROBE_SECONDS,
+                        "timeout_elapsed_ms": 51,
                     },
                     "timings": {
                         "schema_version": "ai-platform.sandbox-latency-split.v1",
@@ -2408,20 +2439,7 @@ def test_platform_runtime_mode_accepts_bound_runtime_probe_results_file(tmp_path
                 "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
                 "run_id": "run-a",
                 "source": "platform_runtime_probe",
-                "resource_limits": {
-                    "over_limit_cleanup_verified": True,
-                    "probe_kind": "platform_resource_timeout",
-                    "timeout_probe_seconds": 0,
-                    "bounded_error_projection": {
-                        "source": "admin_runtime_projection",
-                        "run_id": "run-a",
-                        "status": "failed",
-                        "error_code": "executor_health_timeout",
-                        "host_paths_redacted": True,
-                        "raw_docker_payload_absent": True,
-                        "callback_token_absent": True,
-                    },
-                },
+                "resource_limits": observed_resource_probe(),
                 "egress_policy": {
                     "default_deny_outbound": True,
                     "platform_allowlist_enforced": True,
@@ -2497,20 +2515,7 @@ def test_platform_runtime_mode_accepts_bound_runtime_probe_results_file(tmp_path
     assert output["runtime_mode"] == "platform"
     assert calls[0]["platform_resource_timeout_probe"] is True
     assert calls[0]["runtime_probe_results"] == {
-        "resource_limits": {
-            "over_limit_cleanup_verified": True,
-            "probe_kind": "platform_resource_timeout",
-            "timeout_probe_seconds": 0,
-            "bounded_error_projection": {
-                "source": "admin_runtime_projection",
-                "run_id": "run-a",
-                "status": "failed",
-                "error_code": "executor_health_timeout",
-                "host_paths_redacted": True,
-                "raw_docker_payload_absent": True,
-                "callback_token_absent": True,
-            },
-        },
+        "resource_limits": observed_resource_probe(),
         "egress_policy": {
             "default_deny_outbound": True,
             "platform_allowlist_enforced": True,
@@ -2554,7 +2559,7 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
         async def submit(self, request):
             from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
 
-            assert request.resource_limits["max_seconds"] == 0
+            assert request.resource_limits["max_seconds"] == generator.PLATFORM_DEADLINE_PROBE_SECONDS
             assert request.resource_limits["platform_timeout_probe"] is True
             lease = ContainerLease(
                 container_id="exec-run-a",
@@ -2600,8 +2605,10 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
                     "executor_response": {
                         "status": "failed",
                         "run_id": request.run_id,
-                        "error_code": "executor_health_timeout",
-                        "error_message": "Executor health timeout",
+                        "error_code": "executor_deadline_exceeded",
+                        "error_message": "Executor deadline exceeded",
+                        "requested_max_seconds": generator.PLATFORM_DEADLINE_PROBE_SECONDS,
+                        "timeout_elapsed_ms": 51,
                     },
                     "timings": {
                         "schema_version": "ai-platform.sandbox-latency-split.v1",
@@ -2688,20 +2695,7 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
         "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
         "run_id": "run-a",
         "source": "platform_runtime_probe",
-        "resource_limits": {
-            "over_limit_cleanup_verified": True,
-            "probe_kind": "platform_resource_timeout",
-            "timeout_probe_seconds": 0,
-            "bounded_error_projection": {
-                "source": "admin_runtime_projection",
-                "run_id": "run-a",
-                "status": "failed",
-                "error_code": "executor_health_timeout",
-                "host_paths_redacted": True,
-                "raw_docker_payload_absent": True,
-                "callback_token_absent": True,
-            },
-        },
+        "resource_limits": observed_resource_probe(),
         "egress_policy": {
             "default_deny_outbound": True,
             "platform_allowlist_enforced": True,
@@ -2895,20 +2889,7 @@ def test_runtime_probe_results_file_rejects_under_specified_hardening_sections(t
         "schema_version": "ai-platform.sandbox-runtime-probe-results.v1",
         "run_id": "run-a",
         "source": "platform_runtime_probe",
-        "resource_limits": {
-            "over_limit_cleanup_verified": True,
-            "probe_kind": "platform_resource_timeout",
-            "timeout_probe_seconds": 0,
-            "bounded_error_projection": {
-                "source": "admin_runtime_projection",
-                "run_id": "run-a",
-                "status": "failed",
-                "error_code": "executor_health_timeout",
-                "host_paths_redacted": True,
-                "raw_docker_payload_absent": True,
-                "callback_token_absent": True,
-            },
-        },
+        "resource_limits": observed_resource_probe(),
         "egress_policy": {
             "default_deny_outbound": True,
             "platform_allowlist_enforced": True,
@@ -3013,16 +2994,7 @@ def test_platform_hardening_rejects_wrong_egress_probe_error_code(tmp_path):
             "cancel_probe_container_removed": True,
             "active_lease_released": True,
         },
-        "resource_timeout": {
-            "evidence_class": "source_regression_guard",
-            "max_seconds_enforced": True,
-            "timeout_error_code": "executor_health_timeout",
-            "failed_container_removed": True,
-            "source_regression_tests": [
-                "tests/test_sandbox_container_provider.py::test_docker_provider_maps_health_false_to_timeout",
-                "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout",
-            ],
-        },
+        "resource_timeout": observed_resource_timeout_hardening(),
         "failure_fallback": {
             "evidence_class": "source_regression_guard",
             "dispatch_failure_stops_container": True,
@@ -3043,28 +3015,7 @@ def test_platform_hardening_rejects_wrong_egress_probe_error_code(tmp_path):
                 "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels"
             ],
         },
-        "resource_limits": {
-            "evidence_class": "live_platform_probe",
-            "memory_limit_mb": 512,
-            "cpu_limit_count": 0.5,
-            "pids_limit": 128,
-            "process_timeout_seconds": 60,
-            "limit_source": "platform_request",
-            "docker_inspection_verified": True,
-            "over_limit_cleanup_verified": True,
-            "over_limit_probe_kind": "platform_resource_timeout",
-            "over_limit_timeout_probe_seconds": 0,
-            "bounded_error_projection_verified": True,
-            "bounded_error_projection": {
-                "source": "admin_runtime_projection",
-                "run_id": "run-a",
-                "status": "failed",
-                "error_code": "executor_health_timeout",
-                "host_paths_redacted": True,
-                "raw_docker_payload_absent": True,
-                "callback_token_absent": True,
-            },
-        },
+        "resource_limits": observed_resource_limits_hardening(),
         "egress_policy": {
             "evidence_class": "live_platform_probe",
             "default_deny_outbound": True,
@@ -3125,16 +3076,7 @@ def test_platform_hardening_rejects_network_inspect_as_denied_egress_source(tmp_
             "cancel_probe_container_removed": True,
             "active_lease_released": True,
         },
-        "resource_timeout": {
-            "evidence_class": "source_regression_guard",
-            "max_seconds_enforced": True,
-            "timeout_error_code": "executor_health_timeout",
-            "failed_container_removed": True,
-            "source_regression_tests": [
-                "tests/test_sandbox_container_provider.py::test_docker_provider_maps_health_false_to_timeout",
-                "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout",
-            ],
-        },
+        "resource_timeout": observed_resource_timeout_hardening(),
         "failure_fallback": {
             "evidence_class": "source_regression_guard",
             "dispatch_failure_stops_container": True,
@@ -3155,28 +3097,7 @@ def test_platform_hardening_rejects_network_inspect_as_denied_egress_source(tmp_
                 "tests/test_sandbox_container_provider.py::test_docker_provider_cached_lease_revalidates_container_scope_labels"
             ],
         },
-        "resource_limits": {
-            "evidence_class": "live_platform_probe",
-            "memory_limit_mb": 512,
-            "cpu_limit_count": 0.5,
-            "pids_limit": 128,
-            "process_timeout_seconds": 60,
-            "limit_source": "platform_request",
-            "docker_inspection_verified": True,
-            "over_limit_cleanup_verified": True,
-            "over_limit_probe_kind": "platform_resource_timeout",
-            "over_limit_timeout_probe_seconds": 0,
-            "bounded_error_projection_verified": True,
-            "bounded_error_projection": {
-                "source": "admin_runtime_projection",
-                "run_id": "run-a",
-                "status": "failed",
-                "error_code": "executor_health_timeout",
-                "host_paths_redacted": True,
-                "raw_docker_payload_absent": True,
-                "callback_token_absent": True,
-            },
-        },
+        "resource_limits": observed_resource_limits_hardening(),
         "egress_policy": {
             "evidence_class": "live_platform_probe",
             "default_deny_outbound": True,
@@ -3230,7 +3151,7 @@ def test_run_platform_runtime_probe_captures_executor_container_inspect(monkeypa
         async def submit(self, request):
             from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
 
-            assert request.resource_limits["max_seconds"] == 0
+            assert request.resource_limits["max_seconds"] == generator.PLATFORM_DEADLINE_PROBE_SECONDS
             assert request.resource_limits["platform_timeout_probe"] is True
             lease = ContainerLease(
                 container_id="exec-run-a",
@@ -3659,7 +3580,7 @@ def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_pl
         async def submit(self, request):
             from app.runtime.sandbox.contracts import ContainerLease, WorkspaceLease
 
-            assert request.resource_limits["max_seconds"] == 0
+            assert request.resource_limits["max_seconds"] == generator.PLATFORM_DEADLINE_PROBE_SECONDS
             assert request.resource_limits["platform_timeout_probe"] is True
             lease = ContainerLease(
                 container_id="exec-run-a",
@@ -3705,8 +3626,10 @@ def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_pl
                     "executor_response": {
                         "status": "failed",
                         "run_id": request.run_id,
-                        "error_code": "executor_health_timeout",
-                        "error_message": "Executor health timeout",
+                        "error_code": "executor_deadline_exceeded",
+                        "error_message": "Executor deadline exceeded",
+                        "requested_max_seconds": generator.PLATFORM_DEADLINE_PROBE_SECONDS,
+                        "timeout_elapsed_ms": 51,
                     },
                     "timings": {
                         "schema_version": "ai-platform.sandbox-latency-split.v1",
@@ -3771,14 +3694,16 @@ def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_pl
     assert result == {
         "status": "failed",
         "run_id": "run-a",
-        "error_code": "executor_health_timeout",
+        "error_code": "executor_deadline_exceeded",
     }
     assert recorder.hardening["lease_isolation"]["release_reason"] == "run_failed"
     assert recorder.hardening["resource_limits"]["over_limit_cleanup_verified"] is True
     assert recorder.hardening["resource_limits"]["bounded_error_projection_verified"] is True
     assert recorder.hardening["resource_limits"]["process_timeout_seconds"] == 60
-    assert recorder.hardening["resource_limits"]["over_limit_probe_kind"] == "platform_resource_timeout"
-    assert recorder.hardening["resource_limits"]["over_limit_timeout_probe_seconds"] == 0
+    assert recorder.hardening["resource_limits"]["over_limit_probe_kind"] == "platform_executor_deadline"
+    assert recorder.hardening["resource_limits"]["over_limit_requested_max_seconds"] == 0.05
+    assert recorder.hardening["resource_limits"]["over_limit_observed_timeout_elapsed_ms"] == 51
+    assert recorder.hardening["resource_limits"]["timeout_probe_runtime_subject"] == "local"
     assert recorder.hardening["resource_limits"]["bounded_error_projection"] == {
         "source": "admin_runtime_projection",
         "run_id": "run-a",

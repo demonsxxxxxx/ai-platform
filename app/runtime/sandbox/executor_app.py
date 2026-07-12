@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hmac
 import inspect
 import json
@@ -119,6 +120,35 @@ def _resource_limit_seconds(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _is_async_callable(value: object) -> bool:
+    return inspect.iscoroutinefunction(value) or inspect.iscoroutinefunction(getattr(value, "__call__", None))
+
+
+async def _await_with_deadline(awaitable: Awaitable[Any], *, timeout_seconds: float) -> tuple[Any, bool]:
+    task = asyncio.ensure_future(awaitable)
+    try:
+        done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+    except asyncio.CancelledError:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+        raise
+    if task in done:
+        return task.result(), False
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+    return None, True
 
 
 def _elapsed_ms(started_at: float) -> int:
@@ -487,6 +517,7 @@ def create_executor_app(
         )
         timed_out = max_seconds is not None and max_seconds <= 0
         executor_started_at = time.monotonic()
+        deadline_started_at = executor_started_at
         executor_first_token_latency_ms: int | None = None
         executor_tool_call_latency_ms: int | None = None
         artifact_upload_latency_ms = 0
@@ -528,27 +559,58 @@ def create_executor_app(
         await dispatch_callback_event(running_event)
         runner_result: dict[str, Any] = {}
         if not timed_out:
-            try:
-                raw_runner_result = resolved_executor_runner(request, resolved_workspace_root, emit_runner_event)
-                if inspect.isawaitable(raw_runner_result):
-                    raw_runner_result = await raw_runner_result
-                runner_result = raw_runner_result if isinstance(raw_runner_result, dict) else {}
-            except Exception as exc:
+            if max_seconds is not None and not _is_async_callable(resolved_executor_runner):
                 runner_result = {
                     "status": "failed",
-                    "error_code": "executor_runner_failed",
-                    "error_message": str(exc),
+                    "error_code": "executor_deadline_requires_async_runner",
+                    "error_message": "Positive executor deadlines require an async runner",
                 }
+            else:
+                try:
+                    deadline_started_at = time.monotonic()
+                    raw_runner_result = resolved_executor_runner(request, resolved_workspace_root, emit_runner_event)
+                    if inspect.isawaitable(raw_runner_result):
+                        if max_seconds is not None:
+                            raw_runner_result, timed_out = await _await_with_deadline(
+                                raw_runner_result,
+                                timeout_seconds=max_seconds,
+                            )
+                        else:
+                            raw_runner_result = await raw_runner_result
+                    runner_result = raw_runner_result if isinstance(raw_runner_result, dict) else {}
+                except Exception as exc:
+                    runner_result = {
+                        "status": "failed",
+                        "error_code": "executor_runner_failed",
+                        "error_message": str(exc),
+                    }
 
         runner_status = str(runner_result.get("status") or "completed")
         failed = timed_out or runner_status == "failed"
-        error_code = "executor_health_timeout" if timed_out else str(runner_result.get("error_code") or "")
+        positive_deadline_exceeded = timed_out and max_seconds is not None and max_seconds > 0
+        error_code = (
+            "executor_deadline_exceeded"
+            if positive_deadline_exceeded
+            else "executor_health_timeout"
+            if timed_out
+            else str(runner_result.get("error_code") or "")
+        )
         error_message = (
-            "Executor health timeout"
+            "Executor deadline exceeded"
+            if positive_deadline_exceeded
+            else "Executor health timeout"
             if timed_out
             else str(runner_result.get("error_message") or runner_result.get("message") or "Executor failed")
             if failed
             else None
+        )
+        timeout_observation = (
+            {
+                "requested_max_seconds": max_seconds,
+                "timeout_elapsed_ms": _elapsed_ms(deadline_started_at),
+            }
+            if timed_out
+            else {}
         )
         completed_event = ExecutorCallbackEvent(
             session_id=request.session_id,
@@ -557,7 +619,7 @@ def create_executor_app(
             status="failed" if failed else "completed",
             progress=100 if not failed else 5,
             state_patch=(
-                {"error_code": error_code}
+                {"error_code": error_code, **timeout_observation}
                 if failed
                 else {"marker_path": f"/workspace/runtime/{marker_path.name}"}
             ),
@@ -597,6 +659,7 @@ def create_executor_app(
         if failed:
             response["error_code"] = error_code or "executor_failed"
             response["error_message"] = error_message or "Executor failed"
+            response.update(timeout_observation)
         if callback_errors:
             response["callback_errors"] = callback_errors
         return response

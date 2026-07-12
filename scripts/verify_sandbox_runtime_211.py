@@ -130,7 +130,12 @@ REQUIRED_HARDENING_FLAGS = {
         "max_seconds_enforced",
         "timeout_error_code",
         "failed_container_removed",
-        "source_regression_tests",
+        "requested_max_seconds",
+        "observed_timeout_elapsed_ms",
+        "run_id",
+        "probe_source",
+        "runtime_mode",
+        "runtime_subject",
     ],
     "failure_fallback": [
         "evidence_class",
@@ -153,7 +158,13 @@ REQUIRED_HARDENING_FLAGS = {
         "pids_limit",
         "process_timeout_seconds",
         "over_limit_probe_kind",
-        "over_limit_timeout_probe_seconds",
+        "over_limit_requested_max_seconds",
+        "over_limit_observed_timeout_elapsed_ms",
+        "timeout_probe_run_id",
+        "timeout_probe_source",
+        "timeout_probe_runtime_mode",
+        "timeout_probe_runtime_subject",
+        "max_seconds_enforced",
         "limit_source",
         "docker_inspection_verified",
         "over_limit_cleanup_verified",
@@ -186,7 +197,7 @@ HARDENING_EVIDENCE_CLASS = {
     "lease_isolation": "live_platform_probe",
     "workspace_isolation": "live_platform_probe",
     "cleanup": "live_platform_probe",
-    "resource_timeout": "source_regression_guard",
+    "resource_timeout": "live_platform_probe",
     "failure_fallback": "source_regression_guard",
     "cached_lease_revalidation": "source_regression_guard",
     "resource_limits": "live_platform_probe",
@@ -194,10 +205,6 @@ HARDENING_EVIDENCE_CLASS = {
     "security_options": "live_platform_probe",
 }
 ALLOWED_SOURCE_REGRESSION_TESTS = {
-    "resource_timeout": {
-        "tests/test_sandbox_container_provider.py::test_docker_provider_maps_health_false_to_timeout",
-        "tests/test_sandbox_container_provider.py::test_docker_provider_removes_container_after_health_timeout",
-    },
     "failure_fallback": {
         "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_completion_stop_fails",
         "tests/test_sandbox_runtime.py::test_runtime_does_not_release_db_lease_when_dispatch_failure_stop_fails",
@@ -545,6 +552,11 @@ def _hardening_error(evidence: dict[str, Any]) -> str | None:
             return f"hardening section missing: {section_name}"
         if section.get("evidence_class") != HARDENING_EVIDENCE_CLASS[section_name]:
             return f"hardening evidence_class mismatch: {section_name}"
+        if section_name == "resource_timeout":
+            section_error = _resource_timeout_hardening_error(section, run_id=str(evidence.get("run_id") or ""))
+            if section_error:
+                return section_error
+            continue
         if section_name == "resource_limits":
             section_error = _resource_limits_hardening_error(section, run_id=str(evidence.get("run_id") or ""))
             if section_error:
@@ -598,8 +610,19 @@ def _hardening_error(evidence: dict[str, Any]) -> str | None:
         return "workspace container path mismatch"
     if workspace.get("inputs_container_path") != "/workspace/inputs":
         return "inputs container path mismatch"
-    if hardening["resource_timeout"].get("timeout_error_code") != "executor_health_timeout":
-        return "resource timeout evidence must prove executor_health_timeout fallback"
+    timeout = hardening["resource_timeout"]
+    resource_limits = hardening["resource_limits"]
+    timeout_bindings = {
+        "requested_max_seconds": "over_limit_requested_max_seconds",
+        "observed_timeout_elapsed_ms": "over_limit_observed_timeout_elapsed_ms",
+        "run_id": "timeout_probe_run_id",
+        "probe_source": "timeout_probe_source",
+        "runtime_mode": "timeout_probe_runtime_mode",
+        "runtime_subject": "timeout_probe_runtime_subject",
+    }
+    for timeout_field, limits_field in timeout_bindings.items():
+        if timeout.get(timeout_field) != resource_limits.get(limits_field):
+            return f"hardening timeout evidence binding mismatch: {timeout_field}"
     return None
 
 
@@ -609,6 +632,38 @@ def _positive_number(value: Any) -> bool:
     if not isinstance(value, int | float):
         return False
     return value > 0
+
+
+def _deadline_elapsed_is_bounded(value: object, *, requested_max_seconds: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    if not _positive_number(requested_max_seconds):
+        return False
+    requested_ms = float(requested_max_seconds) * 1000
+    return max(requested_ms * 0.5, 1.0) <= float(value) <= max(requested_ms * 2, requested_ms + 250)
+
+
+def _resource_timeout_hardening_error(section: dict[str, Any], *, run_id: str) -> str | None:
+    if section.get("max_seconds_enforced") is not True:
+        return "hardening evidence missing: resource_timeout.max_seconds_enforced"
+    if section.get("timeout_error_code") != "executor_deadline_exceeded":
+        return "resource timeout evidence must prove executor_deadline_exceeded"
+    if section.get("failed_container_removed") is not True:
+        return "hardening evidence missing: resource_timeout.failed_container_removed"
+    requested = section.get("requested_max_seconds")
+    if not _positive_number(requested):
+        return "hardening evidence missing: resource_timeout.requested_max_seconds"
+    if not _deadline_elapsed_is_bounded(section.get("observed_timeout_elapsed_ms"), requested_max_seconds=requested):
+        return "hardening evidence missing: resource_timeout.observed_timeout_elapsed_ms"
+    if section.get("run_id") != run_id:
+        return "hardening evidence mismatch: resource_timeout.run_id"
+    if section.get("probe_source") != "executor_response":
+        return "hardening evidence missing: resource_timeout.probe_source"
+    if section.get("runtime_mode") != "platform":
+        return "hardening evidence missing: resource_timeout.runtime_mode"
+    if not str(section.get("runtime_subject") or ""):
+        return "hardening evidence missing: resource_timeout.runtime_subject"
+    return None
 
 
 def _resource_limits_hardening_error(section: dict[str, Any], *, run_id: str) -> str | None:
@@ -622,14 +677,29 @@ def _resource_limits_hardening_error(section: dict[str, Any], *, run_id: str) ->
             return f"hardening evidence missing: resource_limits.{field}"
     if section.get("limit_source") != "platform_request":
         return "hardening evidence missing: resource_limits.limit_source"
-    if section.get("over_limit_probe_kind") != "platform_resource_timeout":
+    if section.get("over_limit_probe_kind") != "platform_executor_deadline":
         return "hardening evidence missing: resource_limits.over_limit_probe_kind"
-    if section.get("over_limit_timeout_probe_seconds") != 0:
-        return "hardening evidence missing: resource_limits.over_limit_timeout_probe_seconds"
+    requested = section.get("over_limit_requested_max_seconds")
+    if not _positive_number(requested):
+        return "hardening evidence missing: resource_limits.over_limit_requested_max_seconds"
+    if not _deadline_elapsed_is_bounded(
+        section.get("over_limit_observed_timeout_elapsed_ms"),
+        requested_max_seconds=requested,
+    ):
+        return "hardening evidence missing: resource_limits.over_limit_observed_timeout_elapsed_ms"
+    if section.get("timeout_probe_run_id") != run_id:
+        return "hardening evidence mismatch: resource_limits.timeout_probe_run_id"
+    if section.get("timeout_probe_source") != "executor_response":
+        return "hardening evidence missing: resource_limits.timeout_probe_source"
+    if section.get("timeout_probe_runtime_mode") != "platform":
+        return "hardening evidence missing: resource_limits.timeout_probe_runtime_mode"
+    if not str(section.get("timeout_probe_runtime_subject") or ""):
+        return "hardening evidence missing: resource_limits.timeout_probe_runtime_subject"
     for field in (
         "docker_inspection_verified",
         "over_limit_cleanup_verified",
         "bounded_error_projection_verified",
+        "max_seconds_enforced",
     ):
         if section.get(field) is not True:
             return f"hardening evidence missing: resource_limits.{field}"

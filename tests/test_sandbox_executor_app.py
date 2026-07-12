@@ -1,9 +1,13 @@
+import asyncio
+import threading
+import time
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.runtime.kernel_contracts import AgentEvent
+from app.runtime.sandbox.contracts import ExecutorTaskRequest
 from app.runtime.sandbox.executor_app import create_executor_app
 
 
@@ -555,50 +559,195 @@ def test_executor_execute_reports_platform_timeout_probe_as_failed_callback(tmp_
     assert body["run_id"] == "run-a"
     assert body["error_code"] == "executor_health_timeout"
     assert body["error_message"] == "Executor health timeout"
+    assert body["requested_max_seconds"] == 0
+    assert isinstance(body["timeout_elapsed_ms"], int)
     assert [item[1]["status"] for item in callbacks] == ["running", "failed"]
     assert callbacks[-1][1]["error_message"] == "Executor health timeout"
-    assert callbacks[-1][1]["state_patch"] == {"error_code": "executor_health_timeout"}
+    assert callbacks[-1][1]["state_patch"] == {
+        "error_code": "executor_health_timeout",
+        "requested_max_seconds": 0,
+        "timeout_elapsed_ms": body["timeout_elapsed_ms"],
+    }
     assert str(tmp_path) not in str(body)
 
 
-def test_executor_execute_does_not_truncate_fractional_positive_timeout(tmp_path, monkeypatch):
+def test_executor_execute_enforces_fractional_positive_timeout_and_cancels_runner(tmp_path):
     callbacks = []
+    runner_cancelled = threading.Event()
+    late_side_effect = threading.Event()
     payload = task_payload()
-    payload["config"]["resource_limits"] = {"max_seconds": 0.5}
+    payload["config"]["resource_limits"] = {"max_seconds": 0.03}
 
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    async def fake_run_claude_agent_sdk(**kwargs):
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "sdk final",
-                "session_id": "sdk-session-a",
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-                "error": None,
-                "used_skills": [],
-                "used_skills_source": "",
-            },
-        )()
+    async def executor_runner(request, workspace_root, emit_event):
+        try:
+            await asyncio.sleep(0.2)
+            late_side_effect.set()
+            return {"status": "completed"}
+        except asyncio.CancelledError:
+            runner_cancelled.set()
+            raise
 
     def callback_sender(url, payload, token):
         callbacks.append((url, payload, token))
         return {"accepted": True}
 
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    client = create_test_client(tmp_path, callback_sender=callback_sender)
+    client = create_test_client(
+        tmp_path,
+        callback_sender=callback_sender,
+        executor_runner=executor_runner,
+    )
+
+    started_at = time.monotonic()
+    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+    elapsed = time.monotonic() - started_at
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "executor_deadline_exceeded"
+    assert body["error_message"] == "Executor deadline exceeded"
+    assert body["requested_max_seconds"] == 0.03
+    assert 0 <= body["timeout_elapsed_ms"] < 250
+    assert elapsed < 0.25
+    assert runner_cancelled.wait(timeout=0.1)
+    time.sleep(0.1)
+    assert not late_side_effect.is_set()
+    assert [item[1]["status"] for item in callbacks] == ["running", "failed"]
+    assert callbacks[-1][1]["state_patch"] == {
+        "error_code": "executor_deadline_exceeded",
+        "requested_max_seconds": 0.03,
+        "timeout_elapsed_ms": body["timeout_elapsed_ms"],
+    }
+    assert str(tmp_path) not in str(body)
+
+
+def test_executor_execute_allows_runner_with_larger_fractional_deadline(tmp_path):
+    callbacks = []
+    payload = task_payload()
+    payload["config"]["resource_limits"] = {"max_seconds": 0.2}
+
+    async def executor_runner(request, workspace_root, emit_event):
+        await asyncio.sleep(0.01)
+        return {"status": "completed", "message": "done"}
+
+    def callback_sender(url, payload, token):
+        callbacks.append(payload)
+        return {"accepted": True}
+
+    client = create_test_client(tmp_path, callback_sender=callback_sender, executor_runner=executor_runner)
 
     response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "accepted"
-    assert "error_code" not in body
-    assert [item[1]["status"] for item in callbacks] == ["running", "completed"]
+    assert response.json()["status"] == "accepted"
+    assert [item["status"] for item in callbacks] == ["running", "completed"]
+
+
+def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_path):
+    async def executor_runner(request, workspace_root, emit_event):
+        raise TimeoutError("runner dependency timed out")
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=lambda url, payload, token: {"accepted": True},
+        executor_runner=executor_runner,
+    )
+
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["error_code"] == "executor_runner_failed"
+    assert response.json()["error_message"] == "runner dependency timed out"
+    assert "requested_max_seconds" not in response.json()
+    assert "timeout_elapsed_ms" not in response.json()
+
+
+@pytest.mark.asyncio
+async def test_executor_execute_preserves_caller_cancellation(tmp_path):
+    runner_started = asyncio.Event()
+    runner_cancelled = asyncio.Event()
+
+    async def executor_runner(request, workspace_root, emit_event):
+        runner_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            runner_cancelled.set()
+            raise
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        callback_sender=lambda url, payload, token: {"accepted": True},
+        executor_runner=executor_runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+    )
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
+    request = ExecutorTaskRequest.model_validate(task_payload())
+
+    execute_task = asyncio.create_task(endpoint(request, executor_credential=EXECUTOR_AUTH_TOKEN))
+    await asyncio.wait_for(runner_started.wait(), timeout=0.2)
+    execute_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await execute_task
+    assert runner_cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_executor_execute_preserves_caller_cancellation_when_runner_cleanup_fails(tmp_path):
+    runner_started = asyncio.Event()
+
+    async def executor_runner(request, workspace_root, emit_event):
+        runner_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError as exc:
+            raise RuntimeError("runner cancellation cleanup failed") from exc
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        callback_sender=lambda url, payload, token: {"accepted": True},
+        executor_runner=executor_runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+    )
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
+    request = ExecutorTaskRequest.model_validate(task_payload())
+
+    execute_task = asyncio.create_task(endpoint(request, executor_credential=EXECUTOR_AUTH_TOKEN))
+    await asyncio.wait_for(runner_started.wait(), timeout=0.2)
+    execute_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await execute_task
+
+
+def test_executor_execute_fails_closed_for_sync_runner_with_positive_deadline(tmp_path):
+    invoked = False
+
+    def executor_runner(request, workspace_root, emit_event):
+        nonlocal invoked
+        invoked = True
+        return {"status": "completed"}
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=lambda url, payload, token: {"accepted": True},
+        executor_runner=executor_runner,
+    )
+
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["error_code"] == "executor_deadline_requires_async_runner"
+    assert invoked is False
 
 
 def test_executor_execute_writes_runtime_marker_without_host_path(tmp_path):

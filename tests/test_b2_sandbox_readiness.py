@@ -589,11 +589,17 @@ def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_cl
             "cpu_limit_count": 0.5,
             "pids_limit": 128,
             "process_timeout_seconds": 60,
-            "limit_source": "platform_request",
-            "docker_inspection_verified": True,
-            "over_limit_cleanup_verified": True,
-            "over_limit_probe_kind": "platform_resource_timeout",
-            "over_limit_timeout_probe_seconds": 0,
+                "limit_source": "platform_request",
+                "docker_inspection_verified": True,
+                "over_limit_cleanup_verified": True,
+                "over_limit_probe_kind": "platform_executor_deadline",
+                "over_limit_requested_max_seconds": 0.05,
+                "over_limit_observed_timeout_elapsed_ms": 51,
+                "timeout_probe_run_id": FUTURE_RUN_ID,
+                "timeout_probe_source": "executor_response",
+                "timeout_probe_runtime_mode": "platform",
+                "timeout_probe_runtime_subject": FUTURE_RUNTIME_TAG,
+                "max_seconds_enforced": True,
             "bounded_error_projection_verified": True,
             "bounded_error_projection": {
                 "source": "admin_runtime_projection",
@@ -651,6 +657,58 @@ def test_b2_sandbox_readiness_accepts_reviewed_runtime_hardening_without_gate_cl
         "security_options_evidence": "verified_211_runtime_acceptance",
     }
     assert "gate closable" not in json.dumps(readiness, ensure_ascii=False).lower()
+
+
+def test_resource_limit_readiness_requires_observed_bound_deadline_evidence():
+    source_only = {
+        "resource_limits": {
+            "evidence_class": "live_platform_probe",
+            "memory_limit_mb": 512,
+            "cpu_limit_count": 0.5,
+            "pids_limit": 128,
+            "process_timeout_seconds": 60,
+            "limit_source": "platform_request",
+            "docker_inspection_verified": True,
+            "over_limit_cleanup_verified": True,
+            "over_limit_probe_kind": "platform_resource_timeout",
+            "over_limit_timeout_probe_seconds": 0,
+            "bounded_error_projection_verified": True,
+            "bounded_error_projection": {
+                "source": "admin_runtime_projection",
+                "run_id": "run-a",
+                "status": "failed",
+                "error_code": "executor_health_timeout",
+                "host_paths_redacted": True,
+                "raw_docker_payload_absent": True,
+                "callback_token_absent": True,
+            },
+        }
+    }
+    observed = {
+        "resource_limits": {
+            **source_only["resource_limits"],
+            "over_limit_probe_kind": "platform_executor_deadline",
+            "over_limit_requested_max_seconds": 0.05,
+            "over_limit_observed_timeout_elapsed_ms": 51,
+            "timeout_probe_run_id": "run-a",
+            "timeout_probe_source": "executor_response",
+            "timeout_probe_runtime_mode": "platform",
+            "timeout_probe_runtime_subject": "runtime-sha",
+            "max_seconds_enforced": True,
+            "bounded_error_projection": dict(source_only["resource_limits"]["bounded_error_projection"]),
+        }
+    }
+
+    assert b2_sandbox_readiness._resource_limits_runtime_verified(source_only, run_id="run-a") is False
+    assert b2_sandbox_readiness._resource_limits_runtime_verified(observed, run_id="run-a") is True
+    assert (
+        b2_sandbox_readiness._resource_limits_runtime_verified(
+            observed,
+            run_id="run-a",
+            runtime_subject="different-runtime",
+        )
+        is False
+    )
 
 
 def test_b2_runtime_delta_filter_treats_frontend_only_changes_as_b2_runtime_neutral(monkeypatch):
@@ -1370,8 +1428,14 @@ def test_b2_sandbox_readiness_tracks_current_verifier_and_generator_contract():
     assert runtime["runtime_probe_results_required_section_fields"] == {
         "resource_limits": [
             "over_limit_cleanup_verified=true",
-            "probe_kind=platform_resource_timeout",
-            "timeout_probe_seconds=0",
+            "probe_kind=platform_executor_deadline",
+            "run_id",
+            "probe_source=executor_response",
+            "runtime_mode=platform",
+            "runtime_subject",
+            "requested_max_seconds>0",
+            "observed_timeout_elapsed_ms=bounded",
+            "max_seconds_enforced=true",
             "bounded_error_projection.safe_admin_runtime_projection",
         ],
         "egress_policy": [
