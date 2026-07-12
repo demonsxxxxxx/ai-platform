@@ -8802,6 +8802,87 @@ async def get_authorized_lambchat_session(
     return await cursor.fetchone()
 
 
+async def get_session_for_action(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Load one tenant session for an application service to authorize."""
+
+    cursor = await conn.execute(
+        """
+        select id, tenant_id, workspace_id, user_id, agent_id, title, status, created_at, updated_at
+        from sessions
+        where tenant_id = %s and id = %s
+        for update
+        """,
+        (tenant_id, session_id),
+    )
+    return await cursor.fetchone()
+
+
+async def update_session_title(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    session_id: str,
+    title: str,
+) -> dict[str, Any] | None:
+    """Rename an active tenant session after application-layer authorization."""
+
+    cursor = await conn.execute(
+        """
+        update sessions
+        set title = %s, updated_at = now()
+        where tenant_id = %s and id = %s and status = 'active'
+        returning id, tenant_id, workspace_id, user_id, agent_id, title, status, created_at, updated_at
+        """,
+        (title, tenant_id, session_id),
+    )
+    return await cursor.fetchone()
+
+
+async def mark_session_deleted(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Soft-delete an active tenant session after application-layer authorization."""
+
+    cursor = await conn.execute(
+        """
+        update sessions
+        set status = 'deleted', updated_at = now()
+        where tenant_id = %s and id = %s and status = 'active'
+        returning id, tenant_id, workspace_id, user_id, agent_id, title, status, created_at, updated_at
+        """,
+        (tenant_id, session_id),
+    )
+    return await cursor.fetchone()
+
+
+async def list_session_messages_for_fork(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    """Load one authorized source session's ordered message prefix candidates."""
+
+    cursor = await conn.execute(
+        """
+        select id, run_id, role, content, metadata_json, created_at
+        from messages
+        where tenant_id = %s and session_id = %s
+        order by created_at asc, id asc
+        """,
+        (tenant_id, session_id),
+    )
+    return list(await cursor.fetchall())
+
+
 async def list_authorized_session_runs(
     conn: AsyncConnection,
     *,

@@ -25,8 +25,6 @@ import {
 import { groupSessionsByTime } from "../sessionHelpers";
 import { SessionItem } from "../../sidebar/SessionItem";
 import { APP_NAME } from "../../../constants";
-import { isSessionFavorite } from "../../sidebar/sessionFavorites";
-import type { Project } from "../../../types";
 import {
   getWorkbenchNavItemFromPathname,
   type WorkbenchNavItem,
@@ -35,8 +33,6 @@ import { LibreChatPanelSection } from "../../../librechat-ui/Panel";
 
 export interface SessionActions {
   onDeleteSession: (id: string) => void;
-  onMoveSession: (id: string, projectId: string | null) => void;
-  onToggleFavorite: (id: string) => void;
   onShareSession: (id: string) => void;
   onSelectSession: (id: string) => void;
 }
@@ -56,7 +52,6 @@ interface SessionListContentProps {
   isLoadingMoreUncategorized: boolean;
   loadMoreRef: React.RefCallback<HTMLElement>;
   onUpdateUncategorizedSession: (s: BackendSession) => void;
-  projects: Project[];
   currentSessionId: string | null;
   unreadBySession: UnreadBySession;
   sessionActions: SessionActions;
@@ -80,7 +75,6 @@ export function SessionListContent({
   isLoadingMoreUncategorized,
   loadMoreRef,
   onUpdateUncategorizedSession,
-  projects,
   currentSessionId,
   unreadBySession,
   sessionActions,
@@ -353,28 +347,16 @@ export function SessionListContent({
                                 key={session.id}
                                 session={session}
                                 isActive={currentSessionId === session.id}
-                                projects={projects}
                                 onSelect={() =>
                                   sessionActions.onSelectSession(session.id)
                                 }
                                 onDelete={() =>
                                   sessionActions.onDeleteSession(session.id)
                                 }
-                                onMoveToProject={(projectId) =>
-                                  sessionActions.onMoveSession(
-                                    session.id,
-                                    projectId,
-                                  )
-                                }
-                                currentProjectId={null}
                                 onShare={() =>
                                   sessionActions.onShareSession(session.id)
                                 }
-                                onToggleFavorite={() =>
-                                  sessionActions.onToggleFavorite(session.id)
-                                }
                                 onSessionUpdate={onUpdateUncategorizedSession}
-                                isFavorite={isSessionFavorite(session)}
                                 onDragStartTouch={
                                   undefined
                                 }

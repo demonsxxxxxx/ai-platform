@@ -5,17 +5,16 @@ import {
   buildMessageCheckpointUrl,
   buildMessageForkUrl,
   buildRunCancelUrl,
+  buildSessionListUrl,
   buildSessionRunsUrl,
   buildSubmitChatBody,
   isChatStreamNeedsConfirmation,
 } from "../session.ts";
 
-test("builds a session list url with favorites_only", () => {
-  const searchParams = new URLSearchParams();
-  searchParams.set("favorites_only", "true");
+test("fails closed instead of sending unsupported project or favorite filters", () => {
   assert.equal(
-    `/api/sessions?${searchParams.toString()}`,
-    "/api/sessions?favorites_only=true",
+    buildSessionListUrl({ project_id: "project-1", favorites_only: true }),
+    "/api/sessions",
   );
 });
 

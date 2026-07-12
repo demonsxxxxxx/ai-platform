@@ -172,6 +172,23 @@ export function buildRunCancelUrl(runId: string): string {
   return `${API_BASE}/api/ai/runs/${runId}/cancel`;
 }
 
+export function buildSessionListUrl(params?: {
+  status?: string;
+  limit?: number;
+  skip?: number;
+  project_id?: string;
+  search?: string;
+  favorites_only?: boolean;
+}): string {
+  const searchParams = new URLSearchParams();
+  if (params?.status) searchParams.set("status", params.status);
+  if (params?.limit) searchParams.set("limit", params.limit.toString());
+  if (params?.skip) searchParams.set("skip", params.skip.toString());
+  if (params?.search) searchParams.set("search", params.search);
+  const query = searchParams.toString();
+  return `${API_BASE}/api/sessions${query ? `?${query}` : ""}`;
+}
+
 export const sessionApi = {
   /**
    * List all sessions with pagination
@@ -184,18 +201,9 @@ export const sessionApi = {
     search?: string;
     favorites_only?: boolean;
   }): Promise<SessionListResponse | BackendSession[]> {
-    const searchParams = new URLSearchParams();
-    if (params?.status) searchParams.set("status", params.status);
-    if (params?.limit) searchParams.set("limit", params.limit.toString());
-    if (params?.skip) searchParams.set("skip", params.skip.toString());
-    if (params?.project_id) searchParams.set("project_id", params.project_id);
-    if (params?.search) searchParams.set("search", params.search);
-    if (params?.favorites_only) searchParams.set("favorites_only", "true");
-
-    const url = `${API_BASE}/api/sessions${
-      searchParams.toString() ? `?${searchParams}` : ""
-    }`;
-    return authFetch<SessionListResponse | BackendSession[]>(url);
+    return authFetch<SessionListResponse | BackendSession[]>(
+      buildSessionListUrl(params),
+    );
   },
 
   /**
@@ -363,32 +371,6 @@ export const sessionApi = {
     return authFetch(`${API_BASE}/api/chat/stream?agent_id=${agentId}`, {
       method: "POST",
       body: JSON.stringify(body),
-    });
-  },
-
-  /**
-   * Move session to project
-   */
-  async moveToProject(
-    sessionId: string,
-    projectId: string | null,
-  ): Promise<{ status: string; session: BackendSession }> {
-    return authFetch(`${API_BASE}/api/sessions/${sessionId}/move`, {
-      method: "POST",
-      body: JSON.stringify({ project_id: projectId }),
-    });
-  },
-
-  /**
-   * Toggle session favorite state
-   */
-  async toggleFavorite(sessionId: string): Promise<{
-    status: string;
-    is_favorite: boolean;
-    session: BackendSession;
-  }> {
-    return authFetch(`${API_BASE}/api/sessions/${sessionId}/favorite`, {
-      method: "POST",
     });
   },
 

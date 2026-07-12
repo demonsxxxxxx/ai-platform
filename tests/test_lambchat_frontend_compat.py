@@ -27,6 +27,212 @@ def auth_headers():
     }
 
 
+def action_headers(*, user_id="user-a", tenant_id="default", roles="user"):
+    return {
+        "x-ai-user-id": user_id,
+        "x-ai-user-name": user_id,
+        "x-ai-tenant-id": tenant_id,
+        "x-ai-roles": roles,
+        "x-ai-gateway-secret": "test-secret",
+    }
+
+
+@pytest.mark.asyncio
+async def test_session_action_service_enforces_tenant_owner_admin_and_terminal_delete(monkeypatch):
+    from app import session_actions
+    from app.auth import AuthPrincipal
+
+    records = {
+        ("default", "ses-owner"): {
+            "id": "ses-owner",
+            "tenant_id": "default",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "agent_id": "general-agent",
+            "title": "Original",
+            "status": "active",
+        },
+        ("default", "ses-other"): {
+            "id": "ses-other",
+            "tenant_id": "default",
+            "workspace_id": "workspace-a",
+            "user_id": "user-b",
+            "agent_id": "general-agent",
+            "title": "Other",
+            "status": "active",
+        },
+        ("default", "ses-deleted"): {
+            "id": "ses-deleted",
+            "tenant_id": "default",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "agent_id": "general-agent",
+            "title": "Deleted",
+            "status": "deleted",
+        },
+    }
+    writes = []
+
+    async def get_session_for_action(_conn, *, tenant_id, session_id):
+        return records.get((tenant_id, session_id))
+
+    async def update_session_title(_conn, *, tenant_id, session_id, title):
+        writes.append(("rename", tenant_id, session_id, title))
+        record = records[(tenant_id, session_id)]
+        record["title"] = title
+        return record
+
+    async def mark_session_deleted(_conn, *, tenant_id, session_id):
+        writes.append(("delete", tenant_id, session_id))
+        record = records[(tenant_id, session_id)]
+        record["status"] = "deleted"
+        return record
+
+    monkeypatch.setattr(session_actions.repositories, "get_session_for_action", get_session_for_action)
+    monkeypatch.setattr(session_actions.repositories, "update_session_title", update_session_title)
+    monkeypatch.setattr(session_actions.repositories, "mark_session_deleted", mark_session_deleted)
+
+    owner = AuthPrincipal(user_id="user-a", display_name="A", tenant_id="default", roles=["user"])
+    admin = AuthPrincipal(user_id="admin-a", display_name="Admin", tenant_id="default", roles=["admin"])
+    other_tenant = AuthPrincipal(user_id="user-a", display_name="A", tenant_id="other", roles=["admin"])
+
+    renamed = await session_actions.rename_session(object(), principal=owner, session_id="ses-owner", title=" Renamed ")
+    assert renamed["title"] == "Renamed"
+    assert writes == [("rename", "default", "ses-owner", "Renamed")]
+
+    await session_actions.rename_session(object(), principal=admin, session_id="ses-other", title="Admin rename")
+    assert writes[-1] == ("rename", "default", "ses-other", "Admin rename")
+
+    with pytest.raises(session_actions.SessionActionValidationError):
+        await session_actions.rename_session(object(), principal=owner, session_id="ses-owner", title="   ")
+    with pytest.raises(session_actions.SessionActionNotFoundError):
+        await session_actions.rename_session(object(), principal=owner, session_id="ses-other", title="Denied")
+    with pytest.raises(session_actions.SessionActionNotFoundError):
+        await session_actions.rename_session(object(), principal=other_tenant, session_id="ses-owner", title="Denied")
+    assert all(entry[2] != "ses-other" or entry[3] != "Denied" for entry in writes if entry[0] == "rename")
+
+    deleted = await session_actions.delete_session(object(), principal=owner, session_id="ses-owner")
+    assert deleted["already_deleted"] is False
+    repeated = await session_actions.delete_session(object(), principal=owner, session_id="ses-owner")
+    assert repeated["already_deleted"] is True
+    assert [entry for entry in writes if entry[0] == "delete"] == [("delete", "default", "ses-owner")]
+
+    admin_deleted = await session_actions.delete_session(object(), principal=admin, session_id="ses-other")
+    assert admin_deleted["already_deleted"] is False
+    assert ("delete", "default", "ses-other") in writes
+
+    with pytest.raises(session_actions.SessionActionNotFoundError):
+        await session_actions.delete_session(object(), principal=owner, session_id="missing")
+    with pytest.raises(session_actions.SessionActionNotFoundError):
+        await session_actions.delete_session(object(), principal=owner, session_id="ses-other")
+
+
+@pytest.mark.asyncio
+async def test_session_action_fork_copies_only_authorized_message_prefix_without_oracles(monkeypatch):
+    from app import session_actions
+    from app.auth import AuthPrincipal
+
+    source = {
+        "id": "ses-source",
+        "tenant_id": "default",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "title": "Source",
+        "status": "active",
+    }
+    copied = []
+    created = []
+    ensured_users = []
+
+    async def get_session_for_action(_conn, *, tenant_id, session_id):
+        if (tenant_id, session_id) == ("default", "ses-source"):
+            return source
+        return None
+
+    async def list_session_messages_for_fork(_conn, *, tenant_id, session_id):
+        assert (tenant_id, session_id) == ("default", "ses-source")
+        return [
+            {"id": "msg-1", "run_id": "run-source", "role": "user", "content": "one", "metadata_json": {}},
+            {"id": "msg-2", "run_id": "run-source", "role": "assistant", "content": "two", "metadata_json": {}},
+        ]
+
+    async def create_session(_conn, **kwargs):
+        created.append(kwargs)
+        return "ses-fork"
+
+    async def ensure_user(_conn, *, tenant_id, user_id, display_name=None):
+        ensured_users.append((tenant_id, user_id, display_name))
+
+    async def append_message(_conn, **kwargs):
+        copied.append(kwargs)
+        return f"msg-copy-{len(copied)}"
+
+    monkeypatch.setattr(session_actions.repositories, "get_session_for_action", get_session_for_action)
+    monkeypatch.setattr(session_actions.repositories, "list_session_messages_for_fork", list_session_messages_for_fork)
+    monkeypatch.setattr(session_actions.repositories, "ensure_user", ensure_user)
+    monkeypatch.setattr(session_actions.repositories, "create_session", create_session)
+    monkeypatch.setattr(session_actions.repositories, "append_message", append_message)
+
+    owner = AuthPrincipal(user_id="user-a", display_name="A", tenant_id="default", roles=["user"])
+    admin = AuthPrincipal(user_id="admin-a", display_name="Admin", tenant_id="default", roles=["admin"])
+    other_user = AuthPrincipal(user_id="user-b", display_name="B", tenant_id="default", roles=["user"])
+    other_tenant = AuthPrincipal(user_id="user-a", display_name="A", tenant_id="other", roles=["admin"])
+
+    result = await session_actions.fork_session_message(object(), principal=owner, session_id="ses-source", message_id="msg-1")
+    assert result["source_session_id"] == "ses-source"
+    assert result["session"]["id"] == "ses-fork"
+    assert created == [{"tenant_id": "default", "workspace_id": "workspace-a", "user_id": "user-a", "agent_id": "general-agent", "title": "Source (fork)"}]
+    assert copied == [{"tenant_id": "default", "session_id": "ses-fork", "run_id": None, "role": "user", "content": "one", "metadata_json": {}}]
+    assert ensured_users == [("default", "user-a", "A")]
+
+    await session_actions.fork_session_message(object(), principal=admin, session_id="ses-source", message_id="msg-2")
+    assert created[-1]["user_id"] == "admin-a"
+    assert [item["content"] for item in copied[-2:]] == ["one", "two"]
+    assert ensured_users[-1] == ("default", "admin-a", "Admin")
+
+    for principal, session_id, message_id in (
+        (other_user, "ses-source", "msg-1"),
+        (other_tenant, "ses-source", "msg-1"),
+        (owner, "ses-source", "msg-missing"),
+        (owner, "ses-missing", "msg-1"),
+    ):
+        with pytest.raises(session_actions.SessionActionNotFoundError):
+            await session_actions.fork_session_message(object(), principal=principal, session_id=session_id, message_id=message_id)
+    assert len(created) == 2
+    assert len(copied) == 3
+
+
+def test_lambchat_session_action_routes_are_thin_service_adapters(monkeypatch):
+    from app import session_actions
+
+    calls = []
+
+    async def rename(_conn, *, principal, session_id, title):
+        calls.append(("rename", principal.user_id, session_id, title))
+        return {"id": session_id, "workspace_id": "default", "agent_id": "general-agent", "title": title, "status": "active"}
+
+    async def delete(_conn, *, principal, session_id):
+        calls.append(("delete", principal.user_id, session_id))
+        return {"session": {"id": session_id, "workspace_id": "default", "agent_id": "general-agent", "title": "Deleted", "status": "deleted"}, "already_deleted": False}
+
+    async def fork(_conn, *, principal, session_id, message_id):
+        calls.append(("fork", principal.user_id, session_id, message_id))
+        return {"source_session_id": session_id, "session": {"id": "ses-fork", "workspace_id": "default", "agent_id": "general-agent", "title": "Fork", "status": "active"}}
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(session_actions, "rename_session", rename)
+    monkeypatch.setattr(session_actions, "delete_session", delete)
+    monkeypatch.setattr(session_actions, "fork_session_message", fork)
+    client = TestClient(create_app())
+
+    assert client.patch("/api/sessions/ses-a", headers=action_headers(), json={"name": "Renamed"}).status_code == 200
+    assert client.delete("/api/sessions/ses-a", headers=action_headers()).status_code == 200
+    assert client.post("/api/sessions/ses-a/messages/msg-a/fork", headers=action_headers()).status_code == 200
+    assert calls == [("rename", "user-a", "ses-a", "Renamed"), ("delete", "user-a", "ses-a"), ("fork", "user-a", "ses-a", "msg-a")]
+
+
 @pytest.fixture(autouse=True)
 def default_lambchat_stream_projection(monkeypatch):
     async def empty_run_events(conn, *, tenant_id, run_id):
