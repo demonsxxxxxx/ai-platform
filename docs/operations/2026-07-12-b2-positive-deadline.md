@@ -2,6 +2,12 @@
 
 Status: `source slice; PR ready`
 
+Phases 1-10 are historical or superseded records tied to the revisions named
+below. Their earlier statements about awaiting cooperative cancellation,
+collecting all pending runner work, callback-derived admin projection, or no
+active in-process runner are preserved only as historical evidence and are not
+current claims.
+
 - [x] Phase 1 - Freshness and RED
   - Controller epoch `controller-20260711-1945`, revision 35, lane generation 1.
   - Base and starting head: `6a30f23187609ed0c923d64c680994ce4d0df8b7`.
@@ -59,6 +65,13 @@ Status: `source slice; PR ready`
   - Full affected suite: 159 passed across executor, runtime, generator/verifier, and readiness tests.
   - Fresh compile, diff, seven-code-path scope, and added-line secret/personal-path checks passed before publication readiness.
   - This phase is a source slice only. No Docker, 211, deployment, runtime smoke, merge, CI wait, independent review claim, admin projection proof, or B2 gate closure was performed.
+- [x] Phase 11 - Revision 43 test/doc closure
+  - Accepted production head `46dd51bdca652589d3f89dc46f32dbe456d5951d` remains unchanged by this lane.
+  - The cancellation-swallowing test now proves bounded endpoint return before runner release, waits for the detached runner to finish after release, observes the attempted late event and its suppression, and verifies that the detached cleanup exception is consumed without reaching the event loop exception handler.
+  - Focused strengthened test: 1 passed. The accepted production behavior already satisfied the new assertions, so no production RED or production edit was manufactured.
+- [x] Phase 12 - Revision 43 final local gates
+  - Focused strengthened test: 1 passed; full executor: 39 passed; four-file affected suite: 159 passed.
+  - Fresh compile, diff, exact two-path scope, and added-line secret/personal-path scans passed.
 
 ## Evidence Boundaries
 
@@ -70,6 +83,6 @@ Status: `source slice; PR ready`
 ## Self-Review Focus
 
 - Cancellation must propagate from callers and must not be rewritten as timeout.
-- Timeout handling must not schedule thread work or leave a runner task active.
+- Timeout handling must not schedule thread work. Bounded endpoint return does not prove that a cancellation-swallowing in-process runner is no longer active; the current test waits for its explicit release and completion, while `SandboxRuntime` cleanup remains the hard outer boundary.
 - Terminal callbacks and responses must remain bounded and exclude host paths, callback tokens, and raw runtime payloads.
 - Evidence must reject late, generic, mismatched, source-only, and runtime-subject-unbound claims.

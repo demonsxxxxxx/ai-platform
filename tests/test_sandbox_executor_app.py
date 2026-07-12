@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import gc
 import threading
 import time
 from pathlib import Path
@@ -626,7 +627,10 @@ def test_executor_execute_enforces_fractional_positive_timeout_and_cancels_runne
 async def test_executor_deadline_returns_when_runner_swallows_cancellation_and_ignores_late_events(tmp_path):
     callbacks = []
     runner_cancelled = asyncio.Event()
+    runner_finished = asyncio.Event()
+    late_event_attempted = asyncio.Event()
     release_runner = asyncio.Event()
+    loop_exception_contexts = []
     payload = task_payload()
     payload["config"]["resource_limits"] = {"max_seconds": 0.01}
 
@@ -636,8 +640,12 @@ async def test_executor_deadline_returns_when_runner_swallows_cancellation_and_i
         except asyncio.CancelledError:
             runner_cancelled.set()
             await release_runner.wait()
-            await emit_event(AgentEvent(type="assistant_delta", message="late", payload={"delta": "late"}))
-            return {"status": "completed", "message": "late completion"}
+            try:
+                late_event_attempted.set()
+                await emit_event(AgentEvent(type="assistant_delta", message="late", payload={"delta": "late"}))
+                raise RuntimeError("deterministic runner cleanup failure")
+            finally:
+                runner_finished.set()
 
     async def callback_sender(url, callback_payload, token):
         callbacks.append(callback_payload)
@@ -654,24 +662,49 @@ async def test_executor_deadline_returns_when_runner_swallows_cancellation_and_i
     )
     endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
     request = ExecutorTaskRequest.model_validate(payload)
-    endpoint_task = asyncio.create_task(endpoint(request, executor_credential=EXECUTOR_AUTH_TOKEN))
+    loop = asyncio.get_running_loop()
+    previous_exception_handler = loop.get_exception_handler()
+    initial_tasks = asyncio.all_tasks()
+    endpoint_task = None
 
-    done, _ = await asyncio.wait({endpoint_task}, timeout=0.15)
-    returned_before_runner_release = endpoint_task in done
-    assert runner_cancelled.is_set()
+    def capture_loop_exception(loop, context):
+        loop_exception_contexts.append(context)
 
-    release_runner.set()
-    result = await asyncio.wait_for(endpoint_task, timeout=0.5)
+    loop.set_exception_handler(capture_loop_exception)
+    try:
+        endpoint_task = asyncio.create_task(endpoint(request, executor_credential=EXECUTOR_AUTH_TOKEN))
 
-    assert returned_before_runner_release is True
-    assert result["status"] == "failed"
-    assert result["error_code"] == "executor_deadline_exceeded"
-    assert [callback["status"] for callback in callbacks] == ["running", "failed"]
-    assert all(
-        event.get("message") != "late"
-        for callback in callbacks
-        for event in callback.get("events", [])
-    )
+        done, _ = await asyncio.wait({endpoint_task}, timeout=0.15)
+        assert endpoint_task in done
+        assert runner_cancelled.is_set()
+
+        result = endpoint_task.result()
+        assert result["status"] == "failed"
+        assert result["error_code"] == "executor_deadline_exceeded"
+
+        release_runner.set()
+        await asyncio.wait_for(runner_finished.wait(), timeout=0.5)
+        await asyncio.sleep(0)
+        gc.collect()
+        await asyncio.sleep(0)
+
+        assert late_event_attempted.is_set()
+        assert [callback["status"] for callback in callbacks] == ["running", "failed"]
+        assert all(
+            event.get("message") != "late"
+            for callback in callbacks
+            for event in callback.get("events", [])
+        )
+        assert loop_exception_contexts == []
+        assert [task for task in asyncio.all_tasks() - initial_tasks if not task.done()] == []
+    finally:
+        release_runner.set()
+        if endpoint_task is not None and not endpoint_task.done():
+            endpoint_task.cancel()
+            await asyncio.gather(endpoint_task, return_exceptions=True)
+        if runner_cancelled.is_set() and not runner_finished.is_set():
+            await asyncio.wait_for(runner_finished.wait(), timeout=0.5)
+        loop.set_exception_handler(previous_exception_handler)
 
 
 def test_executor_execute_allows_runner_with_larger_fractional_deadline(tmp_path):
