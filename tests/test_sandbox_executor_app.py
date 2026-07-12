@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import threading
 import time
 from pathlib import Path
@@ -659,6 +660,99 @@ def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_
     assert response.json()["status"] == "failed"
     assert response.json()["error_code"] == "executor_runner_failed"
     assert response.json()["error_message"] == "runner dependency timed out"
+    assert "requested_max_seconds" not in response.json()
+    assert "timeout_elapsed_ms" not in response.json()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_max_seconds", [True, "0.05", float("nan"), float("inf"), float("-inf")])
+async def test_executor_execute_rejects_invalid_deadline_without_invoking_runner(
+    tmp_path,
+    invalid_max_seconds,
+):
+    runner_called = False
+
+    async def executor_runner(request, workspace_root, emit_event):
+        nonlocal runner_called
+        runner_called = True
+        return {"status": "completed"}
+
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        callback_sender=lambda url, payload, token: {"accepted": True},
+        executor_runner=executor_runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+    )
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
+    payload = task_payload()
+    payload["config"]["resource_limits"] = {"max_seconds": invalid_max_seconds}
+    request = ExecutorTaskRequest.model_validate(payload)
+
+    result = await endpoint(request, executor_credential=EXECUTOR_AUTH_TOKEN)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "executor_invalid_max_seconds"
+    assert "requested_max_seconds" not in result
+    assert "timeout_elapsed_ms" not in result
+    assert runner_called is False
+
+
+@pytest.mark.parametrize("runner_kind", ["partial", "callable", "decorated"])
+def test_executor_execute_accepts_supported_async_callable_forms(tmp_path, runner_kind):
+    async def async_runner(request, workspace_root, emit_event):
+        await asyncio.sleep(0)
+        return {"status": "completed", "message": runner_kind}
+
+    if runner_kind == "partial":
+        executor_runner = functools.partial(async_runner)
+    elif runner_kind == "callable":
+        class AsyncRunner:
+            async def __call__(self, request, workspace_root, emit_event):
+                return await async_runner(request, workspace_root, emit_event)
+
+        executor_runner = AsyncRunner()
+    else:
+        @functools.wraps(async_runner)
+        def decorated_runner(request, workspace_root, emit_event):
+            return async_runner(request, workspace_root, emit_event)
+
+        executor_runner = decorated_runner
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=lambda url, payload, token: {"accepted": True},
+        executor_runner=executor_runner,
+    )
+
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+
+
+def test_executor_execute_classifies_decorated_runner_timeout_as_internal_failure(tmp_path):
+    async def async_runner(request, workspace_root, emit_event):
+        raise TimeoutError("decorated runner dependency timed out")
+
+    @functools.wraps(async_runner)
+    def decorated_runner(request, workspace_root, emit_event):
+        return async_runner(request, workspace_root, emit_event)
+
+    client = create_test_client(
+        tmp_path,
+        callback_sender=lambda url, payload, token: {"accepted": True},
+        executor_runner=decorated_runner,
+    )
+
+    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "failed"
+    assert response.json()["error_code"] == "executor_runner_failed"
+    assert response.json()["error_message"] == "decorated runner dependency timed out"
     assert "requested_max_seconds" not in response.json()
     assert "timeout_elapsed_ms" not in response.json()
 

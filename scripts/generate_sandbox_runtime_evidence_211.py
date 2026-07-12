@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import re
 import subprocess
@@ -116,6 +117,11 @@ def _runtime_probe_section_error(section_name: str, section: dict[str, Any], *, 
             return "runtime probe results missing: resource_limits.runtime_mode"
         if not str(section.get("runtime_subject") or ""):
             return "runtime probe results missing: resource_limits.runtime_subject"
+        if not _runtime_identity_matches_subject(
+            section.get("runtime_identity"),
+            runtime_subject=str(section.get("runtime_subject") or ""),
+        ):
+            return "runtime probe results missing: resource_limits.runtime_identity"
         if not _positive_number(section.get("requested_max_seconds")):
             return "runtime probe results missing: resource_limits.requested_max_seconds"
         if not _deadline_elapsed_is_bounded(
@@ -125,6 +131,8 @@ def _runtime_probe_section_error(section_name: str, section: dict[str, Any], *, 
             return "runtime probe results missing: resource_limits.observed_timeout_elapsed_ms"
         if safe_bounded_error_projection(section.get("bounded_error_projection"), run_id=run_id) is None:
             return "runtime probe results missing: resource_limits.bounded_error_projection"
+        if section.get("bounded_error_projection_source") != "executor_callback":
+            return "runtime probe results missing: resource_limits.bounded_error_projection_source"
         return None
     if section_name == "egress_policy":
         for field in (
@@ -299,6 +307,11 @@ class EvidenceRecorder:
         progress = payload.get("progress")
         if isinstance(progress, int | float):
             event["progress"] = progress
+        state_patch = payload.get("state_patch")
+        projection = state_patch.get("bounded_error_projection") if isinstance(state_patch, dict) else None
+        safe_projection = safe_bounded_error_projection(projection, run_id=self.run_id)
+        if safe_projection is not None:
+            event["state_patch"] = {"bounded_error_projection": safe_projection}
         with self._lock:
             self._callback_auth_verified = True
             self.callbacks.append(event)
@@ -487,7 +500,7 @@ def _executor_evidence_from_result(result: object) -> dict[str, object]:
 def _positive_number(value: object) -> bool:
     if isinstance(value, bool):
         return False
-    return isinstance(value, int | float) and value > 0
+    return isinstance(value, int | float) and math.isfinite(float(value)) and value > 0
 
 
 def _runtime_probe_section(
@@ -507,7 +520,8 @@ def _safe_platform_resource_probe_from_result(
     release_reason: object,
     platform_resource_timeout_probe: bool,
     requested_max_seconds: float,
-    runtime_subject: str,
+    runtime_identity: dict[str, Any],
+    callbacks: list[dict[str, object]] | None,
 ) -> dict[str, Any]:
     if not platform_resource_timeout_probe:
         return {}
@@ -518,6 +532,7 @@ def _safe_platform_resource_probe_from_result(
     response_run_id = str(response.get("run_id") or "")
     response_requested = response.get("requested_max_seconds")
     observed_elapsed_ms = response.get("timeout_elapsed_ms")
+    runtime_subject = str(runtime_identity.get("source_revision") or "")
     if (
         status != "failed"
         or response.get("status") != "failed"
@@ -534,26 +549,23 @@ def _safe_platform_resource_probe_from_result(
         or not runtime_subject
     ):
         return {}
-    return {
+    probe = {
         "probe_kind": "platform_executor_deadline",
         "run_id": run_id,
         "probe_source": "executor_response",
         "runtime_mode": "platform",
         "runtime_subject": runtime_subject,
+        "runtime_identity": dict(runtime_identity),
         "requested_max_seconds": float(requested_max_seconds),
         "observed_timeout_elapsed_ms": int(observed_elapsed_ms),
         "max_seconds_enforced": True,
         "over_limit_cleanup_verified": True,
-        "bounded_error_projection": {
-            "source": "admin_runtime_projection",
-            "run_id": run_id,
-            "status": "failed",
-            "error_code": "executor_health_timeout",
-            "host_paths_redacted": True,
-            "raw_docker_payload_absent": True,
-            "callback_token_absent": True,
-        },
     }
+    projection = _bounded_error_projection_from_callbacks(callbacks, run_id=run_id)
+    if projection is not None:
+        probe["bounded_error_projection"] = projection
+        probe["bounded_error_projection_source"] = "executor_callback"
+    return probe
 
 
 def _deadline_elapsed_is_bounded(value: object, *, requested_max_seconds: object) -> bool:
@@ -562,12 +574,100 @@ def _deadline_elapsed_is_bounded(value: object, *, requested_max_seconds: object
     if not _positive_number(requested_max_seconds):
         return False
     requested_ms = float(requested_max_seconds) * 1000
-    return max(requested_ms * 0.5, 1.0) <= float(value) <= max(requested_ms * 2, requested_ms + 250)
+    elapsed_ms = float(value)
+    return math.isfinite(elapsed_ms) and max(requested_ms * 0.5, 1.0) <= elapsed_ms <= max(
+        requested_ms * 2,
+        requested_ms + 250,
+    )
 
 
-def _runtime_subject_from_image(image: object) -> str:
-    value = str(image or "").strip()
-    return value.removeprefix("ai-platform:") if value.startswith("ai-platform:") else value
+def _runtime_identity_from_docker_inspect(
+    docker_inspect: dict[str, Any] | None,
+    *,
+    requested_image: str,
+) -> dict[str, object]:
+    if not isinstance(docker_inspect, dict) or not requested_image:
+        return {}
+    image_id = str(docker_inspect.get("Image") or "")
+    config = docker_inspect.get("Config")
+    if not image_id.startswith("sha256:") or not isinstance(config, dict):
+        return {}
+    observed_image = str(config.get("Image") or "")
+    if observed_image != requested_image:
+        return {}
+    labels = _docker_config_labels(docker_inspect)
+    source_revision = str(labels.get("ai-platform.source_revision") or "")
+    oci_revision = str(labels.get("org.opencontainers.image.revision") or "")
+    source_tree_commit = str(labels.get("ai-platform.source_tree_commit") or "")
+    if (
+        not source_revision
+        or source_revision == "unknown"
+        or source_revision != oci_revision
+        or source_revision != source_tree_commit
+        or str(labels.get("ai-platform.build-dirty") or "").lower() != "false"
+    ):
+        return {}
+    return {
+        "image_id": image_id,
+        "requested_image": requested_image,
+        "observed_image": observed_image,
+        "source_revision": source_revision,
+        "oci_revision": oci_revision,
+        "source_tree_commit": source_tree_commit,
+        "source_tree_dirty": False,
+    }
+
+
+def _runtime_identity_matches_subject(identity: object, *, runtime_subject: str) -> bool:
+    if not isinstance(identity, dict) or not runtime_subject:
+        return False
+    image_id = identity.get("image_id")
+    requested_image = identity.get("requested_image")
+    observed_image = identity.get("observed_image")
+    return (
+        isinstance(image_id, str)
+        and image_id.startswith("sha256:")
+        and isinstance(requested_image, str)
+        and bool(requested_image)
+        and requested_image == observed_image
+        and identity.get("source_revision") == runtime_subject
+        and identity.get("oci_revision") == runtime_subject
+        and identity.get("source_tree_commit") == runtime_subject
+        and identity.get("source_tree_dirty") is False
+    )
+
+
+def _bounded_error_projection_from_callbacks(
+    callbacks: list[dict[str, object]] | None,
+    *,
+    run_id: str,
+) -> dict[str, Any] | None:
+    if not isinstance(callbacks, list):
+        return None
+    for callback in callbacks:
+        if not isinstance(callback, dict) or callback.get("run_id") != run_id or callback.get("status") != "failed":
+            continue
+        state_patch = callback.get("state_patch")
+        projection = state_patch.get("bounded_error_projection") if isinstance(state_patch, dict) else None
+        safe_projection = safe_bounded_error_projection(projection, run_id=run_id)
+        if safe_projection is not None:
+            return safe_projection
+    return None
+
+
+def _merge_current_runtime_probe_results(
+    *,
+    imported: dict[str, Any] | None,
+    current_resource_probe: dict[str, Any],
+    current_egress_probe: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(imported or {})
+    merged.pop("resource_limits", None)
+    if current_resource_probe:
+        merged["resource_limits"] = current_resource_probe
+    if current_egress_probe:
+        merged["egress_policy"] = current_egress_probe
+    return merged
 
 
 def _docker_host_config(docker_inspect: dict[str, Any] | None) -> dict[str, Any]:
@@ -865,8 +965,11 @@ def _platform_hardening_evidence(
                 "timeout_probe_source": str(resource_probe.get("probe_source") or ""),
                 "timeout_probe_runtime_mode": str(resource_probe.get("runtime_mode") or ""),
                 "timeout_probe_runtime_subject": str(resource_probe.get("runtime_subject") or ""),
+                "timeout_probe_runtime_identity": resource_probe.get("runtime_identity"),
             }
         )
+        if resource_probe.get("bounded_error_projection_source") == "executor_callback":
+            resource_limits_evidence["bounded_error_projection_source"] = "executor_callback"
     return {
         "lease_isolation": {
             "evidence_class": "live_platform_probe",
@@ -906,6 +1009,7 @@ def _platform_hardening_evidence(
             "probe_source": str(resource_probe.get("probe_source") or ""),
             "runtime_mode": str(resource_probe.get("runtime_mode") or ""),
             "runtime_subject": str(resource_probe.get("runtime_subject") or ""),
+            "runtime_identity": resource_probe.get("runtime_identity"),
         },
         "failure_fallback": {
             "evidence_class": "source_regression_guard",
@@ -1210,17 +1314,19 @@ def run_platform_runtime_probe(
     )
     recorded_lease_id = captured.get("recorded_lease_id") or f"lease-{_safe_run_id(recorder.run_id)}"
     released_lease_id = captured.get("released_lease_id") or ""
-    derived_runtime_probe_results = dict(runtime_probe_results or {})
+    docker_inspect = captured.get("docker_inspect") if isinstance(captured.get("docker_inspect"), dict) else None
     platform_resource_probe = _safe_platform_resource_probe_from_result(
         run_id=recorder.run_id,
         result=result,
         release_reason=captured.get("release_reason"),
         platform_resource_timeout_probe=platform_resource_timeout_probe,
         requested_max_seconds=PLATFORM_DEADLINE_PROBE_SECONDS,
-        runtime_subject=_runtime_subject_from_image(sandbox_executor_image),
+        runtime_identity=_runtime_identity_from_docker_inspect(
+            docker_inspect,
+            requested_image=sandbox_executor_image,
+        ),
+        callbacks=recorder.callbacks,
     )
-    if platform_resource_probe:
-        derived_runtime_probe_results["resource_limits"] = platform_resource_probe
     platform_egress_probe = _safe_platform_egress_probe_from_result(
         run_id=recorder.run_id,
         egress_denial_probe=captured.get("egress_denial_probe")
@@ -1229,8 +1335,11 @@ def run_platform_runtime_probe(
         docker_inspect=captured.get("docker_inspect") if isinstance(captured.get("docker_inspect"), dict) else None,
         callbacks=recorder.callbacks,
     )
-    if platform_egress_probe:
-        derived_runtime_probe_results["egress_policy"] = platform_egress_probe
+    derived_runtime_probe_results = _merge_current_runtime_probe_results(
+        imported=runtime_probe_results,
+        current_resource_probe=platform_resource_probe,
+        current_egress_probe=platform_egress_probe,
+    )
     recorder.hardening = _platform_hardening_evidence(
         run_id=recorder.run_id,
         workspace_root=workspace_root,
@@ -1278,10 +1387,12 @@ def _runtime_probe_results_payload(*, run_id: str, hardening: dict[str, Any]) ->
             "probe_source": str(resource_limits.get("timeout_probe_source") or ""),
             "runtime_mode": str(resource_limits.get("timeout_probe_runtime_mode") or ""),
             "runtime_subject": str(resource_limits.get("timeout_probe_runtime_subject") or ""),
+            "runtime_identity": resource_limits.get("timeout_probe_runtime_identity"),
             "requested_max_seconds": resource_limits.get("over_limit_requested_max_seconds"),
             "observed_timeout_elapsed_ms": resource_limits.get("over_limit_observed_timeout_elapsed_ms"),
             "max_seconds_enforced": resource_limits.get("max_seconds_enforced") is True,
             "bounded_error_projection": resource_limits.get("bounded_error_projection"),
+            "bounded_error_projection_source": resource_limits.get("bounded_error_projection_source"),
         },
         "egress_policy": {
             "default_deny_outbound": egress_policy.get("default_deny_outbound") is True,

@@ -32,6 +32,19 @@ Status: `PR ready`
   - Implementation commit: `3a699bf8f26baa24c6084a3f94f3477393cf1853`.
   - Branch `codex/b2-positive-deadline` was pushed without force.
   - Draft PR [#405](https://github.com/demonsxxxxxx/ai-platform/pull/405) links the issue without auto-close language.
+- [x] Phase 7 - Revision 38 review fixes
+  - Controller epoch `controller-20260711-1945`, board revision 38, lane generation 1, phase sequence 4.
+  - Starting head `22296c9892cb96ea2f5646fafe42c76f9cd7f768`; scope fingerprint `sha256:78b3270bf4ab8beabead15f39f60218d94ebdc0ed578779b65d776ea0acf8a4a`; clean starting worktree fingerprint `sha256:1e147359c9a84868948c52f227d69ea3f7eba8f9f0f78c6a81421779c3011ee3`.
+  - Executor RED: 7 failed and 2 passed for invalid deadlines and async callable compatibility; focused GREEN: 9 passed; full executor GREEN: 37 passed.
+  - Evidence RED: 4 failed and 1 passed for current-only provenance and finite values; focused GREEN: 5 passed; combined generator/verifier/readiness GREEN: 101 passed.
+  - Full affected suite: 156 passed across executor, runtime, generator/verifier, and readiness tests.
+  - Imported resource-deadline files no longer fall back as current proof; only the current platform diagnostic result can populate resource deadline evidence.
+  - Runtime subject now derives from Docker inspect image ID, requested/observed image equality, matching source labels, and `source_tree_dirty=false`; missing or conflicting identity remains unverified.
+  - Bounded admin projection is retained only when an actual same-run failed callback supplies a projection that passes the existing safety contract; no redaction or error fields are fabricated.
+  - Bool, malformed, NaN, and Infinity deadline inputs fail closed; non-finite elapsed observations are rejected by generator, verifier, and readiness.
+  - Partial, async callable object, and wrapped async runners remain supported; runner-raised `TimeoutError` remains `executor_runner_failed`.
+- [ ] Phase 8 - Revision 38 publish
+  - Pending fresh compile, diff, changed-scope, added-line secret checks, follow-up commit, and push to existing draft PR #405.
 
 ## Evidence Boundaries
 

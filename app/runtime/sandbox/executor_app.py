@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hmac
 import inspect
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -114,16 +116,26 @@ def _safe_id_list(value: Any) -> list[str]:
 
 
 def _resource_limit_seconds(value: Any) -> float | None:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, int | float):
         return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+    parsed = float(value)
+    return parsed if math.isfinite(parsed) else None
 
 
 def _is_async_callable(value: object) -> bool:
-    return inspect.iscoroutinefunction(value) or inspect.iscoroutinefunction(getattr(value, "__call__", None))
+    candidates = [value, getattr(value, "__call__", None)]
+    for candidate in candidates:
+        while isinstance(candidate, functools.partial):
+            candidate = candidate.func
+        if candidate is None:
+            continue
+        try:
+            candidate = inspect.unwrap(candidate)
+        except (ValueError, TypeError):
+            continue
+        if inspect.iscoroutinefunction(candidate):
+            return True
+    return False
 
 
 async def _await_with_deadline(awaitable: Awaitable[Any], *, timeout_seconds: float) -> tuple[Any, bool]:
@@ -152,7 +164,10 @@ async def _await_with_deadline(awaitable: Awaitable[Any], *, timeout_seconds: fl
 
 
 def _elapsed_ms(started_at: float) -> int:
-    return max(int(round((time.monotonic() - started_at) * 1000)), 0)
+    elapsed = time.monotonic() - started_at
+    if not math.isfinite(elapsed):
+        return 0
+    return max(int(round(elapsed * 1000)), 0)
 
 
 def _timing_value(value: object) -> int:
@@ -510,11 +525,13 @@ def create_executor_app(
             state_patch={"stage": "accepted"},
         )
         resource_limits = request.config.get("resource_limits", {})
+        max_seconds_present = isinstance(resource_limits, dict) and "max_seconds" in resource_limits
         max_seconds = (
             _resource_limit_seconds(resource_limits.get("max_seconds"))
             if isinstance(resource_limits, dict)
             else None
         )
+        invalid_max_seconds = max_seconds_present and max_seconds is None
         timed_out = max_seconds is not None and max_seconds <= 0
         executor_started_at = time.monotonic()
         deadline_started_at = executor_started_at
@@ -558,7 +575,13 @@ def create_executor_app(
 
         await dispatch_callback_event(running_event)
         runner_result: dict[str, Any] = {}
-        if not timed_out:
+        if invalid_max_seconds:
+            runner_result = {
+                "status": "failed",
+                "error_code": "executor_invalid_max_seconds",
+                "error_message": "Executor max_seconds must be a finite number",
+            }
+        elif not timed_out:
             if max_seconds is not None and not _is_async_callable(resolved_executor_runner):
                 runner_result = {
                     "status": "failed",

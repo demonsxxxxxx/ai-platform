@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -454,7 +455,7 @@ def _positive_number(value: Any) -> bool:
         return False
     if not isinstance(value, int | float):
         return False
-    return value > 0
+    return math.isfinite(float(value)) and value > 0
 
 
 def _deadline_elapsed_is_bounded(value: object, *, requested_max_seconds: object) -> bool:
@@ -463,7 +464,30 @@ def _deadline_elapsed_is_bounded(value: object, *, requested_max_seconds: object
     if not _positive_number(requested_max_seconds):
         return False
     requested_ms = float(requested_max_seconds) * 1000
-    return max(requested_ms * 0.5, 1.0) <= float(value) <= max(requested_ms * 2, requested_ms + 250)
+    elapsed_ms = float(value)
+    return math.isfinite(elapsed_ms) and max(requested_ms * 0.5, 1.0) <= elapsed_ms <= max(
+        requested_ms * 2,
+        requested_ms + 250,
+    )
+
+
+def _runtime_identity_matches_subject(identity: object, *, runtime_subject: str) -> bool:
+    if not isinstance(identity, dict) or not runtime_subject:
+        return False
+    image_id = identity.get("image_id")
+    requested_image = identity.get("requested_image")
+    observed_image = identity.get("observed_image")
+    return (
+        isinstance(image_id, str)
+        and image_id.startswith("sha256:")
+        and isinstance(requested_image, str)
+        and bool(requested_image)
+        and requested_image == observed_image
+        and identity.get("source_revision") == runtime_subject
+        and identity.get("oci_revision") == runtime_subject
+        and identity.get("source_tree_commit") == runtime_subject
+        and identity.get("source_tree_dirty") is False
+    )
 
 
 def _resource_limits_runtime_verified(
@@ -502,12 +526,17 @@ def _resource_limits_runtime_verified(
         and section.get("timeout_probe_source") == "executor_response"
         and section.get("timeout_probe_runtime_mode") == "platform"
         and bool(str(section.get("timeout_probe_runtime_subject") or ""))
+        and _runtime_identity_matches_subject(
+            section.get("timeout_probe_runtime_identity"),
+            runtime_subject=str(section.get("timeout_probe_runtime_subject") or ""),
+        )
         and (
             not runtime_subject
             or section.get("timeout_probe_runtime_subject") == runtime_subject
         )
         and section.get("max_seconds_enforced") is True
         and section.get("bounded_error_projection_verified") is True
+        and section.get("bounded_error_projection_source") == "executor_callback"
         and bounded_error_projection_is_safe(projection, run_id=run_id)
     )
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -136,6 +137,7 @@ REQUIRED_HARDENING_FLAGS = {
         "probe_source",
         "runtime_mode",
         "runtime_subject",
+        "runtime_identity",
     ],
     "failure_fallback": [
         "evidence_class",
@@ -164,6 +166,7 @@ REQUIRED_HARDENING_FLAGS = {
         "timeout_probe_source",
         "timeout_probe_runtime_mode",
         "timeout_probe_runtime_subject",
+        "timeout_probe_runtime_identity",
         "max_seconds_enforced",
         "limit_source",
         "docker_inspection_verified",
@@ -619,6 +622,7 @@ def _hardening_error(evidence: dict[str, Any]) -> str | None:
         "probe_source": "timeout_probe_source",
         "runtime_mode": "timeout_probe_runtime_mode",
         "runtime_subject": "timeout_probe_runtime_subject",
+        "runtime_identity": "timeout_probe_runtime_identity",
     }
     for timeout_field, limits_field in timeout_bindings.items():
         if timeout.get(timeout_field) != resource_limits.get(limits_field):
@@ -631,7 +635,7 @@ def _positive_number(value: Any) -> bool:
         return False
     if not isinstance(value, int | float):
         return False
-    return value > 0
+    return math.isfinite(float(value)) and value > 0
 
 
 def _deadline_elapsed_is_bounded(value: object, *, requested_max_seconds: object) -> bool:
@@ -640,7 +644,30 @@ def _deadline_elapsed_is_bounded(value: object, *, requested_max_seconds: object
     if not _positive_number(requested_max_seconds):
         return False
     requested_ms = float(requested_max_seconds) * 1000
-    return max(requested_ms * 0.5, 1.0) <= float(value) <= max(requested_ms * 2, requested_ms + 250)
+    elapsed_ms = float(value)
+    return math.isfinite(elapsed_ms) and max(requested_ms * 0.5, 1.0) <= elapsed_ms <= max(
+        requested_ms * 2,
+        requested_ms + 250,
+    )
+
+
+def _runtime_identity_matches_subject(identity: object, *, runtime_subject: str) -> bool:
+    if not isinstance(identity, dict) or not runtime_subject:
+        return False
+    image_id = identity.get("image_id")
+    requested_image = identity.get("requested_image")
+    observed_image = identity.get("observed_image")
+    return (
+        isinstance(image_id, str)
+        and image_id.startswith("sha256:")
+        and isinstance(requested_image, str)
+        and bool(requested_image)
+        and requested_image == observed_image
+        and identity.get("source_revision") == runtime_subject
+        and identity.get("oci_revision") == runtime_subject
+        and identity.get("source_tree_commit") == runtime_subject
+        and identity.get("source_tree_dirty") is False
+    )
 
 
 def _resource_timeout_hardening_error(section: dict[str, Any], *, run_id: str) -> str | None:
@@ -663,6 +690,11 @@ def _resource_timeout_hardening_error(section: dict[str, Any], *, run_id: str) -
         return "hardening evidence missing: resource_timeout.runtime_mode"
     if not str(section.get("runtime_subject") or ""):
         return "hardening evidence missing: resource_timeout.runtime_subject"
+    if not _runtime_identity_matches_subject(
+        section.get("runtime_identity"),
+        runtime_subject=str(section.get("runtime_subject") or ""),
+    ):
+        return "hardening evidence missing: resource_timeout.runtime_identity"
     return None
 
 
@@ -695,6 +727,11 @@ def _resource_limits_hardening_error(section: dict[str, Any], *, run_id: str) ->
         return "hardening evidence missing: resource_limits.timeout_probe_runtime_mode"
     if not str(section.get("timeout_probe_runtime_subject") or ""):
         return "hardening evidence missing: resource_limits.timeout_probe_runtime_subject"
+    if not _runtime_identity_matches_subject(
+        section.get("timeout_probe_runtime_identity"),
+        runtime_subject=str(section.get("timeout_probe_runtime_subject") or ""),
+    ):
+        return "hardening evidence missing: resource_limits.timeout_probe_runtime_identity"
     for field in (
         "docker_inspection_verified",
         "over_limit_cleanup_verified",
@@ -709,6 +746,8 @@ def _resource_limits_hardening_error(section: dict[str, Any], *, run_id: str) ->
     )
     if projection_error:
         return f"hardening evidence missing: {projection_error}"
+    if section.get("bounded_error_projection_source") != "executor_callback":
+        return "hardening evidence missing: resource_limits.bounded_error_projection_source"
     return None
 
 

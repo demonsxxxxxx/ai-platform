@@ -32,6 +32,7 @@ def observed_resource_probe(*, run_id: str = "run-a", runtime_subject: str = "lo
         "probe_source": "executor_response",
         "runtime_mode": "platform",
         "runtime_subject": runtime_subject,
+        "runtime_identity": observed_runtime_identity(runtime_subject=runtime_subject),
         "requested_max_seconds": 0.05,
         "observed_timeout_elapsed_ms": 51,
         "max_seconds_enforced": True,
@@ -44,6 +45,23 @@ def observed_resource_probe(*, run_id: str = "run-a", runtime_subject: str = "lo
             "raw_docker_payload_absent": True,
             "callback_token_absent": True,
         },
+        "bounded_error_projection_source": "executor_callback",
+    }
+
+
+def observed_runtime_identity(
+    *,
+    runtime_subject: str = "local",
+    requested_image: str = "ai-platform:local",
+) -> dict[str, object]:
+    return {
+        "image_id": "sha256:" + "a" * 64,
+        "requested_image": requested_image,
+        "observed_image": requested_image,
+        "source_revision": runtime_subject,
+        "oci_revision": runtime_subject,
+        "source_tree_commit": runtime_subject,
+        "source_tree_dirty": False,
     }
 
 
@@ -59,6 +77,25 @@ def observed_resource_timeout_hardening(*, run_id: str = "run-a") -> dict[str, o
         "probe_source": "executor_response",
         "runtime_mode": "platform",
         "runtime_subject": "local",
+        "runtime_identity": observed_runtime_identity(),
+    }
+
+
+def observed_projection_callback(*, run_id: str = "run-a") -> dict[str, object]:
+    return {
+        "run_id": run_id,
+        "status": "failed",
+        "state_patch": {
+            "bounded_error_projection": {
+                "source": "admin_runtime_projection",
+                "run_id": run_id,
+                "status": "failed",
+                "error_code": "executor_health_timeout",
+                "host_paths_redacted": True,
+                "raw_docker_payload_absent": True,
+                "callback_token_absent": True,
+            }
+        },
     }
 
 
@@ -80,9 +117,11 @@ def observed_resource_limits_hardening(*, run_id: str = "run-a") -> dict[str, ob
         "timeout_probe_source": probe["probe_source"],
         "timeout_probe_runtime_mode": probe["runtime_mode"],
         "timeout_probe_runtime_subject": probe["runtime_subject"],
+        "timeout_probe_runtime_identity": probe["runtime_identity"],
         "max_seconds_enforced": True,
         "bounded_error_projection_verified": True,
         "bounded_error_projection": probe["bounded_error_projection"],
+        "bounded_error_projection_source": "executor_callback",
     }
 
 
@@ -1927,25 +1966,56 @@ def test_platform_resource_probe_derivation_requires_explicit_timeout_probe():
         release_reason="run_failed",
         platform_resource_timeout_probe=False,
         requested_max_seconds=0.05,
-        runtime_subject="runtime-sha",
+        runtime_identity=observed_runtime_identity(runtime_subject="runtime-sha"),
+        callbacks=[],
     ) == {}
-    assert generator._safe_platform_resource_probe_from_result(
+    observed_without_projection = generator._safe_platform_resource_probe_from_result(
         run_id="run-a",
         result=result,
         release_reason="run_failed",
         platform_resource_timeout_probe=True,
         requested_max_seconds=0.05,
-        runtime_subject="runtime-sha",
-    ) == {
+        runtime_identity=observed_runtime_identity(runtime_subject="runtime-sha"),
+        callbacks=[],
+    )
+    assert observed_without_projection == {
         "probe_kind": "platform_executor_deadline",
         "run_id": "run-a",
         "probe_source": "executor_response",
         "runtime_mode": "platform",
         "runtime_subject": "runtime-sha",
+        "runtime_identity": observed_runtime_identity(runtime_subject="runtime-sha"),
         "requested_max_seconds": 0.05,
         "observed_timeout_elapsed_ms": 51,
         "max_seconds_enforced": True,
         "over_limit_cleanup_verified": True,
+    }
+    callback_projection = {
+        "source": "admin_runtime_projection",
+        "run_id": "run-a",
+        "status": "failed",
+        "error_code": "executor_health_timeout",
+        "host_paths_redacted": True,
+        "raw_docker_payload_absent": True,
+        "callback_token_absent": True,
+    }
+    observed_with_projection = generator._safe_platform_resource_probe_from_result(
+        run_id="run-a",
+        result=result,
+        release_reason="run_failed",
+        platform_resource_timeout_probe=True,
+        requested_max_seconds=0.05,
+        runtime_identity=observed_runtime_identity(runtime_subject="runtime-sha"),
+        callbacks=[
+            {
+                "run_id": "run-a",
+                "status": "failed",
+                "state_patch": {"bounded_error_projection": callback_projection},
+            }
+        ],
+    )
+    assert observed_with_projection == {
+        **observed_without_projection,
         "bounded_error_projection": {
             "source": "admin_runtime_projection",
             "run_id": "run-a",
@@ -1955,6 +2025,7 @@ def test_platform_resource_probe_derivation_requires_explicit_timeout_probe():
             "raw_docker_payload_absent": True,
             "callback_token_absent": True,
         },
+        "bounded_error_projection_source": "executor_callback",
     }
 
 
@@ -1983,8 +2054,84 @@ def test_platform_resource_probe_rejects_unbound_or_generic_timeout_claims():
             release_reason="run_failed",
             platform_resource_timeout_probe=True,
             requested_max_seconds=0.05,
-            runtime_subject="runtime-sha",
+            runtime_identity=observed_runtime_identity(runtime_subject="runtime-sha"),
+            callbacks=[],
         ) == {}
+
+
+def test_runtime_identity_requires_observed_matching_clean_image_metadata():
+    generator = load_generator()
+    requested_image = "ai-platform:local"
+    docker_inspect = {
+        "Image": "sha256:" + "a" * 64,
+        "Config": {
+            "Image": requested_image,
+            "Labels": {
+                "ai-platform.source_revision": "runtime-sha",
+                "org.opencontainers.image.revision": "runtime-sha",
+                "ai-platform.source_tree_commit": "runtime-sha",
+                "ai-platform.build-dirty": "false",
+            },
+        },
+    }
+
+    assert generator._runtime_identity_from_docker_inspect(
+        docker_inspect,
+        requested_image=requested_image,
+    ) == observed_runtime_identity(runtime_subject="runtime-sha")
+
+    invalid_inspects = []
+    for patch in (
+        {"Image": ""},
+        {"Config": {**docker_inspect["Config"], "Image": "ai-platform:other"}},
+        {
+            "Config": {
+                **docker_inspect["Config"],
+                "Labels": {**docker_inspect["Config"]["Labels"], "ai-platform.build-dirty": "true"},
+            }
+        },
+        {
+            "Config": {
+                **docker_inspect["Config"],
+                "Labels": {**docker_inspect["Config"]["Labels"], "org.opencontainers.image.revision": "other"},
+            }
+        },
+    ):
+        invalid_inspects.append({**docker_inspect, **patch})
+
+    for invalid in invalid_inspects:
+        assert generator._runtime_identity_from_docker_inspect(
+            invalid,
+            requested_image=requested_image,
+        ) == {}
+
+
+def test_imported_resource_probe_is_not_promoted_without_current_observation():
+    generator = load_generator()
+    imported = {
+        "resource_limits": observed_resource_probe(),
+        "egress_policy": {"probe_source": "runtime_probe_results"},
+    }
+
+    merged = generator._merge_current_runtime_probe_results(
+        imported=imported,
+        current_resource_probe={},
+        current_egress_probe={},
+    )
+
+    assert "resource_limits" not in merged
+    assert merged["egress_policy"] == imported["egress_policy"]
+
+
+def test_deadline_number_helpers_reject_non_finite_values():
+    generator = load_generator()
+    verifier = load_verifier()
+
+    for value in (float("nan"), float("inf"), float("-inf")):
+        assert generator._positive_number(value) is False
+        assert verifier._positive_number(value) is False
+        assert generator._deadline_elapsed_is_bounded(value, requested_max_seconds=0.05) is False
+        assert verifier._deadline_elapsed_is_bounded(value, requested_max_seconds=0.05) is False
 
 
 def test_generated_default_hardening_payload_does_not_pass_full_runtime_hardening_verifier(tmp_path):
@@ -2286,10 +2433,13 @@ def test_main_generate_runtime_probe_results_uses_callback_server(tmp_path, monk
             assert request.callback_url.endswith("/callback")
             assert request.trace_id == "trace_run_a"
             callback_token = self.callback_token_resolver(request.callback_token_id)
-            for status in ("running", "completed"):
+            for status in ("running", "failed"):
+                callback_payload = {"run_id": request.run_id, "status": status}
+                if status == "failed":
+                    callback_payload = observed_projection_callback(run_id=request.run_id)
                 callback = urllib.request.Request(
                     request.callback_url,
-                    data=json.dumps({"run_id": request.run_id, "status": status}).encode("utf-8"),
+                    data=json.dumps(callback_payload).encode("utf-8"),
                     headers={
                         "Content-Type": "application/json",
                         "X-AI-Platform-Callback-Token": callback_token,
@@ -2374,6 +2524,7 @@ def test_main_generate_runtime_probe_results_uses_callback_server(tmp_path, monk
                 "stdout": json.dumps(
                     [
                         {
+                            "Image": "sha256:" + "a" * 64,
                             "HostConfig": {
                                 "Memory": 536870912,
                                 "NanoCpus": 500000000,
@@ -2386,8 +2537,13 @@ def test_main_generate_runtime_probe_results_uses_callback_server(tmp_path, monk
                             },
                             "Mounts": [{"Destination": "/workspace", "RW": True}],
                             "Config": {
+                                "Image": "ai-platform:local",
                                 "Labels": {
                                     "ai-platform.egress.callback_host": "host.docker.internal",
+                                    "ai-platform.source_revision": "local",
+                                    "org.opencontainers.image.revision": "local",
+                                    "ai-platform.source_tree_commit": "local",
+                                    "ai-platform.build-dirty": "false",
                                 },
                             },
                         }
@@ -2649,6 +2805,7 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
                 "stdout": json.dumps(
                     [
                         {
+                            "Image": "sha256:" + "a" * 64,
                             "HostConfig": {
                                 "Memory": 536870912,
                                 "NanoCpus": 500000000,
@@ -2660,6 +2817,15 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
                                 "Binds": ["/tmp/workspace:/workspace:rw"],
                             },
                             "Mounts": [{"Destination": "/workspace", "RW": True}],
+                            "Config": {
+                                "Image": "ai-platform:local",
+                                "Labels": {
+                                    "ai-platform.source_revision": "local",
+                                    "org.opencontainers.image.revision": "local",
+                                    "ai-platform.source_tree_commit": "local",
+                                    "ai-platform.build-dirty": "false",
+                                },
+                            },
                         }
                     ]
                 ),
@@ -2674,7 +2840,7 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
         callback_token="secret-token",
     )
     recorder.record_callback({"run_id": "run-a", "status": "running"}, recorder._callback_token)
-    recorder.record_callback({"run_id": "run-a", "status": "completed"}, recorder._callback_token)
+    recorder.record_callback(observed_projection_callback(), recorder._callback_token)
 
     result = generator.generate_runtime_probe_results(
         recorder=recorder,
@@ -3538,7 +3704,6 @@ def test_run_platform_runtime_probe_does_not_derive_resource_over_limit_from_gen
         executor_url="http://executor.test",
         callback_token="secret-token",
     )
-
     result = generator.run_platform_runtime_probe(
         recorder=recorder,
         sandbox_provider="docker",
@@ -3655,6 +3820,7 @@ def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_pl
                 "stdout": json.dumps(
                     [
                         {
+                            "Image": "sha256:" + "a" * 64,
                             "HostConfig": {
                                 "Memory": 536870912,
                                 "NanoCpus": 500000000,
@@ -3666,6 +3832,15 @@ def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_pl
                                 "Binds": ["/tmp/workspace:/workspace:rw"],
                             },
                             "Mounts": [{"Destination": "/workspace", "RW": True}],
+                            "Config": {
+                                "Image": "ai-platform:local",
+                                "Labels": {
+                                    "ai-platform.source_revision": "local",
+                                    "org.opencontainers.image.revision": "local",
+                                    "ai-platform.source_tree_commit": "local",
+                                    "ai-platform.build-dirty": "false",
+                                },
+                            },
                         }
                     ]
                 ),
@@ -3679,6 +3854,9 @@ def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_pl
         executor_url="http://executor.test",
         callback_token="secret-token",
     )
+    recorder.record_callback({"run_id": "run-a", "status": "running"}, recorder._callback_token)
+    recorder.record_callback(observed_projection_callback(), recorder._callback_token)
+    assert generator._bounded_error_projection_from_callbacks(recorder.callbacks, run_id="run-a") is not None
 
     result = generator.run_platform_runtime_probe(
         recorder=recorder,
@@ -3696,6 +3874,7 @@ def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_pl
         "run_id": "run-a",
         "error_code": "executor_deadline_exceeded",
     }
+    assert generator._bounded_error_projection_from_callbacks(recorder.callbacks, run_id="run-a") is not None
     assert recorder.hardening["lease_isolation"]["release_reason"] == "run_failed"
     assert recorder.hardening["resource_limits"]["over_limit_cleanup_verified"] is True
     assert recorder.hardening["resource_limits"]["bounded_error_projection_verified"] is True
@@ -3704,6 +3883,8 @@ def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_pl
     assert recorder.hardening["resource_limits"]["over_limit_requested_max_seconds"] == 0.05
     assert recorder.hardening["resource_limits"]["over_limit_observed_timeout_elapsed_ms"] == 51
     assert recorder.hardening["resource_limits"]["timeout_probe_runtime_subject"] == "local"
+    assert recorder.hardening["resource_limits"]["timeout_probe_runtime_identity"] == observed_runtime_identity()
+    assert recorder.hardening["resource_limits"]["bounded_error_projection_source"] == "executor_callback"
     assert recorder.hardening["resource_limits"]["bounded_error_projection"] == {
         "source": "admin_runtime_projection",
         "run_id": "run-a",
