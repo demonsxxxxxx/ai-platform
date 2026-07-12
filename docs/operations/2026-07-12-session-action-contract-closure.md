@@ -1,6 +1,6 @@
 # Session Action Contract Closure Phase Status
 
-Status: `local partial`
+Status: `PR ready`
 
 - [x] Phase 1: revision-68 envelope read back on `codex/session-action-contract-closure` from exact base `935f85506e4c5ceba4c35c5c9b6df2fc9278de17`; `origin/main` equals the base and the starting worktree is clean. The controller supplied scope fingerprint is `sha256:58e0275b5b8e8beac66920f17a7c3ab0e2bf211f6ebc064feadc05f2d509358d` and worktree fingerprint is `sha256:c150d49fa5be6df968b17e14f7a03aed20d61d06fb25cfc63129e34267b53300`. This repository records fingerprints but has no local derivation algorithm; their bound source inputs were rechecked.
 - [x] Phase 2: tracking issue [#408](https://github.com/demonsxxxxxx/ai-platform/issues/408) opened without auto-close language.
@@ -8,7 +8,7 @@ Status: `local partial`
 - [x] Phase 4 GREEN: `app.session_actions` now centralizes owner/admin same-tenant authorization, title validation, terminal soft delete, and authorized message-prefix fork. LambChat adapters map only public requests and service outcomes. Move/favorite methods, menu affordances, callback plumbing, and unsupported query serialization were removed without adding persistence.
 - [x] Phase 5: affected backend tests reported `276 passed`; frontend focused tests reported `16 passed`; `tsc -b`, projection audit, and frontend build exited 0. `python -m compileall -q app tools scripts`, `git diff --check`, exact writable-scope, added-line secret, and unsupported-call scans exited 0.
 - [x] Phase 6: initial fixed-head review found no Critical issue and one Important admin-fork users-FK gap. The source schema confirms `sessions.user_id` references `users(id)` while `create_session` does not ensure a user; a RED assertion failed, then the shared service began calling `ensure_user` before fork creation. Fixed-head re-review of `2873cbae..da0c53a5` found no open Critical or Important finding. The review stayed read-only and independently confirmed that denial exits precede `ensure_user`, creation, and message copying.
-- [ ] Phase 7: push the reviewed head, open a ready PR without merge/issue closure, post exact-head local verification and review-substitute evidence, and read back required CI.
+- [x] Phase 7: ready PR [#410](https://github.com/demonsxxxxxx/ai-platform/pull/410) opened without merge or Issue closure. Exact-head local validation and read-only review-substitute evidence are posted on the PR. Required CI readback passed: backend required, frontend required, packaged image build, and projection audit/lint/build/trace.
 - [~] Runtime, 211, Docker, B2/readiness, schema/migrations, project/favorite persistence, merge, issue closure, and gate claims remain out of scope.
 
 ## Current Contract
@@ -72,4 +72,5 @@ unsupported query. Existing unrelated project shell code is not redesigned.
 - `frontend/web/src/hooks/useProjectManager.ts`
 
 No schema, migration, dependency, CI, Docker, deployment, runtime, or 211 file
-will be changed.
+was changed. CI is GitHub-hosted evidence only; this lane made no local Docker,
+deployment, runtime, or 211 claim.
