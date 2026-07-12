@@ -465,10 +465,8 @@ def _deadline_elapsed_is_bounded(value: object, *, requested_max_seconds: object
         return False
     requested_ms = float(requested_max_seconds) * 1000
     elapsed_ms = float(value)
-    return math.isfinite(elapsed_ms) and max(requested_ms * 0.5, 1.0) <= elapsed_ms <= max(
-        requested_ms * 2,
-        requested_ms + 250,
-    )
+    elapsed_upper_bound_ms = requested_ms + max(250, requested_ms * 0.25)
+    return math.isfinite(elapsed_ms) and max(requested_ms * 0.5, 1.0) <= elapsed_ms <= elapsed_upper_bound_ms
 
 
 def _runtime_identity_matches_subject(identity: object, *, runtime_subject: str) -> bool:

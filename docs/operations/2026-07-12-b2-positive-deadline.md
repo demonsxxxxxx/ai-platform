@@ -1,6 +1,21 @@
 # B2 Positive Executor Deadline
 
-Status: `source slice; PR ready`
+Status: `local partial`
+
+- [x] Phase 13 - Revision 60 positive deadline probe contract
+  - Controller epoch `controller-20260711-1945`, board revision 60, lane generation 1, phase sequence 1.
+  - Starting source and head: `adb07c693475614c3d1216810f7a835fd5d1de70`; scope fingerprint `sha256:0e3c19f73f5a6f2339279d3d1166943fffb335d148ab570decbcfd94e3fbdc2f`; clean starting worktree fingerprint `sha256:b893745f8a01a66b6fe48d0ef516691df59b4b98c383baa44744a33f96b2e134`.
+  - RED: 4 failed as expected. The generator requested `0.05` seconds, while generator, verifier, and readiness each accepted `2501ms` for a `2.0s` request.
+  - GREEN: the generator requests a realistic `2.0`-second cooperative deadline; generator, verifier, and readiness accept elapsed time only through requested plus the greater of `250ms` or `25%` of requested.
+- [x] Phase 14 - Revision 60 focused verification and commit readiness
+  - Both focused test files: `106 passed`; compile, diff, exact six-path scope, and added-line secret/personal-path scans passed.
+  - Self-review found no public API, executor/SDK behavior, preemption, schema/data, dependency/CI, Docker, 211, GitHub, or unrelated-path change. Boundary tests cover accepted and rejected values for both upper-bound branches.
+
+## Revision 60 Evidence Boundary
+
+- Current runtime fact from revision 58 remains blocked: requested `0.05` seconds, observed `835ms`, `executor_deadline_exceeded`, cleanup true, and zero leftovers.
+- That tuple is not accepted by this source contract and is not runtime acceptance, B2 closure, deployment, Docker, 211, merge, or PR evidence.
+- Current revision-60 evidence ceiling is `local partial`; runtime scope is none.
 
 Phases 1-10 are historical or superseded records tied to the revisions named
 below. Their earlier statements about awaiting cooperative cancellation,

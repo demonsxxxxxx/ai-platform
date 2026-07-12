@@ -2108,6 +2108,32 @@ def test_deadline_number_helpers_reject_non_finite_values():
         assert verifier._deadline_elapsed_is_bounded(value, requested_max_seconds=0.05) is False
 
 
+def test_positive_deadline_probe_uses_realistic_cooperative_window():
+    generator = load_generator()
+
+    assert generator.PLATFORM_DEADLINE_PROBE_SECONDS == 2.0
+
+
+def test_generator_uses_tight_deadline_elapsed_upper_bound():
+    generator = load_generator()
+
+    assert generator._deadline_elapsed_is_bounded(300, requested_max_seconds=0.05) is True
+    assert generator._deadline_elapsed_is_bounded(301, requested_max_seconds=0.05) is False
+    assert generator._deadline_elapsed_is_bounded(835, requested_max_seconds=0.05) is False
+    assert generator._deadline_elapsed_is_bounded(2500, requested_max_seconds=2.0) is True
+    assert generator._deadline_elapsed_is_bounded(2501, requested_max_seconds=2.0) is False
+
+
+def test_verifier_uses_tight_deadline_elapsed_upper_bound():
+    verifier = load_verifier()
+
+    assert verifier._deadline_elapsed_is_bounded(300, requested_max_seconds=0.05) is True
+    assert verifier._deadline_elapsed_is_bounded(301, requested_max_seconds=0.05) is False
+    assert verifier._deadline_elapsed_is_bounded(835, requested_max_seconds=0.05) is False
+    assert verifier._deadline_elapsed_is_bounded(2500, requested_max_seconds=2.0) is True
+    assert verifier._deadline_elapsed_is_bounded(2501, requested_max_seconds=2.0) is False
+
+
 def test_generated_default_hardening_payload_does_not_pass_full_runtime_hardening_verifier(tmp_path):
     generator = load_generator()
     verifier = load_verifier()
@@ -2470,7 +2496,7 @@ def test_main_generate_runtime_probe_results_uses_callback_server(tmp_path, monk
                         "error_code": "executor_deadline_exceeded",
                         "error_message": "Executor deadline exceeded",
                         "requested_max_seconds": generator.PLATFORM_DEADLINE_PROBE_SECONDS,
-                        "timeout_elapsed_ms": 51,
+                        "timeout_elapsed_ms": 2001,
                     },
                     "timings": {
                         "schema_version": "ai-platform.sandbox-latency-split.v1",
@@ -2738,7 +2764,7 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
                         "error_code": "executor_deadline_exceeded",
                         "error_message": "Executor deadline exceeded",
                         "requested_max_seconds": generator.PLATFORM_DEADLINE_PROBE_SECONDS,
-                        "timeout_elapsed_ms": 51,
+                        "timeout_elapsed_ms": 2001,
                     },
                     "timings": {
                         "schema_version": "ai-platform.sandbox-latency-split.v1",
@@ -2832,6 +2858,8 @@ def test_generate_runtime_probe_results_file_from_platform_probe(tmp_path, monke
     assert docker_calls[1][:3] == ("docker", "exec", "executor-exec-run-a")
     payload = json.loads(runtime_probe_results_file.read_text(encoding="utf-8"))
     expected_resource_probe = observed_resource_probe()
+    expected_resource_probe["requested_max_seconds"] = generator.PLATFORM_DEADLINE_PROBE_SECONDS
+    expected_resource_probe["observed_timeout_elapsed_ms"] = 2001
     expected_resource_probe.pop("bounded_error_projection")
     expected_resource_probe.pop("bounded_error_projection_source")
     assert payload == {
@@ -3769,7 +3797,7 @@ def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_pl
                         "error_code": "executor_deadline_exceeded",
                         "error_message": "Executor deadline exceeded",
                         "requested_max_seconds": generator.PLATFORM_DEADLINE_PROBE_SECONDS,
-                        "timeout_elapsed_ms": 51,
+                        "timeout_elapsed_ms": 2001,
                     },
                     "timings": {
                         "schema_version": "ai-platform.sandbox-latency-split.v1",
@@ -3853,8 +3881,8 @@ def test_run_platform_runtime_probe_derives_resource_over_limit_from_explicit_pl
     assert recorder.hardening["resource_limits"]["bounded_error_projection_verified"] is False
     assert recorder.hardening["resource_limits"]["process_timeout_seconds"] == 60
     assert recorder.hardening["resource_limits"]["over_limit_probe_kind"] == "platform_executor_deadline"
-    assert recorder.hardening["resource_limits"]["over_limit_requested_max_seconds"] == 0.05
-    assert recorder.hardening["resource_limits"]["over_limit_observed_timeout_elapsed_ms"] == 51
+    assert recorder.hardening["resource_limits"]["over_limit_requested_max_seconds"] == 2.0
+    assert recorder.hardening["resource_limits"]["over_limit_observed_timeout_elapsed_ms"] == 2001
     assert recorder.hardening["resource_limits"]["timeout_probe_runtime_subject"] == "local"
     assert recorder.hardening["resource_limits"]["timeout_probe_runtime_identity"] == observed_runtime_identity()
     assert "bounded_error_projection_source" not in recorder.hardening["resource_limits"]
