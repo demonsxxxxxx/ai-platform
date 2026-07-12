@@ -9,6 +9,9 @@ Status: `PR ready`
 - [x] Phase 5 focused integration: auth and Capability Distribution/public Skill tests reported `45 passed, 78 deselected`; the trusted `QA` department sees only the `qa` Skill while an empty or nonmatching department sees none.
 - [x] Phase 6: full auth routes reported `27 passed`; directly affected principal, resolver, repository authorization, and public Skill projection tests reported `30 passed`; compileall, diff, writable-scope, and added-line secret checks exited 0. Self-review found no Critical or Important issue.
 - [x] Phase 7: implementation commit `6fe43017` pushed and draft PR [#404](https://github.com/demonsxxxxxx/ai-platform/pull/404) opened with non-closing issue reference `Refs #403`.
+- [x] Phase 8 review RED: revision-38 case-preservation and alias-metadata tests reported `6 failed, 9 passed`; trusted `QA` was incorrectly folded to `qa`, and four valid top-level departments were erased when unsupported alias metadata coexisted.
+- [x] Phase 9 review GREEN: the same focused matrix reported `15 passed`; exact-case `QA` authorization succeeds, case-mismatched `qa` authorization denies, valid top-level authority survives same/conflicting/blank/null aliases, and alias-only inputs remain denied.
+- [x] Phase 10 follow-up verification: full auth routes reported `31 passed` with two existing Starlette cookie deprecation warnings; directly affected principal, distribution, repository authorization, and public Skill projection tests reported `30 passed`; compileall exited 0.
 - [~] Browser runtime and real company-account acceptance deferred; Docker, deployment, 211, merge, review, and gate closure are outside this lane.
 
 ## Design Decision
@@ -19,13 +22,14 @@ The existing company user-info integration supports a flat top-level response an
 2. Accept a bounded alias set such as `department_id` and `departmentName`.
 3. Search nested objects recursively for department-like values.
 
-Option 1 is implemented. It is the only option that adds the required authority without inventing precedence rules or broad recursive trust. Unsupported aliases are not accepted; if an alias coexists with `department`, extraction returns empty rather than guessing which value is authoritative.
+Option 1 is implemented. It is the only option that adds the required authority without inventing precedence rules or broad recursive trust. Unsupported aliases are ignored metadata: they never become authority, and they do not override or invalidate a valid top-level `department`.
 
 ## Trust And Failure Boundaries
 
 - Authority originates only from the server-side `call_existing_user_info(work_id)` response after successful company login.
 - Login JSON continues to reject an extra `department` field, and an `X-AI-Department-ID` header on the login request is ignored.
-- Missing, blank, numeric, list, object, unsafe multi-valued, alias-only, and ambiguous values produce an empty department.
+- A valid top-level department is trimmed and otherwise preserved exactly, including case, so authorization remains an exact comparison rather than silently broadening identity equivalence.
+- Missing, blank, numeric, list, object, unsafe multi-valued, and alias-only values produce an empty department. Unsupported alias metadata is ignored even when it is same-valued, conflicting, blank, or null.
 - User-info failure remains an ordinary-user login with an empty department.
 - Existing role and AI permission derivation is unchanged. Enterprise permissions are not copied into the signed session.
 - The auth audit payload remains limited to source, work ID, roles, effective AI permissions, and admin status; raw user-info and client-forged values are not recorded.

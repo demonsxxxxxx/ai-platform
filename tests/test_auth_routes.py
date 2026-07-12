@@ -176,7 +176,7 @@ def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
     assert me_response.json()["permissions"] == body["permissions"]
 
 
-def _install_company_department_login_fakes(monkeypatch, user_info):
+def _install_company_department_login_fakes(monkeypatch, user_info, *, qa_department_id="qa"):
     from app.routes import skills_marketplace
 
     async def fake_login(username, password):
@@ -224,7 +224,7 @@ def _install_company_department_login_fakes(monkeypatch, user_info):
                 "status": "active",
                 "visible_to_user": True,
                 "scope_mode": "allowlist",
-                "department_ids": ["qa"],
+                "department_ids": [qa_department_id],
                 "allowed_roles": [],
             },
             {
@@ -268,6 +268,7 @@ def test_company_login_trusted_department_reaches_session_and_skill_projection(m
     settings = _install_company_department_login_fakes(
         monkeypatch,
         {"roles": ["user"], "department": " QA "},
+        qa_department_id="QA",
     )
     client = TestClient(create_app())
 
@@ -280,7 +281,65 @@ def test_company_login_trusted_department_reaches_session_and_skill_projection(m
     assert login_response.status_code == 200
     token = login_response.cookies[settings.ai_session_cookie_name]
     principal = verify_principal_session(token)
-    assert principal.department_id == "qa"
+    assert principal.department_id == "QA"
+
+    skills_response = client.get("/api/skills/")
+
+    assert skills_response.status_code == 200
+    assert [item["skill_name"] for item in skills_response.json()["skills"]] == ["qa-skill"]
+
+
+def test_company_login_department_authorization_is_case_sensitive(monkeypatch):
+    settings = _install_company_department_login_fakes(
+        monkeypatch,
+        {"roles": ["user"], "department": " QA "},
+    )
+    client = TestClient(create_app())
+
+    login_response = client.post(
+        "/api/ai/auth/login",
+        json={"user_name": "user001", "password": "pw"},
+    )
+
+    assert login_response.status_code == 200
+    token = login_response.cookies[settings.ai_session_cookie_name]
+    assert verify_principal_session(token).department_id == "QA"
+
+    skills_response = client.get("/api/skills/")
+
+    assert skills_response.status_code == 200
+    assert skills_response.json()["skills"] == []
+
+
+@pytest.mark.parametrize(
+    "alias_metadata",
+    [
+        {"department_id": "QA"},
+        {"departmentId": "rd"},
+        {"departmentName": "   "},
+        {"department_name": None},
+    ],
+)
+def test_company_login_ignores_unsupported_alias_metadata_when_top_level_department_is_valid(
+    monkeypatch,
+    alias_metadata,
+):
+    user_info = {"roles": ["user"], "department": " QA ", **alias_metadata}
+    settings = _install_company_department_login_fakes(
+        monkeypatch,
+        user_info,
+        qa_department_id="QA",
+    )
+    client = TestClient(create_app())
+
+    login_response = client.post(
+        "/api/ai/auth/login",
+        json={"user_name": "user001", "password": "pw"},
+    )
+
+    assert login_response.status_code == 200
+    token = login_response.cookies[settings.ai_session_cookie_name]
+    assert verify_principal_session(token).department_id == "QA"
 
     skills_response = client.get("/api/skills/")
 
@@ -315,7 +374,6 @@ def test_company_login_rejects_client_department_field(monkeypatch):
         {"roles": ["user"], "department_id": "qa"},
         {"roles": ["user"], "departmentId": "qa"},
         {"roles": ["user"], "departmentName": "qa"},
-        {"roles": ["user"], "department": "qa", "department_id": "rd"},
     ],
 )
 def test_company_login_invalid_or_ambiguous_department_fails_closed(monkeypatch, user_info):

@@ -107,21 +107,10 @@ def _permissions_from_user_info(payload: dict[str, Any]) -> list[str]:
 
 
 def _department_from_user_info(payload: dict[str, Any]) -> str:
-    unsupported_aliases = (
-        "department_id",
-        "departmentId",
-        "departmentName",
-        "department_name",
-        "dept",
-        "dept_id",
-        "deptId",
-    )
-    if any(alias in payload for alias in unsupported_aliases):
-        return ""
     value = payload.get("department")
     if not isinstance(value, str):
         return ""
-    candidate = value.strip().casefold()
+    candidate = value.strip()
     if not candidate:
         return ""
     try:
