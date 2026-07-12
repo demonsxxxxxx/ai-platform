@@ -1,6 +1,6 @@
 # B2 Positive Executor Deadline
 
-Status: `local partial`
+Status: `PR ready`
 
 - [x] Phase 1 - Freshness and RED
   - Controller epoch `controller-20260711-1945`, revision 35, lane generation 1.
@@ -27,9 +27,11 @@ Status: `local partial`
   - Fresh compile, diff, changed-path scope, and added-line secret scans passed before publish.
   - Self-review replaced `asyncio.wait_for` with an explicit task deadline so runner-raised `TimeoutError` remains `executor_runner_failed` while actual pending work is cancelled and collected.
   - Readiness binds the observed timeout runtime subject to the reviewed outer image subject.
-- [ ] Phase 6 - Publish
+- [x] Phase 6 - Publish
   - Issue [#402](https://github.com/demonsxxxxxx/ai-platform/issues/402) is open.
-  - Pending ordinary commit, push, and draft PR without auto-close language.
+  - Implementation commit: `3a699bf8f26baa24c6084a3f94f3477393cf1853`.
+  - Branch `codex/b2-positive-deadline` was pushed without force.
+  - Draft PR [#405](https://github.com/demonsxxxxxx/ai-platform/pull/405) links the issue without auto-close language.
 
 ## Evidence Boundaries
 
