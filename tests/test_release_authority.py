@@ -392,6 +392,35 @@ def test_worker_heartbeat_path_defaults_to_tmp_when_entry_is_absent():
 
 
 @pytest.mark.parametrize(
+    "container_id",
+    [
+        None,
+        "",
+        " ",
+        "private-marker",
+        "a" * 63,
+        "g" * 64,
+        "A" * 64,
+        f"sha256:{'a' * 64}",
+    ],
+)
+def test_worker_container_id_rejects_invalid_metadata_without_leakage(container_id):
+    with pytest.raises(
+        ReleaseAuthorityError,
+        match="^worker container ID metadata is invalid$",
+    ) as exc_info:
+        release_authority._worker_container_id({"Id": container_id})
+    assert str(exc_info.value) == "worker container ID metadata is invalid"
+    assert "private-marker" not in str(exc_info.value)
+
+
+def test_worker_container_id_accepts_full_immutable_id():
+    container_id = "a" * 64
+
+    assert release_authority._worker_container_id({"Id": container_id}) == container_id
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         {},
@@ -435,12 +464,13 @@ def test_worker_heartbeat_path_rejects_invalid_metadata_without_leaking_env(
 
 
 def test_worker_heartbeat_read_failure_is_static_without_path_leakage(monkeypatch):
+    container_id = "a" * 64
     sensitive_path = release_authority._worker_heartbeat_path(
         {"Config": {"Env": ["TMPDIR=/private-marker/tmp"]}}
     )
     failure = subprocess.CalledProcessError(
         1,
-        ["docker", "exec", "ai-platform-worker", "cat", sensitive_path],
+        ["docker", "exec", container_id, "cat", sensitive_path],
         stderr=f"cannot read {sensitive_path}",
     )
     monkeypatch.setattr(
@@ -454,11 +484,12 @@ def test_worker_heartbeat_read_failure_is_static_without_path_leakage(monkeypatc
     ) as exc_info:
         release_authority._read_worker_heartbeat(
             ["docker"],
-            "ai-platform-worker",
+            container_id,
             sensitive_path,
         )
 
     assert "private-marker" not in str(exc_info.value)
+    assert container_id not in str(exc_info.value)
     assert exc_info.value.__suppress_context__ is True
 
 
@@ -467,12 +498,13 @@ def test_verify_cli_report_redacts_worker_heartbeat_read_failure(
     capsys,
     tmp_path,
 ):
+    container_id = "a" * 64
     sensitive_path = release_authority._worker_heartbeat_path(
         {"Config": {"Env": ["TMPDIR=/private-marker/tmp"]}}
     )
     failure = subprocess.CalledProcessError(
         1,
-        ["docker", "exec", "ai-platform-worker", "cat", sensitive_path],
+        ["docker", "exec", container_id, "cat", sensitive_path],
         stderr=f"cannot read {sensitive_path}",
     )
     monkeypatch.setattr(
@@ -483,7 +515,7 @@ def test_verify_cli_report_redacts_worker_heartbeat_read_failure(
         "tools.release_authority.collect_live_parity",
         lambda *args, **kwargs: release_authority._read_worker_heartbeat(
             ["docker"],
-            "ai-platform-worker",
+            container_id,
             sensitive_path,
         ),
     )
@@ -508,6 +540,7 @@ def test_verify_cli_report_redacts_worker_heartbeat_read_failure(
         "verified": False,
     }
     assert "private-marker" not in json.dumps(report)
+    assert container_id not in json.dumps(report)
 
 
 def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monkeypatch, tmp_path):
@@ -515,6 +548,10 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
     observed_urls: list[str] = []
     observed_heartbeat_paths: list[str] = []
     inspected_containers: list[str] = []
+    worker_probe_targets: list[str] = []
+    inspected_worker_id = "a" * 64
+    replacement_worker_id = "b" * 64
+    worker_name_binding = {"ai-platform-worker": inspected_worker_id}
     repository = AUTHORITATIVE_REPOSITORY
 
     monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
@@ -549,55 +586,62 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
         name = args[2]
         inspected_containers.append(name)
         role = name.removeprefix("ai-platform-")
-        return [
-            {
-                "name": name,
-                "Image": (
-                    "sha256:frontend" if name.endswith("frontend") else "sha256:backend"
+        payload = {
+            "name": name,
+            "Id": inspected_worker_id if name.endswith("worker") else "c" * 64,
+            "Image": (
+                "sha256:frontend" if name.endswith("frontend") else "sha256:backend"
+            ),
+            "Config": {
+                "Labels": {
+                    **common,
+                    "ai-platform.release-role": role,
+                    "com.docker.compose.service": role,
+                },
+                "Env": (
+                    ["UNRELATED_ENV=private-marker", "TMPDIR=/home/ai-platform/tmp"]
+                    if name.endswith("worker")
+                    else ["PATH=/usr/bin"]
                 ),
-                "Config": {
-                    "Labels": {
-                        **common,
-                        "ai-platform.release-role": role,
-                        "com.docker.compose.service": role,
-                    },
-                    "Env": (
-                        ["UNRELATED_ENV=private-marker", "TMPDIR=/home/ai-platform/tmp"]
-                        if name.endswith("worker")
-                        else ["PATH=/usr/bin"]
-                    ),
-                },
-                "State": {
-                    "Running": True,
-                    "Pid": 1234 if name.endswith("worker") else 4321,
-                    "Health": (
-                        {"Status": "healthy"} if not name.endswith("worker") else {}
-                    ),
-                },
-                "NetworkSettings": {
-                    "Ports": {
-                        "8080/tcp" if name.endswith("frontend") else "8020/tcp": [
-                            {
-                                "HostIp": "0.0.0.0",
-                                "HostPort": (
-                                    "18001" if name.endswith("frontend") else "8020"
-                                ),
-                            },
-                            {
-                                "HostIp": "::",
-                                "HostPort": (
-                                    "18001" if name.endswith("frontend") else "8020"
-                                ),
-                            },
-                        ]
-                    }
-                },
-            }
-        ]
+            },
+            "State": {
+                "Running": True,
+                "Pid": 1234 if name.endswith("worker") else 4321,
+                "Health": (
+                    {"Status": "healthy"} if not name.endswith("worker") else {}
+                ),
+            },
+            "NetworkSettings": {
+                "Ports": {
+                    "8080/tcp" if name.endswith("frontend") else "8020/tcp": [
+                        {
+                            "HostIp": "0.0.0.0",
+                            "HostPort": (
+                                "18001" if name.endswith("frontend") else "8020"
+                            ),
+                        },
+                        {
+                            "HostIp": "::",
+                            "HostPort": (
+                                "18001" if name.endswith("frontend") else "8020"
+                            ),
+                        },
+                    ]
+                }
+            },
+        }
+        if name.endswith("worker"):
+            worker_name_binding[name] = replacement_worker_id
+        return [payload]
 
     monkeypatch.setattr("tools.release_authority._docker_json", fake_docker_json)
 
-    def fake_container_json_file(docker, name, path):
+    def fake_container_json_file(docker, target, path):
+        worker_probe_targets.append(target)
+        assert worker_name_binding.get(target, target) in {
+            inspected_worker_id,
+            replacement_worker_id,
+        }
         observed_heartbeat_paths.append(path)
         return {
             "schema_version": "ai-platform.worker-runtime-heartbeat.v1",
@@ -608,7 +652,16 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
         }
 
     monkeypatch.setattr("tools.release_authority._container_json_file", fake_container_json_file)
-    monkeypatch.setattr("tools.release_authority._container_process_alive", lambda docker, name, pid: True)
+
+    def fake_process_alive(docker, target, pid):
+        worker_probe_targets.append(target)
+        return (
+            worker_name_binding.get(target, target)
+            in {inspected_worker_id, replacement_worker_id}
+            and pid == 1234
+        )
+
+    monkeypatch.setattr("tools.release_authority._container_process_alive", fake_process_alive)
 
     def fake_http_json(url: str):
         observed_urls.append(url)
@@ -636,6 +689,7 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
     assert report["runtime"]["frontend_commit"] == commit
     assert report["runtime"]["api_health_status"] == "ok"
     assert report["runtime"]["worker_running"] is True
+    assert report["containers"]["worker"]["name"] == "ai-platform-worker"
     assert observed_heartbeat_paths == [
         "/home/ai-platform/tmp/ai-platform-worker-runtime-heartbeat.json"
     ]
@@ -644,11 +698,17 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
         "ai-platform-worker",
         "ai-platform-frontend",
     ]
-    assert "private-marker" not in json.dumps(report["containers"])
+    assert worker_name_binding["ai-platform-worker"] == replacement_worker_id
+    assert worker_probe_targets == [inspected_worker_id, inspected_worker_id]
+    serialized_containers = json.dumps(report["containers"])
+    assert "private-marker" not in serialized_containers
+    assert inspected_worker_id not in serialized_containers
+    assert replacement_worker_id not in serialized_containers
 
 
 def test_collect_live_parity_rejects_stale_worker_heartbeat(monkeypatch, tmp_path):
     commit = "9" * 40
+    container_id = "c" * 64
     repository = AUTHORITATIVE_REPOSITORY
     compose_dir = str((tmp_path / "deploy" / "ai-platform").resolve()).replace("\\", "/")
     common = {
@@ -699,7 +759,7 @@ def test_collect_live_parity_rejects_stale_worker_heartbeat(monkeypatch, tmp_pat
         "tools.release_authority._container_inspect_record",
         lambda docker, name: (
             fake_container_record(docker, name),
-            {"Config": {"Env": ["PATH=/usr/bin"]}},
+            {"Id": container_id, "Config": {"Env": ["PATH=/usr/bin"]}},
         ),
     )
     monkeypatch.setattr(
@@ -730,6 +790,7 @@ def test_collect_live_parity_rejects_stale_worker_heartbeat(monkeypatch, tmp_pat
         collect_live_parity(tmp_path, commit, docker_cmd="docker")
     except ReleaseAuthorityError as exc:
         assert "worker runtime heartbeat" in str(exc)
+        assert container_id not in str(exc)
     else:
         raise AssertionError("stale or wrong-process worker heartbeat must be rejected")
 
@@ -757,19 +818,40 @@ def test_container_process_alive_uses_shell_builtin_kill(monkeypatch):
 
     monkeypatch.setattr("tools.release_authority._run", fake_run)
 
-    assert _container_process_alive(["sudo", "-n", "docker"], "ai-platform-worker", 1234) is True
+    container_id = "a" * 64
+    assert _container_process_alive(["sudo", "-n", "docker"], container_id, 1234) is True
     assert observed == [
         "sudo",
         "-n",
         "docker",
         "exec",
-        "ai-platform-worker",
+        container_id,
         "/bin/sh",
         "-c",
         'kill -0 "$1"',
         "sh",
         "1234",
     ]
+
+
+def test_container_process_alive_fails_closed_when_inspected_instance_disappears(
+    monkeypatch,
+):
+    container_id = "a" * 64
+    failure = subprocess.CalledProcessError(
+        1,
+        ["docker", "exec", container_id, "/bin/sh", "-c", "kill"],
+    )
+    monkeypatch.setattr(
+        "tools.release_authority._run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(failure),
+    )
+
+    assert release_authority._container_process_alive(
+        ["docker"],
+        container_id,
+        1234,
+    ) is False
 
 
 def test_deploy_rejects_unexpected_manual_frontend_identity(monkeypatch, tmp_path):

@@ -22,6 +22,7 @@ from urllib.request import urlopen
 SCHEMA_VERSION = "ai-platform.release-authority.v1"
 PRESERVATION_SCHEMA_VERSION = "ai-platform.release-authority-preservation.v1"
 FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+DOCKER_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 DEFAULT_COMPOSE_RELATIVE_PATH = Path("deploy/ai-platform/docker-compose.yml")
 COMPOSE_PROJECT = "ai-platform-phaseb"
 WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
@@ -535,24 +536,45 @@ def _worker_heartbeat_path(inspected: dict[str, Any]) -> str:
     return str(PurePosixPath(tmpdir) / WORKER_HEARTBEAT_FILENAME)
 
 
+def _worker_container_id(inspected: dict[str, Any]) -> str:
+    container_id = inspected.get("Id")
+    if not isinstance(container_id, str) or not DOCKER_CONTAINER_ID_RE.fullmatch(
+        container_id
+    ):
+        raise ReleaseAuthorityError("worker container ID metadata is invalid")
+    return container_id
+
+
 def _read_worker_heartbeat(
     docker: list[str],
-    name: str,
+    container_id: str,
     path: str,
 ) -> dict[str, Any]:
     try:
-        return _container_json_file(docker, name, path)
+        return _container_json_file(docker, container_id, path)
     except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
         raise ReleaseAuthorityError("worker runtime heartbeat read failed") from None
 
 
-def _container_process_alive(docker: list[str], name: str, pid: Any) -> bool:
+def _container_process_alive(docker: list[str], container_id: str, pid: Any) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
-    result = _run(
-        [*docker, "exec", name, "/bin/sh", "-c", 'kill -0 "$1"', "sh", str(pid)],
-        check=False,
-    )
+    try:
+        result = _run(
+            [
+                *docker,
+                "exec",
+                container_id,
+                "/bin/sh",
+                "-c",
+                'kill -0 "$1"',
+                "sh",
+                str(pid),
+            ],
+            check=False,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
     return result.returncode == 0
 
 
@@ -591,6 +613,7 @@ def collect_live_parity(
     worker_name = "ai-platform-worker"
     api_container = _container_record(docker, "ai-platform-api")
     worker_container, worker_inspect = _container_inspect_record(docker, worker_name)
+    worker_container_id = _worker_container_id(worker_inspect)
     frontend_container = _container_record(docker, "ai-platform-frontend")
     containers = {
         "api": api_container,
@@ -613,14 +636,14 @@ def collect_live_parity(
         raise ReleaseAuthorityError("frontend provenance is dirty")
     worker_heartbeat = _read_worker_heartbeat(
         docker,
-        worker_name,
+        worker_container_id,
         _worker_heartbeat_path(worker_inspect),
     )
     _validate_worker_runtime_heartbeat(
         worker_heartbeat,
         process_alive=_container_process_alive(
             docker,
-            "ai-platform-worker",
+            worker_container_id,
             worker_heartbeat.get("pid"),
         ),
     )
