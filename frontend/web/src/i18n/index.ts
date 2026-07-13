@@ -12,23 +12,17 @@ const SUPPORTED_LANGUAGES = ["en", "zh", "ja", "ko", "ru"];
 const detectLanguage = (): string => {
   // Check if running in browser environment
   if (typeof window === "undefined") {
-    return "en";
+    return "zh";
   }
 
-  // 1. Check localStorage for saved preference
+  // Explicit user or backend-synchronized preference wins.
   const saved = localStorage.getItem("language");
   if (saved && SUPPORTED_LANGUAGES.includes(saved)) {
     return saved;
   }
 
-  // 2. Detect browser language
-  const browserLang = navigator.language.split("-")[0];
-  if (SUPPORTED_LANGUAGES.includes(browserLang)) {
-    return browserLang;
-  }
-
-  // 3. Fallback to English
-  return "en";
+  // No preference defaults to Chinese.
+  return "zh";
 };
 
 i18n.use(initReactI18next).init({
@@ -40,7 +34,7 @@ i18n.use(initReactI18next).init({
     ru: { translation: ru },
   },
   lng: detectLanguage(),
-  fallbackLng: "en",
+  fallbackLng: "zh",
   interpolation: {
     escapeValue: false,
   },

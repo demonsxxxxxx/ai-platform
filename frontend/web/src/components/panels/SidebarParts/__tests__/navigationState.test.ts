@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getWorkbenchNavItemFromPathname } from "../navigationState.ts";
+import {
+  getSafeWorkbenchNavPath,
+  getWorkbenchNavItemFromPathname,
+} from "../navigationState.ts";
 
 test("maps authenticated workbench routes to sidebar navigation items", () => {
   assert.equal(getWorkbenchNavItemFromPathname("/apps"), "apps");
@@ -21,4 +24,11 @@ test("maps authenticated workbench routes to sidebar navigation items", () => {
   assert.equal(getWorkbenchNavItemFromPathname("/models"), "models");
   assert.equal(getWorkbenchNavItemFromPathname("/roles"), null);
   assert.equal(getWorkbenchNavItemFromPathname("/chat"), null);
+});
+
+test("safe navigation redirects unauthorized management destinations before routing", () => {
+  assert.equal(getSafeWorkbenchNavPath("channels", { is_admin: false }), "/chat");
+  assert.equal(getSafeWorkbenchNavPath("models", null), "/chat");
+  assert.equal(getSafeWorkbenchNavPath("mcp", { is_admin: false }), "/mcp");
+  assert.equal(getSafeWorkbenchNavPath("channels", { is_admin: true }), "/channels");
 });

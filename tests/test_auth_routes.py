@@ -9,6 +9,61 @@ from app.auth import AuthPrincipal, is_ai_admin, require_principal, sign_princip
 from app.main import create_app
 
 
+EXPECTED_COMPANY_USER_PERMISSIONS = [
+    "agent:use",
+    "chat:read",
+    "chat:write",
+    "session:read",
+    "session:write",
+    "skill:read",
+    "marketplace:read",
+    "mcp:read",
+    "persona_preset:read",
+    "avatar:upload",
+    "feedback:write",
+    "notification:read",
+    "artifact:download",
+    "file:upload",
+    "file:upload:document",
+]
+
+EXPECTED_COMPANY_ADMIN_PERMISSIONS = EXPECTED_COMPANY_USER_PERMISSIONS + [
+    "agent:read",
+    "agent:admin",
+    "model:admin",
+    "settings:read",
+    "settings:manage",
+    "settings:admin",
+    "admin:status",
+    "skill:write",
+    "skill:delete",
+    "skill:admin",
+    "marketplace:publish",
+    "marketplace:admin",
+    "mcp:write_sse",
+    "mcp:write_http",
+    "mcp:write_sandbox",
+    "mcp:delete",
+    "mcp:admin",
+    "persona_preset:write",
+    "persona_preset:admin",
+    "channel:read",
+    "channel:write",
+    "channel:delete",
+    "channel:admin",
+    "user:read",
+    "user:write",
+    "user:delete",
+    "user:admin",
+    "role:read",
+    "role:manage",
+    "feedback:read",
+    "feedback:admin",
+    "notification:admin",
+    "notification:manage",
+]
+
+
 def auth_settings(**overrides):
     values = {
         "ai_session_secret": "secret",
@@ -40,6 +95,34 @@ def test_ai_admin_maps_platform_admin_aliases():
     assert not is_ai_admin(AuthPrincipal("u5", "Tenant Admin", "default", roles=["tenant_admin"]))
     assert not is_ai_admin(AuthPrincipal("u6", "Skill Developer", "default", roles=["skill_developer"]))
     assert not is_ai_admin(AuthPrincipal("u7", "Runtime Operator", "default", roles=["runtime_operator"]))
+
+
+@pytest.mark.parametrize(
+    ("upstream_roles", "expected_role"),
+    [
+        (["admin"], "admin"),
+        ([" ADMIN "], "admin"),
+        (["developer"], "admin"),
+        (["DeVeLoPeR"], "admin"),
+        (["user"], "user"),
+        (["tenant_admin"], "user"),
+        (["platform_admin"], "user"),
+        (["unknown"], "user"),
+        ([], "user"),
+    ],
+)
+def test_company_login_collapses_upstream_roles_to_one_product_role(
+    monkeypatch,
+    upstream_roles,
+    expected_role,
+):
+    from app.routes.auth import _roles_for_login
+
+    monkeypatch.setattr("app.routes.auth.get_settings", lambda: auth_settings(ai_admin_work_ids=""))
+
+    assert _roles_for_login("synthetic-work-id", "synthetic-login", {"roles": upstream_roles}) == [
+        expected_role
+    ]
 
 
 def test_signed_session_roundtrip_preserves_principal(monkeypatch):
@@ -96,7 +179,7 @@ def test_login_sets_cookie_and_returns_ai_role(monkeypatch):
         assert kwargs["action"] == "auth.login"
         assert kwargs["payload_json"]["source"] == "company-login"
         assert kwargs["payload_json"]["work_id"] == "dev001"
-        assert kwargs["payload_json"]["roles"] == ["developer"]
+        assert kwargs["payload_json"]["roles"] == ["admin"]
         assert "agent:use" in kwargs["payload_json"]["permissions"]
         assert "agent:admin" in kwargs["payload_json"]["permissions"]
         assert kwargs["payload_json"]["is_admin"] is True
@@ -115,6 +198,8 @@ def test_login_sets_cookie_and_returns_ai_role(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["is_admin"] is True
+    assert response.json()["roles"] == ["admin"]
+    assert response.json()["permissions"] == EXPECTED_COMPANY_ADMIN_PERMISSIONS
     assert response.json()["user_id"] == "dev001"
     assert "ai_platform_session=" in response.headers["set-cookie"]
     set_cookie = response.headers["set-cookie"].lower()
@@ -149,26 +234,8 @@ def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body["is_admin"] is False
-    assert body["permissions"] == [
-        "agent:use",
-        "chat:read",
-        "chat:write",
-        "session:read",
-        "session:write",
-        "skill:read",
-        "marketplace:read",
-        "persona_preset:read",
-        "role:read",
-        "role:request",
-        "channel:read",
-        "user:read",
-        "settings:read",
-        "feedback:read",
-        "notification:read",
-        "artifact:download",
-        "file:upload",
-        "file:upload:document",
-    ]
+    assert body["roles"] == ["user"]
+    assert body["permissions"] == EXPECTED_COMPANY_USER_PERMISSIONS
 
     me_response = client.get("/api/ai/auth/me")
 
@@ -422,26 +489,8 @@ def test_company_login_does_not_project_large_enterprise_permissions_into_sessio
 
     assert response.status_code == 200
     body = response.json()
-    assert body["permissions"] == [
-        "agent:use",
-        "chat:read",
-        "chat:write",
-        "session:read",
-        "session:write",
-        "skill:read",
-        "marketplace:read",
-        "persona_preset:read",
-        "role:read",
-        "role:request",
-        "channel:read",
-        "user:read",
-        "settings:read",
-        "feedback:read",
-        "notification:read",
-        "artifact:download",
-        "file:upload",
-        "file:upload:document",
-    ]
+    assert body["roles"] == ["user"]
+    assert body["permissions"] == EXPECTED_COMPANY_USER_PERMISSIONS
     assert len(response.headers["set-cookie"]) < 8192
 
     me_response = client.get("/api/ai/auth/me")
@@ -474,6 +523,10 @@ def test_company_login_survives_user_info_failure_as_ordinary_user(monkeypatch):
     body = response.json()
     assert body["access_token"]
     assert body["token_type"] == "bearer"
+    token = body["access_token"]
+    me_response = TestClient(create_app()).get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me_response.json()["roles"] == ["user"]
+    assert me_response.json()["permissions"] == EXPECTED_COMPANY_USER_PERMISSIONS
 
 
 def test_company_login_admin_allowlist_grants_admin_when_user_info_has_no_roles(monkeypatch):
@@ -505,8 +558,8 @@ def test_company_login_admin_allowlist_grants_admin_when_user_info_has_no_roles(
 
     assert me_response.status_code == 200
     body = me_response.json()
-    assert body["roles"] == ["developer"]
-    assert "agent:admin" in body["permissions"]
+    assert body["roles"] == ["admin"]
+    assert body["permissions"] == EXPECTED_COMPANY_ADMIN_PERMISSIONS
 
 
 def test_company_login_admin_allowlist_matches_submitted_username(monkeypatch):
@@ -519,7 +572,7 @@ def test_company_login_admin_allowlist_matches_submitted_username(monkeypatch):
     async def noop(*args, **kwargs):
         return None
 
-    settings = auth_settings(ai_admin_work_ids="xinlin.jiang")
+    settings = auth_settings(ai_admin_work_ids="synthetic-admin-login")
     monkeypatch.setattr("app.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.auth.get_settings", lambda: settings)
     monkeypatch.setattr("app.routes.lambchat_compat.get_settings", lambda: settings)
@@ -530,14 +583,18 @@ def test_company_login_admin_allowlist_matches_submitted_username(monkeypatch):
     monkeypatch.setattr("app.routes.auth.append_audit_log", noop)
 
     client = TestClient(create_app())
-    login_response = client.post("/api/auth/login", json={"username": "xinlin.jiang", "password": "pw"})
+    login_response = client.post(
+        "/api/auth/login",
+        json={"username": "synthetic-admin-login", "password": "synthetic-password"},
+    )
 
     assert login_response.status_code == 200
     token = login_response.json()["access_token"]
     me_response = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
 
     assert me_response.status_code == 200
-    assert me_response.json()["roles"] == ["developer"]
+    assert me_response.json()["roles"] == ["admin"]
+    assert me_response.json()["permissions"] == EXPECTED_COMPANY_ADMIN_PERMISSIONS
 
 
 def test_company_unsuccessful_login_status_returns_401(monkeypatch):
@@ -581,9 +638,8 @@ def test_company_developer_login_gets_admin_ai_permissions(monkeypatch):
     assert me_response.status_code == 200
     body = me_response.json()
     assert "custom:business" not in body["permissions"]
-    assert "agent:admin" in body["permissions"]
-    assert "model:admin" in body["permissions"]
-    assert "settings:manage" in body["permissions"]
+    assert body["roles"] == ["admin"]
+    assert body["permissions"] == EXPECTED_COMPANY_ADMIN_PERMISSIONS
 
 
 def test_auth_me_returns_cookie_principal(monkeypatch):

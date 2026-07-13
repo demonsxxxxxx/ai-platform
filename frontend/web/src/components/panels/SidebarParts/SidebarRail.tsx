@@ -19,11 +19,12 @@ import {
   type WorkbenchNavItem,
 } from "./navigationState";
 import { LibreChatRailButton } from "../../../librechat-ui/Rail";
+import { canAccessWorkbenchItem } from "../../governance/workbenchAccessPolicy";
 
 const railBtn = "";
 
 interface SidebarRailProps {
-  user: { username?: string; avatar_url?: string } | null;
+  user: { username?: string; avatar_url?: string; is_admin?: boolean } | null;
   imgError: boolean;
   onImgError: () => void;
   isExpanded?: boolean;
@@ -185,42 +186,48 @@ export function SidebarRail({
         >
           <Server size={20} />
         </LibreChatRailButton>
-        <LibreChatRailButton
-          type="button"
-          onClick={onOpenChannels}
-          className={railBtn}
-          aria-current={isRailItemActive("channels") ? "page" : undefined}
-          title={t("nav.channels")}
-          aria-label={t("nav.channels")}
-          itemKey="channels"
-          active={isRailItemActive("channels")}
-        >
-          <MessageCircle size={20} />
-        </LibreChatRailButton>
-        <LibreChatRailButton
-          type="button"
-          onClick={onOpenAgents}
-          className={railBtn}
-          aria-current={isRailItemActive("agents") ? "page" : undefined}
-          title={t("nav.agents")}
-          aria-label={t("nav.agents")}
-          itemKey="agents"
-          active={isRailItemActive("agents")}
-        >
-          <Bot size={20} />
-        </LibreChatRailButton>
-        <LibreChatRailButton
-          type="button"
-          onClick={onOpenModels}
-          className={railBtn}
-          aria-current={isRailItemActive("models") ? "page" : undefined}
-          title={t("nav.models")}
-          aria-label={t("nav.models")}
-          itemKey="models"
-          active={isRailItemActive("models")}
-        >
-          <Cpu size={20} />
-        </LibreChatRailButton>
+        {canAccessWorkbenchItem(user, "channels") && (
+          <LibreChatRailButton
+            type="button"
+            onClick={onOpenChannels}
+            className={railBtn}
+            aria-current={isRailItemActive("channels") ? "page" : undefined}
+            title={t("nav.channels")}
+            aria-label={t("nav.channels")}
+            itemKey="channels"
+            active={isRailItemActive("channels")}
+          >
+            <MessageCircle size={20} />
+          </LibreChatRailButton>
+        )}
+        {canAccessWorkbenchItem(user, "agents") && (
+          <LibreChatRailButton
+            type="button"
+            onClick={onOpenAgents}
+            className={railBtn}
+            aria-current={isRailItemActive("agents") ? "page" : undefined}
+            title={t("nav.agents")}
+            aria-label={t("nav.agents")}
+            itemKey="agents"
+            active={isRailItemActive("agents")}
+          >
+            <Bot size={20} />
+          </LibreChatRailButton>
+        )}
+        {canAccessWorkbenchItem(user, "models") && (
+          <LibreChatRailButton
+            type="button"
+            onClick={onOpenModels}
+            className={railBtn}
+            aria-current={isRailItemActive("models") ? "page" : undefined}
+            title={t("nav.models")}
+            aria-label={t("nav.models")}
+            itemKey="models"
+            active={isRailItemActive("models")}
+          >
+            <Cpu size={20} />
+          </LibreChatRailButton>
+        )}
         <LibreChatRailButton
           type="button"
           onClick={onOpenPersona}

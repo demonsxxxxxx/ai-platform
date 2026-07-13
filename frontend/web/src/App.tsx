@@ -439,7 +439,7 @@ function App() {
             <Route
               path="/users"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute requireAdmin redirectTo="/chat">
                   <UsersPage />
                 </ProtectedRoute>
               }
@@ -447,7 +447,7 @@ function App() {
             <Route
               path="/roles"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute requireAdmin redirectTo="/chat">
                   <RolesPage />
                 </ProtectedRoute>
               }
@@ -455,7 +455,7 @@ function App() {
             <Route
               path="/settings"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute requireAdmin redirectTo="/chat">
                   <SettingsPage />
                 </ProtectedRoute>
               }
@@ -463,7 +463,7 @@ function App() {
             <Route
               path="/feedback"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute requireAdmin redirectTo="/chat">
                   <FeedbackPage />
                 </ProtectedRoute>
               }
@@ -471,7 +471,7 @@ function App() {
             <Route
               path="/channels/:channelType?/:instanceId?"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute requireAdmin redirectTo="/chat">
                   <ChannelsPage />
                 </ProtectedRoute>
               }
@@ -479,7 +479,7 @@ function App() {
             <Route
               path="/agents"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute requireAdmin redirectTo="/chat">
                   <AgentsPage />
                 </ProtectedRoute>
               }
@@ -487,7 +487,7 @@ function App() {
             <Route
               path="/models"
               element={
-                <ProtectedRoute>
+                <ProtectedRoute requireAdmin redirectTo="/chat">
                   <ModelsPage />
                 </ProtectedRoute>
               }

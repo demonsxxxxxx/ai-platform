@@ -1,3 +1,8 @@
+import {
+  canAccessWorkbenchItem,
+  type WorkbenchAccessUser,
+} from "../../governance/workbenchAccessPolicy";
+
 export type WorkbenchNavItem =
   | "apps"
   | "skills"
@@ -47,4 +52,12 @@ export function getWorkbenchNavItemFromPathname(
 /** Returns the authenticated workbench route for a first-level sidebar item. */
 export function getWorkbenchNavPath(item: WorkbenchNavItem): string {
   return navItemToPath[item];
+}
+
+/** Returns a destination that cannot enter an unauthorized workbench route. */
+export function getSafeWorkbenchNavPath(
+  item: WorkbenchNavItem,
+  user: WorkbenchAccessUser,
+): string {
+  return canAccessWorkbenchItem(user, item) ? navItemToPath[item] : "/chat";
 }

@@ -30,6 +30,10 @@ import {
   type WorkbenchNavItem,
 } from "./navigationState";
 import { LibreChatPanelSection } from "../../../librechat-ui/Panel";
+import {
+  canAccessWorkbenchItem,
+  getCanonicalCompanyRoleCode,
+} from "../../governance/workbenchAccessPolicy";
 
 export interface SessionActions {
   onDeleteSession: (id: string) => void;
@@ -38,7 +42,12 @@ export interface SessionActions {
 }
 
 interface SessionListContentProps {
-  user: { username?: string; avatar_url?: string; roles?: string[] } | null;
+  user: {
+    username?: string;
+    avatar_url?: string;
+    roles?: string[];
+    is_admin?: boolean;
+  } | null;
   imgError: boolean;
   onImgError: () => void;
   onCollapse: () => void;
@@ -160,6 +169,9 @@ export function SessionListContent({
       onClick: () => navigate("/models"),
     },
   ];
+  const visibleGovernanceNavItems = governanceNavItems.filter(({ key }) =>
+    canAccessWorkbenchItem(user, key),
+  );
 
   return (
     <div
@@ -257,7 +269,8 @@ export function SessionListContent({
           group="governance"
           label={t("sidebar.governance")}
         >
-          {governanceNavItems.map(({ key, icon: Icon, label, onClick }) => {
+          {visibleGovernanceNavItems.map(
+            ({ key, icon: Icon, label, onClick }) => {
             const isActive = activeNavItem === key;
             return (
               <button
@@ -272,7 +285,8 @@ export function SessionListContent({
                 <span className="min-w-0 truncate">{label}</span>
               </button>
             );
-          })}
+            },
+          )}
         </LibreChatPanelSection>
       </div>
 
@@ -413,9 +427,7 @@ export function SessionListContent({
                 {user?.username || "User"}
               </div>
               <div className="whitespace-nowrap text-xs text-[var(--theme-text-secondary)]">
-                {(user?.roles?.[0] || "User").replace(/^./, (c) =>
-                  c.toUpperCase(),
-                )}
+                {getCanonicalCompanyRoleCode(user)}
               </div>
             </div>
             <ChevronsUpDown className="size-4 shrink-0 text-[var(--theme-text-secondary)]" />
