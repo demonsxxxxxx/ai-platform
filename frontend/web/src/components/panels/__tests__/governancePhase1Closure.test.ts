@@ -119,13 +119,13 @@ test("skills marketplace cards use restrained workbench tiles instead of gradien
   assert.match(baseCard, /rounded-lg/);
 });
 
-test("mcp lifecycle governance reflects backed admin registry without exposing raw controls", () => {
+test("mcp lifecycle governance exposes the backed admin lifecycle within role boundaries", () => {
   const mcp = read("src/components/panels/MCPPanel.tsx");
 
   assert.match(mcp, /data-phase1c-surface="mcp"/);
   assert.match(mcp, /data-fail-closed-surface="mcp-lifecycle"/);
   assert.match(mcp, /lifecycleAvailability/);
-  assert.match(mcp, /credentialsAvailability/);
+  assert.match(mcp, /mcp\.admin\.credentialsSummary/);
   assert.match(mcp, /mcp\.lifecycleGovernance/);
   assert.match(mcp, /mcp\.credentialsGovernance/);
   assert.doesNotMatch(mcp, /mcp\.credentialsUnavailable/);
@@ -134,7 +134,11 @@ test("mcp lifecycle governance reflects backed admin registry without exposing r
   assert.match(mcp, /isPermissionError\(error\)/);
   assert.match(mcp, /enabled: !permissionDenied/);
   assert.doesNotMatch(mcp, /hasAnyPermission\(\[Permission\.MCP_READ\]\)/);
-  assert.doesNotMatch(mcp, /deleteServer\(|createServer\(|updateCredentials\(/);
+  assert.match(mcp, /canManageMcp && !mcpGovernance\.governedUnavailable/);
+  assert.match(mcp, /data-mcp-admin-controls/);
+  assert.match(mcp, /deleteServer\(/);
+  assert.match(mcp, /createServer\(/);
+  assert.doesNotMatch(mcp, /updateCredentials\(/);
 });
 
 test("admin feedback and notification panels use shared enterprise primitives", () => {
@@ -292,6 +296,8 @@ test("governed marketplace and MCP hooks fail closed before calling APIs", () =>
       `${apiName} must guard enabled=false before MCP API calls`,
     );
   }
+  assert.match(mcpHook, /getServer[\s\S]*?encodeURIComponent\(name\)/);
+  assert.match(mcpHook, /toggleServer[\s\S]*?encodeURIComponent\(name\)[\s\S]*?\/toggle/);
 
   for (const apiName of [
     "getSkill",

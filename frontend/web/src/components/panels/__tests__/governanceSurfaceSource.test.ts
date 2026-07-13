@@ -38,9 +38,13 @@ test("skills hub exposes governed catalog status without composer help copy", ()
   assert.match(source, /onCatalogStateChange/);
 });
 
-test("mcp panel exposes backed lifecycle governance without raw lifecycle controls", () => {
+test("mcp panel gives AI admins lifecycle controls while keeping the ordinary directory redacted", () => {
   const source = readFileSync(
     join(root, "src/components/panels/MCPPanel.tsx"),
+    "utf8",
+  );
+  const form = readFileSync(
+    join(root, "src/components/mcp/MCPServerForm.tsx"),
     "utf8",
   );
   assert.match(source, /GovernanceAvailabilityBadge/);
@@ -54,15 +58,57 @@ test("mcp panel exposes backed lifecycle governance without raw lifecycle contro
   assert.doesNotMatch(source, /mcp\.card\.tools/);
   assert.doesNotMatch(
     source,
-    /MCPServerCard|MCPServerForm|ConfirmDialog|EditorSidebar/,
+    /MCPServerCard|EditorSidebar/,
   );
-  assert.doesNotMatch(
-    source,
-    /createServer|updateServer|deleteServer|toggleServer|importServers|exportServers|promoteServer|demoteServer/,
+  assert.match(source, /MCPServerForm/);
+  assert.match(source, /ConfirmDialog/);
+  assert.match(source, /canManageMcp && !mcpGovernance\.governedUnavailable/);
+  assert.match(source, /data-mcp-admin-controls/);
+  assert.match(source, /data-mcp-summary-status/);
+  assert.equal(
+    (source.match(/<GovernanceAvailabilityBadge/g) ?? []).length,
+    1,
+    "MCP panel keeps one authoritative status badge",
   );
+  assert.match(source, /mcp\.admin\.directorySummary/);
+  assert.match(source, /mcp\.admin\.permissionSummary/);
+  assert.match(source, /mcp\.admin\.lifecycleSummary/);
+  assert.match(source, /mcp\.admin\.credentialsSummary/);
+  assert.match(source, /mcp\.card\.statusLabel/);
+  assert.match(source, /mcp\.card\.statusEnabled/);
+  assert.match(source, /mcp\.card\.statusDisabled/);
+  assert.doesNotMatch(source, /t\("governance\.enabled"\)/);
+  assert.doesNotMatch(source, /t\("governance\.disabled"\)/);
+  assert.match(source, /createServer|updateServer|deleteServer|toggleServer/);
+  assert.doesNotMatch(source, /importServers|exportServers|promoteServer|demoteServer/);
   assert.doesNotMatch(
     source,
     /startServer|stopServer|restartServer|rawCredential|allowedTransports|createAsSystem|changeToSystem/,
+  );
+  assert.doesNotMatch(form, /server\?\.url|server\.url/);
+  assert.doesNotMatch(form, /server\?\.headers|server\.headers/);
+  assert.doesNotMatch(form, /server\?\.command|server\.command/);
+  assert.doesNotMatch(form, /server\?\.env_keys|server\.env_keys/);
+  assert.match(form, /department_ids/);
+  assert.match(form, /const \[allowedDepartmentsInput, setAllowedDepartmentsInput\] = useState/);
+  assert.match(
+    form,
+    /department_ids: isSystemServer[\s\S]*?parseDepartmentIds\(allowedDepartmentsInput\)/,
+  );
+  assert.match(form, /value=\{allowedDepartmentsInput\}/);
+  assert.match(form, /<label htmlFor="mcp-allowed-departments"/);
+  assert.match(form, /id="mcp-allowed-departments"/);
+  assert.match(
+    form,
+    /onChange=\{\(event\) => setAllowedDepartmentsInput\(event\.target\.value\)\}/,
+  );
+  assert.doesNotMatch(form, /value=\{allowedDepartments\.join/);
+  assert.match(form, /if \(server\) \{[\s\S]*setUrl\(""\);[\s\S]*setHeaders\(\[\]\);[\s\S]*setCommand\(""\);[\s\S]*setEnvKeys\(\[\]\);/);
+  assert.match(form, /else \{[\s\S]*setAllowedDepartmentsInput\(""\);/);
+  assert.ok(
+    form.indexOf('t("mcp.form.connectionReentry")') <
+      form.indexOf("{/* ── Sandbox-specific fields ── */}"),
+    "write-only re-entry warning must apply to every transport",
   );
 });
 
@@ -100,6 +146,8 @@ test("mcp governance copy exists across shipped workbench locales", () => {
       `${localeName} missing mcp.credentialsGovernance.description`,
     );
   }
+  assert.equal(typeof locale("en").mcp.form.removeRole, "string");
+  assert.equal(typeof locale("zh").mcp.form.removeRole, "string");
 });
 
 test("share dialog fails closed until ai-platform share ACL projection exists", () => {

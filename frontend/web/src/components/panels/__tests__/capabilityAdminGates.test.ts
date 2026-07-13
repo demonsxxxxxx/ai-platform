@@ -53,7 +53,7 @@ test("shared marketplace and mcp management stay ai-admin only", () => {
   );
 });
 
-test("marketplace and mcp panels gate shared admin actions on ai-admin projection without unsupported distribution ui", () => {
+test("marketplace and mcp panels gate shared admin actions on ai-admin projection", () => {
   const marketplacePanelSource = readFileSync(
     join(import.meta.dirname, "..", "MarketplacePanel.tsx"),
     "utf8",
@@ -67,6 +67,8 @@ test("marketplace and mcp panels gate shared admin actions on ai-admin projectio
   assert.match(marketplacePanelSource, /isAiAdminUser\(user\)/);
   assert.match(mcpPanelSource, /isAiAdminUser\(user\)/);
   assert.match(mcpPanelSource, /canManageMcpLifecycle\(\{/);
+  assert.match(mcpPanelSource, /canManageMcp && !mcpGovernance\.governedUnavailable/);
+  assert.match(mcpPanelSource, /data-mcp-admin-controls/);
   assert.doesNotMatch(mcpPanelSource, /CapabilityDistributionAdminCard/);
   assert.doesNotMatch(mcpPanelSource, /useCapabilityDistributions/);
 });

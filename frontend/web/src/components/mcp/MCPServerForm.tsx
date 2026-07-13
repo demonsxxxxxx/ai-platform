@@ -33,12 +33,6 @@ type RoleQuotaDraft = {
   weekly_limit: number | "";
 };
 
-// Simple counter-based ID generator (avoids crypto.randomUUID() browser compat issues)
-let _headerIdCounter = 0;
-function nextHeaderId(): string {
-  return `h-${++_headerIdCounter}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
 function toQuotaDrafts(
   quotas: Record<string, MCPRoleQuota>,
 ): Record<string, RoleQuotaDraft> {
@@ -68,6 +62,10 @@ function serializeRoleQuotas(
     };
   }
   return quotas;
+}
+
+function parseDepartmentIds(value: string): string[] {
+  return [...new Set(value.split(",").map((item) => item.trim()).filter(Boolean))];
 }
 
 export function MCPServerForm({
@@ -121,22 +119,17 @@ export function MCPServerForm({
   const [enabled, setEnabled] = useState(server?.enabled ?? true);
 
   // HTTP fields
-  const [url, setUrl] = useState(server?.url ?? "");
-  const [headers, setHeaders] = useState<KeyValuePair[]>(
-    server?.headers
-      ? Object.entries(server.headers).map(([key, value]) => ({
-          id: nextHeaderId(),
-          key,
-          value: String(value),
-        }))
-      : [],
-  );
+  const [url, setUrl] = useState("");
+  const [headers, setHeaders] = useState<KeyValuePair[]>([]);
 
   // Sandbox fields
-  const [command, setCommand] = useState(server?.command ?? "");
-  const [envKeys, setEnvKeys] = useState<string[]>(server?.env_keys ?? []);
+  const [command, setCommand] = useState("");
+  const [envKeys, setEnvKeys] = useState<string[]>([]);
   const [allowedRoles, setAllowedRoles] = useState<string[]>(
     server?.allowed_roles ?? [],
+  );
+  const [allowedDepartmentsInput, setAllowedDepartmentsInput] = useState(
+    server?.allowed_departments?.join(", ") ?? "",
   );
   const [roleQuotas, setRoleQuotas] = useState<Record<string, RoleQuotaDraft>>(
     () => toQuotaDrafts(server?.role_quotas ?? {}),
@@ -150,19 +143,12 @@ export function MCPServerForm({
       setName(server.name);
       setTransport(server.transport);
       setEnabled(server.enabled);
-      setUrl(server.url ?? "");
-      setHeaders(
-        server.headers
-          ? Object.entries(server.headers).map(([key, value]) => ({
-              id: nextHeaderId(),
-              key,
-              value: String(value),
-            }))
-          : [],
-      );
-      setCommand(server.command ?? "");
-      setEnvKeys(server.env_keys ?? []);
+      setUrl("");
+      setHeaders([]);
+      setCommand("");
+      setEnvKeys([]);
       setAllowedRoles(server.allowed_roles ?? []);
+      setAllowedDepartmentsInput(server.allowed_departments?.join(", ") ?? "");
       setRoleQuotas(toQuotaDrafts(server.role_quotas ?? {}));
     } else {
       setName("");
@@ -173,6 +159,7 @@ export function MCPServerForm({
       setCommand("");
       setEnvKeys([]);
       setAllowedRoles([]);
+      setAllowedDepartmentsInput("");
       setRoleQuotas({});
     }
     setErrors({});
@@ -240,6 +227,9 @@ export function MCPServerForm({
       allowed_roles: isSystemServer ? allowedRoles : undefined,
       role_quotas: isSystemServer
         ? serializeRoleQuotas(allowedRoles, roleQuotas)
+        : undefined,
+      department_ids: isSystemServer
+        ? parseDepartmentIds(allowedDepartmentsInput)
         : undefined,
     };
 
@@ -414,6 +404,27 @@ export function MCPServerForm({
             </div>
           )}
         </div>
+      )}
+
+      {isSystemServer && (
+        <div className="es-field">
+          <label htmlFor="mcp-allowed-departments" className="es-label">
+            {t("mcp.form.allowedDepartments")}
+          </label>
+          <p className="es-hint">{t("mcp.form.allowedDepartmentsDescription")}</p>
+          <input
+            id="mcp-allowed-departments"
+            type="text"
+            value={allowedDepartmentsInput}
+            onChange={(event) => setAllowedDepartmentsInput(event.target.value)}
+            placeholder={t("mcp.form.allowedDepartmentsPlaceholder")}
+            className="enterprise-field-control es-input"
+          />
+        </div>
+      )}
+
+      {isEditing && (
+        <p className="es-hint">{t("mcp.form.connectionReentry")}</p>
       )}
 
       {/* ── Sandbox-specific fields ── */}

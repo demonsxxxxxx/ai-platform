@@ -152,7 +152,7 @@ test("MCP directory degrades non-permission failures without opening lifecycle c
   assert.equal(failed.credentialsAvailability.state, "unavailable");
 });
 
-test("mcp panel keeps lifecycle admin-only and does not wire unsupported distribution controls", () => {
+test("mcp panel gates lifecycle controls behind the AI-admin capability", () => {
   const source = readFileSync(
     join(import.meta.dirname, "..", "MCPPanel.tsx"),
     "utf8",
@@ -162,5 +162,59 @@ test("mcp panel keeps lifecycle admin-only and does not wire unsupported distrib
   assert.match(source, /canManageMcpLifecycle\(\{/);
   assert.doesNotMatch(source, /CapabilityDistributionAdminCard/);
   assert.doesNotMatch(source, /useCapabilityDistributions/);
-  assert.doesNotMatch(source, /server\.can_edit/);
+  assert.match(source, /canManageMcp && !mcpGovernance\.governedUnavailable/);
+  assert.match(source, /data-mcp-admin-controls/);
+  assert.match(source, /createServer/);
+  assert.match(source, /updateServer/);
+  assert.match(source, /deleteServer/);
+  assert.match(source, /toggleServer/);
+  assert.doesNotMatch(source, /details=\{\[error\]\.filter/);
+});
+
+test("mcp editor traps focus and restores the invoking control", () => {
+  const source = readFileSync(
+    join(import.meta.dirname, "..", "MCPPanel.tsx"),
+    "utf8",
+  );
+
+  assert.match(source, /editorDialogRef/);
+  assert.match(source, /editorPreviousFocusRef/);
+  assert.match(source, /editorLoadingRef/);
+  assert.match(source, /event\.key === "Escape"/);
+  assert.match(source, /event\.key !== "Tab"/);
+  assert.match(source, /event\.shiftKey/);
+  assert.match(source, /data-mcp-editor-initial-focus/);
+  assert.match(source, /ref=\{editorDialogRef\}/);
+  assert.match(source, /editorPreviousFocusRef\.current\?\.focus\(\)/);
+});
+
+test("mcp lifecycle mutations keep the editor mounted", () => {
+  const source = readFileSync(
+    join(import.meta.dirname, "..", "MCPPanel.tsx"),
+    "utf8",
+  );
+
+  assert.match(
+    source,
+    /const directoryIsLoading =[\s\S]*?authLoading \|\|[\s\S]*?isLoading &&[\s\S]*?servers\.length === 0 &&[\s\S]*?!editorOpen/,
+  );
+  assert.match(source, /isLoading: directoryIsLoading/);
+});
+
+test("mcp admin transient state closes when lifecycle authority disappears", () => {
+  const source = readFileSync(
+    join(import.meta.dirname, "..", "MCPPanel.tsx"),
+    "utf8",
+  );
+
+  assert.match(
+    source,
+    /useEffect\(\(\) => \{[\s\S]*?if \(canManageMcpUi\) return;[\s\S]*?setEditorOpen\(false\);[\s\S]*?setEditorServer\(null\);[\s\S]*?setDeleteTarget\(null\);[\s\S]*?\}, \[canManageMcpUi\]\);/,
+  );
+  assert.match(source, /\}, \[editorOpen, canManageMcpUi\]\);/);
+  assert.match(
+    source,
+    /isOpen=\{canManageMcpUi && Boolean\(deleteTarget\)\}/,
+  );
+  assert.match(source, /if \(!canManageMcpUi \|\| !deleteTarget\) return;/);
 });

@@ -69,7 +69,7 @@ export function useMCP(options?: {
     async (name: string): Promise<MCPServerResponse | null> => {
       if (!enabled) return null;
       try {
-        return await authFetch<MCPServerResponse>(`${API_BASE}/${name}`);
+        return await authFetch<MCPServerResponse>(`${API_BASE}/${encodeURIComponent(name)}`);
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Failed to fetch MCP server",
@@ -175,7 +175,7 @@ export function useMCP(options?: {
       setError(null);
       try {
         const data: MCPServerToggleResponse = await authFetch(
-          `${API_BASE}/${name}/toggle`,
+          `${API_BASE}/${encodeURIComponent(name)}/toggle`,
           {
             method: "PATCH",
           },
