@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import io
@@ -14,7 +15,7 @@ import shlex
 import subprocess
 import tarfile
 import unicodedata
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Sequence
 from urllib.request import urlopen
 
@@ -51,6 +52,14 @@ COMPATIBILITY_IMAGE_COMMIT_LABELS = (
 
 class ReleaseAuthorityError(RuntimeError):
     """Raised when a release-authority invariant is not satisfied."""
+
+
+@dataclass(frozen=True)
+class _ComposeSelection:
+    relative_paths: tuple[str, ...]
+    absolute_paths: tuple[Path, ...]
+    working_dir: str
+    config_files: str
 
 
 def _run(
@@ -120,6 +129,102 @@ def authoritative_repository(repo_root: Path) -> str:
 def _is_link_or_junction(path: Path) -> bool:
     is_junction = getattr(path, "is_junction", None)
     return path.is_symlink() or bool(is_junction and is_junction())
+
+
+def resolve_compose_files(
+    repo_root: Path,
+    compose_files: Sequence[str | Path] | None,
+) -> _ComposeSelection:
+    """Validate and resolve one ordered repo-relative Compose file selection."""
+    supplied_root = Path(repo_root)
+    try:
+        absolute_root = Path(os.path.abspath(supplied_root))
+        root = supplied_root.resolve(strict=True)
+    except OSError as exc:
+        raise ReleaseAuthorityError("release checkout path is invalid") from exc
+    if (
+        not root.is_dir()
+        or _is_link_or_junction(supplied_root)
+        or absolute_root != root
+    ):
+        raise ReleaseAuthorityError("release checkout path is invalid")
+
+    values: Sequence[str | Path]
+    if compose_files is None:
+        values = (DEFAULT_COMPOSE_RELATIVE_PATH.as_posix(),)
+    else:
+        values = compose_files
+    if not values:
+        raise ReleaseAuthorityError("compose file selection is invalid")
+
+    relative_paths: list[str] = []
+    absolute_paths: list[Path] = []
+    identities: set[str] = set()
+    for index, value in enumerate(values):
+        if isinstance(value, Path):
+            raw = value.as_posix()
+        elif isinstance(value, str):
+            raw = value
+        else:
+            raise ReleaseAuthorityError("compose file selection is invalid")
+        invalid_text = (
+            not raw
+            or raw != unicodedata.normalize("NFC", raw)
+            or "\\" in raw
+            or "," in raw
+            or any(
+                unicodedata.category(character) in WORKER_TMPDIR_UNICODE_CATEGORIES
+                for character in raw
+            )
+        )
+        pure = PurePosixPath(raw)
+        windows = PureWindowsPath(raw)
+        invalid_path = (
+            invalid_text
+            or pure.is_absolute()
+            or windows.is_absolute()
+            or bool(windows.drive)
+            or pure.as_posix() != raw
+            or raw.endswith("/")
+            or any(part in {"", ".", ".."} for part in pure.parts)
+        )
+        if invalid_path:
+            raise ReleaseAuthorityError("compose file selection is invalid")
+        if index == 0 and raw != DEFAULT_COMPOSE_RELATIVE_PATH.as_posix():
+            raise ReleaseAuthorityError("canonical main compose file must be first")
+        if raw in relative_paths:
+            raise ReleaseAuthorityError("duplicate compose file is forbidden")
+
+        candidate = root.joinpath(*pure.parts)
+        current = root
+        for part in pure.parts:
+            current = current / part
+            if _is_link_or_junction(current):
+                raise ReleaseAuthorityError("compose file links are forbidden")
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as exc:
+            raise ReleaseAuthorityError("compose file must exist") from exc
+        if (
+            resolved != candidate
+            or not resolved.is_relative_to(root)
+            or not resolved.is_file()
+        ):
+            raise ReleaseAuthorityError("compose file must be a regular checkout file")
+        identity = os.path.normcase(str(resolved))
+        if identity in identities or any(os.path.samefile(resolved, other) for other in absolute_paths):
+            raise ReleaseAuthorityError("duplicate compose file is forbidden")
+        identities.add(identity)
+        relative_paths.append(raw)
+        absolute_paths.append(resolved)
+
+    working_dir = absolute_paths[0].parent.as_posix()
+    return _ComposeSelection(
+        relative_paths=tuple(relative_paths),
+        absolute_paths=tuple(absolute_paths),
+        working_dir=working_dir,
+        config_files=",".join(path.as_posix() for path in absolute_paths),
+    )
 
 
 def _normalized_release_root(release_root: Path) -> Path:
@@ -294,6 +399,33 @@ def preserve_dirty_source(repo_root: Path, output_root: Path) -> Path:
     return destination
 
 
+def _compose_identity_mismatches(
+    labels: dict[str, Any],
+    role: str,
+    *,
+    expected_compose_dir: str,
+    expected_config_files: str,
+) -> list[str]:
+    mismatches: list[str] = []
+    if labels.get("ai-platform.release-owner") != "repo-local-compose":
+        mismatches.append(f"{role}_container_not_repo_local_compose_owned")
+    if labels.get("ai-platform.release-role") != role:
+        mismatches.append(f"{role}_container_role_mismatch")
+    if labels.get("com.docker.compose.project.working_dir") != expected_compose_dir:
+        mismatches.append(f"{role}_compose_working_dir_mismatch")
+    if str(labels.get("com.docker.compose.project.config_files") or "") != expected_config_files:
+        mismatches.append(f"{role}_compose_config_mismatch")
+    if labels.get("com.docker.compose.project") != COMPOSE_PROJECT:
+        mismatches.append(f"{role}_compose_project_mismatch")
+    if labels.get("com.docker.compose.service") != role:
+        mismatches.append(f"{role}_compose_service_mismatch")
+    if labels.get("com.docker.compose.oneoff") != "False":
+        mismatches.append(f"{role}_compose_oneoff_mismatch")
+    if not str(labels.get("com.docker.compose.config-hash") or "").strip():
+        mismatches.append(f"{role}_compose_config_hash_missing")
+    return mismatches
+
+
 def build_parity_report(
     *,
     expected_commit: str,
@@ -303,6 +435,7 @@ def build_parity_report(
     runtime: dict[str, Any],
     expected_compose_dir: str,
     expected_repository: str,
+    expected_compose_files: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Build a strict same-commit report for source, images, and runtime subjects."""
     commit = _normalize_commit(expected_commit)
@@ -331,33 +464,27 @@ def build_parity_report(
         ):
             mismatches.append(f"{role}_image_compatibility_commit_mismatch")
 
+    expected_config_files = ",".join(expected_compose_files) if expected_compose_files else (
+        f"{expected_compose_dir}/docker-compose.yml"
+    )
     expected_image_roles = {"api": "backend", "worker": "backend", "frontend": "frontend"}
     for role, image_role in expected_image_roles.items():
         container = containers.get(role, {})
         labels = container.get("labels") if isinstance(container.get("labels"), dict) else {}
         if container.get("running") is not True:
             mismatches.append(f"{role}_container_not_running")
-        if labels.get("ai-platform.release-owner") != "repo-local-compose":
-            mismatches.append(f"{role}_container_not_repo_local_compose_owned")
-        if labels.get("ai-platform.release-role") != role:
-            mismatches.append(f"{role}_container_role_mismatch")
+        mismatches.extend(
+            _compose_identity_mismatches(
+                labels,
+                role,
+                expected_compose_dir=expected_compose_dir,
+                expected_config_files=expected_config_files,
+            )
+        )
         if labels.get("ai-platform.source-commit") != commit:
             mismatches.append(f"{role}_container_commit_mismatch")
         if labels.get("ai-platform.source-dirty") != "false":
             mismatches.append(f"{role}_container_dirty_label_mismatch")
-        if labels.get("com.docker.compose.project.working_dir") != expected_compose_dir:
-            mismatches.append(f"{role}_compose_working_dir_mismatch")
-        config_files = str(labels.get("com.docker.compose.project.config_files") or "")
-        if config_files != f"{expected_compose_dir}/docker-compose.yml":
-            mismatches.append(f"{role}_compose_config_mismatch")
-        if labels.get("com.docker.compose.project") != COMPOSE_PROJECT:
-            mismatches.append(f"{role}_compose_project_mismatch")
-        if labels.get("com.docker.compose.service") != role:
-            mismatches.append(f"{role}_compose_service_mismatch")
-        if labels.get("com.docker.compose.oneoff") != "False":
-            mismatches.append(f"{role}_compose_oneoff_mismatch")
-        if not str(labels.get("com.docker.compose.config-hash") or "").strip():
-            mismatches.append(f"{role}_compose_config_hash_missing")
         expected_image_id = images.get(image_role, {}).get("id")
         if not expected_image_id or container.get("image_id") != expected_image_id:
             mismatches.append(f"{role}_container_image_mismatch")
@@ -430,6 +557,61 @@ def _existing_release_image(
         return None
     _validate_release_image(image, commit=commit, repository=repository, role=role)
     return image
+
+
+def _preflight_managed_container_ownership(
+    docker: list[str],
+    selection: _ComposeSelection,
+    *,
+    replace_known_manual_frontend: bool,
+    expected_manual_frontend_image: str | None,
+    expected_manual_frontend_image_id: str | None,
+) -> dict[str, Any] | None:
+    manual_frontend: dict[str, Any] | None = None
+    for role in ("api", "worker", "frontend"):
+        name = f"ai-platform-{role}"
+        existing = _run([*docker, "container", "inspect", name], check=False)
+        if existing.returncode != 0:
+            continue
+        try:
+            payload = json.loads(existing.stdout)
+        except json.JSONDecodeError as exc:
+            raise ReleaseAuthorityError("managed container inspect metadata is invalid") from exc
+        if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], dict):
+            raise ReleaseAuthorityError("managed container inspect metadata is invalid")
+        inspected = payload[0]
+        config = inspected.get("Config") if isinstance(inspected.get("Config"), dict) else {}
+        labels = config.get("Labels") if isinstance(config.get("Labels"), dict) else {}
+        if labels.get("ai-platform.release-owner") == "repo-local-compose":
+            if _compose_identity_mismatches(
+                labels,
+                role,
+                expected_compose_dir=selection.working_dir,
+                expected_config_files=selection.config_files,
+            ):
+                raise ReleaseAuthorityError(f"{role} compose ownership mismatch")
+            continue
+        if role != "frontend":
+            raise ReleaseAuthorityError(f"{role} compose ownership mismatch")
+        if not replace_known_manual_frontend:
+            raise ReleaseAuthorityError(
+                "manual frontend container is forbidden; rerun with explicit replacement"
+            )
+        observed_image = str(config.get("Image") or "")
+        observed_image_id = str(inspected.get("Image") or "")
+        if not expected_manual_frontend_image or not expected_manual_frontend_image_id:
+            raise ReleaseAuthorityError(
+                "manual frontend replacement requires expected image and image ID"
+            )
+        if (
+            observed_image != expected_manual_frontend_image
+            or observed_image_id != expected_manual_frontend_image_id
+        ):
+            raise ReleaseAuthorityError(
+                "manual frontend identity mismatch; refusing container removal"
+            )
+        manual_frontend = inspected
+    return manual_frontend
 
 
 def _container_inspect_record(
@@ -601,9 +783,11 @@ def collect_live_parity(
     commit: str,
     *,
     docker_cmd: str,
+    compose_files: Sequence[str | Path] | None = None,
 ) -> dict[str, Any]:
     """Collect live Docker and embedded provenance for the strict parity report."""
     normalized = assert_clean_commit(repo_root, commit)
+    selection = resolve_compose_files(repo_root, compose_files)
     docker = _docker_base(docker_cmd)
     refs = build_image_references(normalized)
     images = {
@@ -655,7 +839,6 @@ def collect_live_parity(
         "frontend_commit": str(frontend_provenance.get("git", {}).get("commit") or ""),
     }
     runtime["worker_commit"] = str(runtime["worker_heartbeat"].get("runtime_commit") or "")
-    compose_dir = (repo_root.resolve() / DEFAULT_COMPOSE_RELATIVE_PATH).parent.as_posix()
     repository = authoritative_repository(repo_root)
     return build_parity_report(
         expected_commit=normalized,
@@ -663,7 +846,8 @@ def collect_live_parity(
         images=images,
         containers=containers,
         runtime=runtime,
-        expected_compose_dir=compose_dir.rstrip("/"),
+        expected_compose_dir=selection.working_dir,
+        expected_compose_files=[path.as_posix() for path in selection.absolute_paths],
         expected_repository=repository,
     )
 
@@ -677,12 +861,21 @@ def deploy_clean_commit(
     replace_known_manual_frontend: bool,
     expected_manual_frontend_image: str | None = None,
     expected_manual_frontend_image_id: str | None = None,
+    compose_files: Sequence[str | Path] | None = None,
 ) -> dict[str, Any]:
     """Build immutable images and recreate the repo-local compose release."""
     normalized = assert_clean_commit(repo_root, commit)
+    selection = resolve_compose_files(repo_root, compose_files)
     docker = _docker_base(docker_cmd)
-    refs = build_image_references(normalized)
     repository = authoritative_repository(repo_root)
+    manual_frontend = _preflight_managed_container_ownership(
+        docker,
+        selection,
+        replace_known_manual_frontend=replace_known_manual_frontend,
+        expected_manual_frontend_image=expected_manual_frontend_image,
+        expected_manual_frontend_image_id=expected_manual_frontend_image_id,
+    )
+    refs = build_image_references(normalized)
     common_args = [
         "--build-arg", f"AI_PLATFORM_BUILD_COMMIT={normalized}",
         "--build-arg", "AI_PLATFORM_BUILD_DIRTY=false",
@@ -712,34 +905,13 @@ def deploy_clean_commit(
             )
         images[role] = image
 
-    existing = _run([*docker, "container", "inspect", "ai-platform-frontend"], check=False)
-    if existing.returncode == 0:
-        payload = json.loads(existing.stdout)[0]
-        labels = payload.get("Config", {}).get("Labels") or {}
-        compose_dir = (repo_root.resolve() / DEFAULT_COMPOSE_RELATIVE_PATH).parent.as_posix()
-        expected_config = f"{compose_dir}/docker-compose.yml"
-        if labels.get("ai-platform.release-owner") == "repo-local-compose":
-            if (
-                labels.get("com.docker.compose.project.working_dir") != compose_dir
-                or labels.get("com.docker.compose.project.config_files") != expected_config
-                or labels.get("com.docker.compose.project") != COMPOSE_PROJECT
-                or labels.get("com.docker.compose.service") != "frontend"
-                or labels.get("com.docker.compose.oneoff") != "False"
-                or not str(labels.get("com.docker.compose.config-hash") or "").strip()
-            ):
-                raise ReleaseAuthorityError("frontend compose ownership mismatch")
-        else:
-            if not replace_known_manual_frontend:
-                raise ReleaseAuthorityError("manual frontend container is forbidden; rerun with explicit replacement")
-            observed_image = str(payload.get("Config", {}).get("Image") or "")
-            observed_image_id = str(payload.get("Image") or "")
-            if not expected_manual_frontend_image or not expected_manual_frontend_image_id:
-                raise ReleaseAuthorityError("manual frontend replacement requires expected image and image ID")
-            if observed_image != expected_manual_frontend_image or observed_image_id != expected_manual_frontend_image_id:
-                raise ReleaseAuthorityError("manual frontend identity mismatch; refusing container removal")
-            _run([*docker, "container", "rm", "-f", "ai-platform-frontend"])
+    assert_clean_commit(repo_root, normalized)
+    revalidated = resolve_compose_files(repo_root, selection.relative_paths)
+    if revalidated != selection:
+        raise ReleaseAuthorityError("compose file selection changed during release preflight")
+    if manual_frontend is not None:
+        _run([*docker, "container", "rm", "-f", "ai-platform-frontend"])
 
-    compose_file = repo_root / DEFAULT_COMPOSE_RELATIVE_PATH
     compose_environment = [
         f"AI_PLATFORM_IMAGE={refs['backend']}",
         f"AI_PLATFORM_FRONTEND_IMAGE={refs['frontend']}",
@@ -751,6 +923,11 @@ def deploy_clean_commit(
         compose_command = ["sudo", "-n", "env", *compose_environment, "docker"]
     else:
         compose_command = ["env", *compose_environment, *docker]
+    compose_file_args = [
+        argument
+        for path in selection.absolute_paths
+        for argument in ("-f", str(path))
+    ]
     _run(
         [
             *compose_command,
@@ -759,15 +936,19 @@ def deploy_clean_commit(
             COMPOSE_PROJECT,
             "--env-file",
             str(env_file.resolve()),
-            "-f",
-            str(compose_file.resolve()),
+            *compose_file_args,
             "up",
             "-d",
             "--no-build",
         ],
-        cwd=compose_file.parent,
+        cwd=selection.absolute_paths[0].parent,
     )
-    return {"commit": normalized, "images": refs, "compose_file": str(compose_file.resolve())}
+    return {
+        "commit": normalized,
+        "images": refs,
+        "compose_file": str(selection.absolute_paths[0]),
+        "compose_files": [str(path) for path in selection.absolute_paths],
+    }
 
 
 def deploy_main_commit(
@@ -779,6 +960,7 @@ def deploy_main_commit(
     replace_known_manual_frontend: bool,
     expected_manual_frontend_image: str | None = None,
     expected_manual_frontend_image_id: str | None = None,
+    compose_files: Sequence[str | Path] | None = None,
 ) -> dict[str, Any]:
     """Deploy and verify an exact fetched main commit from an isolated checkout."""
     normalized = _normalize_commit(commit)
@@ -791,8 +973,14 @@ def deploy_main_commit(
         replace_known_manual_frontend=replace_known_manual_frontend,
         expected_manual_frontend_image=expected_manual_frontend_image,
         expected_manual_frontend_image_id=expected_manual_frontend_image_id,
+        compose_files=compose_files,
     )
-    parity = collect_live_parity(checkout, normalized, docker_cmd=docker_cmd)
+    parity = collect_live_parity(
+        checkout,
+        normalized,
+        docker_cmd=docker_cmd,
+        compose_files=compose_files,
+    )
     if parity.get("verified") is not True:
         mismatches = parity.get("mismatches")
         detail = ", ".join(str(item) for item in mismatches) if isinstance(mismatches, list) else "unknown"
@@ -830,6 +1018,13 @@ def main() -> int:
     deploy.add_argument("--replace-known-manual-frontend", action="store_true")
     deploy.add_argument("--expected-manual-frontend-image")
     deploy.add_argument("--expected-manual-frontend-image-id")
+    deploy.add_argument(
+        "--compose-file",
+        dest="compose_files",
+        action="append",
+        metavar="REPO_RELATIVE_PATH",
+        help="Ordered repo-relative Compose file; repeat for overlays",
+    )
 
     deploy_main = subparsers.add_parser(
         "deploy-main-commit",
@@ -842,12 +1037,26 @@ def main() -> int:
     deploy_main.add_argument("--replace-known-manual-frontend", action="store_true")
     deploy_main.add_argument("--expected-manual-frontend-image")
     deploy_main.add_argument("--expected-manual-frontend-image-id")
+    deploy_main.add_argument(
+        "--compose-file",
+        dest="compose_files",
+        action="append",
+        metavar="REPO_RELATIVE_PATH",
+        help="Ordered repo-relative Compose file; repeat for overlays",
+    )
 
     verify = subparsers.add_parser("verify", help="Verify source/image/runtime commit parity")
     verify.add_argument("--repo-root", type=Path, required=True)
     verify.add_argument("--commit", required=True)
     verify.add_argument("--docker-cmd", default="docker")
     verify.add_argument("--output", type=Path)
+    verify.add_argument(
+        "--compose-file",
+        dest="compose_files",
+        action="append",
+        metavar="REPO_RELATIVE_PATH",
+        help="Ordered repo-relative Compose file; repeat for overlays",
+    )
 
     args = parser.parse_args()
     try:
@@ -864,6 +1073,7 @@ def main() -> int:
                     replace_known_manual_frontend=args.replace_known_manual_frontend,
                     expected_manual_frontend_image=args.expected_manual_frontend_image,
                     expected_manual_frontend_image_id=args.expected_manual_frontend_image_id,
+                    compose_files=args.compose_files,
                 ),
                 None,
             )
@@ -877,6 +1087,7 @@ def main() -> int:
                     replace_known_manual_frontend=args.replace_known_manual_frontend,
                     expected_manual_frontend_image=args.expected_manual_frontend_image,
                     expected_manual_frontend_image_id=args.expected_manual_frontend_image_id,
+                    compose_files=args.compose_files,
                 ),
                 None,
             )
@@ -885,11 +1096,22 @@ def main() -> int:
                 args.repo_root,
                 args.commit,
                 docker_cmd=args.docker_cmd,
+                compose_files=args.compose_files,
             )
             _write_json(report, args.output)
             return 0 if report["verified"] else 1
-    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError, ReleaseAuthorityError) as exc:
+    except ReleaseAuthorityError as exc:
         _write_json({"verified": False, "error": str(exc), "command": args.command}, None)
+        return 2
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+        _write_json(
+            {
+                "verified": False,
+                "error": "release authority command failed",
+                "command": args.command,
+            },
+            None,
+        )
         return 2
     return 0
 

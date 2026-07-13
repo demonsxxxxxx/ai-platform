@@ -8,6 +8,38 @@ Base: `678d3c46f7b7dc41cf5d99d5b7898551f1bb50f3`.
 
 Issue: `https://github.com/demonsxxxxxx/ai-platform/issues/415`.
 
+## Issue #420 Ordered Compose Set
+
+Lane: `release-authority-compose-overlay-fix`, generation 1, phase 1.
+
+Branch: `codex/420-release-authority-compose-overlay`.
+
+Base: `110e047245c36237b92aa4bd32f9988b42753392`.
+
+Issue: `https://github.com/demonsxxxxxx/ai-platform/issues/420`.
+
+- [x] Revision-133 scope and worktree fingerprints matched the declared clean,
+  detached exact-main source before mutation.
+- [x] Focused RED reproduced the missing ordered selection, two-file ownership,
+  deployment command, CLI forwarding, and static low-level error contract.
+- [x] The existing release-authority module now validates one ordered
+  repo-relative Compose set, defaults to the canonical singleton, checks exact
+  API/worker/frontend ownership before image handling, and reuses the same set
+  for Compose up and live parity.
+- [x] Current module evidence: the focused contract passed (`19 passed`) and
+  the final complete release-authority suite passed (`97 passed`).
+- [x] Final local gates: source-authority docs passed (`50 passed`), compile and
+  all three CLI help smokes exited 0, and diff, exact three-path scope, and
+  added-lines secret/personal-path checks passed. Self-review found no real
+  secret/env output, missing public docstring, uncovered primary error path,
+  out-of-scope change, or unsupported closure claim.
+- [ ] Publication, exact-head evidence, and terminal CI gates remain.
+
+Evidence ceiling: `PR open / Not Ready`. This source-only lane does not access
+Docker, a real env, credentials, browser, or 211; it does not deploy, merge,
+request review, close #415, or claim B2, S1B, G0, Agent, runtime, or gate
+closure.
+
 ## Status
 
 - [x] Provisioning: clean detached worktree matched exact `origin/main`.
