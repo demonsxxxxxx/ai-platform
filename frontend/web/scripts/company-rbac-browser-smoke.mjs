@@ -7,6 +7,7 @@ import {
 import { join, resolve } from "node:path";
 import {
   captureScreenshot,
+  redactedValue,
   sleep as delay,
   startBrowser,
 } from "./browser-smoke-harness.mjs";
@@ -43,9 +44,10 @@ function markStage(stage) {
 
 function recordBrowserEvent(event, details) {
   mkdirSync(evidenceDir, { recursive: true });
+  const entry = redactedValue({ at: new Date().toISOString(), event, details });
   appendFileSync(
     join(evidenceDir, "browser-events.jsonl"),
-    `${JSON.stringify({ at: new Date().toISOString(), event, details })}\n`,
+    `${JSON.stringify(entry)}\n`,
     "utf8",
   );
 }
@@ -314,13 +316,14 @@ async function main() {
 }
 
 main().catch((error) => {
-  const failure = {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const failure = redactedValue({
       schema_version: "ai-platform.company-rbac-browser-smoke.v1",
       synthetic_identities_only: true,
       ok: false,
       stage: currentStage,
-      error: error instanceof Error ? error.message : String(error),
-    };
+      error: errorMessage,
+    });
   mkdirSync(evidenceDir, { recursive: true });
   writeFileSync(
     join(evidenceDir, "failure.json"),

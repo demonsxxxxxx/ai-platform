@@ -86,6 +86,9 @@ ongoing status record. Create a separate design only when the slice changes a
 schema or public contract, persistence, concurrency, infrastructure, or leaves
 an unresolved cross-module decision. Medium or long work may keep one concise
 Phase status document; do not create a spec/plan/status trio by default.
+Create a separate design for security, auth or authorization, tenant isolation,
+release or deployment, runtime, and other high-risk changes even when the slice
+is otherwise small.
 Historical evidence remains historical. Risk-proportionate machine evidence,
 including exact authorization and route checks plus the relevant smoke, remains
 required before making a status claim.

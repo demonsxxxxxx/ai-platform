@@ -28,6 +28,15 @@ Status: `PR ready`
   publishes the literal-safe command and result summary. It is `PR ready` for
   review only; no independent review, merge, deployment, 211 verification, or
   gate closure is claimed.
+- [x] Phase 6: revision-107 fixed four review findings after four independent
+  source-contract RED failures: child exit now escalates and fails closed before
+  profile removal; failure and lifecycle output use the shared redaction value
+  path; `ci:verify` invokes the company source contract; and evidence sizing
+  explicitly requires separate design for security, auth, tenant isolation,
+  release/deployment, runtime, and other high-risk changes. Focused backend
+  tests passed `4/4`, frontend policy/source tests passed `12/12`, compile,
+  lint (0 errors; 13 existing warnings), TypeScript, and `ci:verify` passed.
+  The isolated mock smoke again passed four cases with no new profile retained.
 
 ## Evidence Boundary
 

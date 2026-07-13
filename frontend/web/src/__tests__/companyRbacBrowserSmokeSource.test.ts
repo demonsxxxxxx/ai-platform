@@ -6,6 +6,8 @@ import test from "node:test";
 const root = process.cwd();
 const harnessPath = join(root, "scripts/browser-smoke-harness.mjs");
 const scenarioPath = join(root, "scripts/company-rbac-browser-smoke.mjs");
+const agentsPath = join(root, "../..", "AGENTS.md");
+const workflowPath = join(root, "../..", "docs/agent-rules/github-issue-pr-workflow.md");
 
 function read(path: string): string {
   return readFileSync(path, "utf8");
@@ -62,8 +64,57 @@ test("company RBAC scenario retains exact role, navigation, route, and layout as
 test("shared harness cleans partial startup and reports profile cleanup failure", () => {
   const harness = read(harnessPath);
 
-  assert.match(harness, /await close\(\);\s*throw error;/);
+  assert.match(harness, /await close\(\);/);
+  assert.match(harness, /throw new Error\(redact\(/);
   assert.match(harness, /browser_profile_cleanup_failed/);
   assert.match(harness, /for \(let attempt = 0; attempt < 10; attempt \+= 1\)/);
   assert.match(harness, /if \(!existsSync\(profile\)\)/);
+});
+
+test("child-exit timeout escalates and fails before profile cleanup", () => {
+  const harness = read(harnessPath);
+
+  assert.match(harness, /browser_exit_timeout/);
+  assert.match(harness, /child\.kill\("SIGKILL"\)/);
+  assert.match(harness, /browser_exit_after_escalation/);
+  assert.match(harness, /browser_exit_not_confirmed/);
+  assert.doesNotMatch(harness, /"browser_exit"[\s\S]{0,100}\.catch\(\(\) => null\)/);
+});
+
+test("company failure and lifecycle evidence use the shared redaction value path", () => {
+  const harness = read(harnessPath);
+  const scenario = read(scenarioPath);
+
+  assert.match(harness, /export function redactedValue/);
+  assert.match(scenario, /redactedValue\(\{ at: new Date\(\)\.toISOString\(\), event, details \}\)/);
+  assert.match(scenario, /const failure = redactedValue\(/);
+  assert.doesNotMatch(scenario, /error: error instanceof Error \? error\.message : String\(error\)/);
+});
+
+test("ci verification includes the company smoke source contract", () => {
+  const packageJson = read(join(root, "package.json"));
+
+  assert.match(
+    packageJson,
+    /"ci:verify": "[^"\n]*test:company-rbac-browser-smoke-source/,
+  );
+});
+
+test("evidence sizing preserves explicit high-risk design triggers", () => {
+  const guidance = [read(agentsPath), read(workflowPath)].join("\n");
+
+  for (const trigger of [
+    "security",
+    "auth",
+    "tenant isolation",
+    "release",
+    "deployment",
+    "runtime",
+  ]) {
+    assert.match(
+      guidance,
+      new RegExp(`Create a separate design for[\\s\\S]{0,160}${trigger}`, "i"),
+      trigger,
+    );
+  }
 });

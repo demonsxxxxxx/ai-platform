@@ -9,9 +9,8 @@ const defaultTimeoutMs = 30_000;
 
 export { sleep };
 
-/** Redacts known private values and credential-shaped diagnostic fragments. */
-export function redact(value, privateValues = []) {
-  let text = typeof value === "string" ? value : JSON.stringify(value);
+function redactText(value, privateValues) {
+  let text = String(value);
   for (const privateValue of privateValues) {
     if (!privateValue) continue;
     text = text.replaceAll(privateValue, "[REDACTED]");
@@ -21,6 +20,29 @@ export function redact(value, privateValues = []) {
     /((?:authorization|cookie|password|secret|token)\s*[:=]\s*)[^\s,;]+/gi,
     "$1[REDACTED]",
   );
+}
+
+/** Redacts known private values and credential-shaped diagnostic fragments. */
+export function redact(value, privateValues = []) {
+  return redactText(typeof value === "string" ? value : JSON.stringify(value), privateValues);
+}
+
+/** Returns a redacted diagnostic value without leaking private object fields. */
+export function redactedValue(value, privateValues = []) {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactedValue(item, privateValues));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        /authorization|cookie|password|secret|token/i.test(key)
+          ? "[REDACTED]"
+          : redactedValue(item, privateValues),
+      ]),
+    );
+  }
+  return typeof value === "string" ? redactText(value, privateValues) : value;
 }
 
 /** Returns an explicitly configured Chrome/Edge executable when one is available. */
@@ -73,13 +95,25 @@ export async function findFreePort() {
   });
 }
 
-async function waitForChildExit(child, timeoutMs) {
-  if (!child || child.exitCode !== null) return;
-  await withTimeout(
-    new Promise((resolvePromise) => child.once("exit", resolvePromise)),
-    timeoutMs,
-    "browser_exit",
-  ).catch(() => null);
+function childExited(child) {
+  return Boolean(child && (child.exitCode !== null || child.signalCode !== null));
+}
+
+async function waitForChildExit(child, timeoutMs, report) {
+  if (!child || childExited(child)) return;
+  const exitPromise = new Promise((resolvePromise) => child.once("exit", resolvePromise));
+  try {
+    await withTimeout(exitPromise, timeoutMs, "browser_exit");
+  } catch {
+    report("browser_exit_timeout");
+    child.kill("SIGKILL");
+    try {
+      await withTimeout(exitPromise, Math.min(timeoutMs, 5_000), "browser_exit_after_escalation");
+    } catch {
+      throw new Error("browser_exit_after_escalation:timeout");
+    }
+  }
+  if (!childExited(child)) throw new Error("browser_exit_not_confirmed");
 }
 
 async function removeProfile(profile, report) {
@@ -101,11 +135,11 @@ async function removeProfile(profile, report) {
   throw error;
 }
 
-function trackChild(child, report, privateValues) {
+function trackChild(child, report) {
   for (const [stream, event] of [[child.stdout, "browser_stdout"], [child.stderr, "browser_stderr"]]) {
-    stream?.on("data", (chunk) => report(event, { output: redact(String(chunk), privateValues) }));
+    stream?.on("data", (chunk) => report(event, { output: String(chunk) }));
   }
-  child.once("error", (error) => report("browser_error", { error: redact(String(error), privateValues) }));
+  child.once("error", (error) => report("browser_error", { error: String(error) }));
   child.once("exit", (code, signal) => report("browser_exit", { code, signal }));
 }
 
@@ -221,7 +255,8 @@ export async function startBrowser({
   const port = await findFreePort();
   const profile = mkdtempSync(join(tmpdir(), profilePrefix));
   const endpoint = `http://127.0.0.1:${port}`;
-  const reportRedacted = (event, details = {}) => report(event, JSON.parse(redact(details, [profile])));
+  const reportRedacted = (event, details = {}) =>
+    report(redactedValue(event, [profile]), redactedValue(details, [profile]));
   let child;
   let client;
   let closed = false;
@@ -230,7 +265,7 @@ export async function startBrowser({
     closed = true;
     client?.close();
     child?.kill();
-    await waitForChildExit(child, timeoutMs);
+    await waitForChildExit(child, timeoutMs, reportRedacted);
     await removeProfile(profile, reportRedacted);
   };
 
@@ -251,7 +286,7 @@ export async function startBrowser({
       ],
       { stdio: ["ignore", "pipe", "pipe"], windowsHide: true },
     );
-    trackChild(child, reportRedacted, [profile]);
+    trackChild(child, reportRedacted);
     await waitForHttpReady(`${endpoint}/json/version`, timeoutMs, "browser_cdp");
     const target = await httpJson(
       `${endpoint}/json/new?${encodeURIComponent("about:blank")}`,
@@ -270,7 +305,11 @@ export async function startBrowser({
     reportRedacted("browser_ready", { port });
     return { client, close };
   } catch (error) {
-    await close();
-    throw error;
+    try {
+      await close();
+    } catch (cleanupError) {
+      throw new Error(redact(`${String(error)}; ${String(cleanupError)}`, [profile]));
+    }
+    throw new Error(redact(String(error), [profile]));
   }
 }

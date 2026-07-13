@@ -47,6 +47,10 @@ persistence, concurrency, infrastructure, or leaves an unresolved cross-module
 decision. A medium or long task may maintain one concise Phase status document
 when it improves handoff or verification clarity.
 
+Create a separate design for security, auth or authorization, tenant isolation,
+release or deployment, runtime, and other high-risk changes even when the slice
+is otherwise small.
+
 This sizing rule does not weaken verification. Keep risk-proportionate machine
 evidence: exact authorization and route checks, policy tests, and the relevant
 local or deployed smoke remain required. Do not delete or rewrite historical
