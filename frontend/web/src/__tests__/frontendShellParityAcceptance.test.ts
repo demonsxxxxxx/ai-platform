@@ -229,22 +229,36 @@ test("post-login navigation keeps governed MCP entry discoverable without stale 
     "utf8",
   );
 
+  for (const route of ["/mcp", "/notifications"]) {
+    assert.match(
+      userMenu,
+      new RegExp(
+        `path:\\s*"${route}"[\\s\\S]{0,160}show:\\s*true\\s*,?\\s*}\\s*,`,
+      ),
+      route,
+    );
+  }
   for (const route of [
-    "/mcp",
     "/channels",
     "/agents",
     "/models",
     "/users",
     "/settings",
     "/feedback",
-    "/notifications",
   ]) {
     assert.match(
       userMenu,
-      new RegExp(`path:\\s*"${route}"[\\s\\S]{0,160}show:\\s*true`),
+      new RegExp(
+        `path:\\s*"${route}"[\\s\\S]{0,180}show:\\s*canAccessWorkbenchItem\\(user,\\s*"${route.slice(1)}"\\)\\s*,\\s*}`,
+      ),
       route,
     );
   }
+  assert.match(userMenu, /const visibleNav = navItems\.filter\(\(i\) => i\.show\)/);
+  assert.match(
+    userMenu,
+    /\{visibleNav\.length > 0 && <div>\{visibleNav\.map\(renderNavItem\)\}<\/div>\}/,
+  );
   assert.doesNotMatch(userMenu, /path:\s*"\/roles"/);
   assert.doesNotMatch(userMenu, /Permission\.MCP_READ|Permission\.CHANNEL_READ|Permission\.SETTINGS_MANAGE/);
   assert.doesNotMatch(userMenu, /canReadChannels|canManageSettings/);
