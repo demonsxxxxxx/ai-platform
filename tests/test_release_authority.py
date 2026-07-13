@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 
 import yaml
 
+import tools.release_authority as release_authority
+
 from tools.release_authority import (
     ReleaseAuthorityError,
     assert_clean_commit,
@@ -830,3 +832,299 @@ def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
         "-d",
         "--no-build",
     ]
+
+
+def _install_checkout_git_runner(
+    monkeypatch,
+    *,
+    commit: str,
+    origin: str = AUTHORITATIVE_REPOSITORY,
+    head: str | None = None,
+    status: str = "",
+    ancestor_returncode: int = 0,
+):
+    commands: list[tuple[list[str], Path | None, bool]] = []
+
+    def fake_run(command, *, cwd=None, check=True, text=True, env=None):
+        command = list(command)
+        cwd_path = Path(cwd) if cwd is not None else None
+        commands.append((command, cwd_path, check))
+        stdout = ""
+        returncode = 0
+        if command[:2] == ["git", "init"]:
+            assert cwd_path is not None
+            (cwd_path / ".git").mkdir()
+        elif command[1:4] == ["config", "--get", "remote.origin.url"]:
+            stdout = origin + "\n"
+        elif command[1:3] == ["rev-parse", "HEAD"]:
+            stdout = (head or commit) + "\n"
+        elif command[1:3] == ["status", "--porcelain"]:
+            stdout = status
+        elif command[1:3] == ["merge-base", "--is-ancestor"]:
+            returncode = ancestor_returncode
+        result = subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr="")
+        if check and returncode:
+            raise subprocess.CalledProcessError(returncode, command, output=stdout, stderr="")
+        return result
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+    return commands
+
+
+def test_materialize_main_checkout_fetches_explicit_refspec_into_isolated_commit_dir(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "6" * 40
+    commands = _install_checkout_git_runner(monkeypatch, commit=commit)
+    release_root = tmp_path / "releases"
+
+    checkout = release_authority.materialize_main_checkout(release_root, commit)
+
+    assert checkout == release_root / commit
+    assert checkout.is_dir()
+    assert (checkout / ".git").is_dir()
+    git_commands = [command for command, _, _ in commands if command[0] == "git"]
+    assert ["git", "fetch", "--no-tags", "origin", "main:refs/remotes/origin/main"] in git_commands
+    assert ["git", "cat-file", "-e", f"{commit}^{{commit}}"] in git_commands
+    assert ["git", "merge-base", "--is-ancestor", commit, "refs/remotes/origin/main"] in git_commands
+    assert ["git", "checkout", "--detach", commit] in git_commands
+    assert not any(command[1] in {"archive", "worktree"} for command in git_commands)
+
+
+def test_materialize_main_checkout_reuses_only_clean_matching_checkout(monkeypatch, tmp_path):
+    commit = "7" * 40
+    release_root = tmp_path / "releases"
+    checkout = release_root / commit
+    (checkout / ".git").mkdir(parents=True)
+    commands = _install_checkout_git_runner(monkeypatch, commit=commit)
+
+    assert release_authority.materialize_main_checkout(release_root, commit) == checkout
+
+    git_commands = [command for command, _, _ in commands]
+    assert ["git", "fetch", "--no-tags", "origin", "main:refs/remotes/origin/main"] in git_commands
+    assert ["git", "init"] not in git_commands
+    assert ["git", "checkout", "--detach", commit] not in git_commands
+
+
+def test_materialize_main_checkout_rejects_dirty_or_non_main_reuse(monkeypatch, tmp_path):
+    commit = "8" * 40
+    release_root = tmp_path / "releases"
+    checkout = release_root / commit
+    (checkout / ".git").mkdir(parents=True)
+    _install_checkout_git_runner(monkeypatch, commit=commit, status=" M tracked.txt\n")
+
+    try:
+        release_authority.materialize_main_checkout(release_root, commit)
+    except ReleaseAuthorityError as exc:
+        assert "dirty source" in str(exc)
+    else:
+        raise AssertionError("a dirty versioned checkout must not be reused")
+
+    monkeypatch.undo()
+    _install_checkout_git_runner(monkeypatch, commit=commit, ancestor_returncode=1)
+    try:
+        release_authority.materialize_main_checkout(release_root, commit)
+    except ReleaseAuthorityError as exc:
+        assert "fetched main" in str(exc)
+    else:
+        raise AssertionError("a commit outside fetched main must be rejected")
+
+
+def test_materialize_main_checkout_rejects_checkout_head_mismatch(monkeypatch, tmp_path):
+    commit = "f" * 40
+    release_root = tmp_path / "releases"
+    checkout = release_root / commit
+    (checkout / ".git").mkdir(parents=True)
+    _install_checkout_git_runner(monkeypatch, commit=commit, head="0" * 40)
+
+    try:
+        release_authority.materialize_main_checkout(release_root, commit)
+    except ReleaseAuthorityError as exc:
+        assert "does not match requested commit" in str(exc)
+    else:
+        raise AssertionError("a version directory with a mismatched HEAD must fail closed")
+
+
+def test_materialize_main_checkout_rejects_residue_invalid_commit_and_path_escape(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "9" * 40
+    release_root = tmp_path / "releases"
+    release_root.mkdir()
+    (release_root / f".{commit}.incoming").mkdir()
+    monkeypatch.setattr(
+        "tools.release_authority._run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Git must not run")),
+    )
+
+    for root, requested, expected in (
+        (release_root, commit, "interrupted"),
+        (tmp_path / "uncreated", "../main; touch owned", "full 40-character"),
+        (tmp_path / "releases" / ".." / "escape", commit, "normalized absolute"),
+    ):
+        try:
+            release_authority.materialize_main_checkout(root, requested)
+        except ReleaseAuthorityError as exc:
+            assert expected in str(exc)
+        else:
+            raise AssertionError("unsafe release materialization must fail closed")
+
+
+def test_materialize_main_checkout_rejects_symlink_release_root(monkeypatch, tmp_path):
+    commit = "a" * 40
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    linked = tmp_path / "linked"
+    try:
+        linked.symlink_to(actual, target_is_directory=True)
+    except OSError:
+        linked = actual
+        monkeypatch.setattr(
+            "tools.release_authority._is_link_or_junction",
+            lambda path: Path(path) == linked,
+        )
+    monkeypatch.setattr(
+        "tools.release_authority._run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Git must not run")),
+    )
+
+    try:
+        release_authority.materialize_main_checkout(linked, commit)
+    except ReleaseAuthorityError as exc:
+        assert "symlink" in str(exc)
+    else:
+        raise AssertionError("a symlink release root must fail closed")
+
+
+def test_deploy_main_commit_delegates_existing_deploy_and_parity_authorities(monkeypatch, tmp_path):
+    commit = "b" * 40
+    checkout = tmp_path / "releases" / commit
+    calls: list[tuple[str, Path, str]] = []
+    monkeypatch.setattr(
+        "tools.release_authority.materialize_main_checkout",
+        lambda root, requested: checkout,
+    )
+
+    def fake_deploy(repo_root, requested, **kwargs):
+        calls.append(("deploy", repo_root, requested))
+        return {"commit": requested}
+
+    def fake_parity(repo_root, requested, **kwargs):
+        calls.append(("parity", repo_root, requested))
+        return {"verified": True, "mismatches": []}
+
+    monkeypatch.setattr("tools.release_authority.deploy_clean_commit", fake_deploy)
+    monkeypatch.setattr("tools.release_authority.collect_live_parity", fake_parity)
+
+    result = release_authority.deploy_main_commit(
+        tmp_path / "releases",
+        commit,
+        docker_cmd="sudo -n docker",
+        env_file=tmp_path / ".env",
+        replace_known_manual_frontend=False,
+    )
+
+    assert calls == [("deploy", checkout, commit), ("parity", checkout, commit)]
+    assert result["checkout"] == str(checkout)
+    assert result["parity"]["verified"] is True
+
+
+def test_deploy_main_commit_fails_closed_when_live_parity_does_not_verify(monkeypatch, tmp_path):
+    commit = "c" * 40
+    checkout = tmp_path / "releases" / commit
+    monkeypatch.setattr("tools.release_authority.materialize_main_checkout", lambda root, requested: checkout)
+    monkeypatch.setattr("tools.release_authority.deploy_clean_commit", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        "tools.release_authority.collect_live_parity",
+        lambda *args, **kwargs: {"verified": False, "mismatches": ["api_runtime_commit_mismatch"]},
+    )
+
+    try:
+        release_authority.deploy_main_commit(
+            tmp_path / "releases",
+            commit,
+            docker_cmd="docker",
+            env_file=tmp_path / ".env",
+            replace_known_manual_frontend=False,
+        )
+    except ReleaseAuthorityError as exc:
+        assert "api_runtime_commit_mismatch" in str(exc)
+    else:
+        raise AssertionError("a non-verifying rollout must fail closed")
+
+
+def test_image_validation_rejects_stale_underscore_compatibility_aliases():
+    commit = "d" * 40
+    canonical = {
+        "ai-platform.source-commit": commit,
+        "org.opencontainers.image.revision": commit,
+        "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
+        "ai-platform.build-dirty": "false",
+        "ai-platform.release-role": "backend",
+    }
+    aliases = (
+        "ai-platform.source_revision",
+        "ai-platform.source_commit",
+        "ai-platform.runtime_subject",
+        "ai-platform.source_tree_commit",
+        "ai_platform_source_revision",
+        "ai_platform_source_commit",
+        "ai_platform_runtime_subject",
+        "ai_platform_source_tree_commit",
+    )
+
+    for alias in aliases:
+        image = {"labels": {**canonical, alias: "e" * 40}}
+        try:
+            release_authority._validate_release_image(
+                image,
+                commit=commit,
+                repository=AUTHORITATIVE_REPOSITORY,
+                role="backend",
+            )
+        except ReleaseAuthorityError as exc:
+            assert alias in str(exc)
+        else:
+            raise AssertionError(f"stale compatibility label {alias} must fail closed")
+
+
+def test_parity_report_records_stale_underscore_compatibility_alias():
+    commit = "1" * 40
+    report = build_parity_report(
+        expected_commit=commit,
+        source={"commit": commit, "dirty": False},
+        images={
+            "backend": {
+                "labels": {
+                    "ai-platform.source-commit": commit,
+                    "org.opencontainers.image.revision": commit,
+                    "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
+                    "ai-platform.build-dirty": "false",
+                    "ai-platform.release-role": "backend",
+                    "ai-platform.source_revision": "2" * 40,
+                }
+            },
+            "frontend": {"labels": {}},
+        },
+        containers={},
+        runtime={},
+        expected_compose_dir="/srv/ai-platform/releases/commit/deploy/ai-platform",
+        expected_repository=AUTHORITATIVE_REPOSITORY,
+    )
+
+    assert "backend_image_compatibility_commit_mismatch" in report["mismatches"]
+
+
+def test_release_authority_cli_exposes_git_native_main_commit_deploy():
+    help_text = subprocess.run(
+        [sys.executable, "tools/release_authority.py", "deploy-main-commit", "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert "--release-root" in help_text
+    assert "--repo-root" not in help_text
+    assert "--commit" in help_text

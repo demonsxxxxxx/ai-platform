@@ -29,6 +29,16 @@ AUTHORITATIVE_REPOSITORY_ALIASES = {
     "ssh://git@github.com/demonsxxxxxx/ai-platform.git",
 }
 SECRET_PATH_NAMES = {".env", ".env.local", ".env.production", ".env.development"}
+COMPATIBILITY_IMAGE_COMMIT_LABELS = (
+    "ai-platform.source_revision",
+    "ai-platform.source_commit",
+    "ai-platform.runtime_subject",
+    "ai-platform.source_tree_commit",
+    "ai_platform_source_revision",
+    "ai_platform_source_commit",
+    "ai_platform_runtime_subject",
+    "ai_platform_source_tree_commit",
+)
 
 
 class ReleaseAuthorityError(RuntimeError):
@@ -94,6 +104,88 @@ def authoritative_repository(repo_root: Path) -> str:
     if origin not in AUTHORITATIVE_REPOSITORY_ALIASES:
         raise ReleaseAuthorityError("authoritative repository mismatch")
     return AUTHORITATIVE_REPOSITORY
+
+
+def _is_link_or_junction(path: Path) -> bool:
+    is_junction = getattr(path, "is_junction", None)
+    return path.is_symlink() or bool(is_junction and is_junction())
+
+
+def _normalized_release_root(release_root: Path) -> Path:
+    supplied = Path(release_root)
+    if not supplied.is_absolute() or ".." in supplied.parts:
+        raise ReleaseAuthorityError("release root must be a normalized absolute path")
+    normalized = Path(os.path.abspath(supplied))
+    if normalized.exists() and not normalized.is_dir():
+        raise ReleaseAuthorityError("release root must be a directory")
+    if _is_link_or_junction(normalized) or normalized.resolve(strict=False) != normalized:
+        raise ReleaseAuthorityError("release root symlink traversal is forbidden")
+    normalized.mkdir(parents=True, exist_ok=True)
+    if _is_link_or_junction(normalized) or normalized.resolve(strict=True) != normalized:
+        raise ReleaseAuthorityError("release root symlink traversal is forbidden")
+    return normalized
+
+
+def _assert_standalone_checkout(checkout: Path, release_root: Path) -> None:
+    if _is_link_or_junction(checkout) or checkout.resolve(strict=False).parent != release_root:
+        raise ReleaseAuthorityError("versioned release checkout symlink or path traversal is forbidden")
+    git_dir = checkout / ".git"
+    if not checkout.is_dir() or not git_dir.is_dir() or _is_link_or_junction(git_dir):
+        raise ReleaseAuthorityError("versioned release is not an isolated Git checkout")
+
+
+def _fetch_and_verify_main_commit(checkout: Path, commit: str) -> None:
+    authoritative_repository(checkout)
+    _git(checkout, "fetch", "--no-tags", "origin", "main:refs/remotes/origin/main")
+    commit_object = _run(
+        ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+        cwd=checkout,
+        check=False,
+    )
+    if commit_object.returncode != 0:
+        raise ReleaseAuthorityError("requested commit object is not available after main fetch")
+    ancestor = _run(
+        ["git", "merge-base", "--is-ancestor", commit, "refs/remotes/origin/main"],
+        cwd=checkout,
+        check=False,
+    )
+    if ancestor.returncode == 1:
+        raise ReleaseAuthorityError("requested commit is not reachable from fetched main")
+    if ancestor.returncode != 0:
+        raise ReleaseAuthorityError("unable to verify requested commit against fetched main")
+
+
+def materialize_main_checkout(release_root: Path, commit: str) -> Path:
+    """Fetch main and create or validate one clean isolated checkout by commit."""
+    normalized = _normalize_commit(commit)
+    root = _normalized_release_root(release_root)
+    checkout = root / normalized
+    staging = root / f".{normalized}.incoming"
+
+    if _is_link_or_junction(staging) or staging.exists():
+        raise ReleaseAuthorityError("interrupted release staging residue requires operator review")
+    if _is_link_or_junction(checkout):
+        raise ReleaseAuthorityError("versioned release checkout symlink is forbidden")
+
+    if checkout.exists():
+        _assert_standalone_checkout(checkout, root)
+        assert_clean_commit(checkout, normalized)
+        _fetch_and_verify_main_commit(checkout, normalized)
+        assert_clean_commit(checkout, normalized)
+        return checkout
+
+    staging.mkdir(exist_ok=False)
+    _git(staging, "init")
+    _git(staging, "remote", "add", "origin", AUTHORITATIVE_REPOSITORY)
+    _fetch_and_verify_main_commit(staging, normalized)
+    _git(staging, "checkout", "--detach", normalized)
+    assert_clean_commit(staging, normalized)
+    _assert_standalone_checkout(staging, root)
+    if checkout.exists() or _is_link_or_junction(checkout):
+        raise ReleaseAuthorityError("versioned release destination appeared during materialization")
+    staging.rename(checkout)
+    _assert_standalone_checkout(checkout, root)
+    return checkout
 
 
 def _is_secret_path(relative_path: str) -> bool:
@@ -222,6 +314,11 @@ def build_parity_report(
             mismatches.append(f"{role}_image_dirty_label_mismatch")
         if labels.get("ai-platform.release-role") != role:
             mismatches.append(f"{role}_image_role_mismatch")
+        if any(
+            label in labels and labels.get(label) != commit
+            for label in COMPATIBILITY_IMAGE_COMMIT_LABELS
+        ):
+            mismatches.append(f"{role}_image_compatibility_commit_mismatch")
 
     expected_image_roles = {"api": "backend", "worker": "backend", "frontend": "frontend"}
     for role, image_role in expected_image_roles.items():
@@ -302,6 +399,9 @@ def _validate_release_image(image: dict[str, Any], *, commit: str, repository: s
     }
     for label, value in expected.items():
         if labels.get(label) != value:
+            raise ReleaseAuthorityError(f"{role} image label mismatch: {label}")
+    for label in COMPATIBILITY_IMAGE_COMMIT_LABELS:
+        if label in labels and labels.get(label) != commit:
             raise ReleaseAuthorityError(f"{role} image label mismatch: {label}")
 
 
@@ -572,6 +672,41 @@ def deploy_clean_commit(
     return {"commit": normalized, "images": refs, "compose_file": str(compose_file.resolve())}
 
 
+def deploy_main_commit(
+    release_root: Path,
+    commit: str,
+    *,
+    docker_cmd: str,
+    env_file: Path,
+    replace_known_manual_frontend: bool,
+    expected_manual_frontend_image: str | None = None,
+    expected_manual_frontend_image_id: str | None = None,
+) -> dict[str, Any]:
+    """Deploy and verify an exact fetched main commit from an isolated checkout."""
+    normalized = _normalize_commit(commit)
+    checkout = materialize_main_checkout(release_root, normalized)
+    deployment = deploy_clean_commit(
+        checkout,
+        normalized,
+        docker_cmd=docker_cmd,
+        env_file=env_file,
+        replace_known_manual_frontend=replace_known_manual_frontend,
+        expected_manual_frontend_image=expected_manual_frontend_image,
+        expected_manual_frontend_image_id=expected_manual_frontend_image_id,
+    )
+    parity = collect_live_parity(checkout, normalized, docker_cmd=docker_cmd)
+    if parity.get("verified") is not True:
+        mismatches = parity.get("mismatches")
+        detail = ", ".join(str(item) for item in mismatches) if isinstance(mismatches, list) else "unknown"
+        raise ReleaseAuthorityError(f"deployed release parity failed: {detail}")
+    return {
+        "commit": normalized,
+        "checkout": str(checkout),
+        "deployment": deployment,
+        "parity": parity,
+    }
+
+
 def _write_json(payload: dict[str, Any], output: Path | None) -> None:
     text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     if output:
@@ -598,6 +733,18 @@ def main() -> int:
     deploy.add_argument("--expected-manual-frontend-image")
     deploy.add_argument("--expected-manual-frontend-image-id")
 
+    deploy_main = subparsers.add_parser(
+        "deploy-main-commit",
+        help="Fetch, deploy, and verify one exact main commit",
+    )
+    deploy_main.add_argument("--release-root", type=Path, required=True)
+    deploy_main.add_argument("--commit", required=True)
+    deploy_main.add_argument("--docker-cmd", default="docker")
+    deploy_main.add_argument("--env-file", type=Path, required=True)
+    deploy_main.add_argument("--replace-known-manual-frontend", action="store_true")
+    deploy_main.add_argument("--expected-manual-frontend-image")
+    deploy_main.add_argument("--expected-manual-frontend-image-id")
+
     verify = subparsers.add_parser("verify", help="Verify source/image/runtime commit parity")
     verify.add_argument("--repo-root", type=Path, required=True)
     verify.add_argument("--commit", required=True)
@@ -613,6 +760,19 @@ def main() -> int:
             _write_json(
                 deploy_clean_commit(
                     args.repo_root,
+                    args.commit,
+                    docker_cmd=args.docker_cmd,
+                    env_file=args.env_file,
+                    replace_known_manual_frontend=args.replace_known_manual_frontend,
+                    expected_manual_frontend_image=args.expected_manual_frontend_image,
+                    expected_manual_frontend_image_id=args.expected_manual_frontend_image_id,
+                ),
+                None,
+            )
+        elif args.command == "deploy-main-commit":
+            _write_json(
+                deploy_main_commit(
+                    args.release_root,
                     args.commit,
                     docker_cmd=args.docker_cmd,
                     env_file=args.env_file,
