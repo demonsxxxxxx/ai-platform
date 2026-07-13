@@ -4,6 +4,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
+import pytest
 import yaml
 
 import tools.release_authority as release_authority
@@ -23,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.yml"
 LEGACY_FRONTEND_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.frontend.yml"
 AUTHORITATIVE_REPOSITORY = "https://github.com/demonsxxxxxx/ai-platform.git"
+WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
 
 
 def test_repo_local_compose_is_the_only_frontend_owner_and_binds_one_commit():
@@ -369,9 +371,81 @@ def test_parity_report_rejects_incomplete_compose_identity():
     assert "frontend_compose_config_hash_missing" in report["mismatches"]
 
 
+def test_worker_heartbeat_path_uses_validated_container_tmpdir(monkeypatch):
+    observed: list[tuple[str, ...]] = []
+
+    def fake_docker_json(docker, *args):
+        observed.append(tuple(args))
+        return [
+            {
+                "Config": {
+                    "Env": ["UNRELATED_ENV=private-marker", "TMPDIR=/home/ai-platform/tmp"]
+                }
+            }
+        ]
+
+    monkeypatch.setattr("tools.release_authority._docker_json", fake_docker_json)
+
+    path = release_authority._worker_heartbeat_path(["docker"], "ai-platform-worker")
+
+    assert path == f"/home/ai-platform/tmp/{WORKER_HEARTBEAT_FILENAME}"
+    assert observed == [("container", "inspect", "ai-platform-worker")]
+
+
+def test_worker_heartbeat_path_defaults_to_tmp_when_entry_is_absent(monkeypatch):
+    monkeypatch.setattr(
+        "tools.release_authority._docker_json",
+        lambda docker, *args: [{"Config": {"Env": ["PATH=/usr/bin"]}}],
+    )
+
+    assert release_authority._worker_heartbeat_path(["docker"], "ai-platform-worker") == (
+        f"/tmp/{WORKER_HEARTBEAT_FILENAME}"
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"Config": {"Env": "TMPDIR=/tmp"}},
+        {"Config": {"Env": [None]}},
+        {"Config": {"Env": ["TMPDIR"]}},
+        {"Config": {"Env": ["TMPDIR="]}},
+        {"Config": {"Env": ["TMPDIR=relative"]}},
+        {"Config": {"Env": ["TMPDIR=/tmp/../secret"]}},
+        {"Config": {"Env": [r"TMPDIR=/tmp\secret"]}},
+        {"Config": {"Env": ["TMPDIR=/tmp/\nsecret"]}},
+        {"Config": {"Env": ["TMPDIR=/tmp//nested"]}},
+        {"Config": {"Env": ["TMPDIR=/tmp/./nested"]}},
+        {
+            "Config": {
+                "Env": ["TMPDIR=/one", "UNRELATED_ENV=private-marker", "TMPDIR=/two"]
+            }
+        },
+    ],
+)
+def test_worker_heartbeat_path_rejects_invalid_metadata_without_leaking_env(
+    monkeypatch,
+    payload,
+):
+    monkeypatch.setattr(
+        "tools.release_authority._docker_json",
+        lambda docker, *args: [payload],
+    )
+
+    with pytest.raises(
+        ReleaseAuthorityError,
+        match="^worker container TMPDIR metadata is invalid$",
+    ) as exc_info:
+        release_authority._worker_heartbeat_path(["docker"], "ai-platform-worker")
+    assert "private-marker" not in str(exc_info.value)
+    assert "UNRELATED_ENV" not in str(exc_info.value)
+
+
 def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monkeypatch, tmp_path):
     commit = "d" * 40
     observed_urls: list[str] = []
+    observed_heartbeat_paths: list[str] = []
     repository = AUTHORITATIVE_REPOSITORY
 
     monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
@@ -425,15 +499,21 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
         },
     )
     monkeypatch.setattr(
-        "tools.release_authority._container_json_file",
-        lambda docker, name, path: {
+        "tools.release_authority._worker_heartbeat_path",
+        lambda docker, name: "/home/ai-platform/tmp/ai-platform-worker-runtime-heartbeat.json",
+    )
+
+    def fake_container_json_file(docker, name, path):
+        observed_heartbeat_paths.append(path)
+        return {
             "schema_version": "ai-platform.worker-runtime-heartbeat.v1",
             "worker_id": "worker-a",
             "runtime_commit": commit,
             "pid": 1234,
             "observed_at": datetime.now(timezone.utc).isoformat(),
-        },
-    )
+        }
+
+    monkeypatch.setattr("tools.release_authority._container_json_file", fake_container_json_file)
     monkeypatch.setattr("tools.release_authority._container_process_alive", lambda docker, name, pid: True)
 
     def fake_http_json(url: str):
@@ -462,6 +542,9 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
     assert report["runtime"]["frontend_commit"] == commit
     assert report["runtime"]["api_health_status"] == "ok"
     assert report["runtime"]["worker_running"] is True
+    assert observed_heartbeat_paths == [
+        "/home/ai-platform/tmp/ai-platform-worker-runtime-heartbeat.json"
+    ]
 
 
 def test_collect_live_parity_rejects_stale_worker_heartbeat(monkeypatch, tmp_path):
@@ -530,6 +613,10 @@ def test_collect_live_parity_rejects_stale_worker_heartbeat(monkeypatch, tmp_pat
             "pid": 1111,
             "observed_at": (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
         },
+    )
+    monkeypatch.setattr(
+        "tools.release_authority._worker_heartbeat_path",
+        lambda docker, name: f"/tmp/{WORKER_HEARTBEAT_FILENAME}",
     )
     monkeypatch.setattr("tools.release_authority._container_process_alive", lambda docker, name, pid: False)
 

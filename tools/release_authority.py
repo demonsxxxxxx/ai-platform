@@ -8,11 +8,12 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+import posixpath
 import re
 import shlex
 import subprocess
 import tarfile
+from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 from urllib.request import urlopen
 
@@ -22,6 +23,7 @@ PRESERVATION_SCHEMA_VERSION = "ai-platform.release-authority-preservation.v1"
 FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 DEFAULT_COMPOSE_RELATIVE_PATH = Path("deploy/ai-platform/docker-compose.yml")
 COMPOSE_PROJECT = "ai-platform-phaseb"
+WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
 AUTHORITATIVE_REPOSITORY = "https://github.com/demonsxxxxxx/ai-platform.git"
 AUTHORITATIVE_REPOSITORY_ALIASES = {
     AUTHORITATIVE_REPOSITORY,
@@ -480,6 +482,49 @@ def _container_json_file(docker: list[str], name: str, path: str) -> dict[str, A
     return json.loads(result.stdout)
 
 
+def _worker_heartbeat_path(docker: list[str], name: str) -> str:
+    invalid = "worker container TMPDIR metadata is invalid"
+    inspected = _docker_json(docker, "container", "inspect", name)
+    if (
+        not isinstance(inspected, list)
+        or len(inspected) != 1
+        or not isinstance(inspected[0], dict)
+    ):
+        raise ReleaseAuthorityError(invalid)
+    config = inspected[0].get("Config")
+    if not isinstance(config, dict):
+        raise ReleaseAuthorityError(invalid)
+    environment = config.get("Env")
+    if not isinstance(environment, list) or any(
+        not isinstance(entry, str) for entry in environment
+    ):
+        raise ReleaseAuthorityError(invalid)
+
+    entries = [
+        entry
+        for entry in environment
+        if entry == "TMPDIR" or entry.startswith("TMPDIR=")
+    ]
+    if not entries:
+        tmpdir = "/tmp"
+    elif len(entries) != 1 or not entries[0].startswith("TMPDIR="):
+        raise ReleaseAuthorityError(invalid)
+    else:
+        tmpdir = entries[0].partition("=")[2]
+        invalid_path = (
+            not tmpdir
+            or not PurePosixPath(tmpdir).is_absolute()
+            or tmpdir.startswith("//")
+            or "\\" in tmpdir
+            or any(ord(character) < 32 or ord(character) == 127 for character in tmpdir)
+            or ".." in PurePosixPath(tmpdir).parts
+            or posixpath.normpath(tmpdir) != tmpdir
+        )
+        if invalid_path:
+            raise ReleaseAuthorityError(invalid)
+    return str(PurePosixPath(tmpdir) / WORKER_HEARTBEAT_FILENAME)
+
+
 def _container_process_alive(docker: list[str], name: str, pid: Any) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
@@ -541,10 +586,11 @@ def collect_live_parity(
         raise ReleaseAuthorityError("frontend provenance path mismatch")
     if frontend_provenance.get("git", {}).get("dirty") is not False:
         raise ReleaseAuthorityError("frontend provenance is dirty")
+    worker_name = "ai-platform-worker"
     worker_heartbeat = _container_json_file(
         docker,
-        "ai-platform-worker",
-        "/tmp/ai-platform-worker-runtime-heartbeat.json",
+        worker_name,
+        _worker_heartbeat_path(docker, worker_name),
     )
     _validate_worker_runtime_heartbeat(
         worker_heartbeat,

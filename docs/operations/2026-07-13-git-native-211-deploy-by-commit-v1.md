@@ -66,6 +66,9 @@ Issue: `https://github.com/demonsxxxxxx/ai-platform/issues/415`.
   non-main commits, and invalid commit-shaped input also fail closed.
 - Existing `deploy_clean_commit` and `collect_live_parity` remain the build,
   Compose ownership, and runtime parity authorities.
+- Worker heartbeat parity derives the fixed heartbeat filename from the
+  container's validated absolute POSIX `TMPDIR`, defaults to `/tmp` when the
+  entry is absent, and fails closed without exposing environment values.
 - Canonical image provenance remains mandatory; every published hyphenated or
   underscore compatibility label, including `ai-platform.source-revision` and
   backend `ai-platform.runtime-subject`, must equal the same commit so inherited
