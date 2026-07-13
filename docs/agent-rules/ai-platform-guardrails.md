@@ -120,6 +120,18 @@ source/version ownership as the current platform gates.
 
 ## Review And Deployment Guardrails
 
+- Future 211 source rollout must use `tools/release_authority.py
+  deploy-main-commit` with an explicit full commit that was fetched from
+  authoritative `origin/main`. The build context must be the clean, versioned,
+  isolated Git checkout created by that command, never a local source archive,
+  hand-copied frontend dist, or dirty coordination checkout.
+- Git-native release preparation must fail closed when the commit is not
+  reachable from fetched main, the versioned checkout is dirty, contains
+  ignored worktree files, or is mismatched, an interrupted staging directory
+  remains, a release path escapes through a symlink or traversal, or canonical
+  and compatibility image provenance labels disagree. A controller-owned
+  post-merge 211 rollout is still required before claiming `211 verified` or
+  source-authority closure.
 - Goal-sized work and gate closures should follow
   `docs/agent-rules/github-issue-pr-workflow.md`: issue -> PR -> review ->
   merge -> deploy/smoke -> close issue. Do not close or auto-close an issue
