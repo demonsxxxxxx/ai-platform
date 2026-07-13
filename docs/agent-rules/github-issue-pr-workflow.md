@@ -36,6 +36,22 @@ If the missing CI/CD coverage itself becomes a blocker, create a separate issue
 and PR for the CI/CD workflow. Do not silently upgrade every unrelated PR into a
 CI/CD implementation task.
 
+## Evidence Sizing
+
+For an ordinary implementation slice, use the linked GitHub issue and PR as the
+plan, change description, and continuing status record. Do not require a
+separate spec/plan/status trio by default.
+
+Create a separate design only when the slice changes a schema or public API,
+persistence, concurrency, infrastructure, or leaves an unresolved cross-module
+decision. A medium or long task may maintain one concise Phase status document
+when it improves handoff or verification clarity.
+
+This sizing rule does not weaken verification. Keep risk-proportionate machine
+evidence: exact authorization and route checks, policy tests, and the relevant
+local or deployed smoke remain required. Do not delete or rewrite historical
+evidence merely because a future ordinary slice uses the smaller record.
+
 ## Status Language
 
 Use precise status labels. Do not let an earlier status imply a later one.

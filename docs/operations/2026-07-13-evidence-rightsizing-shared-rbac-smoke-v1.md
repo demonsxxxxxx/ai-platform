@@ -1,0 +1,42 @@
+# Evidence Right-Sizing and Shared RBAC Smoke V1
+
+Status: `local partial`
+
+## Phase Status
+
+- [x] Phase 0: controller revision-105 envelope and exact base/head
+  `678d3c46f7b7dc41cf5d99d5b7898551f1bb50f3` were accepted. The independent
+  scope fingerprint matched `sha256:3a198276900a8e8384555870e9ffd726798320f5e407b0f6c67bf67dd216c71c`;
+  the clean worktree fingerprint matched
+  `sha256:569d756187855990e72143b513e78c89b92e28044bc89ddf72cdedbc05d23ac8`.
+- [x] Phase 1: tracking issue [#416](https://github.com/demonsxxxxxx/ai-platform/issues/416)
+  records the ordinary-slice plan and status. This document is the only concise
+  Phase record for the slice; it is not a separate spec/plan/status trio.
+- [x] Phase 2: source-contract RED observed because the shared harness did not
+  exist; the unchanged company RBAC assertion contract passed in that RED run.
+- [x] Phase 3: scenario-neutral Chrome/CDP lifecycle, timeout, screenshot,
+  redacted child diagnostics, and isolated-profile cleanup moved to the shared
+  harness. The company scenario retains mock identities and RBAC assertions.
+- [x] Phase 4: direct backend permission tests passed `3/3`; the affected
+  permission-gated route test passed `1/1`; frontend policy/source tests passed
+  `8/8`; `python -m compileall -q app tools scripts`, script syntax checks, and
+  `tsc -b` exited `0`. ESLint exited `0` with 13 pre-existing warnings. The
+  isolated mock-backed smoke passed all four ordinary/admin desktop/mobile cases;
+  it recorded four browser-ready, exit, and profile-cleaned events with no
+  cleanup failure or newly retained temporary profile.
+
+## Evidence Boundary
+
+No real credentials, existing browser state, 211 access, deployment, CI workflow,
+product behavior, historical evidence, or the other three browser smoke scripts
+are in scope. Local results can establish at most `PR ready`, never deployment,
+211 verification, merge, or gate closure.
+
+## Follow-up Migration Order
+
+1. MCP admin smoke, after a separate scope decision because it owns Vite and
+   richer diagnostics.
+2. Authorized-Skill smoke, after its attachment and stale-state requirements are
+   independently reviewed.
+3. PRD closure smoke, after its real-login and provenance requirements are
+   separately scoped.
