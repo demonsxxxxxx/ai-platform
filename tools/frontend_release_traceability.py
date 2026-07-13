@@ -23,10 +23,23 @@ DIST_REMEDIATION_COMMANDS = [
     "corepack pnpm run ci:verify",
     "python ../../tools/frontend_release_traceability.py --format json",
 ]
+STATIC_FRONTEND_PYTEST_COMMAND = (
+    "python -m pytest tests/test_deploy_frontend_static.py "
+    "tests/test_frontend_release_traceability.py "
+    "tests/test_frontend_packaged_runtime_smoke.py "
+    "tests/test_frontend_ci_workflow.py tests/test_backend_ci_workflow.py "
+    "tests/test_release_authority.py tests/test_runtime_launch_script.py "
+    "tests/test_source_authority_docs.py "
+    "-q --basetemp .pytest-tmp"
+)
+WORKFLOW_STEP_COMMANDS = {
+    "Verify static frontend Python contracts": STATIC_FRONTEND_PYTEST_COMMAND,
+    "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
+}
 WORKFLOW_COMMANDS = [
     "corepack pnpm install --frozen-lockfile",
-    "python -m pip install pytest",
-    "python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_backend_ci_workflow.py tests/test_release_authority.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py tests/test_governance_readiness.py -q --basetemp .pytest-tmp",
+    "python -m pip install pytest pyyaml",
+    STATIC_FRONTEND_PYTEST_COMMAND,
     "corepack pnpm run ci:verify",
     "python tools/frontend_release_traceability.py --format json",
     "python tools/deploy_frontend_static.py --help",
@@ -318,12 +331,20 @@ def _dist_manifest(
 
 def _workflow_manifest(workflow_path: Path) -> dict[str, object]:
     missing_commands: list[str] = []
+    missing_step_commands: list[str] = []
     if workflow_path.exists():
         workflow_content = workflow_path.read_text(encoding="utf-8")
         missing_commands = [command for command in WORKFLOW_COMMANDS if command not in workflow_content]
+        missing_step_commands = [
+            step_name
+            for step_name, command in WORKFLOW_STEP_COMMANDS.items()
+            if f"      - name: {step_name}\n        run: {command}" not in workflow_content
+        ]
     blockers = []
     if missing_commands:
         blockers.append("frontend_workflow_enforced_commands_missing")
+    if missing_step_commands:
+        blockers.append("frontend_workflow_step_contract_missing")
     status = "missing"
     if workflow_path.exists():
         status = "present_with_policy_gaps" if blockers else "present"
@@ -333,6 +354,8 @@ def _workflow_manifest(workflow_path: Path) -> dict[str, object]:
         "sha256": _sha256(workflow_path) if workflow_path.exists() else None,
         "enforced_commands": WORKFLOW_COMMANDS,
         "missing_commands": missing_commands,
+        "enforced_step_commands": WORKFLOW_STEP_COMMANDS,
+        "missing_step_commands": missing_step_commands,
         "required_path_filters": [],
         "missing_path_filters": [],
         "blockers": blockers,

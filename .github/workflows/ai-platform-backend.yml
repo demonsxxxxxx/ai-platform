@@ -56,6 +56,7 @@ jobs:
             tests/test_b2_sandbox_readiness.py \
             tests/test_repositories.py \
             tests/test_backend_ci_workflow.py \
+            tests/test_governance_readiness.py \
             tests/test_release_authority.py \
             tests/test_contract.py \
             tests/test_worker_main.py \
