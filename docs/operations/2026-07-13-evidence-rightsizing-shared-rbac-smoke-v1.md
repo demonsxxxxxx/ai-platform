@@ -1,6 +1,6 @@
 # Evidence Right-Sizing and Shared RBAC Smoke V1
 
-Status: `local partial`
+Status: `PR ready`
 
 ## Phase Status
 
@@ -24,6 +24,10 @@ Status: `local partial`
   isolated mock-backed smoke passed all four ordinary/admin desktop/mobile cases;
   it recorded four browser-ready, exit, and profile-cleaned events with no
   cleanup failure or newly retained temporary profile.
+- [x] Phase 5: draft PR [#418](https://github.com/demonsxxxxxx/ai-platform/pull/418)
+  publishes the literal-safe command and result summary. It is `PR ready` for
+  review only; no independent review, merge, deployment, 211 verification, or
+  gate closure is claimed.
 
 ## Evidence Boundary
 
