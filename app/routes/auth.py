@@ -20,13 +20,10 @@ AI_USER_PERMISSIONS = [
     "session:write",
     "skill:read",
     "marketplace:read",
+    "mcp:read",
     "persona_preset:read",
-    "role:read",
-    "role:request",
-    "channel:read",
-    "user:read",
-    "settings:read",
-    "feedback:read",
+    "avatar:upload",
+    "feedback:write",
     "notification:read",
     "artifact:download",
     "file:upload",
@@ -34,22 +31,39 @@ AI_USER_PERMISSIONS = [
 ]
 
 AI_ADMIN_PERMISSIONS = [
+    "agent:read",
     "agent:admin",
     "model:admin",
+    "settings:read",
     "settings:manage",
+    "settings:admin",
     "admin:status",
     "skill:write",
     "skill:delete",
     "skill:admin",
     "marketplace:publish",
     "marketplace:admin",
+    "mcp:write_sse",
+    "mcp:write_http",
+    "mcp:write_sandbox",
+    "mcp:delete",
+    "mcp:admin",
+    "persona_preset:write",
+    "persona_preset:admin",
+    "channel:read",
     "channel:write",
     "channel:delete",
     "channel:admin",
+    "user:read",
+    "user:write",
+    "user:delete",
     "user:admin",
-    "settings:admin",
+    "role:read",
+    "role:manage",
+    "feedback:read",
     "feedback:admin",
     "notification:admin",
+    "notification:manage",
 ]
 
 
@@ -134,10 +148,13 @@ def _is_configured_admin(work_id: str) -> bool:
 
 
 def _roles_for_login(work_id: str, login_name: str, user_info: dict[str, Any]) -> list[str]:
-    roles = _roles_from_user_info(user_info)
-    if (_is_configured_admin(work_id) or _is_configured_admin(login_name)) and not _has_admin_role(roles):
-        roles.append("developer")
-    return roles or ["user"]
+    upstream_roles = _roles_from_user_info(user_info)
+    is_admin = (
+        _has_admin_role(upstream_roles)
+        or _is_configured_admin(work_id)
+        or _is_configured_admin(login_name)
+    )
+    return ["admin" if is_admin else "user"]
 
 
 def _is_failed_login_payload(payload: dict[str, Any]) -> bool:

@@ -23,6 +23,7 @@ import {
   clearSessionSelectionGuard,
 } from "../../utils/sessionSelectionGuard";
 import { useSwipeToClose } from "../../hooks/useSwipeToClose";
+import { canAccessWorkbenchItem } from "../governance/workbenchAccessPolicy";
 
 interface UserMenuProps {
   onShowProfile: () => void;
@@ -124,37 +125,37 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
       path: "/channels",
       label: t("nav.channels"),
       icon: MessageCircle,
-      show: true,
+      show: canAccessWorkbenchItem(user, "channels"),
     },
     {
       path: "/agents",
       label: t("nav.agents"),
       icon: Bot,
-      show: true,
+      show: canAccessWorkbenchItem(user, "agents"),
     },
     {
       path: "/models",
       label: t("nav.models"),
       icon: Cpu,
-      show: true,
+      show: canAccessWorkbenchItem(user, "models"),
     },
     {
       path: "/users",
       label: t("nav.users"),
       icon: Users,
-      show: true,
+      show: canAccessWorkbenchItem(user, "users"),
     },
     {
       path: "/settings",
       label: t("nav.settings"),
       icon: Settings,
-      show: true,
+      show: canAccessWorkbenchItem(user, "settings"),
     },
     {
       path: "/feedback",
       label: t("nav.feedback"),
       icon: MessageCircle,
-      show: true,
+      show: canAccessWorkbenchItem(user, "feedback"),
     },
     {
       path: "/notifications",
@@ -184,6 +185,7 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
     <button
       key={item.path}
       type="button"
+      data-workbench-user-menu-item={item.path}
       className={`${menuItemClass} ${
         (item.matchPaths ?? [item.path]).includes(location.pathname)
           ? "bg-[var(--theme-primary-light)] text-[var(--theme-text)]"
@@ -246,6 +248,7 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
       <div className="relative">
         <button
           ref={buttonRef}
+          data-user-menu-trigger
           onClick={() => setShowMenu(!showMenu)}
           className="flex h-8 w-8 items-center justify-center rounded-lg transition-all hover:ring-2 hover:ring-[var(--theme-primary-light)] active:scale-95 overflow-hidden"
         >

@@ -32,9 +32,10 @@ import {
 } from "./SidebarParts";
 import type { SessionActions } from "./SidebarParts";
 import {
-  getWorkbenchNavPath,
+  getSafeWorkbenchNavPath,
   type WorkbenchNavItem,
 } from "./SidebarParts/navigationState";
+import { canAccessWorkbenchItem } from "../governance/workbenchAccessPolicy";
 import { LIBRECHAT_SHELL_GEOMETRY } from "../../librechat-ui/surface";
 
 interface SessionSidebarProps {
@@ -101,8 +102,13 @@ export const SessionSidebar = forwardRef<
   const navigate = useNavigate();
 
   const navigateWorkbenchItem = useCallback(
-    (item: WorkbenchNavItem) => navigate(getWorkbenchNavPath(item)),
-    [navigate],
+    (item: WorkbenchNavItem) => {
+      const destination = canAccessWorkbenchItem(user, item)
+        ? getSafeWorkbenchNavPath(item, user)
+        : "/chat";
+      navigate(destination);
+    },
+    [navigate, user],
   );
 
   useEffect(() => {

@@ -6,6 +6,7 @@ import { Mail, ExternalLink } from "lucide-react";
 import { useAuth } from "../../../hooks/useAuth";
 import { Permission } from "../../../types";
 import { authApi, uploadApi } from "../../../services/api";
+import { getCanonicalCompanyRoleCode } from "../../governance/workbenchAccessPolicy";
 
 export function ProfileInfoTab() {
   const { t } = useTranslation();
@@ -285,21 +286,16 @@ export function ProfileInfoTab() {
             {user?.email || "-"}
           </span>
         </div>
-        {user?.roles && user.roles.length > 0 && (
+        {user && (
           <div className="flex items-center justify-between py-3.5 gap-3">
             <span className="text-sm text-stone-500 dark:text-stone-400 shrink-0">
               {t("profile.roles")}
             </span>
-            <div className="flex flex-wrap justify-end gap-1.5">
-              {user.roles.map((role) => (
-                <span
-                  key={role}
-                  className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-stone-100 dark:bg-stone-700 text-stone-600 dark:text-stone-300"
-                >
-                  {role}
-                </span>
-              ))}
-            </div>
+            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-stone-100 dark:bg-stone-700 text-stone-600 dark:text-stone-300">
+              {t(
+                `workbench.governance.roleLabels.${getCanonicalCompanyRoleCode(user)}`,
+              )}
+            </span>
           </div>
         )}
 
