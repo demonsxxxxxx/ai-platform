@@ -44,6 +44,14 @@ Status: `PR ready`
   backend CI workflow tests passed `3/3`; compile, lint (0 errors; 13 existing
   warnings), TypeScript, diff, and sensitive-marker checks passed. No browser,
   Docker, 211, or product behavior was used or changed in this phase.
+- [x] Phase 8: revision-112 preserved the two stale traceability-contract RED
+  failures and added RED coverage for the missing `pyyaml` install and combined
+  PowerShell command shape. The workflow now installs `pytest pyyaml` and runs
+  the selected Python suite before the deploy-helper help command in separate,
+  single-native-command steps. The traceability contract verifies both the full
+  `ci:verify` value and those exact steps; the focused local contracts passed
+  `21/21`. Fresh GitHub Actions logs remain required after the follow-up push
+  before claiming the CI repair is ready for re-review.
 
 ## Evidence Boundary
 

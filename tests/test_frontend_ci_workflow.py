@@ -3,6 +3,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ai-platform-frontend.yml"
+PYTEST_COMMAND = (
+    "python -m pytest tests/test_deploy_frontend_static.py "
+    "tests/test_frontend_release_traceability.py "
+    "tests/test_frontend_packaged_runtime_smoke.py "
+    "tests/test_frontend_ci_workflow.py "
+    "tests/test_backend_ci_workflow.py "
+    "tests/test_release_authority.py "
+    "tests/test_runtime_launch_script.py "
+    "tests/test_source_authority_docs.py "
+    "tests/test_governance_readiness.py "
+    "-q --basetemp .pytest-tmp"
+)
 
 
 def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability():
@@ -21,8 +33,8 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "if: ${{ always() }}" in workflow
 
     assert "corepack pnpm install --frozen-lockfile" in workflow
-    assert "python -m pip install pytest" in workflow
-    assert "python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_backend_ci_workflow.py tests/test_release_authority.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py tests/test_governance_readiness.py -q --basetemp .pytest-tmp" in workflow
+    assert "python -m pip install pytest pyyaml" in workflow
+    assert PYTEST_COMMAND in workflow
     assert "python tools/deploy_frontend_static.py --help" in workflow
     assert "corepack pnpm run ci:verify" in workflow
     assert "python tools/frontend_release_traceability.py --format json" in workflow
@@ -35,13 +47,21 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "ai-platform-build-provenance.json" in workflow
     assert "paths:" not in workflow.split("workflow_dispatch:", 1)[0]
 
-    pytest_install_index = workflow.index("python -m pip install pytest")
-    deploy_test_index = workflow.index("python -m pytest tests/test_deploy_frontend_static.py")
+    pytest_install_index = workflow.index("python -m pip install pytest pyyaml")
+    deploy_test_index = workflow.index(PYTEST_COMMAND)
     ci_verify_index = workflow.index("corepack pnpm run ci:verify")
     traceability_index = workflow.index("python tools/frontend_release_traceability.py --format json")
     assert pytest_install_index < deploy_test_index
     assert deploy_test_index < ci_verify_index
     assert ci_verify_index < traceability_index
+
+    expected_split_steps = (
+        "      - name: Verify static frontend Python contracts\n"
+        f"        run: {PYTEST_COMMAND}\n\n"
+        "      - name: Verify static frontend deploy helper\n"
+        "        run: python tools/deploy_frontend_static.py --help"
+    )
+    assert expected_split_steps in workflow
 
     lower = workflow.lower()
     assert "docker compose" not in lower
