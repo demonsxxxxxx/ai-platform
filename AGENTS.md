@@ -81,6 +81,18 @@ work, gate closures, and newly discovered defects. Keep the detailed procedure
 in `docs/agent-rules/github-issue-pr-workflow.md` instead of expanding this
 entry file.
 
+For an ordinary implementation slice, the linked issue and PR are the plan and
+ongoing status record. Create a separate design only when the slice changes a
+schema or public contract, persistence, concurrency, infrastructure, or leaves
+an unresolved cross-module decision. Medium or long work may keep one concise
+Phase status document; do not create a spec/plan/status trio by default.
+Create a separate design for security, auth or authorization, tenant isolation,
+release or deployment, runtime, and other high-risk changes even when the slice
+is otherwise small.
+Historical evidence remains historical. Risk-proportionate machine evidence,
+including exact authorization and route checks plus the relevant smoke, remains
+required before making a status claim.
+
 ## Multi-Agent Delegation
 
 - Use `docs/agent-rules/multi-agent-context-workflow.md` for the working

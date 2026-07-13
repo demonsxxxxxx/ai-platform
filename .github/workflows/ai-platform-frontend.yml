@@ -38,12 +38,13 @@ jobs:
         run: corepack pnpm install --frozen-lockfile
 
       - name: Install Python test dependencies
-        run: python -m pip install pytest
+        run: python -m pip install pytest pyyaml
+
+      - name: Verify static frontend Python contracts
+        run: python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_backend_ci_workflow.py tests/test_release_authority.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py -q --basetemp .pytest-tmp
 
       - name: Verify static frontend deploy helper
-        run: |
-          python -m pytest tests/test_deploy_frontend_static.py tests/test_frontend_release_traceability.py tests/test_frontend_packaged_runtime_smoke.py tests/test_frontend_ci_workflow.py tests/test_backend_ci_workflow.py tests/test_release_authority.py tests/test_runtime_launch_script.py tests/test_source_authority_docs.py tests/test_governance_readiness.py -q --basetemp .pytest-tmp
-          python tools/deploy_frontend_static.py --help
+        run: python tools/deploy_frontend_static.py --help
 
       - name: Verify frontend projection and build
         working-directory: frontend/web

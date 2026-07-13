@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 import {
   appendFileSync,
-  existsSync,
   mkdirSync,
-  mkdtempSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
-import { spawn } from "node:child_process";
-import { setTimeout as delay } from "node:timers/promises";
+import { join, resolve } from "node:path";
+import {
+  captureScreenshot,
+  redactedValue,
+  sleep as delay,
+  startBrowser,
+} from "./browser-smoke-harness.mjs";
 
 const baseUrl = (
   process.env.AI_PLATFORM_FRONTEND_URL || "http://127.0.0.1:4173"
@@ -42,143 +42,14 @@ function markStage(stage) {
   );
 }
 
-function findChrome() {
-  const candidates = [
-    process.env.AI_PLATFORM_CHROME_PATH,
-    join(process.env.PROGRAMFILES || "", "Google/Chrome/Application/chrome.exe"),
-    join(process.env.LOCALAPPDATA || "", "Google/Chrome/Application/chrome.exe"),
-    join(process.env.PROGRAMFILES || "", "Microsoft/Edge/Application/msedge.exe"),
-  ].filter(Boolean);
-  return candidates.find((candidate) => existsSync(candidate));
-}
-
-async function getJson(url, options = {}) {
-  const response = await fetch(url, options);
-  if (!response.ok) throw new Error(`http_${response.status}:${url}`);
-  return response.json();
-}
-
-class CdpClient {
-  constructor(webSocketUrl) {
-    this.webSocketUrl = webSocketUrl;
-    this.nextId = 1;
-    this.pending = new Map();
-  }
-
-  async connect() {
-    this.ws = new WebSocket(this.webSocketUrl);
-    await new Promise((resolvePromise, rejectPromise) => {
-      this.ws.addEventListener("open", resolvePromise, { once: true });
-      this.ws.addEventListener("error", rejectPromise, { once: true });
-    });
-    this.ws.addEventListener("message", (event) => {
-      const payload = JSON.parse(event.data);
-      const pending = this.pending.get(payload.id);
-      if (!pending) return;
-      this.pending.delete(payload.id);
-      if (payload.error) pending.reject(new Error(payload.error.message));
-      else pending.resolve(payload.result || {});
-    });
-  }
-
-  send(method, params = {}) {
-    const id = this.nextId++;
-    return new Promise((resolvePromise, rejectPromise) => {
-      this.pending.set(id, { resolve: resolvePromise, reject: rejectPromise });
-      this.ws.send(JSON.stringify({ id, method, params }));
-    });
-  }
-
-  async evaluate(expression) {
-    const result = await this.send("Runtime.evaluate", {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-      userGesture: true,
-    });
-    if (result.exceptionDetails) {
-      throw new Error(
-        result.exceptionDetails.exception?.description ||
-          result.exceptionDetails.text ||
-          "runtime_evaluate_failed",
-      );
-    }
-    return result.result?.value;
-  }
-
-  async waitFor(expression, label) {
-    const started = Date.now();
-    while (Date.now() - started < timeoutMs) {
-      const value = await this.evaluate(expression).catch(() => false);
-      if (value) return value;
-      await delay(150);
-    }
-    throw new Error(`timeout_waiting_for:${label}`);
-  }
-
-  close() {
-    this.ws?.close();
-  }
-}
-
-async function startBrowser(viewport) {
-  const executable = findChrome();
-  if (!executable) throw new Error("chrome_not_found");
-  const port = 9700 + Math.floor(Math.random() * 200);
-  const profile = mkdtempSync(join(tmpdir(), "company-rbac-smoke-"));
-  const child = spawn(
-    executable,
-    [
-      `--remote-debugging-port=${port}`,
-      `--user-data-dir=${profile}`,
-      "--headless=new",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-background-networking",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      `--window-size=${viewport.width},${viewport.height}`,
-      "about:blank",
-    ],
-    { stdio: "ignore", windowsHide: true },
+function recordBrowserEvent(event, details) {
+  mkdirSync(evidenceDir, { recursive: true });
+  const entry = redactedValue({ at: new Date().toISOString(), event, details });
+  appendFileSync(
+    join(evidenceDir, "browser-events.jsonl"),
+    `${JSON.stringify(entry)}\n`,
+    "utf8",
   );
-  const endpoint = `http://127.0.0.1:${port}`;
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    try {
-      await getJson(`${endpoint}/json/version`);
-      break;
-    } catch {
-      await delay(150);
-    }
-  }
-  const target = await getJson(
-    `${endpoint}/json/new?${encodeURIComponent("about:blank")}`,
-    { method: "PUT" },
-  );
-  const client = new CdpClient(target.webSocketDebuggerUrl);
-  await client.connect();
-  await client.send("Page.enable");
-  await client.send("Runtime.enable");
-  await client.send("Emulation.setDeviceMetricsOverride", {
-    width: viewport.width,
-    height: viewport.height,
-    deviceScaleFactor: 1,
-    mobile: viewport.mobile,
-  });
-  return {
-    client,
-    close: async () => {
-      client.close();
-      child.kill();
-      await delay(200);
-      try {
-        rmSync(profile, { recursive: true, force: true });
-      } catch {
-        // Chrome can retain profile handles briefly on Windows.
-      }
-    },
-  };
 }
 
 function mockBootstrapSource(isAdmin) {
@@ -278,18 +149,15 @@ async function navigate(client, path) {
   );
 }
 
-async function screenshot(client, name) {
-  mkdirSync(evidenceDir, { recursive: true });
-  const result = await client.send("Page.captureScreenshot", { format: "png" });
-  const path = join(evidenceDir, `${name}.png`);
-  writeFileSync(path, Buffer.from(result.data, "base64"));
-  return basename(path);
-}
-
 async function runCase(role, viewportName, viewport) {
   markStage(`${role}:${viewportName}:start-browser`);
   const isAdmin = role === "admin";
-  const browser = await startBrowser(viewport);
+  const browser = await startBrowser({
+    viewport,
+    timeoutMs,
+    profilePrefix: "company-rbac-smoke-",
+    report: recordBrowserEvent,
+  });
   const { client } = browser;
   try {
     await client.send("Page.addScriptToEvaluateOnNewDocument", {
@@ -379,7 +247,11 @@ async function runCase(role, viewportName, viewport) {
         errors: window.__companyRbacSmoke.errors,
       };
     })()`);
-    const screenshotName = await screenshot(client, `${role}-${viewportName}`);
+    const screenshotName = await captureScreenshot(
+      client,
+      evidenceDir,
+      `${role}-${viewportName}`,
+    );
     const managementNavigationOk = isAdmin
       ? Math.max(navigation.railCount, navigation.panelCount) === 3
       : navigation.railCount === 0 && navigation.panelCount === 0;
@@ -404,6 +276,12 @@ async function runCase(role, viewportName, viewport) {
       screenshot: screenshotName,
       ok,
     };
+  } catch (error) {
+    markStage(`${role}:${viewportName}:failed`);
+    await captureScreenshot(client, evidenceDir, `failure-${role}-${viewportName}`).catch(
+      () => null,
+    );
+    throw error;
   } finally {
     await browser.close();
   }
@@ -438,13 +316,14 @@ async function main() {
 }
 
 main().catch((error) => {
-  const failure = {
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  const failure = redactedValue({
       schema_version: "ai-platform.company-rbac-browser-smoke.v1",
       synthetic_identities_only: true,
       ok: false,
       stage: currentStage,
-      error: error instanceof Error ? error.message : String(error),
-    };
+      error: errorMessage,
+    });
   mkdirSync(evidenceDir, { recursive: true });
   writeFileSync(
     join(evidenceDir, "failure.json"),

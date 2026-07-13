@@ -12,9 +12,12 @@ from tools.frontend_release_traceability import (
 
 EXPECTED_CI_VERIFY = (
     "node scripts/run-python-tool.mjs ../../tools/frontend_projection_audit.py --format json "
-    "&& corepack pnpm run test:prd-closure-smoke-source && eslint . && tsc -b && vite build "
+    "&& corepack pnpm run test:prd-closure-smoke-source "
+    "&& corepack pnpm run test:company-rbac-browser-smoke-source "
+    "&& eslint . && tsc -b && vite build "
     "&& node scripts/write-build-provenance.mjs"
 )
+EXPECTED_PYTHON_DEPENDENCIES = "python -m pip install pytest pyyaml"
 EXPECTED_WORKFLOW_PYTEST = (
     "python -m pytest tests/test_deploy_frontend_static.py "
     "tests/test_frontend_release_traceability.py "
@@ -24,7 +27,6 @@ EXPECTED_WORKFLOW_PYTEST = (
     "tests/test_release_authority.py "
     "tests/test_runtime_launch_script.py "
     "tests/test_source_authority_docs.py "
-    "tests/test_governance_readiness.py "
     "-q --basetemp .pytest-tmp"
 )
 
@@ -47,11 +49,17 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert trace["workflow"]["status"] == "present"
     assert len(trace["workflow"]["sha256"]) == 64
     assert "corepack pnpm run ci:verify" in trace["workflow"]["enforced_commands"]
-    assert "python -m pip install pytest" in trace["workflow"]["enforced_commands"]
+    assert EXPECTED_PYTHON_DEPENDENCIES in trace["workflow"]["enforced_commands"]
     assert EXPECTED_WORKFLOW_PYTEST in trace["workflow"]["enforced_commands"]
+    assert "tests/test_governance_readiness.py" not in EXPECTED_WORKFLOW_PYTEST
     assert "python tools/deploy_frontend_static.py --help" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in trace["workflow"]["enforced_commands"]
+    assert trace["workflow"]["enforced_step_commands"] == {
+        "Verify static frontend Python contracts": EXPECTED_WORKFLOW_PYTEST,
+        "Verify static frontend deploy helper": "python tools/deploy_frontend_static.py --help",
+    }
+    assert trace["workflow"]["missing_step_commands"] == []
     assert trace["workflow"]["required_path_filters"] == []
     assert trace["workflow"]["missing_path_filters"] == []
     assert len(trace["source_hashes"]["package_json_sha256"]) == 64
@@ -401,10 +409,13 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
     trace = build_frontend_release_traceability(repo_root=tmp_path)
 
     assert trace["workflow"]["status"] == "present_with_policy_gaps"
-    assert trace["workflow"]["blockers"] == ["frontend_workflow_enforced_commands_missing"]
+    assert trace["workflow"]["blockers"] == [
+        "frontend_workflow_enforced_commands_missing",
+        "frontend_workflow_step_contract_missing",
+    ]
     assert trace["workflow"]["missing_commands"] == [
         "corepack pnpm install --frozen-lockfile",
-        "python -m pip install pytest",
+        EXPECTED_PYTHON_DEPENDENCIES,
         EXPECTED_WORKFLOW_PYTEST,
         "corepack pnpm run ci:verify",
         "python tools/frontend_release_traceability.py --format json",
@@ -416,6 +427,10 @@ def test_frontend_release_traceability_flags_workflow_missing_enforced_commands(
         "-f frontend/web/Dockerfile",
         "docker run --rm --entrypoint cat",
         "ai-platform-build-provenance.json",
+    ]
+    assert trace["workflow"]["missing_step_commands"] == [
+        "Verify static frontend Python contracts",
+        "Verify static frontend deploy helper",
     ]
     assert trace["workflow"]["missing_path_filters"] == []
 
