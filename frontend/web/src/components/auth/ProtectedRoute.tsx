@@ -4,11 +4,12 @@
  */
 
 import { type ReactNode, useEffect } from "react";
-import { Navigate } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../hooks/useAuth";
 import { Permission } from "../../types";
+import { canAccessWorkbenchPath } from "../governance/workbenchAccessPolicy";
 import { ChatPageSkeleton } from "../skeletons";
 
 interface ProtectedRouteProps {
@@ -74,22 +75,24 @@ export function ProtectedRoute({
   showToast = false,
   toastMessage = "您没有权限访问此页面",
 }: ProtectedRouteProps) {
-  const { isAuthenticated, isLoading, hasAnyPermission, hasAllPermissions } =
-    useAuth();
+  const {
+    user,
+    isAuthenticated,
+    isLoading,
+    hasAnyPermission,
+    hasAllPermissions,
+  } = useAuth();
+  const location = useLocation();
 
   // 检查是否有访问权限
   const checkAccess = (): boolean => {
+    if (!canAccessWorkbenchPath(user, location.pathname)) {
+      return false;
+    }
+
     // 检查管理员权限
-    if (requireAdmin) {
-      const adminPermissions = [
-        Permission.USER_READ,
-        Permission.USER_WRITE,
-        Permission.USER_DELETE,
-        Permission.ROLE_MANAGE,
-      ];
-      if (!hasAnyPermission(adminPermissions)) {
-        return false;
-      }
+    if (requireAdmin && user?.is_admin !== true) {
+      return false;
     }
 
     // 检查需要全部满足的权限

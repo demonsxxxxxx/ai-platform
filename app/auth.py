@@ -19,6 +19,7 @@ SKILL_DEVELOPER_ROLE = "skill_developer"
 RUNTIME_OPERATOR_ROLE = "runtime_operator"
 AUDITOR_ROLE = "auditor"
 BREAK_GLASS_ADMIN_ROLE = "break_glass_admin"
+COMPANY_AUTHZ_POLICY_VERSION = 1
 
 ADMIN_ROLE_ALIASES = {"admin", "developer", PLATFORM_ADMIN_ROLE, BREAK_GLASS_ADMIN_ROLE}
 PLATFORM_ROLE_TAXONOMY = {
@@ -131,6 +132,8 @@ def sign_principal_session(principal: AuthPrincipal) -> str:
         "iat": now,
         "exp": now + int(settings.ai_session_max_age_seconds),
     }
+    if principal.source == "company-login":
+        payload["authz_policy_version"] = COMPANY_AUTHZ_POLICY_VERSION
     header_part = _b64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}, separators=(",", ":")).encode("utf-8"))
     payload_part = _b64url_encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
     signing_input = f"{header_part}.{payload_part}"
@@ -161,6 +164,9 @@ def verify_principal_session(token: str) -> AuthPrincipal:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_session") from exc
     if int(payload.get("exp") or 0) < int(time.time()):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session_expired")
+    source = str(payload.get("source") or "ai-session")
+    if source == "company-login" and payload.get("authz_policy_version") != COMPANY_AUTHZ_POLICY_VERSION:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stale_company_session")
     return AuthPrincipal(
         user_id=str(payload.get("user_id") or ""),
         display_name=str(payload.get("display_name") or payload.get("user_id") or ""),
@@ -168,7 +174,7 @@ def verify_principal_session(token: str) -> AuthPrincipal:
         department_id=str(payload.get("department_id") or ""),
         roles=[str(item) for item in payload.get("roles") or []],
         permissions=[str(item) for item in payload.get("permissions") or []],
-        source=str(payload.get("source") or "ai-session"),
+        source=source,
     )
 
 
