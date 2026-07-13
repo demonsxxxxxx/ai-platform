@@ -116,6 +116,42 @@ def test_clean_commit_and_immutable_image_reference_contract(tmp_path):
         "frontend": f"ai-platform-frontend:{commit}",
     }
 
+
+def test_ignored_worktree_file_is_not_clean_and_blocks_deploy_before_docker(
+    monkeypatch,
+    tmp_path,
+):
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / ".gitignore").write_text("ignored-build-input.bin\n", encoding="utf-8")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-m", "ignore build input")
+    _git(repo, "remote", "add", "origin", AUTHORITATIVE_REPOSITORY)
+    commit = _git(repo, "rev-parse", "HEAD")
+    (repo / "ignored-build-input.bin").write_bytes(b"must not enter Docker context\n")
+    docker_lookups: list[str] = []
+
+    def forbidden_image_lookup(docker, image):
+        docker_lookups.append(image)
+        raise AssertionError("Docker image lookup must not run for ignored source")
+
+    monkeypatch.setattr("tools.release_authority._image_record", forbidden_image_lookup)
+
+    try:
+        deploy_clean_commit(
+            repo,
+            commit,
+            docker_cmd="docker",
+            env_file=tmp_path / ".env",
+            replace_known_manual_frontend=False,
+        )
+    except ReleaseAuthorityError as exc:
+        assert "ignored" in str(exc)
+    else:
+        raise AssertionError("an ignored worktree file must not be reported clean")
+
+    assert docker_lookups == []
+
     (repo / "tracked.txt").write_text("dirty\n", encoding="utf-8")
     try:
         assert_clean_commit(repo, commit)
@@ -134,12 +170,15 @@ def test_clean_commit_uses_git_porcelain_flag_supported_by_211(monkeypatch, tmp_
             return "d" * 40 + "\n"
         if args[:2] == ("status", "--porcelain"):
             return ""
+        if args == ("ls-files", "--others", "--ignored", "--exclude-standard", "-z"):
+            return b""
         raise AssertionError(args)
 
     monkeypatch.setattr("tools.release_authority._git", fake_git)
 
     assert assert_clean_commit(tmp_path, "d" * 40) == "d" * 40
     assert ("status", "--porcelain", "--untracked-files=all") in commands
+    assert ("ls-files", "--others", "--ignored", "--exclude-standard", "-z") in commands
     assert all("--porcelain=v1" not in args for args in commands)
 
 
@@ -842,6 +881,7 @@ def _install_checkout_git_runner(
     head: str | None = None,
     status: str = "",
     ancestor_returncode: int = 0,
+    ignored_paths: tuple[str, ...] = (),
 ):
     commands: list[tuple[list[str], Path | None, bool]] = []
 
@@ -860,9 +900,16 @@ def _install_checkout_git_runner(
             stdout = (head or commit) + "\n"
         elif command[1:3] == ["status", "--porcelain"]:
             stdout = status
+        elif command[1:5] == ["ls-files", "--others", "--ignored", "--exclude-standard"]:
+            stdout = "\0".join(ignored_paths) + ("\0" if ignored_paths else "")
         elif command[1:3] == ["merge-base", "--is-ancestor"]:
             returncode = ancestor_returncode
-        result = subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr="")
+        if not text:
+            stdout = stdout.encode("utf-8")
+            stderr = b""
+        else:
+            stderr = ""
+        result = subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr=stderr)
         if check and returncode:
             raise subprocess.CalledProcessError(returncode, command, output=stdout, stderr="")
         return result
@@ -944,6 +991,29 @@ def test_materialize_main_checkout_rejects_checkout_head_mismatch(monkeypatch, t
         assert "does not match requested commit" in str(exc)
     else:
         raise AssertionError("a version directory with a mismatched HEAD must fail closed")
+
+
+def test_materialize_main_checkout_rejects_ignored_file_before_reuse(monkeypatch, tmp_path):
+    commit = "3" * 40
+    release_root = tmp_path / "releases"
+    checkout = release_root / commit
+    (checkout / ".git").mkdir(parents=True)
+    commands = _install_checkout_git_runner(
+        monkeypatch,
+        commit=commit,
+        ignored_paths=("ignored-build-input.bin",),
+    )
+
+    try:
+        release_authority.materialize_main_checkout(release_root, commit)
+    except ReleaseAuthorityError as exc:
+        assert "ignored" in str(exc)
+    else:
+        raise AssertionError("a reused checkout with ignored files must fail closed")
+
+    assert ["git", "fetch", "--no-tags", "origin", "main:refs/remotes/origin/main"] not in [
+        command for command, _, _ in commands
+    ]
 
 
 def test_materialize_main_checkout_rejects_residue_invalid_commit_and_path_escape(
@@ -1088,6 +1158,104 @@ def test_image_validation_rejects_stale_underscore_compatibility_aliases():
             assert alias in str(exc)
         else:
             raise AssertionError(f"stale compatibility label {alias} must fail closed")
+
+
+def _published_image_labels(commit: str, role: str) -> dict[str, str]:
+    labels = {
+        "org.opencontainers.image.revision": commit,
+        "ai-platform.source-revision": commit,
+        "ai-platform.source-commit": commit,
+        "ai-platform.build-dirty": "false",
+        "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
+        "ai-platform.release-role": role,
+    }
+    if role == "backend":
+        labels.update(
+            {
+                "ai-platform.runtime-subject": commit,
+                "ai-platform.source_revision": commit,
+                "ai-platform.source_commit": commit,
+                "ai-platform.runtime_subject": commit,
+                "ai-platform.source_tree_commit": commit,
+            }
+        )
+    return labels
+
+
+def test_backend_actual_published_compatibility_labels_are_validated():
+    commit = "4" * 40
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "LABEL ai-platform.runtime-subject=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
+    labels = _published_image_labels(commit, "backend")
+
+    release_authority._validate_release_image(
+        {"labels": labels},
+        commit=commit,
+        repository=AUTHORITATIVE_REPOSITORY,
+        role="backend",
+    )
+    labels["ai-platform.runtime-subject"] = "5" * 40
+    try:
+        release_authority._validate_release_image(
+            {"labels": labels},
+            commit=commit,
+            repository=AUTHORITATIVE_REPOSITORY,
+            role="backend",
+        )
+    except ReleaseAuthorityError as exc:
+        assert "ai-platform.runtime-subject" in str(exc)
+    else:
+        raise AssertionError("a stale published backend runtime subject must fail closed")
+
+
+def test_frontend_actual_published_compatibility_labels_are_validated():
+    commit = "6" * 40
+    dockerfile = (ROOT / "frontend" / "web" / "Dockerfile").read_text(encoding="utf-8")
+    assert "LABEL ai-platform.source-revision=$AI_PLATFORM_BUILD_COMMIT" in dockerfile
+    labels = _published_image_labels(commit, "frontend")
+
+    release_authority._validate_release_image(
+        {"labels": labels},
+        commit=commit,
+        repository=AUTHORITATIVE_REPOSITORY,
+        role="frontend",
+    )
+    labels["ai-platform.source-revision"] = "7" * 40
+    try:
+        release_authority._validate_release_image(
+            {"labels": labels},
+            commit=commit,
+            repository=AUTHORITATIVE_REPOSITORY,
+            role="frontend",
+        )
+    except ReleaseAuthorityError as exc:
+        assert "ai-platform.source-revision" in str(exc)
+    else:
+        raise AssertionError("a stale published frontend source revision must fail closed")
+
+
+def test_parity_report_rejects_stale_published_compatibility_labels():
+    commit = "8" * 40
+    backend_labels = _published_image_labels(commit, "backend")
+    frontend_labels = _published_image_labels(commit, "frontend")
+    backend_labels["ai-platform.runtime-subject"] = "9" * 40
+    frontend_labels["ai-platform.source-revision"] = "a" * 40
+
+    report = build_parity_report(
+        expected_commit=commit,
+        source={"commit": commit, "dirty": False},
+        images={
+            "backend": {"labels": backend_labels},
+            "frontend": {"labels": frontend_labels},
+        },
+        containers={},
+        runtime={},
+        expected_compose_dir="/srv/ai-platform/releases/commit/deploy/ai-platform",
+        expected_repository=AUTHORITATIVE_REPOSITORY,
+    )
+
+    assert "backend_image_compatibility_commit_mismatch" in report["mismatches"]
+    assert "frontend_image_compatibility_commit_mismatch" in report["mismatches"]
 
 
 def test_parity_report_records_stale_underscore_compatibility_alias():

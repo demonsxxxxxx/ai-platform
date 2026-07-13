@@ -30,6 +30,8 @@ AUTHORITATIVE_REPOSITORY_ALIASES = {
 }
 SECRET_PATH_NAMES = {".env", ".env.local", ".env.production", ".env.development"}
 COMPATIBILITY_IMAGE_COMMIT_LABELS = (
+    "ai-platform.source-revision",
+    "ai-platform.runtime-subject",
     "ai-platform.source_revision",
     "ai-platform.source_commit",
     "ai-platform.runtime_subject",
@@ -87,6 +89,9 @@ def assert_clean_commit(repo_root: Path, requested_commit: str) -> str:
     status = str(_git(repo_root, "status", "--porcelain", "--untracked-files=all"))
     if status.strip():
         raise ReleaseAuthorityError("dirty source is forbidden for release deployment")
+    ignored = _git_paths(repo_root, "ls-files", "--others", "--ignored", "--exclude-standard")
+    if ignored:
+        raise ReleaseAuthorityError("ignored worktree files are forbidden for release deployment")
     return commit
 
 
