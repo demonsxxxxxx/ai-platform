@@ -25,8 +25,12 @@ Issue: `https://github.com/demonsxxxxxx/ai-platform/issues/415`.
   secret/env output, missing public docstring, uncovered primary error path, or
   out-of-scope change. No milestone closes, so guardrails and this Phase record
   replace a changelog or roadmap status change.
-- [ ] Publication: scoped commit, push, draft PR, literal-safe validation
-  evidence, CI readback, and controller review dispatch remain pending.
+- [~] Publication: feature commit
+  `c464cbb2e0b41a5313cd6007dc4fafbe4464f334` is pushed and draft PR
+  `https://github.com/demonsxxxxxx/ai-platform/pull/417` is open. Initial
+  readback found backend and frontend required checks in progress with no
+  review decision. Final-head literal-safe evidence and controller-dispatched
+  independent review remain pending.
 
 ## Implemented Contract
 
