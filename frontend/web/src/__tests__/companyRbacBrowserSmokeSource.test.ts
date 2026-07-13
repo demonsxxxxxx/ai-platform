@@ -6,8 +6,6 @@ import test from "node:test";
 const root = process.cwd();
 const harnessPath = join(root, "scripts/browser-smoke-harness.mjs");
 const scenarioPath = join(root, "scripts/company-rbac-browser-smoke.mjs");
-const agentsPath = join(root, "../..", "AGENTS.md");
-const workflowPath = join(root, "../..", "docs/agent-rules/github-issue-pr-workflow.md");
 
 function read(path: string): string {
   return readFileSync(path, "utf8");
@@ -100,21 +98,11 @@ test("ci verification includes the company smoke source contract", () => {
   );
 });
 
-test("evidence sizing preserves explicit high-risk design triggers", () => {
-  const guidance = [read(agentsPath), read(workflowPath)].join("\n");
+test("company source contract reads only packaged frontend inputs", () => {
+  const source = read(join(root, "src/__tests__/companyRbacBrowserSmokeSource.test.ts"));
+  const setup = source.split('test("company source contract reads only packaged frontend inputs"')[0];
 
-  for (const trigger of [
-    "security",
-    "auth",
-    "tenant isolation",
-    "release",
-    "deployment",
-    "runtime",
-  ]) {
-    assert.match(
-      guidance,
-      new RegExp(`Create a separate design for[\\s\\S]{0,160}${trigger}`, "i"),
-      trigger,
-    );
-  }
+  assert.doesNotMatch(setup, /AGENTS\.md/);
+  assert.doesNotMatch(setup, /docs\/agent-rules/);
+  assert.doesNotMatch(setup, /agentsPath|workflowPath/);
 });

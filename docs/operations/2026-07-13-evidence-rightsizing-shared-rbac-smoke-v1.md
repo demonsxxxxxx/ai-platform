@@ -37,6 +37,13 @@ Status: `PR ready`
   tests passed `4/4`, frontend policy/source tests passed `12/12`, compile,
   lint (0 errors; 13 existing warnings), TypeScript, and `ci:verify` passed.
   The isolated mock smoke again passed four cases with no new profile retained.
+- [x] Phase 7: revision-109 addressed the exact packaged-image CI RED from
+  Actions run `29261978319`: the frontend source contract no longer reads
+  repo-root governance documents, while backend required now enforces the same
+  bounded separate-design trigger assertion. Frontend source tests passed `7/7`;
+  backend CI workflow tests passed `3/3`; compile, lint (0 errors; 13 existing
+  warnings), TypeScript, diff, and sensitive-marker checks passed. No browser,
+  Docker, 211, or product behavior was used or changed in this phase.
 
 ## Evidence Boundary
 
