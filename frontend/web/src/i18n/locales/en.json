@@ -1330,6 +1330,9 @@
       "noTools": "No tools found",
       "roleCount": "{{count}} roles",
       "roleQuotaCount": "Role quotas",
+      "statusLabel": "Service status",
+      "statusEnabled": "Running",
+      "statusDisabled": "Disabled",
       "system": "System",
       "systemDisabled": "System Disabled",
       "toolToggleFailed": "Failed to toggle tool",
@@ -1352,6 +1355,11 @@
     "exportToJSON": "Export to JSON",
     "featureDisabled": "MCP feature is disabled. Please contact administrator to enable it.",
     "form": {
+      "allowedDepartments": "Allowed departments",
+      "allowedDepartmentsDescription": "Comma-separated department IDs that can access this server.",
+      "allowedDepartmentsPlaceholder": "engineering, finance",
+      "connectionReentry": "Connection details are write-only. Re-enter the URL, headers, sandbox command, and environment keys when applicable; omitted values are cleared on update.",
+      "removeRole": "Remove role {{role}}",
       "add": "Add",
       "allRoles": "All roles (no restriction)",
       "allowedRoles": "Allowed Roles",
@@ -1398,6 +1406,20 @@
       },
       "valuePlaceholder": "value",
       "weeklyLimit": "Weekly limit"
+    },
+    "admin": {
+      "addServer": "Add MCP server",
+      "addFirstServer": "Add your first MCP server",
+      "directorySummary": "Authorized directory",
+      "permissionSummary": "Only servers authorized for the current account are shown.",
+      "lifecycleSummary": "Create, edit, enable, disable, and delete are administrator-governed.",
+      "credentialsSummary": "Connection configuration is write-only and never displayed in the directory.",
+      "editServer": "Edit MCP server",
+      "enableServer": "Enable MCP server",
+      "disableServer": "Disable MCP server",
+      "deleteServer": "Delete MCP server",
+      "deleteConfirmation": "Delete {{name}}? This action cannot be undone."
+      ,"operationFailed": "The operation could not be completed. Please check the configuration and try again.", "createSuccess": "MCP server created.", "updateSuccess": "MCP server updated.", "deleteSuccess": "MCP server deleted.", "enableSuccess": "MCP server enabled.", "disableSuccess": "MCP server disabled."
     },
     "importFromJSON": "Import from JSON",
     "importServers": "Import MCP Servers",

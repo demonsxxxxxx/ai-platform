@@ -22,6 +22,7 @@ export function RoleSelector({ selectedRoles, onChange }: RoleSelectorProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState("");
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -70,24 +71,43 @@ export function RoleSelector({ selectedRoles, onChange }: RoleSelectorProps) {
     }
   };
 
-  const removeRole = (name: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const removeRole = (name: string) => {
     onChange(selectedRoles.filter((r) => r !== name));
+  };
+
+  const closeDropdown = (restoreFocus = false) => {
+    setIsOpen(false);
+    setSearch("");
+    if (restoreFocus) triggerRef.current?.focus();
+  };
+
+  const handleTriggerKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+  ) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setIsOpen(true);
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeDropdown();
+    }
+  };
+
+  const handleDropdownKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeDropdown(true);
+    }
   };
 
   return (
     <div ref={dropdownRef} className="relative">
-      {/* Selected roles as chips */}
-      <div
-        onClick={() => setIsOpen(!isOpen)}
-        className="enterprise-form-input flex min-h-[38px] cursor-pointer flex-wrap items-center gap-1 px-2 py-1.5"
-      >
-        {selectedRoles.length === 0 ? (
-          <span className="text-xs text-[var(--theme-text-secondary)]">
-            {loading ? "..." : t("mcp.form.allRoles")}
-          </span>
-        ) : (
-          selectedRoles.map((name) => (
+      <div className="enterprise-form-input flex min-h-[38px] flex-wrap items-center gap-1 px-2 py-1.5">
+        {selectedRoles.map((name) => (
             <span
               key={name}
               className="es-chip rounded-md text-xs"
@@ -96,26 +116,51 @@ export function RoleSelector({ selectedRoles, onChange }: RoleSelectorProps) {
               {name}
               <button
                 type="button"
-                onClick={(e) => removeRole(name, e)}
+                data-mcp-role-chip-remove
+                onClick={() => removeRole(name)}
                 className="btn-icon ml-0.5 h-5 w-5 p-0"
-                aria-label={t("mcp.form.clearAll")}
+                aria-label={t("mcp.form.removeRole", { role: name })}
               >
                 <X size={12} />
               </button>
             </span>
-          ))
-        )}
-        <ChevronDown
-          size={14}
-          className={`ml-auto text-[var(--theme-text-secondary)] transition-transform ${
-            isOpen ? "rotate-180" : ""
-          }`}
-        />
+        ))}
+        <button
+          ref={triggerRef}
+          type="button"
+          data-mcp-role-selector-trigger
+          onClick={() => setIsOpen((open) => !open)}
+          onKeyDown={handleTriggerKeyDown}
+          aria-expanded={isOpen}
+          aria-controls="mcp-role-options"
+          aria-haspopup="dialog"
+          aria-label={t("mcp.form.allowedRoles")}
+          className="flex min-h-8 min-w-9 flex-1 items-center gap-2 text-left text-xs text-[var(--theme-text-secondary)]"
+        >
+          {selectedRoles.length === 0 ? (
+            <span>{loading ? "..." : t("mcp.form.allRoles")}</span>
+          ) : (
+            <span className="sr-only">{t("mcp.form.allowedRoles")}</span>
+          )}
+          <ChevronDown
+            size={14}
+            className={`ml-auto shrink-0 transition-transform ${
+              isOpen ? "rotate-180" : ""
+            }`}
+          />
+        </button>
       </div>
 
       {/* Dropdown */}
       {isOpen && (
-        <div className="enterprise-select-dropdown absolute z-10 mt-1 w-full">
+        <div
+          id="mcp-role-options"
+          role="dialog"
+          aria-modal="false"
+          aria-label={t("mcp.form.allowedRoles")}
+          onKeyDown={handleDropdownKeyDown}
+          className="enterprise-select-dropdown absolute z-10 mt-1 w-full"
+        >
           {/* Search */}
           <div className="border-b border-[var(--theme-border)] p-2">
             <div className="flex items-center gap-1.5 rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 dark:bg-stone-900">
@@ -135,7 +180,8 @@ export function RoleSelector({ selectedRoles, onChange }: RoleSelectorProps) {
           </div>
 
           {/* Options */}
-          <div className="max-h-48 overflow-y-auto p-1">
+          <fieldset className="max-h-48 overflow-y-auto p-1">
+            <legend className="sr-only">{t("mcp.form.allowedRoles")}</legend>
             {loading ? (
               <div className="py-3 text-center text-xs text-[var(--theme-text-secondary)]">
                 ...
@@ -178,7 +224,7 @@ export function RoleSelector({ selectedRoles, onChange }: RoleSelectorProps) {
                 </label>
               ))
             )}
-          </div>
+          </fieldset>
 
           {selectedRoles.length > 0 && (
             <div className="border-t border-[var(--theme-border)] p-2">

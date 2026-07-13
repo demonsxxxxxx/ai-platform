@@ -1331,6 +1331,9 @@
       "noTools": "未发现工具",
       "roleCount": "{{count}} 个角色",
       "roleQuotaCount": "角色配额",
+      "statusLabel": "服务状态",
+      "statusEnabled": "运行中",
+      "statusDisabled": "已停用",
       "system": "系统",
       "systemDisabled": "系统禁用",
       "toolToggleFailed": "切换工具失败",
@@ -1353,6 +1356,11 @@
     "exportToJSON": "导出为 JSON",
     "featureDisabled": "MCP 功能已禁用，请联系管理员启用。",
     "form": {
+      "allowedDepartments": "允许的部门",
+      "allowedDepartmentsDescription": "使用逗号分隔可访问此服务器的部门 ID。",
+      "allowedDepartmentsPlaceholder": "engineering, finance",
+      "connectionReentry": "连接配置仅可写入。更新时请按需重新输入 URL、HTTP 头、沙箱命令和环境变量键；未提交的值将被清除。",
+      "removeRole": "移除角色 {{role}}",
       "add": "添加",
       "allRoles": "所有角色（无限制）",
       "allowedRoles": "允许的角色",
@@ -1399,6 +1407,20 @@
       },
       "valuePlaceholder": "值",
       "weeklyLimit": "每周限制"
+    },
+    "admin": {
+      "addServer": "添加 MCP 服务器",
+      "addFirstServer": "添加第一个 MCP 服务器",
+      "directorySummary": "已授权目录",
+      "permissionSummary": "仅显示当前账号获准使用的服务器。",
+      "lifecycleSummary": "创建、编辑、启停和删除由管理员权限控制。",
+      "credentialsSummary": "连接配置只写入，不会在目录中显示。",
+      "editServer": "编辑 MCP 服务器",
+      "enableServer": "启用 MCP 服务器",
+      "disableServer": "停用 MCP 服务器",
+      "deleteServer": "删除 MCP 服务器",
+      "deleteConfirmation": "要删除 {{name}} 吗？此操作无法撤销。"
+      ,"operationFailed": "操作未完成，请检查配置后重试。", "createSuccess": "MCP 服务器已创建。", "updateSuccess": "MCP 服务器已更新。", "deleteSuccess": "MCP 服务器已删除。", "enableSuccess": "MCP 服务器已启用。", "disableSuccess": "MCP 服务器已停用。"
     },
     "importFromJSON": "从 JSON 导入",
     "importServers": "导入 MCP 服务器",

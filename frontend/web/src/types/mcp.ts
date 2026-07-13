@@ -54,6 +54,7 @@ export interface MCPServerCreate {
   env_keys?: string[];
   allowed_roles?: string[];
   role_quotas?: Record<string, MCPRoleQuota>;
+  department_ids?: string[];
 }
 
 // MCP Server Update Request
@@ -66,6 +67,7 @@ export interface MCPServerUpdate {
   env_keys?: string[];
   allowed_roles?: string[];
   role_quotas?: Record<string, MCPRoleQuota>;
+  department_ids?: string[];
 }
 
 // MCP Toggle Response

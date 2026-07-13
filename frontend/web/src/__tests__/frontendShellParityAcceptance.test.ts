@@ -1261,7 +1261,10 @@ test("mcp workbench route exposes the same frontend governance state machine as 
   assert.match(mcpState, /enabled:\s*canManageMcp/);
   assert.doesNotMatch(mcpPanel, /data-frontend-governance-state="ready"/);
   assert.doesNotMatch(mcpPanel, /hasPermission:\s*canReadMcp/);
-  assert.doesNotMatch(mcpPanel, /createServer|updateServer|deleteServer|toggleServer|promoteServer|demoteServer/);
+  assert.match(mcpPanel, /canManageMcp && !mcpGovernance\.governedUnavailable/);
+  assert.match(mcpPanel, /data-mcp-admin-controls/);
+  assert.match(mcpPanel, /createServer|updateServer|deleteServer|toggleServer/);
+  assert.doesNotMatch(mcpPanel, /promoteServer|demoteServer/);
 });
 
 test("skills and marketplace clients use only PR177 public contracts", () => {
