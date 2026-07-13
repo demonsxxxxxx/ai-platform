@@ -12,7 +12,6 @@ PYTEST_COMMAND = (
     "tests/test_release_authority.py "
     "tests/test_runtime_launch_script.py "
     "tests/test_source_authority_docs.py "
-    "tests/test_governance_readiness.py "
     "-q --basetemp .pytest-tmp"
 )
 
@@ -35,6 +34,7 @@ def test_frontend_ci_workflow_enforces_projection_audit_build_and_traceability()
     assert "corepack pnpm install --frozen-lockfile" in workflow
     assert "python -m pip install pytest pyyaml" in workflow
     assert PYTEST_COMMAND in workflow
+    assert "tests/test_governance_readiness.py" not in workflow
     assert "python tools/deploy_frontend_static.py --help" in workflow
     assert "corepack pnpm run ci:verify" in workflow
     assert "python tools/frontend_release_traceability.py --format json" in workflow

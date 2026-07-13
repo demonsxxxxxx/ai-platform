@@ -52,6 +52,13 @@ Status: `PR ready`
   `ci:verify` value and those exact steps; the focused local contracts passed
   `21/21`. Fresh GitHub Actions logs remain required after the follow-up push
   before claiming the CI repair is ready for re-review.
+- [x] Phase 9: revision-113 moved the unchanged governance-readiness CLI test
+  from the dependency-light frontend selected suite to backend required, which
+  already installs the project dependency set. Source contracts require that
+  ownership, prohibit frontend duplication, and retain the revision-112
+  `pytest pyyaml` install plus split pytest/helper steps. Focused local
+  contracts, including governance readiness, passed `28/28`. Fresh frontend
+  and backend Actions logs remain required after the follow-up push.
 
 ## Evidence Boundary
 

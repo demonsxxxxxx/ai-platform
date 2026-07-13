@@ -27,7 +27,6 @@ EXPECTED_WORKFLOW_PYTEST = (
     "tests/test_release_authority.py "
     "tests/test_runtime_launch_script.py "
     "tests/test_source_authority_docs.py "
-    "tests/test_governance_readiness.py "
     "-q --basetemp .pytest-tmp"
 )
 
@@ -52,6 +51,7 @@ def test_frontend_release_traceability_records_ci_contract_without_local_paths()
     assert "corepack pnpm run ci:verify" in trace["workflow"]["enforced_commands"]
     assert EXPECTED_PYTHON_DEPENDENCIES in trace["workflow"]["enforced_commands"]
     assert EXPECTED_WORKFLOW_PYTEST in trace["workflow"]["enforced_commands"]
+    assert "tests/test_governance_readiness.py" not in EXPECTED_WORKFLOW_PYTEST
     assert "python tools/deploy_frontend_static.py --help" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_release_traceability.py --format json" in trace["workflow"]["enforced_commands"]
     assert "python tools/frontend_packaged_runtime_smoke.py --format json" in trace["workflow"]["enforced_commands"]
