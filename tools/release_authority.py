@@ -13,6 +13,7 @@ import re
 import shlex
 import subprocess
 import tarfile
+import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 from urllib.request import urlopen
@@ -24,6 +25,8 @@ FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 DEFAULT_COMPOSE_RELATIVE_PATH = Path("deploy/ai-platform/docker-compose.yml")
 COMPOSE_PROJECT = "ai-platform-phaseb"
 WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
+WORKER_TMPDIR_EXPANSION_MARKERS = frozenset("*?$`[]{}")
+WORKER_TMPDIR_UNICODE_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
 AUTHORITATIVE_REPOSITORY = "https://github.com/demonsxxxxxx/ai-platform.git"
 AUTHORITATIVE_REPOSITORY_ALIASES = {
     AUTHORITATIVE_REPOSITORY,
@@ -428,18 +431,28 @@ def _existing_release_image(
     return image
 
 
-def _container_record(docker: list[str], name: str) -> dict[str, Any]:
+def _container_inspect_record(
+    docker: list[str],
+    name: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     payload = _docker_json(docker, "container", "inspect", name)[0]
     state = payload.get("State") or {}
-    return {
+    config = payload.get("Config") if isinstance(payload.get("Config"), dict) else {}
+    record = {
         "name": name,
         "image_id": payload.get("Image"),
-        "labels": payload.get("Config", {}).get("Labels") or {},
+        "labels": config.get("Labels") or {},
         "running": state.get("Running") is True,
         "pid": state.get("Pid"),
         "health": (state.get("Health") or {}).get("Status") or "",
         "ports": (payload.get("NetworkSettings") or {}).get("Ports") or {},
     }
+    return record, payload
+
+
+def _container_record(docker: list[str], name: str) -> dict[str, Any]:
+    record, _ = _container_inspect_record(docker, name)
+    return record
 
 
 def _container_file_commit(docker: list[str], name: str, path: str) -> str:
@@ -482,16 +495,9 @@ def _container_json_file(docker: list[str], name: str, path: str) -> dict[str, A
     return json.loads(result.stdout)
 
 
-def _worker_heartbeat_path(docker: list[str], name: str) -> str:
+def _worker_heartbeat_path(inspected: dict[str, Any]) -> str:
     invalid = "worker container TMPDIR metadata is invalid"
-    inspected = _docker_json(docker, "container", "inspect", name)
-    if (
-        not isinstance(inspected, list)
-        or len(inspected) != 1
-        or not isinstance(inspected[0], dict)
-    ):
-        raise ReleaseAuthorityError(invalid)
-    config = inspected[0].get("Config")
+    config = inspected.get("Config")
     if not isinstance(config, dict):
         raise ReleaseAuthorityError(invalid)
     environment = config.get("Env")
@@ -516,13 +522,28 @@ def _worker_heartbeat_path(docker: list[str], name: str) -> str:
             or not PurePosixPath(tmpdir).is_absolute()
             or tmpdir.startswith("//")
             or "\\" in tmpdir
-            or any(ord(character) < 32 or ord(character) == 127 for character in tmpdir)
+            or any(character in WORKER_TMPDIR_EXPANSION_MARKERS for character in tmpdir)
+            or any(
+                unicodedata.category(character) in WORKER_TMPDIR_UNICODE_CATEGORIES
+                for character in tmpdir
+            )
             or ".." in PurePosixPath(tmpdir).parts
             or posixpath.normpath(tmpdir) != tmpdir
         )
         if invalid_path:
             raise ReleaseAuthorityError(invalid)
     return str(PurePosixPath(tmpdir) / WORKER_HEARTBEAT_FILENAME)
+
+
+def _read_worker_heartbeat(
+    docker: list[str],
+    name: str,
+    path: str,
+) -> dict[str, Any]:
+    try:
+        return _container_json_file(docker, name, path)
+    except (OSError, subprocess.CalledProcessError, json.JSONDecodeError):
+        raise ReleaseAuthorityError("worker runtime heartbeat read failed") from None
 
 
 def _container_process_alive(docker: list[str], name: str, pid: Any) -> bool:
@@ -567,10 +588,14 @@ def collect_live_parity(
         "backend": _image_record(docker, refs["backend"]),
         "frontend": _image_record(docker, refs["frontend"]),
     }
+    worker_name = "ai-platform-worker"
+    api_container = _container_record(docker, "ai-platform-api")
+    worker_container, worker_inspect = _container_inspect_record(docker, worker_name)
+    frontend_container = _container_record(docker, "ai-platform-frontend")
     containers = {
-        "api": _container_record(docker, "ai-platform-api"),
-        "worker": _container_record(docker, "ai-platform-worker"),
-        "frontend": _container_record(docker, "ai-platform-frontend"),
+        "api": api_container,
+        "worker": worker_container,
+        "frontend": frontend_container,
     }
     api_health = _http_json(_published_loopback_url(containers["api"], "8020/tcp", "/api/ai/health"))
     frontend_provenance = _http_json(
@@ -586,11 +611,10 @@ def collect_live_parity(
         raise ReleaseAuthorityError("frontend provenance path mismatch")
     if frontend_provenance.get("git", {}).get("dirty") is not False:
         raise ReleaseAuthorityError("frontend provenance is dirty")
-    worker_name = "ai-platform-worker"
-    worker_heartbeat = _container_json_file(
+    worker_heartbeat = _read_worker_heartbeat(
         docker,
         worker_name,
-        _worker_heartbeat_path(docker, worker_name),
+        _worker_heartbeat_path(worker_inspect),
     )
     _validate_worker_runtime_heartbeat(
         worker_heartbeat,
