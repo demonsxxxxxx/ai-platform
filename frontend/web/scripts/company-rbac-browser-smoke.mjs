@@ -21,10 +21,8 @@ const evidenceDir = resolve(
 );
 const timeoutMs = 30_000;
 let currentStage = "initializing";
-const adminItems = ["channels", "agents", "models"];
+const adminItems = ["models"];
 const adminMenuPaths = [
-  "/channels",
-  "/agents",
   "/models",
   "/users",
   "/settings",
@@ -127,11 +125,6 @@ function mockBootstrapSource(isAdmin) {
         count: 1, enabled_count: 1, default_model_id: "synthetic-model",
       });
       if (url.pathname === "/api/auth/profile") return json({ metadata: {} });
-      if (url.pathname === "/agents") return json({
-        agents: [{ id: "general-agent", name: "General Agent", description: "Synthetic", options: {} }],
-        default_agent: "general-agent", allowed_model_ids: ["synthetic-model"],
-      });
-      if (url.pathname.includes("persona")) return json({ presets: [], total: 0, skip: 0, limit: 12, available_tags: [] });
       if (url.pathname.includes("session")) return json({ sessions: [], total: 0, runs: [], events: [] });
       if (url.pathname.includes("notification")) return json([]);
       if (url.pathname.includes("mcp")) return json({ servers: [] });
@@ -253,7 +246,7 @@ async function runCase(role, viewportName, viewport) {
       `${role}-${viewportName}`,
     );
     const managementNavigationOk = isAdmin
-      ? Math.max(navigation.railCount, navigation.panelCount) === 3
+      ? Math.max(navigation.railCount, navigation.panelCount) === 1
       : navigation.railCount === 0 && navigation.panelCount === 0;
     const ok =
       managementNavigationOk &&

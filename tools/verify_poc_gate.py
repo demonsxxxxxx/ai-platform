@@ -34,7 +34,7 @@ DEFAULT_WORKER_CONTAINER = "ai-platform-worker"
 DEFAULT_POSTGRES_CONTAINER = "ai-platform-postgres"
 DEFAULT_POSTGRES_USER = "ai_platform"
 DEFAULT_POSTGRES_DB = "ai_platform"
-REQUIRED_UI_PERMISSIONS = {"agent:use", "artifact:download", "agent:admin", "model:admin", "settings:manage", "admin:status"}
+REQUIRED_UI_PERMISSIONS = {"agent:use", "artifact:download", "model:admin", "settings:manage", "admin:status"}
 RUNTIME_ENV_ALLOWLIST = frozenset(
     {
         "CLAUDE_AGENT_SDK_ENABLED",

@@ -12,7 +12,6 @@ function read(path: string): string {
 test("post-login projection pages no longer cite closed backend gap issues", () => {
   const sources = [
     read("src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
-    read("src/components/persona/PersonaWorkbenchPanel.tsx"),
     read("src/i18n/locales/zh.json"),
     read("src/i18n/locales/en.json"),
   ].join("\n");
@@ -20,7 +19,7 @@ test("post-login projection pages no longer cite closed backend gap issues", () 
   assert.doesNotMatch(sources, /#229|#233|backend issue #229|后端 issue #229/i);
   assert.doesNotMatch(
     sources,
-    /等待 revealed files 投影|Waiting for revealed files projection|等待 persona preset 投影|Waiting for persona preset projection/,
+    /等待 revealed files 投影|Waiting for revealed files projection/,
   );
   assert.doesNotMatch(
     sources,

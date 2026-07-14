@@ -62,8 +62,6 @@ import type {
   AgentOption,
   MessageAttachment,
   ConnectionStatus,
-  PersonaPreset,
-  PersonaPresetSnapshot,
 } from "../../../types";
 import type { SubmissionOutcome } from "../../../hooks/useAgent/types";
 import type {
@@ -125,44 +123,9 @@ interface ChatViewProps {
   enabledSkillsCount: number;
   totalSkillsCount: number;
   enableSkills: boolean;
-  personaPresets: PersonaPreset[];
-  personaPresetsTotal: number;
-  personaPresetsPage: number;
-  onPersonaPresetsPageChange: (page: number) => void;
-  onPersonaPresetsSearchChange: (query: string) => void;
-  onPersonaPresetsTagChange: (tag: string | null) => void;
-  selectedPersonaPresetId: string | null;
-  selectedPersonaName: string | null;
-  selectedPersonaSnapshot: PersonaPresetSnapshot | null;
-  personaPresetsLoading: boolean;
-  personaPresetsMutating: boolean;
-  onUsePersonaPreset: (
-    preset: PersonaPreset,
-  ) => Promise<PersonaPresetSnapshot | null>;
-  onTogglePersonaPreference: (
-    preset: PersonaPreset,
-    preference: { is_favorite?: boolean; is_pinned?: boolean },
-  ) => Promise<void>;
-  onCopyPersonaPreset: (preset: PersonaPreset) => Promise<void>;
-  onSavePersonaPreset: (
-    preset: PersonaPreset | null,
-    data: {
-      name: string;
-      description: string;
-      system_prompt: string;
-      tags: string[];
-      skill_names: string[];
-    },
-  ) => Promise<void>;
-  onClearPersonaPreset: () => void;
-  canManagePersonaPresets: boolean;
   agentOptions: Record<string, AgentOption>;
   agentOptionValues: Record<string, boolean | string | number>;
   onToggleAgentOption: (key: string, value: boolean | string | number) => void;
-  // Agent mode selector
-  agents: { id: string; name: string; description: string }[];
-  currentAgent: string;
-  onSelectAgent: (id: string) => void;
   availableModels: ModelOption[];
   currentModelId: string;
   onSelectModel: (modelId: string, modelValue: string) => void;
@@ -223,28 +186,9 @@ export function ChatView({
   enabledSkillsCount,
   totalSkillsCount,
   enableSkills,
-  personaPresets,
-  personaPresetsTotal,
-  personaPresetsPage,
-  onPersonaPresetsPageChange,
-  onPersonaPresetsSearchChange,
-  onPersonaPresetsTagChange,
-  selectedPersonaPresetId,
-  selectedPersonaName,
-  personaPresetsLoading,
-  personaPresetsMutating,
-  onUsePersonaPreset,
-  onTogglePersonaPreference,
-  onCopyPersonaPreset,
-  onSavePersonaPreset,
-  onClearPersonaPreset,
-  canManagePersonaPresets,
   agentOptions,
   agentOptionValues,
   onToggleAgentOption,
-  agents,
-  currentAgent,
-  onSelectAgent,
   availableModels,
   currentModelId,
   onSelectModel,
@@ -350,11 +294,6 @@ export function ChatView({
     return latestMessage ? createMessageAnchorId(latestMessage.id) : null;
   }, [messages, visibleRange]);
 
-  const currentPersonaAvatar = useMemo(() => {
-    const preset = personaPresets.find((p) => p.id === selectedPersonaPresetId);
-    return preset?.avatar ?? null;
-  }, [personaPresets, selectedPersonaPresetId]);
-
   const handleOutlineNavigate = useCallback(
     (anchorId: string, messageIndex: number) => {
       virtuosoRef.current?.scrollToIndex({
@@ -393,7 +332,6 @@ export function ChatView({
           items={outlineItems}
           activeId={activeOutlineId}
           onNavigate={handleOutlineNavigate}
-          personaAvatar={currentPersonaAvatar}
         />
       ),
     });
@@ -402,7 +340,6 @@ export function ChatView({
     activeOutlineId,
     handleOutlineNavigate,
     t,
-    currentPersonaAvatar,
   ]);
 
   useEffect(() => {
@@ -645,8 +582,6 @@ export function ChatView({
         sessionId={sessionId ?? undefined}
         runId={currentRunId ?? undefined}
         isLastMessage={index === messages.length - 1}
-        personaAvatar={currentPersonaAvatar}
-        personaName={selectedPersonaName}
         activePreview={activePreview}
         latestAutoPreview={latestAutoPreview}
         onOpenPreview={handleOpenPreview}
@@ -657,8 +592,6 @@ export function ChatView({
       sessionId,
       currentRunId,
       messages.length,
-      currentPersonaAvatar,
-      selectedPersonaName,
       activePreview,
       latestAutoPreview,
       handleOpenPreview,
@@ -691,28 +624,9 @@ export function ChatView({
     enabledSkillsCount,
     totalSkillsCount,
     enableSkills,
-    personaPresets,
-    personaPresetsTotal,
-    personaPresetsPage,
-    onPersonaPresetsPageChange,
-    onPersonaPresetsSearchChange,
-    onPersonaPresetsTagChange,
-    selectedPersonaPresetId,
-    selectedPersonaName,
-    personaPresetsLoading,
-    personaPresetsMutating,
-    onUsePersonaPreset,
-    onTogglePersonaPreference,
-    onCopyPersonaPreset,
-    onSavePersonaPreset,
-    onClearPersonaPreset,
-    canManagePersonaPresets,
     agentOptions,
     agentOptionValues,
     onToggleAgentOption,
-    agents,
-    currentAgent,
-    onSelectAgent,
     availableModels,
     currentModelId,
     onSelectModel,

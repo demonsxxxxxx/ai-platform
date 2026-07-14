@@ -10,7 +10,6 @@ from app.routes.admin_runs import router as admin_runs_router
 from app.routes.admin_skills import router as admin_skills_router
 from app.routes.admin_tool_policies import router as admin_tool_policies_router
 from app.routes.auth import router as auth_router
-from app.routes.channels import router as channels_router
 from app.routes.chat import router as chat_router
 from app.routes.capability_distributions import router as capability_distributions_router
 from app.routes.context import router as context_router
@@ -74,7 +73,6 @@ def create_app() -> FastAPI:
     app.include_router(capability_distributions_router, prefix="/api")
     app.include_router(skills_marketplace_router, prefix="/api")
     app.include_router(frontend_projections_router, prefix="/api")
-    app.include_router(channels_router, prefix="/api")
     app.include_router(role_governance_router, prefix="/api")
     app.include_router(workbench_projections_router, prefix="/api")
     app.include_router(lambchat_compat_router, prefix="/api")

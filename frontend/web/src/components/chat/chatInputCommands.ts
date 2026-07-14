@@ -4,7 +4,6 @@ export type ComposerCommandName =
   | "menu"
   | "skill"
   | "mcp"
-  | "agent"
   | "model"
   | "file"
   | "context";
@@ -19,7 +18,6 @@ export type ComposerCommandPanel =
 export interface ComposerCommandAvailability {
   skills: boolean;
   tools: boolean;
-  agents: boolean;
   models: boolean;
   files: boolean;
   context: boolean;
@@ -49,7 +47,6 @@ export const COMMAND_PREFIX_PANEL: Record<string, Exclude<FeaturePanel, null>> =
 export interface CommandPanelAvailability {
   skills: boolean;
   tools: boolean;
-  agents?: boolean;
   models?: boolean;
   files?: boolean;
   context?: boolean;
@@ -59,7 +56,6 @@ const commandPanelByName: Record<ComposerCommandName, ComposerCommandPanel> = {
   menu: "command-menu",
   skill: "skills",
   mcp: "tools",
-  agent: "agent",
   model: "model",
   file: "file",
   context: "context",
@@ -71,7 +67,6 @@ const commandAvailabilityKey: Record<
 > = {
   skill: "skills",
   mcp: "tools",
-  agent: "agents",
   model: "models",
   file: "files",
   context: "context",
@@ -80,7 +75,6 @@ const commandAvailabilityKey: Record<
 const panelCommandNames = new Set<ComposerCommandName>([
   "skill",
   "mcp",
-  "agent",
   "model",
   "context",
 ]);
@@ -108,12 +102,6 @@ const slashCommandItems: Array<
     panel: "tools",
     labelKey: "composerCommand.mcp.label",
     descriptionKey: "composerCommand.mcp.description",
-  },
-  {
-    command: "agent",
-    panel: "agent",
-    labelKey: "composerCommand.agent.label",
-    descriptionKey: "composerCommand.agent.description",
   },
   {
     command: "model",
@@ -153,7 +141,6 @@ function normalizeAvailability(
   return {
     skills: availability.skills,
     tools: availability.tools,
-    agents: availability.agents ?? true,
     models: availability.models ?? false,
     files: availability.files ?? false,
     context: availability.context ?? false,
@@ -266,7 +253,6 @@ export function resolveComposerCommandDraft(
       ? "command-menu"
       : command.panel === "skills" ||
           command.panel === "tools" ||
-          command.panel === "agent" ||
           command.panel === "model" ||
           command.panel === "context"
         ? command.panel

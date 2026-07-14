@@ -141,10 +141,6 @@ export function ShortcutDialog({
             keys={["Ctrl", "K"]}
             macKeys={["⌘", "K"]}
           />
-          <ShortcutRow
-            label={t("shortcut.selectPersona", "选择角色")}
-            keys={["@"]}
-          />
           <div
             className="pt-2 pb-2 mt-1 text-[11px] font-medium uppercase tracking-wider"
             style={{

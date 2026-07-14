@@ -411,14 +411,8 @@ export const SessionSidebar = forwardRef<
               onOpenLaunchpad={() => navigate("/apps")}
               onOpenSkills={() => navigate("/skills")}
               onOpenMcp={() => navigate("/mcp")}
-              onOpenChannels={() => navigateWorkbenchItem("channels")}
-              onOpenAgents={() => navigateWorkbenchItem("agents")}
               onOpenModels={() => navigateWorkbenchItem("models")}
-              onOpenPersona={() => navigateWorkbenchItem("persona")}
               onOpenFiles={() => navigateWorkbenchItem("files")}
-              onOpenAgentWorkspace={() =>
-                navigateWorkbenchItem("agent-workspace")
-              }
               recentChatsBtnRef={desktopRecentChatsBtnRef}
               onShowProfile={onShowProfile!}
             />
@@ -456,12 +450,8 @@ export const SessionSidebar = forwardRef<
           onOpenLaunchpad={() => navigate("/apps")}
           onOpenSkills={() => navigate("/skills")}
           onOpenMcp={() => navigate("/mcp")}
-          onOpenChannels={() => navigateWorkbenchItem("channels")}
-          onOpenAgents={() => navigateWorkbenchItem("agents")}
           onOpenModels={() => navigateWorkbenchItem("models")}
-          onOpenPersona={() => navigateWorkbenchItem("persona")}
           onOpenFiles={() => navigateWorkbenchItem("files")}
-          onOpenAgentWorkspace={() => navigateWorkbenchItem("agent-workspace")}
           recentChatsBtnRef={mobileRecentChatsBtnRef}
           onShowProfile={onShowProfile!}
         />

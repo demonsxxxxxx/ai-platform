@@ -29,6 +29,7 @@ export { authApi, buildOAuthLoginUrl } from "./api/auth";
 export { userApi } from "./api/user";
 export { roleApi } from "./api/role";
 export {
+  DEFAULT_CHAT_AGENT_ID,
   isChatStreamNeedsConfirmation,
   sessionApi,
   type BackendSession,
@@ -38,11 +39,8 @@ export {
   type CapabilitySuggestion,
   type SessionListResponse,
 } from "./api/session";
-export { agentApi } from "./api/agent";
-export { agentConfigApi } from "./api/agent_config";
 export { modelApi } from "./api/model";
 export { skillApi } from "./api/skill";
-export { personaPresetApi } from "./api/personaPreset";
 export { settingsApi } from "./api/settings";
 export { workbenchApi } from "./api/workbench";
 export { mcpApi } from "./api/mcp";

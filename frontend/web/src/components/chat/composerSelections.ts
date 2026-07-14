@@ -1,7 +1,6 @@
 export type ComposerSelectionKind =
   | "skill"
   | "mcp"
-  | "agent"
   | "model"
   | "file"
   | "context";

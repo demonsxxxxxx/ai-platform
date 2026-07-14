@@ -2,8 +2,17 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { APP_ROUTE_PATHS } from "../appRouteManifest.ts";
 
 const root = process.cwd();
+
+function readApp(): string {
+  let source = readFileSync(join(root, "src/App.tsx"), "utf8");
+  for (const [id, path] of Object.entries(APP_ROUTE_PATHS)) {
+    source = source.replaceAll(`path={APP_ROUTE_PATHS.${id}}`, `path="${path}"`);
+  }
+  return source;
+}
 
 test("frontend shell parity components are registered", () => {
   const files = [
@@ -12,7 +21,6 @@ test("frontend shell parity components are registered", () => {
     "src/components/chat/ComposerChips.tsx",
     "src/components/governance/GovernanceAvailabilityBadge.tsx",
     "src/components/workbench/GovernedRouteWorkbench.tsx",
-    "src/components/channels/ChannelImportPanel.tsx",
     "src/components/panels/ModelCatalogPanel.tsx",
     "src/components/share/ShareUnavailableState.tsx",
   ];
@@ -23,7 +31,7 @@ test("frontend shell parity components are registered", () => {
 });
 
 test("app routes expose PRD phase 1B and 1C surfaces", () => {
-  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+  const app = readApp();
   const tabs = readFileSync(
     join(root, "src/components/layout/AppContent/TabContent.tsx"),
     "utf8",
@@ -34,27 +42,21 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
     "/apps",
     "/skills",
     "/mcp",
-    "/persona",
     "/files",
   ]) {
     assert.match(app, new RegExp(`path="${route.replace("/", "\\/")}`));
   }
-  assert.match(app, /path="\/channels\/:channelType\?\/:instanceId\?"/);
 
   assert.match(tabs, /apps:\s*LaunchpadPanel/);
   assert.match(tabs, /skills:\s*SkillsHubPanel/);
   assert.doesNotMatch(tabs, /const MarketplacePanel = lazy/);
   assert.doesNotMatch(tabs, /marketplace:\s*SkillsHubPanel/);
   assert.match(tabs, /mcp:\s*MCPPanel/);
-  assert.match(tabs, /channels:\s*ChannelImportPanel/);
   assert.match(tabs, /models:\s*ModelCatalogPanel/);
   assert.doesNotMatch(tabs, /models:\s*ModelPanel/);
-  assert.doesNotMatch(tabs, /channels:\s*ChannelPanel/);
   assert.doesNotMatch(tabs, /models:\s*QuarantinedLegacyPanel/);
   for (const legacyPath of [
     "src/components/layout/AppContent/QuarantinedLegacyPanel.tsx",
-    "src/components/panels/ChannelPanel.tsx",
-    "src/components/panels/channel/feishu/FeishuPanel.tsx",
     "src/components/panels/ModelPanel/ModelPanel.tsx",
   ]) {
     assert.equal(existsSync(join(root, legacyPath)), false, legacyPath);
@@ -62,14 +64,12 @@ test("app routes expose PRD phase 1B and 1C surfaces", () => {
 });
 
 test("phase 1C primary workbench routes are login reachable and fail closed inside pages", () => {
-  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+  const app = readApp();
 
   for (const route of [
     "/skills",
     "/mcp",
-    "/persona",
     "/files",
-    "/channels/:channelType?/:instanceId?",
   ]) {
     const routePattern = new RegExp(
       `path="${route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,180}<`,
@@ -82,9 +82,6 @@ test("phase 1C primary workbench routes are login reachable and fail closed insi
   }
 
   for (const [route, page] of [
-    ["/users", "UsersPage"],
-    ["/settings", "SettingsPage"],
-    ["/feedback", "FeedbackPage"],
     ["/notifications", "NotificationsPage"],
   ]) {
     const projectionRoutePattern = new RegExp(
@@ -105,14 +102,13 @@ test("phase 1C primary workbench routes are login reachable and fail closed insi
     );
   }
 
-  assert.doesNotMatch(app, /redirectTo="\/chat"/);
   assert.match(app, /function WorkbenchForbiddenPage/);
   assert.doesNotMatch(app, /function PhaseTwoWorkbenchPage/);
   assert.match(app, /routeUnavailable=\{\{/);
 });
 
 test("marketplace route remains a protected compatibility redirect to admin skill management", () => {
-  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+  const app = readApp();
 
   assert.match(
     app,
@@ -122,7 +118,7 @@ test("marketplace route remains a protected compatibility redirect to admin skil
 });
 
 test("roles route remains direct-addressable without loading legacy role management APIs", () => {
-  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+  const app = readApp();
   const authTypes = readFileSync(join(root, "src/types/auth.ts"), "utf8");
   const rolesPanel = readFileSync(
     join(root, "src/components/panels/RolesPanel.tsx"),
@@ -141,7 +137,7 @@ test("roles route remains direct-addressable without loading legacy role managem
     app.match(
       /path="\/roles"[\s\S]*?<RolesPage \/>[\s\S]*?<\/ProtectedRoute>/,
     )?.[0] ?? "";
-  assert.match(rolesRoute, /<ProtectedRoute>/);
+  assert.match(rolesRoute, /<ProtectedRoute requireAdmin redirectTo="\/chat">/);
   assert.doesNotMatch(rolesRoute, /Permission\.ROLE_MANAGE/);
   assert.doesNotMatch(rolesRoute, /fallbackComponent=/);
   assert.doesNotMatch(rolesRoute, /<WorkbenchForbiddenPage/);
@@ -189,18 +185,15 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
   assert.doesNotMatch(sidebar, /navigate\("\/marketplace"\)/);
   assert.match(sidebar, /navigate\("\/mcp"\)/);
   assert.match(sidebar, /navigate\("\/apps"\)/);
-  for (const route of ["/agents", "/models", "/channels"]) {
+  for (const route of ["/models"]) {
     assert.match(sidebar, new RegExp(`navigate\\("${route}"\\)`), route);
   }
   assert.doesNotMatch(sidebar, /navigate\("\/roles"\)/);
-  for (const route of ["/persona", "/files"]) {
+  for (const route of ["/files"]) {
     assert.match(sidebar, new RegExp(`navigate\\("${route}"\\)`), route);
   }
   for (const handler of [
-    "onOpenAgents",
     "onOpenModels",
-    "onOpenChannels",
-    "onOpenPersona",
     "onOpenFiles",
   ]) {
     assert.match(sidebar, new RegExp(handler), handler);
@@ -239,8 +232,6 @@ test("post-login navigation keeps governed MCP entry discoverable without stale 
     );
   }
   for (const route of [
-    "/channels",
-    "/agents",
     "/models",
     "/users",
     "/settings",
@@ -508,294 +499,6 @@ test("authenticated shell chrome avoids legacy playful branding accents", () => 
   assert.match(chrome, /bg-teal-700/);
 });
 
-test("persona and files are governed authenticated workbench pages", () => {
-  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
-  const tabs = readFileSync(
-    join(root, "src/components/layout/AppContent/TabContent.tsx"),
-    "utf8",
-  );
-  const tabTypes = readFileSync(
-    join(root, "src/components/layout/AppContent/types.ts"),
-    "utf8",
-  );
-  const sessionSidebar = readFileSync(
-    join(root, "src/components/panels/SessionSidebar.tsx"),
-    "utf8",
-  );
-  const sidebarList = readFileSync(
-    join(root, "src/components/panels/SidebarParts/SessionListContent.tsx"),
-    "utf8",
-  );
-  const sidebarRail = readFileSync(
-    join(root, "src/components/panels/SidebarParts/SidebarRail.tsx"),
-    "utf8",
-  );
-  const welcome = readFileSync(
-    join(root, "src/components/chat/WelcomePage.tsx"),
-    "utf8",
-  );
-  const inputSelectors = readFileSync(
-    join(root, "src/components/chat/ChatInputSelectors.tsx"),
-    "utf8",
-  );
-  const activeGraph = [
-    app,
-    tabs,
-    sessionSidebar,
-    sidebarList,
-    sidebarRail,
-    welcome,
-    inputSelectors,
-  ].join("\n");
-  const personaWorkbench = readFileSync(
-    join(root, "src/components/persona/PersonaWorkbenchPanel.tsx"),
-    "utf8",
-  );
-  const filesWorkbench = readFileSync(
-    join(root, "src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
-    "utf8",
-  );
-  const fileToolbar = readFileSync(
-    join(root, "src/components/fileLibrary/components/Toolbar.tsx"),
-    "utf8",
-  );
-  const fileDropdown = readFileSync(
-    join(root, "src/components/fileLibrary/components/DropdownShell.tsx"),
-    "utf8",
-  );
-  const fileContextMenu = readFileSync(
-    join(root, "src/components/fileLibrary/components/FileContextMenu.tsx"),
-    "utf8",
-  );
-  const personaSelector = readFileSync(
-    join(root, "src/components/persona/PersonaPresetSelector.tsx"),
-    "utf8",
-  );
-  const personaPreviewSidebar = readFileSync(
-    join(root, "src/components/persona/PersonaPreviewSidebar.tsx"),
-    "utf8",
-  );
-  const sessionPreviewDialog = readFileSync(
-    join(root, "src/components/sidebar/SessionPreviewDialog.tsx"),
-    "utf8",
-  );
-  const sessionMenu = readFileSync(
-    join(root, "src/components/sidebar/SessionMenu.tsx"),
-    "utf8",
-  );
-  const fileCardPreview = readFileSync(
-    join(root, "src/components/fileLibrary/components/FileCardPreview.tsx"),
-    "utf8",
-  );
-  const fileGridCard = readFileSync(
-    join(root, "src/components/fileLibrary/components/GridCard.tsx"),
-    "utf8",
-  );
-  const fileSessionGroup = readFileSync(
-    join(root, "src/components/fileLibrary/components/SessionGroup.tsx"),
-    "utf8",
-  );
-  const personaTagDropdown = readFileSync(
-    join(root, "src/components/persona/PersonaTagFilterDropdown.tsx"),
-    "utf8",
-  );
-  const personaScopeDropdown = readFileSync(
-    join(root, "src/components/persona/PersonaScopeDropdown.tsx"),
-    "utf8",
-  );
-  const zhLocale = readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8");
-
-  for (const [route, page, tab] of [
-    ["/persona", "PersonaPage", "persona"],
-    ["/files", "FilesPage", "files"],
-  ] as const) {
-    assert.match(
-      app,
-      new RegExp(
-        `path="${route}"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,220}<${page} \\/>[\\s\\S]{0,120}<\\/ProtectedRoute>`,
-      ),
-      `${route} should be login reachable inside the authenticated shell`,
-    );
-    assert.match(
-      app,
-      new RegExp(
-        `function ${page}\\(\\)[\\s\\S]{0,260}<AppContent key="${tab}" activeTab="${tab}" \\/>`,
-      ),
-      `${page} should render AppContent with the governed ${tab} tab`,
-    );
-    assert.match(tabTypes, new RegExp(`\\| "${tab}"`));
-  }
-  assert.doesNotMatch(app, /path="\/persona"[\s\S]{0,220}<Navigate to="\/chat" replace \/>/);
-  assert.doesNotMatch(app, /path="\/files"[\s\S]{0,220}<Navigate to="\/chat" replace \/>/);
-  assert.match(activeGraph, /navigate\("\/persona"\)/);
-  assert.match(activeGraph, /navigate\("\/files"\)/);
-  assert.doesNotMatch(activeGraph, /PersonaPlazaPanel|persona:\s*PersonaPlazaPanel/);
-  assert.match(tabs, /const PersonaWorkbenchPanel = lazy/);
-  assert.match(tabs, /const RevealedFilesWorkbenchPanel = lazy/);
-  assert.match(tabs, /persona:\s*PersonaWorkbenchPanel/);
-  assert.match(tabs, /files:\s*RevealedFilesWorkbenchPanel/);
-  assert.match(personaWorkbench, /data-persona-workbench-shell/);
-  assert.match(personaWorkbench, /data-frontend-governance-state=\{governanceState\}/);
-  assert.match(personaWorkbench, /resolveFrontendGovernanceState/);
-  assert.match(personaWorkbench, /WorkbenchStateSurface/);
-  assert.match(personaWorkbench, /personaPresets\.issueReferenceDetail/);
-  assert.match(personaWorkbench, /personaPresets\.recoveryDetail/);
-  assert.match(personaWorkbench, /data-persona-degraded-recovery/);
-  assert.doesNotMatch(personaWorkbench, /personaPresets\.backendGapDetail/);
-  assert.doesNotMatch(personaWorkbench, /details=\{persona\.error \? \[persona\.error\] : undefined\}/);
-  assert.match(filesWorkbench, /data-files-workbench-shell/);
-  assert.match(filesWorkbench, /data-frontend-governance-state=\{governanceState\}/);
-  assert.match(filesWorkbench, /resolveFrontendGovernanceState/);
-  assert.match(filesWorkbench, /WorkbenchStateSurface/);
-  assert.match(filesWorkbench, /fileLibrary\.issueReferenceDetail/);
-  assert.match(filesWorkbench, /fileLibrary\.recoveryDetail/);
-  assert.match(filesWorkbench, /data-files-degraded-recovery/);
-  assert.doesNotMatch(filesWorkbench, /fileLibrary\.backendGapDetail/);
-  assert.doesNotMatch(filesWorkbench, /details=\{filesProjectionError \? \[filesProjectionError\] : undefined\}/);
-  assert.doesNotMatch(activeGraph, /MobileMoreMenuSheet|DesktopMoreMenu/);
-  assert.doesNotMatch(personaSelector, /角色广场/);
-  assert.match(personaSelector, /bg-slate-950\/35/);
-  assert.match(personaSelector, /rounded-t-lg/);
-  assert.match(personaSelector, /sm:rounded-lg/);
-  assert.match(personaSelector, /shadow-\[0_8px_24px_rgba\(18,38,63,0\.12\)\]/);
-  assert.doesNotMatch(personaSelector, /shadow-xl|shadow-2xl/);
-  assert.doesNotMatch(personaSelector, /rounded-xl|rounded-2xl|rounded-3xl/);
-  assert.doesNotMatch(personaSelector, /bg-black\/30/);
-  for (const [name, source] of [
-    ["FileToolbar", fileToolbar],
-    ["FileDropdown", fileDropdown],
-    ["FileContextMenu", fileContextMenu],
-    ["PersonaTagFilterDropdown", personaTagDropdown],
-    ["PersonaScopeDropdown", personaScopeDropdown],
-    ["PersonaPreviewSidebar", personaPreviewSidebar],
-    ["SessionPreviewDialog", sessionPreviewDialog],
-    ["SessionMenu", sessionMenu],
-    ["FileCardPreview", fileCardPreview],
-    ["FileGridCard", fileGridCard],
-    ["FileSessionGroup", fileSessionGroup],
-    ["PersonaWorkbenchPanel", personaWorkbench],
-    ["RevealedFilesWorkbenchPanel", filesWorkbench],
-  ] as const) {
-    assert.doesNotMatch(source, /bg-white(?:\/\d+)?/, name);
-    assert.doesNotMatch(source, /bg-stone-50(?!0)(?:\/\d+)?/, name);
-    assert.doesNotMatch(source, /bg-black\/50|bg-black\/30/, name);
-    assert.doesNotMatch(source, /rounded-xl|rounded-2xl|rounded-3xl/, name);
-    assert.doesNotMatch(source, /shadow-xl|shadow-2xl|\bshadow-lg\b/, name);
-  }
-  for (const [name, source] of [
-    ["FileToolbar", fileToolbar],
-    ["FileDropdown", fileDropdown],
-    ["FileContextMenu", fileContextMenu],
-    ["PersonaTagFilterDropdown", personaTagDropdown],
-    ["PersonaScopeDropdown", personaScopeDropdown],
-    ["PersonaPreviewSidebar", personaPreviewSidebar],
-    ["SessionPreviewDialog", sessionPreviewDialog],
-    ["SessionMenu", sessionMenu],
-    ["FileGridCard", fileGridCard],
-    ["FileSessionGroup", fileSessionGroup],
-  ] as const) {
-    assert.match(source, /var\(--theme-bg-card\)/, name);
-    assert.match(source, /var\(--theme-border\)/, name);
-  }
-  assert.match(fileCardPreview, /var\(--theme-bg-sidebar\)/);
-  assert.match(zhLocale, /"skillManagement":\s*"技能管理"/);
-  assert.doesNotMatch(zhLocale, /"roles":\s*"角色广场"/);
-});
-
-test("persona degraded state does not render a false empty catalog", () => {
-  const personaWorkbench = readFileSync(
-    join(root, "src/components/persona/PersonaWorkbenchPanel.tsx"),
-    "utf8",
-  );
-
-  const degradedReturn = personaWorkbench.match(
-    /if \(governanceState === "degraded"\) \{\s*return \(([\s\S]*?)\);\s*\}/,
-  )?.[1];
-
-  assert.ok(
-    degradedReturn,
-    "persona degraded state should return a dedicated degraded workbench surface before catalog controls",
-  );
-  assert.match(degradedReturn, /WorkbenchStateSurface/);
-  assert.doesNotMatch(degradedReturn, /personaPresets\.empty/);
-  assert.doesNotMatch(degradedReturn, /PersonaPresetCard/);
-  assert.doesNotMatch(degradedReturn, /PersonaEditorModal/);
-  assert.doesNotMatch(degradedReturn, /PersonaScopeDropdown/);
-  assert.doesNotMatch(degradedReturn, /PersonaTagFilterDropdown/);
-  assert.doesNotMatch(degradedReturn, /persona\.handleImport/);
-  assert.doesNotMatch(degradedReturn, /persona\.openModal/);
-  assert.doesNotMatch(degradedReturn, /persona\.paged/);
-});
-
-test("persona and files degraded states hide raw missing-route errors and expose issue recovery", () => {
-  const personaWorkbench = readFileSync(
-    join(root, "src/components/persona/PersonaWorkbenchPanel.tsx"),
-    "utf8",
-  );
-  const filesWorkbench = readFileSync(
-    join(root, "src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
-    "utf8",
-  );
-  const zhLocale = JSON.parse(readFileSync(join(root, "src/i18n/locales/zh.json"), "utf8"));
-  const enLocale = JSON.parse(readFileSync(join(root, "src/i18n/locales/en.json"), "utf8"));
-  const personaDegradedReturn = personaWorkbench.match(
-    /if \(governanceState === "degraded"\) \{\s*return \(([\s\S]*?)\);\s*\}/,
-  )?.[1] ?? "";
-  const filesDegradedReturn = filesWorkbench.match(
-    /if \(governanceState === "degraded"\) \{\s*return \(([\s\S]*?)\);\s*\}/,
-  )?.[1] ?? "";
-
-  for (const [name, source] of [
-    ["PersonaWorkbenchPanel degraded branch", personaDegradedReturn],
-    ["RevealedFilesWorkbenchPanel degraded branch", filesDegradedReturn],
-  ] as const) {
-    assert.doesNotMatch(source, /details=\{[^}]*persona\.error/si, name);
-    assert.doesNotMatch(source, /details=\{[^}]*filesProjectionError/si, name);
-    assert.doesNotMatch(source, /Not Found|Request failed:\s*404|statusText|response\.status/i, name);
-    assert.match(source, /data-(persona|files)-degraded-recovery/, name);
-    assert.match(source, /data-(persona|files)-degraded-contract/, name);
-    assert.match(source, /WorkbenchStateSurface/, name);
-    assert.match(source, /workbenchSurface\.(statusTile|compactPanel)/, name);
-  }
-
-  for (const [locale, copy] of [
-    ["zh", zhLocale],
-    ["en", enLocale],
-  ] as const) {
-    const personaCopy = JSON.stringify({
-      degradedTitle: copy.personaPresets.degradedTitle,
-      degradedDescription: copy.personaPresets.degradedDescription,
-      issueReferenceDetail: copy.personaPresets.issueReferenceDetail,
-      recoveryDetail: copy.personaPresets.recoveryDetail,
-      contractBoundaryDescription: copy.personaPresets.contractBoundaryDescription,
-    });
-    const fileCopy = JSON.stringify({
-      degradedTitle: copy.fileLibrary.degradedTitle,
-      degradedDescription: copy.fileLibrary.degradedDescription,
-      issueReferenceDetail: copy.fileLibrary.issueReferenceDetail,
-      recoveryDetail: copy.fileLibrary.recoveryDetail,
-      contractBoundaryDescription: copy.fileLibrary.contractBoundaryDescription,
-    });
-    assert.equal(copy.personaPresets.backendGapDetail, undefined, `${locale}.personaPresets.backendGapDetail should be removed`);
-    assert.equal(copy.fileLibrary.backendGapDetail, undefined, `${locale}.fileLibrary.backendGapDetail should be removed`);
-    assert.doesNotMatch(copy.fileLibrary.title, /文件库|file library/i, `${locale}.fileLibrary.title`);
-    assert.doesNotMatch(copy.seo.files.title, /文件库|file library/i, `${locale}.seo.files.title`);
-    assert.match(copy.fileLibrary.title, /文件工作台|file workbench/i, `${locale}.fileLibrary.title`);
-    assert.match(copy.seo.files.title, /文件工作台|file workbench/i, `${locale}.seo.files.title`);
-    assert.doesNotMatch(personaCopy, /#229|issue 229|backend issue/i, locale);
-    assert.doesNotMatch(fileCopy, /#229|issue 229|backend issue/i, locale);
-    assert.match(personaCopy, /恢复|recovery|recover|contract/i, locale);
-    assert.match(fileCopy, /恢复|recovery|recover|contract/i, locale);
-    assert.match(personaCopy, /暂时不可用|temporarily unavailable/i, locale);
-    assert.match(fileCopy, /暂时不可用|temporarily unavailable/i, locale);
-    assert.doesNotMatch(personaCopy, /backendGapDetail|后端角色预设投影尚未返回|has not returned a readable directory/i, locale);
-    assert.doesNotMatch(fileCopy, /backendGapDetail|后端文件库投影尚未返回|has not returned a readable directory/i, locale);
-    assert.doesNotMatch(fileCopy, /空文件库|empty file library/i, locale);
-    assert.doesNotMatch(personaCopy, /Not Found|Request failed:\s*404/i, locale);
-    assert.doesNotMatch(fileCopy, /Not Found|Request failed:\s*404/i, locale);
-  }
-});
-
 test("authenticated marketplace pages share the workbench surface tokens", () => {
   const skillsHub = readFileSync(
     join(root, "src/components/panels/SkillsHubPanel.tsx"),
@@ -880,7 +583,6 @@ test("profile modal shares the authenticated workbench visual language", () => {
 
 test("profile secondary tabs and MCP selectors use workbench control tokens", () => {
   const controlFiles = [
-    "src/components/profile/UserAgentPreferencePanel.tsx",
     "src/components/profile/tabs/ProfilePasswordTab.tsx",
     "src/components/profile/tabs/ProfileEnvVarsTab.tsx",
     "src/components/mcp/RoleSelector.tsx",
@@ -977,7 +679,7 @@ test("model catalog route is a governed public-projection workbench page", () =>
 });
 
 test("workbench pages render concrete projection panels instead of thin placeholders", () => {
-  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+  const app = readApp();
   const tabs = readFileSync(
     join(root, "src/components/layout/AppContent/TabContent.tsx"),
     "utf8",
@@ -999,9 +701,6 @@ test("workbench pages render concrete projection panels instead of thin placehol
   assert.match(tabs, /settings:\s*WorkbenchSettingsProjectionPanel/);
   assert.match(tabs, /feedback:\s*WorkbenchFeedbackProjectionPanel/);
   assert.match(tabs, /notifications:\s*WorkbenchNotificationsProjectionPanel/);
-  assert.match(tabs, /const AgentDirectoryPanel = lazy/);
-  assert.match(tabs, /agents:\s*AgentDirectoryPanel/);
-  assert.doesNotMatch(app, /agents:[\s\S]{0,420}titleKey:\s*"workbench\.phaseTwo\.agents\.title"/);
   assert.match(tabs, /import \{ GovernedRouteWorkbench \}/);
   assert.match(tabs, /<GovernedRouteWorkbench/);
   assert.doesNotMatch(
@@ -1034,7 +733,7 @@ test("workbench pages render concrete projection panels instead of thin placehol
 });
 
 test("workbench projection pages consume safe backend contracts instead of phase-two placeholders", () => {
-  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
+  const app = readApp();
   const tabs = readFileSync(
     join(root, "src/components/layout/AppContent/TabContent.tsx"),
     "utf8",
@@ -1057,9 +756,7 @@ test("workbench projection pages consume safe backend contracts instead of phase
   ]) {
     assert.match(
       app,
-      new RegExp(
-        `path="${route}"[\\s\\S]{0,260}<ProtectedRoute>[\\s\\S]{0,220}<${page} \\/>[\\s\\S]{0,120}<\\/ProtectedRoute>`,
-      ),
+      new RegExp(`path="${route}"[\\s\\S]{0,360}<${page} \\/>`),
     );
     assert.match(
       app,
@@ -1139,73 +836,6 @@ test("safe projection locale copy no longer reports backed workbench pages as un
         `${locale}.${page} should describe the safe read projection and governed writes, not a missing backend contract`,
       );
     }
-  }
-});
-
-test("agents route uses a public read-only directory instead of legacy config admin APIs", () => {
-  const app = readFileSync(join(root, "src/App.tsx"), "utf8");
-  const tabs = readFileSync(
-    join(root, "src/components/layout/AppContent/TabContent.tsx"),
-    "utf8",
-  );
-  const directory = readFileSync(
-    join(root, "src/components/panels/AgentDirectoryPanel.tsx"),
-    "utf8",
-  );
-
-  assert.match(
-    app,
-    /path="\/agents"[\s\S]{0,260}<ProtectedRoute>[\s\S]{0,220}<AgentsPage \/>[\s\S]{0,120}<\/ProtectedRoute>/,
-  );
-  assert.match(app, /function AgentsPage\(\)[\s\S]{0,260}<AppContent key="agents" activeTab="agents" \/>/);
-  assert.match(tabs, /agents:\s*AgentDirectoryPanel/);
-  assert.match(directory, /data-agent-directory-shell/);
-  assert.match(directory, /agentApi\.list\(\)/);
-  assert.match(directory, /WorkbenchStateSurface/);
-  assert.match(directory, /data-frontend-governance-state/);
-  assert.doesNotMatch(directory, /backend admin projections|后端管理员投影|补齐后再开放/);
-  assert.doesNotMatch(directory, /agentConfigApi|roleApi|\/api\/agent\/config|Permission\.AGENT_ADMIN/);
-});
-
-test("channels route renders a governed workbench instead of a thin unavailable placeholder", () => {
-  const tabs = readFileSync(
-    join(root, "src/components/layout/AppContent/TabContent.tsx"),
-    "utf8",
-  );
-  const channels = readFileSync(
-    join(root, "src/components/channels/ChannelImportPanel.tsx"),
-    "utf8",
-  );
-
-  assert.match(tabs, /channels:\s*ChannelImportPanel/);
-  assert.match(channels, /data-channel-workbench-shell/);
-  assert.match(channels, /channelApi\.listCatalog/);
-  assert.match(channels, /data-channel-catalog-list/);
-  assert.match(channels, /data-channel-admin-governance/);
-  assert.match(channels, /data-channel-connection-state/);
-  assert.match(channels, /PanelHeader/);
-  assert.match(channels, /GovernanceAvailabilityBadge/);
-  assert.match(channels, /channelImport\.capabilities\.publicSources\.title/);
-  assert.match(channels, /channelImport\.catalogReady\.title/);
-  assert.match(channels, /channelImport\.connection/);
-  assert.match(channels, /channelImport\.testDryRunPending/);
-  assert.match(channels, /aria-busy=\{testingChannelId === channel\.channel_id\}/);
-  assert.doesNotMatch(channels, /const backedSources/);
-  assert.doesNotMatch(channels, /backedSources\.length === 0/);
-  assert.doesNotMatch(channels, /supportedChannelTypes/);
-  assert.doesNotMatch(channels, /channelImport\.backendGap/);
-  assert.doesNotMatch(channels, /\b(?:bg|text|border|ring)-stone-/);
-  assert.doesNotMatch(channels, /\b(?:bg|text|border|ring)-slate-/);
-  assert.doesNotMatch(channels, /\btruncate\b/);
-  for (const localeFile of ["src/i18n/locales/zh.json", "src/i18n/locales/en.json"]) {
-    const locale = JSON.parse(readFileSync(join(root, localeFile), "utf8"));
-    assert.ok(locale.channelImport.testDryRunPending, localeFile);
-    assert.ok(locale.channelImport.connection, localeFile);
-    assert.doesNotMatch(
-      JSON.stringify(locale.channelImport),
-      /等待后端|后端.*开放|backend.*before opening|need backend/i,
-      localeFile,
-    );
   }
 });
 
@@ -1294,50 +924,13 @@ test("skills and marketplace clients use only PR177 public contracts", () => {
   assert.match(skillApi, /\/batch\/delete/);
   assert.match(marketplaceApi, /\/install/);
   assert.match(marketplaceApi, /\/update/);
+  assert.match(skillApi, /\/api\/ai\/admin\/skills/);
   for (const source of [skillApi, marketplaceApi]) {
-    assert.doesNotMatch(source, /\/api\/ai\/admin/);
     assert.doesNotMatch(source, /\/api\/admin/);
-    assert.doesNotMatch(source, /\/admin\/skills|\/admin\/marketplace/);
     assert.doesNotMatch(source, /lambchat/i);
   }
-});
-
-test("channels client uses only PR177 governed channel contracts", () => {
-  const channelApi = readFileSync(
-    join(root, "src/services/api/channel.ts"),
-    "utf8",
-  );
-  const channelAdminHook = readFileSync(
-    join(root, "src/hooks/useChannelAdminOperations.ts"),
-    "utf8",
-  );
-  const channelPanel = readFileSync(
-    join(root, "src/components/channels/ChannelImportPanel.tsx"),
-    "utf8",
-  );
-  const channelTypes = readFileSync(join(root, "src/types/channel.ts"), "utf8");
-  const authTypes = readFileSync(join(root, "src/types/auth.ts"), "utf8");
-
-  assert.match(channelApi, /\/api\/channels\/catalog/);
-  assert.match(channelApi, /\/api\/admin\/channels/);
-  assert.match(channelApi, /listCatalog/);
-  assert.match(channelApi, /channelAdminApi/);
-  assert.match(channelApi, /testAdminChannel/);
-  assert.match(channelAdminHook, /enabled/);
-  assert.match(channelAdminHook, /missing_permission:channel:admin/);
-  assert.match(channelPanel, /useChannelAdminOperations\(\{\s*enabled:\s*canAdminChannels/);
-  assert.match(channelTypes, /PublicChannelResponse/);
-  assert.match(channelTypes, /ChannelAdminOperationResponse/);
-  assert.match(authTypes, /CHANNEL_ADMIN = "channel:admin"/);
-  for (const legacyEndpoint of [
-    "/api/channels/types",
-    "/api/channels/${channelType}",
-    "/api/channels/${channelType}/${instanceId}",
-    "/api/channels/${channelType}/${instanceId}/status",
-    "/api/channels/${channelType}/${instanceId}/test",
-  ]) {
-    assert.ok(!channelApi.includes(legacyEndpoint), legacyEndpoint);
-  }
+  assert.doesNotMatch(marketplaceApi, /\/admin\/skills|\/admin\/marketplace/);
+  assert.doesNotMatch(marketplaceApi, /\/api\/ai\/admin/);
 });
 
 test("skills hub treats skills as admin-only skill management before fail-closed", () => {
@@ -1412,9 +1005,7 @@ test("company baseline permissions include backed role plaza and marketplace rea
   const enLocale = readFileSync(join(root, "src/i18n/locales/en.json"), "utf8");
 
   assert.match(authRoute, /"marketplace:read"/);
-  assert.match(authRoute, /"persona_preset:read"/);
   assert.match(authRoute, /"role:read"/);
-  assert.match(authRoute, /"role:request"/);
   assert.match(marketplaceApi, /catalog_read_resolved/);
   assert.match(useMarketplace, /setCatalogReadResolved\(data\.catalog_read_resolved\)/);
   assert.match(marketplaceTest, /catalog_read_resolved:\s*true/);

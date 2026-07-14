@@ -3,7 +3,6 @@ export const PHASE1_CLOSURE_ROUTES = [
   "/chat",
   "/skills",
   "/mcp",
-  "/channels",
   "/shared/:shareId",
 ] as const;
 
@@ -11,7 +10,6 @@ export const PHASE1_COMPOSER_COMMANDS = [
   "/skill",
   "$",
   "/mcp",
-  "/agent",
   "/model",
   "/file",
   "/context",
@@ -21,7 +19,6 @@ export const PHASE1_FAIL_CLOSED_SURFACES = [
   "mcp-lifecycle",
   "mcp-credentials",
   "share-acl-create",
-  "channel-admin-governance",
   "context-selector",
 ] as const;
 
@@ -36,7 +33,6 @@ export const PHASE1_CLOSURE_SCREENSHOTS = [
   "chat-file-chip.png",
   "skills.png",
   "mcp.png",
-  "channels.png",
   "shared-denied.png",
   "ordinary-admin-denied.png",
   "admin-governance.png",

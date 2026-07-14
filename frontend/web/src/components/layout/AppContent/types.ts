@@ -10,12 +10,8 @@ export type TabType =
   | "settings"
   | "mcp"
   | "feedback"
-  | "channels"
-  | "agents"
   | "models"
-  | "persona"
   | "files"
-  | "agent-workspace"
   | "notifications"
   | "memory";
 

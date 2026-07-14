@@ -203,9 +203,10 @@ def main() -> int:
     roles = [str(item) for item in principal.get("roles") or []]
     permissions = [str(item) for item in principal.get("permissions") or []]
     assert_contains(permissions, "agent:use", "permissions")
-    is_admin = bool("agent:admin" in permissions or "admin" in {role.lower() for role in roles} or "developer" in {role.lower() for role in roles})
+    normalized_roles = {role.lower() for role in roles}
+    is_admin = bool("admin:status" in permissions and normalized_roles.intersection({"admin", "developer"}))
     if args.expect_admin and not is_admin:
-        raise RuntimeError("expected admin login, but agent:admin permission is missing")
+        raise RuntimeError("expected admin login, but admin role or admin:status permission is missing")
     if args.expect_user and is_admin:
         raise RuntimeError("expected ordinary user login, but admin capability was present")
 
@@ -214,7 +215,7 @@ def main() -> int:
         "me_http": me.status_code,
         "user": redact_user_id(expected_work_id),
         "roles": roles,
-        "permissions_checked": ["agent:use"] + (["agent:admin"] if args.expect_admin else []),
+        "permissions_checked": ["agent:use"] + (["admin:status"] if args.expect_admin else []),
         "is_admin": is_admin,
     }
 
@@ -238,7 +239,7 @@ def main() -> int:
             "user": redact_user_id(str(audit.get("user_id") or "")),
             "source": payload.get("source"),
             "is_admin": payload.get("is_admin"),
-            "permissions_checked": ["agent:use"] + (["agent:admin"] if args.expect_admin else []),
+            "permissions_checked": ["agent:use"] + (["admin:status"] if args.expect_admin else []),
         }
 
     print(json.dumps({"ok": True, "evidence": evidence}, ensure_ascii=False, indent=2))

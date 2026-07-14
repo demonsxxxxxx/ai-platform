@@ -18,7 +18,6 @@ EXPECTED_COMPANY_USER_PERMISSIONS = [
     "skill:read",
     "marketplace:read",
     "mcp:read",
-    "persona_preset:read",
     "avatar:upload",
     "feedback:write",
     "notification:read",
@@ -28,8 +27,6 @@ EXPECTED_COMPANY_USER_PERMISSIONS = [
 ]
 
 EXPECTED_COMPANY_ADMIN_PERMISSIONS = EXPECTED_COMPANY_USER_PERMISSIONS + [
-    "agent:read",
-    "agent:admin",
     "model:admin",
     "settings:read",
     "settings:manage",
@@ -45,12 +42,6 @@ EXPECTED_COMPANY_ADMIN_PERMISSIONS = EXPECTED_COMPANY_USER_PERMISSIONS + [
     "mcp:write_sandbox",
     "mcp:delete",
     "mcp:admin",
-    "persona_preset:write",
-    "persona_preset:admin",
-    "channel:read",
-    "channel:write",
-    "channel:delete",
-    "channel:admin",
     "user:read",
     "user:write",
     "user:delete",
@@ -181,7 +172,7 @@ def test_login_sets_cookie_and_returns_ai_role(monkeypatch):
         assert kwargs["payload_json"]["work_id"] == "dev001"
         assert kwargs["payload_json"]["roles"] == ["admin"]
         assert "agent:use" in kwargs["payload_json"]["permissions"]
-        assert "agent:admin" in kwargs["payload_json"]["permissions"]
+        assert "model:admin" in kwargs["payload_json"]["permissions"]
         assert kwargs["payload_json"]["is_admin"] is True
         return "aud_1"
 

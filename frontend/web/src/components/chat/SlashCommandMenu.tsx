@@ -1,4 +1,4 @@
-import { Bot, Boxes, FileText, Layers, Sparkles, Wrench } from "lucide-react";
+import { Boxes, FileText, Layers, Sparkles, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
   ComposerCommandName,
@@ -15,7 +15,6 @@ const commandIcons: Record<
 > = {
   skill: Sparkles,
   mcp: Wrench,
-  agent: Bot,
   model: Boxes,
   file: FileText,
   context: Layers,

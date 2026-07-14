@@ -44,9 +44,7 @@ test("PRD closure browser smoke helper covers required frontend evidence", () =>
     "/apps",
     "/skills",
     "/mcp",
-    "/persona",
     "/files",
-    "/channels",
     "/settings",
     "/shared/smoke-denied",
   ]) {
@@ -90,9 +88,7 @@ test("PRD closure browser smoke waits for route-specific workbench content befor
     ["/apps", "data-launchpad-directory-shell"],
     ["/skills", "data-skill-workbench-shell"],
     ["/mcp", "data-mcp-directory-shell"],
-    ["/persona", "data-persona-workbench-shell"],
     ["/files", "data-files-workbench-shell"],
-    ["/channels", "data-channel-workbench-shell"],
     ["/settings", "data-workbench-projection-page"],
   ]) {
     assert.match(source, new RegExp(route.replace(/\//g, "\\/")));

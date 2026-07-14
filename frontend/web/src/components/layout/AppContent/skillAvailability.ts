@@ -10,25 +10,25 @@ function hasSkillReadPermission(permissions: readonly string[]): boolean {
 export function buildEffectiveSkills({
   skills,
   skillsLoading,
-  personaSkillNames,
+  allowedSkillNames,
   disabledSkillNames,
 }: {
   skills: SkillResponse[];
   skillsLoading: boolean;
-  personaSkillNames?: string[];
+  allowedSkillNames?: string[];
   disabledSkillNames?: string[];
 }): SkillResponse[] {
   if (skillsLoading) return skills;
 
   const disabledSet = new Set(disabledSkillNames ?? []);
-  const personaSet =
-    personaSkillNames && personaSkillNames.length > 0
-      ? new Set(personaSkillNames)
+  const allowedSet =
+    allowedSkillNames && allowedSkillNames.length > 0
+      ? new Set(allowedSkillNames)
       : null;
 
   return skills
     .filter(
-      (skill) => skill.enabled && (!personaSet || personaSet.has(skill.name)),
+      (skill) => skill.enabled && (!allowedSet || allowedSet.has(skill.name)),
     )
     .map((skill) => ({
       ...skill,

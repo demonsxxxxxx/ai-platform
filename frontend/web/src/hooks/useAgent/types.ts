@@ -1,10 +1,8 @@
 import type {
   Message,
-  AgentInfo,
   ConnectionStatus,
   FormField,
   MessageAttachment,
-  PersonaPresetSnapshot,
   SelectedSkillRequest,
 } from "../../types";
 import type { SelectedSkillRecoverableCode } from "../useSelectedSkillTask";
@@ -141,8 +139,6 @@ export interface UseAgentOptions {
   onClearApprovals?: () => void;
   getEnabledTools?: () => string[];
   getDisabledSkills?: () => string[];
-  getEnabledSkills?: () => string[] | undefined;
-  getPersonaPresetId?: () => string | null;
   getDisabledMcpTools?: () => string[];
   getAgentOptions?: () => Record<string, boolean | string | number>;
   onSkillAdded?: (
@@ -230,10 +226,6 @@ export interface UseAgentReturn {
   sessionId: string | null;
   currentProjectId: string | null;
   currentRunId: string | null;
-  agents: AgentInfo[];
-  currentAgent: string;
-  agentsLoading: boolean;
-  allowedModelIds: string[] | null;
   isReconnecting: boolean;
   connectionStatus: ConnectionStatus;
   newlyCreatedSession: BackendSession | null;
@@ -247,9 +239,6 @@ export interface UseAgentReturn {
   ) => Promise<SubmissionOutcome>;
   stopGeneration: () => Promise<void>;
   clearMessages: () => void;
-  selectAgent: (agentId: string) => void;
-  switchAgent: (agentId: string) => void;
-  refreshAgents: () => Promise<void>;
   loadHistory: (
     targetSessionId: string,
     targetRunId?: string,
@@ -262,14 +251,9 @@ export interface UseAgentReturn {
 
 // Session configuration restored from metadata
 export interface SessionConfig {
-  agent_id?: string;
   agent_options?: Record<string, boolean | string | number>;
   disabled_tools?: string[];
   disabled_skills?: string[];
-  enabled_skills?: string[];
-  persona_preset_id?: string;
-  persona_preset_name?: string;
-  persona_snapshot?: PersonaPresetSnapshot;
   disabled_mcp_tools?: string[];
 }
 

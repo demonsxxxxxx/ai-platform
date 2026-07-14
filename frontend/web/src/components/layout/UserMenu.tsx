@@ -4,7 +4,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
   Bell,
-  Bot,
   Cpu,
   MessageSquare,
   MessageCircle,
@@ -121,18 +120,6 @@ export function UserMenu({ onShowProfile }: UserMenuProps) {
       show: true,
     },
     { path: "/mcp", label: t("nav.mcp"), icon: Server, show: true },
-    {
-      path: "/channels",
-      label: t("nav.channels"),
-      icon: MessageCircle,
-      show: canAccessWorkbenchItem(user, "channels"),
-    },
-    {
-      path: "/agents",
-      label: t("nav.agents"),
-      icon: Bot,
-      show: canAccessWorkbenchItem(user, "agents"),
-    },
     {
       path: "/models",
       label: t("nav.models"),
