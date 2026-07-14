@@ -21,6 +21,10 @@ import type {
 } from "./types";
 import { clearAllLoadingStates } from "./messageParts";
 import { convertAttachments, processMessageEvent } from "./eventProcessor";
+import {
+  terminalRunStatusFromEvent,
+  type TerminalRunStatus,
+} from "./runLifecycle";
 
 /**
  * Context passed to event handler
@@ -28,6 +32,7 @@ import { convertAttachments, processMessageEvent } from "./eventProcessor";
 export interface EventHandlerContext {
   options?: UseAgentOptions;
   sessionIdRef: React.MutableRefObject<string | null>;
+  currentRunIdRef: React.MutableRefObject<string | null>;
   processedEventIdsRef: React.MutableRefObject<Set<string>>;
   lastHistoryTimestampRef: React.MutableRefObject<Date | null>;
   activeSubagentStackRef: React.MutableRefObject<SubagentStackItem[]>;
@@ -37,6 +42,11 @@ export interface EventHandlerContext {
   setConnectionStatus: (status: string) => void;
   setIsInitializingSandbox: (loading: boolean) => void;
   setSandboxError: (error: string | null) => void;
+  onRunTerminal?: (
+    runId: string,
+    status: TerminalRunStatus,
+    messageId: string,
+  ) => boolean;
   dismissQueueToast?: () => void;
 }
 
@@ -108,6 +118,31 @@ export function handleStreamEvent(
     data = JSON.parse(event.data);
   } catch {
     // Fallback for non-JSON data
+  }
+
+  const eventRunId =
+    typeof data.run_id === "string" && data.run_id.trim()
+      ? data.run_id
+      : null;
+  if (eventRunId && ctx.currentRunIdRef.current !== eventRunId) {
+    return;
+  }
+
+  const terminalStatus = terminalRunStatusFromEvent(
+    eventType,
+    data as unknown as Record<string, unknown>,
+  );
+  const terminalRunId =
+    eventRunId ||
+    (eventType === "complete" || eventType === "done"
+      ? ctx.currentRunIdRef.current
+      : null);
+  if (
+    terminalStatus &&
+    terminalRunId &&
+    ctx.onRunTerminal?.(terminalRunId, terminalStatus, messageId)
+  ) {
+    return;
   }
 
   const depth = data.depth || 0;

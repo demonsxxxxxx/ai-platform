@@ -2153,6 +2153,101 @@ async def test_lambchat_translate_agent_defaults_to_translate_skill(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_turn(monkeypatch):
+    """A projected routed agent id must remain valid when the client continues its session."""
+
+    calls = []
+    run_ids = iter(["run_routed_first", "run_routed_second"])
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        calls.append(("resolve", agent_id, skill_id))
+        return {
+            "executor_type": "claude-agent-worker",
+            "skill_version": "0.1.0",
+            "input_modes": ["docx"],
+        }
+
+    async def fake_create_session(conn, **kwargs):
+        calls.append(("session", kwargs["session_id"], kwargs["agent_id"]))
+        return kwargs["session_id"]
+
+    async def fake_create_run(conn, **kwargs):
+        run_id = next(run_ids)
+        calls.append(("run", kwargs["session_id"], kwargs["agent_id"], run_id))
+        return run_id
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def fake_enqueue_run(payload):
+        calls.append(("queue", payload["session_id"], payload["agent_id"]))
+        return 1
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
+    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.new_id",
+        lambda kind: "ses_routed" if kind == "ses" else f"{kind}_unexpected",
+    )
+
+    first = await chat_stream(
+        ChatStreamRequest(
+            message="翻译这个 Word 文档",
+            attachments=[
+                {
+                    "key": "file_routed",
+                    "name": "demo.docx",
+                    "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                }
+            ],
+        ),
+        agent_id="document-translation",
+        principal=principal(),
+    )
+
+    assert first.session_id == "ses_routed"
+    assert first.intent_decision is not None
+    assert first.intent_decision.agent_id == "document-translation"
+
+    second = await chat_stream(
+        ChatStreamRequest(
+            message="继续处理同一份文档",
+            session_id=first.session_id,
+            attachments=[
+                {
+                    "key": "file_routed",
+                    "name": "demo.docx",
+                    "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                }
+            ],
+        ),
+        agent_id=first.intent_decision.agent_id,
+        principal=principal(),
+    )
+
+    assert second.session_id == first.session_id
+    assert second.intent_decision is not None
+    assert second.intent_decision.agent_id == "document-translation"
+    assert calls == [
+        ("resolve", "baoyu-translate", "baoyu-translate"),
+        ("session", "ses_routed", "baoyu-translate"),
+        ("run", "ses_routed", "baoyu-translate", "run_routed_first"),
+        ("queue", "ses_routed", "baoyu-translate"),
+        ("resolve", "baoyu-translate", "baoyu-translate"),
+        ("session", "ses_routed", "baoyu-translate"),
+        ("run", "ses_routed", "baoyu-translate", "run_routed_second"),
+        ("queue", "ses_routed", "baoyu-translate"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_chat_stream_word_translate_file_id_routes_from_general_agent(monkeypatch):
     calls = []
 

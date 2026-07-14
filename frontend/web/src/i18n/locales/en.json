@@ -392,6 +392,47 @@
     "goodMorning": "Good morning, {{name}}",
     "helpDocs": "Help Docs",
     "keyboardShortcuts": "Keyboard Shortcuts",
+    "toolPermission": {
+      "adminTitle": "Tool permission governance",
+      "allowedForRun": {
+        "message": "An administrator granted the permission required for this run.",
+        "title": "Permission granted for this run"
+      },
+      "allowedOnce": {
+        "message": "An administrator granted one-time permission.",
+        "title": "Action authorized"
+      },
+      "decided": {
+        "message": "An administrator has handled this tool permission.",
+        "title": "Tool permission handled"
+      },
+      "decisionFailed": "Could not submit the permission decision. Please try again.",
+      "decisions": {
+        "allow_for_run": "Allow for this run",
+        "allow_once": "Allow once",
+        "deny": "Deny",
+        "pending": "Pending"
+      },
+      "denied": {
+        "message": "An administrator did not approve this action; it remains denied.",
+        "title": "Action not authorized"
+      },
+      "pending": {
+        "message": "An administrator must handle this action before it can continue.",
+        "title": "Waiting for administrator review"
+      },
+      "readOnly": "Read-only action",
+      "recordedDecision": "Recorded decision: {{decision}}",
+      "risk": "{{level}} risk",
+      "riskLevels": {
+        "critical": "Critical",
+        "high": "High",
+        "low": "Low",
+        "medium": "Medium"
+      },
+      "submitting": "Submitting…",
+      "writeCapable": "Write-capable action"
+    },
     "message": {
       "allFiles": "All files",
       "args": "Args",
@@ -473,6 +514,9 @@
     "queued": "Queued (position {{position}})...",
     "rateLimited": "Too many requests, please try again later",
     "requestFailed": "Failed to load session",
+    "runTerminal": {
+      "failed": "The task could not be completed. Try again later or contact an administrator if the problem persists."
+    },
     "sandbox": {
       "error": "initialization failed",
       "initializing": "initializing environment",

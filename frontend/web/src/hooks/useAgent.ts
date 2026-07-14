@@ -42,6 +42,7 @@ import {
   isCurrentHistoryLoad,
   resolveHistoryCurrentRunId,
 } from "./useAgent/historyRunState";
+import { isActiveRunStatus, type TerminalRunStatus } from "./useAgent/runLifecycle";
 import { clearAllLoadingStates } from "./useAgent/messageParts";
 import { type EventHandlerContext } from "./useAgent/eventHandlers";
 import {
@@ -134,17 +135,26 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   // Monotonic token used to stop stale overlapping loadHistory calls.
   const historyLoadTokenRef = useRef(0);
 
+  // Session changes invalidate both pending submit responses and their SSE stream.
+  const sessionGenerationRef = useRef(0);
+  const submissionTokenRef = useRef(0);
+
   // Stream version to invalidate stale SSE events after clearMessages
   const streamVersionRef = useRef(0);
 
   // Keep sessionId/runId in ref for closure access
   const sessionIdRef = useRef<string | null>(null);
+  const sessionAgentIdRef = useRef(DEFAULT_CHAT_AGENT_ID);
   const currentRunIdRef = useRef<string | null>(null);
   const messagesRef = useRef<Message[]>([]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
+
+  useEffect(() => {
+    sessionAgentIdRef.current = sessionAgentId;
+  }, [sessionAgentId]);
 
   useEffect(() => {
     currentRunIdRef.current = currentRunId;
@@ -154,11 +164,88 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     messagesRef.current = messages;
   }, [messages]);
 
+  const finalizeTerminalRun = useCallback(
+    (
+      runId: string,
+      status: TerminalRunStatus,
+      messageId: string,
+    ): boolean => {
+      if (currentRunIdRef.current !== runId) {
+        return false;
+      }
+
+      currentRunIdRef.current = null;
+      streamVersionRef.current += 1;
+      clearReconnectTimeout(reconnectTimeoutRef);
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      isConnectingRef.current = false;
+      streamingMessageIdRef.current = null;
+      isSendingRef.current = false;
+
+      toast.dismiss("chat-queue");
+      setCurrentRunId(null);
+      setIsLoading(false);
+      setConnectionStatus("disconnected");
+      setIsInitializingSandbox(false);
+      options?.onClearApprovals?.();
+      setMessages((previous) =>
+        previous.map((message) => {
+          if (message.id !== messageId && message.runId !== runId) {
+            return message;
+          }
+          const parts = clearAllLoadingStates(message.parts || []);
+          if (
+            status === "failed" &&
+            !parts.some(
+              (part) =>
+                part.type === "run_status" &&
+                part.event_id === `terminal-failure:${runId}`,
+            )
+          ) {
+            return {
+              ...message,
+              isStreaming: false,
+              parts: [
+                ...parts,
+                {
+                  type: "run_status" as const,
+                  event_id: `terminal-failure:${runId}`,
+                  event_type: "run_failed",
+                  stage: "agent",
+                  message: i18n.t("chat.runTerminal.failed"),
+                  severity: "error" as const,
+                },
+              ],
+            };
+          }
+          if (
+            status === "cancelled" &&
+            !parts.some((part) => part.type === "cancelled")
+          ) {
+            return {
+              ...message,
+              isStreaming: false,
+              cancelled: true,
+              parts: [...parts, { type: "cancelled" as const }],
+            };
+          }
+          return { ...message, isStreaming: false, parts };
+        }),
+      );
+      return true;
+    },
+    [options],
+  );
+
   // Create event handler context
   const createEventHandlerContext = useCallback(
     (): EventHandlerContext => ({
       options,
       sessionIdRef,
+      currentRunIdRef,
       processedEventIdsRef,
       lastHistoryTimestampRef,
       activeSubagentStackRef,
@@ -169,8 +256,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         setConnectionStatus(status as ConnectionStatus),
       setIsInitializingSandbox,
       setSandboxError,
+      onRunTerminal: finalizeTerminalRun,
     }),
-    [options],
+    [options, finalizeTerminalRun],
   );
 
   // Create SSE connection context
@@ -208,6 +296,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const historyLoadToken = beginHistoryLoad(historyLoadTokenRef);
       const isCurrentHistoryLoadRequest = () =>
         isCurrentHistoryLoad(historyLoadTokenRef, historyLoadToken);
+      sessionGenerationRef.current += 1;
+      submissionTokenRef.current += 1;
+      streamVersionRef.current += 1;
+      isSendingRef.current = false;
 
       isLoadingHistoryRef.current = true;
       setIsLoadingHistory(true);
@@ -247,8 +339,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         }
 
         if (sessionData) {
+          sessionIdRef.current = targetSessionId;
           setSessionId(targetSessionId);
-          setSessionAgentId(sessionData.agent_id || DEFAULT_CHAT_AGENT_ID);
+          const loadedAgentId = sessionData.agent_id || DEFAULT_CHAT_AGENT_ID;
+          sessionAgentIdRef.current = loadedAgentId;
+          setSessionAgentId(loadedAgentId);
           setCurrentProjectId(
             (sessionData.metadata?.project_id as string) || null,
           );
@@ -305,15 +400,15 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             sessionData,
             eventsData,
           });
-          setCurrentRunId(historyCurrentRunId);
-          currentRunIdRef.current = historyCurrentRunId;
-
-          let isTaskRunning = false;
-          if (statusData) {
-            isTaskRunning =
-              statusData.status === "pending" ||
-              statusData.status === "running";
-          }
+          // Reconnect only after the authoritative run record says it is
+          // active. Event history alone must never revive a failed run.
+          const isTaskRunning = Boolean(
+            statusData && isActiveRunStatus(statusData.status),
+          );
+          const activeHistoryRunId =
+            isTaskRunning && historyCurrentRunId ? historyCurrentRunId : null;
+          setCurrentRunId(activeHistoryRunId);
+          currentRunIdRef.current = activeHistoryRunId;
 
           if (eventsData.events && eventsData.events.length > 0) {
             let reconstructedMessages = reconstructMessagesFromEvents(
@@ -448,6 +543,21 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return { status: "failed" };
       }
       isSendingRef.current = true;
+      const submissionToken = ++submissionTokenRef.current;
+      const requestSessionGeneration = sessionGenerationRef.current;
+      const requestSessionId = sessionIdRef.current;
+      const requestAgentId = sessionAgentIdRef.current;
+      streamVersionRef.current += 1;
+      const isCurrentSubmission = () =>
+        submissionTokenRef.current === submissionToken &&
+        sessionGenerationRef.current === requestSessionGeneration;
+      const isCurrentRequestSession = () =>
+        isCurrentSubmission() && sessionIdRef.current === requestSessionId;
+      const finishCurrentSubmission = () => {
+        if (isCurrentSubmission()) {
+          isSendingRef.current = false;
+        }
+      };
 
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
@@ -474,8 +584,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
       try {
         // 用户发送消息时标记当前 session 为已读
-        if (sessionId) {
-          sessionApi.markRead(sessionId).catch(() => {});
+        if (requestSessionId) {
+          sessionApi.markRead(requestSessionId).catch(() => {});
         }
 
         // 获取当前禁用的 skills 和 mcp_tools
@@ -490,15 +600,19 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
         const submitData: ChatStreamResponse = await sessionApi.submitChat(
           content,
-          sessionId ?? undefined,
+          requestSessionId ?? undefined,
           fullAgentOptions,
           attachments,
           pendingProjectIdRef.current ?? undefined,
           disabledSkills,
           disabledMcpTools,
           selectedSkill,
-          sessionAgentId,
+          requestAgentId,
         );
+
+        if (!isCurrentRequestSession()) {
+          return { status: "failed" };
+        }
 
         if (isChatStreamNeedsConfirmation(submitData)) {
           pendingProjectIdRef.current = null;
@@ -520,7 +634,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           setConnectionStatus("disconnected");
           setIsInitializingSandbox(false);
           setIsLoading(false);
-          isSendingRef.current = false;
+          finishCurrentSubmission();
           return { status: "accepted" };
         }
 
@@ -528,9 +642,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         const newRunId = submitData.run_id;
         const routedAgentId = resolveChatSessionAgentId(
           submitData,
-          sessionAgentId,
+          requestAgentId,
         );
         const projectId = pendingProjectIdRef.current;
+        sessionAgentIdRef.current = routedAgentId;
         setSessionAgentId(routedAgentId);
 
         // Clear pending project ID after use
@@ -544,7 +659,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           );
         }
 
-        if (!sessionId && newSessionId) {
+        if (!requestSessionId && newSessionId) {
+          sessionIdRef.current = newSessionId;
           setSessionId(newSessionId);
           const now = new Date().toISOString();
 
@@ -591,7 +707,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             .catch((err) => {
               console.warn("[sendMessage] Failed to generate title:", err);
             });
-        } else if (sessionId && newRunId) {
+        } else if (requestSessionId && newRunId) {
           // 更新现有 session 的 metadata
           const conversationConfig: Record<string, unknown> = {
             ...((newlyCreatedSession?.metadata as Record<string, unknown>) ||
@@ -616,6 +732,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         }
         if (newRunId) {
           setCurrentRunId(newRunId);
+          currentRunIdRef.current = newRunId;
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantMessageId
@@ -629,7 +746,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           );
         }
 
-        const streamSessionId = newSessionId || sessionId;
+        const streamSessionId = newSessionId || requestSessionId;
         const streamRunId = newRunId;
         finalAssistantMessageId = newRunId || assistantMessageId;
 
@@ -646,6 +763,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           ctx,
         )
           .catch(() => {
+            if (!isCurrentSubmission()) {
+              return;
+            }
             toast.dismiss("chat-queue");
             const streamError = i18n.t("chat.requestFailed");
             setError(streamError);
@@ -667,15 +787,20 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             setIsInitializingSandbox(false);
           })
           .finally(() => {
-            setIsLoading(false);
-            isSendingRef.current = false;
+            if (isCurrentSubmission()) {
+              setIsLoading(false);
+              finishCurrentSubmission();
+            }
           });
         return { status: "accepted" };
       } catch (err) {
+        if (!isCurrentRequestSession()) {
+          return { status: "failed" };
+        }
         toast.dismiss("chat-queue");
         if (err instanceof Error && err.name === "AbortError") {
           setIsLoading(false);
-          isSendingRef.current = false;
+          finishCurrentSubmission();
           return { status: "failed" };
         }
         const recoverableCode = selectedSkill
@@ -686,7 +811,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           setConnectionStatus("disconnected");
           setIsInitializingSandbox(false);
           setIsLoading(false);
-          isSendingRef.current = false;
+          finishCurrentSubmission();
           return { status: "recoverable_error", code: recoverableCode };
         }
         const errorMessage =
@@ -709,13 +834,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         setConnectionStatus("disconnected");
         setIsInitializingSandbox(false);
         setIsLoading(false);
-        isSendingRef.current = false;
+        finishCurrentSubmission();
         return { status: "failed" };
       }
     },
     [
-      sessionId,
-      sessionAgentId,
       createSSEContext,
       newlyCreatedSession?.metadata,
       options,
@@ -757,9 +880,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   }, [options]);
 
   const clearMessages = useCallback(() => {
+    sessionGenerationRef.current += 1;
+    submissionTokenRef.current += 1;
     streamVersionRef.current += 1;
     setMessages([]);
     setSessionId(null);
+    sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
     setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
     setError(null);
     setCurrentRunId(null);
@@ -770,6 +896,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     sessionIdRef.current = null;
     currentRunIdRef.current = null;
     activeSubagentStackRef.current = [];
+    isSendingRef.current = false;
+    isConnectingRef.current = false;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;

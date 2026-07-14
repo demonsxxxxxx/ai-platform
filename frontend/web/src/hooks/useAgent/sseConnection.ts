@@ -14,6 +14,11 @@ import { getRefreshToken } from "../../services/api/token";
 import type { EventType, StreamEvent } from "./types";
 import { handleStreamEvent, type EventHandlerContext } from "./eventHandlers";
 import { clearAllLoadingStates } from "./messageParts";
+import {
+  isActiveRunStatus,
+  terminalRunStatus,
+  terminalRunStatusFromEvent,
+} from "./runLifecycle";
 
 /**
  * SSE Connection context
@@ -54,9 +59,26 @@ export function clearReconnectTimeout(
 
 export type SSECloseAction = "terminal" | "retry";
 export type SSEFetchEventSource = typeof fetchEventSource;
+type ReconnectDependencies = {
+  getStatus?: typeof sessionApi.getStatus;
+  connect?: typeof connectToSSE;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isCurrentSSETarget(
+  ctx: SSEConnectionContext,
+  targetSessionId: string,
+  targetRunId: string,
+  streamVersion?: number,
+): boolean {
+  return (
+    ctx.sessionIdRef.current === targetSessionId &&
+    ctx.currentRunIdRef.current === targetRunId &&
+    (streamVersion === undefined || ctx.streamVersionRef.current === streamVersion)
+  );
 }
 
 function isTerminalErrorPayload(data: unknown): boolean {
@@ -72,6 +94,9 @@ function isTerminalErrorPayload(data: unknown): boolean {
 }
 
 export function isTerminalSSEEvent(eventType: string, data?: unknown): boolean {
+  if (isRecord(data) && terminalRunStatusFromEvent(eventType, data)) {
+    return true;
+  }
   if (eventType === "done" || eventType === "complete") {
     return true;
   }
@@ -108,7 +133,15 @@ export async function connectToSSE(
     streamingMessageIdRef,
     setConnectionStatus,
     retryCountRef,
+    streamVersionRef,
   } = ctx;
+
+  // Never let a deferred connection for an old session/run abort the active
+  // stream. The target check also gives run-less terminal SSE frames a stream
+  // generation boundary before they reach the event handler.
+  if (!isCurrentSSETarget(ctx, targetSessionId, targetRunId)) {
+    return;
+  }
 
   if (isConnectingRef.current) {
     console.log("[SSE] Connection already in progress, skipping...");
@@ -120,9 +153,17 @@ export async function connectToSSE(
   if (abortControllerRef.current) {
     abortControllerRef.current.abort();
   }
-  abortControllerRef.current = new AbortController();
+  const streamAbortController = new AbortController();
+  abortControllerRef.current = streamAbortController;
+  const streamVersion = streamVersionRef.current;
+  const isCurrentStream = () =>
+    abortControllerRef.current === streamAbortController &&
+    isCurrentSSETarget(ctx, targetSessionId, targetRunId, streamVersion);
 
   const token = await getValidAccessToken();
+  if (!isCurrentStream()) {
+    return;
+  }
   const headers: Record<string, string> = {};
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
@@ -143,9 +184,12 @@ export async function connectToSSE(
       {
         credentials: "include",
         headers,
-        signal: abortControllerRef.current.signal,
+        signal: streamAbortController.signal,
         openWhenHidden: true,
         onopen: async (response) => {
+          if (!isCurrentStream()) {
+            return;
+          }
           if (response.status === 401) {
             if (hasRetried) {
               // refreshAccessToken() in the first attempt already handled redirect
@@ -180,6 +224,9 @@ export async function connectToSSE(
           retryCountRef.current = 0;
         },
         onmessage: (event) => {
+          if (!isCurrentStream()) {
+            return;
+          }
           if (event.event === "ping") return;
           const eventId = event.id || uuid();
           let parsedData: Record<string, unknown>;
@@ -207,10 +254,16 @@ export async function connectToSSE(
           handleStreamEvent(streamEvent, messageId, eventId, timestamp, ctx);
         },
         onerror: (err) => {
+          if (!isCurrentStream()) {
+            return;
+          }
           console.error("[SSE] Connection error:", err);
           setConnectionStatus("reconnecting");
         },
         onclose: () => {
+          if (!isCurrentStream()) {
+            return;
+          }
           console.log("[SSE] Connection closed");
           const closeAction = getSSECloseAction({ receivedTerminalEvent });
           if (closeAction === "retry") {
@@ -235,6 +288,9 @@ export async function connectToSSE(
       },
     );
   } catch (err) {
+    if (!isCurrentStream()) {
+      return;
+    }
     if (err instanceof Error && err.name === "AbortError") {
       console.log("[SSE] Connection aborted");
       return;
@@ -243,7 +299,9 @@ export async function connectToSSE(
     setConnectionStatus("disconnected");
     throw err;
   } finally {
-    isConnectingRef.current = false;
+    if (isCurrentStream()) {
+      isConnectingRef.current = false;
+    }
   }
 }
 
@@ -256,6 +314,7 @@ export async function reconnectSSE(
     currentRunIdRef: React.MutableRefObject<string | null>;
     isReconnectFromHistoryRef: React.MutableRefObject<boolean>;
   },
+  dependencies: ReconnectDependencies = {},
 ): Promise<void> {
   const {
     sessionIdRef,
@@ -269,12 +328,22 @@ export async function reconnectSSE(
     isReconnectFromHistoryRef,
     setConnectionStatus,
   } = ctx;
+  const getStatus = dependencies.getStatus || sessionApi.getStatus;
+  const connect = dependencies.connect || connectToSSE;
 
   const currentSessId = sessionIdRef.current;
   const currentRId = currentRunIdRef.current;
   const currentMsgId = streamingMessageIdRef.current;
+  const reconnectStreamVersion = ctx.streamVersionRef.current;
+  const isCurrentReconnect = () =>
+    isCurrentSSETarget(
+      ctx,
+      currentSessId || "",
+      currentRId || "",
+      reconnectStreamVersion,
+    );
 
-  if (!currentSessId || !currentRId) {
+  if (!currentSessId || !currentRId || !isCurrentReconnect()) {
     console.log("[SSE] No session/run ID, skipping reconnect");
     return;
   }
@@ -289,30 +358,32 @@ export async function reconnectSSE(
   isConnectingRef.current = false;
 
   try {
-    const statusData = await sessionApi.getStatus(currentSessId, currentRId);
-    if (statusData.status === "completed" || statusData.status === "error") {
+    const statusData = await getStatus(currentSessId, currentRId);
+    if (!isCurrentReconnect()) {
+      return;
+    }
+    const terminalStatus = terminalRunStatus(statusData.status);
+    if (terminalStatus) {
       console.log("[SSE] Task already completed");
+      ctx.onRunTerminal?.(
+        currentRId,
+        terminalStatus,
+        currentMsgId || currentRId,
+      );
+      return;
+    }
+    if (!isActiveRunStatus(statusData.status)) {
       setConnectionStatus("disconnected");
       ctx.setIsInitializingSandbox(false);
-      streamingMessageIdRef.current = null;
-      // Clear loading states on the message
-      if (currentMsgId) {
-        ctx.setMessages((prev) =>
-          prev.map((m) =>
-            m.id === currentMsgId
-              ? {
-                  ...m,
-                  isStreaming: false,
-                  parts: clearAllLoadingStates(m.parts || []),
-                }
-              : m,
-          ),
-        );
-      }
       return;
     }
   } catch (err) {
     console.error("[SSE] Failed to check task status:", err);
+    // Without a current authoritative run record, fail closed. A later user
+    // reconnect can query again; this stale connection must not revive itself.
+    setConnectionStatus("disconnected");
+    ctx.setIsInitializingSandbox(false);
+    return;
   }
 
   setConnectionStatus("reconnecting");
@@ -324,14 +395,20 @@ export async function reconnectSSE(
   );
 
   reconnectTimeoutRef.current = setTimeout(async () => {
+    if (!isCurrentReconnect()) {
+      return;
+    }
     if (currentMsgId) {
       const msgs = messagesRef.current;
       const lastMsg = msgs.find((m) => m.id === currentMsgId);
       if (lastMsg) {
         isReconnectFromHistoryRef.current = true;
         try {
-          await connectToSSE(currentSessId, currentRId, currentMsgId, ctx);
+          await connect(currentSessId, currentRId, currentMsgId, ctx);
         } catch {
+          if (!isCurrentReconnect()) {
+            return;
+          }
           await reconnectSSE(ctx);
         }
       }

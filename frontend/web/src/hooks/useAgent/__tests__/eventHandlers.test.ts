@@ -20,6 +20,7 @@ function createContext(
 
   return {
     sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: null },
     processedEventIdsRef: { current: new Set<string>() },
     lastHistoryTimestampRef: { current: lastHistoryTimestamp },
     activeSubagentStackRef: { current: [] },
@@ -67,6 +68,74 @@ test("terminal stream events dismiss a queued admission toast", () => {
 
     assert.equal(dismissCalls, 1, `${terminalEvent} must clear chat-queue`);
   }
+});
+
+test("does not let a stale run terminal event finalize the active run", () => {
+  const ctx = createContext([], null);
+  ctx.currentRunIdRef.current = "run-new";
+  const terminalCalls: Array<[string, string, string]> = [];
+  ctx.onRunTerminal = (runId, status, messageId) => {
+    terminalCalls.push([runId, status, messageId]);
+    return true;
+  };
+
+  handleStreamEvent(
+    {
+      event: "run_event",
+      data: JSON.stringify({
+        run_id: "run-old",
+        event_type: "run_failed",
+      }),
+    } as StreamEvent,
+    "assistant-old",
+    "evt-old-terminal",
+    "2026-07-14T02:00:00.000Z",
+    ctx,
+  );
+
+  assert.deepEqual(terminalCalls, []);
+  assert.equal(ctx.setMessagesCalls(), 0);
+});
+
+test("delegates an active run terminal event once to the lifecycle owner", () => {
+  const ctx = createContext([], null);
+  ctx.currentRunIdRef.current = "run-active";
+  let terminalCalls = 0;
+  ctx.onRunTerminal = (runId, status, messageId) => {
+    terminalCalls += 1;
+    assert.deepEqual([runId, status, messageId], [
+      "run-active",
+      "failed",
+      "assistant-active",
+    ]);
+    ctx.currentRunIdRef.current = null;
+    return true;
+  };
+
+  const terminalEvent = {
+    event: "run_event",
+    data: JSON.stringify({
+      run_id: "run-active",
+      event_type: "run_failed",
+    }),
+  } as StreamEvent;
+  handleStreamEvent(
+    terminalEvent,
+    "assistant-active",
+    "evt-terminal-1",
+    "2026-07-14T02:00:00.000Z",
+    ctx,
+  );
+  handleStreamEvent(
+    { ...terminalEvent, data: terminalEvent.data },
+    "assistant-active",
+    "evt-terminal-2",
+    "2026-07-14T02:00:01.000Z",
+    ctx,
+  );
+
+  assert.equal(terminalCalls, 1);
+  assert.equal(ctx.setMessagesCalls(), 0);
 });
 
 test("skips replayed SSE events at the history timestamp boundary", () => {
@@ -158,6 +227,7 @@ test("user cancel marks message cancelled without closing the SSE connection", (
     ],
     null,
   );
+  ctx.currentRunIdRef.current = "run-1";
 
   handleStreamEvent(
     {

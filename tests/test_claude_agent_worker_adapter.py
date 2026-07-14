@@ -81,6 +81,15 @@ class FakeSdkStopSequence:
     message = "completed at the requested stop sequence"
     session_id = "sdk-session"
     usage = {"input_tokens": 1}
+    error = None
+    terminal_reason = "stop_sequence"
+
+
+class FakeSdkExceptionTextStopSequence:
+    used_sdk = True
+    message = ""
+    session_id = None
+    usage = {}
     error = "stop_sequence"
 
 
@@ -626,6 +635,21 @@ async def test_general_chat_keeps_real_sdk_errors_failed(monkeypatch):
         return FakeSdkRuntimeError()
 
     monkeypatch.setattr(adapter, "_try_run_sdk", sdk_runtime_error)
+
+    result = await adapter._run_general_chat(payload())
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
+
+
+@pytest.mark.asyncio
+async def test_general_chat_keeps_stop_sequence_exception_text_failed(monkeypatch):
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+
+    async def sdk_exception(*args, **kwargs):
+        return FakeSdkExceptionTextStopSequence()
+
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_exception)
 
     result = await adapter._run_general_chat(payload())
 
@@ -3085,6 +3109,63 @@ async def test_sdk_runner_deduplicates_result_message(monkeypatch, tmp_path):
     result = await run_claude_agent_sdk(prompt="hello", cwd=tmp_path, skill_id="general-chat")
 
     assert result.message == "hello from sdk"
+
+
+@pytest.mark.asyncio
+async def test_sdk_runner_records_structured_normal_stop_sequence(monkeypatch, tmp_path):
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class AssistantMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = {"input_tokens": 3}
+        model_usage = {}
+        result = "completed normally"
+        is_error = False
+        errors = []
+        stop_reason = "stop_sequence"
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    async def query(prompt, options):
+        yield AssistantMessage([TextBlock("completed normally")])
+        yield ResultMessage()
+
+    current_settings = type(
+        "S",
+        (),
+        {
+            "claude_agent_sdk_enabled": True,
+            "anthropic_base_url": "",
+            "anthropic_auth_token": "",
+            "anthropic_model": "",
+            "openai_api_key": "",
+            "claude_agent_model": "deepseek-v4-flash",
+            "claude_agent_sdk_skills": "",
+            "claude_agent_sdk_timeout_seconds": 5,
+        },
+    )()
+    fake_sdk = types.SimpleNamespace(
+        AssistantMessage=AssistantMessage,
+        ClaudeAgentOptions=ClaudeAgentOptions,
+        ResultMessage=ResultMessage,
+        TextBlock=TextBlock,
+        query=query,
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
+
+    result = await run_claude_agent_sdk(prompt="hello", cwd=tmp_path, skill_id="general-chat")
+
+    assert result.error is None
+    assert result.terminal_reason == "stop_sequence"
 
 
 @pytest.mark.asyncio

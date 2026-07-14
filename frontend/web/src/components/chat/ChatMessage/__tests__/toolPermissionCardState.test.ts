@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import type { ToolPermissionPart } from "../../../../types";
 import {
   getOrdinaryUserToolPermissionPresentation,
   syncToolPermissionCardState,
 } from "../toolPermissionCardState.ts";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const pendingPart: ToolPermissionPart = {
   type: "tool_permission",
@@ -42,10 +47,78 @@ test("clears a stale local submit error when replay marks the permission decided
   assert.equal(result.error, null);
 });
 
-test("projects pending governed access as a non-interactive product message", () => {
+test("projects each ordinary-user permission history state without approval controls", () => {
   assert.deepEqual(getOrdinaryUserToolPermissionPresentation(pendingPart), {
-    title: "Action unavailable",
-    message:
-      "This action could not be completed because it requires additional authorization.",
+    titleKey: "chat.toolPermission.pending.title",
+    messageKey: "chat.toolPermission.pending.message",
   });
+  assert.deepEqual(
+    getOrdinaryUserToolPermissionPresentation({
+      ...pendingPart,
+      status: "decided",
+      decision: "allow_once",
+    }),
+    {
+      titleKey: "chat.toolPermission.allowedOnce.title",
+      messageKey: "chat.toolPermission.allowedOnce.message",
+    },
+  );
+  assert.deepEqual(
+    getOrdinaryUserToolPermissionPresentation({
+      ...pendingPart,
+      status: "decided",
+      decision: "allow_for_run",
+    }),
+    {
+      titleKey: "chat.toolPermission.allowedForRun.title",
+      messageKey: "chat.toolPermission.allowedForRun.message",
+    },
+  );
+  assert.deepEqual(
+    getOrdinaryUserToolPermissionPresentation({
+      ...pendingPart,
+      status: "decided",
+      decision: "deny",
+    }),
+    {
+      titleKey: "chat.toolPermission.denied.title",
+      messageKey: "chat.toolPermission.denied.message",
+    },
+  );
+});
+
+test("uses a decided fallback when the history has no known decision", () => {
+  assert.deepEqual(
+    getOrdinaryUserToolPermissionPresentation({
+      ...pendingPart,
+      status: "decided",
+    }),
+    {
+      titleKey: "chat.toolPermission.decided.title",
+      messageKey: "chat.toolPermission.decided.message",
+    },
+  );
+});
+
+test("keeps the control decision separate from ordinary-user presentation", () => {
+  const presentation = getOrdinaryUserToolPermissionPresentation(pendingPart);
+
+  assert.deepEqual(Object.keys(presentation).sort(), [
+    "messageKey",
+    "titleKey",
+  ]);
+});
+
+test("requires an explicit admin capability before rendering permission controls", () => {
+  const rendererSource = readFileSync(
+    resolve(__dirname, "../MessagePartRenderer.tsx"),
+    "utf8",
+  );
+  const chatMessageSource = readFileSync(resolve(__dirname, "../index.tsx"), "utf8");
+
+  assert.match(rendererSource, /canManageToolPermissions = false/);
+  assert.match(rendererSource, /canManageToolPermissions &&\s*\n?\s*\(isDecided/);
+  assert.match(rendererSource, /<PermissionDecisionButton/);
+  assert.match(chatMessageSource, /user\?\.is_admin === true/);
+  assert.match(chatMessageSource, /canManageToolPermissions=\{canManageToolPermissions\}/);
 });

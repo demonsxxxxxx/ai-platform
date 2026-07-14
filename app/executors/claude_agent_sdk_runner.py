@@ -75,6 +75,9 @@ class ClaudeAgentSdkRunResult:
     session_id: str | None = None
     usage: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    # ResultMessage.stop_reason is meaningful only on a structured, non-error
+    # SDK terminal result.  Keep it separate from the failure text.
+    terminal_reason: str | None = None
     used_skills: list[str] = field(default_factory=list)
     used_skills_source: str = ""
 
@@ -1176,9 +1179,10 @@ async def run_claude_agent_sdk(
     texts: list[str] = []
     result_session_id: str | None = None
     usage: dict[str, Any] = {}
+    terminal_reason: str | None = None
 
     async def consume() -> ClaudeAgentSdkRunResult:
-        nonlocal result_session_id, usage
+        nonlocal result_session_id, usage, terminal_reason
         async for message in query(prompt=_sdk_user_prompt_stream(prompt, session_id=session_id), options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
@@ -1200,11 +1204,16 @@ async def run_claude_agent_sdk(
                         used_skills=list(used_skill_names),
                         used_skills_source="executor_hook" if used_skill_names else "",
                     )
+                stop_reason = getattr(message, "stop_reason", None)
+                terminal_reason = (
+                    str(stop_reason).strip() if isinstance(stop_reason, str) and stop_reason.strip() else None
+                )
         return ClaudeAgentSdkRunResult(
             used_sdk=True,
             message="\n".join(texts).strip(),
             session_id=result_session_id,
             usage=usage,
+            terminal_reason=terminal_reason,
             used_skills=list(used_skill_names),
             used_skills_source="executor_hook" if used_skill_names else "",
         )

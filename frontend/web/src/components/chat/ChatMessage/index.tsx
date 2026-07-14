@@ -249,7 +249,10 @@ export const ChatMessage = memo(function ChatMessage({
 }: ChatMessageProps) {
   const { t } = useTranslation();
   const { availableModels } = useSettingsContext();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user } = useAuth();
+  // Only the authenticated, server-projected admin flag unlocks governed
+  // permission decisions. Missing or stale role data remains fail closed.
+  const canManageToolPermissions = user?.is_admin === true;
   const isUser = message.role === "user";
   const isStreaming = message.isStreaming && !message.content;
   const modelDetails = resolveTokenUsageModelDetails({
@@ -348,6 +351,7 @@ export const ChatMessage = memo(function ChatMessage({
                     partIndex: index,
                     latestAutoPreview: latestAutoPreview ?? null,
                   })}
+                  canManageToolPermissions={canManageToolPermissions}
                 />
               ))}
               <RevealArtifactsSummary

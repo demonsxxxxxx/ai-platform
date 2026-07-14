@@ -513,16 +513,15 @@ class ClaudeAgentWorkerAdapter:
         return "claude_agent_sdk_required"
 
     def _sdk_completed_normally(self, sdk_result) -> bool:
-        if not sdk_result or not getattr(sdk_result, "used_sdk", False):
-            return False
-        return (
-            not getattr(sdk_result, "error", None)
-            or self._sdk_terminal_reason(sdk_result) == "stop_sequence"
+        return bool(
+            sdk_result
+            and getattr(sdk_result, "used_sdk", False)
+            and not getattr(sdk_result, "error", None)
         )
 
     def _sdk_terminal_reason(self, sdk_result) -> str | None:
-        error = str(getattr(sdk_result, "error", "") or "").strip()
-        return error if error == "stop_sequence" else None
+        terminal_reason = getattr(sdk_result, "terminal_reason", None)
+        return terminal_reason if isinstance(terminal_reason, str) and terminal_reason else None
 
     def _sdk_required_result(self, payload: RunPayload, sdk_result) -> ExecutorResult:
         error_code = self._sdk_failure_code(sdk_result)

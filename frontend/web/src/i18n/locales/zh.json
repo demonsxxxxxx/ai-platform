@@ -392,6 +392,47 @@
     "goodMorning": "早上好，{{name}}",
     "helpDocs": "帮助文档",
     "keyboardShortcuts": "键盘快捷键",
+    "toolPermission": {
+      "adminTitle": "工具权限治理",
+      "allowedForRun": {
+        "message": "管理员已授予本次运行所需的权限。",
+        "title": "本次运行已获授权"
+      },
+      "allowedOnce": {
+        "message": "管理员已授予一次性权限。",
+        "title": "操作已获授权"
+      },
+      "decided": {
+        "message": "该工具权限已由管理员处理。",
+        "title": "工具权限已处理"
+      },
+      "decisionFailed": "提交权限决策失败，请稍后重试。",
+      "decisions": {
+        "allow_for_run": "允许本次运行",
+        "allow_once": "允许一次",
+        "deny": "拒绝",
+        "pending": "待处理"
+      },
+      "denied": {
+        "message": "管理员未批准此操作；系统将保持拒绝状态。",
+        "title": "操作未获授权"
+      },
+      "pending": {
+        "message": "该操作需要管理员处理后才能继续。",
+        "title": "正在等待管理员处理"
+      },
+      "readOnly": "只读操作",
+      "recordedDecision": "已记录决策：{{decision}}",
+      "risk": "{{level}}风险",
+      "riskLevels": {
+        "critical": "严重",
+        "high": "高",
+        "low": "低",
+        "medium": "中"
+      },
+      "submitting": "提交中…",
+      "writeCapable": "可写操作"
+    },
     "message": {
       "allFiles": "全部文件",
       "args": "参数",
@@ -473,6 +514,9 @@
     "queued": "排队中 (第 {{position}} 位)...",
     "rateLimited": "请求过于频繁，请稍后再试",
     "requestFailed": "加载会话失败",
+    "runTerminal": {
+      "failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。"
+    },
     "sandbox": {
       "error": "初始化失败",
       "initializing": "正在初始化环境",
