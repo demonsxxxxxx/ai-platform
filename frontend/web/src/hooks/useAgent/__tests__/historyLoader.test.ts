@@ -212,19 +212,22 @@ test("reconstructMessagesFromEvents replays ai-platform run events and artifact 
   );
 });
 
-test("reconstructMessagesFromEvents keeps final payloads and artifacts before terminal run events", () => {
+test("reconstructMessagesFromEvents accepts production outer event types and keeps final payloads before the synthetic terminal", () => {
   const messages = reconstructMessagesFromEvents(
     [
       {
-        id: "terminal-first",
-        event_type: "run_event",
+        id: "persisted-progress",
+        sequence: 41,
+        event_type: "worker_started",
         run_id: "run-terminal",
         timestamp: "2026-07-15T01:00:00.000Z",
         data: {
-          event_id: "terminal-first",
-          event_type: "run_failed",
-          severity: "error",
-          message: "Run failed",
+          event_id: "persisted-progress",
+          run_id: "run-terminal",
+          event_type: "worker_started",
+          stage: "worker",
+          severity: "info",
+          content: "开始处理",
         },
       },
       {
@@ -235,7 +238,7 @@ test("reconstructMessagesFromEvents keeps final payloads and artifacts before te
         data: { detail_kind: "failed", detail_code: "run_failed" },
       },
       {
-        id: "artifact-after-terminal-row",
+        id: "artifact-card",
         event_type: "artifact_card",
         run_id: "run-terminal",
         timestamp: "2026-07-15T01:00:02.000Z",
@@ -244,7 +247,15 @@ test("reconstructMessagesFromEvents keeps final payloads and artifacts before te
           artifact_type: "report",
           label: "报告",
           size_bytes: 1,
+          download_url: "/api/ai/artifacts/artifact-terminal/download",
         },
+      },
+      {
+        id: "run-terminal:terminal:failed",
+        event_type: "done",
+        run_id: "run-terminal",
+        timestamp: "2026-07-15T01:00:03.000Z",
+        data: { run_id: "run-terminal", status: "failed" },
       },
     ] satisfies HistoryEvent[],
     new Set<string>(),
@@ -255,8 +266,56 @@ test("reconstructMessagesFromEvents keeps final payloads and artifacts before te
   assert.match(messages[0]?.content || "", /任务未能完成/);
   assert.deepEqual(messages[0]?.parts?.map((part) => part.type), [
     "artifact",
-    "run_status",
   ]);
+});
+
+test("reconstructMessagesFromEvents replays a production outer permission event through the compatibility envelope", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "outer-permission:user",
+        event_type: "user:message",
+        run_id: "run-outer-permission",
+        timestamp: "2026-07-15T00:00:00Z",
+        data: { content: "执行工具" },
+      },
+      {
+        id: "outer-permission:request",
+        sequence: 12,
+        event_type: "tool_permission_requested",
+        run_id: "run-outer-permission",
+        timestamp: "2026-07-15T00:00:01Z",
+        data: {
+          event_id: "outer-permission:request",
+          run_id: "run-outer-permission",
+          event_type: "tool_permission_requested",
+          tool_permission_card: {
+            permission_request_id: "permission-outer",
+            run_id: "run-outer-permission",
+            tool_id: "Bash",
+            tool_call_id: "call-outer",
+            risk_level: "high",
+            write_capable: true,
+            status: "pending",
+          },
+        },
+      },
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  const assistant = messages.find(
+    (message) => message.role === "assistant" && message.runId === "run-outer-permission",
+  );
+  assert.equal(
+    assistant?.parts?.some(
+      (part) =>
+        part.type === "tool_permission" &&
+        part.permission_request_id === "permission-outer",
+    ),
+    true,
+  );
 });
 
 test("reconstructMessagesFromEvents replays tool permission request and decision cards", () => {

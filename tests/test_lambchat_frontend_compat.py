@@ -781,9 +781,10 @@ def test_lambchat_sse_stream_places_artifact_card_before_terminal_run_event(monk
     assert response.status_code == 200
     artifact_index = response.text.index("event: artifact_card")
     final_index = response.text.index("event: message:chunk")
-    terminal_index = response.text.index('"event_type": "run_succeeded"')
-    done_index = response.text.index("event: done")
-    assert artifact_index < final_index < terminal_index < done_index
+    terminal_index = response.text.index("event: done")
+    assert artifact_index < final_index < terminal_index
+    assert '"event_type": "run_succeeded"' not in response.text
+    assert '"run_id": "run_a", "status": "succeeded"' in response.text
 
 
 def test_lambchat_sse_stream_defers_persisted_terminal_until_status_and_final_payload(monkeypatch):
@@ -843,9 +844,8 @@ def test_lambchat_sse_stream_defers_persisted_terminal_until_status_and_final_pa
 
     assert response.status_code == 200
     assert calls == 2
-    assert response.text.count('"event_type": "run_succeeded"') == 1
-    assert response.text.index("final answer") < response.text.index('"event_type": "run_succeeded"')
-    assert response.text.index('"event_type": "run_succeeded"') < response.text.index("event: done")
+    assert '"event_type": "run_succeeded"' not in response.text
+    assert response.text.index("final answer") < response.text.index("event: done")
 
 
 def test_lambchat_sse_stream_does_not_duplicate_answer_when_assistant_delta_was_persisted(monkeypatch):
@@ -1504,8 +1504,8 @@ def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
     assert event["trace_id"] == "trace_run_a"
     assert event["type"] == "message:chunk"
     assert event["stage"] == "answer"
-    assert event["payload"] == {"content": "hello"}
-    assert event["data"] == {"content": "hello"}
+    assert event["payload"] == {"run_id": "run_a", "content": "hello"}
+    assert event["data"] == {"run_id": "run_a", "content": "hello"}
     assert "sequence" not in event
 
 
@@ -1553,7 +1553,11 @@ def test_lambchat_session_answer_event_redacts_runtime_private_text(monkeypatch)
     assert response.status_code == 200
     event = response.json()["events"][0]
     assert event["type"] == "final_detail"
-    assert event["payload"] == {"detail_kind": "failed", "detail_code": "run_failed"}
+    assert event["payload"] == {
+        "run_id": "run_a",
+        "detail_kind": "failed",
+        "detail_code": "run_failed",
+    }
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(event)
     assert "/var/lib/ai-platform" not in str(event)
     assert "runtime211" not in str(event)
@@ -1616,6 +1620,22 @@ def test_lambchat_history_places_artifact_and_safe_failure_detail_before_termina
             },
         ]
 
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "artifact-a",
+                "trace_id": "trace_run_a",
+                "artifact_type": "report",
+                "label": "失败报告",
+                "content_type": "text/plain",
+                "storage_key": "tenants/tenant-a/runs/run_a/private.txt",
+                "size_bytes": 42,
+                "manifest_version": "ai-platform.artifact-manifest.v1",
+                "manifest_json": {"local_path": "/var/lib/private.txt"},
+                "created_at": None,
+            }
+        ]
+
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
     monkeypatch.setattr(
@@ -1630,6 +1650,10 @@ def test_lambchat_history_places_artifact_and_safe_failure_detail_before_termina
         "app.routes.lambchat_compat.repositories.list_run_events",
         fake_list_run_events,
     )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        fake_list_run_artifacts,
+    )
     client = TestClient(create_app())
 
     response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
@@ -1637,12 +1661,23 @@ def test_lambchat_history_places_artifact_and_safe_failure_detail_before_termina
     assert response.status_code == 200
     events = response.json()["events"]
     event_types = [event["event_type"] for event in events]
-    assert event_types.index("artifact_created") < event_types.index("final_detail") < event_types.index("run_failed")
+    assert event_types.index("artifact_created") < event_types.index("artifact_card") < event_types.index("final_detail") < event_types.index("done")
     final = events[event_types.index("final_detail")]
-    assert final["payload"] == {"detail_kind": "failed", "detail_code": "run_failed"}
+    assert final["payload"] == {
+        "run_id": "run_a",
+        "detail_kind": "failed",
+        "detail_code": "run_failed",
+    }
+    assert final["data"]["run_id"] == "run_a"
     assert "Executor failed" not in str(final)
-    terminal = events[event_types.index("run_failed")]
-    assert terminal["sequence"] == 12
+    artifact = events[event_types.index("artifact_card")]
+    assert artifact["data"]["artifact_id"] == "artifact-a"
+    assert artifact["data"]["download_url"] == "/api/ai/artifacts/artifact-a/download"
+    assert "storage_key" not in str(artifact)
+    terminal = events[event_types.index("done")]
+    assert terminal["data"] == {"run_id": "run_a", "status": "failed"}
+    assert "sequence" not in terminal
+    assert all(event["event_type"] != "run_failed" for event in events)
 
 
 def test_lambchat_session_event_data_redacts_runtime_private_message(monkeypatch):

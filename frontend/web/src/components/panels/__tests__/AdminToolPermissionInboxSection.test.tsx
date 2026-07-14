@@ -4,6 +4,7 @@ import test from "node:test";
 import "../../../i18n";
 import type { User } from "../../../types";
 import type { AdminToolPermissionInboxClient } from "../AdminToolPermissionInboxSection.tsx";
+import { ApiRequestError } from "../../../services/api/fetch.ts";
 
 type Listener = (event: { type: string }) => void;
 
@@ -294,13 +295,14 @@ test("administrator inbox fetches, renders and decides only through its tenant i
       return {
         permission_requests: listCalls === 1
           ? [{
-              permission_request_id: "tpr-a",
+              request_id: "tpr-a",
               run_id: "run-owner",
               tool_id: "customer-write",
-              tool_call_id: "call-a",
+              tool_display: "customer-write",
               risk_level: "high",
               write_capable: true,
               status: "pending",
+              allowed_decisions: ["allow_once", "deny"],
             }]
           : [],
         total: listCalls === 1 ? 1 : 0,
@@ -340,16 +342,19 @@ test("administrator inbox keeps 403 and 409 errors localized and free of raw ser
   let mode: "forbidden" | "conflict" = "forbidden";
   const client: AdminToolPermissionInboxClient = {
     list: async () => {
-      if (mode === "forbidden") throw { status: 403, message: "private-server-detail" };
+      if (mode === "forbidden") {
+        throw new ApiRequestError("private-server-detail", 403, "not_ai_admin");
+      }
       return {
         permission_requests: [{
-          permission_request_id: "tpr-conflict",
+          request_id: "tpr-conflict",
           run_id: "run-owner",
           tool_id: "customer-write",
-          tool_call_id: "call-conflict",
+          tool_display: "customer-write",
           risk_level: "high",
           write_capable: false,
           status: "pending",
+          allowed_decisions: ["allow_once", "deny"],
         }],
         total: 1,
         status: "pending",
@@ -357,7 +362,11 @@ test("administrator inbox keeps 403 and 409 errors localized and free of raw ser
       };
     },
     decide: async () => {
-      throw { status: 409, message: "private-server-detail" };
+      throw new ApiRequestError(
+        "private-server-detail",
+        409,
+        "tool_permission_request_not_pending",
+      );
     },
   };
   const forbidden = await mountInbox(adminUser, client);
@@ -387,6 +396,52 @@ test("administrator inbox keeps 403 and 409 errors localized and free of raw ser
     assert.doesNotMatch(textOf(conflict.container), /private-server-detail/);
   } finally {
     await conflict.cleanup();
+  }
+});
+
+test("administrator inbox maps the supported-decision conflict code without exposing server text", async () => {
+  const client: AdminToolPermissionInboxClient = {
+    list: async () => ({
+      permission_requests: [{
+        request_id: "tpr-unsupported",
+        run_id: "run-owner",
+        tool_id: "customer-write",
+        tool_display: "customer-write",
+        risk_level: "high",
+        write_capable: true,
+        status: "pending",
+        allowed_decisions: ["allow_once", "deny"],
+      }],
+      total: 1,
+      status: "pending",
+      limit: 50,
+    }),
+    decide: async () => {
+      throw new ApiRequestError(
+        "private-server-detail",
+        409,
+        "tool_permission_decision_not_supported",
+      );
+    },
+  };
+  const mounted = await mountInbox(adminUser, client);
+  try {
+    const deny = findButton(mounted.container, "拒绝");
+    assert.ok(deny);
+    await mounted.React.act(async () => {
+      mounted.container.dispatchEvent({
+        type: "click",
+        target: deny,
+        button: 0,
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(textOf(mounted.container), /该权限请求不支持此决策/);
+    assert.doesNotMatch(textOf(mounted.container), /private-server-detail/);
+  } finally {
+    await mounted.cleanup();
   }
 });
 

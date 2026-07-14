@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { authFetch } from "../fetch.ts";
+import { ApiRequestError, authFetch } from "../fetch.ts";
 
 function installFetchAuthStubs({
   fetchImpl,
@@ -159,6 +159,37 @@ test("authFetch strips caller-supplied Authorization headers in browser mode", a
     const headers = new Headers(calls[0].init?.headers);
     assert.equal(headers.has("Authorization"), false);
     assert.equal(headers.get("X-Test"), "1");
+  } finally {
+    stubs.restore();
+  }
+});
+
+test("authFetch exposes only the safe server status and detail code to governance clients", async () => {
+  const stubs = installFetchAuthStubs({
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({ detail: "tool_permission_decision_not_supported" }),
+        {
+          status: 409,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
+  });
+
+  try {
+    await assert.rejects(
+      () => authFetch("/api/ai/tool-permissions/inbox/request/decision"),
+      (error: unknown) => {
+        assert.equal(error instanceof ApiRequestError, true);
+        assert.equal((error as ApiRequestError).status, 409);
+        assert.equal(
+          (error as ApiRequestError).code,
+          "tool_permission_decision_not_supported",
+        );
+        assert.doesNotMatch((error as Error).message, /private|token/i);
+        return true;
+      },
+    );
   } finally {
     stubs.restore();
   }

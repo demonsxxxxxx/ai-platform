@@ -18,10 +18,26 @@ export interface ToolPermissionDecisionResponse {
 }
 
 export interface ToolPermissionInboxResponse {
-  permission_requests: ToolPermissionRequestView[];
+  permission_requests: ToolPermissionInboxRequestView[];
   total: number;
   status: "pending" | "decided" | "all" | string;
   limit: number;
+}
+
+export interface ToolPermissionInboxRequestView {
+  request_id: string;
+  run_id: string;
+  tool_id: string;
+  tool_display: string;
+  risk_level: string;
+  write_capable: boolean;
+  status: "pending" | "decided" | string;
+  expires_at?: string | null;
+  allowed_decisions: ToolPermissionDecision[];
+}
+
+export interface ToolPermissionInboxDecisionResponse {
+  permission_request: ToolPermissionInboxRequestView;
 }
 
 type ToolPermissionRequestFn = <T>(
@@ -84,7 +100,7 @@ export async function decideToolPermissionInbox(
   decision: ToolPermissionDecision,
   reason?: string,
   options: DecideToolPermissionOptions = {},
-): Promise<ToolPermissionDecisionResponse> {
+): Promise<ToolPermissionInboxDecisionResponse> {
   const request = options.request || authFetch;
   const body: { decision: ToolPermissionDecision; reason?: string } = {
     decision,
@@ -92,7 +108,7 @@ export async function decideToolPermissionInbox(
   if (reason) {
     body.reason = reason;
   }
-  return request<ToolPermissionDecisionResponse>(
+  return request<ToolPermissionInboxDecisionResponse>(
     `/api/ai/tool-permissions/inbox/${encodeURIComponent(requestId)}/decision`,
     {
       method: "POST",

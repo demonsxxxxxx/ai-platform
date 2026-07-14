@@ -9,7 +9,7 @@ from app.db import transaction
 from app.models import ToolPermissionDecisionRequest, ToolPermissionRequest
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.tool_policy import max_risk
-from app.tool_permission_projection import permission_response
+from app.tool_permission_projection import inbox_allowed_decisions, inbox_permission_response, permission_response
 
 router = APIRouter()
 
@@ -18,12 +18,13 @@ def _event_timestamp(value: object) -> object:
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
-def _inbox_decision_endpoint(request_id: str) -> str:
-    return f"/api/ai/tool-permissions/inbox/{request_id}/decision"
-
-
 def _permission_response_for_inbox(row: dict[str, object]) -> dict[str, object]:
-    return permission_response(row, decision_endpoint=_inbox_decision_endpoint(str(row["id"])))
+    return inbox_permission_response(row)
+
+
+def _raise_if_unsupported_decision(row: dict[str, object], decision: str) -> None:
+    if decision == "allow_for_run" and decision not in inbox_allowed_decisions(row):
+        raise HTTPException(status_code=409, detail="tool_permission_decision_not_supported")
 
 
 async def _append_decision_event_and_audit(
@@ -153,7 +154,7 @@ async def list_tool_permission_inbox(
     limit: int = Query(default=50, ge=1, le=200),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
-    """Return a tenant governance inbox for admins, otherwise caller history."""
+    """Return an allowlisted tenant governance inbox for admins, otherwise caller history."""
     async with transaction() as conn:
         if is_ai_admin(principal):
             rows = await repositories.list_tool_permission_inbox_for_tenant(
@@ -215,6 +216,7 @@ async def decide_tool_permission(
         )
         if existing is None:
             raise HTTPException(status_code=404, detail="tool_permission_request_not_found")
+        _raise_if_unsupported_decision(existing, request.decision)
         row = await repositories.decide_tool_permission_request(
             conn,
             tenant_id=principal.tenant_id,
@@ -256,6 +258,7 @@ async def decide_tool_permission_from_inbox(
         )
         if existing is None:
             raise HTTPException(status_code=404, detail="tool_permission_request_not_found")
+        _raise_if_unsupported_decision(existing, request.decision)
         run_id = str(existing["run_id"])
         row = await repositories.decide_tool_permission_request(
             conn,

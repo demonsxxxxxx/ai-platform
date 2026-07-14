@@ -154,6 +154,7 @@ def test_same_tenant_admin_decides_another_users_request_and_audits_actor(monkey
             reason=kwargs["reason"],
             risk_level="high",
             write_capable=True,
+            request_payload_json={"command_sha256": "a" * 64},
             expires_at="2026-06-05T12:15:00Z",
         )
 
@@ -428,8 +429,12 @@ def test_tool_permission_inbox_lists_current_user_requests(monkeypatch):
     body = response.json()
     assert calls == [("tenant-a", "user-a", "pending", 10)]
     assert body["total"] == 1
-    assert body["permission_requests"][0]["permission_request_id"] == "tpr-pending"
-    assert body["permission_requests"][0]["decision_endpoint"] == "/api/ai/tool-permissions/inbox/tpr-pending/decision"
+    assert body["permission_requests"][0]["request_id"] == "tpr-pending"
+    assert body["permission_requests"][0]["allowed_decisions"] == [
+        "allow_once",
+        "allow_for_run",
+        "deny",
+    ]
     assert "request_payload" not in body["permission_requests"][0]
     assert "decision_payload" not in body["permission_requests"][0]
     serialized = str(body)
@@ -475,10 +480,57 @@ def test_tool_permission_inbox_lists_tenant_requests_for_admin(monkeypatch):
     assert response.status_code == 200
     assert calls == [("tenant-a", "pending", 10)]
     body = response.json()
-    assert body["permission_requests"][0]["permission_request_id"] == "tpr-a"
+    inbox_request = body["permission_requests"][0]
+    assert inbox_request["request_id"] == "tpr-a"
+    assert inbox_request["allowed_decisions"] == ["allow_once", "deny"]
+    assert set(inbox_request) == {
+        "request_id",
+        "run_id",
+        "tool_id",
+        "tool_display",
+        "risk_level",
+        "write_capable",
+        "status",
+        "expires_at",
+        "allowed_decisions",
+    }
     serialized = str(body)
     assert "admin-inbox-secret" not in serialized
     assert "admin-inbox-secret-command" not in serialized
+    assert "reason" not in serialized
+
+
+def test_tool_permission_inbox_allows_run_scope_only_for_a_fingerprinted_request(monkeypatch):
+    async def fake_list_tool_permission_inbox_for_tenant(conn, *, tenant_id, status, limit):
+        return [
+            permission_row(
+                id="tpr-bash",
+                tool_id="Bash",
+                request_payload_json={
+                    "command_sha256": "a" * 64,
+                    "command": "secret command",
+                },
+            )
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.tool_permissions.repositories.list_tool_permission_inbox_for_tenant",
+        fake_list_tool_permission_inbox_for_tenant,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/ai/tool-permissions/inbox",
+        headers=headers(user_id="admin-a", roles="admin"),
+    )
+
+    assert response.status_code == 200
+    inbox_request = response.json()["permission_requests"][0]
+    assert inbox_request["allowed_decisions"] == ["allow_once", "allow_for_run", "deny"]
+    assert "a" * 64 not in str(inbox_request)
+    assert "secret command" not in str(inbox_request)
 
 
 def test_tool_permission_inbox_status_filters_pass_through(monkeypatch):
@@ -512,7 +564,13 @@ def test_tool_permission_inbox_admin_decision_writes_event_and_audit(monkeypatch
 
     async def fake_get_tool_permission_request_by_id_for_tenant(conn, *, tenant_id, request_id):
         assert (tenant_id, request_id) == ("tenant-a", "tpr-a")
-        return permission_row(user_id="run-owner", risk_level="high", write_capable=True, reason="needs write")
+        return permission_row(
+            user_id="run-owner",
+            risk_level="high",
+            write_capable=True,
+            reason="needs write",
+            request_payload_json={"command_sha256": "a" * 64},
+        )
 
     async def fake_decide_tool_permission_request(conn, **kwargs):
         calls.append(("decision", kwargs))
@@ -522,6 +580,7 @@ def test_tool_permission_inbox_admin_decision_writes_event_and_audit(monkeypatch
             reason=kwargs["reason"],
             risk_level="high",
             write_capable=True,
+            request_payload_json={"command_sha256": "a" * 64},
             expires_at="2026-06-05T12:15:00Z",
         )
 
@@ -548,8 +607,12 @@ def test_tool_permission_inbox_admin_decision_writes_event_and_audit(monkeypatch
     )
 
     assert response.status_code == 200
-    assert response.json()["permission_request"]["decision"] == "allow_for_run"
-    assert response.json()["permission_request"]["decision_endpoint"] == "/api/ai/tool-permissions/inbox/tpr-a/decision"
+    assert response.json()["permission_request"]["request_id"] == "tpr-a"
+    assert response.json()["permission_request"]["allowed_decisions"] == [
+        "allow_once",
+        "allow_for_run",
+        "deny",
+    ]
     assert calls[0][1]["run_id"] == "run-a"
     assert calls[0][1]["user_id"] == "run-owner"
     assert calls[0][1]["expires_in_seconds"] == 1200
@@ -578,6 +641,65 @@ def test_tool_permission_inbox_decision_hides_cross_tenant_request(monkeypatch):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "tool_permission_request_not_found"
+
+
+def test_tool_permission_inbox_rejects_unfingerprinted_allow_for_run_before_update(monkeypatch):
+    async def fake_get_tool_permission_request_by_id_for_tenant(conn, *, tenant_id, request_id):
+        return permission_row(tool_id="ragflow-knowledge-search", request_payload_json={})
+
+    async def fail_decide_tool_permission_request(conn, **kwargs):
+        raise AssertionError("unsupported allow_for_run must fail before atomic update")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.tool_permissions.repositories.get_tool_permission_request_by_id_for_tenant",
+        fake_get_tool_permission_request_by_id_for_tenant,
+    )
+    monkeypatch.setattr(
+        "app.routes.tool_permissions.repositories.decide_tool_permission_request",
+        fail_decide_tool_permission_request,
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/tool-permissions/inbox/tpr-a/decision",
+        headers=headers(user_id="admin-a", roles="admin"),
+        json={"decision": "allow_for_run"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "tool_permission_decision_not_supported"
+
+
+def test_direct_admin_decision_rejects_unfingerprinted_allow_for_run_before_update(monkeypatch):
+    async def fake_get_tool_permission_request_for_tenant(conn, *, tenant_id, run_id, request_id):
+        assert (tenant_id, run_id, request_id) == ("tenant-a", "run-a", "tpr-a")
+        return permission_row(tool_id="ragflow-knowledge-search", request_payload_json={})
+
+    async def fail_decide_tool_permission_request(conn, **kwargs):
+        raise AssertionError("unsupported allow_for_run must fail before atomic update")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.tool_permissions.repositories.get_tool_permission_request_for_tenant",
+        fake_get_tool_permission_request_for_tenant,
+    )
+    monkeypatch.setattr(
+        "app.routes.tool_permissions.repositories.decide_tool_permission_request",
+        fail_decide_tool_permission_request,
+    )
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-a/tool-permissions/tpr-a/decision",
+        headers=headers(user_id="admin-a", roles="admin"),
+        json={"decision": "allow_for_run"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "tool_permission_decision_not_supported"
 
 
 def test_tool_permission_inbox_decision_returns_409_for_already_decided_request(monkeypatch):

@@ -21,6 +21,24 @@ interface FetchOptions extends RequestInit {
   _retry?: boolean;
 }
 
+/** A sanitized server status/code pair for callers that need safe recovery. */
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
+function safeErrorCode(value: unknown): string | undefined {
+  return typeof value === "string" && /^[a-z0-9_]+$/.test(value)
+    ? value
+    : undefined;
+}
+
 /**
  * 带认证的 fetch 封装
  * 浏览器生产路径只依赖同源 cookie session，不再附带脚本可读 bearer token。
@@ -93,7 +111,11 @@ export async function authFetch<T>(
       errorMessage =
         errorData.detail || `Request failed: ${response.statusText}`;
     }
-    throw new Error(translateBackendError(errorMessage, i18n.t.bind(i18n)));
+    throw new ApiRequestError(
+      translateBackendError(errorMessage, i18n.t.bind(i18n)),
+      response.status,
+      safeErrorCode(errorData.detail),
+    );
   }
 
   // 处理空响应

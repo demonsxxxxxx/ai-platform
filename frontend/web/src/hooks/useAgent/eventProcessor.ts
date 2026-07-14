@@ -511,7 +511,12 @@ export function processMessageEvent(
         }
       }
       if (data.event_type === "tool_permission_requested") {
-        const permissionPart = createToolPermissionRequestedPart(data);
+        // Public persisted history projects permission requests as a
+        // controlled card.  Live legacy frames may still carry the older
+        // direct payload, so accept both without reintroducing action rights.
+        const permissionPart =
+          createToolPermissionCardPart(data) ??
+          createToolPermissionRequestedPart(data);
         if (permissionPart) {
           result.parts = upsertToolPermissionPart(parts, permissionPart);
           break;

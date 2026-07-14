@@ -893,6 +893,7 @@ test("useAgent waits for a failed done status when the fallback error is public 
   const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetStatus = sessionApi.getStatus;
+  const originalGetEvents = sessionApi.getEvents;
   const originalFetch = dom.window.fetch;
   dom.window.fetch = async () =>
     sseFramesResponse([
@@ -916,6 +917,21 @@ test("useAgent waits for a failed done status when the fallback error is public 
     status: "error",
     raw_status: "failed",
   })) as typeof sessionApi.getStatus;
+  sessionApi.getEvents = (async (_sessionId, options) => ({
+    events: options?.run_id
+      ? [{
+          id: "run-public-fallback-failed:final",
+          event_type: "final_detail",
+          run_id: "run-public-fallback-failed",
+          timestamp: "2026-07-15T00:00:01Z",
+          data: {
+            run_id: "run-public-fallback-failed",
+            detail_kind: "failed",
+            detail_code: "run_failed",
+          },
+        }]
+      : [],
+  })) as typeof sessionApi.getEvents;
 
   try {
     await harness.act(async () => {
@@ -942,6 +958,7 @@ test("useAgent waits for a failed done status when the fallback error is public 
     sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getStatus = originalGetStatus;
+    sessionApi.getEvents = originalGetEvents;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -1089,6 +1106,7 @@ test("useAgent reconciles an ordinary transport interruption authoritatively", a
   const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetStatus = sessionApi.getStatus;
+  const originalGetEvents = sessionApi.getEvents;
   const originalFetch = dom.window.fetch;
   let statusCalls = 0;
   let sseCalls = 0;
@@ -1116,6 +1134,21 @@ test("useAgent reconciles an ordinary transport interruption authoritatively", a
       raw_status: "failed",
     };
   }) as typeof sessionApi.getStatus;
+  sessionApi.getEvents = (async (_sessionId, options) => ({
+    events: options?.run_id
+      ? [{
+          id: "run-transport-interruption:final",
+          event_type: "final_detail",
+          run_id: "run-transport-interruption",
+          timestamp: "2026-07-15T00:00:01Z",
+          data: {
+            run_id: "run-transport-interruption",
+            detail_kind: "failed",
+            detail_code: "run_failed",
+          },
+        }]
+      : [],
+  })) as typeof sessionApi.getEvents;
 
   try {
     await harness.act(async () => {
@@ -1141,6 +1174,103 @@ test("useAgent reconciles an ordinary transport interruption authoritatively", a
     sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getStatus = originalGetStatus;
+    sessionApi.getEvents = originalGetEvents;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent shares one generation-bound reconciliation owner across concurrent recovery callers", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalFetch = dom.window.fetch;
+  let statusCalls = 0;
+  let resolveStatus!: (value: Awaited<ReturnType<typeof sessionApi.getStatus>>) => void;
+  dom.window.fetch = async () => {
+    throw new Error("concurrent recovery transport interruption");
+  };
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "并发恢复会话",
+    session_id: "session-reconcile-owner",
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-reconcile-owner",
+    run_id: "run-reconcile-owner",
+    trace_id: "trace-reconcile-owner",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+  sessionApi.getStatus = (async () => {
+    statusCalls += 1;
+    return new Promise((resolve) => {
+      resolveStatus = resolve;
+    });
+  }) as typeof sessionApi.getStatus;
+  sessionApi.getEvents = (async (_sessionId, options) => ({
+    events: options?.run_id
+      ? [{
+          id: "run-reconcile-owner:final",
+          event_type: "final_detail",
+          run_id: "run-reconcile-owner",
+          timestamp: "2026-07-15T00:00:01Z",
+          data: {
+            run_id: "run-reconcile-owner",
+            detail_kind: "failed",
+            detail_code: "run_failed",
+          },
+        }]
+      : [],
+  })) as typeof sessionApi.getEvents;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("并发状态恢复");
+    });
+    await settle(harness.act);
+    assert.equal(statusCalls, 1);
+
+    let firstReconnect!: Promise<void>;
+    let secondReconnect!: Promise<void>;
+    await harness.act(async () => {
+      firstReconnect = harness.hook.reconnectSSE();
+      secondReconnect = harness.hook.reconnectSSE();
+    });
+    assert.equal(statusCalls, 1);
+
+    resolveStatus({
+      session_id: "session-reconcile-owner",
+      run_id: "run-reconcile-owner",
+      status: "error",
+      raw_status: "failed",
+    });
+    await harness.act(async () => {
+      await Promise.all([firstReconnect, secondReconnect]);
+    });
+    await settle(harness.act);
+
+    assert.equal(statusCalls, 1);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(
+      harness.hook.messages
+        .flatMap((message) => message.parts || [])
+        .filter(
+          (part) =>
+            part.type === "run_status" &&
+            part.event_id === "terminal-failure:run-reconcile-owner",
+        ).length,
+      1,
+    );
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.getEvents = originalGetEvents;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -1153,6 +1283,7 @@ test("useAgent reconciles a post-refresh transport failure from its initial stre
   const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalGetStatus = sessionApi.getStatus;
+  const originalGetEvents = sessionApi.getEvents;
   const originalFetch = dom.window.fetch;
   const originalGlobalFetch = globalThis.fetch;
   const originalSessionMarker = dom.window.localStorage.getItem(
@@ -1199,6 +1330,21 @@ test("useAgent reconciles a post-refresh transport failure from its initial stre
       raw_status: "failed",
     };
   }) as typeof sessionApi.getStatus;
+  sessionApi.getEvents = (async (_sessionId, options) => ({
+    events: options?.run_id
+      ? [{
+          id: "run-initial-post-refresh:final",
+          event_type: "final_detail",
+          run_id: "run-initial-post-refresh",
+          timestamp: "2026-07-15T00:00:01Z",
+          data: {
+            run_id: "run-initial-post-refresh",
+            detail_kind: "failed",
+            detail_code: "run_failed",
+          },
+        }]
+      : [],
+  })) as typeof sessionApi.getEvents;
 
   try {
     await harness.act(async () => {
@@ -1225,6 +1371,7 @@ test("useAgent reconciles a post-refresh transport failure from its initial stre
     sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     sessionApi.getStatus = originalGetStatus;
+    sessionApi.getEvents = originalGetEvents;
     dom.window.fetch = originalFetch;
     globalThis.fetch = originalGlobalFetch;
     if (originalSessionMarker === null) {
@@ -1411,27 +1558,43 @@ test("useAgent derives an events-only failed reload run before normalizing its p
     is_active: true,
     metadata: {},
   });
-  sessionApi.getEvents = async () => ({
-    events: [
-      {
-        id: "evt-history-user",
-        run_id: "run-history-failed",
-        event_type: "user:message",
-        timestamp: "2026-07-15T00:00:00Z",
-        data: { content: "执行任务" },
-      },
-      {
-        id: "evt-history-failed",
-        run_id: "run-history-failed",
-        event_type: "run_event",
-        timestamp: "2026-07-15T00:00:01Z",
-        data: {
-          event_type: "run_failed",
-          message: "Executor failed",
-          severity: "error",
-        },
-      },
-    ],
+  sessionApi.getEvents = async (_sessionId, options) => ({
+    events: options?.run_id
+      ? [{
+          id: "run-history-failed:final",
+          event_type: "final_detail",
+          run_id: "run-history-failed",
+          timestamp: "2026-07-15T00:00:02Z",
+          data: {
+            run_id: "run-history-failed",
+            detail_kind: "failed",
+            detail_code: "run_failed",
+          },
+        }]
+      : [
+          {
+            id: "evt-history-user",
+            run_id: "run-history-failed",
+            event_type: "user:message",
+            timestamp: "2026-07-15T00:00:00Z",
+            data: { content: "执行任务" },
+          },
+          {
+            id: "evt-history-progress",
+            sequence: 4,
+            run_id: "run-history-failed",
+            event_type: "worker_started",
+            timestamp: "2026-07-15T00:00:01Z",
+            data: {
+              event_id: "evt-history-progress",
+              run_id: "run-history-failed",
+              event_type: "worker_started",
+              stage: "worker",
+              content: "处理中",
+              severity: "info",
+            },
+          },
+        ],
   });
   sessionApi.getStatus = (async (sessionId, runId) => {
     statusCalls.push([sessionId, runId]);
@@ -1566,16 +1729,26 @@ test("useAgent reconciles a reload SSE interruption to its failed run status", a
     is_active: true,
     metadata: {},
   });
-  sessionApi.getEvents = async () => ({
-    events: [
-      {
-        id: "evt-history-interrupted",
-        run_id: "run-history-interrupted",
-        event_type: "user:message",
-        timestamp: "2026-07-15T00:00:00Z",
-        data: { content: "恢复后中断" },
-      },
-    ],
+  sessionApi.getEvents = async (_sessionId, options) => ({
+    events: options?.run_id
+      ? [{
+          id: "run-history-interrupted:final",
+          event_type: "final_detail",
+          run_id: "run-history-interrupted",
+          timestamp: "2026-07-15T00:00:02Z",
+          data: {
+            run_id: "run-history-interrupted",
+            detail_kind: "failed",
+            detail_code: "run_failed",
+          },
+        }]
+      : [{
+          id: "evt-history-interrupted",
+          run_id: "run-history-interrupted",
+          event_type: "user:message",
+          timestamp: "2026-07-15T00:00:00Z",
+          data: { content: "恢复后中断" },
+        }],
   });
   sessionApi.getStatus = (async () => {
     statusCalls += 1;
@@ -1614,6 +1787,184 @@ test("useAgent reconciles a reload SSE interruption to its failed run status", a
     sessionApi.getStatus = originalGetStatus;
     sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent hydrates the exact terminal run compatibility history before converging", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const eventQueries: Array<string | undefined> = [];
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-terminal-hydrate",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async (_sessionId, options) => {
+    eventQueries.push(options?.run_id);
+    if (!options?.run_id) {
+      return {
+        events: [{
+          id: "terminal-hydrate:user",
+          event_type: "user:message",
+          run_id: "run-terminal-hydrate",
+          timestamp: "2026-07-15T00:00:00Z",
+          data: { content: "恢复终态" },
+        }],
+      };
+    }
+    return {
+      events: [
+        {
+          id: "terminal-hydrate:progress",
+          sequence: 9,
+          event_type: "worker_started",
+          run_id: "run-terminal-hydrate",
+          timestamp: "2026-07-15T00:00:01Z",
+          data: {
+            event_id: "terminal-hydrate:progress",
+            run_id: "run-terminal-hydrate",
+            event_type: "worker_started",
+            stage: "worker",
+            content: "处理完成",
+          },
+        },
+        {
+          id: "terminal-hydrate:artifact",
+          event_type: "artifact_card",
+          run_id: "run-terminal-hydrate",
+          timestamp: "2026-07-15T00:00:02Z",
+          data: {
+            run_id: "run-terminal-hydrate",
+            artifact_id: "artifact-terminal-hydrate",
+            artifact_type: "report",
+            label: "结果报告",
+            download_url: "/api/ai/artifacts/artifact-terminal-hydrate/download",
+          },
+        },
+        {
+          id: "terminal-hydrate:final",
+          event_type: "message:chunk",
+          run_id: "run-terminal-hydrate",
+          timestamp: "2026-07-15T00:00:03Z",
+          data: { run_id: "run-terminal-hydrate", content: "最终答案" },
+        },
+        {
+          id: "run-terminal-hydrate:terminal:succeeded",
+          event_type: "done",
+          run_id: "run-terminal-hydrate",
+          timestamp: "2026-07-15T00:00:04Z",
+          data: { run_id: "run-terminal-hydrate", status: "succeeded" },
+        },
+      ],
+    };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-terminal-hydrate",
+    run_id: "run-terminal-hydrate",
+    status: "error",
+    raw_status: "succeeded",
+  })) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-terminal-hydrate");
+    });
+    await settle(harness.act);
+
+    const assistant = harness.hook.messages.find(
+      (message) => message.runId === "run-terminal-hydrate" && message.role === "assistant",
+    );
+    assert.deepEqual(eventQueries, [undefined, "run-terminal-hydrate"]);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(assistant?.content, "最终答案");
+    assert.equal(
+      assistant?.parts?.some(
+        (part) =>
+          part.type === "artifact" &&
+          part.artifact_id === "artifact-terminal-hydrate",
+      ),
+      true,
+    );
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent presents a safe local card when terminal history hydration fails", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  let eventQueries = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-terminal-hydrate-failure",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async () => {
+    eventQueries += 1;
+    if (eventQueries === 1) {
+      return {
+        events: [{
+          id: "terminal-hydrate-failure:user",
+          event_type: "user:message",
+          run_id: "run-terminal-hydrate-failure",
+          timestamp: "2026-07-15T00:00:00Z",
+          data: { content: "恢复失败终态" },
+        }],
+      };
+    }
+    throw new Error("history unavailable");
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-terminal-hydrate-failure",
+    run_id: "run-terminal-hydrate-failure",
+    status: "failed",
+  })) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-terminal-hydrate-failure");
+    });
+    await settle(harness.act);
+
+    const cards = harness.hook.messages
+      .flatMap((message) => message.parts || [])
+      .filter(
+        (part) =>
+          part.type === "run_status" &&
+          part.event_id ===
+            "terminal-result-unavailable:run-terminal-hydrate-failure",
+      );
+    assert.equal(eventQueries, 2);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(cards.length, 1);
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
     await harness.cleanup();
   }
 });
@@ -1705,6 +2056,7 @@ test("useAgent immediately reconciles a non-terminal application error without s
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
   const originalGetStatus = sessionApi.getStatus;
+  const originalGetEvents = sessionApi.getEvents;
   const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalFetch = dom.window.fetch;
@@ -1734,6 +2086,21 @@ test("useAgent immediately reconciles a non-terminal application error without s
       raw_status: "failed",
     };
   }) as typeof sessionApi.getStatus;
+  sessionApi.getEvents = (async (_sessionId, options) => ({
+    events: options?.run_id
+      ? [{
+          id: "run-nonterminal-error:final",
+          event_type: "final_detail",
+          run_id: "run-nonterminal-error",
+          timestamp: "2026-07-15T00:00:01Z",
+          data: {
+            run_id: "run-nonterminal-error",
+            detail_kind: "failed",
+            detail_code: "run_failed",
+          },
+        }]
+      : [],
+  })) as typeof sessionApi.getEvents;
 
   try {
     await harness.act(async () => {
@@ -1761,6 +2128,7 @@ test("useAgent immediately reconciles a non-terminal application error without s
   } finally {
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.getStatus = originalGetStatus;
+    sessionApi.getEvents = originalGetEvents;
     sessionApi.markRead = originalMarkRead;
     sessionApi.generateTitle = originalGenerateTitle;
     dom.window.fetch = originalFetch;

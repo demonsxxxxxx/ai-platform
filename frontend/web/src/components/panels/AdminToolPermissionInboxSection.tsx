@@ -6,9 +6,10 @@ import {
   decideToolPermissionInbox,
   listToolPermissionInbox,
   type ToolPermissionDecision,
+  type ToolPermissionInboxRequestView,
   type ToolPermissionInboxResponse,
-  type ToolPermissionRequestView,
 } from "../../services/api/toolPermission";
+import { ApiRequestError } from "../../services/api/fetch";
 
 export interface AdminToolPermissionInboxClient {
   list: () => Promise<ToolPermissionInboxResponse>;
@@ -25,21 +26,27 @@ const defaultClient: AdminToolPermissionInboxClient = {
 };
 
 function inboxErrorKey(error: unknown): string {
-  const status =
-    error && typeof error === "object" && "status" in error
-      ? (error as { status?: unknown }).status
-      : undefined;
-  if (status === 403) return "settings.toolPermissionInbox.forbidden";
-  if (status === 409) return "settings.toolPermissionInbox.alreadyDecided";
+  if (!(error instanceof ApiRequestError)) {
+    return "settings.toolPermissionInbox.requestFailed";
+  }
+  if (error.code === "not_ai_admin") {
+    return "settings.toolPermissionInbox.forbidden";
+  }
+  if (error.code === "tool_permission_request_not_pending") {
+    return "settings.toolPermissionInbox.alreadyDecided";
+  }
+  if (error.code === "tool_permission_decision_not_supported") {
+    return "settings.toolPermissionInbox.decisionNotSupported";
+  }
   return "settings.toolPermissionInbox.requestFailed";
 }
 
-function RequestSummary({ request }: { request: ToolPermissionRequestView }) {
+function RequestSummary({ request }: { request: ToolPermissionInboxRequestView }) {
   const { t } = useTranslation();
   return (
     <div className="min-w-0">
       <p className="truncate text-sm font-medium text-stone-700 dark:text-stone-200">
-        {request.tool_id}
+        {request.tool_display || request.tool_id}
       </p>
       <p className="mt-0.5 text-xs text-stone-500 dark:text-stone-400">
         {t("settings.toolPermissionInbox.risk", {
@@ -65,7 +72,7 @@ export function AdminToolPermissionInboxSection({
   const { t } = useTranslation();
   const { user } = useAuth();
   const isAdmin = user?.is_admin === true;
-  const [requests, setRequests] = useState<ToolPermissionRequestView[]>([]);
+  const [requests, setRequests] = useState<ToolPermissionInboxRequestView[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const [errorKey, setErrorKey] = useState<string | null>(null);
@@ -97,7 +104,7 @@ export function AdminToolPermissionInboxSection({
         await client.decide(requestId, decision);
         setRequests((previous) =>
           previous.filter(
-            (request) => request.permission_request_id !== requestId,
+            (request) => request.request_id !== requestId,
           ),
         );
         // A refresh makes a concurrent/duplicate server decision converge
@@ -156,17 +163,17 @@ export function AdminToolPermissionInboxSection({
         )}
         {requests.map((request) => (
           <div
-            key={request.permission_request_id}
+            key={request.request_id}
             className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-[var(--theme-bg-sidebar)] px-3 py-2"
           >
             <RequestSummary request={request} />
             <div className="flex flex-wrap gap-1.5">
-              {(["allow_once", "allow_for_run", "deny"] as const).map(
+              {request.allowed_decisions.map(
                 (decision) => (
                   <button
                     key={decision}
                     type="button"
-                    onClick={() => void decide(request.permission_request_id, decision)}
+                    onClick={() => void decide(request.request_id, decision)}
                     disabled={decidingId !== null}
                     className={
                       decision === "deny"

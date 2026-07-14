@@ -19,7 +19,6 @@ import type {
 import { convertAttachments, processMessageEvent } from "./eventProcessor";
 import { clearAllLoadingStates } from "./messageParts";
 import { parseDate } from "../../utils/datetime";
-import { terminalRunStatus } from "./runLifecycle";
 
 function resolveUserMessageId(
   event: HistoryEvent,
@@ -68,10 +67,54 @@ function canAttachToPreviousAssistant(
   );
 }
 
-function isPersistedTerminalHistoryEvent(event: HistoryEvent): boolean {
-  if (event.event_type !== "run_event") return false;
-  const data = event.data as HistoryEventData;
-  return terminalRunStatus(data.event_type) !== null;
+function compatibilityHistoryRank(event: HistoryEvent): number {
+  if (event.event_type === "user:message") return -1;
+  if (typeof event.sequence === "number") return 0;
+  if (event.event_type === "artifact_card") return 1;
+  if (
+    event.event_type === "message:chunk" ||
+    event.event_type === "final_detail"
+  ) {
+    return 2;
+  }
+  if (event.event_type === "done") return 3;
+  return 0;
+}
+
+const DIRECT_HISTORY_PROCESSOR_EVENTS = new Set([
+  "agent:call",
+  "agent:result",
+  "thinking",
+  "message:chunk",
+  "final_detail",
+  "tool:start",
+  "tool:result",
+  "sandbox:starting",
+  "sandbox:ready",
+  "sandbox:error",
+  "token:usage",
+  "todo:updated",
+  "summary",
+  "artifact_card",
+]);
+
+/**
+ * Persisted compatibility history intentionally exposes its production event
+ * type at the outer level.  The message processor's durable status and tool
+ * permission projection still uses the `run_event` envelope, so translate
+ * only sequenced persisted rows that have no dedicated visual processor.
+ */
+function historyProcessorEventType(
+  event: HistoryEvent,
+  data: HistoryEventData,
+): string {
+  if (
+    typeof event.sequence === "number" &&
+    !DIRECT_HISTORY_PROCESSOR_EVENTS.has(event.event_type)
+  ) {
+    return "run_event";
+  }
+  return event.event_type || data.event_type || "run_event";
 }
 
 /**
@@ -148,12 +191,13 @@ function processHistoryEvent(
     event_id: eventData.event_id || (event.id ? event.id.toString() : undefined),
     run_id: eventData.run_id || event.run_id,
     event_type: eventData.event_type || event.event_type,
+    sequence: event.sequence ?? eventData.sequence,
     timestamp: eventData.timestamp || event.timestamp,
     ...eventData,
   } as EventData;
 
   const result = processMessageEvent(
-    eventType,
+    historyProcessorEventType(event, eventData),
     eventDataWithEnvelope,
     msg.parts || [],
     msg.content,
@@ -204,17 +248,22 @@ export function reconstructMessagesFromEvents(
   processedEventIds: Set<string>,
   opts: ProcessHistoryOptions,
 ): Message[] {
-  // Sort events by timestamp
+  // A run's compatibility projection is ordered by persisted sequence, then
+  // artifact/final payload, then its synthetic terminal.  Different runs keep
+  // their normal chronological ordering.
   const sortedEvents = [...events].sort((a, b) => {
-    // A compatibility projection may persist its terminal run event before
-    // the final answer or artifact payload becomes visible.  Keep terminal
-    // convergence behind every event for the same run even when source
-    // timestamps are skewed, so history follows the live stream contract.
     if (a.run_id && a.run_id === b.run_id) {
-      const aTerminal = isPersistedTerminalHistoryEvent(a);
-      const bTerminal = isPersistedTerminalHistoryEvent(b);
-      if (aTerminal !== bTerminal) {
-        return aTerminal ? 1 : -1;
+      const rankA = compatibilityHistoryRank(a);
+      const rankB = compatibilityHistoryRank(b);
+      if (rankA !== rankB) {
+        return rankA - rankB;
+      }
+      if (rankA === 0) {
+        const sequenceA = typeof a.sequence === "number" ? a.sequence : null;
+        const sequenceB = typeof b.sequence === "number" ? b.sequence : null;
+        if (sequenceA !== null && sequenceB !== null && sequenceA !== sequenceB) {
+          return sequenceA - sequenceB;
+        }
       }
     }
     const timeA = parseEventTimestamp(a.timestamp, 0).getTime();

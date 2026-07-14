@@ -19,6 +19,7 @@ import {
   isActiveRunStatus,
   terminalRunStatus,
   terminalRunStatusFromEvent,
+  type TerminalRunStatus,
 } from "./runLifecycle";
 import type { ChatRunStatusResponse } from "../../services/api/session";
 
@@ -36,6 +37,12 @@ export interface SSEConnectionContext extends EventHandlerContext {
   retryCountRef: React.MutableRefObject<number>;
   statusRetryCountRef?: React.MutableRefObject<number>;
   messagesRef: React.MutableRefObject<Message[]>;
+  hydrateTerminalRun?: (
+    sessionId: string,
+    runId: string,
+    status: TerminalRunStatus,
+    messageId: string,
+  ) => Promise<void>;
 }
 
 /**
@@ -419,9 +426,6 @@ export async function connectToSSE(
             terminalStatus && !sourceRunId
               ? { ...parsedData, run_id: targetRunId }
               : parsedData;
-          if (terminalStatus) {
-            receivedTerminalEvent = true;
-          }
           const timestamp = normalizedData._timestamp as string | undefined;
           const streamEvent: StreamEvent = {
             event: event.event as EventType,
@@ -439,6 +443,11 @@ export async function connectToSSE(
               streamVersion,
             },
           );
+          // A foreign, replayed, stale, or otherwise rejected terminal frame
+          // must not suppress close reconciliation for the current run.
+          if (terminalStatus && accepted) {
+            receivedTerminalEvent = true;
+          }
           if (
             accepted &&
             isAcceptedRunProgress(event.event, normalizedData, Boolean(terminalStatus))
@@ -617,11 +626,20 @@ export async function reconnectSSE(
   const terminalStatus = terminalRunStatus(statusResult.status);
   if (terminalStatus) {
     console.log("[SSE] Task already completed");
-    ctx.onRunTerminal?.(
-      currentRId,
-      terminalStatus,
-      currentMsgId || currentRId,
-    );
+    if (ctx.hydrateTerminalRun) {
+      await ctx.hydrateTerminalRun(
+        currentSessId,
+        currentRId,
+        terminalStatus,
+        currentMsgId || currentRId,
+      );
+    } else {
+      ctx.onRunTerminal?.(
+        currentRId,
+        terminalStatus,
+        currentMsgId || currentRId,
+      );
+    }
     return;
   }
 

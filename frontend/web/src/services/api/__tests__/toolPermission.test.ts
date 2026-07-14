@@ -72,14 +72,14 @@ test("uses only the tenant administrator inbox endpoints for inbox list and deci
     if (init?.method === "POST") {
       return {
         permission_request: {
-          permission_request_id: "tpr-inbox",
+          request_id: "tpr-inbox",
           run_id: "run-owner",
           tool_id: "customer-write",
-          tool_call_id: "call-owner",
+          tool_display: "customer-write",
           risk_level: "high",
           write_capable: true,
           status: "decided",
-          decision: "deny",
+          allowed_decisions: ["allow_once", "deny"],
         },
       } as T;
     }
@@ -97,7 +97,7 @@ test("uses only the tenant administrator inbox endpoints for inbox list and deci
   });
 
   assert.equal(inbox.total, 0);
-  assert.equal(decision.permission_request.decision, "deny");
+  assert.equal(decision.permission_request.request_id, "tpr-inbox");
   assert.deepEqual(calls, [
     {
       url: "/api/ai/tool-permissions/inbox?status=pending&limit=25",
