@@ -34,6 +34,7 @@ export interface EventHandlerContext {
   sessionIdRef: React.MutableRefObject<string | null>;
   currentRunIdRef: React.MutableRefObject<string | null>;
   processedEventIdsRef: React.MutableRefObject<Set<string>>;
+  acceptedRunEventSequenceRef?: React.MutableRefObject<AcceptedRunEventSequence>;
   lastHistoryTimestampRef: React.MutableRefObject<Date | null>;
   activeSubagentStackRef: React.MutableRefObject<SubagentStackItem[]>;
   streamVersionRef: React.MutableRefObject<number>;
@@ -49,6 +50,57 @@ export interface EventHandlerContext {
   ) => boolean;
   onRunStatusUnavailable?: (runId: string, messageId: string) => boolean;
   dismissQueueToast?: () => void;
+}
+
+/** Durable, bounded progress cursor for the active session/run stream. */
+export interface AcceptedRunEventSequence {
+  sessionId: string | null;
+  runId: string | null;
+  sequence: number | null;
+}
+
+/** The connection generation that authorizes a runless stream frame. */
+export interface StreamEventBinding {
+  sessionId: string;
+  runId: string;
+  streamVersion: number;
+}
+
+const MESSAGE_EVENTS = new Set<string>([
+  "agent:call",
+  "agent:result",
+  "thinking",
+  "message:chunk",
+  "tool:start",
+  "tool:result",
+  "sandbox:starting",
+  "sandbox:ready",
+  "sandbox:error",
+  "token:usage",
+  "todo:updated",
+  "summary",
+  "run_event",
+  "artifact_card",
+  "error",
+]);
+
+const SIDE_EFFECT_EVENTS = new Set<string>([
+  "metadata",
+  "user:message",
+  "user:cancel",
+  "complete",
+  "done",
+  "queue_update",
+  "approval_required",
+  "skills:changed",
+]);
+
+function runEventSequence(data: EventData): number | null {
+  return typeof data.sequence === "number" &&
+    Number.isSafeInteger(data.sequence) &&
+    data.sequence >= 0
+    ? data.sequence
+    : null;
 }
 
 function dismissQueueToast(ctx: EventHandlerContext): void {
@@ -70,20 +122,68 @@ export function handleStreamEvent(
   eventId: string,
   eventTimestamp: string | undefined,
   ctx: EventHandlerContext,
-): void {
+  binding?: StreamEventBinding,
+): boolean {
   console.log("[handleStreamEvent] Received event:", {
     eventType: event.event,
     messageId,
     eventId,
   });
 
-  // Skip if already processed by ID
-  if (ctx.processedEventIdsRef.current.has(eventId)) {
-    console.log("[SSE] Skipping duplicate event by ID:", eventId);
-    return;
+  // A bound SSE connection is the authority for both run ownership and
+  // generation. Generic callers cannot bind runless terminal frames.
+  if (
+    binding &&
+    (ctx.streamVersionRef.current !== binding.streamVersion ||
+      ctx.sessionIdRef.current !== binding.sessionId ||
+      ctx.currentRunIdRef.current !== binding.runId)
+  ) {
+    return false;
   }
 
-  // Skip if this event is older than the last history timestamp
+  const eventType = event.event;
+  let data: EventData;
+  try {
+    const parsed = JSON.parse(event.data);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return false;
+    }
+    data = parsed as EventData;
+  } catch {
+    return false;
+  }
+
+  const eventRunId =
+    typeof data.run_id === "string" && data.run_id.trim()
+      ? data.run_id
+      : null;
+  if (eventRunId && ctx.currentRunIdRef.current !== eventRunId) {
+    return false;
+  }
+  if (binding && eventRunId && eventRunId !== binding.runId) {
+    return false;
+  }
+
+  const terminalStatus = terminalRunStatusFromEvent(
+    eventType,
+    data as unknown as Record<string, unknown>,
+  );
+  // Only a generation-bound SSE connection may bind a runless terminal frame.
+  // Generic event handling, including history replay, must have an explicit id.
+  if (terminalStatus && !eventRunId) {
+    return false;
+  }
+
+  if (!SIDE_EFFECT_EVENTS.has(eventType) && !MESSAGE_EVENTS.has(eventType)) {
+    console.warn("[SSE] Unhandled event type:", eventType);
+    return false;
+  }
+
+  if (ctx.processedEventIdsRef.current.has(eventId)) {
+    console.log("[SSE] Skipping duplicate event by ID:", eventId);
+    return false;
+  }
+
   if (eventTimestamp && ctx.lastHistoryTimestampRef.current) {
     const eventTime = parseDate(eventTimestamp);
     const historyTime = ctx.lastHistoryTimestampRef.current;
@@ -95,56 +195,63 @@ export function handleStreamEvent(
         "<=",
         historyTime.toISOString(),
       );
-      return;
+      return false;
     }
   }
 
-  ctx.processedEventIdsRef.current.add(eventId);
-
-  // Cap the dedup set to prevent unbounded memory growth during long streams.
-  // Safe to clear: event dedup is only needed within a single streaming session,
-  // and the set is fully cleared on loadHistory/sendMessage/clearMessages.
-  if (ctx.processedEventIdsRef.current.size > 10_000) {
-    ctx.processedEventIdsRef.current.clear();
-  }
-
-  // Capture stream version at event processing time to detect stale events.
-  // If clearMessages() was called while SSE events were still in-flight,
-  // the version will have been incremented and these stale events should be dropped.
-  const streamVersion = ctx.streamVersionRef.current;
-
-  const eventType = event.event;
-  let data: EventData = {};
-  try {
-    data = JSON.parse(event.data);
-  } catch {
-    // Fallback for non-JSON data
-  }
-
-  const eventRunId =
-    typeof data.run_id === "string" && data.run_id.trim()
-      ? data.run_id
-      : null;
-  if (eventRunId && ctx.currentRunIdRef.current !== eventRunId) {
-    return;
-  }
-
-  const terminalStatus = terminalRunStatusFromEvent(
-    eventType,
-    data as unknown as Record<string, unknown>,
-  );
-  // Only a generation-bound SSE connection may bind a runless terminal frame.
-  // Generic event handling, including history replay, must have an explicit id.
-  const terminalRunId = eventRunId;
-  if (terminalStatus && !terminalRunId) {
-    return;
+  const progressSequence = runEventSequence(data);
+  const progressSessionId = binding?.sessionId ?? ctx.sessionIdRef.current;
+  const progressRunId = binding?.runId ?? eventRunId;
+  const acceptedProgress = ctx.acceptedRunEventSequenceRef?.current;
+  // Sequenced run_event frames can only be accepted through the durable
+  // cursor. A partial caller without that cursor must fail closed instead of
+  // accidentally restoring the reconnect budget.
+  if (eventType === "run_event" && progressSequence !== null && !acceptedProgress) {
+    return false;
   }
   if (
-    terminalStatus &&
-    terminalRunId &&
-    ctx.onRunTerminal?.(terminalRunId, terminalStatus, messageId)
+    eventType === "run_event" &&
+    progressSequence !== null &&
+    progressSessionId &&
+    progressRunId &&
+    acceptedProgress &&
+    acceptedProgress.sessionId === progressSessionId &&
+    acceptedProgress.runId === progressRunId &&
+    acceptedProgress.sequence !== null &&
+    progressSequence <= acceptedProgress.sequence
   ) {
-    return;
+    return false;
+  }
+
+  // Mark only after all current-run/generation, parse, replay, and timestamp
+  // checks have passed. The capped UI dedup set stays bounded; the sequence
+  // cursor below remains the replay-safe authority for reconnect recovery.
+  ctx.processedEventIdsRef.current.add(eventId);
+  if (ctx.processedEventIdsRef.current.size > 10_000) {
+    ctx.processedEventIdsRef.current.clear();
+    ctx.processedEventIdsRef.current.add(eventId);
+  }
+  if (
+    eventType === "run_event" &&
+    progressSequence !== null &&
+    progressSessionId &&
+    progressRunId
+  ) {
+    if (ctx.acceptedRunEventSequenceRef) {
+      ctx.acceptedRunEventSequenceRef.current = {
+        sessionId: progressSessionId,
+        runId: progressRunId,
+        sequence: progressSequence,
+      };
+    }
+  }
+
+  if (
+    terminalStatus &&
+    eventRunId &&
+    ctx.onRunTerminal?.(eventRunId, terminalStatus, messageId)
+  ) {
+    return true;
   }
 
   const depth = data.depth || 0;
@@ -155,22 +262,22 @@ export function handleStreamEvent(
       if (
         data.session_id &&
         !ctx.sessionIdRef.current &&
-        ctx.streamVersionRef.current === streamVersion
+        (!binding || ctx.streamVersionRef.current === binding.streamVersion)
       ) {
         ctx.setSessionId(data.session_id);
       }
-      return;
+      return true;
     }
 
     case "user:message": {
       handleUserMessage(data, messageId, eventTimestamp, ctx);
-      return;
+      return true;
     }
 
     case "user:cancel": {
       dismissQueueToast(ctx);
       handleError(data, messageId, ctx, true, { keepConnectionOpen: true });
-      return;
+      return true;
     }
 
     case "complete":
@@ -194,7 +301,7 @@ export function handleStreamEvent(
         sessionApi.markRead(activeSessionId).catch(() => {});
       }
       ctx.options?.onStreamDone?.();
-      return;
+      return true;
     }
 
     case "queue_update": {
@@ -204,12 +311,12 @@ export function handleStreamEvent(
           toast.success(i18n.t("chat.queueStart"), { duration: 2000 });
         });
       }
-      return;
+      return true;
     }
 
     case "approval_required": {
       handleApprovalRequired(data, ctx);
-      return;
+      return true;
     }
 
     case "skills:changed": {
@@ -225,36 +332,8 @@ export function handleStreamEvent(
           (data.files_count as number) || 0,
         );
       }
-      return;
+      return true;
     }
-  }
-
-  // Drop stale events if clearMessages() was called mid-stream
-  if (ctx.streamVersionRef.current !== streamVersion) {
-    return;
-  }
-
-  // Only process known message-transforming event types
-  const MESSAGE_EVENTS = new Set([
-    "agent:call",
-    "agent:result",
-    "thinking",
-    "message:chunk",
-    "tool:start",
-    "tool:result",
-    "sandbox:starting",
-    "sandbox:ready",
-    "sandbox:error",
-    "token:usage",
-    "todo:updated",
-    "summary",
-    "run_event",
-    "artifact_card",
-    "error",
-  ]);
-  if (!MESSAGE_EVENTS.has(eventType)) {
-    console.warn("[SSE] Unhandled event type:", eventType);
-    return;
   }
 
   // Events that transform message state via processMessageEvent
@@ -338,6 +417,7 @@ export function handleStreamEvent(
     ctx.setIsInitializingSandbox(false);
     ctx.options?.onClearApprovals?.();
   }
+  return true;
 }
 
 // ---- Events handled outside processMessageEvent ----

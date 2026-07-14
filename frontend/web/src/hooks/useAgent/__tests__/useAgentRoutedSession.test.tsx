@@ -1664,7 +1664,7 @@ test("useAgent clears a pending reconnect timer when switching sessions", async 
   }
 });
 
-test("useAgent preserves an active run reconnect budget across a same-session reload", async () => {
+test("useAgent preserves replay-safe reconnect budget across a same-session reload", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -1689,9 +1689,14 @@ test("useAgent preserves an active run reconnect budget across a same-session re
       {
         id: "evt-reconnect-budget",
         run_id: "run-reconnect-budget",
-        event_type: "user:message",
+        event_type: "run_event",
         timestamp: "2026-07-15T00:00:00Z",
-        data: { content: "恢复同一运行" },
+        data: {
+          event_id: "evt-reconnect-budget",
+          run_id: "run-reconnect-budget",
+          sequence: 9,
+          event_type: "worker_started",
+        },
       },
     ],
   });
@@ -1702,8 +1707,11 @@ test("useAgent preserves an active run reconnect budget across a same-session re
   })) as typeof sessionApi.getStatus;
   dom.window.fetch = async () => {
     sseCalls += 1;
-    return new Response("", {
-      headers: { "content-type": "text/event-stream" },
+    return sseEventResponse("run_event", {
+      event_id: "evt-reconnect-budget",
+      run_id: "run-reconnect-budget",
+      sequence: 9,
+      event_type: "worker_started",
     });
   };
 

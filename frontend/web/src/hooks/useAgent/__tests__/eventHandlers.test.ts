@@ -22,6 +22,9 @@ function createContext(
     sessionIdRef: { current: "session-1" },
     currentRunIdRef: { current: null },
     processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: null, runId: null, sequence: null },
+    },
     lastHistoryTimestampRef: { current: lastHistoryTimestamp },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 0 },
@@ -169,6 +172,153 @@ test("skips replayed SSE events at the history timestamp boundary", () => {
   handleStreamEvent(event, "assistant-1", "redis-event-1", timestamp, ctx);
 
   assert.equal(ctx.setMessagesCalls(), 0);
+});
+
+test("reports acceptance only after current-run validation and deduplication", () => {
+  const ctx = createContext([], new Date("2026-04-19T01:02:03.456Z"));
+  ctx.currentRunIdRef.current = "run-active";
+
+  const accepted = handleStreamEvent(
+    {
+      event: "run_event",
+      data: JSON.stringify({
+        run_id: "run-active",
+        sequence: 4,
+        event_type: "worker_started",
+      }),
+    } as StreamEvent,
+    "assistant-1",
+    "evt-current",
+    "2026-04-19T01:02:04.000Z",
+    ctx,
+    { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
+  );
+  assert.equal(accepted, true);
+  assert.equal(
+    handleStreamEvent(
+      {
+        event: "run_event",
+        data: JSON.stringify({
+          run_id: "run-active",
+          sequence: 5,
+          event_type: "worker_started",
+        }),
+      } as StreamEvent,
+      "assistant-1",
+      "evt-current",
+      "2026-04-19T01:02:05.000Z",
+      ctx,
+      { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
+    ),
+    false,
+  );
+  assert.equal(
+    handleStreamEvent(
+      {
+        event: "run_event",
+        data: JSON.stringify({
+          run_id: "run-foreign",
+          sequence: 6,
+          event_type: "worker_started",
+        }),
+      } as StreamEvent,
+      "assistant-1",
+      "evt-foreign",
+      "2026-04-19T01:02:06.000Z",
+      ctx,
+      { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
+    ),
+    false,
+  );
+  assert.equal(
+    handleStreamEvent(
+      { event: "run_event", data: "not-json" } as StreamEvent,
+      "assistant-1",
+      "evt-invalid",
+      "2026-04-19T01:02:07.000Z",
+      ctx,
+      { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
+    ),
+    false,
+  );
+  assert.equal(
+    handleStreamEvent(
+      { event: "done", data: JSON.stringify({ status: "failed" }) },
+      "assistant-1",
+      "evt-runless-terminal",
+      "2026-04-19T01:02:08.000Z",
+      ctx,
+    ),
+    false,
+  );
+});
+
+test("retains the run-event sequence replay guard after the event-id cap", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-active";
+  ctx.acceptedRunEventSequenceRef!.current = {
+    sessionId: "session-1",
+    runId: "run-active",
+    sequence: 8,
+  };
+  ctx.processedEventIdsRef.current = new Set(
+    Array.from({ length: 10_000 }, (_, index) => `history-${index}`),
+  );
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-active",
+    streamVersion: 0,
+  };
+
+  assert.equal(
+    handleStreamEvent(
+      {
+        event: "run_event",
+        data: JSON.stringify({
+          run_id: "run-active",
+          sequence: 9,
+          event_type: "worker_progress",
+        }),
+      } as StreamEvent,
+      "assistant-1",
+      "evt-new-after-cap",
+      undefined,
+      ctx,
+      binding,
+    ),
+    true,
+  );
+  assert.equal(ctx.processedEventIdsRef.current.size, 1);
+  assert.equal(
+    handleStreamEvent(
+      {
+        event: "run_event",
+        data: JSON.stringify({
+          run_id: "run-active",
+          sequence: 8,
+          event_type: "worker_started",
+        }),
+      } as StreamEvent,
+      "assistant-1",
+      "evt-old-replay-after-cap",
+      undefined,
+      ctx,
+      binding,
+    ),
+    false,
+  );
+  assert.equal(ctx.setMessagesCalls(), 1);
 });
 
 test("creates a new streaming assistant for a running run after the latest user message", () => {

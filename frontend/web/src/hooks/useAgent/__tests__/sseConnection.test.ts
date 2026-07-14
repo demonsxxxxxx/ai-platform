@@ -529,7 +529,7 @@ test("drops a delayed non-terminal application error after its stream generation
   assert.equal(context.isConnectingRef.current, false);
 });
 
-test("bounds continuous active transport reconnects and converges unavailable once", async (t) => {
+test("bounds replayed active run_event reconnects and converges unavailable once", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const originalRandom = Math.random;
   Math.random = () => 0;
@@ -556,7 +556,10 @@ test("bounds continuous active transport reconnects and converges unavailable on
     },
     sessionIdRef: { current: "session-1" },
     currentRunIdRef: { current: "run-1" },
-    processedEventIdsRef: { current: new Set<string>() },
+    processedEventIdsRef: { current: new Set(["evt-replayed-progress"]) },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-1", runId: "run-1", sequence: 42 },
+    },
     lastHistoryTimestampRef: { current: null },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 0 },
@@ -595,6 +598,15 @@ test("bounds continuous active transport reconnects and converges unavailable on
           false,
           async (_input, init) => {
             await init.onopen?.(new Response(null, { status: 200 }));
+            init.onmessage?.({
+              event: "run_event",
+              id: "evt-replayed-progress",
+              data: JSON.stringify({
+                run_id: "run-1",
+                sequence: 42,
+                event_type: "worker_started",
+              }),
+            } as never);
             await init.onclose?.();
           },
         );
@@ -621,7 +633,7 @@ test("bounds continuous active transport reconnects and converges unavailable on
   }
 });
 
-test("resets reconnect budget only after a current-run progress frame", async () => {
+test("resets reconnect budget only after a unique current-run progress frame", async () => {
   const currentContext = {
     abortControllerRef: { current: null },
     isConnectingRef: { current: false },
@@ -632,6 +644,9 @@ test("resets reconnect budget only after a current-run progress frame", async ()
     sessionIdRef: { current: "session-1" },
     currentRunIdRef: { current: "run-1" },
     processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: "session-1", runId: "run-1", sequence: null },
+    },
     lastHistoryTimestampRef: { current: null },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 0 },
@@ -652,9 +667,13 @@ test("resets reconnect budget only after a current-run progress frame", async ()
       async (_input, init) => {
         await init.onopen?.(new Response(null, { status: 200 }));
         init.onmessage?.({
-          event: "message:chunk",
+          event: "run_event",
           id: "evt-current-progress",
-          data: JSON.stringify({ run_id: "run-1", content: "进度" }),
+          data: JSON.stringify({
+            run_id: "run-1",
+            sequence: 43,
+            event_type: "worker_progress",
+          }),
         } as never);
         await init.onclose?.();
       },
@@ -662,6 +681,7 @@ test("resets reconnect budget only after a current-run progress frame", async ()
     /SSE closed before terminal event/,
   );
   assert.equal(currentContext.retryCountRef.current, 0);
+  assert.equal(currentContext.acceptedRunEventSequenceRef.current.sequence, 43);
 
   const nonProgressContext = {
     ...currentContext,
@@ -680,6 +700,11 @@ test("resets reconnect budget only after a current-run progress frame", async ()
       async (_input, init) => {
         await init.onopen?.(new Response(null, { status: 200 }));
         init.onmessage?.({ event: "ping", data: "{}" } as never);
+        init.onmessage?.({
+          event: "message:chunk",
+          id: "evt-current-synthetic-progress",
+          data: JSON.stringify({ run_id: "run-1", content: "并非权威进度" }),
+        } as never);
         init.onmessage?.({
           event: "run_event",
           data: JSON.stringify({ run_id: "run-foreign", event_type: "worker_started" }),

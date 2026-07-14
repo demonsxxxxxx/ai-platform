@@ -49,7 +49,10 @@ import {
   type TerminalRunStatus,
 } from "./useAgent/runLifecycle";
 import { clearAllLoadingStates } from "./useAgent/messageParts";
-import { type EventHandlerContext } from "./useAgent/eventHandlers";
+import {
+  type AcceptedRunEventSequence,
+  type EventHandlerContext,
+} from "./useAgent/eventHandlers";
 import {
   connectToSSE,
   reconnectSSE,
@@ -86,6 +89,40 @@ function formatConfirmationMessage(suggestions: CapabilitySuggestion[]): string 
     return `${index + 1}. ${item.label}${reason}`;
   });
   return ["需要确认处理方式后再继续。", "", ...items].join("\n");
+}
+
+function maxAcceptedRunEventSequence(
+  events: HistoryEvent[] | undefined,
+  runId: string | null,
+): number | null {
+  if (!runId || !events?.length) {
+    return null;
+  }
+
+  let maximum: number | null = null;
+  for (const event of events) {
+    const data =
+      typeof event.data === "object" && event.data !== null && !Array.isArray(event.data)
+        ? (event.data as Record<string, unknown>)
+        : null;
+    const eventRunId =
+      typeof event.run_id === "string" && event.run_id.trim()
+        ? event.run_id
+        : typeof data?.run_id === "string" && data.run_id.trim()
+          ? data.run_id
+          : null;
+    const sequence = data?.sequence;
+    if (
+      eventRunId === runId &&
+      typeof sequence === "number" &&
+      Number.isSafeInteger(sequence) &&
+      sequence >= 0 &&
+      (maximum === null || sequence > maximum)
+    ) {
+      maximum = sequence;
+    }
+  }
+  return maximum;
 }
 
 export function useAgent(options?: UseAgentOptions): UseAgentReturn {
@@ -128,6 +165,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
   // Track processed event IDs to prevent duplicates
   const processedEventIdsRef = useRef<Set<string>>(new Set());
+
+  // A persistent, per-session/run sequence cursor keeps reconnect recovery
+  // replay-safe even after the bounded event-id set reaches its memory cap.
+  const acceptedRunEventSequenceRef = useRef<AcceptedRunEventSequence>({
+    sessionId: null,
+    runId: null,
+    sequence: null,
+  });
 
   // Track last event timestamp from history
   const lastHistoryTimestampRef = useRef<Date | null>(null);
@@ -195,6 +240,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       isSendingRef.current = false;
       retryCountRef.current = 0;
       statusRetryCountRef.current = 0;
+      acceptedRunEventSequenceRef.current = {
+        sessionId: null,
+        runId: null,
+        sequence: null,
+      };
 
       toast.dismiss("chat-queue");
       setCurrentRunId(null);
@@ -319,6 +369,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       sessionIdRef,
       currentRunIdRef,
       processedEventIdsRef,
+      acceptedRunEventSequenceRef,
       lastHistoryTimestampRef,
       activeSubagentStackRef,
       streamVersionRef,
@@ -380,6 +431,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       submissionTokenRef.current += 1;
       streamVersionRef.current += 1;
       statusRetryCountRef.current = 0;
+      acceptedRunEventSequenceRef.current = {
+        sessionId: null,
+        runId: null,
+        sequence: null,
+      };
       pendingProjectIdRef.current = null;
       isLoadingHistoryRef.current = false;
       isSendingRef.current = false;
@@ -415,6 +471,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         // A new session owns an independent transport-reconnect budget. Clear
         // the previous session's budget before asynchronous history work.
         retryCountRef.current = 0;
+        acceptedRunEventSequenceRef.current = {
+          sessionId: null,
+          runId: null,
+          sequence: null,
+        };
       }
       const isCurrentHistoryLoadRequest = () =>
         isMountedRef.current &&
@@ -514,6 +575,33 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             sessionData,
             eventsData,
           });
+          const historySequence = maxAcceptedRunEventSequence(
+            eventsData.events,
+            historyCurrentRunId,
+          );
+          const acceptedProgress = acceptedRunEventSequenceRef.current;
+          if (
+            historyCurrentRunId &&
+            acceptedProgress.sessionId === targetSessionId &&
+            acceptedProgress.runId === historyCurrentRunId
+          ) {
+            if (
+              historySequence !== null &&
+              (acceptedProgress.sequence === null ||
+                historySequence > acceptedProgress.sequence)
+            ) {
+              acceptedRunEventSequenceRef.current = {
+                ...acceptedProgress,
+                sequence: historySequence,
+              };
+            }
+          } else {
+            acceptedRunEventSequenceRef.current = {
+              sessionId: historyCurrentRunId ? targetSessionId : null,
+              runId: historyCurrentRunId,
+              sequence: historySequence,
+            };
+          }
           if (
             previousSessionId === targetSessionId &&
             previousRunId !== historyCurrentRunId
@@ -718,6 +806,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       clearReconnectTimeout(reconnectTimeoutRef);
 
       processedEventIdsRef.current.clear();
+      acceptedRunEventSequenceRef.current = {
+        sessionId: null,
+        runId: null,
+        sequence: null,
+      };
       lastHistoryTimestampRef.current = null;
 
       const previousMessages = messagesRef.current;
@@ -892,6 +985,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         if (newRunId) {
           // A confirmed run owns a fresh continuous transport-recovery budget.
           retryCountRef.current = 0;
+          acceptedRunEventSequenceRef.current = {
+            sessionId: newSessionId || requestSessionId || null,
+            runId: newRunId,
+            sequence: null,
+          };
           setCurrentRunId(newRunId);
           currentRunIdRef.current = newRunId;
           setMessages((prev) =>
@@ -1055,6 +1153,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     setSandboxError(null);
     setConnectionStatus("disconnected");
     processedEventIdsRef.current.clear();
+    acceptedRunEventSequenceRef.current = {
+      sessionId: null,
+      runId: null,
+      sequence: null,
+    };
     lastHistoryTimestampRef.current = null;
     streamingMessageIdRef.current = null;
     sessionIdRef.current = null;

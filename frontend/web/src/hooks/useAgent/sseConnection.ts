@@ -159,27 +159,22 @@ function explicitRunId(data: Record<string, unknown>): string | null {
 }
 
 /**
- * Only meaningful current-run progress proves that a stream recovered. Handshake,
- * metadata, queue, ping, and error frames can all arrive in an open→close loop.
+ * A persisted run_event sequence is the only progress signal authoritative
+ * enough to restore a reconnect budget. Open, ping, synthetic frames, and
+ * non-run events may be replayed without proving new backend progress.
  */
-function isReconnectBudgetResetFrame(eventType: string): boolean {
-  return [
-    "run_event",
-    "message:chunk",
-    "thinking",
-    "tool:start",
-    "tool:result",
-    "todo:updated",
-    "summary",
-    "artifact_card",
-    "agent:call",
-    "agent:result",
-    "approval_required",
-    "sandbox:starting",
-    "sandbox:ready",
-    "token:usage",
-    "skills:changed",
-  ].includes(eventType);
+function isAcceptedRunProgress(
+  eventType: string,
+  data: Record<string, unknown>,
+  terminal: boolean,
+): boolean {
+  return (
+    !terminal &&
+    eventType === "run_event" &&
+    typeof data.sequence === "number" &&
+    Number.isSafeInteger(data.sequence) &&
+    data.sequence >= 0
+  );
 }
 
 export function getSSECloseAction({
@@ -301,23 +296,27 @@ export async function connectToSSE(
             return;
           }
           if (event.event === "ping") return;
-          const eventId = event.id || uuid();
           let parsedData: Record<string, unknown>;
           try {
-            parsedData = JSON.parse(event.data);
+            const parsed = JSON.parse(event.data);
+            if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+              return;
+            }
+            parsedData = parsed as Record<string, unknown>;
           } catch {
             // Ignore parse errors
             return;
           }
+          const eventId =
+            event.id ||
+            (typeof parsedData.event_id === "string" && parsedData.event_id.trim()
+              ? parsedData.event_id
+              : uuid());
           const sourceRunId = explicitRunId(parsedData);
           // An old explicit frame cannot end this connection or suppress its
           // reconnect. It is not safe to rebind an explicit foreign run.
           if (sourceRunId && sourceRunId !== targetRunId) {
             return;
-          }
-
-          if (isReconnectBudgetResetFrame(event.event)) {
-            retryCountRef.current = 0;
           }
 
           const terminalStatus = terminalRunStatusFromEvent(
@@ -360,7 +359,24 @@ export async function connectToSSE(
             event: event.event as EventType,
             data: JSON.stringify(normalizedData),
           };
-          handleStreamEvent(streamEvent, messageId, eventId, timestamp, ctx);
+          const accepted = handleStreamEvent(
+            streamEvent,
+            messageId,
+            eventId,
+            timestamp,
+            ctx,
+            {
+              sessionId: targetSessionId,
+              runId: targetRunId,
+              streamVersion,
+            },
+          );
+          if (
+            accepted &&
+            isAcceptedRunProgress(event.event, normalizedData, Boolean(terminalStatus))
+          ) {
+            retryCountRef.current = 0;
+          }
         },
         onerror: (err) => {
           if (!isCurrentStream()) {
