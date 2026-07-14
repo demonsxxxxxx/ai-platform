@@ -1,10 +1,4 @@
-import type { ToolPermissionDecision, ToolPermissionPart } from "../../../types";
-
-export interface ToolPermissionCardState {
-  status: ToolPermissionPart["status"];
-  decision: ToolPermissionDecision | undefined;
-  error: string | null;
-}
+import type { ToolPermissionPart } from "../../../types";
 
 export interface OrdinaryUserToolPermissionPresentation {
   titleKey: string;
@@ -46,17 +40,5 @@ export function getOrdinaryUserToolPermissionPresentation(
   return {
     titleKey: "chat.toolPermission.decided.title",
     messageKey: "chat.toolPermission.decided.message",
-  };
-}
-
-export function syncToolPermissionCardState(
-  part: ToolPermissionPart,
-  currentError: string | null,
-): ToolPermissionCardState {
-  const isDecided = part.status === "decided" || Boolean(part.decision);
-  return {
-    status: part.status,
-    decision: part.decision,
-    error: isDecided ? null : currentError,
   };
 }

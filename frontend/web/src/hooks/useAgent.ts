@@ -54,6 +54,7 @@ import {
   connectToSSE,
   reconnectSSE,
   clearReconnectTimeout,
+  queryAuthoritativeRunStatus,
   type SSEConnectionContext,
 } from "./useAgent/sseConnection";
 import { createOptimisticMessagesForSend } from "./useAgent/optimisticMessages";
@@ -122,6 +123,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   );
   const retryCountRef = useRef(0);
   const statusRetryCountRef = useRef(0);
+  const isMountedRef = useRef(false);
+  const mountedGenerationRef = useRef(0);
 
   // Track processed event IDs to prevent duplicates
   const processedEventIdsRef = useRef<Set<string>>(new Set());
@@ -176,7 +179,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       outcome: TerminalRunStatus | "status_unavailable",
       messageId: string,
     ): boolean => {
-      if (currentRunIdRef.current !== runId) {
+      if (!isMountedRef.current || currentRunIdRef.current !== runId) {
         return false;
       }
 
@@ -334,6 +337,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const createSSEContext = useCallback(
     (): SSEConnectionContext => ({
       ...createEventHandlerContext(),
+      isMountedRef,
       abortControllerRef,
       isConnectingRef,
       streamingMessageIdRef,
@@ -346,6 +350,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   );
 
   const reconcileCurrentRun = useCallback(async () => {
+    if (!isMountedRef.current) {
+      return;
+    }
     const ctx = {
       ...createSSEContext(),
       sessionIdRef,
@@ -357,9 +364,32 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
   // Cleanup on unmount
   useEffect(() => {
+    isMountedRef.current = true;
+    const mountedGeneration = ++mountedGenerationRef.current;
     return () => {
+      if (mountedGenerationRef.current !== mountedGeneration) {
+        return;
+      }
+      // Invalidate every asynchronous owner before releasing stream resources.
+      // StrictMode creates a fresh mounted generation immediately afterwards.
+      isMountedRef.current = false;
+      mountedGenerationRef.current += 1;
+      historyLoadTokenRef.current += 1;
+      sessionGenerationRef.current += 1;
+      submissionTokenRef.current += 1;
+      streamVersionRef.current += 1;
+      statusRetryCountRef.current = 0;
+      pendingProjectIdRef.current = null;
+      isLoadingHistoryRef.current = false;
+      isSendingRef.current = false;
+      isConnectingRef.current = false;
+      retryCountRef.current = 0;
+      statusRetryCountRef.current = 0;
+      streamingMessageIdRef.current = null;
+      isReconnectFromHistoryRef.current = false;
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
+        abortControllerRef.current = null;
       }
       clearReconnectTimeout(reconnectTimeoutRef);
     };
@@ -368,6 +398,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   // Load message history from backend
   const loadHistory = useCallback(
     async (targetSessionId: string, targetRunId?: string) => {
+      if (!isMountedRef.current) {
+        return null;
+      }
+      const mountedGeneration = mountedGenerationRef.current;
       if (isLoadingHistoryRef.current) {
         console.log(
           "[loadHistory] Switching to new session, aborting previous load...",
@@ -375,6 +409,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       }
       const historyLoadToken = beginHistoryLoad(historyLoadTokenRef);
       const isCurrentHistoryLoadRequest = () =>
+        isMountedRef.current &&
+        mountedGenerationRef.current === mountedGeneration &&
         isCurrentHistoryLoad(historyLoadTokenRef, historyLoadToken);
       sessionGenerationRef.current += 1;
       submissionTokenRef.current += 1;
@@ -471,13 +507,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             sessionData,
             eventsData,
           });
-          const statusData = historyCurrentRunId
-            ? await sessionApi
-                .getStatus(targetSessionId, historyCurrentRunId)
-                .catch((e) => {
-                  console.warn("[loadHistory] Failed to check status:", e);
-                  return null;
-                })
+          const statusResult = historyCurrentRunId
+            ? await queryAuthoritativeRunStatus({
+                sessionId: targetSessionId,
+                runId: historyCurrentRunId,
+                isCurrent: isCurrentHistoryLoadRequest,
+                statusRetryCountRef,
+              })
             : null;
           if (!isCurrentHistoryLoadRequest()) {
             return null;
@@ -485,12 +521,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
           // Reconnect only after the authoritative run record says it is
           // active. Event history alone must never revive a failed run.
+          const normalizedStatus =
+            statusResult?.kind === "resolved" ? statusResult.status : null;
           const isTaskRunning = Boolean(
-            statusData && isActiveRunStatus(statusData.status),
+            normalizedStatus && isActiveRunStatus(normalizedStatus),
           );
-          const terminalStatus = statusData
-            ? terminalRunStatus(statusData.status)
-            : null;
+          const terminalStatus = terminalRunStatus(normalizedStatus);
+          const statusUnavailable = statusResult?.kind === "unavailable";
           const activeHistoryRunId =
             isTaskRunning && historyCurrentRunId ? historyCurrentRunId : null;
           let reconstructedMessages = eventsData.events?.length
@@ -537,15 +574,21 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           }
           setMessages(reconstructedMessages);
 
-          if (terminalStatus && historyCurrentRunId) {
-            const terminalMessageId =
-              [...reconstructedMessages]
+          const historyMessageId = historyCurrentRunId
+            ? ([...reconstructedMessages]
                 .reverse()
                 .find(
                   (message) =>
                     message.runId === historyCurrentRunId &&
                     message.role === "assistant",
-                )?.id || historyCurrentRunId;
+                )?.id || historyCurrentRunId)
+            : null;
+
+          if (statusUnavailable && historyCurrentRunId && historyMessageId) {
+            currentRunIdRef.current = historyCurrentRunId;
+            setCurrentRunId(historyCurrentRunId);
+            finalizeRunStatusUnavailable(historyCurrentRunId, historyMessageId);
+          } else if (terminalStatus && historyCurrentRunId && historyMessageId) {
             // The shared lifecycle converger owns terminal presentation for
             // both live SSE and restored history.
             currentRunIdRef.current = historyCurrentRunId;
@@ -553,7 +596,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             finalizeTerminalRun(
               historyCurrentRunId,
               terminalStatus,
-              terminalMessageId,
+              historyMessageId,
             );
           } else {
             setCurrentRunId(activeHistoryRunId);
@@ -609,6 +652,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       createSSEContext,
       canReadFeedback,
       finalizeTerminalRun,
+      finalizeRunStatusUnavailable,
       reconcileCurrentRun,
     ],
   );
@@ -621,6 +665,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       attachments?: MessageAttachment[],
       selectedSkill?: SelectedSkillRequest | null,
     ): Promise<SubmissionOutcome> => {
+      if (!isMountedRef.current) return { status: "failed" };
       if (!content.trim()) return { status: "failed" };
 
       if (isSendingRef.current) {
@@ -631,11 +676,15 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       }
       isSendingRef.current = true;
       const submissionToken = ++submissionTokenRef.current;
+      const mountedGeneration = mountedGenerationRef.current;
       const requestSessionGeneration = sessionGenerationRef.current;
       const requestSessionId = sessionIdRef.current;
       const requestAgentId = sessionAgentIdRef.current;
       streamVersionRef.current += 1;
+      statusRetryCountRef.current = 0;
       const isCurrentSubmission = () =>
+        isMountedRef.current &&
+        mountedGenerationRef.current === mountedGeneration &&
         submissionTokenRef.current === submissionToken &&
         sessionGenerationRef.current === requestSessionGeneration;
       const isCurrentRequestSession = () =>
@@ -778,6 +827,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             .generateTitle(newSessionId, content, i18n.language)
             .then((result) => {
               if (
+                !isMountedRef.current ||
+                mountedGenerationRef.current !== mountedGeneration ||
                 sessionGenerationRef.current !== requestSessionGeneration ||
                 sessionIdRef.current !== newSessionId
               ) {

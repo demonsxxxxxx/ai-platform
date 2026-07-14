@@ -15,15 +15,18 @@ import type { EventType, StreamEvent } from "./types";
 import { handleStreamEvent, type EventHandlerContext } from "./eventHandlers";
 import { clearAllLoadingStates } from "./messageParts";
 import {
+  authoritativeRunStatus,
   isActiveRunStatus,
   terminalRunStatus,
   terminalRunStatusFromEvent,
 } from "./runLifecycle";
+import type { ChatRunStatusResponse } from "../../services/api/session";
 
 /**
  * SSE Connection context
  */
 export interface SSEConnectionContext extends EventHandlerContext {
+  isMountedRef?: React.MutableRefObject<boolean>;
   abortControllerRef: React.MutableRefObject<AbortController | null>;
   isConnectingRef: React.MutableRefObject<boolean>;
   streamingMessageIdRef: React.MutableRefObject<string | null>;
@@ -60,11 +63,65 @@ export function clearReconnectTimeout(
 
 export type SSECloseAction = "terminal" | "retry";
 export type SSEFetchEventSource = typeof fetchEventSource;
-const MAX_STATUS_QUERY_RETRIES = 2;
+export const MAX_STATUS_QUERY_RETRIES = 2;
 type ReconnectDependencies = {
   getStatus?: typeof sessionApi.getStatus;
   connect?: typeof connectToSSE;
 };
+
+export type AuthoritativeStatusQueryResult =
+  | {
+      kind: "resolved";
+      data: ChatRunStatusResponse;
+      status: string;
+    }
+  | { kind: "stale" }
+  | { kind: "unavailable" };
+
+/**
+ * Read one run's authoritative state with the same bounded retry semantics
+ * for initial history restoration and every SSE interruption.
+ */
+export async function queryAuthoritativeRunStatus({
+  sessionId,
+  runId,
+  isCurrent,
+  statusRetryCountRef,
+  getStatus = sessionApi.getStatus,
+}: {
+  sessionId: string;
+  runId: string;
+  isCurrent: () => boolean;
+  statusRetryCountRef: React.MutableRefObject<number>;
+  getStatus?: typeof sessionApi.getStatus;
+}): Promise<AuthoritativeStatusQueryResult> {
+  while (isCurrent()) {
+    try {
+      const data = await getStatus(sessionId, runId);
+      if (!isCurrent()) {
+        return { kind: "stale" };
+      }
+      const status = authoritativeRunStatus(data);
+      if (status && (isActiveRunStatus(status) || terminalRunStatus(status))) {
+        statusRetryCountRef.current = 0;
+        return { kind: "resolved", data, status };
+      }
+      console.warn("[SSE] Unknown authoritative run status:", status);
+    } catch (error) {
+      if (!isCurrent()) {
+        return { kind: "stale" };
+      }
+      console.error("[SSE] Failed to check task status:", error);
+    }
+
+    if (statusRetryCountRef.current >= MAX_STATUS_QUERY_RETRIES) {
+      return { kind: "unavailable" };
+    }
+    statusRetryCountRef.current += 1;
+  }
+
+  return { kind: "stale" };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -77,6 +134,7 @@ function isCurrentSSETarget(
   streamVersion?: number,
 ): boolean {
   return (
+    ctx.isMountedRef?.current !== false &&
     ctx.sessionIdRef.current === targetSessionId &&
     ctx.currentRunIdRef.current === targetRunId &&
     (streamVersion === undefined || ctx.streamVersionRef.current === streamVersion)
@@ -164,6 +222,7 @@ export async function connectToSSE(
   );
 
   let receivedTerminalEvent = false;
+  let receivedNonTerminalApplicationError = false;
 
   setConnectionStatus("connecting");
   retryCountRef.current = 0;
@@ -238,11 +297,19 @@ export async function connectToSSE(
             parsedData,
           );
           // An SSE `error` frame can report a stream interruption while the
-          // backend run is still active. Keep it out of generic error
-          // presentation and let the close/catch path reconcile status.
+          // backend run is still active. Abort immediately and hand exactly
+          // one generation-bound reconciliation to the caller; do not wait
+          // for a server close or let fetch-event-source retry internally.
           if (event.event === "error" && !terminalStatus) {
+            receivedNonTerminalApplicationError = true;
             setConnectionStatus("reconnecting");
-            return;
+            isConnectingRef.current = false;
+            // Throw while this stream is still current. fetch-event-source
+            // then runs its error path, disposes its internal request, and
+            // rejects this connection rather than scheduling a retry. Calling
+            // our signal's abort() first would resolve fetch-event-source and
+            // silently skip the authoritative reconciliation below.
+            throw new Error("SSE application interruption before terminal event");
           }
           // A `done` frame without an authoritative terminal status (for
           // example, `{ status: "timeout" }`) likewise cannot complete the
@@ -308,12 +375,23 @@ export async function connectToSSE(
     if (!isCurrentStream()) {
       return;
     }
-    if (err instanceof Error && err.name === "AbortError") {
+    if (
+      err instanceof Error &&
+      err.name === "AbortError" &&
+      !receivedNonTerminalApplicationError
+    ) {
       console.log("[SSE] Connection aborted");
       return;
     }
     console.error("[SSE] Connection error:", err);
     setConnectionStatus("disconnected");
+    if (receivedNonTerminalApplicationError) {
+      streamAbortController.abort();
+      if (abortControllerRef.current === streamAbortController) {
+        abortControllerRef.current = null;
+      }
+      isConnectingRef.current = false;
+    }
     throw err;
   } finally {
     if (isCurrentStream()) {
@@ -348,7 +426,6 @@ export async function reconnectSSE(
   } = ctx;
   const statusRetryCountRef =
     providedStatusRetryCountRef || { current: MAX_STATUS_QUERY_RETRIES };
-  const getStatus = dependencies.getStatus || sessionApi.getStatus;
   const connect = dependencies.connect || connectToSSE;
 
   const currentSessId = sessionIdRef.current;
@@ -386,38 +463,31 @@ export async function reconnectSSE(
 
   isConnectingRef.current = false;
 
-  try {
-    const statusData = await getStatus(currentSessId, currentRId);
-    if (!isCurrentReconnect()) {
-      return;
-    }
-    const terminalStatus = terminalRunStatus(statusData.status);
-    if (terminalStatus) {
-      console.log("[SSE] Task already completed");
-      ctx.onRunTerminal?.(
-        currentRId,
-        terminalStatus,
-        currentMsgId || currentRId,
-      );
-      return;
-    }
-    if (!isActiveRunStatus(statusData.status)) {
-      convergeUnavailable();
-      return;
-    }
-    statusRetryCountRef.current = 0;
-  } catch (err) {
-    if (!isCurrentReconnect()) {
-      return;
-    }
-    console.error("[SSE] Failed to check task status:", err);
-    if (statusRetryCountRef.current < MAX_STATUS_QUERY_RETRIES) {
-      statusRetryCountRef.current += 1;
-      return reconnectSSE(ctx, dependencies);
-    }
+  const statusResult = await queryAuthoritativeRunStatus({
+    sessionId: currentSessId,
+    runId: currentRId,
+    isCurrent: isCurrentReconnect,
+    statusRetryCountRef,
+    getStatus: dependencies.getStatus,
+  });
+  if (statusResult.kind === "stale") {
+    return;
+  }
+  if (statusResult.kind === "unavailable") {
     // The run's backend state remains unknown. Converge locally without
     // inventing a failed backend result; reloading the session is recovery.
     convergeUnavailable();
+    return;
+  }
+
+  const terminalStatus = terminalRunStatus(statusResult.status);
+  if (terminalStatus) {
+    console.log("[SSE] Task already completed");
+    ctx.onRunTerminal?.(
+      currentRId,
+      terminalStatus,
+      currentMsgId || currentRId,
+    );
     return;
   }
 

@@ -1,5 +1,10 @@
 export type TerminalRunStatus = "failed" | "cancelled" | "succeeded";
 
+export interface RunStatusWire {
+  status?: string | null;
+  raw_status?: string | null;
+}
+
 const TERMINAL_STATUS_ALIASES: Record<string, TerminalRunStatus> = {
   cancelled: "cancelled",
   complete: "succeeded",
@@ -18,6 +23,20 @@ export function terminalRunStatus(value: unknown): TerminalRunStatus | null {
     return null;
   }
   return TERMINAL_STATUS_ALIASES[value.trim().toLowerCase()] || null;
+}
+
+/** Prefer the platform status when the compatibility projection supplies it. */
+export function authoritativeRunStatus(
+  status: RunStatusWire,
+): string | null {
+  const rawStatus = normalizeRunStatus(status.raw_status);
+  return rawStatus ?? normalizeRunStatus(status.status);
+}
+
+function normalizeRunStatus(value: unknown): string | null {
+  return typeof value === "string" && value.trim()
+    ? value.trim().toLowerCase()
+    : null;
 }
 
 /** Return a terminal outcome only when the application frame explicitly carries one. */

@@ -10,11 +10,6 @@ import {
 } from "lucide-react";
 import type { MessagePart } from "../../../types";
 import { useTranslation } from "react-i18next";
-import { useEffect, useState } from "react";
-import {
-  decideToolPermission,
-  type ToolPermissionDecision,
-} from "../../../services/api/toolPermission";
 import { MarkdownContent } from "./MarkdownContent";
 import { formatFileSize, getFileTypeInfo } from "../../documents/utils";
 import {
@@ -37,7 +32,6 @@ import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { createToolPartAnchorId } from "./messagePartAnchors";
 import {
   getOrdinaryUserToolPermissionPresentation,
-  syncToolPermissionCardState,
 } from "./toolPermissionCardState";
 import { buildArtifactPreviewRequest } from "./items/artifactPreview";
 import { downloadArtifactFile } from "./items/artifactDownload";
@@ -52,7 +46,6 @@ export function MessagePartRenderer({
   allowAutoPreview,
   activePreview,
   onOpenPreview,
-  canManageToolPermissions = false,
 }: {
   part: MessagePart;
   messageId?: string;
@@ -65,8 +58,6 @@ export function MessagePartRenderer({
     preview: RevealPreviewRequest,
     source?: RevealPreviewOpenSource,
   ) => boolean;
-  /** Explicit server-backed capability from the parent chat surface. */
-  canManageToolPermissions?: boolean;
 }) {
   const { t } = useTranslation();
   const toolPartAnchorId =
@@ -296,12 +287,7 @@ export function MessagePartRenderer({
   }
 
   if (part.type === "tool_permission") {
-    return (
-      <ToolPermissionCardItem
-        part={part}
-        canManageToolPermissions={canManageToolPermissions}
-      />
-    );
+    return <ToolPermissionCardItem part={part} />;
   }
 
   if (part.type === "artifact") {
@@ -473,50 +459,11 @@ function ArtifactCardItem({
 
 function ToolPermissionCardItem({
   part,
-  canManageToolPermissions,
 }: {
   part: Extract<MessagePart, { type: "tool_permission" }>;
-  canManageToolPermissions: boolean;
 }) {
   const { t } = useTranslation();
-  const [status, setStatus] = useState(part.status);
-  const [decision, setDecision] = useState(part.decision);
-  const [submitting, setSubmitting] =
-    useState<ToolPermissionDecision | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const nextState = syncToolPermissionCardState(part, error);
-    setStatus(nextState.status);
-    setDecision(nextState.decision);
-    setError(nextState.error);
-  }, [part, error]);
-
   const presentation = getOrdinaryUserToolPermissionPresentation(part);
-  const isDecided = status === "decided" || Boolean(decision);
-  const riskKey = `chat.toolPermission.riskLevels.${part.risk_level}`;
-
-  const submitDecision = async (nextDecision: ToolPermissionDecision) => {
-    setSubmitting(nextDecision);
-    setError(null);
-    try {
-      const response = await decideToolPermission(
-        part.run_id,
-        part.permission_request_id,
-        nextDecision,
-      );
-      setStatus("decided");
-      setDecision(response.permission_request.decision || nextDecision);
-    } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : t("chat.toolPermission.decisionFailed"),
-      );
-    } finally {
-      setSubmitting(null);
-    }
-  };
 
   return (
     <div
@@ -532,118 +479,14 @@ function ToolPermissionCardItem({
           className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400"
         />
         <div className="min-w-0 flex-1">
-          {canManageToolPermissions ? (
-            <>
-              <div className="break-words text-sm font-semibold">
-                {t("chat.toolPermission.adminTitle")}
-              </div>
-              <div className="mt-1 break-all text-xs text-stone-600 dark:text-stone-300">
-                {part.tool_id}
-              </div>
-              <div className="mt-1 flex flex-wrap gap-2 text-xs text-stone-500 dark:text-stone-400">
-                <span>
-                  {t("chat.toolPermission.risk", {
-                    level: t(riskKey, { defaultValue: part.risk_level }),
-                  })}
-                </span>
-                <span>
-                  {part.write_capable
-                    ? t("chat.toolPermission.writeCapable")
-                    : t("chat.toolPermission.readOnly")}
-                </span>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="break-words text-sm font-semibold">
-                {t(presentation.titleKey)}
-              </div>
-              <div className="mt-1 text-xs text-stone-600 dark:text-stone-300">
-                {t(presentation.messageKey)}
-              </div>
-            </>
-          )}
+          <div className="break-words text-sm font-semibold">
+            {t(presentation.titleKey)}
+          </div>
+          <div className="mt-1 text-xs text-stone-600 dark:text-stone-300">
+            {t(presentation.messageKey)}
+          </div>
         </div>
       </div>
-
-      {canManageToolPermissions &&
-        (isDecided ? (
-          <div className="mt-3 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-1.5 text-xs font-medium text-[var(--theme-text)] dark:bg-stone-900">
-            {t("chat.toolPermission.recordedDecision", {
-              decision: t(
-                `chat.toolPermission.decisions.${decision || "pending"}`,
-              ),
-            })}
-          </div>
-        ) : (
-          <div className="mt-3 flex flex-wrap gap-2">
-            <PermissionDecisionButton
-              label={t("chat.toolPermission.decisions.allow_once")}
-              decision="allow_once"
-              submitting={submitting}
-              submittingLabel={t("chat.toolPermission.submitting")}
-              onClick={submitDecision}
-            />
-            <PermissionDecisionButton
-              label={t("chat.toolPermission.decisions.allow_for_run")}
-              decision="allow_for_run"
-              submitting={submitting}
-              submittingLabel={t("chat.toolPermission.submitting")}
-              onClick={submitDecision}
-            />
-            <PermissionDecisionButton
-              label={t("chat.toolPermission.decisions.deny")}
-              decision="deny"
-              submitting={submitting}
-              submittingLabel={t("chat.toolPermission.submitting")}
-              onClick={submitDecision}
-            />
-          </div>
-        ))}
-
-      {canManageToolPermissions && error && (
-        <div className="mt-2 break-words text-xs font-medium text-red-600 dark:text-red-300">
-          {error}
-        </div>
-      )}
     </div>
-  );
-}
-
-function PermissionDecisionButton({
-  label,
-  decision,
-  submitting,
-  submittingLabel,
-  onClick,
-}: {
-  label: string;
-  decision: ToolPermissionDecision;
-  submitting: ToolPermissionDecision | null;
-  submittingLabel: string;
-  onClick: (decision: ToolPermissionDecision) => void;
-}) {
-  const isDeny = decision === "deny";
-  const disabled = Boolean(submitting);
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={() => onClick(decision)}
-      className={clsx(
-        "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors",
-        "disabled:cursor-not-allowed disabled:opacity-60",
-        isDeny
-          ? "border-red-200 bg-[var(--theme-bg-card)] text-red-700 hover:bg-red-50 dark:border-red-900/60 dark:bg-stone-900 dark:text-red-300 dark:hover:bg-red-950/30"
-          : "border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text)] hover:bg-[var(--theme-bg-sidebar)] dark:bg-stone-900",
-      )}
-    >
-      {isDeny ? <XCircle size={14} /> : <CheckCircle size={14} />}
-      <span>
-        {submitting === decision
-          ? submittingLabel
-          : label}
-      </span>
-    </button>
   );
 }

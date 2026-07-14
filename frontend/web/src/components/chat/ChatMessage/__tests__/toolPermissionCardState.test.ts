@@ -3,12 +3,15 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
+import "../../../../i18n";
 import type { ToolPermissionPart } from "../../../../types";
 import {
   getOrdinaryUserToolPermissionPresentation,
-  syncToolPermissionCardState,
 } from "../toolPermissionCardState.ts";
+import { MessagePartRenderer } from "../MessagePartRenderer.tsx";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -23,29 +26,6 @@ const pendingPart: ToolPermissionPart = {
   write_capable: true,
   status: "pending",
 };
-
-test("keeps a local submit error while the permission request is still pending", () => {
-  const result = syncToolPermissionCardState(pendingPart, "network failed");
-
-  assert.equal(result.status, "pending");
-  assert.equal(result.decision, undefined);
-  assert.equal(result.error, "network failed");
-});
-
-test("clears a stale local submit error when replay marks the permission decided", () => {
-  const result = syncToolPermissionCardState(
-    {
-      ...pendingPart,
-      status: "decided",
-      decision: "allow_once",
-    },
-    "network failed",
-  );
-
-  assert.equal(result.status, "decided");
-  assert.equal(result.decision, "allow_once");
-  assert.equal(result.error, null);
-});
 
 test("projects each ordinary-user permission history state without approval controls", () => {
   assert.deepEqual(getOrdinaryUserToolPermissionPresentation(pendingPart), {
@@ -109,16 +89,29 @@ test("keeps the control decision separate from ordinary-user presentation", () =
   ]);
 });
 
-test("requires an explicit admin capability before rendering permission controls", () => {
+test("renders permission history without controls for every chat viewer", () => {
   const rendererSource = readFileSync(
     resolve(__dirname, "../MessagePartRenderer.tsx"),
     "utf8",
   );
   const chatMessageSource = readFileSync(resolve(__dirname, "../index.tsx"), "utf8");
+  const pendingMarkup = renderToStaticMarkup(
+    React.createElement(MessagePartRenderer, {
+      part: pendingPart,
+      isLast: true,
+    }),
+  );
+  const deniedMarkup = renderToStaticMarkup(
+    React.createElement(MessagePartRenderer, {
+      part: { ...pendingPart, status: "decided", decision: "deny" },
+      isLast: true,
+    }),
+  );
 
-  assert.match(rendererSource, /canManageToolPermissions = false/);
-  assert.match(rendererSource, /canManageToolPermissions &&\s*\n?\s*\(isDecided/);
-  assert.match(rendererSource, /<PermissionDecisionButton/);
-  assert.match(chatMessageSource, /user\?\.is_admin === true/);
-  assert.match(chatMessageSource, /canManageToolPermissions=\{canManageToolPermissions\}/);
+  assert.doesNotMatch(rendererSource, /canManageToolPermissions|decideToolPermission|PermissionDecisionButton/);
+  assert.doesNotMatch(chatMessageSource, /canManageToolPermissions|user\?\.is_admin/);
+  assert.doesNotMatch(pendingMarkup, /<button\b/i);
+  assert.doesNotMatch(deniedMarkup, /<button\b/i);
+  assert.match(pendingMarkup, /正在等待管理员处理/);
+  assert.match(deniedMarkup, /操作未获授权/);
 });

@@ -72,6 +72,15 @@ export type ChatStreamResponse =
   | ChatStreamQueuedResponse
   | ChatStreamNeedsConfirmationResponse;
 
+/** Compatibility status projection with its authoritative platform value. */
+export interface ChatRunStatusResponse {
+  session_id: string;
+  run_id?: string;
+  status?: string | null;
+  raw_status?: string | null;
+  error?: string;
+}
+
 export function isChatStreamNeedsConfirmation(
   response: ChatStreamResponse | unknown,
 ): response is ChatStreamNeedsConfirmationResponse {
@@ -332,12 +341,7 @@ export const sessionApi = {
   async getStatus(
     sessionId: string,
     runId?: string,
-  ): Promise<{
-    session_id: string;
-    run_id?: string;
-    status: string;
-    error?: string;
-  }> {
+  ): Promise<ChatRunStatusResponse> {
     const params = runId ? `?run_id=${runId}` : "";
     return authFetch(
       `${API_BASE}/api/chat/sessions/${sessionId}/status${params}`,

@@ -7,6 +7,7 @@ import {
   connectToSSE,
   getSSECloseAction,
   isTerminalSSEEvent,
+  queryAuthoritativeRunStatus,
   reconnectSSE,
   type SSEConnectionContext,
 } from "../sseConnection.ts";
@@ -49,6 +50,48 @@ test("classifies only explicit server-sent terminal errors as application failur
     true,
   );
   assert.equal(isTerminalSSEEvent("error", { error: "stream_timeout" }), false);
+});
+
+test("uses raw_status as the authoritative compatibility status", async () => {
+  const retryRef = { current: 0 };
+  const cases = [
+    { wire: { status: "completed", raw_status: "succeeded" }, expected: "succeeded" },
+    { wire: { status: "cancelled", raw_status: "cancelled" }, expected: "cancelled" },
+    { wire: { status: "failed", raw_status: "failed" }, expected: "failed" },
+    { wire: { status: "error", raw_status: "failed" }, expected: "failed" },
+  ];
+
+  for (const { wire, expected } of cases) {
+    const result = await queryAuthoritativeRunStatus({
+      sessionId: "session-1",
+      runId: "run-1",
+      isCurrent: () => true,
+      statusRetryCountRef: retryRef,
+      getStatus: async () => ({
+        session_id: "session-1",
+        run_id: "run-1",
+        ...wire,
+      }),
+    });
+    assert.deepEqual(result, {
+      kind: "resolved",
+      data: { session_id: "session-1", run_id: "run-1", ...wire },
+      status: expected,
+    });
+  }
+
+  const bareError = await queryAuthoritativeRunStatus({
+    sessionId: "session-1",
+    runId: "run-1",
+    isCurrent: () => true,
+    statusRetryCountRef: { current: 2 },
+    getStatus: async () => ({
+      session_id: "session-1",
+      run_id: "run-1",
+      status: "error",
+    }),
+  });
+  assert.deepEqual(bareError, { kind: "unavailable" });
 });
 
 test("connectToSSE propagates a terminal transport failure to its caller", async () => {
@@ -414,9 +457,73 @@ test("leaves a runless stream timeout for authoritative status reconciliation", 
         await init.onclose?.();
       },
     ),
-    /SSE closed before terminal event/,
+    /SSE application interruption before terminal event/,
   );
 
   assert.equal(terminalCalls, 0);
   assert.ok(connectionStates.includes("reconnecting"));
+});
+
+test("drops a delayed non-terminal application error after its stream generation changes", async () => {
+  const connectionStates: string[] = [];
+  let releaseFetchError!: () => void;
+  let errorFrameHandled!: () => void;
+  const errorFrame = new Promise<void>((resolve) => {
+    errorFrameHandled = resolve;
+  });
+  const delayedFetchError = new Promise<void>((resolve) => {
+    releaseFetchError = resolve;
+  });
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: null },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    messagesRef: { current: [] },
+    sessionIdRef: { current: "session-old" },
+    currentRunIdRef: { current: "run-old" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 4 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: (status: string) => connectionStates.push(status),
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+  } satisfies SSEConnectionContext;
+
+  const connection = connectToSSE(
+    "session-old",
+    "run-old",
+    "assistant-old",
+    context,
+    false,
+    async (_input, init) => {
+      await init.onopen?.(new Response(null, { status: 200 }));
+      try {
+        init.onmessage?.({
+          event: "error",
+          id: "evt-stream-timeout",
+          data: JSON.stringify({ error: "stream_timeout" }),
+        } as never);
+      } catch {
+        errorFrameHandled();
+      }
+      await delayedFetchError;
+      throw new Error("delayed fetch-event-source rejection");
+    },
+  );
+
+  await errorFrame;
+  context.sessionIdRef.current = "session-new";
+  context.currentRunIdRef.current = "run-new";
+  context.streamVersionRef.current += 1;
+  connectionStates.length = 0;
+  releaseFetchError();
+  await connection;
+
+  assert.deepEqual(connectionStates, []);
+  assert.equal(context.isConnectingRef.current, false);
 });

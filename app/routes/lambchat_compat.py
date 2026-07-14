@@ -622,7 +622,15 @@ async def chat_status(
             session_id=session_id,
             limit=10,
         )
-    target = next((row for row in rows if row["id"] == run_id), rows[0] if rows else None)
+    if run_id is not None:
+        target = next((row for row in rows if row["id"] == run_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="run_not_found")
+    else:
+        # Preserve the legacy latest-run projection only when the client did
+        # not request a specific run. An explicit id must never borrow another
+        # authorized row's status.
+        target = rows[0] if rows else None
     raw_status = _platform_status(str(target["status"])) if target else "idle"
     return {"session_id": session_id, "run_id": run_id, "status": _lambchat_status(raw_status), "raw_status": raw_status}
 
