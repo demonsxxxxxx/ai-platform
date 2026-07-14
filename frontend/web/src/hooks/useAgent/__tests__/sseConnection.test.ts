@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   connectToSSE,
   getSSECloseAction,
+  isNonRetryableSSEAuthenticationError,
   isTerminalSSEEvent,
   MAX_CONSECUTIVE_SSE_RECONNECTS,
   queryAuthoritativeRunStatus,
@@ -680,7 +681,13 @@ test("fails closed when the refreshed SSE retry is still unauthorized", async ()
         },
       },
     ),
-    /SSE unauthorized after token refresh/,
+    (error: unknown) => {
+      assert.equal(isNonRetryableSSEAuthenticationError(error), true);
+      if (isNonRetryableSSEAuthenticationError(error)) {
+        assert.equal(error.failure, "refresh_retry_exhausted");
+      }
+      return true;
+    },
   );
 
   assert.equal(refreshCalls, 1);
@@ -695,7 +702,7 @@ test("fails closed when a current 401 has no refresh marker or refresh fails", a
       name: "no refresh marker",
       getRefreshToken: () => null,
       refreshAccessToken: async () => "unused",
-      expected: /SSE unauthorized: no refresh token/,
+      expectedFailure: "refresh_unavailable" as const,
     },
     {
       name: "refresh failure",
@@ -703,7 +710,7 @@ test("fails closed when a current 401 has no refresh marker or refresh fails", a
       refreshAccessToken: async () => {
         throw new Error("refresh failed");
       },
-      expected: /SSE unauthorized: token refresh failed/,
+      expectedFailure: "refresh_failed" as const,
     },
   ]) {
     const { context, connectionStates } = createTokenRefreshContext();
@@ -724,12 +731,110 @@ test("fails closed when a current 401 has no refresh marker or refresh fails", a
           refreshAccessToken: scenario.refreshAccessToken,
         },
       ),
-      scenario.expected,
+      (error: unknown) => {
+        assert.equal(isNonRetryableSSEAuthenticationError(error), true);
+        if (isNonRetryableSSEAuthenticationError(error)) {
+          assert.equal(error.failure, scenario.expectedFailure);
+        }
+        return true;
+      },
       scenario.name,
     );
 
     assert.equal(context.isConnectingRef.current, false);
     assert.equal(connectionStates.at(-1), "disconnected");
+  }
+});
+
+test("a scheduled reconnect converges non-retryable auth without another status read", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  let statusCalls = 0;
+  let connectCalls = 0;
+  let unavailableCalls = 0;
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-auth" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    messagesRef: {
+      current: [
+        {
+          id: "assistant-auth",
+          role: "assistant",
+          content: "",
+          timestamp: new Date(),
+          isStreaming: true,
+        },
+      ],
+    },
+    sessionIdRef: { current: "session-auth" },
+    currentRunIdRef: { current: "run-auth" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    isReconnectFromHistoryRef: { current: false },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunStatusUnavailable: () => {
+      unavailableCalls += 1;
+      return true;
+    },
+  } satisfies SSEConnectionContext & {
+    isReconnectFromHistoryRef: { current: boolean };
+  };
+  const flushAsync = async () => {
+    for (let index = 0; index < 6; index += 1) {
+      await Promise.resolve();
+    }
+  };
+
+  try {
+    await reconnectSSE(context, {
+      getStatus: async () => {
+        statusCalls += 1;
+        return { session_id: "session-auth", run_id: "run-auth", status: "running" };
+      },
+      connect: async (sessionId, runId, messageId, reconnectContext) => {
+        connectCalls += 1;
+        await connectToSSE(
+          sessionId,
+          runId,
+          messageId,
+          reconnectContext,
+          false,
+          async (_input, init) => {
+            await init.onopen?.(new Response(null, { status: 401 }));
+          },
+          {
+            getValidAccessToken: async () => null,
+            getRefreshToken: () => null,
+            refreshAccessToken: async () => "unused",
+          },
+        );
+      },
+    });
+
+    t.mock.timers.tick(1_000);
+    await flushAsync();
+    assert.equal(statusCalls, 1);
+    assert.equal(connectCalls, 1);
+    assert.equal(unavailableCalls, 1);
+
+    t.mock.timers.tick(60_000);
+    await flushAsync();
+    assert.equal(statusCalls, 1);
+    assert.equal(connectCalls, 1);
+    assert.equal(unavailableCalls, 1);
+  } finally {
+    Math.random = originalRandom;
   }
 });
 

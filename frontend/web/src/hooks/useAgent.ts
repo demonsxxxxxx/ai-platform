@@ -57,6 +57,7 @@ import {
   connectToSSE,
   reconnectSSE,
   clearReconnectTimeout,
+  isNonRetryableSSEAuthenticationError,
   queryAuthoritativeRunStatus,
   type SSEConnectionContext,
 } from "./useAgent/sseConnection";
@@ -727,11 +728,18 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               historyCurrentRunId,
               streamingMessageId,
               ctx,
-            ).catch(() => {
+            ).catch((streamError) => {
               if (
                 !isCurrentHistoryLoadRequest() ||
                 currentRunIdRef.current !== historyCurrentRunId
               ) {
+                return;
+              }
+              if (isNonRetryableSSEAuthenticationError(streamError)) {
+                finalizeRunStatusUnavailable(
+                  historyCurrentRunId,
+                  streamingMessageId,
+                );
                 return;
               }
               reconcileCurrentRun().catch((reconcileError) => {
@@ -1034,11 +1042,18 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           finalAssistantMessageId,
           ctx,
         )
-          .catch(async () => {
+          .catch(async (streamError) => {
             if (
               !isCurrentSubmission() ||
               currentRunIdRef.current !== streamRunId
             ) {
+              return;
+            }
+            if (isNonRetryableSSEAuthenticationError(streamError)) {
+              finalizeRunStatusUnavailable(
+                streamRunId,
+                finalAssistantMessageId,
+              );
               return;
             }
             await reconcileCurrentRun();
@@ -1101,6 +1116,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       createSSEContext,
       newlyCreatedSession?.metadata,
       options,
+      finalizeRunStatusUnavailable,
       reconcileCurrentRun,
     ],
   );

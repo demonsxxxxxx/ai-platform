@@ -930,6 +930,141 @@ test("useAgent converges a bounded status-query failure to one local unavailable
   }
 });
 
+test("useAgent fails closed once for a non-retryable SSE authentication error", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalFetch = dom.window.fetch;
+  let statusCalls = 0;
+  let sseCalls = 0;
+  dom.window.localStorage.removeItem("ai_platform_session_present");
+  dom.window.fetch = async () => {
+    sseCalls += 1;
+    return new Response(null, { status: 401 });
+  };
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "认证失效会话",
+    session_id: "session-auth-unavailable",
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-auth-unavailable",
+    run_id: "run-auth-unavailable",
+    trace_id: "trace-auth-unavailable",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+  // A generic stream interruption would query this active projection. A
+  // non-retryable authentication rejection must not do so.
+  sessionApi.getStatus = (async () => {
+    statusCalls += 1;
+    return {
+      session_id: "session-auth-unavailable",
+      run_id: "run-auth-unavailable",
+      status: "running",
+    };
+  }) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("认证失效后不应重连");
+    });
+    await settle(harness.act);
+    // The shortest reconnect backoff is one second. Waiting past it proves no
+    // stale reconnect timer or second stream attempt was scheduled.
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    await settle(harness.act);
+
+    const parts = harness.hook.messages.flatMap((message) => message.parts || []);
+    assert.equal(statusCalls, 0);
+    assert.equal(sseCalls, 1);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.equal(
+      parts.filter(
+        (part) =>
+          part.type === "run_status" &&
+          part.event_id === "terminal-status-unavailable:run-auth-unavailable",
+      ).length,
+      1,
+    );
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getStatus = originalGetStatus;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent reconciles an ordinary transport interruption authoritatively", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalFetch = dom.window.fetch;
+  let statusCalls = 0;
+  let sseCalls = 0;
+  dom.window.fetch = async () => {
+    sseCalls += 1;
+    throw new Error("ordinary network interruption");
+  };
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "网络中断会话",
+    session_id: "session-transport-interruption",
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-transport-interruption",
+    run_id: "run-transport-interruption",
+    trace_id: "trace-transport-interruption",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+  sessionApi.getStatus = (async () => {
+    statusCalls += 1;
+    return {
+      session_id: "session-transport-interruption",
+      run_id: "run-transport-interruption",
+      status: "error",
+      raw_status: "failed",
+    };
+  }) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("普通网络中断需要核对状态");
+    });
+    await settle(harness.act);
+
+    const parts = harness.hook.messages.flatMap((message) => message.parts || []);
+    assert.equal(sseCalls, 1);
+    assert.equal(statusCalls, 1);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(
+      parts.filter(
+        (part) =>
+          part.type === "run_status" &&
+          part.event_id === "terminal-failure:run-transport-interruption",
+      ).length,
+      1,
+    );
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getStatus = originalGetStatus;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent releases the active state for succeeded and cancelled terminals", async () => {
   for (const terminal of [
     { eventType: "run_succeeded", runId: "run-success", cancelled: false },

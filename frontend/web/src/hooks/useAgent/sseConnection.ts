@@ -69,6 +69,43 @@ export interface SSETokenDependencies {
   getRefreshToken?: typeof getRefreshToken;
   refreshAccessToken?: typeof refreshAccessToken;
 }
+
+/**
+ * A sanitized, explicit contract for authentication failures which cannot be
+ * recovered by reconnecting this stream. Callers must converge locally rather
+ * than treating these as ordinary transport interruptions.
+ */
+export const NON_RETRYABLE_SSE_AUTH_ERROR_CODE = "sse_authentication_failed";
+export type NonRetryableSSEAuthenticationFailure =
+  | "refresh_retry_exhausted"
+  | "refresh_unavailable"
+  | "refresh_failed";
+
+/** Stable, sanitized authentication error surfaced to stream owners. */
+export class NonRetryableSSEAuthenticationError extends Error {
+  readonly code = NON_RETRYABLE_SSE_AUTH_ERROR_CODE;
+
+  constructor(readonly failure: NonRetryableSSEAuthenticationFailure) {
+    super(NON_RETRYABLE_SSE_AUTH_ERROR_CODE);
+    this.name = "NonRetryableSSEAuthenticationError";
+  }
+}
+
+/** Returns true only for the explicit non-retryable SSE auth contract. */
+export function isNonRetryableSSEAuthenticationError(
+  error: unknown,
+): error is NonRetryableSSEAuthenticationError {
+  if (!(error instanceof NonRetryableSSEAuthenticationError)) {
+    return false;
+  }
+  return (
+    error.code === NON_RETRYABLE_SSE_AUTH_ERROR_CODE &&
+    (error.failure === "refresh_retry_exhausted" ||
+      error.failure === "refresh_unavailable" ||
+      error.failure === "refresh_failed")
+  );
+}
+
 export const MAX_STATUS_QUERY_RETRIES = 2;
 /** Maximum reconnects after continuous transport loss for one session/run. */
 export const MAX_CONSECUTIVE_SSE_RECONNECTS = 3;
@@ -277,17 +314,21 @@ export async function connectToSSE(
           }
           if (response.status === 401) {
             if (hasRetried) {
-              // refreshAccessToken() in the first attempt already handled redirect
-              // if needed, so just abort and throw
-              throw new Error("SSE unauthorized after token refresh");
+              // The first attempt already granted the only refresh opportunity
+              // for this stream. Do not turn a second 401 into a reconnect.
+              throw new NonRetryableSSEAuthenticationError(
+                "refresh_retry_exhausted",
+              );
             }
             if (!getCurrentRefreshToken()) {
-              throw new Error("SSE unauthorized: no refresh token");
+              throw new NonRetryableSSEAuthenticationError(
+                "refresh_unavailable",
+              );
             }
             try {
               await refreshCurrentAccessToken();
             } catch {
-              throw new Error("SSE unauthorized: token refresh failed");
+              throw new NonRetryableSSEAuthenticationError("refresh_failed");
             }
             // Refresh is asynchronous. A session switch, clear, unmount, or
             // replacement stream can happen while it is pending; an old
@@ -601,8 +642,15 @@ export async function reconnectSSE(
         isReconnectFromHistoryRef.current = true;
         try {
           await connect(currentSessId, currentRId, currentMsgId, ctx);
-        } catch {
+        } catch (error) {
           if (!isCurrentReconnect()) {
+            return;
+          }
+          if (isNonRetryableSSEAuthenticationError(error)) {
+            // Authentication cannot be recovered by a status read or another
+            // stream attempt. The lifecycle converger clears the generation's
+            // active stream without fabricating a backend failed result.
+            convergeUnavailable();
             return;
           }
           await reconnectSSE(ctx, dependencies);
