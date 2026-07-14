@@ -64,6 +64,8 @@ export function clearReconnectTimeout(
 export type SSECloseAction = "terminal" | "retry";
 export type SSEFetchEventSource = typeof fetchEventSource;
 export const MAX_STATUS_QUERY_RETRIES = 2;
+/** Maximum reconnects after continuous transport loss for one session/run. */
+export const MAX_CONSECUTIVE_SSE_RECONNECTS = 3;
 type ReconnectDependencies = {
   getStatus?: typeof sessionApi.getStatus;
   connect?: typeof connectToSSE;
@@ -156,6 +158,30 @@ function explicitRunId(data: Record<string, unknown>): string | null {
     : null;
 }
 
+/**
+ * Only meaningful current-run progress proves that a stream recovered. Handshake,
+ * metadata, queue, ping, and error frames can all arrive in an open→close loop.
+ */
+function isReconnectBudgetResetFrame(eventType: string): boolean {
+  return [
+    "run_event",
+    "message:chunk",
+    "thinking",
+    "tool:start",
+    "tool:result",
+    "todo:updated",
+    "summary",
+    "artifact_card",
+    "agent:call",
+    "agent:result",
+    "approval_required",
+    "sandbox:starting",
+    "sandbox:ready",
+    "token:usage",
+    "skills:changed",
+  ].includes(eventType);
+}
+
 export function getSSECloseAction({
   receivedTerminalEvent,
 }: {
@@ -225,7 +251,6 @@ export async function connectToSSE(
   let receivedNonTerminalApplicationError = false;
 
   setConnectionStatus("connecting");
-  retryCountRef.current = 0;
 
   try {
     await fetchStream(
@@ -270,7 +295,6 @@ export async function connectToSSE(
           }
           console.log("[SSE] Connection established");
           setConnectionStatus("connected");
-          retryCountRef.current = 0;
         },
         onmessage: (event) => {
           if (!isCurrentStream()) {
@@ -290,6 +314,10 @@ export async function connectToSSE(
           // reconnect. It is not safe to rebind an explicit foreign run.
           if (sourceRunId && sourceRunId !== targetRunId) {
             return;
+          }
+
+          if (isReconnectBudgetResetFrame(event.event)) {
+            retryCountRef.current = 0;
           }
 
           const terminalStatus = terminalRunStatusFromEvent(
@@ -491,6 +519,13 @@ export async function reconnectSSE(
     return;
   }
 
+  if (retryCountRef.current >= MAX_CONSECUTIVE_SSE_RECONNECTS) {
+    // The backend is still active, but this client has exhausted its bounded
+    // transport recovery budget. Converge locally without inventing failure.
+    convergeUnavailable();
+    return;
+  }
+
   setConnectionStatus("reconnecting");
 
   const delay = getReconnectDelay(retryCountRef.current);
@@ -514,7 +549,7 @@ export async function reconnectSSE(
           if (!isCurrentReconnect()) {
             return;
           }
-          await reconnectSSE(ctx);
+          await reconnectSSE(ctx, dependencies);
         }
       }
     }

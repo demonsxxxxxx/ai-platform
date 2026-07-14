@@ -1663,3 +1663,72 @@ test("useAgent clears a pending reconnect timer when switching sessions", async 
     await harness.cleanup();
   }
 });
+
+test("useAgent preserves an active run reconnect budget across a same-session reload", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const originalRandom = Math.random;
+  let sseCalls = 0;
+  Math.random = () => 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-reconnect-budget",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    events: [
+      {
+        id: "evt-reconnect-budget",
+        run_id: "run-reconnect-budget",
+        event_type: "user:message",
+        timestamp: "2026-07-15T00:00:00Z",
+        data: { content: "恢复同一运行" },
+      },
+    ],
+  });
+  sessionApi.getStatus = (async () => ({
+    session_id: "session-reconnect-budget",
+    run_id: "run-reconnect-budget",
+    status: "running",
+  })) as typeof sessionApi.getStatus;
+  dom.window.fetch = async () => {
+    sseCalls += 1;
+    return new Response("", {
+      headers: { "content-type": "text/event-stream" },
+    });
+  };
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-reconnect-budget");
+    });
+    await settle(harness.act);
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-reconnect-budget");
+    });
+    await settle(harness.act);
+
+    // The second interruption is the same run, so it must retain retry #1
+    // and schedule retry #2 (two seconds), not restart at one second.
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await settle(harness.act);
+    assert.equal(sseCalls, 2);
+  } finally {
+    Math.random = originalRandom;
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});

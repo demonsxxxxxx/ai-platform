@@ -193,6 +193,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       isConnectingRef.current = false;
       streamingMessageIdRef.current = null;
       isSendingRef.current = false;
+      retryCountRef.current = 0;
       statusRetryCountRef.current = 0;
 
       toast.dismiss("chat-queue");
@@ -408,6 +409,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         );
       }
       const historyLoadToken = beginHistoryLoad(historyLoadTokenRef);
+      const previousSessionId = sessionIdRef.current;
+      const previousRunId = currentRunIdRef.current;
+      if (previousSessionId !== targetSessionId) {
+        // A new session owns an independent transport-reconnect budget. Clear
+        // the previous session's budget before asynchronous history work.
+        retryCountRef.current = 0;
+      }
       const isCurrentHistoryLoadRequest = () =>
         isMountedRef.current &&
         mountedGenerationRef.current === mountedGeneration &&
@@ -416,7 +424,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       submissionTokenRef.current += 1;
       streamVersionRef.current += 1;
       isSendingRef.current = false;
-      retryCountRef.current = 0;
       statusRetryCountRef.current = 0;
 
       isLoadingHistoryRef.current = true;
@@ -507,6 +514,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             sessionData,
             eventsData,
           });
+          if (
+            previousSessionId === targetSessionId &&
+            previousRunId !== historyCurrentRunId
+          ) {
+            // A reload of the same active run must retain its bounded
+            // transport budget; only a true session/run handoff starts over.
+            retryCountRef.current = 0;
+          }
           const statusResult = historyCurrentRunId
             ? await queryAuthoritativeRunStatus({
                 sessionId: targetSessionId,
@@ -875,6 +890,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           );
         }
         if (newRunId) {
+          // A confirmed run owns a fresh continuous transport-recovery budget.
+          retryCountRef.current = 0;
           setCurrentRunId(newRunId);
           currentRunIdRef.current = newRunId;
           setMessages((prev) =>

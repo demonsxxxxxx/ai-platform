@@ -947,21 +947,15 @@ def test_lambchat_status_normalizes_platform_terminal_statuses(monkeypatch):
         assert user_id == "user-a"
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
-        return [
-            {
-                "id": "run_succeeded",
-                "status": "succeeded",
-            },
-            {
-                "id": "run_failed",
-                "status": "failed",
-            },
-            {
-                "id": "run_cancelled",
-                "status": "canceled",
-            },
-        ]
+    statuses = {
+        "run_succeeded": "succeeded",
+        "run_failed": "failed",
+        "run_cancelled": "canceled",
+    }
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id) == ("default", "user-a")
+        return {"id": run_id, "session_id": "ses_a", "status": statuses[run_id]}
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
@@ -970,8 +964,8 @@ def test_lambchat_status_normalizes_platform_terminal_statuses(monkeypatch):
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
-        fake_list_authorized_session_runs,
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
     )
     client = TestClient(create_app())
 
@@ -995,9 +989,9 @@ def test_lambchat_status_rejects_an_absent_explicit_run_without_falling_back(mon
         assert (tenant_id, user_id, session_id) == ("default", "user-a", "ses_a")
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
-        assert (tenant_id, user_id, session_id, limit) == ("default", "user-a", "ses_a", 10)
-        return [{"id": "run-other", "status": "failed"}]
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run-requested")
+        return None
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
@@ -1006,8 +1000,8 @@ def test_lambchat_status_rejects_an_absent_explicit_run_without_falling_back(mon
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
-        fake_list_authorized_session_runs,
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
     )
     client = TestClient(create_app())
 
@@ -1018,7 +1012,74 @@ def test_lambchat_status_rejects_an_absent_explicit_run_without_falling_back(mon
 
     assert response.status_code == 404
     assert response.json()["detail"] == "run_not_found"
-    assert "run-other" not in response.text
+
+
+def test_lambchat_status_uses_exact_authorized_run_beyond_latest_list_and_rejects_scope_mismatch(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        calls.append(("session", tenant_id, user_id, session_id))
+        return {"id": session_id} if (tenant_id, user_id) == ("default", "user-a") else None
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        calls.append(("run", tenant_id, user_id, run_id))
+        if run_id == "run-old":
+            return {"id": run_id, "session_id": "ses_a", "status": "succeeded"}
+        if run_id == "run-other-session":
+            return {"id": run_id, "session_id": "ses_other", "status": "running"}
+        return None
+
+    async def unexpected_recent_list(*args, **kwargs):
+        raise AssertionError("explicit run lookup must not use the latest-ten list")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        unexpected_recent_list,
+    )
+    client = TestClient(create_app())
+
+    old = client.get("/api/chat/sessions/ses_a/status?run_id=run-old", headers=auth_headers())
+    wrong_session = client.get(
+        "/api/chat/sessions/ses_a/status?run_id=run-other-session",
+        headers=auth_headers(),
+    )
+    wrong_user = client.get(
+        "/api/chat/sessions/ses_a/status?run_id=run-old",
+        headers=action_headers(user_id="user-b"),
+    )
+    wrong_tenant = client.get(
+        "/api/chat/sessions/ses_a/status?run_id=run-old",
+        headers=action_headers(tenant_id="other-tenant"),
+    )
+
+    assert old.status_code == 200
+    assert old.json() == {
+        "session_id": "ses_a",
+        "run_id": "run-old",
+        "status": "completed",
+        "raw_status": "succeeded",
+    }
+    assert wrong_session.status_code == 404
+    assert wrong_user.status_code == 404
+    assert wrong_tenant.status_code == 404
+    assert calls == [
+        ("session", "default", "user-a", "ses_a"),
+        ("run", "default", "user-a", "run-old"),
+        ("session", "default", "user-a", "ses_a"),
+        ("run", "default", "user-a", "run-other-session"),
+        ("session", "default", "user-b", "ses_a"),
+        ("session", "other-tenant", "user-a", "ses_a"),
+    ]
 
 
 def test_lambchat_status_keeps_latest_selection_scoped_to_tenant_and_user(monkeypatch):

@@ -7,6 +7,7 @@ import {
   connectToSSE,
   getSSECloseAction,
   isTerminalSSEEvent,
+  MAX_CONSECUTIVE_SSE_RECONNECTS,
   queryAuthoritativeRunStatus,
   reconnectSSE,
   type SSEConnectionContext,
@@ -526,4 +527,240 @@ test("drops a delayed non-terminal application error after its stream generation
 
   assert.deepEqual(connectionStates, []);
   assert.equal(context.isConnectingRef.current, false);
+});
+
+test("bounds continuous active transport reconnects and converges unavailable once", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  let statusCalls = 0;
+  let connectCalls = 0;
+  let unavailableCalls = 0;
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-1" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    messagesRef: {
+      current: [
+        {
+          id: "assistant-1",
+          role: "assistant",
+          content: "",
+          timestamp: new Date(),
+          isStreaming: true,
+        },
+      ],
+    },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    isReconnectFromHistoryRef: { current: false },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunStatusUnavailable: () => {
+      unavailableCalls += 1;
+      return true;
+    },
+  } satisfies SSEConnectionContext & {
+    isReconnectFromHistoryRef: { current: boolean };
+  };
+  const flushAsync = async () => {
+    for (let index = 0; index < 6; index += 1) {
+      await Promise.resolve();
+    }
+  };
+
+  try {
+    await reconnectSSE(context, {
+      getStatus: async () => {
+        statusCalls += 1;
+        return { session_id: "session-1", run_id: "run-1", status: "running" };
+      },
+      connect: async (sessionId, runId, messageId, reconnectContext) => {
+        connectCalls += 1;
+        await connectToSSE(
+          sessionId,
+          runId,
+          messageId,
+          reconnectContext,
+          false,
+          async (_input, init) => {
+            await init.onopen?.(new Response(null, { status: 200 }));
+            await init.onclose?.();
+          },
+        );
+      },
+    });
+
+    for (let attempt = 0; attempt < MAX_CONSECUTIVE_SSE_RECONNECTS; attempt += 1) {
+      t.mock.timers.tick(2 ** attempt * 1000);
+      await flushAsync();
+    }
+
+    assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
+    assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+    assert.equal(unavailableCalls, 1);
+    assert.equal(context.reconnectTimeoutRef.current, null);
+
+    t.mock.timers.tick(60_000);
+    await flushAsync();
+    assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
+    assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+    assert.equal(unavailableCalls, 1);
+  } finally {
+    Math.random = originalRandom;
+  }
+});
+
+test("resets reconnect budget only after a current-run progress frame", async () => {
+  const currentContext = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: null },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: MAX_CONSECUTIVE_SSE_RECONNECTS },
+    messagesRef: { current: [] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+  } satisfies SSEConnectionContext;
+
+  await assert.rejects(
+    connectToSSE(
+      "session-1",
+      "run-1",
+      "assistant-1",
+      currentContext,
+      false,
+      async (_input, init) => {
+        await init.onopen?.(new Response(null, { status: 200 }));
+        init.onmessage?.({
+          event: "message:chunk",
+          id: "evt-current-progress",
+          data: JSON.stringify({ run_id: "run-1", content: "进度" }),
+        } as never);
+        await init.onclose?.();
+      },
+    ),
+    /SSE closed before terminal event/,
+  );
+  assert.equal(currentContext.retryCountRef.current, 0);
+
+  const nonProgressContext = {
+    ...currentContext,
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    retryCountRef: { current: MAX_CONSECUTIVE_SSE_RECONNECTS },
+    processedEventIdsRef: { current: new Set<string>() },
+  } satisfies SSEConnectionContext;
+  await assert.rejects(
+    connectToSSE(
+      "session-1",
+      "run-1",
+      "assistant-1",
+      nonProgressContext,
+      false,
+      async (_input, init) => {
+        await init.onopen?.(new Response(null, { status: 200 }));
+        init.onmessage?.({ event: "ping", data: "{}" } as never);
+        init.onmessage?.({
+          event: "run_event",
+          data: JSON.stringify({ run_id: "run-foreign", event_type: "worker_started" }),
+        } as never);
+        await init.onclose?.();
+      },
+    ),
+    /SSE closed before terminal event/,
+  );
+  assert.equal(
+    nonProgressContext.retryCountRef.current,
+    MAX_CONSECUTIVE_SSE_RECONNECTS,
+  );
+});
+
+test("drops a queued reconnect timer after session switch or unmount", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  let connectCalls = 0;
+  let unavailableCalls = 0;
+  const context = {
+    isMountedRef: { current: true as boolean },
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-old" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    messagesRef: {
+      current: [
+        {
+          id: "assistant-old",
+          role: "assistant",
+          content: "",
+          timestamp: new Date(),
+          isStreaming: true,
+        },
+      ],
+    },
+    sessionIdRef: { current: "session-old" },
+    currentRunIdRef: { current: "run-old" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 2 },
+    isReconnectFromHistoryRef: { current: false },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunStatusUnavailable: () => {
+      unavailableCalls += 1;
+      return true;
+    },
+  } satisfies SSEConnectionContext & {
+    isReconnectFromHistoryRef: { current: boolean };
+  };
+
+  try {
+    await reconnectSSE(context, {
+      getStatus: async () => ({
+        session_id: "session-old",
+        run_id: "run-old",
+        status: "running",
+      }),
+      connect: async () => {
+        connectCalls += 1;
+      },
+    });
+    context.sessionIdRef.current = "session-new";
+    context.currentRunIdRef.current = "run-new";
+    context.streamVersionRef.current += 1;
+    context.isMountedRef.current = false;
+    t.mock.timers.tick(1_000);
+    await Promise.resolve();
+
+    assert.equal(connectCalls, 0);
+    assert.equal(unavailableCalls, 0);
+  } finally {
+    Math.random = originalRandom;
+  }
 });

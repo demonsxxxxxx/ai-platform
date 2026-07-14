@@ -615,22 +615,29 @@ async def chat_status(
         )
         if session is None:
             raise HTTPException(status_code=404, detail="session_not_found")
-        rows = await repositories.list_authorized_session_runs(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            session_id=session_id,
-            limit=10,
-        )
-    if run_id is not None:
-        target = next((row for row in rows if row["id"] == run_id), None)
-        if target is None:
-            raise HTTPException(status_code=404, detail="run_not_found")
-    else:
-        # Preserve the legacy latest-run projection only when the client did
-        # not request a specific run. An explicit id must never borrow another
-        # authorized row's status.
-        target = rows[0] if rows else None
+        if run_id is not None:
+            # An explicit id is a precise, principal-scoped lookup: it must
+            # not inherit the list endpoint's recency limit or another
+            # session's state.
+            target = await repositories.get_authorized_run(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                run_id=run_id,
+            )
+            if target is None or target.get("session_id") != session_id:
+                raise HTTPException(status_code=404, detail="run_not_found")
+        else:
+            # Preserve legacy latest-run behavior only for callers that did
+            # not identify a run.
+            rows = await repositories.list_authorized_session_runs(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+                limit=10,
+            )
+            target = rows[0] if rows else None
     raw_status = _platform_status(str(target["status"])) if target else "idle"
     return {"session_id": session_id, "run_id": run_id, "status": _lambchat_status(raw_status), "raw_status": raw_status}
 
