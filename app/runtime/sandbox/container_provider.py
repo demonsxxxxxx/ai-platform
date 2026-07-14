@@ -5,6 +5,7 @@ import inspect
 import ipaddress
 import json
 import os
+import re
 import secrets
 import shlex
 import socket
@@ -403,8 +404,8 @@ def _executor_identity_labels() -> dict[str, str]:
 
 def _provider_lease_labels(labels: dict[str, str]) -> dict[str, str]:
     public_executor_labels = {
-        "ai-platform.executor.image",
-        "ai-platform.executor.image_digest",
+        "ai-platform.executor.requested_image",
+        "ai-platform.executor.requested_image_digest",
     }
     return {
         str(key): str(value)
@@ -515,11 +516,31 @@ def _opensandbox_entrypoint(settings: Any) -> list[str]:
         raise ContainerStartFailedError("OpenSandbox executor entrypoint is invalid") from exc
 
 
-def _opensandbox_image(settings: Any) -> str:
+def _opensandbox_requested_image(settings: Any) -> tuple[str, str]:
+    """Return the immutable image request and its digest, never an observed runtime subject."""
+
     image = str(getattr(settings, "opensandbox_executor_image", "") or "").strip()
-    if image:
-        return image
-    return str(getattr(settings, "sandbox_executor_image", "ai-platform:local") or "ai-platform:local")
+    if not image:
+        image = str(getattr(settings, "sandbox_executor_image", "") or "").strip()
+    subject, separator, digest = image.partition("@")
+    last_path_segment = subject.rsplit("/", 1)[-1]
+    if (
+        not separator
+        or not subject
+        or any(character.isspace() or ord(character) < 32 or ord(character) == 127 for character in subject)
+        or "@" in digest
+        or ":" in last_path_segment
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+    ):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox executor image must be an immutable sha256 reference")
+    configured_digest = str(getattr(settings, "opensandbox_executor_image_digest", "") or "").strip()
+    if configured_digest and configured_digest != digest:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox configured executor digest does not match image reference")
+    return image, digest
+
+
+def _opensandbox_image(settings: Any) -> str:
+    return _opensandbox_requested_image(settings)[0]
 
 
 def _opensandbox_resource_limits(resource_limits: dict[str, Any]) -> dict[str, str]:
@@ -642,8 +663,8 @@ def _normalized_capability_profile_endpoint(url: str) -> str:
     try:
         parsed = urlsplit(str(url or "").strip())
         port = parsed.port
-    except ValueError as exc:
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability authenticated endpoint is invalid") from exc
+    except ValueError:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability authenticated endpoint is invalid") from None
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.hostname
@@ -661,8 +682,8 @@ def _normalized_capability_profile_endpoint(url: str) -> str:
     else:
         try:
             parsed_ip = ipaddress.ip_address(host)
-        except ValueError as exc:
-            raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability authenticated endpoint is invalid") from exc
+        except ValueError:
+            raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability authenticated endpoint is invalid") from None
         if (
             parsed_ip.version != 4
             or parsed_ip.is_link_local
@@ -680,17 +701,26 @@ def _normalized_capability_profile_endpoint(url: str) -> str:
     return urlunsplit((parsed.scheme, netloc, parsed.path or "/", "", ""))
 
 
-def _validated_executor_image_digest(settings: Any) -> str:
-    configured = str(getattr(settings, "opensandbox_executor_image_digest", "") or "").strip()
-    image = _opensandbox_image(settings)
-    digest = configured or (image.rsplit("@", 1)[-1] if "@" in image else "")
-    if not digest.startswith("sha256:") or len(digest) != len("sha256:") + 64:
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox executor image digest is invalid")
-    try:
-        int(digest.removeprefix("sha256:"), 16)
-    except ValueError as exc:
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox executor image digest is invalid") from exc
-    return digest
+def _requested_executor_image_digest(settings: Any) -> str:
+    return _opensandbox_requested_image(settings)[1]
+
+
+def _contains_header_control_characters(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def _validated_capability_request_headers(headers: dict[str, str]) -> dict[str, str]:
+    authorization = headers.get("Authorization")
+    if (
+        set(headers) != {"Authorization"}
+        or not isinstance(authorization, str)
+        or not authorization.startswith("Bearer ")
+    ):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability authentication credential is invalid")
+    token = authorization.removeprefix("Bearer ")
+    if not token or not token.isascii() or _contains_header_control_characters(token):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability authentication credential is invalid")
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _default_opensandbox_capability_profile_fetcher(
@@ -699,16 +729,20 @@ def _default_opensandbox_capability_profile_fetcher(
     timeout_seconds: float,
 ) -> dict[str, Any]:
     endpoint = _normalized_capability_profile_endpoint(url)
+    safe_headers = _validated_capability_request_headers(headers)
     timeout = min(max(float(timeout_seconds), 0.1), CAPABILITY_PROFILE_MAX_REQUEST_SECONDS)
     started_at = time.monotonic()
     try:
         with httpx.Client(
             timeout=httpx.Timeout(timeout=timeout, connect=min(timeout, 1.0)),
             follow_redirects=False,
+            trust_env=False,
         ) as client:
-            with client.stream("GET", endpoint, headers=headers) as response:
+            with client.stream("GET", endpoint, headers=safe_headers) as response:
                 if response.is_redirect:
                     raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint redirect is rejected")
+                if response.status_code in {401, 403}:
+                    raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint authentication failed")
                 response.raise_for_status()
                 content = bytearray()
                 for chunk in response.iter_bytes():
@@ -720,14 +754,20 @@ def _default_opensandbox_capability_profile_fetcher(
         if time.monotonic() - started_at > CAPABILITY_PROFILE_MAX_REQUEST_SECONDS:
             raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint request failed")
         payload = json.loads(bytes(content))
-    except httpx.HTTPStatusError:
-        raise
-    except OpenSandboxCapabilityAdmissionError:
-        raise
-    except json.JSONDecodeError as exc:
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile is malformed") from exc
-    except (httpx.HTTPError, OSError, TypeError, ValueError) as exc:
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint request failed") from exc
+    except OpenSandboxCapabilityAdmissionError as exc:
+        message = str(exc)
+        if message in {
+            "OpenSandbox capability endpoint redirect is rejected",
+            "OpenSandbox capability endpoint authentication failed",
+            "OpenSandbox capability endpoint request failed",
+            "OpenSandbox capability profile response is too large",
+        }:
+            raise OpenSandboxCapabilityAdmissionError(message) from None
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint request failed") from None
+    except json.JSONDecodeError:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile is malformed") from None
+    except Exception:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint request failed") from None
     if not isinstance(payload, dict):
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile is malformed")
     return payload
@@ -818,26 +858,29 @@ async def _admit_opensandbox_external_egress_capability(
         field="authenticated endpoint",
     )
     endpoint = _normalized_capability_profile_endpoint(capability_url)
-    _validated_executor_image_digest(settings)
+    _requested_executor_image_digest(settings)
     capability_token = _required_capability_value(
         getattr(settings, "opensandbox_external_egress_capability_token", ""),
         field="authentication credential",
     )
+    headers = _validated_capability_request_headers({"Authorization": f"Bearer {capability_token}"})
     try:
         profile = await asyncio.to_thread(
             fetcher,
             endpoint,
-            {"Authorization": f"Bearer {capability_token}"},
+            headers,
             float(getattr(settings, "opensandbox_request_timeout_seconds", 30.0) or 30.0),
         )
     except httpx.HTTPStatusError as exc:
         if exc.response.status_code in {401, 403}:
-            raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint authentication failed") from exc
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint request failed") from exc
-    except OpenSandboxCapabilityAdmissionError:
-        raise
-    except Exception as exc:
-        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint request failed") from exc
+            raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint authentication failed") from None
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint request failed") from None
+    except OpenSandboxCapabilityAdmissionError as exc:
+        if str(exc) == "OpenSandbox capability endpoint authentication failed":
+            raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint authentication failed") from None
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint request failed") from None
+    except Exception:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint request failed") from None
     return _validate_opensandbox_external_egress_profile(profile, settings=settings, now=now)
 
 
@@ -861,8 +904,9 @@ def _opensandbox_labels(
 ) -> dict[str, str]:
     labels = _platform_metadata(request)
     labels["ai-platform.provider_backend"] = "opensandbox"
-    labels["ai-platform.executor.image"] = _opensandbox_image(settings)
-    labels["ai-platform.executor.image_digest"] = _validated_executor_image_digest(settings)
+    requested_image, requested_digest = _opensandbox_requested_image(settings)
+    labels["ai-platform.executor.requested_image"] = requested_image
+    labels["ai-platform.executor.requested_image_digest"] = requested_digest
     labels.update(_executor_identity_labels())
     labels.update(capability.lease_labels())
     return labels

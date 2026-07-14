@@ -8,19 +8,21 @@ closed unless it proves the configured OpenSandbox endpoint, `runsc` runtime
 identity, external gateway/policy subject, and callback-boundary subject. A requested
 OpenSandbox `networkPolicy` together with this gVisor/runsc profile is rejected as an
 unsupported combination; `defaultAction=deny` remains a request projection, not
-enforcement proof. Runtime evidence must bind the run, sandbox identity, executor
-image, ai-platform runtime subject, gateway-policy subject, deny audit/counter,
-callback, and cleanup. This change is source-tested only: it does not verify s72,
-211, B2, or data-plane egress enforcement. Integration is blocked pending #429.
+enforcement proof. This change is source-tested only: it does not verify s72, 211, B2,
+or data-plane egress enforcement. Observer-backed external-egress runtime evidence is
+unsupported and missing pending #436/#429; no caller-supplied JSON is accepted as that
+evidence.
 
-Generation-2 security boundary: capability transport permits only a normalized,
-literal loopback/private IPv4 target (with no DNS hostname resolution), never follows
-redirects, has a hard request/response-size ceiling, and does not expose credentials or
-response details. Profiles are bounded in age, TTL, and remaining validity. A separate,
-versioned runtime probe must independently identify the run/sandbox/image digest/runsc
-identity, gateway deny events/counter delta, callback, and cleanup; label/config/SDK
-readback cannot satisfy the verifier. These remain source contracts until #429 provides
-the authenticated gateway baseline for a re-chartered integration run.
+Generation-3 source boundary: capability transport permits only a normalized, literal
+loopback/private IPv4 target (with no DNS hostname resolution), never follows redirects,
+does not trust proxy environment variables, has hard request/response-size ceilings, and
+does not expose credentials or response details. Profiles are bounded in age, TTL, and
+remaining validity. OpenSandbox admission requires a requested immutable
+`repository@sha256:<digest>` image reference; labels record that requested subject only,
+not an observed container digest or runtime enforcement result. An authenticated observer
+provided through #436/#429 is required before any runtime evidence or integration claim.
+If the compatibility digest setting is supplied, it must equal the digest in that requested
+reference and cannot override it.
 
 Status:
 - [x] local provider adapter wired behind `SandboxProvider`/`ContainerProvider`. Evidence: `tests/test_sandbox_container_provider.py` covers `opensandbox` provider selection, lease field mapping, stop/cleanup, startup file/command probes, byte readback compatibility, command exit-code failure, endpoint private headers, scheme-less endpoint URL normalization, and sanitized failure projection.

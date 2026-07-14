@@ -15,7 +15,7 @@ import re
 import subprocess
 import sys
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qsl, urlsplit
@@ -794,7 +794,7 @@ def _opensandbox_provider_lifecycle_error(evidence: dict[str, Any]) -> str | Non
     lifecycle = evidence.get("provider_lifecycle")
     if not isinstance(lifecycle, dict):
         return "OpenSandbox provider lifecycle evidence missing"
-    if lifecycle.get("schema_version") != "ai-platform.opensandbox-provider-lifecycle.v3":
+    if lifecycle.get("schema_version") != "ai-platform.opensandbox-provider-lifecycle.v1":
         return "OpenSandbox provider lifecycle schema mismatch"
     if lifecycle.get("provider") != "opensandbox":
         return "OpenSandbox provider lifecycle provider mismatch"
@@ -819,6 +819,10 @@ def _opensandbox_provider_lifecycle_error(evidence: dict[str, Any]) -> str | Non
         ),
         "resource_policy": (
             "resource_limits_requested",
+        ),
+        "egress_policy": (
+            "policy_requested",
+            "callback_host_allowlisted",
         ),
         "dispatch": (
             "executor_response_present",
@@ -850,149 +854,9 @@ def _opensandbox_provider_lifecycle_error(evidence: dict[str, Any]) -> str | Non
             return f"OpenSandbox provider lifecycle evidence missing: resource_policy.{field}"
     if resource_policy.get("policy_projection_source") != "provider_request":
         return "OpenSandbox provider lifecycle resource policy source mismatch"
-    lifecycle_state = lifecycle["lifecycle"]
-    sandbox_id = lifecycle_state.get("sandbox_id")
-    if not isinstance(sandbox_id, str) or not sandbox_id:
-        return "OpenSandbox provider lifecycle sandbox identity missing"
-    capability = lifecycle.get("external_egress_capability")
-    if not isinstance(capability, dict):
-        return "OpenSandbox external-egress capability evidence missing"
-    required_capability_fields = (
-        "profile_id",
-        "opensandbox_endpoint",
-        "ai_platform_runtime_subject",
-        "gateway_policy_subject",
-        "callback_boundary_subject",
-        "deny_audit_subject",
-        "deny_counter_subject",
-        "executor_image",
-        "executor_image_digest",
-    )
-    for field in required_capability_fields:
-        if not isinstance(capability.get(field), str) or not capability[field]:
-            return f"OpenSandbox external-egress capability evidence missing: {field}"
-    if capability.get("source") != "authenticated_capability_profile":
-        return "OpenSandbox external-egress capability must come from authenticated profile admission"
-    if capability.get("profile_version") != "v1":
-        return "OpenSandbox external-egress capability profile version mismatch"
-    if capability.get("runtime_identity") != "runsc":
-        return "OpenSandbox external-egress runtime identity mismatch"
-
-    runtime = lifecycle.get("external_egress_runtime")
-    if not isinstance(runtime, dict):
-        return "OpenSandbox external-egress runtime evidence missing"
-    if runtime.get("schema_version") != "ai-platform.opensandbox-external-egress-runtime-probe.v1":
-        return "OpenSandbox external-egress runtime probe schema mismatch"
-    if runtime.get("provider") != "opensandbox":
-        return "OpenSandbox external-egress runtime provider mismatch"
-    for field, expected in (
-        ("run_id", evidence.get("run_id")),
-        ("sandbox_id", sandbox_id),
-        ("ai_platform_runtime_subject", capability.get("ai_platform_runtime_subject")),
-        ("gateway_policy_subject", capability.get("gateway_policy_subject")),
-        ("callback_boundary_subject", capability.get("callback_boundary_subject")),
-    ):
-        if runtime.get(field) != expected:
-            return f"OpenSandbox external-egress runtime binding mismatch: {field}"
-    observed_at = runtime.get("observed_at")
-    if not isinstance(observed_at, str) or not observed_at:
-        return "OpenSandbox external-egress runtime observed_at missing"
-    try:
-        observed_time = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
-    except ValueError:
-        return "OpenSandbox external-egress runtime observed_at invalid"
-    if observed_time.tzinfo is None:
-        return "OpenSandbox external-egress runtime observed_at invalid"
-    observed_time = observed_time.astimezone(timezone.utc)
-    now = datetime.now(timezone.utc)
-    if observed_time < now - timedelta(seconds=300) or observed_time > now + timedelta(seconds=30):
-        return "OpenSandbox external-egress runtime observed_at stale"
-    executor = runtime.get("executor")
-    if not isinstance(executor, dict) or (
-        executor.get("image") != capability.get("executor_image")
-        or executor.get("digest") != capability.get("executor_image_digest")
-    ):
-        return "OpenSandbox external-egress runtime executor binding mismatch"
-    runtime_identity = runtime.get("runtime_identity")
-    if not isinstance(runtime_identity, dict) or runtime_identity.get("value") != "runsc":
-        return "OpenSandbox external-egress runtime identity mismatch"
-    if runtime_identity.get("source") not in {"opensandbox_runtime_inspect", "docker_runtime_inspect"}:
-        return "OpenSandbox external-egress runtime identity source is not independent"
-    callback = runtime.get("callback")
-    if not isinstance(callback, dict) or not (
-        callback.get("delivered") is True
-        and callback.get("run_id") == evidence.get("run_id")
-        and callback.get("sandbox_id") == sandbox_id
-        and callback.get("source") == "platform_callback_audit"
-        and isinstance(callback.get("event_id"), str)
-        and callback["event_id"]
-    ):
-        return "OpenSandbox external-egress callback evidence is incomplete"
-    deny_events = runtime.get("deny_events")
-    if not isinstance(deny_events, list) or len(deny_events) != 2:
-        return "OpenSandbox external-egress deny event evidence is incomplete"
-    event_ids: list[str] = []
-    event_kinds: set[str] = set()
-    for event in deny_events:
-        if not isinstance(event, dict) or not (
-            event.get("run_id") == evidence.get("run_id")
-            and event.get("sandbox_id") == sandbox_id
-            and event.get("denied") is True
-            and event.get("source") == "gateway_nft_audit"
-            and isinstance(event.get("event_id"), str)
-            and event["event_id"]
-        ):
-            return "OpenSandbox external-egress deny event evidence is incomplete"
-        kind = event.get("target_kind")
-        if kind not in {"fqdn", "literal_ip"}:
-            return "OpenSandbox external-egress deny event kind is invalid"
-        event_kinds.add(kind)
-        event_ids.append(event["event_id"])
-    if event_kinds != {"fqdn", "literal_ip"} or len(set(event_ids)) != 2:
-        return "OpenSandbox external-egress deny event evidence is incomplete"
-    deny_counter = runtime.get("deny_counter")
-    if not isinstance(deny_counter, dict) or not (
-        deny_counter.get("run_id") == evidence.get("run_id")
-        and deny_counter.get("sandbox_id") == sandbox_id
-        and deny_counter.get("source") == "gateway_nft_counter"
-        and isinstance(deny_counter.get("counter_name"), str)
-        and deny_counter["counter_name"]
-        and deny_counter.get("deny_event_ids") == event_ids
-    ):
-        return "OpenSandbox external-egress deny counter evidence is incomplete"
-    before = deny_counter.get("before")
-    after = deny_counter.get("after")
-    delta = deny_counter.get("delta")
-    if (
-        not isinstance(before, int)
-        or isinstance(before, bool)
-        or not isinstance(after, int)
-        or isinstance(after, bool)
-        or not isinstance(delta, int)
-        or isinstance(delta, bool)
-        or before < 0
-        or after <= before
-        or delta != after - before
-        or delta <= 0
-    ):
-        return "OpenSandbox external-egress deny counter delta is invalid"
-    cleanup = runtime.get("cleanup")
-    if not isinstance(cleanup, dict) or not (
-        cleanup.get("confirmed") is True
-        and cleanup.get("run_id") == evidence.get("run_id")
-        and cleanup.get("sandbox_id") == sandbox_id
-        and cleanup.get("source") == "platform_lease_cleanup_audit"
-    ):
-        return "OpenSandbox external-egress cleanup evidence is incomplete"
-    independent_sources = {
-        runtime_identity.get("source"),
-        callback.get("source"),
-        deny_events[0].get("source"),
-        deny_counter.get("source"),
-        cleanup.get("source"),
-    }
-    if len(independent_sources) != 5:
-        return "OpenSandbox external-egress evidence sources are not independent"
+    egress_policy = lifecycle["egress_policy"]
+    if egress_policy.get("policy_projection_source") != "provider_request":
+        return "OpenSandbox provider lifecycle egress policy source mismatch"
     return None
 
 
@@ -1006,12 +870,6 @@ def check_opensandbox_provider_lifecycle_evidence(evidence_path: str | Path, *, 
     lifecycle_error = _opensandbox_provider_lifecycle_error(evidence)
     if lifecycle_error:
         return CheckResult("check_opensandbox_provider_lifecycle_evidence", False, lifecycle_error)
-    if evidence.get("sandbox_provider") == "fake":
-        return CheckResult(
-            "check_opensandbox_provider_lifecycle_evidence",
-            False,
-            "fake sandbox provider is not runtime boundary proof",
-        )
     if evidence.get("sandbox_provider") != "opensandbox":
         return CheckResult(
             "check_opensandbox_provider_lifecycle_evidence",

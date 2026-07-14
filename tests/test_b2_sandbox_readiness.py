@@ -328,19 +328,18 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_p
         "does_not_close_b2": True,
     }
     assert readiness["provider_profile"]["opensandbox_external_egress_capability_admission"] == {
-        "status": "source_tested_429_runtime_integration_required",
+        "status": "source_tested_runtime_observer_missing_436_429",
         "profile_schema_version": "ai-platform.opensandbox.external-egress-capability.v1",
         "required_bindings": [
             "authenticated_capability_endpoint",
             "opensandbox_endpoint",
             "runsc_runtime_identity",
-            "executor_image_digest",
+            "requested_immutable_executor_image_reference",
             "ai_platform_runtime_subject",
             "gateway_policy_subject",
             "callback_boundary_subject",
         ],
-        "runtime_probe_schema_version": "ai-platform.opensandbox-external-egress-runtime-probe.v1",
-        "runtime_probe_requires_independent_sources": True,
+        "observer_backed_runtime_evidence": "unsupported_pending_436_429",
         "request_default_action_deny_is_enforcement_proof": False,
         "does_not_close_b2": True,
     }

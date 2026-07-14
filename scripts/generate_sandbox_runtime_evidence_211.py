@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -42,9 +42,6 @@ SAFE_NAME_PATTERN = re.compile(r"[^a-zA-Z0-9_.-]+")
 EVIDENCE_SCHEMA_VERSION = "ai-platform.sandbox-runtime-211.v1"
 LATENCY_SCHEMA_VERSION = "ai-platform.sandbox-latency-split.v1"
 RUNTIME_PROBE_RESULTS_SCHEMA_VERSION = "ai-platform.sandbox-runtime-probe-results.v1"
-OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_PROBE_SCHEMA_VERSION = "ai-platform.opensandbox-external-egress-runtime-probe.v1"
-OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_PROBE_MAX_AGE_SECONDS = 300
-OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_PROBE_CLOCK_SKEW_SECONDS = 30
 PLATFORM_DEADLINE_PROBE_SECONDS = 2.0
 NON_EXPANSION_INVARIANTS = {
     "ordinary_user_high_risk_sandbox_allowed": False,
@@ -59,11 +56,9 @@ RUNTIME_PROBE_RESULTS_ALLOWED_KEYS = {
     "source",
     "resource_limits",
     "egress_policy",
-    "opensandbox_external_egress",
     "security_options",
 }
 RUNTIME_PROBE_RESULTS_SECTION_KEYS = ("resource_limits", "egress_policy", "security_options")
-RUNTIME_PROBE_RESULTS_OPTIONAL_SECTION_KEYS = ("opensandbox_external_egress",)
 
 
 class SandboxEvidenceArgumentParser(argparse.ArgumentParser):
@@ -106,30 +101,7 @@ def _normalize_callback_defaults(
         args.callback_public_url = "http://host.docker.internal:{port}/callback" if auto_docker_callback else ""
 
 
-def _parse_probe_timestamp(value: object, *, section_name: str, now: datetime) -> str | None:
-    if not isinstance(value, str) or not value:
-        return f"runtime probe results missing: {section_name}.observed_at"
-    try:
-        observed_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return f"runtime probe results missing: {section_name}.observed_at"
-    if observed_at.tzinfo is None:
-        return f"runtime probe results missing: {section_name}.observed_at"
-    observed_at = observed_at.astimezone(timezone.utc)
-    if observed_at < now - timedelta(seconds=OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_PROBE_MAX_AGE_SECONDS):
-        return f"runtime probe results missing: {section_name}.observed_at"
-    if observed_at > now + timedelta(seconds=OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_PROBE_CLOCK_SKEW_SECONDS):
-        return f"runtime probe results missing: {section_name}.observed_at"
-    return None
-
-
-def _runtime_probe_section_error(
-    section_name: str,
-    section: dict[str, Any],
-    *,
-    run_id: str,
-    now: datetime | None = None,
-) -> str | None:
+def _runtime_probe_section_error(section_name: str, section: dict[str, Any], *, run_id: str) -> str | None:
     if section_name == "resource_limits":
         if section.get("over_limit_cleanup_verified") is not True:
             return "runtime probe results missing: resource_limits.over_limit_cleanup_verified"
@@ -185,105 +157,6 @@ def _runtime_probe_section_error(
             return "runtime probe results missing: egress_policy.policy_source"
         if section.get("probe_source") != "runtime_probe_results":
             return "runtime probe results missing: egress_policy.probe_source"
-        return None
-    if section_name == "opensandbox_external_egress":
-        section_now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        if section.get("schema_version") != OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_PROBE_SCHEMA_VERSION:
-            return "runtime probe results missing: opensandbox_external_egress.schema_version"
-        if section.get("provider") != "opensandbox":
-            return "runtime probe results missing: opensandbox_external_egress.provider"
-        if section.get("run_id") != run_id:
-            return "runtime probe results missing: opensandbox_external_egress.run_id"
-        timestamp_error = _parse_probe_timestamp(
-            section.get("observed_at"),
-            section_name="opensandbox_external_egress",
-            now=section_now,
-        )
-        if timestamp_error:
-            return timestamp_error
-        sandbox_id = section.get("sandbox_id")
-        if not isinstance(sandbox_id, str) or not sandbox_id:
-            return "runtime probe results missing: opensandbox_external_egress.sandbox_id"
-        executor = section.get("executor")
-        if not isinstance(executor, dict) or not all(
-            isinstance(executor.get(field), str) and executor[field]
-            for field in ("image", "digest")
-        ):
-            return "runtime probe results missing: opensandbox_external_egress.executor"
-        runtime_identity = section.get("runtime_identity")
-        if not isinstance(runtime_identity, dict) or runtime_identity.get("value") != "runsc":
-            return "runtime probe results missing: opensandbox_external_egress.runtime_identity"
-        if runtime_identity.get("source") not in {"opensandbox_runtime_inspect", "docker_runtime_inspect"}:
-            return "runtime probe results missing: opensandbox_external_egress.runtime_identity.source"
-        for field in ("ai_platform_runtime_subject", "gateway_policy_subject", "callback_boundary_subject"):
-            if not isinstance(section.get(field), str) or not section[field]:
-                return f"runtime probe results missing: opensandbox_external_egress.{field}"
-        callback = section.get("callback")
-        if not isinstance(callback, dict) or not (
-            callback.get("delivered") is True
-            and callback.get("run_id") == run_id
-            and callback.get("sandbox_id") == sandbox_id
-            and callback.get("source") == "platform_callback_audit"
-            and isinstance(callback.get("event_id"), str)
-            and callback["event_id"]
-        ):
-            return "runtime probe results missing: opensandbox_external_egress.callback"
-        deny_events = section.get("deny_events")
-        if not isinstance(deny_events, list) or len(deny_events) != 2:
-            return "runtime probe results missing: opensandbox_external_egress.deny_events"
-        event_ids: list[str] = []
-        event_kinds: set[str] = set()
-        for event in deny_events:
-            if not isinstance(event, dict) or not (
-                event.get("run_id") == run_id
-                and event.get("sandbox_id") == sandbox_id
-                and event.get("denied") is True
-                and event.get("source") == "gateway_nft_audit"
-                and isinstance(event.get("event_id"), str)
-                and event["event_id"]
-            ):
-                return "runtime probe results missing: opensandbox_external_egress.deny_events"
-            kind = event.get("target_kind")
-            if kind not in {"fqdn", "literal_ip"}:
-                return "runtime probe results missing: opensandbox_external_egress.deny_events"
-            event_kinds.add(kind)
-            event_ids.append(event["event_id"])
-        if event_kinds != {"fqdn", "literal_ip"} or len(set(event_ids)) != 2:
-            return "runtime probe results missing: opensandbox_external_egress.deny_events"
-        deny_counter = section.get("deny_counter")
-        if not isinstance(deny_counter, dict) or not (
-            deny_counter.get("run_id") == run_id
-            and deny_counter.get("sandbox_id") == sandbox_id
-            and deny_counter.get("source") == "gateway_nft_counter"
-            and isinstance(deny_counter.get("counter_name"), str)
-            and deny_counter["counter_name"]
-            and deny_counter.get("deny_event_ids") == event_ids
-        ):
-            return "runtime probe results missing: opensandbox_external_egress.deny_counter"
-        before = deny_counter.get("before")
-        after = deny_counter.get("after")
-        delta = deny_counter.get("delta")
-        if (
-            not isinstance(before, int)
-            or isinstance(before, bool)
-            or not isinstance(after, int)
-            or isinstance(after, bool)
-            or not isinstance(delta, int)
-            or isinstance(delta, bool)
-            or before < 0
-            or after <= before
-            or delta != after - before
-            or delta <= 0
-        ):
-            return "runtime probe results missing: opensandbox_external_egress.deny_counter"
-        cleanup = section.get("cleanup")
-        if not isinstance(cleanup, dict) or not (
-            cleanup.get("confirmed") is True
-            and cleanup.get("run_id") == run_id
-            and cleanup.get("sandbox_id") == sandbox_id
-            and cleanup.get("source") == "platform_lease_cleanup_audit"
-        ):
-            return "runtime probe results missing: opensandbox_external_egress.cleanup"
         return None
     if section_name == "security_options":
         if section.get("privileged") is not False:
@@ -358,12 +231,7 @@ def redact_for_output(text: object) -> str:
     return _redact(text)
 
 
-def load_runtime_probe_results(
-    path: str | Path,
-    *,
-    run_id: str,
-    now: datetime | None = None,
-) -> dict[str, Any]:
+def load_runtime_probe_results(path: str | Path, *, run_id: str) -> dict[str, Any]:
     """Load bounded platform probe results for the same run without trusting raw payloads."""
     if not run_id:
         raise RuntimeError("runtime probe results require run_id")
@@ -398,19 +266,9 @@ def load_runtime_probe_results(
             raise RuntimeError(f"runtime probe results section must be an object: {key}")
         results[key] = dict(section)
     for key, section in results.items():
-        section_error = _runtime_probe_section_error(key, section, run_id=run_id, now=now)
+        section_error = _runtime_probe_section_error(key, section, run_id=run_id)
         if section_error:
             raise RuntimeError(section_error)
-    for key in RUNTIME_PROBE_RESULTS_OPTIONAL_SECTION_KEYS:
-        if key not in payload:
-            continue
-        section = payload.get(key)
-        if not isinstance(section, dict):
-            raise RuntimeError(f"runtime probe results missing: {key}")
-        section_error = _runtime_probe_section_error(key, section, run_id=run_id, now=now)
-        if section_error:
-            raise RuntimeError(section_error)
-        results[key] = dict(section)
     return results
 
 
@@ -1207,7 +1065,6 @@ def _opensandbox_provider_lifecycle_evidence(
     recorder: EvidenceRecorder,
     captured: dict[str, Any],
     resource_limits: dict[str, Any],
-    runtime_probe_results: dict[str, Any] | None,
 ) -> dict[str, object]:
     if recorder.sandbox_provider != "opensandbox":
         return {}
@@ -1216,30 +1073,8 @@ def _opensandbox_provider_lifecycle_evidence(
     release_reason = str(captured.get("release_reason") or "")
     lease_labels = captured.get("lease_labels")
     labels = lease_labels if isinstance(lease_labels, dict) else {}
-    external_egress_probe = (
-        runtime_probe_results.get("opensandbox_external_egress")
-        if isinstance(runtime_probe_results, dict)
-        and isinstance(runtime_probe_results.get("opensandbox_external_egress"), dict)
-        else {}
-    )
-    probe_executor = external_egress_probe.get("executor")
-    probe_executor = probe_executor if isinstance(probe_executor, dict) else {}
-    probe_binding_matches = bool(external_egress_probe) and all(
-        (
-            external_egress_probe.get("run_id") == recorder.run_id,
-            external_egress_probe.get("sandbox_id") == str(captured.get("container_id") or ""),
-            external_egress_probe.get("provider") == "opensandbox",
-            probe_executor.get("image") == labels.get("ai-platform.executor.image"),
-            probe_executor.get("digest") == labels.get("ai-platform.executor.image_digest"),
-            external_egress_probe.get("ai_platform_runtime_subject") == labels.get("ai-platform.runtime_subject"),
-            external_egress_probe.get("gateway_policy_subject")
-            == labels.get("ai-platform.external_egress.gateway_policy_subject"),
-            external_egress_probe.get("callback_boundary_subject")
-            == labels.get("ai-platform.external_egress.callback_boundary_subject"),
-        )
-    )
     return {
-        "schema_version": "ai-platform.opensandbox-provider-lifecycle.v3",
+        "schema_version": "ai-platform.opensandbox-provider-lifecycle.v1",
         "provider": "opensandbox",
         "run_id": recorder.run_id,
         "lifecycle": {
@@ -1247,7 +1082,6 @@ def _opensandbox_provider_lifecycle_evidence(
             "delete_observed": bool(recorded_lease_id and recorded_lease_id == released_lease_id),
             "container_id_present": bool(captured.get("container_id")),
             "executor_endpoint_present": bool(captured.get("executor_url")),
-            "sandbox_id": str(captured.get("container_id") or ""),
         },
         "db_lease": {
             "recorded": bool(recorded_lease_id),
@@ -1277,30 +1111,11 @@ def _opensandbox_provider_lifecycle_evidence(
             "pids_limit": int(resource_limits.get("pids_limit") or 0),
             "policy_projection_source": "provider_request",
         },
-        "external_egress_capability": {
-            "source": (
-                "authenticated_capability_profile"
-                if labels.get("ai-platform.external_egress.profile_version") == "v1"
-                else "missing_capability_profile"
-            ),
-            "profile_version": str(labels.get("ai-platform.external_egress.profile_version") or ""),
-            "profile_id": str(labels.get("ai-platform.external_egress.profile_id") or ""),
-            "opensandbox_endpoint": str(labels.get("ai-platform.external_egress.endpoint") or ""),
-            "runtime_identity": str(labels.get("ai-platform.external_egress.runtime_identity") or ""),
-            "ai_platform_runtime_subject": str(labels.get("ai-platform.runtime_subject") or ""),
-            "gateway_policy_subject": str(labels.get("ai-platform.external_egress.gateway_policy_subject") or ""),
-            "callback_boundary_subject": str(labels.get("ai-platform.external_egress.callback_boundary_subject") or ""),
-            "deny_audit_subject": str(labels.get("ai-platform.external_egress.deny_audit_subject") or ""),
-            "deny_counter_subject": str(labels.get("ai-platform.external_egress.deny_counter_subject") or ""),
-            "executor_image": str(labels.get("ai-platform.executor.image") or ""),
-            "executor_image_digest": str(labels.get("ai-platform.executor.image_digest") or ""),
+        "egress_policy": {
+            "policy_requested": labels.get("ai-platform.egress.policy") == "opensandbox-network-policy",
+            "callback_host_allowlisted": bool(labels.get("ai-platform.egress.callback_host")),
+            "policy_projection_source": "provider_request",
         },
-        "external_egress_binding": {
-            "source": "generator_cross_check",
-            "probe_present": bool(external_egress_probe),
-            "matches_lease_and_profile": probe_binding_matches,
-        },
-        "external_egress_runtime": dict(external_egress_probe),
         "dispatch": {
             "executor_response_present": bool(recorder.executor),
             "callback_stream_observed": recorder.has_required_callbacks(),
@@ -1505,7 +1320,6 @@ def run_platform_runtime_probe(
         recorder=recorder,
         captured=captured,
         resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
-        runtime_probe_results=runtime_probe_results,
     )
     output = {
         "status": str(getattr(result, "status", "")),

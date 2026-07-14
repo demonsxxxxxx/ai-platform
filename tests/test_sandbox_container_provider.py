@@ -409,7 +409,7 @@ class OpenSandboxSettings:
     sandbox_container_provider = "opensandbox"
     sandbox_container_start_timeout_seconds = 30
     sandbox_executor_health_timeout_seconds = 60
-    sandbox_executor_image = "ai-platform:local"
+    sandbox_executor_image = "registry.example/ai-platform@sha256:" + "a" * 64
     sandbox_callback_base_url = "http://host.docker.internal:8020"
     sandbox_egress_policy_enabled = False
     sandbox_callback_host_gateway = "host.docker.internal"
@@ -628,8 +628,48 @@ def test_default_capability_transport_pins_loopback_caps_timeout_and_hides_respo
     assert calls[0]["url"] == "http://127.0.0.1:18081/opensandbox/external-egress"
     assert calls[0]["headers"] == {"Authorization": "Bearer capability-test-token"}
     assert calls[0]["kwargs"]["follow_redirects"] is False
+    assert calls[0]["kwargs"]["trust_env"] is False
     assert calls[0]["kwargs"]["timeout"].connect <= 2.0
     assert calls[0]["kwargs"]["timeout"].read <= 2.0
+
+
+def test_default_capability_transport_ignores_hostile_proxy_environment(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    proxy_url = "http://proxy.invalid/capability-test-token"
+    monkeypatch.setenv("HTTP_PROXY", proxy_url)
+    monkeypatch.setenv("HTTPS_PROXY", proxy_url)
+    payload = json.dumps(external_egress_capability_profile()).encode("utf-8")
+    calls = install_default_capability_transport(monkeypatch, FakeCapabilityResponse(chunks=[payload]))
+
+    container_provider._default_opensandbox_capability_profile_fetcher(
+        "http://127.0.0.1:18081/opensandbox/external-egress",
+        {"Authorization": "Bearer capability-test-token"},
+        1,
+    )
+
+    assert calls[0]["kwargs"]["trust_env"] is False
+    assert proxy_url not in str(calls[0])
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Authorization": "Bearer capability-test-token\r\nX-Injected: true"},
+        {"Authorization": "Bearer capability-test-token", "X-Injected": "true"},
+    ],
+)
+def test_default_capability_transport_rejects_invalid_headers_before_network(monkeypatch, headers):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    calls = install_default_capability_transport(monkeypatch, FakeCapabilityResponse(chunks=[b"{}"]))
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="credential is invalid"):
+        container_provider._default_opensandbox_capability_profile_fetcher(
+            "http://127.0.0.1:18081/opensandbox/external-egress",
+            headers,
+            1,
+        )
+
+    assert calls == []
 
 
 def test_default_capability_transport_enforces_total_timeout(monkeypatch):
@@ -647,6 +687,8 @@ def test_default_capability_transport_enforces_total_timeout(monkeypatch):
 
     assert calls
     assert "capability-test-token" not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__ is True
 
 
 @pytest.mark.parametrize(
@@ -656,6 +698,7 @@ def test_default_capability_transport_enforces_total_timeout(monkeypatch):
         (FakeCapabilityResponse(chunks=[b"{" * (64 * 1024 + 1)]), "too large"),
         (FakeCapabilityResponse(chunks=[b"not-json"]), "malformed"),
         (httpx.ReadTimeout("capability-test-token timeout"), "request failed"),
+        (RuntimeError("capability-test-token http://private.invalid"), "request failed"),
     ],
 )
 def test_default_capability_transport_fails_closed_without_secret_or_response_details(monkeypatch, response, expected_message):
@@ -670,6 +713,8 @@ def test_default_capability_transport_fails_closed_without_secret_or_response_de
         )
 
     assert "capability-test-token" not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__ is True
 
 
 @pytest.mark.asyncio
@@ -687,6 +732,73 @@ async def test_default_capability_transport_surfaces_only_sanitized_auth_failure
 
     assert calls and calls[0]["headers"] == {"Authorization": "Bearer capability-test-token"}
     assert "capability-test-token" not in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__suppress_context__ is True
+
+
+@pytest.mark.asyncio
+async def test_capability_token_control_characters_fail_before_network(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    settings = ExternalEgressCapabilitySettings()
+    settings.opensandbox_external_egress_capability_token = "capability-test-token\nX-Injected: true"
+    calls = install_default_capability_transport(monkeypatch, FakeCapabilityResponse(chunks=[b"{}"]))
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="credential is invalid"):
+        await container_provider._admit_opensandbox_external_egress_capability(
+            settings=settings,
+            fetcher=container_provider._default_opensandbox_capability_profile_fetcher,
+            now=TEST_CAPABILITY_NOW,
+        )
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("image", "configured_digest", "expected_message"),
+    [
+        ("registry.example/ai-platform:latest", "sha256:" + "a" * 64, "immutable sha256"),
+        ("registry.example/ai-platform", "sha256:" + "a" * 64, "immutable sha256"),
+        (
+            "registry.example/ai-platform@sha256:" + "a" * 64,
+            "sha256:" + "b" * 64,
+            "does not match",
+        ),
+    ],
+)
+async def test_opensandbox_provider_rejects_mutable_or_mismatched_requested_image(
+    monkeypatch,
+    image,
+    configured_digest,
+    expected_message,
+):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = ExternalEgressCapabilitySettings()
+    settings.opensandbox_executor_image = image
+    settings.opensandbox_executor_image_digest = configured_digest
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match=expected_message):
+        await opensandbox_provider().create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.created == []
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_uses_valid_requested_immutable_image(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = ExternalEgressCapabilitySettings()
+    settings.opensandbox_executor_image = "registry.example/team/ai-platform@sha256:" + "b" * 64
+    settings.opensandbox_executor_image_digest = "sha256:" + "b" * 64
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+
+    lease = await opensandbox_provider().create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.created[0]["image"] == settings.opensandbox_executor_image
+    assert lease.labels["ai-platform.executor.requested_image"] == settings.opensandbox_executor_image
+    assert lease.labels["ai-platform.executor.requested_image_digest"] == "sha256:" + "b" * 64
 
 
 @pytest.mark.asyncio
@@ -1332,7 +1444,7 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     )
 
     created = FakeOpenSandbox.created[0]
-    assert created["image"] == "ai-platform:local"
+    assert created["image"] == "registry.example/ai-platform@sha256:" + "a" * 64
     assert "user" not in created
     assert created["entrypoint"] == ["/app/docker-entrypoint.sh", "uvicorn"]
     assert created["metadata"]["ai-platform.owner"] == "sandbox-runtime"
@@ -1363,11 +1475,14 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     assert lease.labels["ai-platform.provider_backend"] == "opensandbox"
     assert lease.labels["ai-platform.external_egress.runtime_identity"] == "runsc"
     assert lease.labels["ai-platform.external_egress.gateway_policy_subject"] == "gateway-policy-subject-a"
-    assert lease.labels["ai-platform.executor.image"] == "ai-platform:local"
-    assert lease.labels["ai-platform.executor.image_digest"] == "sha256:" + "a" * 64
+    assert lease.labels["ai-platform.executor.requested_image"] == "registry.example/ai-platform@sha256:" + "a" * 64
+    assert lease.labels["ai-platform.executor.requested_image_digest"] == "sha256:" + "a" * 64
     assert not any(
         key.startswith("ai-platform.executor.")
-        and key not in {"ai-platform.executor.image", "ai-platform.executor.image_digest"}
+        and key not in {
+            "ai-platform.executor.requested_image",
+            "ai-platform.executor.requested_image_digest",
+        }
         for key in lease.labels
     )
 
