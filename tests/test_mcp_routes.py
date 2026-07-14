@@ -251,7 +251,7 @@ def install_mcp_route_fakes(
     return calls
 
 
-def test_mcp_read_contract_projects_visible_tools_without_lifecycle_write(monkeypatch):
+def test_mcp_read_contract_bounds_ordinary_catalog_and_keeps_tool_discovery(monkeypatch):
     calls = install_mcp_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
@@ -261,20 +261,9 @@ def test_mcp_read_contract_projects_visible_tools_without_lifecycle_write(monkey
         "servers": [
             {
                 "name": "ragflow",
-                "transport": "streamable_http",
                 "status": "active",
                 "enabled": True,
-                "visible_to_user": True,
-                "is_system": True,
                 "can_edit": False,
-                "allowed_roles": ["user"],
-                "allowed_departments": [],
-                "role_quotas": {},
-                "credential_state": "platform_managed",
-                "credential_metadata": {},
-                "created_at": None,
-                "updated_at": "2026-06-23T00:00:00Z",
-                "contract_version": "ai-platform.mcp-lifecycle.v1",
             }
         ],
         "total": 1,
@@ -284,8 +273,23 @@ def test_mcp_read_contract_projects_visible_tools_without_lifecycle_write(monkey
 
     detail_response = client.get("/api/mcp/ragflow", headers=headers())
     assert detail_response.status_code == 200
-    assert detail_response.json()["name"] == "ragflow"
-    assert detail_response.json()["can_edit"] is False
+    assert detail_response.json() == list_response.json()["servers"][0]
+
+    export_response = client.get("/api/mcp/export", headers=headers())
+    assert export_response.status_code == 200
+    assert export_response.json() == {"servers": {"ragflow": detail_response.json()}}
+    forbidden_fields = {
+        "credential_state",
+        "credential_metadata",
+        "allowed_roles",
+        "allowed_departments",
+        "role_quotas",
+        "created_at",
+        "updated_at",
+        "transport",
+        "is_system",
+    }
+    assert forbidden_fields.isdisjoint(detail_response.json())
 
     tools_response = client.get("/api/mcp/ragflow/tools", headers=headers())
     assert tools_response.status_code == 200
@@ -345,6 +349,33 @@ def test_mcp_distribution_omits_cross_department_and_returns_not_found_for_direc
     assert client.get("/api/mcp/", headers=unauthorized).json()["servers"] == []
     assert client.get("/api/mcp/ragflow", headers=unauthorized).status_code == 404
     assert client.get("/api/mcp/ragflow/tools", headers=unauthorized).status_code == 404
+
+
+def test_mcp_cross_tenant_server_and_tool_reads_fail_closed(monkeypatch):
+    install_mcp_route_fakes(monkeypatch)
+
+    async def tenant_scoped_servers(conn, *, tenant_id, include_disabled=True):
+        if tenant_id != "default":
+            return []
+        return [
+            {
+                "name": "ragflow",
+                "transport": "streamable_http",
+                "status": "active",
+                "is_system": True,
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.routes.mcp.repositories.list_tenant_mcp_server_registry",
+        tenant_scoped_servers,
+    )
+    client = TestClient(create_app())
+    foreign_headers = {**headers(), "X-AI-Tenant-ID": "tenant-b"}
+
+    assert client.get("/api/mcp/", headers=foreign_headers).json()["servers"] == []
+    assert client.get("/api/mcp/ragflow", headers=foreign_headers).status_code == 404
+    assert client.get("/api/mcp/ragflow/tools", headers=foreign_headers).status_code == 404
 
 
 def test_mcp_distribution_denies_role_hidden_disabled_and_missing_rows(monkeypatch):
@@ -454,6 +485,25 @@ def test_mcp_response_projects_authoritative_distribution_over_registry_scope(mo
     assert server["visible_to_user"] is False
     assert server["allowed_roles"] == ["reviewer"]
     assert server["allowed_departments"] == ["rd"]
+
+
+def test_mcp_admin_read_and_export_keep_redacted_governance_metadata(monkeypatch):
+    install_mcp_route_fakes(
+        monkeypatch,
+        distribution_rows=[_mcp_distribution(department_ids=["rd"], allowed_roles=["reviewer"])],
+    )
+    client = TestClient(create_app())
+    admin_headers = headers(roles="admin", department_id="platform")
+
+    detail_response = client.get("/api/mcp/ragflow", headers=admin_headers)
+    export_response = client.get("/api/mcp/export", headers=admin_headers)
+
+    assert detail_response.status_code == 200
+    assert detail_response.json()["can_edit"] is True
+    assert detail_response.json()["allowed_roles"] == ["reviewer"]
+    assert detail_response.json()["allowed_departments"] == ["rd"]
+    assert detail_response.json()["credential_state"] == "platform_managed"
+    assert "credential_metadata" not in export_response.json()["servers"]["ragflow"]
 
 
 def test_authorized_mcp_registration_entries_exclude_denied_parent_servers():

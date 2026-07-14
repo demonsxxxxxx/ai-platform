@@ -214,6 +214,36 @@ def _server_response(
     }
 
 
+def _ordinary_server_response(
+    row: dict[str, Any],
+    *,
+    distribution: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the bounded MCP directory projection for an authorized ordinary user."""
+
+    status = str((distribution or {}).get("status") or row.get("status") or "disabled")
+    enabled = status == "active"
+    return {
+        "name": _server_name(row),
+        "status": "active" if enabled else "disabled",
+        "enabled": enabled,
+        "can_edit": False,
+    }
+
+
+def _server_read_response(
+    row: dict[str, Any],
+    *,
+    distribution: dict[str, Any] | None,
+    principal: AuthPrincipal,
+) -> dict[str, Any]:
+    """Keep admin governance reads separate from the ordinary catalog projection."""
+
+    if is_ai_admin(principal):
+        return _server_response(row, distribution=distribution, can_edit=True)
+    return _ordinary_server_response(row, distribution=distribution)
+
+
 def _legacy_server_response(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     updated_at = next((row.get("updated_at") for row in rows if row.get("updated_at") is not None), None)
     return {
@@ -440,10 +470,10 @@ async def _public_projected_servers(principal: AuthPrincipal) -> list[dict[str, 
                 ),
             )
     return [
-        _server_response(
+        _server_read_response(
             row,
             distribution=distribution_map.get(_server_name(row)),
-            can_edit=is_ai_admin(principal),
+            principal=principal,
         )
         for row in authorized
     ]
@@ -635,10 +665,10 @@ async def get_mcp_server(
 
     safe_name = _safe_name(name)
     row, distribution, _ = await _public_server_access(principal=principal, name=safe_name)
-    return _server_response(
+    return _server_read_response(
         row,
         distribution=distribution,
-        can_edit=is_ai_admin(principal),
+        principal=principal,
     )
 
 
