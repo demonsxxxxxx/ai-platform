@@ -1,8 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { ToolSelector } from "../selectors/ToolSelector";
 import { SkillSelector } from "../selectors/SkillSelector";
-import { AgentModeSelector } from "../selectors/AgentModeSelector";
-import { PersonaPresetSelector } from "../persona/PersonaPresetSelector";
 import { AgentOptionButton } from "./AgentOptionButton";
 import { ComposerModelPanel } from "./ComposerModelPanel";
 import { ComposerUnavailablePanel } from "./ComposerUnavailablePanel";
@@ -13,8 +11,6 @@ import type {
   ToolCategory,
   PublicSkillResponse,
   AgentOption,
-  PersonaPreset,
-  PersonaPresetSnapshot,
 } from "../../types";
 import {
   LibreChatSelectorLayer,
@@ -38,30 +34,6 @@ export interface ChatInputSelectorsProps {
   onSelectSkill?: (skill: PublicSkillResponse) => void;
   skillsLoading?: boolean;
   enableSkills?: boolean;
-  // Persona presets
-  personaPresets?: PersonaPreset[];
-  personaPresetsTotal?: number;
-  personaPresetsPage?: number;
-  onPersonaPresetsPageChange?: (page: number) => void;
-  onPersonaPresetsSearchChange?: (query: string) => void;
-  onPersonaPresetsTagChange?: (tag: string | null) => void;
-  selectedPersonaPresetId?: string | null;
-  personaPresetsLoading?: boolean;
-  personaPresetsMutating?: boolean;
-  onUsePersonaPreset?: (
-    preset: PersonaPreset,
-  ) => Promise<PersonaPresetSnapshot | null>;
-  onTogglePersonaPreference?: (
-    preset: PersonaPreset,
-    preference: { is_favorite?: boolean; is_pinned?: boolean },
-  ) => Promise<void>;
-  onCopyPersonaPreset?: (preset: PersonaPreset) => Promise<void>;
-  onClearPersonaPreset?: () => void;
-  canManagePersonaPresets?: boolean;
-  // Agent mode
-  agents?: { id: string; name: string; description: string }[];
-  currentAgent?: string;
-  onSelectAgent?: (id: string) => void;
   // Model selector
   availableModels?: ModelOption[];
   currentModelId?: string;
@@ -87,23 +59,6 @@ export function ChatInputSelectors({
   onSelectSkill,
   skillsLoading = false,
   enableSkills = true,
-  personaPresets = [],
-  personaPresetsTotal,
-  personaPresetsPage,
-  onPersonaPresetsPageChange,
-  onPersonaPresetsSearchChange,
-  onPersonaPresetsTagChange,
-  selectedPersonaPresetId,
-  personaPresetsLoading = false,
-  personaPresetsMutating = false,
-  onUsePersonaPreset,
-  onTogglePersonaPreference,
-  onCopyPersonaPreset,
-  onClearPersonaPreset,
-  canManagePersonaPresets = false,
-  agents = [],
-  currentAgent,
-  onSelectAgent,
   availableModels = [],
   currentModelId,
   onSelectModel,
@@ -151,45 +106,6 @@ export function ChatInputSelectors({
             />
           </LibreChatSelectorModal>
         )}
-      {onUsePersonaPreset && onCopyPersonaPreset && onClearPersonaPreset && (
-        <LibreChatSelectorModal panel="persona">
-          <PersonaPresetSelector
-            presets={personaPresets}
-            total={personaPresetsTotal}
-            page={personaPresetsPage}
-            selectedPresetId={selectedPersonaPresetId}
-            isOpen={activePanel === "persona"}
-            isLoading={personaPresetsLoading}
-            isMutating={personaPresetsMutating}
-            canManagePresets={canManagePersonaPresets}
-            onOpenChange={(open) => onActivePanelChange(open ? "persona" : null)}
-            onPageChange={onPersonaPresetsPageChange}
-            onSearchChange={onPersonaPresetsSearchChange}
-            onTagChange={onPersonaPresetsTagChange}
-            onUsePreset={onUsePersonaPreset}
-            onTogglePreference={onTogglePersonaPreference}
-            onCopyPreset={onCopyPersonaPreset}
-            onClearPreset={() => {
-              onClearPersonaPreset();
-              onActivePanelChange(null);
-            }}
-          />
-        </LibreChatSelectorModal>
-      )}
-      <LibreChatSelectorModal panel="agent">
-        <AgentModeSelector
-          agents={agents}
-          currentAgent={currentAgent || ""}
-          onSelectAgent={onSelectAgent}
-          isOpen={activePanel === "agent"}
-          onOpenChange={(open) => onActivePanelChange(open ? "agent" : null)}
-          searchSeed={
-            commandSearchSeed?.panel === "agent"
-              ? commandSearchSeed.query
-              : undefined
-          }
-        />
-      </LibreChatSelectorModal>
       {onSelectModel && availableModels.length > 0 && (
         <LibreChatSelectorModal panel="model">
           <ComposerModelPanel

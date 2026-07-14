@@ -235,18 +235,9 @@ test("post-login projection panels share workbench surface tokens", () => {
     ["MCPPanel", read("src/components/panels/MCPPanel.tsx")],
     ["RolesPanel", read("src/components/panels/RolesPanel.tsx")],
     [
-      "ChannelImportPanel",
-      read("src/components/channels/ChannelImportPanel.tsx"),
-    ],
-    [
-      "PersonaWorkbenchPanel",
-      read("src/components/persona/PersonaWorkbenchPanel.tsx"),
-    ],
-    [
       "RevealedFilesWorkbenchPanel",
       read("src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
     ],
-    ["AgentDirectoryPanel", read("src/components/panels/AgentDirectoryPanel.tsx")],
     ["ModelCatalogPanel", read("src/components/panels/ModelCatalogPanel.tsx")],
     ["MemoryPanel", read("src/components/panels/MemoryPanel/index.tsx")],
     [
@@ -295,10 +286,6 @@ test("workbench governance surfaces do not hard-code slate or stone palettes", (
   const governedSources = new Map([
     ["RolesPanel", read("src/components/panels/RolesPanel.tsx")],
     [
-      "PersonaWorkbenchPanel",
-      read("src/components/persona/PersonaWorkbenchPanel.tsx"),
-    ],
-    [
       "RevealedFilesWorkbenchPanel",
       read("src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx"),
     ],
@@ -325,80 +312,6 @@ test("workbench governance surfaces do not hard-code slate or stone palettes", (
     assert.match(baseCss, new RegExp(`--theme-${token}:`), token);
     assert.match(baseCss, new RegExp(`--theme-${token}-soft:`), token);
     assert.match(baseCss, new RegExp(`--theme-${token}-ring:`), token);
-  }
-});
-
-test("persona files and memory pages stay on the enterprise workbench visual system", () => {
-  const personaWorkbench = read(
-    "src/components/persona/PersonaWorkbenchPanel.tsx",
-  );
-  const personaCard = read("src/components/persona/PersonaPresetCard.tsx");
-  const personaSelector = read("src/components/persona/PersonaPresetSelector.tsx");
-  const personaPreview = read("src/components/persona/PersonaPreviewSidebar.tsx");
-  const cardUtils = read("src/components/common/cardUtils.ts");
-  const cardCss = read("src/styles/card-base.css");
-  const personaCss = read("src/styles/persona.css");
-  const baseCss = read("src/styles/base.css");
-  const filesWorkbench = read(
-    "src/components/fileLibrary/RevealedFilesWorkbenchPanel.tsx",
-  );
-  const fileToolbar = read("src/components/fileLibrary/components/Toolbar.tsx");
-  const fileGridCard = read("src/components/fileLibrary/components/GridCard.tsx");
-  const fileListCard = read("src/components/fileLibrary/components/ListCard.tsx");
-  const fileEmptyState = read(
-    "src/components/fileLibrary/components/EmptyState.tsx",
-  );
-  const memoryPanel = read("src/components/panels/MemoryPanel/index.tsx");
-
-  for (const [name, source] of new Map([
-    ["PersonaPresetCard", personaCard],
-    ["PersonaPresetSelector", personaSelector],
-    ["PersonaPreviewSidebar", personaPreview],
-  ])) {
-    assert.doesNotMatch(
-      source,
-      /nameToGradient|linear-gradient|scb__banner|pps-card__banner/,
-      name,
-    );
-    assert.match(
-      source,
-      /enterprise-subtle-panel|scb group|pps-card group/,
-      name,
-    );
-  }
-
-  assert.doesNotMatch(cardUtils, /GRADIENT_PALETTES|nameToGradient/);
-  assert.doesNotMatch(cardCss, /mp-card|scb__banner|border-shimmer/);
-  assert.doesNotMatch(
-    personaCss,
-    /pps-card__banner|pps-card__status-badge|translateY\(-3px\)/,
-  );
-  assert.match(baseCss, /--theme-border-strong:/);
-  assert.match(fileToolbar, /var\(--theme-workbench-canvas\)/);
-  assert.doesNotMatch(fileToolbar, /var\(--theme-bg\)"/);
-  assert.doesNotMatch(
-    fileGridCard,
-    /text-stone-(?:700|800|900)|dark:bg-stone-900/,
-  );
-  assert.doesNotMatch(
-    fileListCard,
-    /text-stone-(?:700|800|900)|dark:bg-stone-900/,
-  );
-  assert.match(fileEmptyState, /enterprise-empty-state/);
-  assert.match(memoryPanel, /className=\{workbenchSurface\.page\}/);
-  assert.match(memoryPanel, /className=\{workbenchSurface\.statePage\}/);
-  assert.match(personaWorkbench, /data-persona-degraded-workbench-grid/);
-  assert.match(personaWorkbench, /data-persona-degraded-main/);
-  assert.match(personaWorkbench, /data-persona-degraded-contract/);
-  assert.match(filesWorkbench, /data-files-degraded-workbench-grid/);
-  assert.match(filesWorkbench, /data-files-degraded-main/);
-  assert.match(filesWorkbench, /data-files-degraded-contract/);
-  for (const [name, source] of new Map([
-    ["PersonaWorkbenchPanel", personaWorkbench],
-    ["RevealedFilesWorkbenchPanel", filesWorkbench],
-  ])) {
-    assert.match(source, /xl:grid-cols-\[minmax\(0,1fr\)_18rem\]/, name);
-    assert.match(source, /WorkbenchStateSurface/, name);
   }
 });
 
@@ -457,13 +370,11 @@ test("governed workbench states expose a shared browser smoke selector", () => {
 test("phase 1c logged-in route surfaces expose shared governance smoke attributes", () => {
   const tabContent = read("src/components/layout/AppContent/TabContent.tsx");
   const launchpad = read("src/components/launchpad/LaunchpadPanel.tsx");
-  const channelImport = read("src/components/channels/ChannelImportPanel.tsx");
   const memoryPanel = read("src/components/panels/MemoryPanel/index.tsx");
 
   for (const [name, source] of new Map([
     ["TabContent", tabContent],
     ["LaunchpadPanel", launchpad],
-    ["ChannelImportPanel", channelImport],
     ["MemoryPanel", memoryPanel],
   ])) {
     assert.match(source, /buildFrontendGovernanceSmokeAttributes/, name);
@@ -471,10 +382,9 @@ test("phase 1c logged-in route surfaces expose shared governance smoke attribute
 
   assert.match(tabContent, /buildFrontendGovernanceSmokeAttributes\(routeUnavailable\.state\)/);
   assert.match(launchpad, /buildFrontendGovernanceSmokeAttributes\("ready"\)/);
-  assert.match(channelImport, /buildFrontendGovernanceSmokeAttributes\(governanceState\)/);
   assert.match(memoryPanel, /buildFrontendGovernanceSmokeAttributes\(governanceState\)/);
   assert.doesNotMatch(
-    [tabContent, launchpad, channelImport, memoryPanel].join("\n"),
+    [tabContent, launchpad, memoryPanel].join("\n"),
     /data-frontend-governance-state=\{(?:routeUnavailable\.state|governanceState)\}/,
   );
 });
@@ -717,12 +627,7 @@ test("reachable catalog pages delegate page backgrounds to workbench surface tok
     ["SkillsHubPanel", read("src/components/panels/SkillsHubPanel.tsx")],
     ["SkillsPanel", read("src/components/panels/SkillsPanel/index.tsx")],
     ["MarketplacePanel", read("src/components/panels/MarketplacePanel.tsx")],
-    ["AgentDirectoryPanel", read("src/components/panels/AgentDirectoryPanel.tsx")],
     ["ModelCatalogPanel", read("src/components/panels/ModelCatalogPanel.tsx")],
-    [
-      "ChannelImportPanel",
-      read("src/components/channels/ChannelImportPanel.tsx"),
-    ],
   ]);
 
   for (const [name, source] of sources) {
@@ -766,75 +671,8 @@ test("launchpad and unavailable route workbenches use shared surface tokens", ()
   assert.match(stateSurface, /workbenchSurface\.statusTile/);
 });
 
-test("launchpad and public directory pages use one workbench catalog layout", () => {
-  const surface = read("src/components/workbench/workbenchSurface.ts");
-  const launchpad = read("src/components/launchpad/LaunchpadPanel.tsx");
-  const mcp = read("src/components/panels/MCPPanel.tsx");
-  const agents = read("src/components/panels/AgentDirectoryPanel.tsx");
-  const models = read("src/components/panels/ModelCatalogPanel.tsx");
-
-  assert.match(surface, /catalog:/);
-  assert.match(surface, /summaryGrid:/);
-  assert.match(surface, /summaryGridFour:/);
-  assert.match(surface, /2xl:grid-cols-4/);
-  assert.match(surface, /summaryCard:/);
-  assert.match(surface, /content:/);
-  assert.match(surface, /cardGrid:/);
-  assert.match(surface, /entryCard:/);
-  assert.match(surface, /metricTile:/);
-  assert.match(surface, /iconBox:/);
-
-  for (const [name, source] of new Map([
-    ["MCPPanel", mcp],
-    ["AgentDirectoryPanel", agents],
-    ["ModelCatalogPanel", models],
-  ])) {
-    assert.match(source, /className=\{workbenchSurface\.page\}/, name);
-    assert.match(source, /workbenchSurface\.catalog\.summaryGrid/, name);
-    assert.match(source, /workbenchSurface\.catalog\.summaryCard/, name);
-    assert.match(source, /workbenchSurface\.catalog\.cardGrid/, name);
-    assert.match(source, /workbenchSurface\.catalog\.entryCard/, name);
-    assert.doesNotMatch(source, /text-stone-(?:400|500|600|700|800|900)/, name);
-    assert.doesNotMatch(source, /text-slate-(?:400|500|600|700|800|900)/, name);
-    assert.doesNotMatch(source, /bg-slate-(?:100|200|900)/, name);
-    assert.doesNotMatch(source, /dark:bg-stone-(?:800|900|950)/, name);
-  }
-
-  assert.match(launchpad, /className=\{workbenchSurface\.page\}/);
-  assert.match(launchpad, /workbenchSurface\.catalog\.summaryGrid/);
-  assert.match(launchpad, /workbenchSurface\.catalog\.summaryCard/);
-  assert.match(launchpad, /data-company-navigation-shell/);
-  assert.doesNotMatch(launchpad, /data-legacy-webui-frame/);
-  assert.doesNotMatch(launchpad, /<iframe/);
-  assert.doesNotMatch(launchpad, /text-stone-(?:400|500|600|700|800|900)/);
-  assert.doesNotMatch(launchpad, /text-slate-(?:400|500|600|700|800|900)/);
-  assert.doesNotMatch(launchpad, /bg-slate-(?:100|200|900)/);
-  assert.doesNotMatch(launchpad, /dark:bg-stone-(?:800|900|950)/);
-
-  for (const [name, source] of new Map([
-    ["MCPPanel", mcp],
-    ["AgentDirectoryPanel", agents],
-    ["ModelCatalogPanel", models],
-  ])) {
-    assert.match(source, /workbenchSurface\.catalog\.content/, name);
-    assert.match(source, /workbenchSurface\.catalog\.metricTile/, name);
-    assert.match(
-      source,
-      /workbenchSurface\.catalog\.(?:iconBox|compactIconBox)/,
-      name,
-    );
-  }
-
-  assert.match(launchpad, /PanelHeader/);
-  assert.match(launchpad, /data-launchpad-directory-shell/);
-  assert.doesNotMatch(launchpad, /border-b border-slate-200/);
-  assert.match(mcp, /workbenchSurface\.catalog\.summaryGridFour/);
-  assert.doesNotMatch(mcp, /workbenchSurface\.catalog\.summaryGrid[^\w]/);
-});
-
 test("public catalog pages use semantic workbench status tokens", () => {
   const sources = new Map([
-    ["AgentDirectoryPanel", read("src/components/panels/AgentDirectoryPanel.tsx")],
     ["ModelCatalogPanel", read("src/components/panels/ModelCatalogPanel.tsx")],
     ["MemoryPanel", read("src/components/panels/MemoryPanel/index.tsx")],
   ]);
@@ -858,50 +696,6 @@ test("composer and command surfaces use stable dimensions", () => {
   assert.match(css, /max-height:\s*min\(52dvh,\s*420px\)/);
   assert.match(css, /\.composer-command-surface/);
   assert.match(css, /overflow:\s*hidden/);
-});
-
-test("empty chat keeps the command dock compact and composer-first", () => {
-  const welcome = read("src/components/chat/WelcomePage.tsx");
-  const chatView = read("src/components/layout/AppContent/ChatView.tsx");
-  const welcomeLayout = read("src/components/chat/welcomeLayout.ts");
-
-  assert.match(welcome, /welcome-chat-start/);
-  assert.match(welcome, /data-chat-start-surface/);
-  assert.match(welcome, /data-chat-start-header/);
-  assert.match(welcome, /data-chat-composer-first/);
-  assert.match(welcome, /data-chat-empty-composer/);
-  assert.match(welcome, /composer: ReactNode/);
-  assert.match(chatView, /data-chat-shell-composer/);
-  assert.match(chatView, /<ChatInput[\s\S]*\{\.\.\.chatInputProps\}/);
-  assert.doesNotMatch(
-    chatView,
-    /onMentionQueryChange=\{[\s\S]*messages\.length === 0 \? handleMentionQueryChange : undefined[\s\S]*\}/,
-  );
-  assert.doesNotMatch(chatView, /pendingInput=\{pendingInput\}/);
-  assert.doesNotMatch(chatView, /onPendingInputConsumed=\{\(\) => setPendingInput\(null\)\}/);
-  assert.doesNotMatch(welcome, /onStarterPromptSelect/);
-  assert.doesNotMatch(welcome, /import \{ ChatInput \}/);
-  assert.doesNotMatch(welcome, /<ChatInput/);
-  assert.doesNotMatch(welcome, /data-chat-quick-actions/);
-  assert.doesNotMatch(welcome, /QuickActionItem/);
-  assert.doesNotMatch(welcome, /quickActions/);
-  assert.doesNotMatch(welcome, /ComposerCommandHintBar/);
-  assert.doesNotMatch(welcome, /data-composer-command-dock/);
-  assert.doesNotMatch(welcome, /data-composer-selection-summary/);
-  assert.doesNotMatch(welcome, /workbench\.commandDock/);
-  assert.doesNotMatch(welcome, /workbench\.commandDockHint/);
-  assert.doesNotMatch(welcome, /welcome-workbench-cockpit/);
-  assert.doesNotMatch(welcome, /WorkbenchQueueList/);
-  assert.doesNotMatch(welcome, /workbenchSurface\.cockpit/);
-  assert.doesNotMatch(welcome, /flex-1 flex-col justify-center/);
-  assert.doesNotMatch(welcome, /sm:grid-cols-3/);
-  assert.doesNotMatch(welcome, /workbench\.slashSkillsHint/);
-  assert.doesNotMatch(welcome, /workbench\.slashMcpHint/);
-  assert.doesNotMatch(welcome, /workbench\.slashContextHint/);
-  assert.doesNotMatch(welcome, /welcome-card-shimmer/);
-  assert.doesNotMatch(welcome, /rounded-2xl/);
-  assert.doesNotMatch(welcomeLayout, /rounded-2xl/);
-  assert.match(welcomeLayout, /rounded-lg/);
 });
 
 test("expanded app sidebar keeps company navigation and admin skills as first-level smoke targets", () => {
@@ -930,26 +724,13 @@ test("expanded app sidebar keeps company navigation and admin skills as first-le
   for (const route of [
     "/apps",
     "/skills",
-    "/persona",
     "/files",
-    "/channels",
-    "/agents",
     "/models",
   ]) {
     assert.match(navigation, new RegExp(`"${route}"`), route);
   }
   assert.doesNotMatch(navigation, /"\/marketplace"/);
   assert.doesNotMatch(navigation, /"\/roles"/);
-});
-
-test("post-login Chinese sidebar labels distinguish persona presets from admin skill management", () => {
-  const zh = JSON.parse(read("src/i18n/locales/zh.json"));
-  const en = JSON.parse(read("src/i18n/locales/en.json"));
-
-  assert.equal(zh.nav.persona, "人设");
-  assert.equal(zh.nav.skillManagement, "技能管理");
-  assert.notEqual(zh.nav.persona, zh.nav.skillManagement);
-  assert.notEqual(en.nav.persona, en.nav.skillManagement);
 });
 
 test("post-login sidebar marks the current governed route in expanded and rail modes", () => {

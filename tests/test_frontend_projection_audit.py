@@ -76,9 +76,7 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         for route in active_route_inventory["safe_public_projection_routes"]
     }
     assert active_safe_routes == {
-        "/api/agent-workspace",
         "/api/agent/models/available",
-        "/api/channels",
         "/api/feedback",
         "/api/github",
         "/api/marketplace",
@@ -98,8 +96,6 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
         route["route_prefix"]
         for route in audit["route_inventory"]["safe_public_projection_routes"]
     }
-    assert "/api/channels" in all_safe_routes
-    assert "/api/agent-workspace" in all_safe_routes
     assert "/api/mcp" in all_safe_routes
     assert "/api/notifications/active" in all_safe_routes
     assert "/api/settings" in all_safe_routes
@@ -118,7 +114,6 @@ def test_frontend_projection_audit_reports_current_public_admin_boundary():
     assert "/api/github" not in active_policy_routes
     assert "/api/marketplace" not in active_policy_routes
     assert "/api/skills" not in active_policy_routes
-    assert "/api/channels" not in active_policy_routes
     assert "/api/notifications/admin" not in active_policy_routes
     assert "/api/role-governance" not in active_policy_routes
     assert "/api/settings" not in active_policy_routes

@@ -50,8 +50,8 @@ test("company RBAC scenario retains exact role, navigation, route, and layout as
     scenario,
     /\["chat:read", "chat:write", "session:read", "session:write"\]/,
   );
-  assert.match(scenario, /const adminItems = \["channels", "agents", "models"\]/);
-  assert.match(scenario, /Math\.max\(navigation\.railCount, navigation\.panelCount\) === 3/);
+  assert.match(scenario, /const adminItems = \["models"\]/);
+  assert.match(scenario, /Math\.max\(navigation\.railCount, navigation\.panelCount\) === 1/);
   assert.match(scenario, /navigation\.railCount === 0 && navigation\.panelCount === 0/);
   assert.match(scenario, /layout\.finalPath === "\/users" && layout\.adminContentSeen === true/);
   assert.match(scenario, /layout\.finalPath === "\/chat" && layout\.adminContentSeen === false/);

@@ -1,14 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getAgentOptionSyncMode } from "../useAgentOptions";
+import { CHAT_AGENT_OPTION_DEFINITIONS } from "../../../../types/agentOptions.ts";
+import { getAgentOptionSyncMode, normalizeAgentOptions } from "../useAgentOptions";
 
-test("resets agent options when switching to a different agent with identical option schemas", () => {
+test("keeps the real thinking parameter without an agent directory", () => {
+  const options = normalizeAgentOptions(CHAT_AGENT_OPTION_DEFINITIONS);
+
+  assert.equal(options?.enable_thinking.default, "off");
+  assert.deepEqual(
+    options?.enable_thinking.options?.map((item) => item.value),
+    ["off", "low", "medium", "high", "max"],
+  );
+});
+
+test("resets option values when definitions initialize", () => {
   assert.equal(
     getAgentOptionSyncMode({
-      currentAgentId: "agent-b",
-      previousAgentId: "agent-a",
       optionsJson: '{"enable_thinking":{"default":"medium"}}',
-      previousOptionsJson: '{"enable_thinking":{"default":"medium"}}',
+      previousOptionsJson: "",
       hasPendingRestoredOptions: false,
     }),
     "reset",
@@ -18,8 +27,6 @@ test("resets agent options when switching to a different agent with identical op
 test("applies restored session options before skip checks", () => {
   assert.equal(
     getAgentOptionSyncMode({
-      currentAgentId: "agent-a",
-      previousAgentId: "agent-a",
       optionsJson: '{"enable_thinking":{"default":"medium"}}',
       previousOptionsJson: '{"enable_thinking":{"default":"medium"}}',
       hasPendingRestoredOptions: true,
@@ -28,11 +35,9 @@ test("applies restored session options before skip checks", () => {
   );
 });
 
-test("preserves overlapping values only when the same agent schema changes", () => {
+test("preserves overlapping values when option definitions change", () => {
   assert.equal(
     getAgentOptionSyncMode({
-      currentAgentId: "agent-a",
-      previousAgentId: "agent-a",
       optionsJson: '{"enable_thinking":{"default":"high"}}',
       previousOptionsJson: '{"enable_thinking":{"default":"medium"}}',
       hasPendingRestoredOptions: false,

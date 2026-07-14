@@ -14,13 +14,10 @@ import { ImageViewer } from "../common";
 import { ConfirmDialog } from "../common/ConfirmDialog";
 import { ContactAdminDialog } from "../common/ContactAdminDialog";
 import { useFileUpload } from "../../hooks/useFileUpload";
-import { useMentionState } from "../../hooks/useMentionState";
-import { useMentionSearch } from "../../hooks/useMentionSearch";
 import { useInputHistory } from "../../hooks/useInputHistory";
 import { useTextareaResize } from "../../hooks/useTextareaResize";
 import { usePasteHandler } from "../../hooks/usePasteHandler";
 import { useAuth } from "../../hooks/useAuth";
-import { MentionPopup } from "./MentionPopup";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import { ChatInputSelectors } from "./ChatInputSelectors";
 import { ChatInputHelpMenu } from "./ChatInputHelpMenu";
@@ -39,7 +36,6 @@ import {
   type ComposerSelection,
   type ComposerSelectionKind,
 } from "./composerSelections";
-import { getMentionPopupFixedPlacement } from "./chatInputViewport";
 import { FILE_CATEGORY_PERMISSIONS } from "./chatInputConstants";
 import {
   consumePendingSelectionActionPrompt,
@@ -50,7 +46,6 @@ import type { ChatInputProps } from "./chatInputTypes";
 import type { FeaturePanel } from "../selectors/FeatureMenu";
 import type {
   MessageAttachment,
-  PersonaPreset,
   PublicSkillResponse,
 } from "../../types";
 import {
@@ -90,32 +85,14 @@ export const ChatInput = memo(function ChatInput({
   enabledSkillsCount = 0,
   totalSkillsCount = 0,
   enableSkills = true,
-  personaPresets = [],
-  personaPresetsTotal,
-  personaPresetsPage,
-  onPersonaPresetsPageChange,
-  onPersonaPresetsSearchChange,
-  onPersonaPresetsTagChange,
-  selectedPersonaPresetId,
-  selectedPersonaName,
-  personaPresetsLoading = false,
-  personaPresetsMutating = false,
-  onUsePersonaPreset,
-  onCopyPersonaPreset,
-  onClearPersonaPreset,
-  canManagePersonaPresets = false,
   agentOptions,
   agentOptionValues = {},
   onToggleAgentOption,
-  agents = [],
-  currentAgent,
-  onSelectAgent,
   availableModels = [],
   currentModelId,
   onSelectModel,
   attachments: externalAttachments,
   onAttachmentsChange: externalOnAttachmentsChange,
-  onMentionQueryChange,
   pendingInput,
   onPendingInputConsumed,
   className,
@@ -163,9 +140,7 @@ export const ChatInput = memo(function ChatInput({
   const containerRef = useRef<HTMLDivElement>(null);
   const openFileCommandRef = useRef<(() => void) | null>(null);
   const isSubmittingRef = useRef(false);
-  const [cursorPosition, setCursorPosition] = useState(0);
-  const [mentionPopupPlacement, setMentionPopupPlacement] =
-    useState<ReturnType<typeof getMentionPopupFixedPlacement>>(null);
+  const [, setCursorPosition] = useState(0);
   const { hasPermission } = useAuth();
 
   const uploadCategories = (
@@ -195,47 +170,6 @@ export const ChatInput = memo(function ChatInput({
     validateCount,
     scheduleTextareaResize,
   });
-
-  const {
-    mention,
-    moveHighlight: moveMentionHighlight,
-    setHighlightedIndex: setMentionHighlight,
-    setResultCount: setMentionResultCount,
-    resetMention,
-    dismissMention,
-  } = useMentionState(input, cursorPosition, !!onUsePersonaPreset);
-
-  const mentionSearch = useMentionSearch(mention.query, mention.isActive);
-
-  useEffect(() => {
-    if (mention.isActive) {
-      setMentionResultCount(mentionSearch.presets.length);
-    }
-  }, [mention.isActive, mentionSearch.presets.length, setMentionResultCount]);
-
-  useEffect(() => {
-    if (!onMentionQueryChange) return;
-    onMentionQueryChange(mention.isActive ? mention.query : null);
-  }, [mention.isActive, mention.query, onMentionQueryChange]);
-
-  useEffect(() => {
-    if (!onMentionQueryChange || !selectedPersonaPresetId || !mention.isActive)
-      return;
-    const before = input.substring(0, mention.atIndex);
-    const after = input.substring(mention.atIndex + mention.query.length + 1);
-    setInput(before + after);
-    setCursorPosition(before.length || 0);
-    requestAnimationFrame(() => {
-      const textarea = textareaRef.current;
-      if (textarea) {
-        textarea.selectionStart = textarea.selectionEnd = before.length;
-        textarea.focus();
-        scheduleTextareaResize();
-      }
-    });
-    resetMention();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires only on preset selection
-  }, [selectedPersonaPresetId]);
 
   useEffect(() => {
     const applySelectionActionPrompt = (prompt: string) => {
@@ -271,79 +205,6 @@ export const ChatInput = memo(function ChatInput({
       window.removeEventListener(SELECTION_ACTION_EVENT, handleSelectionAction);
     };
   }, [scheduleTextareaResize]);
-
-  useEffect(() => {
-    if (!mention.isActive) {
-      setMentionPopupPlacement(null);
-      return;
-    }
-
-    const updateMentionPopupPlacement = () => {
-      const container = containerRef.current;
-      setMentionPopupPlacement(
-        getMentionPopupFixedPlacement({
-          inputRect: container?.getBoundingClientRect() ?? null,
-          viewportHeight: window.visualViewport?.height ?? window.innerHeight,
-        }),
-      );
-    };
-
-    updateMentionPopupPlacement();
-    window.addEventListener("resize", updateMentionPopupPlacement);
-    window.addEventListener("scroll", updateMentionPopupPlacement, true);
-    window.visualViewport?.addEventListener(
-      "resize",
-      updateMentionPopupPlacement,
-    );
-    window.visualViewport?.addEventListener(
-      "scroll",
-      updateMentionPopupPlacement,
-    );
-    return () => {
-      window.removeEventListener("resize", updateMentionPopupPlacement);
-      window.removeEventListener("scroll", updateMentionPopupPlacement, true);
-      window.visualViewport?.removeEventListener(
-        "resize",
-        updateMentionPopupPlacement,
-      );
-      window.visualViewport?.removeEventListener(
-        "scroll",
-        updateMentionPopupPlacement,
-      );
-    };
-  }, [mention.isActive]);
-
-  const personaAvatar = useMemo(() => {
-    if (!selectedPersonaPresetId) return null;
-    const preset = personaPresets.find((p) => p.id === selectedPersonaPresetId);
-    if (!preset) return null;
-    return {
-      avatar: preset.avatar ?? undefined,
-      primaryTag: preset.tags[0] || "",
-    };
-  }, [selectedPersonaPresetId, personaPresets]);
-
-  const applyMentionSelection = useCallback(
-    (preset: PersonaPreset) => {
-      if (!mention.isActive) return;
-      const before = input.substring(0, mention.atIndex);
-      const after = input.substring(mention.atIndex + mention.query.length + 1);
-      const newInput = before + after;
-      setInput(newInput);
-      setCursorPosition(before.length || 0);
-      requestAnimationFrame(() => {
-        const textarea = textareaRef.current;
-        if (textarea) {
-          textarea.selectionStart = textarea.selectionEnd = before.length;
-          textarea.focus();
-          scheduleTextareaResize();
-        }
-      });
-      onUsePersonaPreset?.(preset);
-      resetMention();
-    },
-    [input, mention, onUsePersonaPreset, resetMention, scheduleTextareaResize],
-  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -420,30 +281,6 @@ export const ChatInput = memo(function ChatInput({
       }
     }
 
-    if (mention.isActive) {
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        moveMentionHighlight("up");
-        return;
-      }
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        moveMentionHighlight("down");
-        return;
-      }
-      if (e.key === "Enter" || e.key === "Tab") {
-        e.preventDefault();
-        const highlighted = mentionSearch.presets[mention.highlightedIndex];
-        if (highlighted) applyMentionSelection(highlighted);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        resetMention();
-        return;
-      }
-    }
-
     const newlineModifier = localStorage.getItem("newlineModifier") || "shift";
 
     if (e.key === "Enter") {
@@ -502,15 +339,12 @@ export const ChatInput = memo(function ChatInput({
     () => ({
       skills: skillsAvailable,
       tools: toolsAvailable,
-      agents: agents.length > 0 && !!onSelectAgent,
       models: !!availableModels?.length && !!onSelectModel,
       files: uploadCategories.length > 0,
       context: true,
     }),
     [
-      agents.length,
       availableModels?.length,
-      onSelectAgent,
       onSelectModel,
       skillsAvailable,
       toolsAvailable,
@@ -530,9 +364,7 @@ export const ChatInput = memo(function ChatInput({
       > = {
         skills: "skill",
         tools: "mcp",
-        agent: "agent",
         thinking: "context",
-        persona: "context",
         model: "model",
         file: "file",
         context: "context",
@@ -883,10 +715,6 @@ export const ChatInput = memo(function ChatInput({
   }, [tools]);
 
   useEffect(() => {
-    dispatchComposerSelection({ type: "clear-kind", kind: "agent" });
-  }, [currentAgent]);
-
-  useEffect(() => {
     dispatchComposerSelection({ type: "clear-kind", kind: "model" });
   }, [currentModelId]);
 
@@ -924,20 +752,12 @@ export const ChatInput = memo(function ChatInput({
         if (tool?.enabled) onToggleTool?.(toolName);
         return;
       }
-      if (id.startsWith("agent:")) {
-        const fallbackAgent = agents.find((agent) => agent.id !== currentAgent);
-        if (fallbackAgent) onSelectAgent?.(fallbackAgent.id);
-        return;
-      }
       if (id.startsWith("model:")) {
         return;
       }
     },
     [
-      agents,
-      currentAgent,
       onClearSelectedSkill,
-      onSelectAgent,
       onToggleTool,
       setAttachments,
       tools,
@@ -1017,24 +837,7 @@ export const ChatInput = memo(function ChatInput({
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
             dragging={isDraggingOver}
-            mentionActive={mention.isActive}
           >
-            {mention.isActive && !onMentionQueryChange && (
-              <MentionPopup
-                presets={mentionSearch.presets}
-                highlightedIndex={mention.highlightedIndex}
-                selectedPresetId={selectedPersonaPresetId}
-                isLoading={mentionSearch.isLoading}
-                isLoadingMore={mentionSearch.isLoadingMore}
-                hasMore={mentionSearch.hasMore}
-                onSelect={applyMentionSelection}
-                onHover={setMentionHighlight}
-                onClose={dismissMention}
-                onLoadMore={mentionSearch.loadMore}
-                placement={mentionPopupPlacement ?? undefined}
-              />
-            )}
-
             <ChatInputAttachments
               attachments={attachments}
               onAttachmentsChange={setAttachments}
@@ -1110,10 +913,6 @@ export const ChatInput = memo(function ChatInput({
                 totalToolsCount={totalToolsCount}
                 enabledSkillsCount={enabledSkillsCount}
                 totalSkillsCount={totalSkillsCount}
-                hasPersonaSelector={!!onUsePersonaPreset}
-                personaName={selectedPersonaName}
-                hasAgentSelector={agents.length > 1 && !!onSelectAgent}
-                agentName={agents.find((a) => a.id === currentAgent)?.name}
                 hasThinkingOption={
                   !!(
                     agentOptions &&
@@ -1129,9 +928,6 @@ export const ChatInput = memo(function ChatInput({
                 onFileCommandReady={(openFileCommand) => {
                   openFileCommandRef.current = openFileCommand;
                 }}
-                selectedPersonaName={selectedPersonaName}
-                personaAvatar={personaAvatar}
-                onClearPersonaPreset={onClearPersonaPreset}
                 onStopClick={() => setStopConfirmOpen(true)}
                 onNoPermissionClick={() => setContactAdminOpen(true)}
               />
@@ -1155,22 +951,6 @@ export const ChatInput = memo(function ChatInput({
         onSelectSkill={handleSelectTaskSkill}
         skillsLoading={_skillsLoading}
         enableSkills={enableSkills}
-        personaPresets={personaPresets}
-        personaPresetsTotal={personaPresetsTotal}
-        personaPresetsPage={personaPresetsPage}
-        onPersonaPresetsPageChange={onPersonaPresetsPageChange}
-        onPersonaPresetsSearchChange={onPersonaPresetsSearchChange}
-        onPersonaPresetsTagChange={onPersonaPresetsTagChange}
-        selectedPersonaPresetId={selectedPersonaPresetId}
-        personaPresetsLoading={personaPresetsLoading}
-        personaPresetsMutating={personaPresetsMutating}
-        onUsePersonaPreset={onUsePersonaPreset}
-        onCopyPersonaPreset={onCopyPersonaPreset}
-        onClearPersonaPreset={onClearPersonaPreset}
-        canManagePersonaPresets={canManagePersonaPresets}
-        agents={agents}
-        currentAgent={currentAgent}
-        onSelectAgent={onSelectAgent}
         availableModels={availableModels}
         currentModelId={currentModelId}
         onSelectModel={handleSelectModelChip}

@@ -196,7 +196,6 @@ async def oauth_providers() -> dict[str, object]:
 UI_PERMISSIONS = [
     "agent:use",
     "artifact:download",
-    "agent:admin",
     "model:admin",
     "settings:manage",
     "admin:status",
@@ -213,10 +212,6 @@ UI_PERMISSIONS = [
     "marketplace:read",
     "marketplace:publish",
     "marketplace:admin",
-    "channel:read",
-    "channel:write",
-    "channel:delete",
-    "channel:admin",
     "user:read",
     "user:admin",
     "settings:read",
@@ -372,38 +367,6 @@ async def roles(skip: int = 0, limit: int = 100, q: str | None = None) -> dict[s
     limit = max(1, min(limit, 200))
     skip = max(0, skip)
     return {"roles": [], "total": 0, "skip": skip, "limit": limit, "q": q or ""}
-
-
-@router.get("/agents")
-async def agents(principal: AuthPrincipal = Depends(require_principal)) -> dict[str, object]:
-    async with transaction() as conn:
-        rows = await repositories.list_principal_lambchat_agents(
-            conn,
-            tenant_id=principal.tenant_id,
-            actor_user_id=principal.user_id,
-            department_id=principal.department_id,
-            roles=principal.roles,
-            is_admin=is_ai_admin(principal),
-            permissions=principal.permissions,
-        )
-    items = [
-        {
-            "id": public_agent_id_for_projection(row.get("id"), row.get("default_skill_id")),
-            "name": row["name"],
-            "description": row.get("description") or "",
-            "version": "platform-managed",
-            "sort_order": index,
-            "supports_sandbox": False,
-            "options": {},
-        }
-        for index, row in enumerate(rows, start=1)
-    ]
-    return {
-        "agents": items,
-        "count": len(items),
-        "default_agent": items[0]["id"] if items else None,
-        "allowed_model_ids": None,
-    }
 
 
 @router.get("/sessions")

@@ -2,11 +2,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
+import { APP_ROUTE_PATHS } from "../appRouteManifest.ts";
 
 const root = process.cwd();
 
 function readSource(path: string): string {
   return readFileSync(join(root, path), "utf8");
+}
+
+function readApp(): string {
+  let app = readSource("src/App.tsx");
+  for (const [id, path] of Object.entries(APP_ROUTE_PATHS)) {
+    app = app.replaceAll(`path={APP_ROUTE_PATHS.${id}}`, `path="${path}"`);
+  }
+  return app;
 }
 
 test("authenticated sidebar treats skills as admin skill management and removes role plaza plus marketplace shortcuts", () => {
@@ -36,7 +45,7 @@ test("authenticated sidebar treats skills as admin skill management and removes 
 });
 
 test("marketplace route is folded into admin skill management", () => {
-  const app = readSource("src/App.tsx");
+  const app = readApp();
   const tabContent = readSource("src/components/layout/AppContent/TabContent.tsx");
   const skillsHub = readSource("src/components/panels/SkillsHubPanel.tsx");
   const state = readSource("src/components/panels/SkillsHubPanel/state.ts");

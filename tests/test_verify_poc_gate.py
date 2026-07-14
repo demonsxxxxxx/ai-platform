@@ -21,7 +21,7 @@ def test_api_compat_gate_requires_user_and_admin_permissions(monkeypatch):
     gate = verify_poc_gate.check_api_compat("http://api.local")
 
     assert gate.ok is False
-    assert gate.evidence["missing_permissions"] == ["admin:status", "agent:admin", "model:admin", "settings:manage"]
+    assert gate.evidence["missing_permissions"] == ["admin:status", "model:admin", "settings:manage"]
 
 
 def test_api_compat_gate_accepts_runtime_default_model_from_catalog(monkeypatch):

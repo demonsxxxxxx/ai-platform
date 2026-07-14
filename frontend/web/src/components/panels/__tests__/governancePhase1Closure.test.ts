@@ -184,12 +184,6 @@ test("authenticated admin surfaces avoid legacy glass and heavy modal styling", 
     "src/components/panels/JsonSchemaEditor.tsx",
     "src/components/panels/SystemHealthSection.tsx",
     "src/components/panels/AdminRuntimeCapacitySection.tsx",
-    "src/components/panels/AgentPanel/AgentConfigPanel.tsx",
-    "src/components/panels/AgentPanel/shared/ProviderSelect.tsx",
-    "src/components/panels/AgentPanel/shared/RoleSelector.tsx",
-    "src/components/panels/AgentPanel/shared/ToggleSwitch.tsx",
-    "src/components/panels/AgentPanel/tabs/GlobalAgentTab.tsx",
-    "src/components/panels/AgentPanel/tabs/RolesAgentTab.tsx",
     "src/components/panels/MemoryPanel/index.tsx",
     "src/components/panels/MemoryPanel/MemoryFilter.tsx",
     "src/components/panels/MemoryPanel/MemoryEditor.tsx",
@@ -226,10 +220,6 @@ test("shared workbench support surfaces use enterprise tokens instead of legacy 
     ],
     ["MemoryPanel", read("src/components/panels/MemoryPanel/index.tsx")],
     ["ApprovalPanel", read("src/components/panels/ApprovalPanel.tsx")],
-    [
-      "ProviderSelect",
-      read("src/components/panels/AgentPanel/shared/ProviderSelect.tsx"),
-    ],
   ]);
 
   const forbiddenPatterns = [
@@ -448,11 +438,11 @@ test("skills phase one backed operations match current public contracts", () => 
   assert.match(skillsList, /\{canBatchSkills && filteredSkills\.length > 0 &&/);
   assert.match(
     skillsActions,
-    /result\.skills\.filter\(\(s\) => s\.already_exists\)\.map\(\(s\) => s\.name\)/,
+    /initialZipSkillSelection\(result\.skills, canAdminUploadSkills\)/,
   );
   assert.match(zipUploadModal, /const backedCount = zipSkills\.filter\(\(s\) => s\.already_exists\)\.length/);
-  assert.match(zipUploadModal, /skill\.already_exists && onZipSkillToggle\(skill\.name\)/);
-  assert.match(zipUploadModal, /!skill\.already_exists\s*\?\s*"cursor-not-allowed opacity-40"/);
+  assert.match(zipUploadModal, /canSelectZipSkill\(skill, allowNewSkills\)/);
+  assert.match(zipUploadModal, /!skill\.already_exists && !allowNewSkills/);
   assert.doesNotMatch(skillsPanel, /skillBatchWriteBacked = false/);
 });
 

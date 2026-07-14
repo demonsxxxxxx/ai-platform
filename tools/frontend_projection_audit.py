@@ -100,9 +100,7 @@ AI_PLATFORM_ROUTE_PREFIXES = [
     "/api/ai/runs/",
 ]
 SAFE_PUBLIC_ROUTE_PREFIXES = [
-    "/api/agent-workspace",
     "/api/agent/models/available",
-    "/api/channels",
     "/api/github",
     "/api/feedback",
     "/api/marketplace",
@@ -140,7 +138,6 @@ LEGACY_POLICY_REQUIRED_ROUTE_PREFIXES = [
     "/api/agent/models",
     "/api/env-vars",
     "/api/memory",
-    "/api/persona-presets",
     "/api/roles",
 ]
 LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
@@ -177,13 +174,6 @@ LEGACY_ROUTE_POLICY_MAP: dict[str, dict[str, str]] = {
         "governance_gate": "G6",
         "ordinary_user_exposure": "fail_closed_until_ai_platform_memory_projection",
         "admin_exposure": "same_tenant_admin_memory_projection_only",
-        "required_action": "remap_to_ai_platform_public_or_admin_projection",
-    },
-    "/api/persona-presets": {
-        "domain": "agent_frontend_profile_policy",
-        "governance_gate": "G9",
-        "ordinary_user_exposure": "fail_closed_until_public_projection_exists",
-        "admin_exposure": "same_tenant_admin_projection_only",
         "required_action": "remap_to_ai_platform_public_or_admin_projection",
     },
     "/api/roles": {

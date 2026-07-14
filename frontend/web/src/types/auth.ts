@@ -50,14 +50,6 @@ export enum Permission {
   FEEDBACK_WRITE = "feedback:write",
   FEEDBACK_READ = "feedback:read",
   FEEDBACK_ADMIN = "feedback:admin",
-  // Channel
-  CHANNEL_READ = "channel:read",
-  CHANNEL_WRITE = "channel:write",
-  CHANNEL_DELETE = "channel:delete",
-  CHANNEL_ADMIN = "channel:admin",
-  // Agent
-  AGENT_READ = "agent:read",
-  AGENT_ADMIN = "agent:admin",
   // Platform admin status
   ADMIN_STATUS = "admin:status",
   // Model
@@ -66,10 +58,6 @@ export enum Permission {
   MARKETPLACE_READ = "marketplace:read",
   MARKETPLACE_PUBLISH = "marketplace:publish",
   MARKETPLACE_ADMIN = "marketplace:admin",
-  // Persona Preset
-  PERSONA_PRESET_READ = "persona_preset:read",
-  PERSONA_PRESET_WRITE = "persona_preset:write",
-  PERSONA_PRESET_ADMIN = "persona_preset:admin",
   // Environment Variables
   ENVVAR_READ = "envvar:read",
   ENVVAR_WRITE = "envvar:write",

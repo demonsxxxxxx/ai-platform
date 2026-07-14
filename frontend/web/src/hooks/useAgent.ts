@@ -9,25 +9,22 @@ import i18n from "../i18n";
 import { uuid } from "../utils/uuid";
 import type {
   Message,
-  AgentInfo,
-  AgentListResponse,
   ConnectionStatus,
   MessageAttachment,
   SelectedSkillRequest,
 } from "../types";
 import {
+  DEFAULT_CHAT_AGENT_ID,
   isChatStreamNeedsConfirmation,
   sessionApi,
   type BackendSession,
   type CapabilitySuggestion,
   type ChatStreamResponse,
 } from "../services/api";
-import { authenticatedRequest } from "../services/api/authenticatedRequest";
 import { feedbackApi } from "../services/api/feedback";
 import { useAuth } from "../hooks/useAuth";
 import { Permission } from "../types/auth";
 import {
-  API_BASE,
   type UseAgentOptions,
   type SubagentStackItem,
   type HistoryEvent,
@@ -53,10 +50,8 @@ import {
   type SSEConnectionContext,
 } from "./useAgent/sseConnection";
 import { createOptimisticMessagesForSend } from "./useAgent/optimisticMessages";
-import { resolvePersonaEnabledSkills } from "./useAgent/personaRequestConfig";
 import { translateBackendError } from "../utils/backendErrors";
 import { dispatchSessionTitleUpdated } from "../utils/sessionTitleEvents";
-import { resolveAvailableAgentId } from "./useAgent/agentSelection";
 import {
   SELECTED_SKILL_RECOVERABLE_CODES,
   type SelectedSkillRecoverableCode,
@@ -99,10 +94,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [currentAgent, setCurrentAgent] = useState<string>("");
-  const [agentsLoading, setAgentsLoading] = useState(false);
-  const [allowedModelIds, setAllowedModelIds] = useState<string[] | null>(null);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
@@ -194,120 +185,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     [createEventHandlerContext],
   );
 
-  // Ref for currentAgent to avoid dependency changes triggering refetch
-  const currentAgentRef = useRef(currentAgent);
-  useEffect(() => {
-    currentAgentRef.current = currentAgent;
-  }, [currentAgent]);
-
-  // Fetch available agents
-  const fetchAgents = useCallback(async () => {
-    setAgentsLoading(true);
-    try {
-      const response = await authenticatedRequest(`${API_BASE}/agents`, {
-        headers: {
-          "Content-Type": "application/json",
-        },
-      });
-      if (!response.ok) throw new Error("Failed to fetch agents");
-      const data: AgentListResponse = await response.json();
-      const availableAgents = data.agents || [];
-      setAgents(availableAgents);
-      setAllowedModelIds(data.allowed_model_ids ?? null);
-      const metadataDefaultAgentId =
-        localStorage.getItem("defaultAgentId") || undefined;
-      const nextAgentId = resolveAvailableAgentId(
-        currentAgentRef.current,
-        metadataDefaultAgentId || data.default_agent,
-        availableAgents,
-      );
-      if (nextAgentId !== currentAgentRef.current) {
-        currentAgentRef.current = nextAgentId;
-        setCurrentAgent(nextAgentId);
-      }
-    } catch (err) {
-      console.error("Failed to fetch agents:", err);
-    } finally {
-      setAgentsLoading(false);
-    }
-  }, []); // No dependencies - uses ref instead
-
-  // Load agents on mount
-  useEffect(() => {
-    fetchAgents();
-  }, [fetchAgents]);
-
-  // Refresh agents when page becomes visible (e.g., switching back to /chat tab)
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        fetchAgents();
-      }
-    };
-
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [fetchAgents]);
-
-  // Listen for agent preference updates to refresh agents list and apply new default
-  useEffect(() => {
-    const handleAgentPreferenceUpdated = async (event: Event) => {
-      // Fetch fresh agents data
-      setAgentsLoading(true);
-      try {
-        const response = await authenticatedRequest(`${API_BASE}/agents`, {
-          headers: {
-            "Content-Type": "application/json",
-          },
-        });
-        if (!response.ok) throw new Error("Failed to fetch agents");
-        const data: AgentListResponse = await response.json();
-
-        // Update agents list
-        const availableAgents = data.agents || [];
-        setAgents(availableAgents);
-        setAllowedModelIds(data.allowed_model_ids ?? null);
-
-        // Apply the new default agent if user doesn't have an active session
-        // (i.e., no current messages means it's a good time to switch)
-        const hasActiveSession = messagesRef.current.length > 0;
-        const eventAgentId =
-          event instanceof CustomEvent &&
-          typeof event.detail?.agentId === "string"
-            ? event.detail.agentId
-            : undefined;
-        const metadataDefaultAgentId =
-          localStorage.getItem("defaultAgentId") || undefined;
-        const nextAgentId = resolveAvailableAgentId(
-          hasActiveSession ? currentAgentRef.current : "",
-          eventAgentId || metadataDefaultAgentId || data.default_agent,
-          availableAgents,
-        );
-        if (nextAgentId !== currentAgentRef.current) {
-          currentAgentRef.current = nextAgentId;
-          setCurrentAgent(nextAgentId);
-        }
-      } catch (err) {
-        console.error("Failed to fetch agents after preference update:", err);
-      } finally {
-        setAgentsLoading(false);
-      }
-    };
-
-    window.addEventListener(
-      "agent-preference-updated",
-      handleAgentPreferenceUpdated,
-    );
-    return () => {
-      window.removeEventListener(
-        "agent-preference-updated",
-        handleAgentPreferenceUpdated,
-      );
-    };
-  }, []);
-
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -380,7 +257,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
           // 从 metadata 提取配置信息
           const sessionConfig = {
-            agent_id: (sessionData.metadata?.agent_id as string) || undefined,
             agent_options:
               (sessionData.metadata?.agent_options as Record<
                 string,
@@ -390,17 +266,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               (sessionData.metadata?.disabled_tools as string[]) || undefined,
             disabled_skills:
               (sessionData.metadata?.disabled_skills as string[]) || undefined,
-            enabled_skills:
-              (sessionData.metadata?.enabled_skills as string[]) || undefined,
-            persona_preset_id:
-              (sessionData.metadata?.persona_preset_id as string) || undefined,
-            persona_preset_name:
-              (sessionData.metadata?.persona_preset_name as string) ||
-              undefined,
-            persona_snapshot:
-              (sessionData.metadata?.persona_snapshot as
-                | import("../types").PersonaPresetSnapshot
-                | undefined) || undefined,
             disabled_mcp_tools:
               (sessionData.metadata?.disabled_mcp_tools as string[]) ||
               undefined,
@@ -611,12 +476,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         }
 
         // 获取当前禁用的 skills 和 mcp_tools
-        const personaPresetId = options?.getPersonaPresetId?.() || null;
         const disabledSkills = options?.getDisabledSkills?.() || [];
-        const enabledSkills = resolvePersonaEnabledSkills(
-          personaPresetId,
-          options?.getEnabledSkills?.(),
-        );
         const disabledMcpTools = options?.getDisabledMcpTools?.() || [];
 
         // Merge session-level agent options (e.g. model) with ChatInput values
@@ -626,7 +486,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         };
 
         const submitData: ChatStreamResponse = await sessionApi.submitChat(
-          currentAgent,
           content,
           sessionId ?? undefined,
           fullAgentOptions,
@@ -634,8 +493,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           pendingProjectIdRef.current ?? undefined,
           disabledSkills,
           disabledMcpTools,
-          personaPresetId,
-          enabledSkills,
           selectedSkill,
         );
 
@@ -685,11 +542,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           // 构建完整的对话配置
           const conversationConfig: Record<string, unknown> = {
             current_run_id: newRunId,
-            agent_id: currentAgent,
+            agent_id: DEFAULT_CHAT_AGENT_ID,
             agent_options: fullAgentOptions,
             disabled_skills: disabledSkills,
-            enabled_skills: enabledSkills,
-            persona_preset_id: personaPresetId,
             disabled_mcp_tools: disabledMcpTools,
           };
           if (projectId) {
@@ -698,7 +553,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
           const newSession: BackendSession = {
             id: newSessionId,
-            agent_id: currentAgent,
+            agent_id: DEFAULT_CHAT_AGENT_ID,
             created_at: now,
             updated_at: now,
             is_active: true,
@@ -733,11 +588,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             ...((newlyCreatedSession?.metadata as Record<string, unknown>) ||
               {}),
             current_run_id: newRunId,
-            agent_id: currentAgent,
+            agent_id: DEFAULT_CHAT_AGENT_ID,
             agent_options: fullAgentOptions,
             disabled_skills: disabledSkills,
-            enabled_skills: enabledSkills,
-            persona_preset_id: personaPresetId,
             disabled_mcp_tools: disabledMcpTools,
           };
 
@@ -852,7 +705,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     },
     [
       sessionId,
-      currentAgent,
       createSSEContext,
       newlyCreatedSession?.metadata,
       options,
@@ -911,19 +763,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       abortControllerRef.current = null;
     }
     clearReconnectTimeout(reconnectTimeoutRef);
-  }, []);
-
-  const selectAgent = useCallback(
-    (agentId: string) => {
-      setCurrentAgent(agentId);
-      clearMessages();
-    },
-    [clearMessages],
-  );
-
-  // Switch agent without clearing messages (for mode toggling)
-  const switchAgent = useCallback((agentId: string) => {
-    setCurrentAgent(agentId);
   }, []);
 
   // Reconnect function
@@ -990,10 +829,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     error,
     sessionId,
     currentRunId,
-    agents,
-    currentAgent,
-    agentsLoading,
-    allowedModelIds,
     isReconnecting: connectionStatus === "reconnecting",
     connectionStatus,
     newlyCreatedSession,
@@ -1002,9 +837,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     sendMessage,
     stopGeneration,
     clearMessages,
-    selectAgent,
-    switchAgent,
-    refreshAgents: fetchAgents,
     loadHistory,
     reconnectSSE: handleReconnectSSE,
     setPendingProjectId: (id: string | null) => {

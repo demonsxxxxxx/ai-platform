@@ -49,24 +49,6 @@ export type {
 } from "./message";
 
 // ============================================
-// Persona Preset Types
-// ============================================
-export type {
-  PersonaPreset,
-  PersonaPresetCreate,
-  PersonaPresetListParams,
-  PersonaPresetListResponse,
-  PersonaPresetPreferenceUpdate,
-  PersonaPresetScope,
-  PersonaPresetSnapshot,
-  PersonaPresetStatus,
-  PersonaStarterPrompt,
-  PersonaPresetUpdate,
-  PersonaPresetVisibility,
-  LocalizedText,
-} from "./personaPreset";
-
-// ============================================
 // Skills Types
 // ============================================
 export type {
@@ -91,37 +73,7 @@ export type {
   PublishToMarketplaceRequest,
 } from "./skill";
 
-// ============================================
-// Agent Types
-// ============================================
-export type {
-  AgentOption,
-  AgentInfo,
-  AgentListResponse,
-  WorkflowStepData,
-  AgentConfig,
-  GlobalAgentConfigResponse,
-  RoleAgentAssignment,
-  RoleAgentAssignmentResponse,
-  RoleModelAssignment,
-  UserAgentPreference,
-  UserAgentPreferenceResponse,
-  AgentWorkspaceAgent,
-  AgentWorkspaceArtifact,
-  AgentWorkspaceConsole,
-  AgentWorkspaceConsoleEvent,
-  AgentWorkspaceConsoleStep,
-  AgentWorkspaceJsonValue,
-  AgentWorkspaceLatestContext,
-  AgentWorkspaceMemoryContextPolicy,
-  AgentWorkspaceParams,
-  AgentWorkspaceProjection,
-  AgentWorkspaceReferencedMaterials,
-  AgentWorkspaceRunSummary,
-  AgentWorkspaceSession,
-  AgentWorkspaceToolPermission,
-  AgentWorkspaceUsedContextSummary,
-} from "./agent";
+export type { AgentOption } from "./agentOptions";
 
 // ============================================
 // Session Types
@@ -232,15 +184,6 @@ export type {
   SharedContentOwner,
   SharedContentResponse,
 } from "./share";
-
-// ============================================
-// Channel Types
-// ============================================
-export type {
-  PublicChannelResponse,
-  PublicChannelsResponse,
-  ChannelAdminOperationResponse,
-} from "./channel";
 
 // ============================================
 // Role Governance Types

@@ -7,10 +7,7 @@ import {
   Server,
   Bot,
   Cpu,
-  MessageCircle,
-  UserRound,
   FileStack,
-  SquareTerminal,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation } from "react-router-dom";
@@ -36,12 +33,8 @@ interface SidebarRailProps {
   onOpenLaunchpad: () => void;
   onOpenSkills: () => void;
   onOpenMcp: () => void;
-  onOpenChannels: () => void;
-  onOpenAgents: () => void;
   onOpenModels: () => void;
-  onOpenPersona: () => void;
   onOpenFiles: () => void;
-  onOpenAgentWorkspace: () => void;
   recentChatsBtnRef: React.RefObject<HTMLButtonElement | null>;
   onShowProfile: () => void;
 }
@@ -59,12 +52,8 @@ export function SidebarRail({
   onOpenLaunchpad,
   onOpenSkills,
   onOpenMcp,
-  onOpenChannels,
-  onOpenAgents,
   onOpenModels,
-  onOpenPersona,
   onOpenFiles,
-  onOpenAgentWorkspace,
   recentChatsBtnRef,
   onShowProfile,
 }: SidebarRailProps) {
@@ -186,34 +175,6 @@ export function SidebarRail({
         >
           <Server size={20} />
         </LibreChatRailButton>
-        {canAccessWorkbenchItem(user, "channels") && (
-          <LibreChatRailButton
-            type="button"
-            onClick={onOpenChannels}
-            className={railBtn}
-            aria-current={isRailItemActive("channels") ? "page" : undefined}
-            title={t("nav.channels")}
-            aria-label={t("nav.channels")}
-            itemKey="channels"
-            active={isRailItemActive("channels")}
-          >
-            <MessageCircle size={20} />
-          </LibreChatRailButton>
-        )}
-        {canAccessWorkbenchItem(user, "agents") && (
-          <LibreChatRailButton
-            type="button"
-            onClick={onOpenAgents}
-            className={railBtn}
-            aria-current={isRailItemActive("agents") ? "page" : undefined}
-            title={t("nav.agents")}
-            aria-label={t("nav.agents")}
-            itemKey="agents"
-            active={isRailItemActive("agents")}
-          >
-            <Bot size={20} />
-          </LibreChatRailButton>
-        )}
         {canAccessWorkbenchItem(user, "models") && (
           <LibreChatRailButton
             type="button"
@@ -230,18 +191,6 @@ export function SidebarRail({
         )}
         <LibreChatRailButton
           type="button"
-          onClick={onOpenPersona}
-          className={railBtn}
-          aria-current={isRailItemActive("persona") ? "page" : undefined}
-          title={t("nav.persona")}
-          aria-label={t("nav.persona")}
-          itemKey="persona"
-          active={isRailItemActive("persona")}
-        >
-          <UserRound size={20} />
-        </LibreChatRailButton>
-        <LibreChatRailButton
-          type="button"
           onClick={onOpenFiles}
           className={railBtn}
           aria-current={isRailItemActive("files") ? "page" : undefined}
@@ -251,20 +200,6 @@ export function SidebarRail({
           active={isRailItemActive("files")}
         >
           <FileStack size={20} />
-        </LibreChatRailButton>
-        <LibreChatRailButton
-          type="button"
-          onClick={onOpenAgentWorkspace}
-          className={railBtn}
-          aria-current={
-            isRailItemActive("agent-workspace") ? "page" : undefined
-          }
-          title={t("nav.agentWorkspace")}
-          aria-label={t("nav.agentWorkspace")}
-          itemKey="agent-workspace"
-          active={isRailItemActive("agent-workspace")}
-        >
-          <SquareTerminal size={20} />
         </LibreChatRailButton>
         <LibreChatRailButton
           type="button"

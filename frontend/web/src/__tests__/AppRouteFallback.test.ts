@@ -2,14 +2,23 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { APP_ROUTE_PATHS } from "../appRouteManifest.ts";
 
 const src = resolve(import.meta.dirname, "..");
 const read = (relativePath: string) =>
   readFileSync(resolve(src, relativePath), "utf8");
 
+const readApp = () => {
+  let app = read("App.tsx");
+  for (const [id, path] of Object.entries(APP_ROUTE_PATHS)) {
+    app = app.replaceAll(`path={APP_ROUTE_PATHS.${id}}`, `path="${path}"`);
+  }
+  return app;
+};
+
 test("admin routes redirect ordinary users before mounting management pages", () => {
-  const app = read("App.tsx");
-  const routes = ["users", "roles", "settings", "feedback", "agents", "models"];
+  const app = readApp();
+  const routes = ["users", "roles", "settings", "feedback", "models"];
   for (const route of routes) {
     assert.match(
       app,
@@ -19,10 +28,6 @@ test("admin routes redirect ordinary users before mounting management pages", ()
       route,
     );
   }
-  assert.match(
-    app,
-    /path="\/channels\/:channelType\?\/:instanceId\?"[\s\S]{0,220}<ProtectedRoute[\s\S]{0,120}requireAdmin[\s\S]{0,120}redirectTo="\/chat"/,
-  );
 });
 
 test("requireAdmin uses the signed is_admin projection instead of permission inference", () => {

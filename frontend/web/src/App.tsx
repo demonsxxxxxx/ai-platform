@@ -23,6 +23,7 @@ import {
 import { APP_TOASTER_CLASS_NAME } from "./components/layout/AppContent/appToastLayout";
 import { useAuth } from "./hooks/useAuth";
 import type { TabType } from "./components/layout/AppContent/types";
+import { APP_ROUTE_PATHS } from "./appRouteManifest";
 
 const SharedPage = lazy(() =>
   import("./components/share/SharedPage").then((m) => ({
@@ -231,24 +232,6 @@ function FeedbackPage() {
   return <AppContent key="feedback" activeTab="feedback" />;
 }
 
-function ChannelsPage() {
-  useSEO({
-    title: "seo.channels.title",
-    description: "seo.channels.description",
-    path: "/channels",
-  });
-  return <AppContent key="channels" activeTab="channels" />;
-}
-
-function AgentsPage() {
-  useSEO({
-    title: "seo.agents.title",
-    description: "seo.agents.description",
-    path: "/agents",
-  });
-  return <AppContent key="agents" activeTab="agents" />;
-}
-
 function ModelsPage() {
   useSEO({
     title: "seo.models.title",
@@ -258,15 +241,6 @@ function ModelsPage() {
   return <AppContent key="models" activeTab="models" />;
 }
 
-function PersonaPage() {
-  useSEO({
-    title: "seo.persona.title",
-    description: "seo.persona.description",
-    path: "/persona",
-  });
-  return <AppContent key="persona" activeTab="persona" />;
-}
-
 function FilesPage() {
   useSEO({
     title: "seo.files.title",
@@ -274,15 +248,6 @@ function FilesPage() {
     path: "/files",
   });
   return <AppContent key="files" activeTab="files" />;
-}
-
-function AgentWorkspacePage() {
-  useSEO({
-    title: "seo.agentWorkspace.title",
-    description: "seo.agentWorkspace.description",
-    path: "/agent-workspace",
-  });
-  return <AppContent key="agent-workspace" activeTab="agent-workspace" />;
 }
 
 function NotificationsPage() {
@@ -389,15 +354,15 @@ function App() {
         <SelectionActionPopover />
         <Suspense fallback={<ChatPageSkeleton />}>
           <Routes>
-            <Route path="/" element={<RootRedirect />} />
+            <Route path={APP_ROUTE_PATHS.root} element={<RootRedirect />} />
             {/* Auth routes */}
-            <Route path="/auth/login" element={<AuthPageWrapper />} />
+            <Route path={APP_ROUTE_PATHS.login} element={<AuthPageWrapper />} />
             <Route
-              path="/auth/register"
+              path={APP_ROUTE_PATHS.register}
               element={<AuthPageWrapper initialMode="register" />}
             />
             <Route
-              path="/chat/:sessionId?"
+              path={APP_ROUTE_PATHS.chat}
               element={
                 <ProtectedRoute>
                   <ChatPage />
@@ -405,7 +370,7 @@ function App() {
               }
             />
             <Route
-              path="/apps"
+              path={APP_ROUTE_PATHS.apps}
               element={
                 <ProtectedRoute>
                   <LaunchpadPage />
@@ -413,7 +378,7 @@ function App() {
               }
             />
             <Route
-              path="/skills"
+              path={APP_ROUTE_PATHS.skills}
               element={
                 <ProtectedRoute>
                   <SkillsPage />
@@ -421,7 +386,7 @@ function App() {
               }
             />
             <Route
-              path="/marketplace"
+              path={APP_ROUTE_PATHS.marketplace}
               element={
                 <ProtectedRoute>
                   <Navigate to="/skills" replace />
@@ -429,7 +394,7 @@ function App() {
               }
             />
             <Route
-              path="/mcp"
+              path={APP_ROUTE_PATHS.mcp}
               element={
                 <ProtectedRoute>
                   <MCPPage />
@@ -437,7 +402,7 @@ function App() {
               }
             />
             <Route
-              path="/users"
+              path={APP_ROUTE_PATHS.users}
               element={
                 <ProtectedRoute requireAdmin redirectTo="/chat">
                   <UsersPage />
@@ -445,7 +410,7 @@ function App() {
               }
             />
             <Route
-              path="/roles"
+              path={APP_ROUTE_PATHS.roles}
               element={
                 <ProtectedRoute requireAdmin redirectTo="/chat">
                   <RolesPage />
@@ -453,7 +418,7 @@ function App() {
               }
             />
             <Route
-              path="/settings"
+              path={APP_ROUTE_PATHS.settings}
               element={
                 <ProtectedRoute requireAdmin redirectTo="/chat">
                   <SettingsPage />
@@ -461,7 +426,7 @@ function App() {
               }
             />
             <Route
-              path="/feedback"
+              path={APP_ROUTE_PATHS.feedback}
               element={
                 <ProtectedRoute requireAdmin redirectTo="/chat">
                   <FeedbackPage />
@@ -469,23 +434,7 @@ function App() {
               }
             />
             <Route
-              path="/channels/:channelType?/:instanceId?"
-              element={
-                <ProtectedRoute requireAdmin redirectTo="/chat">
-                  <ChannelsPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/agents"
-              element={
-                <ProtectedRoute requireAdmin redirectTo="/chat">
-                  <AgentsPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/models"
+              path={APP_ROUTE_PATHS.models}
               element={
                 <ProtectedRoute requireAdmin redirectTo="/chat">
                   <ModelsPage />
@@ -493,15 +442,7 @@ function App() {
               }
             />
             <Route
-              path="/persona"
-              element={
-                <ProtectedRoute>
-                  <PersonaPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/files"
+              path={APP_ROUTE_PATHS.files}
               element={
                 <ProtectedRoute>
                   <FilesPage />
@@ -509,26 +450,7 @@ function App() {
               }
             />
             <Route
-              path="/agent-workspace"
-              element={
-                <ProtectedRoute
-                  requireAllPermissions={[
-                    Permission.CHAT_READ,
-                    Permission.SESSION_READ,
-                  ]}
-                  fallbackComponent={
-                    <WorkbenchForbiddenPage
-                      activeTab="agent-workspace"
-                      permissionLabel={`${Permission.CHAT_READ} / ${Permission.SESSION_READ}`}
-                    />
-                  }
-                >
-                  <AgentWorkspacePage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/notifications"
+              path={APP_ROUTE_PATHS.notifications}
               element={
                 <ProtectedRoute>
                   <NotificationsPage />
@@ -536,7 +458,7 @@ function App() {
               }
             />
             <Route
-              path="/memory"
+              path={APP_ROUTE_PATHS.memory}
               element={
                 <ProtectedRoute
                   permissions={[
@@ -555,24 +477,24 @@ function App() {
               }
             />
             {/* OAuth callback page - handles OAuth redirect from backend */}
-            <Route path="/auth/callback" element={<OAuthCallback />} />
+            <Route path={APP_ROUTE_PATHS.oauthCallback} element={<OAuthCallback />} />
             {/* Password reset pages - no auth required */}
-            <Route path="/auth/reset-request" element={<ForgotPassword />} />
-            <Route path="/auth/reset-password" element={<ResetPassword />} />
+            <Route path={APP_ROUTE_PATHS.resetRequest} element={<ForgotPassword />} />
+            <Route path={APP_ROUTE_PATHS.resetPassword} element={<ResetPassword />} />
             {/* Email verification page - no auth required */}
-            <Route path="/auth/verify-email" element={<VerifyEmail />} />
+            <Route path={APP_ROUTE_PATHS.verifyEmail} element={<VerifyEmail />} />
             {/* Registration pending verification page - no auth required */}
-            <Route path="/auth/pending" element={<RegistrationPending />} />
+            <Route path={APP_ROUTE_PATHS.registrationPending} element={<RegistrationPending />} />
             {/* Public shared session page - no auth required */}
             <Route
-              path="/shared/:shareId"
+              path={APP_ROUTE_PATHS.shared}
               element={
                 <Suspense fallback={null}>
                   <SharedPage />
                 </Suspense>
               }
             />
-            <Route path="*" element={<NotFoundPage />} />
+            <Route path={APP_ROUTE_PATHS.notFound} element={<NotFoundPage />} />
           </Routes>
         </Suspense>
       </ErrorBoundary>

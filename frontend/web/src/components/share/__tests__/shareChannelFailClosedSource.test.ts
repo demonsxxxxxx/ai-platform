@@ -22,28 +22,6 @@ test("shared session page has explicit fail-closed states", () => {
   assert.match(unavailable, /unavailable/);
 });
 
-test("channel import page is governed and fail closed", () => {
-  const channelPanel = readFileSync(
-    join(root, "src/components/channels/ChannelImportPanel.tsx"),
-    "utf8",
-  );
-  const channelsPage = readFileSync(
-    join(root, "src/components/pages/ChannelsPage.tsx"),
-    "utf8",
-  );
-  const tabContent = readFileSync(
-    join(root, "src/components/layout/AppContent/TabContent.tsx"),
-    "utf8",
-  );
-
-  assert.match(channelPanel, /channelImport\.unavailable/);
-  assert.match(channelPanel, /redaction/);
-  assert.match(channelPanel, /retention/);
-  assert.match(channelsPage, /ChannelImportPanel/);
-  assert.match(tabContent, /ChannelImportPanel/);
-  assert.match(tabContent, /channels:\s*ChannelImportPanel/);
-});
-
 test("phase 1C discovery pages explain unavailable governance instead of blank denial", () => {
   const skillsHub = readFileSync(
     join(root, "src/components/panels/SkillsHubPanel.tsx"),
@@ -51,10 +29,6 @@ test("phase 1C discovery pages explain unavailable governance instead of blank d
   );
   const mcpPanel = readFileSync(
     join(root, "src/components/panels/MCPPanel.tsx"),
-    "utf8",
-  );
-  const channelPanel = readFileSync(
-    join(root, "src/components/channels/ChannelImportPanel.tsx"),
     "utf8",
   );
 
@@ -66,7 +40,6 @@ test("phase 1C discovery pages explain unavailable governance instead of blank d
   assert.doesNotMatch(skillsHub, /skills\.featureDisabled/);
   assert.match(mcpPanel, /mcp\.permissionLimited/);
   assert.match(mcpPanel, /data-phase1c-surface="mcp"/);
-  assert.match(channelPanel, /data-phase1c-surface="channel-import"/);
 });
 
 test("phase 1C governance copy exists in every supported locale", () => {
@@ -95,7 +68,7 @@ test("launchpad copy keeps click-through boundary visible", () => {
   assert.doesNotMatch(launchpad, /migrate.*nonGMPlims/i);
 });
 
-test("share channel and launchpad use shared workbench unavailable language", () => {
+test("share and launchpad use shared workbench unavailable language", () => {
   const unavailable = readFileSync(
     join(root, "src/components/workbench/WorkbenchUnavailableState.tsx"),
     "utf8",
@@ -104,15 +77,7 @@ test("share channel and launchpad use shared workbench unavailable language", ()
     join(root, "src/components/share/ShareUnavailableState.tsx"),
     "utf8",
   );
-  const channel = readFileSync(
-    join(root, "src/components/channels/ChannelImportPanel.tsx"),
-    "utf8",
-  );
 
   assert.match(unavailable, /data-workbench-unavailable/);
   assert.match(share, /WorkbenchUnavailableState/);
-  assert.match(channel, /WorkbenchStateSurface/);
-  assert.match(channel, /channelApi\.listCatalog/);
-  assert.match(channel, /data-channel-catalog-list/);
-  assert.match(channel, /channelImport\.unavailable/);
 });

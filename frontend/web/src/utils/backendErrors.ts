@@ -2,10 +2,6 @@ import type { TFunction } from "i18next";
 
 const BACKEND_ERROR_KEYS: Record<string, string> = {
   // Stable backend error codes
-  persona_preset_not_found: "personaPresets.presetNotFound",
-  persona_preset_no_edit_permission: "personaPresets.noEditPermission",
-  persona_preset_no_delete_permission: "personaPresets.noDeletePermission",
-  persona_preset_no_admin_permission: "personaPresets.noAdminPermission",
   model_not_found: "errors.modelNotFound",
   model_disabled: "errors.modelDisabled",
   model_not_allowed: "errors.modelNotAllowed",
@@ -36,7 +32,6 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
   不能修改自己所属角色的权限: "backendErrors.cannotChangeOwnRolePermissions",
   审批请求不存在: "backendErrors.approvalNotFound",
   审批请求已处理: "backendErrors.approvalAlreadyHandled",
-  角色预设不存在: "personaPresets.presetNotFound",
   不能创建收藏项目: "backendErrors.cannotCreateFavoritesProject",
   不能删除收藏项目: "backendErrors.cannotDeleteFavoritesProject",
   没有分享会话的权限: "backendErrors.shareNoPermission",
@@ -69,9 +64,6 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
   状态必须是active或archived: "backendErrors.invalidSessionStatus",
   "状态必须是 active 或 archived": "backendErrors.invalidSessionStatus",
 
-  "Channel instance not found": "backendErrors.channelInstanceNotFound",
-  "Channel instance is disabled": "backendErrors.channelInstanceDisabled",
-  "Instance name is required": "backendErrors.instanceNameRequired",
   "Invalid key format. Must match: ^[A-Za-z_][A-Za-z0-9_]*$":
     "backendErrors.invalidEnvKeyFormat",
   "Invalid file ID format": "backendErrors.invalidFileId",

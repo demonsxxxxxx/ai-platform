@@ -11,14 +11,12 @@ import { useTranslation } from "react-i18next";
 import {
   Wrench,
   Sparkles,
-  Bot,
   Brain,
   Plus,
   Image,
   Video,
   Music,
   FileText,
-  UserRound,
   ChevronDown,
   Upload,
   Layers,
@@ -30,10 +28,8 @@ import type { FileCategory } from "../../types";
 import type { UploadLimits } from "../../hooks/useFileUpload";
 
 export type FeaturePanel =
-  | "persona"
   | "tools"
   | "skills"
-  | "agent"
   | "model"
   | "file"
   | "context"
@@ -55,10 +51,6 @@ interface FeatureMenuProps {
   totalToolsCount: number;
   enabledSkillsCount: number;
   totalSkillsCount: number;
-  hasPersonaSelector?: boolean;
-  personaName?: string | null;
-  hasAgentSelector: boolean;
-  agentName?: string | null;
   hasThinkingOption: boolean;
   thinkingLabel?: string;
   thinkingLevel?: string;
@@ -157,10 +149,6 @@ export const FeatureMenu = memo(function FeatureMenu({
   totalToolsCount,
   enabledSkillsCount,
   totalSkillsCount,
-  hasPersonaSelector = false,
-  personaName,
-  hasAgentSelector,
-  agentName,
   hasThinkingOption,
   thinkingLabel,
   thinkingLevel,
@@ -206,8 +194,6 @@ export const FeatureMenu = memo(function FeatureMenu({
   const hasFeatureItems =
     totalToolsCount > 0 ||
     totalSkillsCount > 0 ||
-    hasPersonaSelector ||
-    hasAgentSelector ||
     hasThinkingOption ||
     uploadCategories.length > 0;
   if (!hasFeatureItems && uploadCategories.length === 0) return null;
@@ -277,22 +263,11 @@ export const FeatureMenu = memo(function FeatureMenu({
                 })}
               </MenuGroup>
             )}
-            {(hasPersonaSelector ||
-              totalToolsCount > 0 ||
-              totalSkillsCount > 0) && (
+            {(totalToolsCount > 0 || totalSkillsCount > 0) && (
               <MenuGroup
                 label={t("featureMenu.enhance", "增强")}
                 icon={<Layers size={18} />}
               >
-                {hasPersonaSelector && (
-                  <MenuItem
-                    icon={<UserRound size={18} />}
-                    label={t("featureMenu.persona", "角色")}
-                    badge={personaName || undefined}
-                    active={activePanel === "persona"}
-                    onClick={() => onOpen("persona")}
-                  />
-                )}
                 {totalToolsCount > 0 && (
                   <MenuItem
                     icon={<Wrench size={18} />}
@@ -313,20 +288,11 @@ export const FeatureMenu = memo(function FeatureMenu({
                 )}
               </MenuGroup>
             )}
-            {(hasAgentSelector || hasThinkingOption || uploadCategories.length > 0) && (
+            {(hasThinkingOption || uploadCategories.length > 0) && (
               <MenuGroup
                 label={t("featureMenu.settings", "设置")}
                 icon={<Settings2 size={18} />}
               >
-                {hasAgentSelector && (
-                  <MenuItem
-                    icon={<Bot size={18} />}
-                    label={t("agent.selectMode", "选择模式")}
-                    badge={agentName ? t(agentName) : undefined}
-                    active={activePanel === "agent"}
-                    onClick={() => onOpen("agent")}
-                  />
-                )}
                 <MenuItem
                   icon={<Settings2 size={18} />}
                   label={t("featureMenu.model", "Model")}

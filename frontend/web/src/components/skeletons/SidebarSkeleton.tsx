@@ -33,7 +33,7 @@ function SidebarRailSkeleton() {
           <div className="skeleton-line size-9 rounded-full mx-2" />
         </div>
 
-        {/* Action icons — matches real rail: NewChat, Search, PersonaPlaza, FileLibrary, RecentChats */}
+        {/* Action icons match the current rail. */}
         <div className="mt-3 flex-1 min-h-0 overflow-y-auto flex flex-col items-center w-full space-y-1">
           <div className="skeleton-line size-9 rounded-full mx-2" />
           <div className="skeleton-line size-9 rounded-full mx-2" />
@@ -77,7 +77,7 @@ function SidebarExpandedSkeleton() {
         <div className="skeleton-line size-8 rounded-lg shrink-0" />
       </div>
 
-      {/* Action buttons — NewChat, Search, PersonaPlaza, FileLibrary, More */}
+      {/* Action buttons */}
       <div className="flex flex-col gap-px px-2 py-2 space-y-1">
         {/* New Chat */}
         <div className="w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px]">
@@ -90,7 +90,6 @@ function SidebarExpandedSkeleton() {
           <div className="skeleton-line h-3.5 w-14 rounded-md flex-1" />
           <div className="skeleton-line h-4 w-10 rounded-md" />
         </div>
-        {/* Persona Plaza */}
         <div className="w-full h-9 rounded-[10px] flex items-center gap-3 px-[9px]">
           <div className="skeleton-line size-5 rounded-md shrink-0" />
           <div className="skeleton-line h-3.5 w-20 rounded-md" />

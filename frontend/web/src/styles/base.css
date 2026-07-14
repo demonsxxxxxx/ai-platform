@@ -36,7 +36,7 @@
   html[data-editor-sidebar="open"] #root [data-yields-sidebar] {
     right: var(--editor-sidebar-width, 30%) !important;
   }
-  /* Portals rendered outside #root (e.g. PersonaPresetSelector) */
+  /* Portals rendered outside #root. */
   html[data-editor-sidebar="open"] body > [data-yields-sidebar] {
     right: var(--editor-sidebar-width, 30%) !important;
   }

@@ -1,4 +1,4 @@
-import { Bot, Boxes, FileText, Sparkles, Wrench, X } from "lucide-react";
+import { Boxes, FileText, Sparkles, Wrench, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type {
   ComposerSelection,
@@ -9,7 +9,6 @@ import { LibreChatComposerChip } from "../../librechat-ui/Chips";
 const chipIcons: Record<ComposerSelectionKind, typeof Sparkles> = {
   skill: Sparkles,
   mcp: Wrench,
-  agent: Bot,
   model: Boxes,
   file: FileText,
   context: Boxes,

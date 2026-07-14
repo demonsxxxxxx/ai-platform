@@ -93,7 +93,6 @@ test("rail exposes company navigation admin Skills and MCP as first-level workbe
   assert.match(sessionSidebarSource, /navigate\("\/skills"\)/);
   assert.doesNotMatch(sessionSidebarSource, /navigate\("\/marketplace"\)/);
   assert.match(sessionSidebarSource, /navigate\("\/mcp"\)/);
-  assert.match(sessionSidebarSource, /navigateWorkbenchItem\("persona"\)/);
   assert.match(sessionSidebarSource, /navigateWorkbenchItem\("files"\)/);
 });
 
@@ -101,6 +100,5 @@ test("Chinese shell copy names the PRD surfaces directly", () => {
   assert.match(zhSource, /技能市场/);
   assert.match(zhSource, /MCP 工具/);
   assert.match(zhSource, /公司导航/);
-  assert.match(zhSource, /频道导入/);
   assert.match(zhSource, /会话分享/);
 });

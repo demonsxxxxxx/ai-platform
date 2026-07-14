@@ -6,7 +6,7 @@ from app.main import create_app
 from app.settings import Settings
 
 
-def headers(permissions: str = "persona_preset:read,artifact:download") -> dict[str, str]:
+def headers(permissions: str = "artifact:download") -> dict[str, str]:
     return {
         "X-AI-User-ID": "ordinary",
         "X-AI-Roles": "user",
@@ -53,61 +53,6 @@ def install_projection_route_fakes(monkeypatch, *, artifacts=None, sessions=None
         raising=False,
     )
     return calls
-
-
-def test_persona_presets_read_projection_returns_default_catalog(monkeypatch):
-    install_projection_route_fakes(monkeypatch)
-    client = TestClient(create_app())
-
-    response = client.get("/api/persona-presets/?limit=20", headers=headers("persona_preset:read"))
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["total"] >= 1
-    assert body["skip"] == 0
-    assert body["limit"] == 20
-    assert body["presets"][0]["id"]
-    assert body["presets"][0]["scope"] == "global"
-    assert body["presets"][0]["visibility"] == "public"
-    assert body["presets"][0]["status"] == "published"
-
-
-def test_persona_presets_fail_closed_without_read_permission(monkeypatch):
-    install_projection_route_fakes(monkeypatch)
-    client = TestClient(create_app())
-
-    response = client.get("/api/persona-presets/", headers=headers("artifact:download"))
-
-    assert response.status_code == 403
-    assert response.json()["detail"] == "missing_permission:persona_preset:read"
-
-
-def test_persona_presets_project_use_snapshot_and_local_preference(monkeypatch):
-    install_projection_route_fakes(monkeypatch)
-    client = TestClient(create_app())
-
-    use_response = client.post(
-        "/api/persona-presets/default-general-agent/use",
-        headers=headers("persona_preset:read"),
-    )
-    preference_response = client.patch(
-        "/api/persona-presets/default-general-agent/preference",
-        json={"is_favorite": True, "is_pinned": False},
-        headers=headers("persona_preset:read"),
-    )
-    copy_denied_response = client.post(
-        "/api/persona-presets/default-general-agent/copy",
-        headers=headers("persona_preset:read"),
-    )
-
-    assert use_response.status_code == 200
-    assert use_response.json()["preset_id"] == "default-general-agent"
-    assert use_response.json()["missing_skill_names"] == []
-    assert preference_response.status_code == 200
-    assert preference_response.json()["is_favorite"] is True
-    assert preference_response.json()["is_pinned"] is False
-    assert copy_denied_response.status_code == 403
-    assert copy_denied_response.json()["detail"] == "missing_permission:persona_preset:write"
 
 
 def test_revealed_files_read_projection_returns_empty_shapes(monkeypatch):
@@ -224,7 +169,7 @@ def test_revealed_files_fail_closed_without_artifact_permission(monkeypatch):
     install_projection_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
-    response = client.get("/api/files/revealed", headers=headers("persona_preset:read"))
+    response = client.get("/api/files/revealed", headers=headers(""))
 
     assert response.status_code == 403
     assert response.json()["detail"] == "missing_permission:artifact:download"

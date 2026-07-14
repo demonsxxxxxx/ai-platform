@@ -8,6 +8,7 @@ import {
   PHASE1_FAIL_CLOSED_SURFACES,
   PHASE1_FORBIDDEN_VISUAL_MARKERS,
 } from "../components/workbench/phase1ClosureContract";
+import { APP_ROUTE_PATHS } from "../appRouteManifest.ts";
 
 const root = process.cwd();
 
@@ -15,8 +16,16 @@ function source(path: string): string {
   return readFileSync(join(root, path), "utf8");
 }
 
+function appSource(): string {
+  let app = source("src/App.tsx");
+  for (const [id, path] of Object.entries(APP_ROUTE_PATHS)) {
+    app = app.replaceAll(`path={APP_ROUTE_PATHS.${id}}`, `path="${path}"`);
+  }
+  return app;
+}
+
 test("phase one closure routes are registered in the active app graph", () => {
-  const app = source("src/App.tsx");
+  const app = appSource();
   const tabs = source("src/components/layout/AppContent/TabContent.tsx");
 
   for (const route of PHASE1_CLOSURE_ROUTES) {
@@ -31,7 +40,6 @@ test("phase one closure routes are registered in the active app graph", () => {
   assert.match(tabs, /skills:\s*SkillsHubPanel/);
   assert.doesNotMatch(tabs, /marketplace:\s*SkillsHubPanel/);
   assert.match(tabs, /mcp:\s*MCPPanel/);
-  assert.match(tabs, /channels:\s*ChannelImportPanel/);
 });
 
 test("phase one composer command names are active source concepts", () => {
@@ -54,7 +62,6 @@ test("governed phase one write surfaces remain explicit fail-closed states", () 
     source("src/components/panels/SkillsHubPanel.tsx"),
     source("src/components/panels/MarketplacePanel.tsx"),
     source("src/components/panels/MCPPanel.tsx"),
-    source("src/components/channels/ChannelImportPanel.tsx"),
     source("src/components/share/ShareUnavailableState.tsx"),
     source("src/components/chat/ComposerUnavailablePanel.tsx"),
   ].join("\n");

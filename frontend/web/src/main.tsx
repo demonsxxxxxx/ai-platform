@@ -12,7 +12,6 @@ import "./styles/chat.css";
 import "./styles/skill.css";
 import "./styles/card-base.css";
 import "./styles/marketplace.css";
-import "./styles/persona.css";
 import "./styles/welcome.css";
 import "./styles/approval.css";
 import "./styles/landing.css";
