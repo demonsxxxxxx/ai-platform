@@ -1664,7 +1664,7 @@ test("useAgent clears a pending reconnect timer when switching sessions", async 
   }
 });
 
-test("useAgent preserves replay-safe reconnect budget across a same-session reload", async () => {
+test("useAgent preserves replay-safe reconnect budget from production-shaped history across a same-session reload", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -1689,12 +1689,12 @@ test("useAgent preserves replay-safe reconnect budget across a same-session relo
       {
         id: "evt-reconnect-budget",
         run_id: "run-reconnect-budget",
-        event_type: "run_event",
+        sequence: 9,
+        event_type: "worker_started",
         timestamp: "2026-07-15T00:00:00Z",
         data: {
           event_id: "evt-reconnect-budget",
           run_id: "run-reconnect-budget",
-          sequence: 9,
           event_type: "worker_started",
         },
       },

@@ -111,12 +111,25 @@ function maxAcceptedRunEventSequence(
         : typeof data?.run_id === "string" && data.run_id.trim()
           ? data.run_id
           : null;
-    const sequence = data?.sequence;
+    // The production history wire contract keeps the persisted cursor at the
+    // top level.  Retain the nested form only as a strict compatibility
+    // fallback for older saved projections; synthetic answer entries have
+    // neither form and therefore cannot restore a reconnect budget.
+    const topLevelSequence = event.sequence;
+    const fallbackSequence = data?.sequence;
+    const sequence =
+      typeof topLevelSequence === "number" &&
+      Number.isSafeInteger(topLevelSequence) &&
+      topLevelSequence >= 0
+        ? topLevelSequence
+        : typeof fallbackSequence === "number" &&
+            Number.isSafeInteger(fallbackSequence) &&
+            fallbackSequence >= 0
+          ? fallbackSequence
+          : null;
     if (
       eventRunId === runId &&
-      typeof sequence === "number" &&
-      Number.isSafeInteger(sequence) &&
-      sequence >= 0 &&
+      sequence !== null &&
       (maximum === null || sequence > maximum)
     ) {
       maximum = sequence;

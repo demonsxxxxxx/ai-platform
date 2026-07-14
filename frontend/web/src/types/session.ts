@@ -52,6 +52,7 @@ export interface SessionListResponse {
 
 export interface SSEEventRecord {
   id: string;
+  sequence?: number;
   event_type: string;
   data: Record<string, unknown>;
   timestamp: string;

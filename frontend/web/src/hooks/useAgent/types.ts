@@ -211,6 +211,8 @@ export interface HistoryEventData {
 // History event from backend
 export interface HistoryEvent {
   id?: string | number;
+  /** Monotonic persisted run-event cursor; synthetic history entries omit it. */
+  sequence?: number;
   event_type: string;
   data: HistoryEventData | unknown;
   timestamp?: string;

@@ -548,6 +548,10 @@ async def session_events(
                         "severity": envelope["severity"],
                         "visible_to_user": envelope["visible_to_user"],
                         "payload": envelope["payload"],
+                        # Persisted run-event sequences remain top-level in the
+                        # history projection.  They are the replay-safe cursor
+                        # for clients reconnecting to a running run.
+                        "sequence": envelope["sequence"],
                         "data": _event_payload(
                             event,
                             principal,

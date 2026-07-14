@@ -78,6 +78,9 @@ class ClaudeAgentSdkRunResult:
     # ResultMessage.stop_reason is meaningful only on a structured, non-error
     # SDK terminal result.  Keep it separate from the failure text.
     terminal_reason: str | None = None
+    # A successful stream is valid only after the SDK supplies this structured
+    # non-error ResultMessage.  Assistant chunks are progress, not completion.
+    received_structured_terminal: bool = False
     used_skills: list[str] = field(default_factory=list)
     used_skills_source: str = ""
 
@@ -1180,9 +1183,10 @@ async def run_claude_agent_sdk(
     result_session_id: str | None = None
     usage: dict[str, Any] = {}
     terminal_reason: str | None = None
+    received_structured_terminal = False
 
     async def consume() -> ClaudeAgentSdkRunResult:
-        nonlocal result_session_id, usage, terminal_reason
+        nonlocal result_session_id, usage, terminal_reason, received_structured_terminal
         async for message in query(prompt=_sdk_user_prompt_stream(prompt, session_id=session_id), options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
@@ -1204,6 +1208,7 @@ async def run_claude_agent_sdk(
                         used_skills=list(used_skill_names),
                         used_skills_source="executor_hook" if used_skill_names else "",
                     )
+                received_structured_terminal = True
                 stop_reason = getattr(message, "stop_reason", None)
                 terminal_reason = (
                     str(stop_reason).strip() if isinstance(stop_reason, str) and stop_reason.strip() else None
@@ -1213,7 +1218,9 @@ async def run_claude_agent_sdk(
             message="\n".join(texts).strip(),
             session_id=result_session_id,
             usage=usage,
+            error=None if received_structured_terminal else "claude_agent_sdk_missing_structured_terminal",
             terminal_reason=terminal_reason,
+            received_structured_terminal=received_structured_terminal,
             used_skills=list(used_skill_names),
             used_skills_source="executor_hook" if used_skill_names else "",
         )

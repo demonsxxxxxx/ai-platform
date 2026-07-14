@@ -58,6 +58,7 @@ class FakeQueryResult:
     session_id = "sdk-session"
     usage = {"input_tokens": 1}
     error = None
+    received_structured_terminal = True
 
 
 class FakeSdkUnavailable:
@@ -83,6 +84,7 @@ class FakeSdkStopSequence:
     usage = {"input_tokens": 1}
     error = None
     terminal_reason = "stop_sequence"
+    received_structured_terminal = True
 
 
 class FakeSdkExceptionTextStopSequence:
@@ -91,6 +93,15 @@ class FakeSdkExceptionTextStopSequence:
     session_id = None
     usage = {}
     error = "stop_sequence"
+
+
+class FakeSdkMissingStructuredTerminal:
+    used_sdk = True
+    message = "assistant chunks are not a terminal result"
+    session_id = "sdk-session"
+    usage = {"input_tokens": 1}
+    error = "claude_agent_sdk_missing_structured_terminal"
+    received_structured_terminal = False
 
 
 class FakeSdkRuntimeErrorWithSkillUse:
@@ -625,6 +636,21 @@ async def test_general_chat_treats_sdk_stop_sequence_as_normal_completion(monkey
     assert result.result["message"] == "completed at the requested stop sequence"
     assert result.result["sdk_error"] is None
     assert result.executor_payload["sdk_terminal_reason"] == "stop_sequence"
+
+
+@pytest.mark.asyncio
+async def test_general_chat_fails_closed_without_structured_sdk_terminal(monkeypatch):
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+
+    async def sdk_missing_terminal(*args, **kwargs):
+        return FakeSdkMissingStructuredTerminal()
+
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_missing_terminal)
+
+    result = await adapter._run_general_chat(payload())
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_missing_structured_terminal"
 
 
 @pytest.mark.asyncio
@@ -3109,6 +3135,7 @@ async def test_sdk_runner_deduplicates_result_message(monkeypatch, tmp_path):
     result = await run_claude_agent_sdk(prompt="hello", cwd=tmp_path, skill_id="general-chat")
 
     assert result.message == "hello from sdk"
+    assert result.received_structured_terminal is True
 
 
 @pytest.mark.asyncio
@@ -3166,6 +3193,85 @@ async def test_sdk_runner_records_structured_normal_stop_sequence(monkeypatch, t
 
     assert result.error is None
     assert result.terminal_reason == "stop_sequence"
+    assert result.received_structured_terminal is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stream_kind", "expected_error"),
+    [
+        ("assistant_only", "claude_agent_sdk_missing_structured_terminal"),
+        ("empty", "claude_agent_sdk_missing_structured_terminal"),
+        ("error_result", "sdk_rejected"),
+        ("exception_stop_sequence", "stop_sequence"),
+    ],
+)
+async def test_sdk_runner_fails_closed_without_a_normal_structured_terminal(
+    monkeypatch, tmp_path, stream_kind, expected_error
+):
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class AssistantMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = {}
+        model_usage = {}
+        result = ""
+        is_error = True
+        errors = ["sdk_rejected"]
+        stop_reason = "stop_sequence"
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    async def query(prompt, options):
+        if stream_kind == "assistant_only":
+            yield AssistantMessage([TextBlock("partial assistant output")])
+            return
+        if stream_kind == "error_result":
+            yield ResultMessage()
+            return
+        if stream_kind == "exception_stop_sequence":
+            raise RuntimeError("stop_sequence")
+        if False:  # Keep the empty branch an async generator.
+            yield AssistantMessage([])
+
+    current_settings = type(
+        "S",
+        (),
+        {
+            "claude_agent_sdk_enabled": True,
+            "anthropic_base_url": "",
+            "anthropic_auth_token": "",
+            "anthropic_model": "",
+            "openai_api_key": "",
+            "claude_agent_model": "deepseek-v4-flash",
+            "claude_agent_sdk_skills": "",
+            "claude_agent_sdk_timeout_seconds": 5,
+        },
+    )()
+    fake_sdk = types.SimpleNamespace(
+        AssistantMessage=AssistantMessage,
+        ClaudeAgentOptions=ClaudeAgentOptions,
+        ResultMessage=ResultMessage,
+        TextBlock=TextBlock,
+        query=query,
+    )
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
+
+    result = await run_claude_agent_sdk(prompt="hello", cwd=tmp_path, skill_id="general-chat")
+
+    assert result.used_sdk is True
+    assert result.error == expected_error
+    assert result.received_structured_terminal is False
+    assert result.terminal_reason is None
 
 
 @pytest.mark.asyncio
@@ -5384,6 +5490,7 @@ async def test_sdk_runner_preserves_skill_use_when_timeout_fires_after_hook(monk
 
     assert result.used_sdk is True
     assert result.error == "claude_agent_sdk_timeout"
+    assert result.received_structured_terminal is False
     assert result.used_skills == ["qa-file-reviewer"]
     assert result.used_skills_source == "executor_hook"
 

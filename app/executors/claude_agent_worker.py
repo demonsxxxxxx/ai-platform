@@ -504,6 +504,8 @@ class ClaudeAgentWorkerAdapter:
         if sdk_result is None:
             return "claude_agent_sdk_disabled"
         error_text = str(getattr(sdk_result, "error", "") or "")
+        if error_text == "claude_agent_sdk_missing_structured_terminal":
+            return "claude_agent_sdk_missing_structured_terminal"
         if error_text.startswith("claude_agent_sdk_unavailable"):
             return "claude_agent_sdk_unavailable"
         if getattr(sdk_result, "used_sdk", False):
@@ -517,6 +519,7 @@ class ClaudeAgentWorkerAdapter:
             sdk_result
             and getattr(sdk_result, "used_sdk", False)
             and not getattr(sdk_result, "error", None)
+            and getattr(sdk_result, "received_structured_terminal", False)
         )
 
     def _sdk_terminal_reason(self, sdk_result) -> str | None:

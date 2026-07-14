@@ -1307,6 +1307,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
         return [
             {
                 "id": "evt_a",
+                "sequence": 37,
                 "trace_id": "trace_run_a",
                 "schema_version": "ai-platform.event-envelope.v1",
                 "event_type": "skill_selected",
@@ -1379,6 +1380,8 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
     assert event["trace_id"] == "trace_run_a"
     assert event["type"] == "capability_selected"
     assert event["event_type"] == "capability_selected"
+    assert event["sequence"] == 37
+    assert "sequence" not in event["data"]
     assert event["payload"]["capability_id"] == "document_review"
     assert "skill_id" not in str(event)
     assert "skill_ids" not in str(event)
@@ -1434,6 +1437,7 @@ def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
     assert event["stage"] == "answer"
     assert event["payload"] == {"content": "hello"}
     assert event["data"] == {"content": "hello"}
+    assert "sequence" not in event
 
 
 def test_lambchat_session_answer_event_redacts_runtime_private_text(monkeypatch):
