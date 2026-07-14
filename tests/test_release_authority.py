@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -22,9 +23,12 @@ from tools.release_authority import (
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.yml"
+SANDBOX_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.sandbox.yml"
 LEGACY_FRONTEND_COMPOSE = ROOT / "deploy" / "ai-platform" / "docker-compose.frontend.yml"
 AUTHORITATIVE_REPOSITORY = "https://github.com/demonsxxxxxx/ai-platform.git"
 WORKER_HEARTBEAT_FILENAME = "ai-platform-worker-runtime-heartbeat.json"
+COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.yml"
+SANDBOX_COMPOSE_RELATIVE_PATH = "deploy/ai-platform/docker-compose.sandbox.yml"
 
 
 def test_repo_local_compose_is_the_only_frontend_owner_and_binds_one_commit():
@@ -70,6 +74,22 @@ def test_repo_local_compose_requires_immutable_backend_and_frontend_images():
     assert services["frontend"]["image"] == "${AI_PLATFORM_FRONTEND_IMAGE:?set AI_PLATFORM_FRONTEND_IMAGE}"
 
 
+def test_sandbox_compose_overlay_preserves_live_docker_provider_and_mounts():
+    compose = yaml.safe_load(SANDBOX_COMPOSE.read_text(encoding="utf-8"))
+    services = compose["services"]
+
+    assert services["api"]["environment"]["SANDBOX_CONTAINER_PROVIDER"] == "docker"
+    assert services["worker"]["environment"]["SANDBOX_CONTAINER_PROVIDER"] == "docker"
+    assert "${DOCKER_SOCKET_GID:?set DOCKER_SOCKET_GID}" in services["worker"]["group_add"]
+    assert "/var/run/docker.sock:/var/run/docker.sock" in services["worker"]["volumes"]
+    workspace_mount = (
+        "${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}:"
+        "${SANDBOX_WORKSPACE_ROOT:-/tmp/ai-platform-sandbox-workspaces}"
+    )
+    assert workspace_mount in services["api"]["volumes"]
+    assert workspace_mount in services["worker"]["volumes"]
+
+
 def test_backend_and_frontend_images_publish_release_authority_labels():
     backend = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     frontend = (ROOT / "frontend" / "web" / "Dockerfile").read_text(encoding="utf-8")
@@ -106,6 +126,41 @@ def _init_repo(repo: Path) -> str:
     _git(repo, "add", "tracked.txt")
     _git(repo, "commit", "-m", "baseline")
     return _git(repo, "rev-parse", "HEAD")
+
+
+def _write_compose_files(repo_root: Path) -> tuple[Path, Path]:
+    compose_dir = repo_root / "deploy" / "ai-platform"
+    compose_dir.mkdir(parents=True, exist_ok=True)
+    main = compose_dir / "docker-compose.yml"
+    overlay = compose_dir / "docker-compose.sandbox.yml"
+    main.write_text("services: {}\n", encoding="utf-8")
+    overlay.write_text("services: {}\n", encoding="utf-8")
+    return main, overlay
+
+
+def _compose_config_value(*paths: Path) -> str:
+    return ",".join(path.resolve().as_posix() for path in paths)
+
+
+def _owned_container_payload(role: str, compose_dir: Path, config_files: str) -> list[dict]:
+    return [
+        {
+            "Image": "sha256:old",
+            "Config": {
+                "Image": f"ai-platform-{role}:old",
+                "Labels": {
+                    "ai-platform.release-owner": "repo-local-compose",
+                    "ai-platform.release-role": role,
+                    "com.docker.compose.project.working_dir": compose_dir.resolve().as_posix(),
+                    "com.docker.compose.project.config_files": config_files,
+                    "com.docker.compose.project": "ai-platform-phaseb",
+                    "com.docker.compose.service": role,
+                    "com.docker.compose.oneoff": "False",
+                    "com.docker.compose.config-hash": "config-hash",
+                },
+            },
+        }
+    ]
 
 
 def test_clean_commit_and_immutable_image_reference_contract(tmp_path):
@@ -273,6 +328,187 @@ def test_parity_report_verifies_one_clean_repo_local_compose_commit():
 
     assert report["verified"] is True
     assert report["mismatches"] == []
+
+
+def test_parity_report_verifies_exact_ordered_two_file_compose_set_for_all_services():
+    commit = "4" * 40
+    repository = AUTHORITATIVE_REPOSITORY
+    compose_dir = "/srv/ai-platform-release/deploy/ai-platform"
+    compose_files = [
+        f"{compose_dir}/docker-compose.yml",
+        f"{compose_dir}/docker-compose.sandbox.yml",
+    ]
+    image_labels = {
+        "ai-platform.source-commit": commit,
+        "org.opencontainers.image.revision": commit,
+        "ai-platform.source-repository": repository,
+        "ai-platform.build-dirty": "false",
+    }
+    images = {
+        "backend": {
+            "id": "sha256:backend",
+            "labels": {**image_labels, "ai-platform.release-role": "backend"},
+        },
+        "frontend": {
+            "id": "sha256:frontend",
+            "labels": {**image_labels, "ai-platform.release-role": "frontend"},
+        },
+    }
+    common = {
+        "ai-platform.source-commit": commit,
+        "ai-platform.source-dirty": "false",
+        "ai-platform.release-owner": "repo-local-compose",
+        "com.docker.compose.project.working_dir": compose_dir,
+        "com.docker.compose.project.config_files": ",".join(compose_files),
+        "com.docker.compose.project": "ai-platform-phaseb",
+        "com.docker.compose.oneoff": "False",
+        "com.docker.compose.config-hash": "config-hash",
+    }
+    containers = {
+        role: {
+            "image_id": "sha256:frontend" if role == "frontend" else "sha256:backend",
+            "running": True,
+            "labels": {
+                **common,
+                "ai-platform.release-role": role,
+                "com.docker.compose.service": role,
+            },
+        }
+        for role in ("api", "worker", "frontend")
+    }
+    runtime = {
+        "api_commit": commit,
+        "api_health_status": "ok",
+        "worker_commit": commit,
+        "worker_running": True,
+        "frontend_commit": commit,
+    }
+
+    report = build_parity_report(
+        expected_commit=commit,
+        source={"commit": commit, "dirty": False},
+        images=images,
+        containers=containers,
+        runtime=runtime,
+        expected_compose_dir=compose_dir,
+        expected_compose_files=compose_files,
+        expected_repository=repository,
+    )
+
+    assert report["verified"] is True
+    for role in ("api", "worker", "frontend"):
+        mismatched = {name: {**record, "labels": dict(record["labels"])} for name, record in containers.items()}
+        mismatched[role]["labels"]["com.docker.compose.project.config_files"] = ",".join(
+            reversed(compose_files)
+        )
+        rejected = build_parity_report(
+            expected_commit=commit,
+            source={"commit": commit, "dirty": False},
+            images=images,
+            containers=mismatched,
+            runtime=runtime,
+            expected_compose_dir=compose_dir,
+            expected_compose_files=compose_files,
+            expected_repository=repository,
+        )
+        assert f"{role}_compose_config_mismatch" in rejected["mismatches"]
+
+
+@pytest.mark.parametrize(
+    "selected",
+    [
+        [],
+        [SANDBOX_COMPOSE_RELATIVE_PATH, COMPOSE_RELATIVE_PATH],
+        [COMPOSE_RELATIVE_PATH, COMPOSE_RELATIVE_PATH],
+        [COMPOSE_RELATIVE_PATH, "../docker-compose.sandbox.yml"],
+        [COMPOSE_RELATIVE_PATH, "deploy//ai-platform/docker-compose.sandbox.yml"],
+        [COMPOSE_RELATIVE_PATH, "deploy\\ai-platform\\docker-compose.sandbox.yml"],
+        [COMPOSE_RELATIVE_PATH, "deploy/./ai-platform/docker-compose.sandbox.yml"],
+        [COMPOSE_RELATIVE_PATH, "deploy/ai-platform/docker-compose.sandbox.yml/"],
+        [COMPOSE_RELATIVE_PATH, "deploy/ai-platform/docker,compose.sandbox.yml"],
+        [COMPOSE_RELATIVE_PATH, "deploy/ai-platform/docker-compose.sandbox.yml\n"],
+        [COMPOSE_RELATIVE_PATH, "/private-marker/docker-compose.sandbox.yml"],
+        [COMPOSE_RELATIVE_PATH, "C:/private-marker/docker-compose.sandbox.yml"],
+        [COMPOSE_RELATIVE_PATH, 42],
+        [COMPOSE_RELATIVE_PATH, "deploy/ai-platform/missing.yml"],
+        [COMPOSE_RELATIVE_PATH, "deploy/ai-platform"],
+    ],
+)
+def test_compose_file_selection_rejects_unsafe_or_noncanonical_paths(
+    monkeypatch,
+    tmp_path,
+    selected,
+):
+    _write_compose_files(tmp_path)
+
+    with pytest.raises(ReleaseAuthorityError):
+        release_authority.resolve_compose_files(tmp_path, selected)
+
+    docker_bases: list[str] = []
+    monkeypatch.setattr(
+        "tools.release_authority.assert_clean_commit",
+        lambda repo, requested: "a" * 40,
+    )
+
+    def forbidden_docker_base(value):
+        docker_bases.append(value)
+        raise AssertionError("unsafe Compose selection must fail before Docker")
+
+    monkeypatch.setattr("tools.release_authority._docker_base", forbidden_docker_base)
+    with pytest.raises(ReleaseAuthorityError):
+        deploy_clean_commit(
+            tmp_path,
+            "a" * 40,
+            docker_cmd="docker",
+            env_file=tmp_path / ".env",
+            replace_known_manual_frontend=False,
+            compose_files=selected,
+        )
+    assert docker_bases == []
+
+
+def test_compose_file_selection_rejects_absolute_and_linked_paths(monkeypatch, tmp_path):
+    main, overlay = _write_compose_files(tmp_path)
+    outside = tmp_path.parent / "private-marker-compose.yml"
+    outside.write_text("services: {}\n", encoding="utf-8")
+
+    with pytest.raises(ReleaseAuthorityError) as absolute_error:
+        release_authority.resolve_compose_files(
+            tmp_path,
+            [COMPOSE_RELATIVE_PATH, str(outside.resolve())],
+        )
+    assert "private-marker" not in str(absolute_error.value)
+
+    original = release_authority._is_link_or_junction
+    monkeypatch.setattr(
+        "tools.release_authority._is_link_or_junction",
+        lambda path: Path(path) == overlay or original(Path(path)),
+    )
+    with pytest.raises(ReleaseAuthorityError):
+        release_authority.resolve_compose_files(
+            tmp_path,
+            [COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH],
+        )
+
+    assert main.is_file()
+
+
+def test_compose_file_selection_rejects_duplicate_file_identity(tmp_path):
+    main, overlay = _write_compose_files(tmp_path)
+    alias = overlay.with_name("docker-compose.alias.yml")
+    os.link(overlay, alias)
+
+    with pytest.raises(ReleaseAuthorityError):
+        release_authority.resolve_compose_files(
+            tmp_path,
+            [
+                COMPOSE_RELATIVE_PATH,
+                SANDBOX_COMPOSE_RELATIVE_PATH,
+                "deploy/ai-platform/docker-compose.alias.yml",
+            ],
+        )
+
+    assert main.is_file()
 
 
 def test_parity_report_rejects_stopped_release_container():
@@ -545,6 +781,7 @@ def test_verify_cli_report_redacts_worker_heartbeat_read_failure(
 
 def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monkeypatch, tmp_path):
     commit = "d" * 40
+    main_compose, sandbox_compose = _write_compose_files(tmp_path)
     observed_urls: list[str] = []
     observed_heartbeat_paths: list[str] = []
     inspected_containers: list[str] = []
@@ -576,7 +813,10 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
         "ai-platform.source-dirty": "false",
         "ai-platform.release-owner": "repo-local-compose",
         "com.docker.compose.project.working_dir": compose_dir,
-        "com.docker.compose.project.config_files": f"{compose_dir}/docker-compose.yml",
+        "com.docker.compose.project.config_files": _compose_config_value(
+            main_compose,
+            sandbox_compose,
+        ),
         "com.docker.compose.project": "ai-platform-phaseb",
         "com.docker.compose.oneoff": "False",
         "com.docker.compose.config-hash": "config-hash",
@@ -679,6 +919,7 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
         tmp_path,
         commit,
         docker_cmd="docker",
+        compose_files=[COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH],
     )
 
     assert report["verified"] is True
@@ -708,6 +949,7 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
 
 def test_collect_live_parity_rejects_stale_worker_heartbeat(monkeypatch, tmp_path):
     commit = "9" * 40
+    _write_compose_files(tmp_path)
     container_id = "c" * 64
     repository = AUTHORITATIVE_REPOSITORY
     compose_dir = str((tmp_path / "deploy" / "ai-platform").resolve()).replace("\\", "/")
@@ -856,6 +1098,7 @@ def test_container_process_alive_fails_closed_when_inspected_instance_disappears
 
 def test_deploy_rejects_unexpected_manual_frontend_identity(monkeypatch, tmp_path):
     commit = "e" * 40
+    _write_compose_files(tmp_path)
     removed: list[list[str]] = []
 
     monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
@@ -882,6 +1125,8 @@ def test_deploy_rejects_unexpected_manual_frontend_identity(monkeypatch, tmp_pat
                 stdout=json.dumps([{"Config": {"Image": "ai-platform-frontend:unexpected", "Labels": {}}}]),
                 stderr="",
             )
+        if command[-2:] in (["inspect", "ai-platform-api"], ["inspect", "ai-platform-worker"]):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
         if "rm" in command:
             removed.append(list(command))
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
@@ -906,8 +1151,230 @@ def test_deploy_rejects_unexpected_manual_frontend_identity(monkeypatch, tmp_pat
     assert removed == []
 
 
+def test_deploy_rejects_same_name_manual_frontend_replacement_before_removal(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "f" * 40
+    _write_compose_files(tmp_path)
+    expected_image = "ai-platform-frontend:manual"
+    expected_image_id = "sha256:" + "1" * 64
+    original_container_id = "a" * 64
+    replacement_container_id = "b" * 64
+    frontend_inspects = 0
+    removed: list[list[str]] = []
+
+    monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
+    monkeypatch.setattr(
+        "tools.release_authority._git",
+        lambda repo, *args: AUTHORITATIVE_REPOSITORY + "\n",
+    )
+    monkeypatch.setattr(
+        "tools.release_authority._image_record",
+        lambda docker, image: {
+            "id": "sha256:frontend" if "frontend" in image else "sha256:backend",
+            "labels": {
+                "ai-platform.source-commit": commit,
+                "org.opencontainers.image.revision": commit,
+                "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
+                "ai-platform.build-dirty": "false",
+                "ai-platform.release-role": "frontend" if "frontend" in image else "backend",
+            },
+        },
+    )
+
+    def fake_run(command, **kwargs):
+        nonlocal frontend_inspects
+        if command[-2:] in (["inspect", "ai-platform-api"], ["inspect", "ai-platform-worker"]):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
+        if command[-3:] == ["container", "inspect", "ai-platform-frontend"]:
+            frontend_inspects += 1
+            container_id = (
+                original_container_id if frontend_inspects == 1 else replacement_container_id
+            )
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "Id": container_id,
+                            "Image": expected_image_id,
+                            "Config": {"Image": expected_image, "Labels": {}},
+                        }
+                    ]
+                ),
+                stderr="",
+            )
+        if "rm" in command:
+            removed.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+
+    with pytest.raises(ReleaseAuthorityError):
+        deploy_clean_commit(
+            tmp_path,
+            commit,
+            docker_cmd="docker",
+            env_file=tmp_path / ".env",
+            replace_known_manual_frontend=True,
+            expected_manual_frontend_image=expected_image,
+            expected_manual_frontend_image_id=expected_image_id,
+        )
+
+    assert frontend_inspects == 2
+    assert removed == []
+
+
+def test_deploy_removes_revalidated_manual_frontend_by_immutable_id(monkeypatch, tmp_path):
+    commit = "f" * 40
+    _write_compose_files(tmp_path)
+    expected_image = "ai-platform-frontend:manual"
+    expected_image_id = "sha256:" + "1" * 64
+    container_id = "c" * 64
+    frontend_inspects = 0
+    removed: list[list[str]] = []
+
+    monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
+    monkeypatch.setattr(
+        "tools.release_authority._git",
+        lambda repo, *args: AUTHORITATIVE_REPOSITORY + "\n",
+    )
+    monkeypatch.setattr(
+        "tools.release_authority._image_record",
+        lambda docker, image: {
+            "id": "sha256:frontend" if "frontend" in image else "sha256:backend",
+            "labels": {
+                "ai-platform.source-commit": commit,
+                "org.opencontainers.image.revision": commit,
+                "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
+                "ai-platform.build-dirty": "false",
+                "ai-platform.release-role": "frontend" if "frontend" in image else "backend",
+            },
+        },
+    )
+
+    def fake_run(command, **kwargs):
+        nonlocal frontend_inspects
+        if command[-2:] in (["inspect", "ai-platform-api"], ["inspect", "ai-platform-worker"]):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
+        if command[-3:] == ["container", "inspect", "ai-platform-frontend"]:
+            frontend_inspects += 1
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "Id": container_id,
+                            "Image": expected_image_id,
+                            "Config": {"Image": expected_image, "Labels": {}},
+                        }
+                    ]
+                ),
+                stderr="",
+            )
+        if "rm" in command:
+            removed.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+
+    deploy_clean_commit(
+        tmp_path,
+        commit,
+        docker_cmd="docker",
+        env_file=tmp_path / ".env",
+        replace_known_manual_frontend=True,
+        expected_manual_frontend_image=expected_image,
+        expected_manual_frontend_image_id=expected_image_id,
+    )
+
+    assert frontend_inspects == 2
+    assert removed == [["docker", "container", "rm", "-f", container_id]]
+
+
+@pytest.mark.parametrize("second_inspect", ["missing", "malformed_id"])
+def test_deploy_rejects_missing_or_malformed_manual_frontend_before_removal(
+    monkeypatch,
+    tmp_path,
+    second_inspect,
+):
+    commit = "f" * 40
+    _write_compose_files(tmp_path)
+    expected_image = "ai-platform-frontend:manual"
+    expected_image_id = "sha256:" + "1" * 64
+    container_id = "d" * 64
+    frontend_inspects = 0
+    removed: list[list[str]] = []
+
+    monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
+    monkeypatch.setattr(
+        "tools.release_authority._git",
+        lambda repo, *args: AUTHORITATIVE_REPOSITORY + "\n",
+    )
+    monkeypatch.setattr(
+        "tools.release_authority._image_record",
+        lambda docker, image: {
+            "id": "sha256:frontend" if "frontend" in image else "sha256:backend",
+            "labels": {
+                "ai-platform.source-commit": commit,
+                "org.opencontainers.image.revision": commit,
+                "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
+                "ai-platform.build-dirty": "false",
+                "ai-platform.release-role": "frontend" if "frontend" in image else "backend",
+            },
+        },
+    )
+
+    def fake_run(command, **kwargs):
+        nonlocal frontend_inspects
+        if command[-2:] in (["inspect", "ai-platform-api"], ["inspect", "ai-platform-worker"]):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
+        if command[-3:] == ["container", "inspect", "ai-platform-frontend"]:
+            frontend_inspects += 1
+            if frontend_inspects == 2 and second_inspect == "missing":
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
+            observed_id = "invalid" if frontend_inspects == 2 else container_id
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    [
+                        {
+                            "Id": observed_id,
+                            "Image": expected_image_id,
+                            "Config": {"Image": expected_image, "Labels": {}},
+                        }
+                    ]
+                ),
+                stderr="",
+            )
+        if "rm" in command:
+            removed.append(list(command))
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+
+    with pytest.raises(ReleaseAuthorityError):
+        deploy_clean_commit(
+            tmp_path,
+            commit,
+            docker_cmd="docker",
+            env_file=tmp_path / ".env",
+            replace_known_manual_frontend=True,
+            expected_manual_frontend_image=expected_image,
+            expected_manual_frontend_image_id=expected_image_id,
+        )
+
+    assert frontend_inspects == 2
+    assert removed == []
+
+
 def test_deploy_reuses_valid_existing_commit_tag_without_rebuilding(monkeypatch, tmp_path):
     commit = "1" * 40
+    _write_compose_files(tmp_path)
     build_commands: list[list[str]] = []
     repository = AUTHORITATIVE_REPOSITORY
 
@@ -928,7 +1395,7 @@ def test_deploy_reuses_valid_existing_commit_tag_without_rebuilding(monkeypatch,
     )
 
     def fake_run(command, **kwargs):
-        if command[-3:] == ["container", "inspect", "ai-platform-frontend"]:
+        if len(command) >= 3 and command[-3:-1] == ["container", "inspect"]:
             return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
         if "build" in command:
             build_commands.append(list(command))
@@ -949,6 +1416,7 @@ def test_deploy_reuses_valid_existing_commit_tag_without_rebuilding(monkeypatch,
 
 def test_deploy_rejects_existing_commit_tag_with_wrong_provenance(monkeypatch, tmp_path):
     commit = "3" * 40
+    _write_compose_files(tmp_path)
     repository = AUTHORITATIVE_REPOSITORY
     build_commands: list[list[str]] = []
 
@@ -969,6 +1437,8 @@ def test_deploy_rejects_existing_commit_tag_with_wrong_provenance(monkeypatch, t
     )
 
     def fake_run(command, **kwargs):
+        if len(command) >= 3 and command[-3:-1] == ["container", "inspect"]:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
         if "build" in command:
             build_commands.append(list(command))
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
@@ -993,6 +1463,7 @@ def test_deploy_rejects_existing_commit_tag_with_wrong_provenance(monkeypatch, t
 
 def test_deploy_rejects_spoofed_repo_owned_frontend(monkeypatch, tmp_path):
     commit = "2" * 40
+    _write_compose_files(tmp_path)
     repository = AUTHORITATIVE_REPOSITORY
 
     monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
@@ -1033,6 +1504,8 @@ def test_deploy_rejects_spoofed_repo_owned_frontend(monkeypatch, tmp_path):
                 ),
                 stderr="",
             )
+        if command[-2:] in (["inspect", "ai-platform-api"], ["inspect", "ai-platform-worker"]):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr("tools.release_authority._run", fake_run)
@@ -1071,6 +1544,7 @@ def test_release_authority_cli_exposes_preserve_deploy_and_verify_commands():
     ).stdout
     assert "--expected-manual-frontend-image" in deploy_help
     assert "--expected-manual-frontend-image-id" in deploy_help
+    assert "--compose-file" in deploy_help
 
     verify_help = subprocess.run(
         [sys.executable, "tools/release_authority.py", "verify", "--help"],
@@ -1080,10 +1554,45 @@ def test_release_authority_cli_exposes_preserve_deploy_and_verify_commands():
     ).stdout
     assert "--compose-dir" not in verify_help
     assert "--frontend-provenance-url" not in verify_help
+    assert "--compose-file" in verify_help
+
+
+def test_release_authority_cli_redacts_low_level_command_failures(monkeypatch, capsys, tmp_path):
+    def fail_without_leaking(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            1,
+            ["docker", "private-marker-command"],
+            output="private-marker-output",
+            stderr="private-marker-secret",
+        )
+
+    monkeypatch.setattr("tools.release_authority.collect_live_parity", fail_without_leaking)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "release_authority.py",
+            "verify",
+            "--repo-root",
+            str(tmp_path),
+            "--commit",
+            "d" * 40,
+        ],
+    )
+
+    assert release_authority.main() == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "command": "verify",
+        "error": "release authority command failed",
+        "verified": False,
+    }
+    assert "private-marker" not in json.dumps(report)
 
 
 def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
     commit = "5" * 40
+    _write_compose_files(tmp_path)
     repository = AUTHORITATIVE_REPOSITORY
     commands: list[list[str]] = []
     image_records = {
@@ -1115,7 +1624,7 @@ def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
 
     def fake_run(command, **kwargs):
         commands.append(list(command))
-        if command[-3:] == ["container", "inspect", "ai-platform-frontend"]:
+        if len(command) >= 3 and command[-3:-1] == ["container", "inspect"]:
             return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
@@ -1146,6 +1655,340 @@ def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
         "-d",
         "--no-build",
     ]
+
+
+def test_deploy_preserves_exact_two_file_ownership_and_compose_command(monkeypatch, tmp_path):
+    commit = "7" * 40
+    main_compose, sandbox_compose = _write_compose_files(tmp_path)
+    compose_dir = main_compose.parent
+    config_files = _compose_config_value(main_compose, sandbox_compose)
+    events: list[str] = []
+    commands: list[list[str]] = []
+    image_records = {
+        f"ai-platform:{commit}": {
+            "id": "sha256:backend",
+            "labels": {
+                "ai-platform.source-commit": commit,
+                "org.opencontainers.image.revision": commit,
+                "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
+                "ai-platform.build-dirty": "false",
+                "ai-platform.release-role": "backend",
+            },
+        },
+        f"ai-platform-frontend:{commit}": {
+            "id": "sha256:frontend",
+            "labels": {
+                "ai-platform.source-commit": commit,
+                "org.opencontainers.image.revision": commit,
+                "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
+                "ai-platform.build-dirty": "false",
+                "ai-platform.release-role": "frontend",
+            },
+        },
+    }
+    monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
+    monkeypatch.setattr(
+        "tools.release_authority._git",
+        lambda repo, *args: AUTHORITATIVE_REPOSITORY + "\n",
+    )
+
+    def fake_image_record(docker, image):
+        events.append(f"image:{image}")
+        return image_records[image]
+
+    monkeypatch.setattr("tools.release_authority._image_record", fake_image_record)
+
+    def fake_run(command, **kwargs):
+        commands.append(list(command))
+        if len(command) >= 3 and command[-3:-1] == ["container", "inspect"]:
+            role = command[-1].removeprefix("ai-platform-")
+            events.append(f"container:{role}")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(_owned_container_payload(role, compose_dir, config_files)),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+
+    deployment = deploy_clean_commit(
+        tmp_path,
+        commit,
+        docker_cmd="sudo -n docker",
+        env_file=tmp_path / ".env",
+        replace_known_manual_frontend=False,
+        compose_files=[COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH],
+    )
+
+    assert events[:3] == ["container:api", "container:worker", "container:frontend"]
+    assert events[3].startswith("image:")
+    compose = next(command for command in commands if "compose" in command)
+    assert compose[compose.index("compose") :] == [
+        "compose",
+        "-p",
+        "ai-platform-phaseb",
+        "--env-file",
+        str((tmp_path / ".env").resolve()),
+        "-f",
+        str(main_compose.resolve()),
+        "-f",
+        str(sandbox_compose.resolve()),
+        "up",
+        "-d",
+        "--no-build",
+    ]
+    assert deployment["compose_files"] == [
+        str(main_compose.resolve()),
+        str(sandbox_compose.resolve()),
+    ]
+
+
+def test_deploy_accepts_trusted_prior_sibling_ordered_compose_ownership(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "7" * 40
+    prior_commit = "678d3c46"
+    release_root = tmp_path / "releases"
+    target = release_root / commit
+    prior = release_root / prior_commit
+    target_main, target_sandbox = _write_compose_files(target)
+    prior_main, prior_sandbox = _write_compose_files(prior)
+    assert not (prior / ".git").exists()
+    prior_config = _compose_config_value(prior_main, prior_sandbox)
+    events: list[str] = []
+    commands: list[list[str]] = []
+    image_records = {
+        f"ai-platform:{commit}": {
+            "id": "sha256:backend",
+            "labels": {
+                "ai-platform.source-commit": commit,
+                "org.opencontainers.image.revision": commit,
+                "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
+                "ai-platform.build-dirty": "false",
+                "ai-platform.release-role": "backend",
+            },
+        },
+        f"ai-platform-frontend:{commit}": {
+            "id": "sha256:frontend",
+            "labels": {
+                "ai-platform.source-commit": commit,
+                "org.opencontainers.image.revision": commit,
+                "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
+                "ai-platform.build-dirty": "false",
+                "ai-platform.release-role": "frontend",
+            },
+        },
+    }
+    monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
+    monkeypatch.setattr(
+        "tools.release_authority._git",
+        lambda repo, *args: AUTHORITATIVE_REPOSITORY + "\n",
+    )
+
+    def fake_image_record(docker, image):
+        events.append(f"image:{image}")
+        return image_records[image]
+
+    monkeypatch.setattr("tools.release_authority._image_record", fake_image_record)
+
+    def fake_run(command, **kwargs):
+        commands.append(list(command))
+        if len(command) >= 3 and command[-3:-1] == ["container", "inspect"]:
+            role = command[-1].removeprefix("ai-platform-")
+            events.append(f"container:{role}")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    _owned_container_payload(role, prior_main.parent, prior_config)
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+
+    deploy_clean_commit(
+        target,
+        commit,
+        docker_cmd="docker",
+        env_file=tmp_path / ".env",
+        replace_known_manual_frontend=False,
+        compose_files=[COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH],
+    )
+
+    assert events[:3] == ["container:api", "container:worker", "container:frontend"]
+    assert events[3].startswith("image:")
+    compose = next(command for command in commands if "compose" in command)
+    assert compose[compose.index("compose") :] == [
+        "compose",
+        "-p",
+        "ai-platform-phaseb",
+        "--env-file",
+        str((tmp_path / ".env").resolve()),
+        "-f",
+        str(target_main.resolve()),
+        "-f",
+        str(target_sandbox.resolve()),
+        "up",
+        "-d",
+        "--no-build",
+    ]
+
+
+@pytest.mark.parametrize(
+    "invalid_prior",
+    ["non_commit", "non_sibling", "linked_file", "wrong_order"],
+)
+def test_prior_release_ownership_rejects_untrusted_root_or_relative_set(
+    monkeypatch,
+    tmp_path,
+    invalid_prior,
+):
+    commit = "7" * 40
+    release_root = tmp_path / "releases"
+    target = release_root / commit
+    _write_compose_files(target)
+    selection = release_authority.resolve_compose_files(
+        target,
+        [COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH],
+    )
+    if invalid_prior == "non_commit":
+        prior = release_root / "not-a-commit"
+    elif invalid_prior == "non_sibling":
+        prior = tmp_path / "other-releases" / "678d3c46"
+    else:
+        prior = release_root / "678d3c46"
+    prior_main, prior_sandbox = _write_compose_files(prior)
+    assert not (prior / ".git").exists()
+    config_files = _compose_config_value(prior_main, prior_sandbox)
+    if invalid_prior == "wrong_order":
+        config_files = _compose_config_value(prior_sandbox, prior_main)
+    if invalid_prior == "linked_file":
+        original = release_authority._is_link_or_junction
+        monkeypatch.setattr(
+            "tools.release_authority._is_link_or_junction",
+            lambda path: Path(path) == prior_sandbox or original(Path(path)),
+        )
+    labels = _owned_container_payload("api", prior_main.parent, config_files)[0][
+        "Config"
+    ]["Labels"]
+
+    assert release_authority._compose_ownership_selection(labels, selection) is None
+
+
+def test_deploy_rejects_prior_release_root_split_before_image_lookup(
+    monkeypatch,
+    tmp_path,
+):
+    commit = "7" * 40
+    release_root = tmp_path / "releases"
+    target = release_root / commit
+    _write_compose_files(target)
+    prior_api = release_root / "678d3c46"
+    prior_worker = release_root / "abcdef12"
+    api_main, api_sandbox = _write_compose_files(prior_api)
+    worker_main, worker_sandbox = _write_compose_files(prior_worker)
+    image_lookups: list[str] = []
+
+    monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
+    monkeypatch.setattr(
+        "tools.release_authority._git",
+        lambda repo, *args: AUTHORITATIVE_REPOSITORY + "\n",
+    )
+
+    def forbidden_image_lookup(docker, image):
+        image_lookups.append(image)
+        raise AssertionError("split prior ownership must fail before image lookup")
+
+    monkeypatch.setattr("tools.release_authority._image_record", forbidden_image_lookup)
+
+    def fake_run(command, **kwargs):
+        if len(command) >= 3 and command[-3:-1] == ["container", "inspect"]:
+            role = command[-1].removeprefix("ai-platform-")
+            if role == "worker":
+                compose_dir = worker_main.parent
+                config_files = _compose_config_value(worker_main, worker_sandbox)
+            else:
+                compose_dir = api_main.parent
+                config_files = _compose_config_value(api_main, api_sandbox)
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(_owned_container_payload(role, compose_dir, config_files)),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+
+    with pytest.raises(ReleaseAuthorityError) as exc_info:
+        deploy_clean_commit(
+            target,
+            commit,
+            docker_cmd="docker",
+            env_file=tmp_path / ".env",
+            replace_known_manual_frontend=False,
+            compose_files=[COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH],
+        )
+
+    assert str(exc_info.value) == "worker compose ownership mismatch"
+    assert image_lookups == []
+
+
+@pytest.mark.parametrize("mismatched_role", ["api", "worker", "frontend"])
+def test_deploy_rejects_ordered_compose_ownership_mismatch_before_image_lookup(
+    monkeypatch,
+    tmp_path,
+    mismatched_role,
+):
+    commit = "8" * 40
+    main_compose, sandbox_compose = _write_compose_files(tmp_path)
+    compose_dir = main_compose.parent
+    exact_config = _compose_config_value(main_compose, sandbox_compose)
+    reversed_config = _compose_config_value(sandbox_compose, main_compose)
+    image_lookups: list[str] = []
+    monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
+    monkeypatch.setattr(
+        "tools.release_authority._git",
+        lambda repo, *args: AUTHORITATIVE_REPOSITORY + "\n",
+    )
+
+    def forbidden_image_lookup(docker, image):
+        image_lookups.append(image)
+        raise AssertionError("image lookup must follow ownership validation")
+
+    monkeypatch.setattr("tools.release_authority._image_record", forbidden_image_lookup)
+
+    def fake_run(command, **kwargs):
+        if len(command) >= 3 and command[-3:-1] == ["container", "inspect"]:
+            role = command[-1].removeprefix("ai-platform-")
+            config = reversed_config if role == mismatched_role else exact_config
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(_owned_container_payload(role, compose_dir, config)),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("tools.release_authority._run", fake_run)
+
+    with pytest.raises(ReleaseAuthorityError) as exc_info:
+        deploy_clean_commit(
+            tmp_path,
+            commit,
+            docker_cmd="docker",
+            env_file=tmp_path / ".env",
+            replace_known_manual_frontend=False,
+            compose_files=[COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH],
+        )
+
+    assert str(exc_info.value) == f"{mismatched_role} compose ownership mismatch"
+    assert image_lookups == []
 
 
 def _install_checkout_git_runner(
@@ -1346,18 +2189,19 @@ def test_materialize_main_checkout_rejects_symlink_release_root(monkeypatch, tmp
 def test_deploy_main_commit_delegates_existing_deploy_and_parity_authorities(monkeypatch, tmp_path):
     commit = "b" * 40
     checkout = tmp_path / "releases" / commit
-    calls: list[tuple[str, Path, str]] = []
+    calls: list[tuple[str, Path, str, tuple[str, ...]]] = []
+    compose_files = (COMPOSE_RELATIVE_PATH, SANDBOX_COMPOSE_RELATIVE_PATH)
     monkeypatch.setattr(
         "tools.release_authority.materialize_main_checkout",
         lambda root, requested: checkout,
     )
 
     def fake_deploy(repo_root, requested, **kwargs):
-        calls.append(("deploy", repo_root, requested))
+        calls.append(("deploy", repo_root, requested, tuple(kwargs["compose_files"])))
         return {"commit": requested}
 
     def fake_parity(repo_root, requested, **kwargs):
-        calls.append(("parity", repo_root, requested))
+        calls.append(("parity", repo_root, requested, tuple(kwargs["compose_files"])))
         return {"verified": True, "mismatches": []}
 
     monkeypatch.setattr("tools.release_authority.deploy_clean_commit", fake_deploy)
@@ -1369,9 +2213,13 @@ def test_deploy_main_commit_delegates_existing_deploy_and_parity_authorities(mon
         docker_cmd="sudo -n docker",
         env_file=tmp_path / ".env",
         replace_known_manual_frontend=False,
+        compose_files=compose_files,
     )
 
-    assert calls == [("deploy", checkout, commit), ("parity", checkout, commit)]
+    assert calls == [
+        ("deploy", checkout, commit, compose_files),
+        ("parity", checkout, commit, compose_files),
+    ]
     assert result["checkout"] == str(checkout)
     assert result["parity"]["verified"] is True
 
@@ -1571,3 +2419,4 @@ def test_release_authority_cli_exposes_git_native_main_commit_deploy():
     assert "--release-root" in help_text
     assert "--repo-root" not in help_text
     assert "--commit" in help_text
+    assert "--compose-file" in help_text

@@ -8,6 +8,60 @@ Base: `678d3c46f7b7dc41cf5d99d5b7898551f1bb50f3`.
 
 Issue: `https://github.com/demonsxxxxxx/ai-platform/issues/415`.
 
+## Issue #420 Ordered Compose Set
+
+Lane: `release-authority-compose-overlay-fix`, generation 2, phase 2.
+
+Branch: `codex/420-release-authority-compose-overlay`.
+
+Base: `110e047245c36237b92aa4bd32f9988b42753392`.
+
+Issue: `https://github.com/demonsxxxxxx/ai-platform/issues/420`.
+
+- [x] Revision-133 scope and worktree fingerprints matched the declared clean,
+  detached exact-main source before mutation.
+- [x] Focused RED reproduced the missing ordered selection, two-file ownership,
+  deployment command, CLI forwarding, and static low-level error contract.
+- [x] The existing release-authority module now validates one ordered
+  repo-relative Compose set, defaults to the canonical singleton, checks exact
+  API/worker/frontend ownership before image handling, and reuses the same set
+  for Compose up and live parity.
+- [x] Current module evidence: the focused contract passed (`19 passed`) and
+  the final complete release-authority suite passed (`97 passed`).
+- [x] Final local gates: source-authority docs passed (`50 passed`), compile and
+  all three CLI help smokes exited 0, and diff, exact three-path scope, and
+  added-lines secret/personal-path checks passed. Self-review found no real
+  secret/env output, missing public docstring, uncovered primary error path,
+  out-of-scope change, or unsupported closure claim.
+- [x] Generation-1 publication: commit `fcf7c55432989adfd1e862cadf102451a2d6b83b`
+  is pushed, draft PR `https://github.com/demonsxxxxxx/ai-platform/pull/421`
+  is open, exact-head evidence was read back, and all four checks succeeded.
+- [x] Revision-136 gate: generation-2 scope and worktree fingerprints matched
+  the exact clean PR head and base before mutation.
+- [x] Revision-135 findings intake: one independent Important and one
+  controller-supplemental Important identified prior-release absolute-root
+  rotation and mutable-name manual frontend removal defects.
+- [x] Generation-2 RED: two focused regressions reproduced both findings on
+  `fcf7c554` (`2 failed`, `97 deselected`).
+- [x] Generation-2 GREEN: trusted archive-style prior siblings now retain the
+  exact ordered relative Compose set without requiring `.git`; all managed
+  services share one ownership root, post-deploy parity remains target-exact,
+  and manual frontend removal revalidates and removes an immutable container
+  ID. Focused findings tests passed (`11 passed`) and the complete suite passed
+  (`107 passed`).
+- [x] Generation-2 local gates: source-authority docs passed (`50 passed`),
+  compile and all three CLI help smokes exited 0, and diff, exact three-path
+  scope, and added-lines secret/personal-path checks passed. Self-review found
+  no metadata weakening, prior-root exception in post-deploy parity, mutable
+  name removal, real secret/env output, or out-of-scope change.
+- [ ] Generation-2 pre-commit, follow-up publication, exact-head evidence,
+  terminal CI, and fresh independent re-review remain.
+
+Evidence ceiling: `PR open / Not Ready pending fresh independent re-review`.
+This source-only lane does not access Docker, a real env, credentials, browser,
+or 211; it does not deploy, merge, request review, close #415/#409, or claim
+B2, S1B, G0, Agent, runtime, or gate closure.
+
 ## Status
 
 - [x] Provisioning: clean detached worktree matched exact `origin/main`.
