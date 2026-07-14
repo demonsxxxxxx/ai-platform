@@ -534,7 +534,9 @@ def _opensandbox_requested_image(settings: Any) -> tuple[str, str]:
     ):
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox executor image must be an immutable sha256 reference") from None
     configured_digest = str(getattr(settings, "opensandbox_executor_image_digest", "") or "")
-    if configured_digest and configured_digest != digest:
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", configured_digest):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox configured executor digest is invalid") from None
+    if configured_digest != digest:
         raise OpenSandboxCapabilityAdmissionError("OpenSandbox configured executor digest does not match image reference") from None
     return image, digest
 

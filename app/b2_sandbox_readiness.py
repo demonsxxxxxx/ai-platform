@@ -1122,6 +1122,7 @@ def build_b2_sandbox_readiness(repo_root: Path | None = None) -> dict[str, Any]:
                     "opensandbox_endpoint",
                     "runsc_runtime_identity",
                     "requested_immutable_executor_image_reference",
+                    "configured_requested_executor_image_digest",
                     "profile_requested_executor_image_digest",
                     "ai_platform_runtime_subject",
                     "gateway_policy_subject",

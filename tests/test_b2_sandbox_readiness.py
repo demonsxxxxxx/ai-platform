@@ -335,6 +335,7 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_p
             "opensandbox_endpoint",
             "runsc_runtime_identity",
             "requested_immutable_executor_image_reference",
+            "configured_requested_executor_image_digest",
             "profile_requested_executor_image_digest",
             "ai_platform_runtime_subject",
             "gateway_policy_subject",

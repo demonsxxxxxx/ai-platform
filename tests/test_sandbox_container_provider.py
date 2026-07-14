@@ -872,6 +872,34 @@ async def test_opensandbox_provider_rejects_mutable_or_mismatched_requested_imag
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "configured_digest",
+    [None, "", " ", "sha256:not-a-digest", "sha256:" + "a" * 64 + " "],
+)
+async def test_opensandbox_provider_requires_nonblank_configured_digest_before_profile_fetch(
+    monkeypatch,
+    configured_digest,
+):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    settings = ExternalEgressCapabilitySettings()
+    settings.opensandbox_executor_image_digest = configured_digest
+    monkeypatch.setattr(container_provider, "get_settings", lambda: settings)
+    fetch_attempted = False
+
+    def fetch_profile(*_args: Any) -> dict[str, Any]:
+        nonlocal fetch_attempted
+        fetch_attempted = True
+        return external_egress_capability_profile()
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="configured executor digest is invalid"):
+        await opensandbox_provider(capability_profile_fetcher=fetch_profile).create_or_reuse(request(), workspace())
+
+    assert fetch_attempted is False
+    assert FakeOpenSandbox.created == []
+
+
+@pytest.mark.asyncio
 async def test_opensandbox_provider_uses_valid_requested_immutable_image(monkeypatch):
     container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
     FakeOpenSandbox.reset()

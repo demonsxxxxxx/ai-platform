@@ -21,8 +21,8 @@ remaining validity. OpenSandbox admission requires a requested immutable
 `repository@sha256:<digest>` image reference; labels record that requested subject only,
 not an observed container digest or runtime enforcement result. An authenticated observer
 provided through #436/#429 is required before any runtime evidence or integration claim.
-If the compatibility digest setting is supplied, it must equal the digest in that requested
-reference and cannot override it. The authenticated capability profile must carry the
+The configured requested-image digest is mandatory and must equal the digest in that
+requested reference; it cannot override it. The authenticated capability profile must carry the
 same requested executor-image digest; all three values are compared before sandbox
 creation or reuse, and the capability labels retain only the requested/profile subject.
 
