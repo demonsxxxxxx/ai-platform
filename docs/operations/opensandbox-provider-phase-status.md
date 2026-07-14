@@ -13,6 +13,15 @@ image, ai-platform runtime subject, gateway-policy subject, deny audit/counter,
 callback, and cleanup. This change is source-tested only: it does not verify s72,
 211, B2, or data-plane egress enforcement. Integration is blocked pending #429.
 
+Generation-2 security boundary: capability transport permits only a normalized,
+literal loopback/private IPv4 target (with no DNS hostname resolution), never follows
+redirects, has a hard request/response-size ceiling, and does not expose credentials or
+response details. Profiles are bounded in age, TTL, and remaining validity. A separate,
+versioned runtime probe must independently identify the run/sandbox/image digest/runsc
+identity, gateway deny events/counter delta, callback, and cleanup; label/config/SDK
+readback cannot satisfy the verifier. These remain source contracts until #429 provides
+the authenticated gateway baseline for a re-chartered integration run.
+
 Status:
 - [x] local provider adapter wired behind `SandboxProvider`/`ContainerProvider`. Evidence: `tests/test_sandbox_container_provider.py` covers `opensandbox` provider selection, lease field mapping, stop/cleanup, startup file/command probes, byte readback compatibility, command exit-code failure, endpoint private headers, scheme-less endpoint URL normalization, and sanitized failure projection.
 - [x] platform source of truth preserved. Evidence: OpenSandbox only implements `ContainerProvider`; `SandboxRuntime` still owns `SandboxRuntimeRequest`, `ContainerLease`, DB lease creation/release, callback token derivation, executor dispatch, and result timing projection. OpenSandbox private endpoint headers are stored only in process-local `ContainerLease.executor_headers` and are excluded from `model_dump()`/DB lease payload/Admin projections.

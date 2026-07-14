@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     opensandbox_external_egress_capability_token: str = Field(default="")
     opensandbox_external_egress_gateway_policy_subject: str = Field(default="")
     opensandbox_external_egress_callback_boundary_subject: str = Field(default="")
+    opensandbox_executor_image_digest: str = Field(default="")
     sandbox_max_active_ephemeral_containers: int = Field(default=2)
     sandbox_max_active_persistent_containers: int = Field(default=1)
     max_active_runs_per_user: int = Field(default=3)
