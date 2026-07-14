@@ -23,6 +23,7 @@ from urllib.request import urlopen
 SCHEMA_VERSION = "ai-platform.release-authority.v1"
 PRESERVATION_SCHEMA_VERSION = "ai-platform.release-authority-preservation.v1"
 FULL_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+RELEASE_DIRECTORY_RE = re.compile(r"^[0-9a-f]{7,40}$")
 DOCKER_CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 DEFAULT_COMPOSE_RELATIVE_PATH = Path("deploy/ai-platform/docker-compose.yml")
 COMPOSE_PROJECT = "ai-platform-phaseb"
@@ -56,6 +57,7 @@ class ReleaseAuthorityError(RuntimeError):
 
 @dataclass(frozen=True)
 class _ComposeSelection:
+    checkout_root: Path
     relative_paths: tuple[str, ...]
     absolute_paths: tuple[Path, ...]
     working_dir: str
@@ -220,6 +222,7 @@ def resolve_compose_files(
 
     working_dir = absolute_paths[0].parent.as_posix()
     return _ComposeSelection(
+        checkout_root=root,
         relative_paths=tuple(relative_paths),
         absolute_paths=tuple(absolute_paths),
         working_dir=working_dir,
@@ -559,6 +562,75 @@ def _existing_release_image(
     return image
 
 
+def _inspect_optional_container(docker: list[str], name: str) -> dict[str, Any] | None:
+    existing = _run([*docker, "container", "inspect", name], check=False)
+    if existing.returncode != 0:
+        return None
+    try:
+        payload = json.loads(existing.stdout)
+    except json.JSONDecodeError as exc:
+        raise ReleaseAuthorityError("managed container inspect metadata is invalid") from exc
+    if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], dict):
+        raise ReleaseAuthorityError("managed container inspect metadata is invalid")
+    return payload[0]
+
+
+def _compose_ownership_selection(
+    labels: dict[str, Any],
+    target: _ComposeSelection,
+) -> _ComposeSelection | None:
+    working_dir = labels.get("com.docker.compose.project.working_dir")
+    config_files = labels.get("com.docker.compose.project.config_files")
+    if not isinstance(working_dir, str) or not isinstance(config_files, str):
+        return None
+    if working_dir == target.working_dir and config_files == target.config_files:
+        return target
+
+    observed_files = config_files.split(",")
+    if (
+        len(observed_files) != len(target.relative_paths)
+        or not observed_files
+        or any(not value for value in observed_files)
+    ):
+        return None
+    observed_main = Path(observed_files[0])
+    if (
+        not observed_main.is_absolute()
+        or observed_main.as_posix() != observed_files[0]
+        or "\\" in observed_files[0]
+        or any(
+            unicodedata.category(character) in WORKER_TMPDIR_UNICODE_CATEGORIES
+            for character in observed_files[0]
+        )
+    ):
+        return None
+    observed_root = observed_main
+    for _ in DEFAULT_COMPOSE_RELATIVE_PATH.parts:
+        observed_root = observed_root.parent
+    release_root = target.checkout_root.parent
+    if (
+        observed_root == target.checkout_root
+        or observed_root.parent != release_root
+        or not FULL_COMMIT_RE.fullmatch(target.checkout_root.name)
+        or not RELEASE_DIRECTORY_RE.fullmatch(observed_root.name)
+    ):
+        return None
+    try:
+        observed = resolve_compose_files(observed_root, target.relative_paths)
+    except (OSError, ReleaseAuthorityError):
+        return None
+    if observed.working_dir != working_dir or observed.config_files != config_files:
+        return None
+    return observed
+
+
+def _manual_frontend_container_id(inspected: dict[str, Any]) -> str:
+    container_id = inspected.get("Id")
+    if not isinstance(container_id, str) or not DOCKER_CONTAINER_ID_RE.fullmatch(container_id):
+        raise ReleaseAuthorityError("manual frontend container ID metadata is invalid")
+    return container_id
+
+
 def _preflight_managed_container_ownership(
     docker: list[str],
     selection: _ComposeSelection,
@@ -566,30 +638,30 @@ def _preflight_managed_container_ownership(
     replace_known_manual_frontend: bool,
     expected_manual_frontend_image: str | None,
     expected_manual_frontend_image_id: str | None,
-) -> dict[str, Any] | None:
-    manual_frontend: dict[str, Any] | None = None
+) -> str | None:
+    manual_frontend_id: str | None = None
+    compose_owner_root: Path | None = None
     for role in ("api", "worker", "frontend"):
         name = f"ai-platform-{role}"
-        existing = _run([*docker, "container", "inspect", name], check=False)
-        if existing.returncode != 0:
+        inspected = _inspect_optional_container(docker, name)
+        if inspected is None:
             continue
-        try:
-            payload = json.loads(existing.stdout)
-        except json.JSONDecodeError as exc:
-            raise ReleaseAuthorityError("managed container inspect metadata is invalid") from exc
-        if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], dict):
-            raise ReleaseAuthorityError("managed container inspect metadata is invalid")
-        inspected = payload[0]
         config = inspected.get("Config") if isinstance(inspected.get("Config"), dict) else {}
         labels = config.get("Labels") if isinstance(config.get("Labels"), dict) else {}
         if labels.get("ai-platform.release-owner") == "repo-local-compose":
+            owned_selection = _compose_ownership_selection(labels, selection)
+            if owned_selection is None:
+                raise ReleaseAuthorityError(f"{role} compose ownership mismatch")
             if _compose_identity_mismatches(
                 labels,
                 role,
-                expected_compose_dir=selection.working_dir,
-                expected_config_files=selection.config_files,
+                expected_compose_dir=owned_selection.working_dir,
+                expected_config_files=owned_selection.config_files,
             ):
                 raise ReleaseAuthorityError(f"{role} compose ownership mismatch")
+            if compose_owner_root is not None and compose_owner_root != owned_selection.checkout_root:
+                raise ReleaseAuthorityError(f"{role} compose ownership mismatch")
+            compose_owner_root = owned_selection.checkout_root
             continue
         if role != "frontend":
             raise ReleaseAuthorityError(f"{role} compose ownership mismatch")
@@ -610,8 +682,8 @@ def _preflight_managed_container_ownership(
             raise ReleaseAuthorityError(
                 "manual frontend identity mismatch; refusing container removal"
             )
-        manual_frontend = inspected
-    return manual_frontend
+        manual_frontend_id = _manual_frontend_container_id(inspected)
+    return manual_frontend_id
 
 
 def _container_inspect_record(
@@ -868,7 +940,7 @@ def deploy_clean_commit(
     selection = resolve_compose_files(repo_root, compose_files)
     docker = _docker_base(docker_cmd)
     repository = authoritative_repository(repo_root)
-    manual_frontend = _preflight_managed_container_ownership(
+    manual_frontend_id = _preflight_managed_container_ownership(
         docker,
         selection,
         replace_known_manual_frontend=replace_known_manual_frontend,
@@ -909,8 +981,14 @@ def deploy_clean_commit(
     revalidated = resolve_compose_files(repo_root, selection.relative_paths)
     if revalidated != selection:
         raise ReleaseAuthorityError("compose file selection changed during release preflight")
-    if manual_frontend is not None:
-        _run([*docker, "container", "rm", "-f", "ai-platform-frontend"])
+    if manual_frontend_id is not None:
+        current_frontend = _inspect_optional_container(docker, "ai-platform-frontend")
+        if (
+            current_frontend is None
+            or _manual_frontend_container_id(current_frontend) != manual_frontend_id
+        ):
+            raise ReleaseAuthorityError("manual frontend changed before removal")
+        _run([*docker, "container", "rm", "-f", manual_frontend_id])
 
     compose_environment = [
         f"AI_PLATFORM_IMAGE={refs['backend']}",
