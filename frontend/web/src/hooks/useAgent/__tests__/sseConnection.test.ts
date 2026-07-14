@@ -12,6 +12,7 @@ import {
   queryAuthoritativeRunStatus,
   reconnectSSE,
   type SSEConnectionContext,
+  type SSEFetchEventSource,
 } from "../sseConnection.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -46,6 +47,79 @@ function createDeferred<T>() {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+type FetchEventSourceInit = Parameters<SSEFetchEventSource>[1];
+
+interface AbortResolvingFetchStep {
+  response?: Response;
+  error?: Error;
+  onStart?: (init: FetchEventSourceInit) => void;
+  afterOpen?: (init: FetchEventSourceInit) => Promise<void> | void;
+}
+
+/**
+ * Mirrors the ownership edge needed here: aborting a stream resolves its
+ * fetch-event-source promise even while an async onopen callback is pending.
+ */
+function createAbortResolvingFetchEventSource(
+  steps: AbortResolvingFetchStep[],
+): SSEFetchEventSource {
+  let callIndex = 0;
+  return async (_input, init) =>
+    new Promise<void>((resolve, reject) => {
+      const step = steps[callIndex++];
+      if (!step) {
+        reject(new Error("missing fetch-event-source test step"));
+        return;
+      }
+      let settled = false;
+      const signal = init.signal;
+      const cleanup = () => signal?.removeEventListener("abort", onAbort);
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const onAbort = () => finish();
+
+      signal?.addEventListener("abort", onAbort, { once: true });
+      step.onStart?.(init);
+      if (signal?.aborted) {
+        finish();
+        return;
+      }
+
+      void (async () => {
+        try {
+          if (step.error) {
+            throw step.error;
+          }
+          if (!step.response) {
+            throw new Error("missing fetch-event-source test response");
+          }
+          await init.onopen?.(step.response);
+          await step.afterOpen?.(init);
+          finish();
+        } catch (error) {
+          try {
+            init.onerror?.(error as never);
+            // A stale stream's onerror intentionally returns. A current
+            // stream's onerror rethrows so the owner receives the failure.
+            finish();
+          } catch (ownerError) {
+            fail(ownerError);
+          }
+        }
+      })();
+    });
 }
 
 test("SSE uses the same explicit cookie-session credential boundary", () => {
@@ -576,11 +650,15 @@ test("does not let a deferred stale 401 refresh mutate a replacement SSE stream"
     "assistant-old",
     context,
     false,
-    async (_input, init) => {
-      fetchCalls += 1;
-      oldSignal = init.signal;
-      await init.onopen?.(new Response(null, { status: 401 }));
-    },
+    createAbortResolvingFetchEventSource([
+      {
+        response: new Response(null, { status: 401 }),
+        onStart: (init) => {
+          fetchCalls += 1;
+          oldSignal = init.signal;
+        },
+      },
+    ]),
     {
       getValidAccessToken: async () => "old-access",
       getRefreshToken: () => "refresh-marker",
@@ -627,16 +705,35 @@ test("retries a current 401 once and aborts only its captured stream controller"
     "assistant-old",
     context,
     false,
-    async (_input, init) => {
-      fetchCalls += 1;
-      if (!init.signal) {
-        throw new Error("missing test stream abort signal");
-      }
-      signals.push(init.signal);
-      await init.onopen?.(
-        new Response(null, { status: fetchCalls === 1 ? 401 : 200 }),
-      );
-    },
+    createAbortResolvingFetchEventSource([
+      {
+        response: new Response(null, { status: 401 }),
+        onStart: (init) => {
+          fetchCalls += 1;
+          if (!init.signal) {
+            throw new Error("missing test stream abort signal");
+          }
+          signals.push(init.signal);
+        },
+      },
+      {
+        response: new Response(null, { status: 200 }),
+        onStart: (init) => {
+          fetchCalls += 1;
+          if (!init.signal) {
+            throw new Error("missing test stream abort signal");
+          }
+          signals.push(init.signal);
+        },
+        afterOpen: async (init) => {
+          init.onmessage?.({
+            event: "complete",
+            data: JSON.stringify({ status: "succeeded" }),
+          } as never);
+          await init.onclose?.();
+        },
+      },
+    ]),
     {
       getValidAccessToken: async () => "access",
       getRefreshToken: () => "refresh-marker",
@@ -653,7 +750,7 @@ test("retries a current 401 once and aborts only its captured stream controller"
   assert.equal(signals[1].aborted, false);
   assert.equal(context.abortControllerRef.current?.signal, signals[1]);
   assert.equal(context.isConnectingRef.current, false);
-  assert.equal(connectionStates.at(-1), "connected");
+  assert.equal(connectionStates.at(-1), "disconnected");
 });
 
 test("fails closed when the refreshed SSE retry is still unauthorized", async () => {
@@ -668,10 +765,20 @@ test("fails closed when the refreshed SSE retry is still unauthorized", async ()
       "assistant-old",
       context,
       false,
-      async (_input, init) => {
-        fetchCalls += 1;
-        await init.onopen?.(new Response(null, { status: 401 }));
-      },
+      createAbortResolvingFetchEventSource([
+        {
+          response: new Response(null, { status: 401 }),
+          onStart: () => {
+            fetchCalls += 1;
+          },
+        },
+        {
+          response: new Response(null, { status: 401 }),
+          onStart: () => {
+            fetchCalls += 1;
+          },
+        },
+      ]),
       {
         getValidAccessToken: async () => "access",
         getRefreshToken: () => "refresh-marker",
@@ -688,6 +795,50 @@ test("fails closed when the refreshed SSE retry is still unauthorized", async ()
       }
       return true;
     },
+  );
+
+  assert.equal(refreshCalls, 1);
+  assert.equal(fetchCalls, 2);
+  assert.equal(context.isConnectingRef.current, false);
+  assert.equal(connectionStates.at(-1), "disconnected");
+});
+
+test("propagates a post-refresh transport failure through the original owner", async () => {
+  const { context, connectionStates } = createTokenRefreshContext();
+  let fetchCalls = 0;
+  let refreshCalls = 0;
+
+  await assert.rejects(
+    connectToSSE(
+      "session-old",
+      "run-old",
+      "assistant-old",
+      context,
+      false,
+      createAbortResolvingFetchEventSource([
+        {
+          response: new Response(null, { status: 401 }),
+          onStart: () => {
+            fetchCalls += 1;
+          },
+        },
+        {
+          error: new Error("post-refresh transport failure"),
+          onStart: () => {
+            fetchCalls += 1;
+          },
+        },
+      ]),
+      {
+        getValidAccessToken: async () => "access",
+        getRefreshToken: () => "refresh-marker",
+        refreshAccessToken: async () => {
+          refreshCalls += 1;
+          return "refreshed-access";
+        },
+      },
+    ),
+    /post-refresh transport failure/,
   );
 
   assert.equal(refreshCalls, 1);
@@ -752,6 +903,8 @@ test("a scheduled reconnect converges non-retryable auth without another status 
   Math.random = () => 0;
   let statusCalls = 0;
   let connectCalls = 0;
+  let streamCalls = 0;
+  let refreshCalls = 0;
   let unavailableCalls = 0;
   const context = {
     abortControllerRef: { current: null },
@@ -791,7 +944,7 @@ test("a scheduled reconnect converges non-retryable auth without another status 
     isReconnectFromHistoryRef: { current: boolean };
   };
   const flushAsync = async () => {
-    for (let index = 0; index < 6; index += 1) {
+    for (let index = 0; index < 20; index += 1) {
       await Promise.resolve();
     }
   };
@@ -810,13 +963,27 @@ test("a scheduled reconnect converges non-retryable auth without another status 
           messageId,
           reconnectContext,
           false,
-          async (_input, init) => {
-            await init.onopen?.(new Response(null, { status: 401 }));
-          },
+          createAbortResolvingFetchEventSource([
+            {
+              response: new Response(null, { status: 401 }),
+              onStart: () => {
+                streamCalls += 1;
+              },
+            },
+            {
+              response: new Response(null, { status: 401 }),
+              onStart: () => {
+                streamCalls += 1;
+              },
+            },
+          ]),
           {
             getValidAccessToken: async () => null,
-            getRefreshToken: () => null,
-            refreshAccessToken: async () => "unused",
+            getRefreshToken: () => "refresh-marker",
+            refreshAccessToken: async () => {
+              refreshCalls += 1;
+              return "refreshed-access";
+            },
           },
         );
       },
@@ -826,13 +993,127 @@ test("a scheduled reconnect converges non-retryable auth without another status 
     await flushAsync();
     assert.equal(statusCalls, 1);
     assert.equal(connectCalls, 1);
+    assert.equal(streamCalls, 2);
+    assert.equal(refreshCalls, 1);
     assert.equal(unavailableCalls, 1);
 
     t.mock.timers.tick(60_000);
     await flushAsync();
     assert.equal(statusCalls, 1);
     assert.equal(connectCalls, 1);
+    assert.equal(streamCalls, 2);
+    assert.equal(refreshCalls, 1);
     assert.equal(unavailableCalls, 1);
+  } finally {
+    Math.random = originalRandom;
+  }
+});
+
+test("a scheduled reconnect reconciles a post-refresh transport failure", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const originalRandom = Math.random;
+  Math.random = () => 0;
+  let statusCalls = 0;
+  let connectCalls = 0;
+  let streamCalls = 0;
+  let refreshCalls = 0;
+  let terminalCalls = 0;
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-transport" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    messagesRef: {
+      current: [
+        {
+          id: "assistant-transport",
+          role: "assistant",
+          content: "",
+          timestamp: new Date(),
+          isStreaming: true,
+        },
+      ],
+    },
+    sessionIdRef: { current: "session-transport" },
+    currentRunIdRef: { current: "run-transport" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    isReconnectFromHistoryRef: { current: false },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunTerminal: () => {
+      terminalCalls += 1;
+      return true;
+    },
+  } satisfies SSEConnectionContext & {
+    isReconnectFromHistoryRef: { current: boolean };
+  };
+  const flushAsync = async () => {
+    for (let index = 0; index < 20; index += 1) {
+      await Promise.resolve();
+    }
+  };
+
+  try {
+    await reconnectSSE(context, {
+      getStatus: async () => {
+        statusCalls += 1;
+        return {
+          session_id: "session-transport",
+          run_id: "run-transport",
+          status: statusCalls === 1 ? "running" : "error",
+          raw_status: statusCalls === 1 ? "running" : "failed",
+        };
+      },
+      connect: async (sessionId, runId, messageId, reconnectContext) => {
+        connectCalls += 1;
+        await connectToSSE(
+          sessionId,
+          runId,
+          messageId,
+          reconnectContext,
+          false,
+          createAbortResolvingFetchEventSource([
+            {
+              response: new Response(null, { status: 401 }),
+              onStart: () => {
+                streamCalls += 1;
+              },
+            },
+            {
+              error: new Error("scheduled post-refresh transport failure"),
+              onStart: () => {
+                streamCalls += 1;
+              },
+            },
+          ]),
+          {
+            getValidAccessToken: async () => null,
+            getRefreshToken: () => "refresh-marker",
+            refreshAccessToken: async () => {
+              refreshCalls += 1;
+              return "refreshed-access";
+            },
+          },
+        );
+      },
+    });
+
+    t.mock.timers.tick(1_000);
+    await flushAsync();
+    assert.equal(statusCalls, 2);
+    assert.equal(connectCalls, 1);
+    assert.equal(streamCalls, 2);
+    assert.equal(refreshCalls, 1);
+    assert.equal(terminalCalls, 1);
+    assert.equal(context.reconnectTimeoutRef.current, null);
   } finally {
     Math.random = originalRandom;
   }

@@ -1065,6 +1065,186 @@ test("useAgent reconciles an ordinary transport interruption authoritatively", a
   }
 });
 
+test("useAgent reconciles a post-refresh transport failure from its initial stream owner", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalFetch = dom.window.fetch;
+  const originalGlobalFetch = globalThis.fetch;
+  const originalSessionMarker = dom.window.localStorage.getItem(
+    "ai_platform_session_present",
+  );
+  let statusCalls = 0;
+  let streamCalls = 0;
+  let refreshProbeCalls = 0;
+  const fetchWithRefresh: typeof fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("/api/ai/auth/me")) {
+      refreshProbeCalls += 1;
+      return new Response("{}", { status: 200 });
+    }
+    if (url.includes("/stream?run_id=run-initial-post-refresh")) {
+      streamCalls += 1;
+      if (streamCalls === 1) {
+        return new Response(null, { status: 401 });
+      }
+      throw new Error("initial post-refresh transport interruption");
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+  dom.window.localStorage.setItem("ai_platform_session_present", "present");
+  dom.window.fetch = fetchWithRefresh;
+  globalThis.fetch = fetchWithRefresh;
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "刷新后中断会话",
+    session_id: "session-initial-post-refresh",
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-initial-post-refresh",
+    run_id: "run-initial-post-refresh",
+    trace_id: "trace-initial-post-refresh",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+  sessionApi.getStatus = (async () => {
+    statusCalls += 1;
+    return {
+      session_id: "session-initial-post-refresh",
+      run_id: "run-initial-post-refresh",
+      status: "error",
+      raw_status: "failed",
+    };
+  }) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("刷新后网络中断需要核对状态");
+    });
+    await settle(harness.act);
+
+    const parts = harness.hook.messages.flatMap((message) => message.parts || []);
+    assert.equal(refreshProbeCalls, 1);
+    assert.equal(streamCalls, 2);
+    assert.equal(statusCalls, 1);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(
+      parts.filter(
+        (part) =>
+          part.type === "run_status" &&
+          part.event_id === "terminal-failure:run-initial-post-refresh",
+      ).length,
+      1,
+    );
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getStatus = originalGetStatus;
+    dom.window.fetch = originalFetch;
+    globalThis.fetch = originalGlobalFetch;
+    if (originalSessionMarker === null) {
+      dom.window.localStorage.removeItem("ai_platform_session_present");
+    } else {
+      dom.window.localStorage.setItem(
+        "ai_platform_session_present",
+        originalSessionMarker,
+      );
+    }
+    await harness.cleanup();
+  }
+});
+
+test("useAgent history restore fails closed for non-retryable SSE authentication", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = dom.window.fetch;
+  const originalSessionMarker = dom.window.localStorage.getItem(
+    "ai_platform_session_present",
+  );
+  let statusCalls = 0;
+  let streamCalls = 0;
+  dom.window.localStorage.removeItem("ai_platform_session_present");
+  dom.window.fetch = async () => {
+    streamCalls += 1;
+    return new Response(null, { status: 401 });
+  };
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-history-auth",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    events: [
+      {
+        id: "evt-history-auth-user",
+        run_id: "run-history-auth",
+        event_type: "user:message",
+        timestamp: "2026-07-15T00:00:00Z",
+        data: { content: "恢复认证失效任务" },
+      },
+    ],
+  });
+  sessionApi.getStatus = (async () => {
+    statusCalls += 1;
+    return {
+      session_id: "session-history-auth",
+      run_id: "run-history-auth",
+      status: "running",
+    };
+  }) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-history-auth");
+    });
+    await settle(harness.act);
+
+    const parts = harness.hook.messages.flatMap((message) => message.parts || []);
+    // The one status read establishes that the restored run was active. The
+    // typed authentication result must not trigger a second reconciliation.
+    assert.equal(statusCalls, 1);
+    assert.equal(streamCalls, 1);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.equal(
+      parts.filter(
+        (part) =>
+          part.type === "run_status" &&
+          part.event_id === "terminal-status-unavailable:run-history-auth",
+      ).length,
+      1,
+    );
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    dom.window.fetch = originalFetch;
+    if (originalSessionMarker === null) {
+      dom.window.localStorage.removeItem("ai_platform_session_present");
+    } else {
+      dom.window.localStorage.setItem(
+        "ai_platform_session_present",
+        originalSessionMarker,
+      );
+    }
+    await harness.cleanup();
+  }
+});
+
 test("useAgent releases the active state for succeeded and cancelled terminals", async () => {
   for (const terminal of [
     { eventType: "run_succeeded", runId: "run-success", cancelled: false },

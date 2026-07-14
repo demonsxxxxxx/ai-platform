@@ -106,6 +106,22 @@ export function isNonRetryableSSEAuthenticationError(
   );
 }
 
+/**
+ * Internal handoff only: the outer stream owner catches this after a current
+ * token refresh succeeds, disposes its captured controller, and starts the
+ * single refreshed attempt. It must never escape to hook consumers.
+ */
+class RefreshRetryRequested extends Error {
+  constructor() {
+    super("sse_refresh_retry_requested");
+    this.name = "RefreshRetryRequested";
+  }
+}
+
+function isRefreshRetryRequested(error: unknown): error is RefreshRetryRequested {
+  return error instanceof RefreshRetryRequested;
+}
+
 export const MAX_STATUS_QUERY_RETRIES = 2;
 /** Maximum reconnects after continuous transport loss for one session/run. */
 export const MAX_CONSECUTIVE_SSE_RECONNECTS = 3;
@@ -293,10 +309,6 @@ export async function connectToSSE(
 
   let receivedTerminalEvent = false;
   let receivedNonTerminalApplicationError = false;
-  // A retry connection replaces this stream's controller.  If that new,
-  // current connection fails, preserve its error through this old stream's
-  // guarded catch instead of incorrectly treating it as a stale no-op.
-  let refreshRetryError: unknown = null;
 
   setConnectionStatus("connecting");
 
@@ -336,32 +348,10 @@ export async function connectToSSE(
             if (!isCurrentStream()) {
               return;
             }
-            // Abort only this callback's controller, never the shared ref:
-            // it may already belong to a newer stream.
-            streamAbortController.abort();
-            if (
-              abortControllerRef.current !== streamAbortController ||
-              !isCurrentSSETarget(ctx, targetSessionId, targetRunId, streamVersion)
-            ) {
-              return;
-            }
-            abortControllerRef.current = null;
-            isConnectingRef.current = false;
-            try {
-              await connectToSSE(
-                targetSessionId,
-                targetRunId,
-                messageId,
-                ctx,
-                true,
-                fetchStream,
-                tokenDependencies,
-              );
-            } catch (error) {
-              refreshRetryError = error;
-              throw error;
-            }
-            return;
+            // Do not abort or recurse here. fetch-event-source treats an
+            // abort as a successful completion, which would detach a retry
+            // launched inside this callback from the original owner promise.
+            throw new RefreshRetryRequested();
           }
           if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
@@ -494,10 +484,29 @@ export async function connectToSSE(
       },
     );
   } catch (err) {
-    if (!isCurrentStream()) {
-      if (refreshRetryError !== null) {
-        throw refreshRetryError;
+    if (isRefreshRetryRequested(err)) {
+      // The signal is valid only for this exact captured controller and its
+      // session/run/generation. A stale callback must not touch a replacement
+      // stream's ref, connecting state, or status.
+      if (!isCurrentStream()) {
+        return;
       }
+      // Release this owner's reference before aborting its controller so an
+      // abort callback cannot observe itself as the current replacement.
+      abortControllerRef.current = null;
+      isConnectingRef.current = false;
+      streamAbortController.abort();
+      return await connectToSSE(
+        targetSessionId,
+        targetRunId,
+        messageId,
+        ctx,
+        true,
+        fetchStream,
+        tokenDependencies,
+      );
+    }
+    if (!isCurrentStream()) {
       return;
     }
     if (
