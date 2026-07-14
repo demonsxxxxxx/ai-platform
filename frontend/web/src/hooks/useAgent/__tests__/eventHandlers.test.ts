@@ -57,9 +57,16 @@ test("terminal stream events dismiss a queued admission toast", () => {
     const ctx = createContext([], null, () => {
       dismissCalls += 1;
     });
+    ctx.currentRunIdRef.current = "run-active";
 
     handleStreamEvent(
-      { event: terminalEvent, data: "{}" },
+      {
+        event: terminalEvent,
+        data: JSON.stringify({
+          run_id: "run-active",
+          ...(terminalEvent === "error" ? { error: "run_failed" } : {}),
+        }),
+      },
       "assistant-1",
       `terminal-${terminalEvent}`,
       "2026-07-11T01:02:03.000Z",

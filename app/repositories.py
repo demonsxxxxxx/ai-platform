@@ -3992,6 +3992,25 @@ async def get_tool_permission_request(
     return await cursor.fetchone()
 
 
+async def get_tool_permission_request_for_tenant(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    request_id: str,
+) -> dict[str, Any] | None:
+    """Fetch one permission request for tenant-scoped administrator governance."""
+    cursor = await conn.execute(
+        """
+        select *
+        from run_tool_permission_requests
+        where tenant_id = %s and run_id = %s and id = %s
+        """,
+        (tenant_id, run_id, request_id),
+    )
+    return await cursor.fetchone()
+
+
 async def get_tool_permission_request_by_id(
     conn: AsyncConnection,
     *,
@@ -4007,6 +4026,24 @@ async def get_tool_permission_request_by_id(
         where tenant_id = %s and user_id = %s and id = %s
         """,
         (tenant_id, user_id, request_id),
+    )
+    return await cursor.fetchone()
+
+
+async def get_tool_permission_request_by_id_for_tenant(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    request_id: str,
+) -> dict[str, Any] | None:
+    """Fetch one tenant request for the admin inbox without owner filtering."""
+    cursor = await conn.execute(
+        """
+        select *
+        from run_tool_permission_requests
+        where tenant_id = %s and id = %s
+        """,
+        (tenant_id, request_id),
     )
     return await cursor.fetchone()
 
@@ -4030,6 +4067,28 @@ async def list_tool_permission_inbox(
         limit %s
         """,
         (tenant_id, user_id, status, status, int(limit)),
+    )
+    return list(await cursor.fetchall())
+
+
+async def list_tool_permission_inbox_for_tenant(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    status: str = "pending",
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """List tenant permission requests for the administrator governance inbox."""
+    cursor = await conn.execute(
+        """
+        select *
+        from run_tool_permission_requests
+        where tenant_id = %s
+          and (%s = 'all' or status = %s)
+        order by created_at desc, id desc
+        limit %s
+        """,
+        (tenant_id, status, status, int(limit)),
     )
     return list(await cursor.fetchall())
 

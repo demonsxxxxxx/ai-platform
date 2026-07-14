@@ -9,6 +9,7 @@ import i18n from "../i18n";
 import { uuid } from "../utils/uuid";
 import type {
   Message,
+  MessagePart,
   ConnectionStatus,
   MessageAttachment,
   SelectedSkillRequest,
@@ -42,7 +43,11 @@ import {
   isCurrentHistoryLoad,
   resolveHistoryCurrentRunId,
 } from "./useAgent/historyRunState";
-import { isActiveRunStatus, type TerminalRunStatus } from "./useAgent/runLifecycle";
+import {
+  isActiveRunStatus,
+  terminalRunStatus,
+  type TerminalRunStatus,
+} from "./useAgent/runLifecycle";
 import { clearAllLoadingStates } from "./useAgent/messageParts";
 import { type EventHandlerContext } from "./useAgent/eventHandlers";
 import {
@@ -116,6 +121,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     null,
   );
   const retryCountRef = useRef(0);
+  const statusRetryCountRef = useRef(0);
 
   // Track processed event IDs to prevent duplicates
   const processedEventIdsRef = useRef<Set<string>>(new Set());
@@ -164,10 +170,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     messagesRef.current = messages;
   }, [messages]);
 
-  const finalizeTerminalRun = useCallback(
+  const convergeRunLifecycle = useCallback(
     (
       runId: string,
-      status: TerminalRunStatus,
+      outcome: TerminalRunStatus | "status_unavailable",
       messageId: string,
     ): boolean => {
       if (currentRunIdRef.current !== runId) {
@@ -184,45 +190,80 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       isConnectingRef.current = false;
       streamingMessageIdRef.current = null;
       isSendingRef.current = false;
+      statusRetryCountRef.current = 0;
 
       toast.dismiss("chat-queue");
       setCurrentRunId(null);
       setIsLoading(false);
       setConnectionStatus("disconnected");
       setIsInitializingSandbox(false);
+      setSandboxError(null);
       options?.onClearApprovals?.();
-      setMessages((previous) =>
-        previous.map((message) => {
-          if (message.id !== messageId && message.runId !== runId) {
+      const productCard = (): MessagePart | null => {
+        if (outcome === "failed") {
+          return {
+            type: "run_status",
+            event_id: `terminal-failure:${runId}`,
+            event_type: "run_failed",
+            stage: "agent",
+            message: i18n.t("chat.runTerminal.failed"),
+            severity: "error",
+          };
+        }
+        if (outcome === "status_unavailable") {
+          return {
+            type: "run_status",
+            event_id: `terminal-status-unavailable:${runId}`,
+            event_type: "status_unavailable",
+            stage: "agent",
+            message: i18n.t("chat.runTerminal.statusUnavailable", {
+              defaultValue: i18n.t("chat.requestFailed"),
+            }),
+            severity: "warning",
+          };
+        }
+        return null;
+      };
+      const card = productCard();
+      const cardEventId =
+        card?.type === "run_status" ? card.event_id : null;
+      setMessages((previous) => {
+        let matched = false;
+        let cardAdded = false;
+        const updated = previous.map((message) => {
+          if (
+            message.id !== messageId &&
+            !(message.role === "assistant" && message.runId === runId)
+          ) {
             return message;
           }
-          const parts = clearAllLoadingStates(message.parts || []);
+          matched = true;
+          const parts = clearAllLoadingStates(message.parts || []).filter(
+            (part) =>
+              !(
+                part.type === "run_status" &&
+                terminalRunStatus(part.event_type) === outcome
+              ),
+          );
           if (
-            status === "failed" &&
+            card &&
+            cardEventId &&
+            !cardAdded &&
             !parts.some(
               (part) =>
                 part.type === "run_status" &&
-                part.event_id === `terminal-failure:${runId}`,
+                part.event_id === cardEventId,
             )
           ) {
+            cardAdded = true;
             return {
               ...message,
               isStreaming: false,
-              parts: [
-                ...parts,
-                {
-                  type: "run_status" as const,
-                  event_id: `terminal-failure:${runId}`,
-                  event_type: "run_failed",
-                  stage: "agent",
-                  message: i18n.t("chat.runTerminal.failed"),
-                  severity: "error" as const,
-                },
-              ],
+              parts: [...parts, card],
             };
           }
           if (
-            status === "cancelled" &&
+            outcome === "cancelled" &&
             !parts.some((part) => part.type === "cancelled")
           ) {
             return {
@@ -233,11 +274,38 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             };
           }
           return { ...message, isStreaming: false, parts };
-        }),
-      );
+        });
+        if (!matched && card) {
+          return [
+            ...updated,
+            {
+              id: messageId || runId,
+              runId,
+              role: "assistant",
+              content: "",
+              timestamp: new Date(),
+              isStreaming: false,
+              parts: [card],
+            },
+          ];
+        }
+        return updated;
+      });
       return true;
     },
     [options],
+  );
+
+  const finalizeTerminalRun = useCallback(
+    (runId: string, status: TerminalRunStatus, messageId: string): boolean =>
+      convergeRunLifecycle(runId, status, messageId),
+    [convergeRunLifecycle],
+  );
+
+  const finalizeRunStatusUnavailable = useCallback(
+    (runId: string, messageId: string): boolean =>
+      convergeRunLifecycle(runId, "status_unavailable", messageId),
+    [convergeRunLifecycle],
   );
 
   // Create event handler context
@@ -257,8 +325,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setIsInitializingSandbox,
       setSandboxError,
       onRunTerminal: finalizeTerminalRun,
+      onRunStatusUnavailable: finalizeRunStatusUnavailable,
     }),
-    [options, finalizeTerminalRun],
+    [options, finalizeTerminalRun, finalizeRunStatusUnavailable],
   );
 
   // Create SSE connection context
@@ -270,10 +339,21 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       streamingMessageIdRef,
       reconnectTimeoutRef,
       retryCountRef,
+      statusRetryCountRef,
       messagesRef,
     }),
     [createEventHandlerContext],
   );
+
+  const reconcileCurrentRun = useCallback(async () => {
+    const ctx = {
+      ...createSSEContext(),
+      sessionIdRef,
+      currentRunIdRef,
+      isReconnectFromHistoryRef,
+    };
+    await reconnectSSE(ctx);
+  }, [createSSEContext]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -300,6 +380,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       submissionTokenRef.current += 1;
       streamVersionRef.current += 1;
       isSendingRef.current = false;
+      retryCountRef.current = 0;
+      statusRetryCountRef.current = 0;
 
       isLoadingHistoryRef.current = true;
       setIsLoadingHistory(true);
@@ -348,11 +430,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             (sessionData.metadata?.project_id as string) || null,
           );
 
-          const statusRunId = resolveHistoryCurrentRunId({
-            targetRunId,
-            sessionData,
-          });
-
           // 从 metadata 提取配置信息
           const sessionConfig = {
             agent_options:
@@ -369,14 +446,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               undefined,
           };
 
-          // 并行发起 events、status 和 feedback 请求，减少串行等待时间
+          // Event history determines the exact latest run before its status is
+          // queried. Session metadata can be absent or stale in production.
           const eventsPromise = sessionApi.getEvents(targetSessionId);
-          const statusPromise = statusRunId
-            ? sessionApi.getStatus(targetSessionId, statusRunId).catch((e) => {
-                console.warn("[loadHistory] Failed to check status:", e);
-                return null;
-              })
-            : Promise.resolve(null);
           const feedbackPromise = canReadFeedback
             ? feedbackApi
                 .list(0, 100, undefined, undefined, targetSessionId)
@@ -386,9 +458,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 })
             : Promise.resolve(null);
 
-          const [eventsData, statusData, feedbackList] = await Promise.all([
+          const [eventsData, feedbackList] = await Promise.all([
             eventsPromise,
-            statusPromise,
             feedbackPromise,
           ]);
           if (!isCurrentHistoryLoadRequest()) {
@@ -400,107 +471,117 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             sessionData,
             eventsData,
           });
+          const statusData = historyCurrentRunId
+            ? await sessionApi
+                .getStatus(targetSessionId, historyCurrentRunId)
+                .catch((e) => {
+                  console.warn("[loadHistory] Failed to check status:", e);
+                  return null;
+                })
+            : null;
+          if (!isCurrentHistoryLoadRequest()) {
+            return null;
+          }
+
           // Reconnect only after the authoritative run record says it is
           // active. Event history alone must never revive a failed run.
           const isTaskRunning = Boolean(
             statusData && isActiveRunStatus(statusData.status),
           );
+          const terminalStatus = statusData
+            ? terminalRunStatus(statusData.status)
+            : null;
           const activeHistoryRunId =
             isTaskRunning && historyCurrentRunId ? historyCurrentRunId : null;
-          setCurrentRunId(activeHistoryRunId);
-          currentRunIdRef.current = activeHistoryRunId;
+          let reconstructedMessages = eventsData.events?.length
+            ? reconstructMessagesFromEvents(
+                eventsData.events as HistoryEvent[],
+                processedEventIdsRef.current,
+                { options, activeSubagentStack: activeSubagentStackRef.current },
+              )
+            : [];
 
-          if (eventsData.events && eventsData.events.length > 0) {
-            let reconstructedMessages = reconstructMessagesFromEvents(
-              eventsData.events as HistoryEvent[],
-              processedEventIdsRef.current,
-              { options, activeSubagentStack: activeSubagentStackRef.current },
+          if (feedbackList && feedbackList.items.length > 0) {
+            const feedbackMap = new Map(
+              feedbackList.items.map((f) => [
+                f.run_id,
+                { feedback: f.rating, feedbackId: f.id },
+              ]),
             );
+            reconstructedMessages = reconstructedMessages.map((msg) => {
+              const feedbackInfo = msg.runId
+                ? feedbackMap.get(msg.runId)
+                : undefined;
+              return feedbackInfo
+                ? { ...msg, ...feedbackInfo }
+                : msg;
+            });
+          }
 
-            // Apply feedback (already loaded in parallel)
-            if (feedbackList && feedbackList.items.length > 0) {
-              const feedbackMap = new Map(
-                feedbackList.items.map((f) => [
-                  f.run_id,
-                  { feedback: f.rating, feedbackId: f.id },
-                ]),
-              );
-              reconstructedMessages = reconstructedMessages.map((msg) => {
-                if (msg.runId) {
-                  const feedbackInfo = feedbackMap.get(msg.runId);
-                  if (feedbackInfo) {
-                    return {
-                      ...msg,
-                      feedback: feedbackInfo.feedback,
-                      feedbackId: feedbackInfo.feedbackId,
-                    };
-                  }
-                }
-                return msg;
-              });
-            }
+          const lastTimestamp = getLastEventTimestamp(
+            (eventsData.events || []) as HistoryEvent[],
+          );
+          if (lastTimestamp) {
+            lastHistoryTimestampRef.current = lastTimestamp;
+          }
 
-            const lastTimestamp = getLastEventTimestamp(
-              eventsData.events as HistoryEvent[],
+          let streamingMessageId: string | null = null;
+          if (isTaskRunning && historyCurrentRunId) {
+            const prepared = prepareMessagesForRunningRun(
+              reconstructedMessages,
+              historyCurrentRunId,
+              () => uuid(),
             );
-            if (lastTimestamp) {
-              lastHistoryTimestampRef.current = lastTimestamp;
-            }
+            reconstructedMessages = prepared.messages;
+            streamingMessageId = prepared.streamingMessageId;
+          }
+          setMessages(reconstructedMessages);
 
-            // When the task is still running, target the assistant message for
-            // that same run. If history has the user message but no assistant
-            // events yet, append a fresh assistant bubble after the latest user.
-            if (isTaskRunning && historyCurrentRunId) {
-              const prepared = prepareMessagesForRunningRun(
-                reconstructedMessages,
-                historyCurrentRunId,
-              );
-              reconstructedMessages = prepared.messages;
-              const streamingMessageId = prepared.streamingMessageId;
-
-              setMessages(reconstructedMessages);
-
-              // Fire-and-forget SSE reconnect so that loadHistory
-              // returns sessionConfig immediately, allowing the caller
-              // (useSessionSync) to restore model selection and other UI
-              // state without being blocked by the long-lived connection.
-              isReconnectFromHistoryRef.current = false;
-              const ctx = createSSEContext();
-              connectToSSE(
-                targetSessionId,
-                historyCurrentRunId,
-                streamingMessageId,
-                ctx,
-              ).catch((e) => {
-                console.warn("[loadHistory] SSE reconnect failed:", e);
-              });
-            } else {
-              setMessages(reconstructedMessages);
-            }
+          if (terminalStatus && historyCurrentRunId) {
+            const terminalMessageId =
+              [...reconstructedMessages]
+                .reverse()
+                .find(
+                  (message) =>
+                    message.runId === historyCurrentRunId &&
+                    message.role === "assistant",
+                )?.id || historyCurrentRunId;
+            // The shared lifecycle converger owns terminal presentation for
+            // both live SSE and restored history.
+            currentRunIdRef.current = historyCurrentRunId;
+            setCurrentRunId(historyCurrentRunId);
+            finalizeTerminalRun(
+              historyCurrentRunId,
+              terminalStatus,
+              terminalMessageId,
+            );
           } else {
-            setMessages([]);
+            setCurrentRunId(activeHistoryRunId);
+            currentRunIdRef.current = activeHistoryRunId;
+          }
 
-            if (isTaskRunning && historyCurrentRunId) {
-              isReconnectFromHistoryRef.current = false;
-
-              const streamingMessageId = uuid();
-              const prepared = prepareMessagesForRunningRun(
-                [],
-                historyCurrentRunId,
-                () => streamingMessageId,
-              );
-              setMessages(prepared.messages);
-              // Fire-and-forget SSE reconnect (same reason as above).
-              const ctx = createSSEContext();
-              connectToSSE(
-                targetSessionId,
-                historyCurrentRunId,
-                streamingMessageId,
-                ctx,
-              ).catch((e) => {
-                console.warn("[loadHistory] SSE reconnect failed:", e);
+          if (isTaskRunning && historyCurrentRunId && streamingMessageId) {
+            isReconnectFromHistoryRef.current = false;
+            const ctx = createSSEContext();
+            connectToSSE(
+              targetSessionId,
+              historyCurrentRunId,
+              streamingMessageId,
+              ctx,
+            ).catch(() => {
+              if (
+                !isCurrentHistoryLoadRequest() ||
+                currentRunIdRef.current !== historyCurrentRunId
+              ) {
+                return;
+              }
+              reconcileCurrentRun().catch((reconcileError) => {
+                console.warn(
+                  "[loadHistory] SSE reconciliation failed:",
+                  reconcileError,
+                );
               });
-            }
+            });
           }
 
           // Return sessionConfig *before* any SSE reconnect so that the
@@ -523,7 +604,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
       return null;
     },
-    [options, createSSEContext, canReadFeedback],
+    [
+      options,
+      createSSEContext,
+      canReadFeedback,
+      finalizeTerminalRun,
+      reconcileCurrentRun,
+    ],
   );
 
   // Send message
@@ -690,14 +777,20 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           sessionApi
             .generateTitle(newSessionId, content, i18n.language)
             .then((result) => {
+              if (
+                sessionGenerationRef.current !== requestSessionGeneration ||
+                sessionIdRef.current !== newSessionId
+              ) {
+                return;
+              }
               setNewlyCreatedSession((prev) =>
-                prev
+                prev?.id === newSessionId
                   ? {
                       ...prev,
                       name: result.title,
                       updated_at: new Date().toISOString(),
                     }
-                  : null,
+                  : prev,
               );
               dispatchSessionTitleUpdated({
                 sessionId: newSessionId,
@@ -762,34 +855,21 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           finalAssistantMessageId,
           ctx,
         )
-          .catch(() => {
-            if (!isCurrentSubmission()) {
+          .catch(async () => {
+            if (
+              !isCurrentSubmission() ||
+              currentRunIdRef.current !== streamRunId
+            ) {
               return;
             }
-            toast.dismiss("chat-queue");
-            const streamError = i18n.t("chat.requestFailed");
-            setError(streamError);
-            setMessages((prev) =>
-              prev.map((message) =>
-                message.id === finalAssistantMessageId
-                  ? {
-                      ...message,
-                      content: i18n.t("chat.errorPrefix", {
-                        error: streamError,
-                      }),
-                      isStreaming: false,
-                      parts: clearAllLoadingStates(message.parts || []),
-                    }
-                  : message,
-              ),
-            );
-            setConnectionStatus("disconnected");
-            setIsInitializingSandbox(false);
+            await reconcileCurrentRun();
           })
           .finally(() => {
             if (isCurrentSubmission()) {
-              setIsLoading(false);
               finishCurrentSubmission();
+              if (currentRunIdRef.current !== streamRunId) {
+                setIsLoading(false);
+              }
             }
           });
         return { status: "accepted" };
@@ -842,6 +922,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       createSSEContext,
       newlyCreatedSession?.metadata,
       options,
+      reconcileCurrentRun,
     ],
   );
 
@@ -880,15 +961,30 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   }, [options]);
 
   const clearMessages = useCallback(() => {
+    // Invalidate every asynchronous owner before clearing React state so a
+    // delayed submit or history restore cannot repopulate this blank session.
+    historyLoadTokenRef.current += 1;
     sessionGenerationRef.current += 1;
     submissionTokenRef.current += 1;
     streamVersionRef.current += 1;
+    pendingProjectIdRef.current = null;
+    isLoadingHistoryRef.current = false;
+    isSendingRef.current = false;
+    isConnectingRef.current = false;
+    retryCountRef.current = 0;
+    statusRetryCountRef.current = 0;
     setMessages([]);
     setSessionId(null);
     sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
     setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
     setError(null);
     setCurrentRunId(null);
+    setCurrentProjectId(null);
+    setNewlyCreatedSession(null);
+    setIsLoading(false);
+    setIsLoadingHistory(false);
+    setIsInitializingSandbox(false);
+    setSandboxError(null);
     setConnectionStatus("disconnected");
     processedEventIdsRef.current.clear();
     lastHistoryTimestampRef.current = null;
@@ -896,8 +992,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     sessionIdRef.current = null;
     currentRunIdRef.current = null;
     activeSubagentStackRef.current = [];
-    isSendingRef.current = false;
-    isConnectingRef.current = false;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -906,15 +1000,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   }, []);
 
   // Reconnect function
-  const handleReconnectSSE = useCallback(async () => {
-    const ctx = {
-      ...createSSEContext(),
-      sessionIdRef,
-      currentRunIdRef,
-      isReconnectFromHistoryRef,
-    };
-    await reconnectSSE(ctx);
-  }, [createSSEContext]);
+  const handleReconnectSSE = reconcileCurrentRun;
 
   // Handle visibility change
   useEffect(() => {

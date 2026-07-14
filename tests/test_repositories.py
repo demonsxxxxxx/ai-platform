@@ -29,9 +29,12 @@ from app.repositories import (
     list_context_share_snapshots_for_target_session,
     get_latest_tool_permission_decision,
     get_tool_permission_request_by_id,
+    get_tool_permission_request_by_id_for_tenant,
+    get_tool_permission_request_for_tenant,
     get_run_identity,
     list_multi_agent_dispatch_candidate_run_ids,
     list_tool_permission_inbox,
+    list_tool_permission_inbox_for_tenant,
     list_run_events,
     list_run_artifacts,
     list_scoped_context_messages,
@@ -5047,6 +5050,26 @@ async def test_list_tool_permission_inbox_filters_current_user_and_status():
 
 
 @pytest.mark.asyncio
+async def test_list_tool_permission_inbox_for_tenant_excludes_admin_user_filter():
+    conn = RecordingConnection()
+
+    rows = await list_tool_permission_inbox_for_tenant(
+        conn,
+        tenant_id="tenant-a",
+        status="pending",
+        limit=25,
+    )
+
+    sql, params = conn.calls[0]
+    assert "from run_tool_permission_requests" in sql
+    assert "where tenant_id = %s" in sql
+    assert "user_id =" not in sql
+    assert "(%s = 'all' or status = %s)" in sql
+    assert params == ("tenant-a", "pending", "pending", 25)
+    assert rows == []
+
+
+@pytest.mark.asyncio
 async def test_get_tool_permission_request_by_id_scopes_to_user_without_run():
     conn = RecordingConnection()
 
@@ -5062,6 +5085,43 @@ async def test_get_tool_permission_request_by_id_scopes_to_user_without_run():
     assert "where tenant_id = %s and user_id = %s and id = %s" in sql
     assert "run_id =" not in sql
     assert params == ("tenant-a", "user-a", "tpr-a")
+    assert row["id"] == "step-a"
+
+
+@pytest.mark.asyncio
+async def test_admin_tool_permission_lookup_scopes_to_tenant_run_and_request_not_admin_user():
+    conn = RecordingConnection()
+
+    row = await get_tool_permission_request_for_tenant(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        request_id="tpr-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "from run_tool_permission_requests" in sql
+    assert "where tenant_id = %s and run_id = %s and id = %s" in sql
+    assert "user_id =" not in sql
+    assert params == ("tenant-a", "run-a", "tpr-a")
+    assert row["id"] == "step-a"
+
+
+@pytest.mark.asyncio
+async def test_admin_tool_permission_inbox_lookup_scopes_to_tenant_and_request_not_admin_user():
+    conn = RecordingConnection()
+
+    row = await get_tool_permission_request_by_id_for_tenant(
+        conn,
+        tenant_id="tenant-a",
+        request_id="tpr-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "from run_tool_permission_requests" in sql
+    assert "where tenant_id = %s and id = %s" in sql
+    assert "user_id =" not in sql
+    assert params == ("tenant-a", "tpr-a")
     assert row["id"] == "step-a"
 
 

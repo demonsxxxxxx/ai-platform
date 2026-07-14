@@ -34,7 +34,7 @@ test("resolveHistoryCurrentRunId clears stale previous run when the target sessi
   );
 });
 
-test("resolveHistoryCurrentRunId restores the target session run id from explicit, metadata, or history candidates", () => {
+test("resolveHistoryCurrentRunId restores an explicit run first, then the latest event-backed candidate", () => {
   assert.equal(
     resolveHistoryCurrentRunId({
       targetRunId: "run-explicit",
@@ -49,7 +49,7 @@ test("resolveHistoryCurrentRunId restores the target session run id from explici
       sessionData: { metadata: { current_run_id: "run-current" } },
       eventsData: { run_id: "run-events", events: [] },
     }),
-    "run-current",
+    "run-events",
   );
 
   assert.equal(
@@ -57,7 +57,7 @@ test("resolveHistoryCurrentRunId restores the target session run id from explici
       sessionData: { metadata: { latest_run_id: "run-latest" } },
       eventsData: { run_id: "run-events", events: [] },
     }),
-    "run-latest",
+    "run-events",
   );
 
   assert.equal(
@@ -65,7 +65,7 @@ test("resolveHistoryCurrentRunId restores the target session run id from explici
       sessionData: { metadata: { latest_run: { run_id: "run-nested" } } },
       eventsData: { run_id: "run-events", events: [] },
     }),
-    "run-nested",
+    "run-events",
   );
 
   assert.equal(
@@ -161,25 +161,24 @@ test("loadHistory guards awaited history writes with the current load token", ()
     "session state must only be written by the current history load",
   );
 
-  const eventsAwait = source.indexOf("const [eventsData, statusData, feedbackList] = await Promise.all");
+  const eventsAwait = source.indexOf("const [eventsData, feedbackList] = await Promise.all");
   const eventsGuard = source.indexOf("if (!isCurrentHistoryLoadRequest())", eventsAwait);
-  const currentRunWrite = source.indexOf(
-    "setCurrentRunId(historyCurrentRunId)",
-    eventsAwait,
-  );
-  const messagesWrite = source.indexOf("setMessages(reconstructedMessages)", eventsAwait);
+  const statusAwait = source.indexOf("const statusData = historyCurrentRunId", eventsAwait);
+  const statusGuard = source.indexOf("if (!isCurrentHistoryLoadRequest())", statusAwait);
+  const messagesWrite = source.indexOf("setMessages(reconstructedMessages)", statusAwait);
 
   assert.notEqual(eventsAwait, -1);
   assert.notEqual(eventsGuard, -1);
-  assert.notEqual(currentRunWrite, -1);
+  assert.notEqual(statusAwait, -1);
+  assert.notEqual(statusGuard, -1);
   assert.notEqual(messagesWrite, -1);
   assert.ok(
-    eventsAwait < eventsGuard && eventsGuard < currentRunWrite,
-    "currentRunId must only be written by the current history load",
+    eventsAwait < eventsGuard && eventsGuard < statusAwait,
+    "event history must determine the status lookup candidate",
   );
   assert.ok(
-    eventsAwait < eventsGuard && eventsGuard < messagesWrite,
-    "messages must only be written by the current history load",
+    statusAwait < statusGuard && statusGuard < messagesWrite,
+    "messages must only be written after the current status lookup",
   );
 
   const finallyStart = source.indexOf("} finally {");

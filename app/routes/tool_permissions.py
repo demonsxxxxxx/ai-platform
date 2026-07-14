@@ -3,7 +3,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app import repositories
-from app.auth import AuthPrincipal, require_principal
+from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.db import transaction
 from app.models import ToolPermissionDecisionRequest, ToolPermissionRequest
@@ -153,15 +153,23 @@ async def list_tool_permission_inbox(
     limit: int = Query(default=50, ge=1, le=200),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
-    """Return current-user tool permission requests across runs."""
+    """Return a tenant governance inbox for admins, otherwise caller history."""
     async with transaction() as conn:
-        rows = await repositories.list_tool_permission_inbox(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            status=status,
-            limit=limit,
-        )
+        if is_ai_admin(principal):
+            rows = await repositories.list_tool_permission_inbox_for_tenant(
+                conn,
+                tenant_id=principal.tenant_id,
+                status=status,
+                limit=limit,
+            )
+        else:
+            rows = await repositories.list_tool_permission_inbox(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                status=status,
+                limit=limit,
+            )
     return {
         "permission_requests": [_permission_response_for_inbox(row) for row in rows],
         "total": len(rows),
@@ -196,11 +204,12 @@ async def decide_tool_permission(
     request: ToolPermissionDecisionRequest,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
     async with transaction() as conn:
-        existing = await repositories.get_tool_permission_request(
+        existing = await repositories.get_tool_permission_request_for_tenant(
             conn,
             tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
             run_id=run_id,
             request_id=request_id,
         )
@@ -209,7 +218,7 @@ async def decide_tool_permission(
         row = await repositories.decide_tool_permission_request(
             conn,
             tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
+            user_id=str(existing["user_id"]),
             run_id=run_id,
             request_id=request_id,
             decision=request.decision,
@@ -236,12 +245,13 @@ async def decide_tool_permission_from_inbox(
     request: ToolPermissionDecisionRequest,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
-    """Decide a current-user tool permission request from the standalone inbox."""
+    """Decide a tenant request from the administrator permission inbox."""
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
     async with transaction() as conn:
-        existing = await repositories.get_tool_permission_request_by_id(
+        existing = await repositories.get_tool_permission_request_by_id_for_tenant(
             conn,
             tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
             request_id=request_id,
         )
         if existing is None:
@@ -250,7 +260,7 @@ async def decide_tool_permission_from_inbox(
         row = await repositories.decide_tool_permission_request(
             conn,
             tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
+            user_id=str(existing["user_id"]),
             run_id=run_id,
             request_id=request_id,
             decision=request.decision,

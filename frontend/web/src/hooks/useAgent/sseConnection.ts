@@ -31,6 +31,7 @@ export interface SSEConnectionContext extends EventHandlerContext {
     typeof setTimeout
   > | null>;
   retryCountRef: React.MutableRefObject<number>;
+  statusRetryCountRef?: React.MutableRefObject<number>;
   messagesRef: React.MutableRefObject<Message[]>;
 }
 
@@ -59,6 +60,7 @@ export function clearReconnectTimeout(
 
 export type SSECloseAction = "terminal" | "retry";
 export type SSEFetchEventSource = typeof fetchEventSource;
+const MAX_STATUS_QUERY_RETRIES = 2;
 type ReconnectDependencies = {
   getStatus?: typeof sessionApi.getStatus;
   connect?: typeof connectToSSE;
@@ -81,31 +83,19 @@ function isCurrentSSETarget(
   );
 }
 
-function isTerminalErrorPayload(data: unknown): boolean {
-  if (!isRecord(data)) {
-    return false;
-  }
-
-  return (
-    typeof data.type === "string" ||
-    typeof data.run_id === "string" ||
-    typeof data.trace_id === "string"
+export function isTerminalSSEEvent(eventType: string, data?: unknown): boolean {
+  return Boolean(
+    terminalRunStatusFromEvent(
+      eventType,
+      isRecord(data) ? data : {},
+    ),
   );
 }
 
-export function isTerminalSSEEvent(eventType: string, data?: unknown): boolean {
-  if (isRecord(data) && terminalRunStatusFromEvent(eventType, data)) {
-    return true;
-  }
-  if (eventType === "done" || eventType === "complete") {
-    return true;
-  }
-
-  if (eventType === "error") {
-    return isTerminalErrorPayload(data);
-  }
-
-  return false;
+function explicitRunId(data: Record<string, unknown>): string | null {
+  return typeof data.run_id === "string" && data.run_id.trim()
+    ? data.run_id
+    : null;
 }
 
 export function getSSECloseAction({
@@ -236,20 +226,44 @@ export async function connectToSSE(
             // Ignore parse errors
             return;
           }
-          if (
-            event.event === "error" &&
-            !isTerminalSSEEvent(event.event, parsedData)
-          ) {
-            setConnectionStatus("reconnecting");
-            throw new Error("SSE transport error before terminal event");
+          const sourceRunId = explicitRunId(parsedData);
+          // An old explicit frame cannot end this connection or suppress its
+          // reconnect. It is not safe to rebind an explicit foreign run.
+          if (sourceRunId && sourceRunId !== targetRunId) {
+            return;
           }
-          if (isTerminalSSEEvent(event.event, parsedData)) {
+
+          const terminalStatus = terminalRunStatusFromEvent(
+            event.event,
+            parsedData,
+          );
+          // An SSE `error` frame can report a stream interruption while the
+          // backend run is still active. Keep it out of generic error
+          // presentation and let the close/catch path reconcile status.
+          if (event.event === "error" && !terminalStatus) {
+            setConnectionStatus("reconnecting");
+            return;
+          }
+          // A `done` frame without an authoritative terminal status (for
+          // example, `{ status: "timeout" }`) likewise cannot complete the
+          // run locally.
+          if (
+            (event.event === "done" || event.event === "complete") &&
+            !terminalStatus
+          ) {
+            return;
+          }
+          const normalizedData =
+            terminalStatus && !sourceRunId
+              ? { ...parsedData, run_id: targetRunId }
+              : parsedData;
+          if (terminalStatus) {
             receivedTerminalEvent = true;
           }
-          const timestamp = parsedData._timestamp as string | undefined;
+          const timestamp = normalizedData._timestamp as string | undefined;
           const streamEvent: StreamEvent = {
             event: event.event as EventType,
-            data: event.data,
+            data: JSON.stringify(normalizedData),
           };
           handleStreamEvent(streamEvent, messageId, eventId, timestamp, ctx);
         },
@@ -259,6 +273,9 @@ export async function connectToSSE(
           }
           console.error("[SSE] Connection error:", err);
           setConnectionStatus("reconnecting");
+          // fetch-event-source retries unless the handler throws. Let the
+          // generation-aware caller reconcile authoritative status instead.
+          throw err;
         },
         onclose: () => {
           if (!isCurrentStream()) {
@@ -324,10 +341,13 @@ export async function reconnectSSE(
     isConnectingRef,
     reconnectTimeoutRef,
     retryCountRef,
+    statusRetryCountRef: providedStatusRetryCountRef,
     messagesRef,
     isReconnectFromHistoryRef,
     setConnectionStatus,
   } = ctx;
+  const statusRetryCountRef =
+    providedStatusRetryCountRef || { current: MAX_STATUS_QUERY_RETRIES };
   const getStatus = dependencies.getStatus || sessionApi.getStatus;
   const connect = dependencies.connect || connectToSSE;
 
@@ -342,6 +362,15 @@ export async function reconnectSSE(
       currentRId || "",
       reconnectStreamVersion,
     );
+  const convergeUnavailable = () => {
+    if (
+      ctx.onRunStatusUnavailable?.(currentRId || "", currentMsgId || currentRId || "")
+    ) {
+      return;
+    }
+    setConnectionStatus("disconnected");
+    ctx.setIsInitializingSandbox(false);
+  };
 
   if (!currentSessId || !currentRId || !isCurrentReconnect()) {
     console.log("[SSE] No session/run ID, skipping reconnect");
@@ -373,16 +402,22 @@ export async function reconnectSSE(
       return;
     }
     if (!isActiveRunStatus(statusData.status)) {
-      setConnectionStatus("disconnected");
-      ctx.setIsInitializingSandbox(false);
+      convergeUnavailable();
       return;
     }
+    statusRetryCountRef.current = 0;
   } catch (err) {
+    if (!isCurrentReconnect()) {
+      return;
+    }
     console.error("[SSE] Failed to check task status:", err);
-    // Without a current authoritative run record, fail closed. A later user
-    // reconnect can query again; this stale connection must not revive itself.
-    setConnectionStatus("disconnected");
-    ctx.setIsInitializingSandbox(false);
+    if (statusRetryCountRef.current < MAX_STATUS_QUERY_RETRIES) {
+      statusRetryCountRef.current += 1;
+      return reconnectSSE(ctx, dependencies);
+    }
+    // The run's backend state remains unknown. Converge locally without
+    // inventing a failed backend result; reloading the session is recovery.
+    convergeUnavailable();
     return;
   }
 

@@ -27,12 +27,13 @@ test("retries an SSE close that arrives before a terminal stream event", () => {
   );
 });
 
-test("treats SSE close as terminal only after done or task error", () => {
+test("treats SSE close as terminal only after an explicit terminal state", () => {
   assert.equal(isTerminalSSEEvent("message:chunk"), false);
-  assert.equal(isTerminalSSEEvent("done"), true);
+  assert.equal(isTerminalSSEEvent("done"), false);
+  assert.equal(isTerminalSSEEvent("done", { status: "succeeded" }), true);
   assert.equal(isTerminalSSEEvent("complete"), true);
   assert.equal(isTerminalSSEEvent("user:cancel"), false);
-  assert.equal(isTerminalSSEEvent("error", { type: "ValueError" }), true);
+  assert.equal(isTerminalSSEEvent("error", { type: "ValueError" }), false);
 
   assert.equal(
     getSSECloseAction({
@@ -42,11 +43,12 @@ test("treats SSE close as terminal only after done or task error", () => {
   );
 });
 
-test("does not treat transport-level SSE errors as terminal task events", () => {
+test("classifies only explicit server-sent terminal errors as application failures", () => {
   assert.equal(
-    isTerminalSSEEvent("error", { error: "An internal error occurred" }),
-    false,
+    isTerminalSSEEvent("error", { error: "run_failed" }),
+    true,
   );
+  assert.equal(isTerminalSSEEvent("error", { error: "stream_timeout" }), false);
 });
 
 test("connectToSSE propagates a terminal transport failure to its caller", async () => {
@@ -217,4 +219,204 @@ test("drops a reconnect when its status response belongs to an old stream genera
 
   assert.equal(connectCalls, 0);
   assert.equal(context.reconnectTimeoutRef.current, null);
+});
+
+test("bounds status-query retries before converging to local unavailable state", async () => {
+  let statusCalls = 0;
+  let unavailableCalls = 0;
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-1" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    messagesRef: { current: [] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-1" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    isReconnectFromHistoryRef: { current: false },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunStatusUnavailable: (runId: string, messageId: string) => {
+      unavailableCalls += 1;
+      assert.deepEqual([runId, messageId], ["run-1", "assistant-1"]);
+      return true;
+    },
+  } satisfies SSEConnectionContext & {
+    isReconnectFromHistoryRef: { current: boolean };
+  };
+
+  await reconnectSSE(context, {
+    getStatus: async () => {
+      statusCalls += 1;
+      throw new Error("status unavailable");
+    },
+  });
+
+  assert.equal(statusCalls, 3);
+  assert.equal(context.statusRetryCountRef.current, 2);
+  assert.equal(unavailableCalls, 1);
+  assert.equal(context.reconnectTimeoutRef.current, null);
+});
+
+test("drops a status-query retry after its session generation changes", async () => {
+  let unavailableCalls = 0;
+  let statusCalls = 0;
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-old" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    messagesRef: { current: [] },
+    sessionIdRef: { current: "session-old" },
+    currentRunIdRef: { current: "run-old" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 4 },
+    isReconnectFromHistoryRef: { current: false },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunStatusUnavailable: () => {
+      unavailableCalls += 1;
+      return true;
+    },
+  } satisfies SSEConnectionContext & {
+    isReconnectFromHistoryRef: { current: boolean };
+  };
+
+  await reconnectSSE(context, {
+    getStatus: async () => {
+      statusCalls += 1;
+      context.sessionIdRef.current = "session-new";
+      context.currentRunIdRef.current = "run-new";
+      context.streamVersionRef.current += 1;
+      throw new Error("old status request failed");
+    },
+  });
+
+  assert.equal(statusCalls, 1);
+  assert.equal(unavailableCalls, 0);
+  assert.equal(context.reconnectTimeoutRef.current, null);
+});
+
+test("ignores a mismatched explicit terminal frame without suppressing reconnect", async () => {
+  let terminalCalls = 0;
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: null },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    statusRetryCountRef: { current: 0 },
+    messagesRef: { current: [] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-active" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: () => undefined,
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunTerminal: () => {
+      terminalCalls += 1;
+      return true;
+    },
+  } satisfies SSEConnectionContext;
+
+  await assert.rejects(
+    connectToSSE(
+      "session-1",
+      "run-active",
+      "assistant-active",
+      context,
+      false,
+      async (_input, init) => {
+        await init.onopen?.(new Response(null, { status: 200 }));
+        init.onmessage?.({
+          event: "run_event",
+          id: "evt-old-terminal",
+          data: JSON.stringify({
+            run_id: "run-old",
+            event_type: "run_failed",
+          }),
+        } as never);
+        await init.onclose?.();
+      },
+    ),
+    /SSE closed before terminal event/,
+  );
+
+  assert.equal(terminalCalls, 0);
+});
+
+test("leaves a runless stream timeout for authoritative status reconciliation", async () => {
+  let terminalCalls = 0;
+  const connectionStates: string[] = [];
+  const context = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: null },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    messagesRef: { current: [] },
+    sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: "run-active" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 0 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: (status: string) => connectionStates.push(status),
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+    onRunTerminal: () => {
+      terminalCalls += 1;
+      return true;
+    },
+  } satisfies SSEConnectionContext;
+
+  await assert.rejects(
+    connectToSSE(
+      "session-1",
+      "run-active",
+      "assistant-active",
+      context,
+      false,
+      async (_input, init) => {
+        await init.onopen?.(new Response(null, { status: 200 }));
+        init.onmessage?.({
+          event: "error",
+          id: "evt-timeout-error",
+          data: JSON.stringify({ error: "stream_timeout" }),
+        } as never);
+        init.onmessage?.({
+          event: "done",
+          id: "evt-timeout-done",
+          data: JSON.stringify({ status: "timeout" }),
+        } as never);
+        await init.onclose?.();
+      },
+    ),
+    /SSE closed before terminal event/,
+  );
+
+  assert.equal(terminalCalls, 0);
+  assert.ok(connectionStates.includes("reconnecting"));
 });

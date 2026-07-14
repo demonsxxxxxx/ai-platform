@@ -47,6 +47,7 @@ export interface EventHandlerContext {
     status: TerminalRunStatus,
     messageId: string,
   ) => boolean;
+  onRunStatusUnavailable?: (runId: string, messageId: string) => boolean;
   dismissQueueToast?: () => void;
 }
 
@@ -132,11 +133,12 @@ export function handleStreamEvent(
     eventType,
     data as unknown as Record<string, unknown>,
   );
-  const terminalRunId =
-    eventRunId ||
-    (eventType === "complete" || eventType === "done"
-      ? ctx.currentRunIdRef.current
-      : null);
+  // Only a generation-bound SSE connection may bind a runless terminal frame.
+  // Generic event handling, including history replay, must have an explicit id.
+  const terminalRunId = eventRunId;
+  if (terminalStatus && !terminalRunId) {
+    return;
+  }
   if (
     terminalStatus &&
     terminalRunId &&

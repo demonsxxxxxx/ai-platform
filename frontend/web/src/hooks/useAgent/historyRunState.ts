@@ -39,9 +39,9 @@ export function resolveHistoryCurrentRunId({
 }: ResolveHistoryCurrentRunIdInput): string | null {
   return (
     normalizeRunId(targetRunId) ??
-    resolveSessionMetadataRunId(sessionData?.metadata) ??
     normalizeRunId(eventsData?.run_id) ??
     resolveLatestEventRunId(eventsData?.events) ??
+    resolveSessionMetadataRunId(sessionData?.metadata) ??
     null
   );
 }

@@ -27,6 +27,21 @@ test("prefers an explicit run-event terminal state over the stream envelope", ()
   );
 });
 
+test("does not turn non-terminal SSE error envelopes into failed runs", () => {
+  assert.equal(
+    terminalRunStatusFromEvent("error", { error: "stream_timeout" }),
+    null,
+  );
+  assert.equal(
+    terminalRunStatusFromEvent("done", { status: "timeout" }),
+    null,
+  );
+  assert.equal(
+    terminalRunStatusFromEvent("error", { error: "run_failed" }),
+    "failed",
+  );
+});
+
 test("only authoritative active statuses are eligible for reconnect", () => {
   assert.equal(isActiveRunStatus("queued"), true);
   assert.equal(isActiveRunStatus("running"), true);

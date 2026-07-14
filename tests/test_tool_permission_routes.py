@@ -12,12 +12,12 @@ async def fake_transaction():
     yield object()
 
 
-def headers():
+def headers(*, user_id="user-a", roles="user", tenant_id="tenant-a"):
     return {
-        "X-AI-User-ID": "user-a",
-        "X-AI-User-Name": "User A",
-        "X-AI-Roles": "user",
-        "X-AI-Tenant-ID": "tenant-a",
+        "X-AI-User-ID": user_id,
+        "X-AI-User-Name": user_id,
+        "X-AI-Roles": roles,
+        "X-AI-Tenant-ID": tenant_id,
     }
 
 
@@ -133,12 +133,18 @@ def test_tool_permission_request_redacts_reason_before_event_payload(monkeypatch
     assert "/var/lib/ai-platform" not in str(event_payload)
 
 
-def test_tool_permission_decision_writes_event_and_audit(monkeypatch):
+def test_same_tenant_admin_decides_another_users_request_and_audits_actor(monkeypatch):
     calls = []
 
-    async def fake_get_tool_permission_request(conn, *, tenant_id, user_id, run_id, request_id):
-        assert (tenant_id, user_id, run_id, request_id) == ("tenant-a", "user-a", "run-a", "tpr-a")
-        return permission_row(risk_level="high", write_capable=True, reason="需要运行写入命令")
+    async def fake_get_tool_permission_request_for_tenant(conn, *, tenant_id, run_id, request_id):
+        assert (tenant_id, run_id, request_id) == ("tenant-a", "run-a", "tpr-a")
+        return permission_row(
+            user_id="run-owner",
+            risk_level="high",
+            write_capable=True,
+            reason="需要运行写入命令",
+            request_payload_json={"command": "operator-secret-command"},
+        )
 
     async def fake_decide_tool_permission_request(conn, **kwargs):
         calls.append(("decision", kwargs))
@@ -161,7 +167,7 @@ def test_tool_permission_decision_writes_event_and_audit(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request", fake_get_tool_permission_request)
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request_for_tenant", fake_get_tool_permission_request_for_tenant)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.decide_tool_permission_request", fake_decide_tool_permission_request)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.append_audit_log", fake_append_audit_log)
@@ -169,14 +175,16 @@ def test_tool_permission_decision_writes_event_and_audit(monkeypatch):
 
     response = client.post(
         "/api/ai/runs/run-a/tool-permissions/tpr-a/decision",
-        headers=headers(),
+        headers=headers(user_id="admin-a", roles="admin"),
         json={"decision": "allow_once", "reason": "read-only query"},
     )
 
     assert response.status_code == 200
     assert response.json()["permission_request"]["decision"] == "allow_once"
     assert response.json()["permission_request"]["expires_at"] == "2026-06-05T12:15:00Z"
+    assert "operator-secret-command" not in response.text
     assert calls[0][1]["expires_in_seconds"] == 900
+    assert calls[0][1]["user_id"] == "run-owner"
     assert calls[1][1]["event_type"] == "tool_permission_decided"
     assert calls[1][1]["payload"] == {
         "visible_to_user": True,
@@ -192,13 +200,14 @@ def test_tool_permission_decision_writes_event_and_audit(monkeypatch):
         "expires_at": "2026-06-05T12:15:00Z",
     }
     assert calls[2][1]["action"] == "tool.permission.decision"
+    assert calls[2][1]["user_id"] == "admin-a"
 
 
 def test_tool_permission_decision_serializes_datetime_expiry_for_event_payload(monkeypatch):
     calls = []
     expires_at = datetime(2026, 6, 5, 12, 15, tzinfo=timezone.utc)
 
-    async def fake_get_tool_permission_request(conn, *, tenant_id, user_id, run_id, request_id):
+    async def fake_get_tool_permission_request_for_tenant(conn, *, tenant_id, run_id, request_id):
         return permission_row(risk_level="medium", write_capable=False)
 
     async def fake_decide_tool_permission_request(conn, **kwargs):
@@ -221,7 +230,7 @@ def test_tool_permission_decision_serializes_datetime_expiry_for_event_payload(m
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request", fake_get_tool_permission_request)
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request_for_tenant", fake_get_tool_permission_request_for_tenant)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.decide_tool_permission_request", fake_decide_tool_permission_request)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.append_audit_log", fake_append_audit_log)
@@ -229,7 +238,7 @@ def test_tool_permission_decision_serializes_datetime_expiry_for_event_payload(m
 
     response = client.post(
         "/api/ai/runs/run-a/tool-permissions/tpr-a/decision",
-        headers=headers(),
+        headers=headers(roles="admin"),
         json={"decision": "allow_once", "reason": "read-only query"},
     )
 
@@ -241,7 +250,7 @@ def test_tool_permission_decision_serializes_datetime_expiry_for_event_payload(m
 def test_tool_permission_decision_redacts_reason_before_event_payload(monkeypatch):
     calls = []
 
-    async def fake_get_tool_permission_request(conn, *, tenant_id, user_id, run_id, request_id):
+    async def fake_get_tool_permission_request_for_tenant(conn, *, tenant_id, run_id, request_id):
         return permission_row(risk_level="medium", write_capable=True)
 
     async def fake_decide_tool_permission_request(conn, **kwargs):
@@ -263,7 +272,7 @@ def test_tool_permission_decision_redacts_reason_before_event_payload(monkeypatc
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request", fake_get_tool_permission_request)
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request_for_tenant", fake_get_tool_permission_request_for_tenant)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.decide_tool_permission_request", fake_decide_tool_permission_request)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.append_audit_log", fake_append_audit_log)
@@ -271,7 +280,7 @@ def test_tool_permission_decision_redacts_reason_before_event_payload(monkeypatc
 
     response = client.post(
         "/api/ai/runs/run-a/tool-permissions/tpr-a/decision",
-        headers=headers(),
+        headers=headers(roles="admin"),
         json={"decision": "deny", "reason": "deny token=hidden /var/lib/ai-platform/run-a/private.log"},
     )
 
@@ -280,6 +289,55 @@ def test_tool_permission_decision_redacts_reason_before_event_payload(monkeypatc
     assert event_payload["reason"] == ""
     assert "hidden" not in str(event_payload)
     assert "/var/lib/ai-platform" not in str(event_payload)
+
+
+def test_ordinary_run_owner_cannot_decide_permission_requests(monkeypatch):
+    async def fail_direct_lookup(*args, **kwargs):
+        raise AssertionError("ordinary users must be rejected before direct lookup")
+
+    async def fail_inbox_lookup(*args, **kwargs):
+        raise AssertionError("ordinary users must be rejected before inbox lookup")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request_for_tenant", fail_direct_lookup)
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request_by_id_for_tenant", fail_inbox_lookup)
+    client = TestClient(create_app())
+
+    direct = client.post(
+        "/api/ai/runs/run-a/tool-permissions/tpr-a/decision",
+        headers=headers(roles="user"),
+        json={"decision": "allow_once"},
+    )
+    inbox = client.post(
+        "/api/ai/tool-permissions/inbox/tpr-a/decision",
+        headers=headers(roles="user"),
+        json={"decision": "deny"},
+    )
+
+    assert direct.status_code == 403
+    assert inbox.status_code == 403
+    assert direct.json()["detail"] == "not_ai_admin"
+    assert inbox.json()["detail"] == "not_ai_admin"
+
+
+def test_admin_direct_decision_hides_cross_tenant_or_run_mismatches(monkeypatch):
+    async def fake_get_tool_permission_request_for_tenant(conn, *, tenant_id, run_id, request_id):
+        assert (tenant_id, run_id, request_id) == ("tenant-a", "run-other", "tpr-other")
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request_for_tenant", fake_get_tool_permission_request_for_tenant)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-other/tool-permissions/tpr-other/decision",
+        headers=headers(user_id="admin-a", roles="admin", tenant_id="tenant-a"),
+        json={"decision": "deny"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "tool_permission_request_not_found"
 
 
 def test_tool_permission_response_hides_internal_request_and_decision_payloads(monkeypatch):
@@ -381,6 +439,48 @@ def test_tool_permission_inbox_lists_current_user_requests(monkeypatch):
     assert "aaaaaaaa" not in serialized
 
 
+def test_tool_permission_inbox_lists_tenant_requests_for_admin(monkeypatch):
+    calls = []
+
+    async def fake_list_tool_permission_inbox_for_tenant(conn, *, tenant_id, status, limit):
+        calls.append((tenant_id, status, limit))
+        return [
+            permission_row(
+                user_id="run-owner",
+                reason="operator token=admin-inbox-secret",
+                request_payload_json={"command": "admin-inbox-secret-command"},
+            )
+        ]
+
+    async def fail_current_user_inbox(*args, **kwargs):
+        raise AssertionError("admin governance inbox must not filter to the admin user")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.tool_permissions.repositories.list_tool_permission_inbox_for_tenant",
+        fake_list_tool_permission_inbox_for_tenant,
+    )
+    monkeypatch.setattr(
+        "app.routes.tool_permissions.repositories.list_tool_permission_inbox",
+        fail_current_user_inbox,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/ai/tool-permissions/inbox?status=pending&limit=10",
+        headers=headers(user_id="admin-a", roles="admin"),
+    )
+
+    assert response.status_code == 200
+    assert calls == [("tenant-a", "pending", 10)]
+    body = response.json()
+    assert body["permission_requests"][0]["permission_request_id"] == "tpr-a"
+    serialized = str(body)
+    assert "admin-inbox-secret" not in serialized
+    assert "admin-inbox-secret-command" not in serialized
+
+
 def test_tool_permission_inbox_status_filters_pass_through(monkeypatch):
     calls = []
 
@@ -407,12 +507,12 @@ def test_tool_permission_inbox_status_filters_pass_through(monkeypatch):
     assert calls == [("decided", 7), ("all", 9)]
 
 
-def test_tool_permission_inbox_decision_writes_event_and_audit(monkeypatch):
+def test_tool_permission_inbox_admin_decision_writes_event_and_audit(monkeypatch):
     calls = []
 
-    async def fake_get_tool_permission_request_by_id(conn, *, tenant_id, user_id, request_id):
-        assert (tenant_id, user_id, request_id) == ("tenant-a", "user-a", "tpr-a")
-        return permission_row(risk_level="high", write_capable=True, reason="needs write")
+    async def fake_get_tool_permission_request_by_id_for_tenant(conn, *, tenant_id, request_id):
+        assert (tenant_id, request_id) == ("tenant-a", "tpr-a")
+        return permission_row(user_id="run-owner", risk_level="high", write_capable=True, reason="needs write")
 
     async def fake_decide_tool_permission_request(conn, **kwargs):
         calls.append(("decision", kwargs))
@@ -435,7 +535,7 @@ def test_tool_permission_inbox_decision_writes_event_and_audit(monkeypatch):
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request_by_id", fake_get_tool_permission_request_by_id)
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request_by_id_for_tenant", fake_get_tool_permission_request_by_id_for_tenant)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.decide_tool_permission_request", fake_decide_tool_permission_request)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.append_audit_log", fake_append_audit_log)
@@ -443,7 +543,7 @@ def test_tool_permission_inbox_decision_writes_event_and_audit(monkeypatch):
 
     response = client.post(
         "/api/ai/tool-permissions/inbox/tpr-a/decision",
-        headers=headers(),
+        headers=headers(user_id="admin-a", roles="admin"),
         json={"decision": "allow_for_run", "reason": "approved from inbox", "expires_in_seconds": 1200},
     )
 
@@ -451,25 +551,28 @@ def test_tool_permission_inbox_decision_writes_event_and_audit(monkeypatch):
     assert response.json()["permission_request"]["decision"] == "allow_for_run"
     assert response.json()["permission_request"]["decision_endpoint"] == "/api/ai/tool-permissions/inbox/tpr-a/decision"
     assert calls[0][1]["run_id"] == "run-a"
+    assert calls[0][1]["user_id"] == "run-owner"
     assert calls[0][1]["expires_in_seconds"] == 1200
     assert calls[1][1]["event_type"] == "tool_permission_decided"
     assert calls[1][1]["payload"]["permission_request_id"] == "tpr-a"
     assert calls[1][1]["payload"]["decision"] == "allow_for_run"
     assert calls[2][1]["action"] == "tool.permission.decision"
+    assert calls[2][1]["user_id"] == "admin-a"
 
 
-def test_tool_permission_inbox_decision_returns_404_for_other_user_request(monkeypatch):
-    async def fake_get_tool_permission_request_by_id(conn, *, tenant_id, user_id, request_id):
+def test_tool_permission_inbox_decision_hides_cross_tenant_request(monkeypatch):
+    async def fake_get_tool_permission_request_by_id_for_tenant(conn, *, tenant_id, request_id):
+        assert (tenant_id, request_id) == ("tenant-a", "tpr-other")
         return None
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request_by_id", fake_get_tool_permission_request_by_id)
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request_by_id_for_tenant", fake_get_tool_permission_request_by_id_for_tenant)
     client = TestClient(create_app())
 
     response = client.post(
         "/api/ai/tool-permissions/inbox/tpr-other/decision",
-        headers=headers(),
+        headers=headers(roles="admin"),
         json={"decision": "deny", "reason": "not mine"},
     )
 
@@ -480,7 +583,7 @@ def test_tool_permission_inbox_decision_returns_404_for_other_user_request(monke
 def test_tool_permission_inbox_decision_returns_409_for_already_decided_request(monkeypatch):
     calls = []
 
-    async def fake_get_tool_permission_request_by_id(conn, *, tenant_id, user_id, request_id):
+    async def fake_get_tool_permission_request_by_id_for_tenant(conn, *, tenant_id, request_id):
         return permission_row(status="decided", decision="deny")
 
     async def fake_decide_tool_permission_request(conn, **kwargs):
@@ -495,7 +598,7 @@ def test_tool_permission_inbox_decision_returns_409_for_already_decided_request(
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request_by_id", fake_get_tool_permission_request_by_id)
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.get_tool_permission_request_by_id_for_tenant", fake_get_tool_permission_request_by_id_for_tenant)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.decide_tool_permission_request", fake_decide_tool_permission_request)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.append_event", fail_append_event)
     monkeypatch.setattr("app.routes.tool_permissions.repositories.append_audit_log", fail_append_audit_log)
@@ -503,7 +606,7 @@ def test_tool_permission_inbox_decision_returns_409_for_already_decided_request(
 
     response = client.post(
         "/api/ai/tool-permissions/inbox/tpr-a/decision",
-        headers=headers(),
+        headers=headers(roles="admin"),
         json={"decision": "allow_once", "reason": "too late"},
     )
 
