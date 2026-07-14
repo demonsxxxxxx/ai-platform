@@ -6,13 +6,11 @@ import {
   Image as ImageIcon,
   File,
 } from "lucide-react";
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import { MarkdownContent } from "../MarkdownContent";
 import { CopyButton } from "../../../common";
-import { dispatchPersonaPresetsChanged } from "../../../../hooks/personaPresetEvents";
-import { getPersonaPresetMutationDetail } from "./personaPresetToolResult";
 import type { McpContentBlock, McpMultiModalResult } from "./toolUtils";
 import { isMarkdownText, extractText } from "./toolUtils";
 import { ToolResultPanel } from "./ToolResultPanel";
@@ -385,20 +383,6 @@ export function ToolResultContent({
 }: {
   result?: string | Record<string, unknown>;
 }) {
-  const personaMutationDetail = useMemo(
-    () => getPersonaPresetMutationDetail(result),
-    [result],
-  );
-  const lastPersonaMutationKeyRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    if (!personaMutationDetail) return;
-    const key = JSON.stringify(personaMutationDetail);
-    if (lastPersonaMutationKeyRef.current === key) return;
-    lastPersonaMutationKeyRef.current = key;
-    dispatchPersonaPresetsChanged(personaMutationDetail);
-  }, [personaMutationDetail]);
-
   const textContent = extractText(result);
 
   // LangChain content blocks 数组: [{"type": "text", "text": "..."}, ...]

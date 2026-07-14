@@ -5,16 +5,12 @@ export type WorkbenchAccessKey =
   | "apps"
   | "skills"
   | "mcp"
-  | "persona"
   | "files"
-  | "agent-workspace"
   | "notifications"
   | "memory"
   | "users"
   | "roles"
   | "settings"
-  | "channels"
-  | "agents"
   | "models"
   | "feedback";
 
@@ -22,8 +18,6 @@ const ADMIN_ONLY_ITEMS = new Set<WorkbenchAccessKey>([
   "users",
   "roles",
   "settings",
-  "channels",
-  "agents",
   "models",
   "feedback",
 ]);
@@ -34,16 +28,12 @@ const PATH_ACCESS_KEYS: Array<[RegExp, WorkbenchAccessKey]> = [
   [/^\/skills(?:\/|$)/, "skills"],
   [/^\/marketplace(?:\/|$)/, "skills"],
   [/^\/mcp(?:\/|$)/, "mcp"],
-  [/^\/persona(?:\/|$)/, "persona"],
   [/^\/files(?:\/|$)/, "files"],
-  [/^\/agent-workspace(?:\/|$)/, "agent-workspace"],
   [/^\/notifications(?:\/|$)/, "notifications"],
   [/^\/memory(?:\/|$)/, "memory"],
   [/^\/users(?:\/|$)/, "users"],
   [/^\/roles(?:\/|$)/, "roles"],
   [/^\/settings(?:\/|$)/, "settings"],
-  [/^\/channels(?:\/|$)/, "channels"],
-  [/^\/agents(?:\/|$)/, "agents"],
   [/^\/models(?:\/|$)/, "models"],
   [/^\/feedback(?:\/|$)/, "feedback"],
 ];

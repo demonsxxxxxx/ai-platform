@@ -14,9 +14,7 @@ const ordinaryItems: WorkbenchAccessKey[] = [
   "apps",
   "skills",
   "mcp",
-  "persona",
   "files",
-  "agent-workspace",
   "notifications",
   "memory",
 ];
@@ -25,8 +23,6 @@ const adminOnlyItems: WorkbenchAccessKey[] = [
   "users",
   "roles",
   "settings",
-  "channels",
-  "agents",
   "models",
   "feedback",
 ];
@@ -53,9 +49,7 @@ test("admin identity is fail closed unless the signed projection is explicitly t
 });
 
 test("path policy covers nested management URLs and leaves public unknown paths alone", () => {
-  assert.equal(canAccessWorkbenchPath(ordinaryUser, "/channels/slack/demo"), false);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/users"), false);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/mcp"), true);
-  assert.equal(canAccessWorkbenchPath(adminUser, "/channels/slack/demo"), true);
   assert.equal(canAccessWorkbenchPath(ordinaryUser, "/shared/example"), true);
 });

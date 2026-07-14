@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import type { AgentInfo } from "../../../types";
+import type { AgentOption } from "../../../types/agentOptions";
 
 export const DEFAULT_THINKING_LEVEL_STORAGE_KEY = "defaultThinkingLevel";
+const EMPTY_AGENT_OPTION_DEFINITIONS: Record<string, AgentOption> = {};
 
 const THINKING_LEVEL_OPTION_DEFS = [
   { value: "off", label_key: "agentOptions.enableThinking.options.off" },
@@ -45,8 +46,8 @@ export function normalizeAgentOptionValues(
 }
 
 export function normalizeAgentOptions(
-  options?: AgentInfo["options"],
-): AgentInfo["options"] | undefined {
+  options?: Record<string, AgentOption>,
+): Record<string, AgentOption> | undefined {
   if (!options) return options;
 
   return Object.fromEntries(
@@ -82,7 +83,7 @@ type StorageLike = Pick<Storage, "getItem">;
 
 function applyStoredAgentOptionDefaults(
   defaultValues: Record<string, boolean | string | number>,
-  options?: AgentInfo["options"],
+  options?: Record<string, AgentOption>,
   storage?: StorageLike,
 ): Record<string, boolean | string | number> {
   if (!options?.enable_thinking) {
@@ -103,7 +104,7 @@ function applyStoredAgentOptionDefaults(
 }
 
 export function buildAgentOptionValues(
-  options?: AgentInfo["options"],
+  options?: Record<string, AgentOption>,
   restoredOptions?: Record<string, boolean | string | number>,
   storage: StorageLike | undefined = typeof window !== "undefined"
     ? window.localStorage
@@ -137,14 +138,10 @@ export function buildAgentOptionValues(
 export type AgentOptionSyncMode = "restore" | "reset" | "preserve" | "skip";
 
 export function getAgentOptionSyncMode({
-  currentAgentId,
-  previousAgentId,
   optionsJson,
   previousOptionsJson,
   hasPendingRestoredOptions,
 }: {
-  currentAgentId: string;
-  previousAgentId?: string;
   optionsJson: string;
   previousOptionsJson: string;
   hasPendingRestoredOptions: boolean;
@@ -153,7 +150,7 @@ export function getAgentOptionSyncMode({
     return "restore";
   }
 
-  if (!previousAgentId || previousAgentId !== currentAgentId) {
+  if (!previousOptionsJson) {
     return "reset";
   }
 
@@ -164,7 +161,9 @@ export function getAgentOptionSyncMode({
   return "preserve";
 }
 
-export function useAgentOptions(agents: AgentInfo[], currentAgent: string) {
+export function useAgentOptions(
+  optionDefinitions: Record<string, AgentOption> = EMPTY_AGENT_OPTION_DEFINITIONS,
+) {
   const [agentOptionValues, setAgentOptionValues] = useState<
     Record<string, boolean | string | number>
   >({});
@@ -172,28 +171,20 @@ export function useAgentOptions(agents: AgentInfo[], currentAgent: string) {
     string,
     boolean | string | number
   > | null>(null);
-  // Track serialized agent options to avoid rebuilding on every agents ref change
+  // Track option definitions so model metadata refreshes preserve user selections.
   const prevAgentOptionsJsonRef = useRef<string>("");
-  const prevAgentIdRef = useRef<string | undefined>(undefined);
 
-  const currentAgentInfo = agents.find((a) => a.id === currentAgent);
-  const currentAgentOptions =
-    normalizeAgentOptions(currentAgentInfo?.options) || {};
+  const currentAgentOptions = normalizeAgentOptions(optionDefinitions) || {};
 
   useEffect(() => {
-    const options = normalizeAgentOptions(
-      agents.find((a) => a.id === currentAgent)?.options,
-    );
+    const options = normalizeAgentOptions(optionDefinitions);
     const optionsJson = JSON.stringify(options);
     const syncMode = getAgentOptionSyncMode({
-      currentAgentId: currentAgent,
-      previousAgentId: prevAgentIdRef.current,
       optionsJson,
       previousOptionsJson: prevAgentOptionsJsonRef.current,
       hasPendingRestoredOptions: pendingRestoredOptionsRef.current !== null,
     });
 
-    prevAgentIdRef.current = currentAgent;
     const prevJson = prevAgentOptionsJsonRef.current;
     prevAgentOptionsJsonRef.current = optionsJson;
 
@@ -226,13 +217,11 @@ export function useAgentOptions(agents: AgentInfo[], currentAgent: string) {
       }
       return rebuilt;
     });
-  }, [currentAgent, agents]);
+  }, [optionDefinitions]);
 
   useEffect(() => {
     const handleThinkingPreferenceUpdated = () => {
-      const options = normalizeAgentOptions(
-        agents.find((a) => a.id === currentAgent)?.options,
-      );
+      const options = normalizeAgentOptions(optionDefinitions);
       // Only update the thinking level default; preserve all other user selections.
       setAgentOptionValues((prev) => ({
         ...buildAgentOptionValues(options),
@@ -253,7 +242,7 @@ export function useAgentOptions(agents: AgentInfo[], currentAgent: string) {
         handleThinkingPreferenceUpdated,
       );
     };
-  }, [agents, currentAgent]);
+  }, [optionDefinitions]);
 
   const handleToggleAgentOption = useCallback(
     (key: string, value: boolean | string | number) => {
@@ -264,11 +253,9 @@ export function useAgentOptions(agents: AgentInfo[], currentAgent: string) {
 
   // Reset to agent defaults (for new session)
   const resetAgentOptionDefaults = useCallback(() => {
-    const options = normalizeAgentOptions(
-      agents.find((a) => a.id === currentAgent)?.options,
-    );
+    const options = normalizeAgentOptions(optionDefinitions);
     setAgentOptionValues(buildAgentOptionValues(options));
-  }, [agents, currentAgent]);
+  }, [optionDefinitions]);
 
   // 从外部恢复配置
   const restoreAgentOptions = useCallback(

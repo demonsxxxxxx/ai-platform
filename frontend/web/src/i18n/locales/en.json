@@ -75,128 +75,6 @@
       "description": "This page is available for your account."
     }
   },
-  "agentConfig": {
-    "addFirstModel": "Add your first model",
-    "addModel": "Add Model",
-    "advancedConfig": "Advanced",
-    "allModelsAvailable": "All models selected",
-    "apiConfiguration": "API Configuration",
-    "apiKeyEditHint": "Leave empty to keep the existing key. Enter a new key to replace it.",
-    "apiKeyHint": "Leave empty to skip (not recommended)",
-    "apiKeyPlaceholder": "Custom API key for this model",
-    "apiTag": "API",
-    "availableAgents": "Available Agents",
-    "batchAddRow": "Add Model",
-    "batchCreate": "Batch Create",
-    "batchCreateBtn": "Create {{count}} Models",
-    "batchCreateDesc": "Quickly add multiple model configurations",
-    "batchCreateFailed": "Batch create failed",
-    "batchCreateSuccess": "{{count}} model(s) created successfully",
-    "batchCreateTitle": "Batch Create Models",
-    "batchImportBtn": "Import",
-    "batchJsonError": "Invalid JSON or missing required fields",
-    "batchJsonHint": "Paste a JSON array of model configurations. Each object must have 'value' and 'label' fields.",
-    "batchJsonLabel": "JSON Configuration",
-    "batchJsonPreview": "{{count}} model(s) parsed successfully",
-    "batchModelListHint": "* Value and label are required",
-    "batchModelsHint": "Format: value | label | description per line. Label and description are optional. Separator: | or tab.",
-    "batchModelsList": "Models (one per line: value | label)",
-    "batchNoModels": "Please enter at least one model",
-    "batchPreview": "{{count}} model(s) will be created",
-    "batchTabAddOneByOne": "Add One by One",
-    "batchTabJsonImport": "JSON Import",
-    "clearAll": "Clear all",
-    "confirmDeleteModel": "Are you sure you want to delete this model?",
-    "createModel": "Create Model",
-    "createModelDesc": "Add a new model configuration",
-    "ctxTag": "ctx: {{value}}",
-    "currentPreference": "Current default agent: {{agentName}}",
-    "customApi": "Custom API",
-    "customApiKey": "Custom API Key",
-    "defaultAgent": "Default Agent",
-    "defaultAgentDescription": "Select your default agent for new conversations",
-    "delete": "Delete",
-    "deleteModel": "Delete Model",
-    "disable": "Disable",
-    "disableAgent": "Disable {{name}}",
-    "disabled": "Disabled",
-    "edit": "Edit",
-    "editModel": "Edit Model",
-    "editModelDesc": "Modify model configuration",
-    "enable": "Enable",
-    "enableAgent": "Enable {{name}}",
-    "exportModels": "Export",
-    "fallbackModel": "Fallback Model",
-    "fallbackModelHint": "Automatically switch to this model when the primary model fails",
-    "globalDescription": "Configure which agents are available globally. Only enabled agents can be assigned to roles.",
-    "globalTab": "Global",
-    "importInvalidFormat": "Invalid JSON format",
-    "importModels": "Import",
-    "importing": "Importing...",
-    "invalidMaxInputTokens": "Max Input Tokens must be a valid number",
-    "invalidMaxTokens": "Max Tokens must be a valid number",
-    "invalidTemperature": "Temperature must be a number between 0 and 2",
-    "keyTag": "Key",
-    "loadFailed": "Failed to load agent configuration",
-    "maxInputTokens": "Max Input Tokens",
-    "maxTag": "max: {{value}}",
-    "maxTokens": "Max Tokens",
-    "modelApiBase": "API Base URL",
-    "modelApiBasePlaceholder": "e.g., https://api.anthropic.com",
-    "modelApiKey": "API Key",
-    "modelConfigDescription": "Add, edit, or remove models from the model library. Each model can have custom API settings.",
-    "modelConfigTab": "Model Config",
-    "modelCreateSuccess": "Model created successfully",
-    "modelDeleteFailed": "Failed to delete model",
-    "modelDeleteSuccess": "Model deleted successfully",
-    "modelDescription": "Description",
-    "modelDescriptionPlaceholder": "Optional description",
-    "modelDisabled": "Model disabled",
-    "modelEnabled": "Model enabled",
-    "modelLabel": "Label",
-    "modelLabelPlaceholder": "e.g., Claude 3.5 Sonnet",
-    "modelProvider": "Provider",
-    "modelReorderFailed": "Failed to reorder models",
-    "modelSaveFailed": "Failed to save model",
-    "modelSaveSuccess": "Model saved successfully",
-    "modelTitle": "Model Configuration",
-    "modelToggleFailed": "Failed to toggle model",
-    "modelValue": "Value (Model ID)",
-    "modelValueHint": "e.g. anthropic/claude-3-5-sonnet, used to route to the corresponding API",
-    "modelValuePlaceholder": "e.g., anthropic/claude-3-5-sonnet",
-    "modelValueReadonly": "Model ID cannot be changed after creation",
-    "modelsDescription": "Configure which models each role can use. When no models are selected, the role cannot use any model.",
-    "modelsTab": "Models",
-    "moveDown": "Move down",
-    "moveUp": "Move up",
-    "noAvailableAgents": "No agents available",
-    "noFallback": "None",
-    "noModelsConfigured": "No models configured",
-    "noModelsConfiguredHint": "Please configure models in Model Config tab first",
-    "noPermission": "You don't have permission to view agent configuration",
-    "off": "Off",
-    "optional": "Optional",
-    "parameters": "Parameters",
-    "preferenceSaved": "Default agent preference saved",
-    "providerAuto": "Auto-detect",
-    "providerHint": "Override the API interface used. Leave as Auto-detect to infer from the model ID prefix.",
-    "rolesDescription": "Configure which agents each role can access.",
-    "rolesTab": "Role Assignments",
-    "saveFailed": "Failed to save configuration",
-    "saveSuccess": "Configuration saved successfully",
-    "selectAgentsForRole": "Select agents accessible to {{roleName}} role",
-    "selectAll": "Select all",
-    "selectModelsForRole": "Select models accessible to {{roleName}} role",
-    "selectRole": "Select a role",
-    "selectedModelsCount": "{{count}} / {{total}} models selected",
-    "sharedConfig": "Shared Configuration",
-    "sharedConfigHint": "Set API URL and key for all models at once. Leave empty to configure each model individually.",
-    "subtitle": "Manage agent availability and role assignments",
-    "tempTag": "temp: {{value}}",
-    "temperature": "Temperature",
-    "title": "Agent Configuration",
-    "valueAndLabelRequired": "Value and Label are required"
-  },
   "agentOptions": {
     "enableThinking": {
       "description": "Control thinking intensity (supported models only)",
@@ -208,16 +86,6 @@
         "medium": "Medium",
         "off": "Off"
       }
-    }
-  },
-  "agents": {
-    "fast": {
-      "description": "No sandbox, faster response, for daily chat",
-      "name": "Fast Agent"
-    },
-    "search": {
-      "description": "With code interpreter & sandbox, for complex tasks",
-      "name": "Search Agent"
     }
   },
   "appName": "AI Platform",
@@ -503,112 +371,6 @@
     "tracing": "Tracing",
     "user": "Profile"
   },
-  "channel": {
-    "addFirstInstance": "Add First Instance",
-    "addInstance": "Add Instance",
-    "agent": "Agent",
-    "agentHint": "Select which agent handles messages from this channel",
-    "configuration": "Configuration",
-    "connected": "Connected",
-    "createdAt": "Created",
-    "defaultAgent": "Default Agent",
-    "defaultModel": "Default Model",
-    "deleteConfirm": "Are you sure you want to delete this channel configuration? This action cannot be undone.",
-    "deleteConfirmMessage": "Are you sure you want to delete this channel instance? This action cannot be undone.",
-    "deleteError": "Failed to delete configuration",
-    "deleteSuccess": "Configuration deleted",
-    "deleteTitle": "Delete Channel Instance",
-    "description": "Connect governed company channels to AI Platform",
-    "disconnected": "Disconnected",
-    "enabled": "Enable Channel",
-    "enabledDesc": "Enable or disable this channel",
-    "fieldRequired": "{{field.title}} is required",
-    "instanceName": "Instance Name",
-    "instanceNamePlaceholder": "Enter instance name",
-    "leaveEmpty": "leave empty to keep current value",
-    "loadError": "Failed to load channel configuration",
-    "loadTypesError": "Failed to load available channels",
-    "model": "Model",
-    "modelHint": "Select which model this channel uses. Uses the model's configured provider and API key.",
-    "nameRequired": "Instance name is required",
-    "newInstance": "New Instance",
-    "noChannels": "No channels available",
-    "noChannelsDesc": "Check back later for available integrations",
-    "noInstances": "No instances configured",
-    "notConfigured": "Not configured",
-    "saveError": "Failed to save configuration",
-    "saveSuccess": "Configuration saved",
-    "setupGuide": "Setup Guide",
-    "testConnection": "Test",
-    "testError": "Failed to test connection",
-    "testFailed": "Connection failed",
-    "testSuccess": "Connection successful",
-    "title": "Channels"
-  },
-  "channelImport": {
-    "title": "Channels",
-    "subtitle": "Review company message entry points, notification entry points, and external channel governance in one workbench.",
-    "redaction": "Redaction",
-    "retention": "Retention",
-    "sourcesTitle": "Channel sources",
-    "sourcesDescription": "Reads the governed ai-platform channel catalog and only shows safe tenant, workspace, capability, redaction, and retention projections.",
-    "loading": "Loading channel catalog",
-    "testDryRun": "Test connection",
-    "testDryRunPending": "Testing",
-    "adminTestQueued": "Channel test queued for audited execution",
-    "adminTestFailed": "Failed to queue channel test",
-    "sourceFailClosedDescription": "Channel sources are shown from the public catalog projection. Management actions stay locked by channel:admin permission.",
-    "catalogItem": {
-      "description": "{{type}} entry in workspace {{workspace}}"
-    },
-    "connection": {
-      "label": "Connection",
-      "states": {
-        "connected": "Connected",
-        "healthy": "Healthy",
-        "degraded": "Degraded",
-        "disconnected": "Disconnected",
-        "disabled": "Disabled",
-        "unknown": "Unknown"
-      }
-    },
-    "catalogReady": {
-      "title": "Channel catalog connected",
-      "description": "{{workspace}} has {{count}} channels, {{enabled}} enabled. Management actions only open with channel:admin permission.",
-      "publicProjection": "Public catalog projection",
-      "publicProjectionDescription": "Ordinary users can see channel name, type, capabilities, connection state, and governance policy without webhooks, tokens, or secrets.",
-      "adminProjection": "Admin lifecycle",
-      "adminProjectionDescription": "Create, test, enable, disable, credential, and retention requests go through audited /api/admin/channels endpoints."
-    },
-    "empty": {
-      "title": "No channels yet",
-      "description": "This workspace has no visible channels. Channels appear here after an administrator creates or enables them."
-    },
-    "sources": {
-      "feishu": "Feishu",
-      "wechat": "WeCom",
-      "dingtalk": "DingTalk",
-      "slack": "Slack"
-    },
-    "capabilities": {
-      "publicSources": {
-        "title": "Public channel projection",
-        "description": "Ordinary users should only see approved channel catalog data without webhooks, secrets, or cross-tenant configuration."
-      },
-      "runtimeNotices": {
-        "title": "Runtime notices",
-        "description": "Chat and task runtime notices still flow through the current message surfaces while this management entry stays read-only."
-      },
-      "lifecycle": {
-        "title": "Lifecycle governance",
-        "description": "Create, test, enable, disable, credential, and retention controls unlock only through audited channel:admin endpoints."
-      }
-    },
-    "unavailable": {
-      "description": "This workspace did not return a usable channel catalog. The page remains visible while management actions stay permission-locked.",
-      "title": "Channel import is not available yet"
-    }
-  },
   "chat": {
     "assistant": "Assistant",
     "attachFile": "Attach file",
@@ -619,7 +381,6 @@
     "commandTrigger": "Open commands: / or $ for Skills, /mcp for MCP tools",
     "featureMenu": {
       "enhance": "Enhance",
-      "persona": "Persona",
       "settings": "Settings",
       "upload": "Upload"
     },
@@ -631,7 +392,6 @@
     "goodMorning": "Good morning, {{name}}",
     "helpDocs": "Help Docs",
     "keyboardShortcuts": "Keyboard Shortcuts",
-    "mentionNoResults": "No matching personas",
     "message": {
       "allFiles": "All files",
       "args": "Args",
@@ -961,7 +721,6 @@
     "enhance": "Enhance",
     "fileReference": "File reference",
     "mcpTools": "MCP Tools",
-    "persona": "Persona",
     "settings": "Settings",
     "skillsMarketplace": "Skills Marketplace",
     "upload": "Upload",
@@ -1418,8 +1177,13 @@
       "enableServer": "Enable MCP server",
       "disableServer": "Disable MCP server",
       "deleteServer": "Delete MCP server",
-      "deleteConfirmation": "Delete {{name}}? This action cannot be undone."
-      ,"operationFailed": "The operation could not be completed. Please check the configuration and try again.", "createSuccess": "MCP server created.", "updateSuccess": "MCP server updated.", "deleteSuccess": "MCP server deleted.", "enableSuccess": "MCP server enabled.", "disableSuccess": "MCP server disabled."
+      "deleteConfirmation": "Delete {{name}}? This action cannot be undone.",
+      "operationFailed": "The operation could not be completed. Please check the configuration and try again.",
+      "createSuccess": "MCP server created.",
+      "updateSuccess": "MCP server updated.",
+      "deleteSuccess": "MCP server deleted.",
+      "enableSuccess": "MCP server enabled.",
+      "disableSuccess": "MCP server disabled."
     },
     "importFromJSON": "Import from JSON",
     "importServers": "Import MCP Servers",
@@ -1610,10 +1374,7 @@
   },
   "nav": {
     "adminMarketplace": "Admin Marketplace",
-    "agentWorkspace": "Agent Workspace",
-    "agents": "Agents",
     "apps": "Company Apps",
-    "channels": "Channels",
     "chat": "Chat",
     "feedback": "Feedback",
     "files": "Files",
@@ -1623,7 +1384,6 @@
     "models": "Models",
     "more": "More",
     "notifications": "Notifications",
-    "persona": "Persona",
     "roles": "Roles",
     "settings": "Settings",
     "skillManagement": "Skill Management",
@@ -1633,10 +1393,7 @@
     "users": "Users"
   },
   "navDesc": {
-    "agentWorkspace": "Review sessions, runs, artifacts, approvals, and memory context",
-    "agents": "Configure and manage AI agents",
     "apps": "Open internal systems and frequently used sites",
-    "channels": "Manage communication channels",
     "chat": "Conversations with AI agents",
     "feedback": "View and manage user feedback",
     "marketplace": "Discover and install skills",
@@ -1686,102 +1443,6 @@
   "passwordInput": {
     "hidePassword": "Hide password",
     "showPassword": "Show password"
-  },
-  "personaPresets": {
-    "addStarterPrompt": "Add Starter Prompt",
-    "all": "All",
-    "allSkillsSelected": "All skills selected",
-    "allTags": "All",
-    "applying": "Applying...",
-    "archived": "Archived",
-    "avatar": "Avatar",
-    "avatarUploadFailed": "Avatar upload failed",
-    "change": "Change Persona",
-    "changeAvatar": "Change Avatar",
-    "clear": "Clear Persona",
-    "clearFilters": "Clear Filters",
-    "clearSkills": "Clear",
-    "clearSuccess": "Current persona cleared",
-    "confirmDelete": "Delete Persona",
-    "confirmDeleteMessage": "Are you sure you want to delete persona \"{{name}}\"? This action cannot be undone.",
-    "contractBoundaryDescription": "The frontend only reads the public projection. When a request fails, permission is missing, or the service is unavailable, it keeps a degraded workbench without falling back to the old plaza or admin APIs.",
-    "contractBoundaryTitle": "Persona preset projection is temporarily unavailable",
-    "copy": "Copy to My Personas",
-    "copyFailed": "Failed to copy persona preset",
-    "copySuccess": "Persona \"{{name}}\" copied",
-    "createFailed": "Failed to create persona preset",
-    "createHint": "Define the persona's behavior, tone, and capability boundaries",
-    "createMine": "Create My Persona",
-    "createSuccess": "Persona \"{{name}}\" created",
-    "deleteFailed": "Failed to delete persona preset",
-    "deleteSuccess": "Persona \"{{name}}\" deleted",
-    "degradedDescription": "The persona preset public projection is connected. The current request is temporarily unavailable, so the workbench entry stays visible without showing the error as an empty persona catalog.",
-    "degradedSafeDetail": "Search, scope filters, favorites, pinned state, import, and export stay in the workbench context without bypassing backend permissions or displaying failed reads as an empty catalog.",
-    "degradedTitle": "Persona projection is degraded",
-    "description": "Description",
-    "descriptionPlaceholder": "Briefly describe the persona's capabilities and characteristics",
-    "draft": "Draft",
-    "edit": "Edit",
-    "editMine": "Edit My Persona",
-    "editOfficial": "Edit Official Persona",
-    "empty": "No persona presets available",
-    "emptyHint": "Admins can create official persona presets",
-    "export": "Export",
-    "exportSuccess": "Exported {{count}} personas",
-    "favorite": "Favorite",
-    "fetchFailed": "Failed to fetch persona presets",
-    "import": "Import",
-    "importInvalidFile": "Import failed: invalid file format",
-    "importPartialFail": "{{count}} personas failed to import",
-    "importSuccess": "Successfully imported {{count}} personas",
-    "importing": "Importing...",
-    "issueReferenceDetail": "The persona preset projection is connected to the public workbench API. This degraded state means the request failed, permission is missing, or the service is unhealthy; it is a runtime availability signal.",
-    "manage": "Manage Personas",
-    "mine": "My Personas",
-    "name": "Name",
-    "namePlaceholder": "Give the persona a name",
-    "noAdminPermission": "Missing admin permission for global persona presets",
-    "noDeletePermission": "No permission to delete this persona preset",
-    "noEditPermission": "No permission to edit this persona preset",
-    "noMatch": "No matching personas",
-    "official": "Official",
-    "officialHint": "Official personas are visible to all users. It is recommended to fill in the description, tags, and available skills.",
-    "pickIcon": "Choose Icon",
-    "pin": "Pin",
-    "presetNotFound": "Persona preset not found",
-    "publishOfficial": "Publish Official Persona",
-    "published": "Published",
-    "recoveryDetail": "Recovery condition: once login, permissions, and the persona preset endpoints respond normally, the page moves from degraded to ready.",
-    "scope": "Scope",
-    "search": "Search persona name, description...",
-    "selectedSkills": "Selected Skills",
-    "skillCount": "{{count}} skills selected",
-    "skills": "Skills",
-    "skillsControlledHint": "The current persona \"{{name}}\" controls the available Skills. Clear the persona or edit the preset to change skills for this chat.",
-    "skillsCount": "skills",
-    "skillsInput": "Skills",
-    "skillsInputPlaceholder": "Click to select available skills...",
-    "starterIcon": "Icon",
-    "starterPromptPlaceholder": "Enter a prompt, or use {\"zh\":\"...\",\"en\":\"...\"}",
-    "starterPrompts": "Starter Prompts",
-    "status": "Status",
-    "subtitle": "Choose a persona to start chatting",
-    "systemPrompt": "System Prompt",
-    "systemPromptPlaceholder": "Define the persona's behavior, tone, and capability boundaries...",
-    "tags": "Tags",
-    "tagsAndSkills": "Tags & Skills",
-    "tagsInput": "Tags",
-    "tagsInputPlaceholder": "Separate with commas, e.g.: Writing, Translation, Code",
-    "title": "Persona Plaza",
-    "tryOtherFilters": "Try different search criteria",
-    "updateFailed": "Failed to update persona preset",
-    "updateSuccess": "Persona \"{{name}}\" updated",
-    "uploadAvatar": "Upload Avatar",
-    "usageCount": "uses",
-    "use": "Use",
-    "useFailed": "Failed to use persona preset",
-    "useSuccess": "Switched to persona \"{{name}}\"",
-    "using": "In Use"
   },
   "profile": {
     "appearance": "Appearance",
@@ -2023,21 +1684,9 @@
     "explainPrompt": "Please explain this text:\n\n{{codeBlock}}"
   },
   "seo": {
-    "agentWorkspace": {
-      "description": "Read-only Agent workspace for sessions, run console, artifacts, tool approvals, and memory context from governed ai-platform projections.",
-      "title": "Agent Workspace"
-    },
-    "agents": {
-      "description": "Configure and manage AI agents. Set up system prompts, select models, define governed tools, and tune runtime settings for controlled tasks.",
-      "title": "AI Agents"
-    },
     "apps": {
       "description": "Company internal systems and frequently used site navigation.",
       "title": "Company Apps"
-    },
-    "channels": {
-      "description": "Manage communication channels. Connect external messaging platforms and notification services for multi-channel AI interactions.",
-      "title": "Communication Channels"
     },
     "chat": {
       "description": "Have intelligent conversations with AI agents. Multi-model switching, real-time streaming responses, session management, file uploads, and governed context provenance.",
@@ -2074,10 +1723,6 @@
     "notifications": {
       "description": "Manage system announcements and notifications. Stay updated with platform news, alerts, and important messages.",
       "title": "Notifications"
-    },
-    "persona": {
-      "description": "Governed persona workbench entry for preset discovery and management. The page stays degraded until backend persona projections are available.",
-      "title": "Persona Presets"
     },
     "roles": {
       "description": "Configure roles and granular permissions. Define access control policies for teams, resources, and administrative functions.",
@@ -2356,7 +2001,6 @@
     "newChatAlt": "New Chat (Alternative)",
     "newline": "New Line",
     "search": "Search Chats",
-    "selectPersona": "Select Persona",
     "send": "Send Message"
   },
   "sidebar": {
@@ -2895,32 +2539,6 @@
     "subtitle": "View models available to this workbench. Admin writes stay locked by governance policy.",
     "title": "Models"
   },
-  "agentDirectory": {
-    "adminGovernance": "Admin configuration",
-    "adminGovernanceDescription": "Role assignment, prompt editing, model binding, and tool governance remain locked to administrator-controlled surfaces.",
-    "directoryStats": "Directory status",
-    "directoryStatsDescription": "{{count}} Agents published. Default: {{defaultAgent}}. Model scope: {{models}}.",
-    "emptyDescription": "The directory only shows public Agents returned by the backend projection. Admin configuration remains closed.",
-    "forbidden": "Agent directory is governed",
-    "forbiddenDescription": "This account cannot read the public Agent projection yet.",
-    "loadFailed": "Agent directory is unavailable",
-    "loading": "Loading Agent directory",
-    "loadingDescription": "Checking the public Agent projection for this workspace.",
-    "modelScopeAll": "all approved models",
-    "noAgents": "No Agents are published",
-    "noDescription": "No description published",
-    "noMatchingAgents": "No matching Agents",
-    "optionCount": "{{count}} published",
-    "options": "Options",
-    "publicProjection": "Public projection",
-    "publicProjectionDescription": "This page reads /api/agents only and does not expose prompts, tools, role assignments, or legacy config APIs.",
-    "searchPlaceholder": "Search Agents",
-    "subtitle": "Browse approved Agents from the public projection. Configuration writes stay governed.",
-    "title": "Agents",
-    "unavailable": "Agent directory is unavailable",
-    "unavailableDescription": "The public Agent projection did not return data. Chat can keep using the current default Agent while admin controls stay locked.",
-    "version": "Version"
-  },
   "workbench": {
     "cockpit": "Workbench",
     "commandDock": "Composer",
@@ -3029,24 +2647,6 @@
         },
         "description": "Feedback is connected as a unified triage desk over the safe projection. Assignment, closure, and label writes remain permission- and audit-governed.",
         "title": "Feedback triage"
-      },
-      "agents": {
-        "capabilities": {
-          "adminProjection": {
-            "description": "System prompts, tool bindings, and model bindings are waiting for admin projections.",
-            "title": "Admin projection"
-          },
-          "publicSelection": {
-            "description": "Chat still uses the current selectable agents; this page does not load the legacy config panel.",
-            "title": "Public Agent selection"
-          },
-          "roleAssignment": {
-            "description": "Role-based agent assignment needs backend RBAC governance contracts.",
-            "title": "Role assignment"
-          }
-        },
-        "description": "Agent administration depends on role, model, and tool governance. The entry remains visible without rendering legacy configuration pages.",
-        "title": "Agent administration is not enabled yet"
       },
       "notifications": {
         "capabilities": {

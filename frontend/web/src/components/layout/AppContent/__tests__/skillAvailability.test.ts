@@ -49,11 +49,11 @@ function booleanSetting(key: string, value: boolean): SettingItem {
   };
 }
 
-test("limits persona skills by whitelist and then applies disabled skills", () => {
+test("limits skills by whitelist and then applies disabled skills", () => {
   const result = buildEffectiveSkills({
     skills: [skill("planner"), skill("writer"), skill("other")],
     skillsLoading: false,
-    personaSkillNames: ["planner", "writer"],
+    allowedSkillNames: ["planner", "writer"],
     disabledSkillNames: ["writer"],
   });
 
@@ -71,7 +71,7 @@ test("composer skill availability never re-adds hidden skills via session toggle
   const result = buildEffectiveSkills({
     skills: [skill("planner"), skill("writer")],
     skillsLoading: false,
-    personaSkillNames: ["planner", "hidden-skill"],
+    allowedSkillNames: ["planner", "hidden-skill"],
     disabledSkillNames: ["hidden-skill"],
   });
 
@@ -81,7 +81,7 @@ test("composer skill availability never re-adds hidden skills via session toggle
   );
 });
 
-test("falls back to disabled-skills mode without a persona whitelist", () => {
+test("falls back to disabled-skills mode without a whitelist", () => {
   const result = buildEffectiveSkills({
     skills: [skill("planner"), skill("writer"), skill("globally-off", false)],
     skillsLoading: false,

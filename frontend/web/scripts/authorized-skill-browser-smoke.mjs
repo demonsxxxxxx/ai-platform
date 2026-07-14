@@ -217,7 +217,7 @@ function mockBootstrapSource() {
       if (typeof init.body === "string") {
         try { body = JSON.parse(init.body); } catch { body = "unparsed"; }
       }
-      if (url.pathname.startsWith("/api/") || url.pathname === "/agents" || url.pathname.startsWith("/mcp")) {
+      if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/mcp")) {
         state.requests.push({ path: url.pathname, method, credentials, body });
       }
       if (url.pathname === "/api/ai/auth/me") return json({
@@ -226,7 +226,7 @@ function mockBootstrapSource() {
         display_name: "Smoke User",
         tenant_id: "tenant-smoke",
         roles: ["member"],
-        permissions: ["chat:write", "skill:read", "persona_preset:read"],
+        permissions: ["chat:write", "skill:read"],
         is_admin: false,
         source: "cookie_session",
       });
@@ -237,11 +237,6 @@ function mockBootstrapSource() {
         default_model_id: "model-1",
       });
       if (url.pathname === "/api/auth/profile") return json({ metadata: { pinned_model_ids: [] } });
-      if (url.pathname === "/agents") return json({
-        agents: [{ id: "general-agent", name: "General Agent", description: "General tasks", options: {} }],
-        default_agent: "general-agent",
-        allowed_model_ids: ["model-1"],
-      });
       if (url.pathname === "/api/skills" || url.pathname === "/api/skills/") {
         state.skillListReads += 1;
         const projectedSkills = state.staleReturned
@@ -301,7 +296,6 @@ function mockBootstrapSource() {
         multi_agent: null,
       });
       if (url.pathname.includes("generate-title")) return json({ title: "Authorized Skill task" });
-      if (url.pathname.includes("persona") && method === "GET") return json({ presets: [], total: 0, skip: 0, limit: 12, available_tags: [] });
       if (url.pathname.includes("session") && method === "GET") return json({ sessions: [], total: 0, runs: [], events: [] });
       if (url.pathname.startsWith("/mcp") || url.pathname.includes("mcp")) return json({ servers: [] });
       if (url.pathname.startsWith("/api/")) return json({ items: [], total: 0, notifications: [], projects: [] });
@@ -568,11 +562,11 @@ async function runViewport(name, viewport) {
       return {
         submissions,
         credentialViolations: requests
-          .filter((item) => item.path.startsWith("/api/") || item.path === "/agents")
+          .filter((item) => item.path.startsWith("/api/"))
           .filter((item) => item.credentials !== "include")
           .map(({ path, method, credentials }) => ({ path, method, credentials })),
         allApiCredentialsIncluded: requests
-          .filter((item) => item.path.startsWith("/api/") || item.path === "/agents")
+          .filter((item) => item.path.startsWith("/api/"))
           .every((item) => item.credentials === "include"),
         errors: window.__authorizedSkillSmoke.errors,
       };

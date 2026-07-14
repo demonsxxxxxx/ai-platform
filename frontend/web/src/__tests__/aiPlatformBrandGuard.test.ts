@@ -24,7 +24,6 @@ const activeFiles = [
   "src/hooks/useSessionConfig.ts",
   "src/utils/sessionTitleEvents.ts",
   "src/components/common/selectionActionPrompt.ts",
-  "src/components/persona/usePersonaPlaza.ts",
   "src/components/profile/ProfileModal.tsx",
   "src/components/chat/ChatInputHelpMenu.tsx",
   "src/components/chat/WelcomePage.tsx",
@@ -33,7 +32,6 @@ const activeFiles = [
   "src/components/auth/AuthLayout.tsx",
   "src/components/auth/ForgotPassword.tsx",
   "src/components/auth/ResetPassword.tsx",
-  "src/components/pages/ChannelsPage.tsx",
   "src/components/sidebar/RecentChatsDialog.tsx",
   "src/components/panels/SidebarParts/SidebarRail.tsx",
   "src/components/panels/SidebarParts/SessionListContent.tsx",
@@ -73,7 +71,6 @@ test("brand entry surfaces consume the ai-platform home authority", () => {
   const entryFiles = [
     "src/components/auth/AuthPage.tsx",
     "src/components/share/SharedPage.tsx",
-    "src/components/panels/SidebarParts/SessionListContent.tsx",
   ];
 
   const offenders = entryFiles.filter((file) => {

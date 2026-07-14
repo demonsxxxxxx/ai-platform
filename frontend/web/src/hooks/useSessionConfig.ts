@@ -15,7 +15,6 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import type { SessionConfig } from "./useAgent/types";
-import type { PersonaPresetSnapshot } from "../types";
 import { normalizeAgentOptionValues } from "../components/layout/AppContent/useAgentOptions";
 import {
   readSessionConfigStorage,
@@ -29,8 +28,6 @@ export interface SessionConfigState {
   disabledMcpTools: string[];
   // Agent options
   agentOptions: Record<string, boolean | string | number>;
-  personaPresetId: string | null;
-  personaSnapshot: PersonaPresetSnapshot | null;
 }
 
 export interface UseSessionConfigOptions {
@@ -43,7 +40,7 @@ export interface UseSessionConfigOptions {
 /** Read persisted config from localStorage, returns null if not found or invalid */
 function loadPersistedConfig(): Pick<
   SessionConfigState,
-  "disabledSkills" | "disabledMcpTools" | "personaPresetId" | "personaSnapshot"
+  "disabledSkills" | "disabledMcpTools"
 > | null {
   try {
     const raw = readSessionConfigStorage();
@@ -56,8 +53,6 @@ function loadPersistedConfig(): Pick<
       return {
         disabledSkills: parsed.disabledSkills,
         disabledMcpTools: parsed.disabledMcpTools,
-        personaPresetId: parsed.personaPresetId ?? null,
-        personaSnapshot: parsed.personaSnapshot ?? null,
       };
     }
   } catch {
@@ -72,8 +67,6 @@ function persistConfig(
     SessionConfigState,
     | "disabledSkills"
     | "disabledMcpTools"
-    | "personaPresetId"
-    | "personaSnapshot"
   >,
 ) {
   try {
@@ -96,8 +89,6 @@ export interface UseSessionConfigReturn {
   setDisabledSkills: (skills: string[]) => void;
   setDisabledMcpTools: (tools: string[]) => void;
   setAgentOptions: (options: Record<string, boolean | string | number>) => void;
-  setPersonaPreset: (presetId: string, snapshot: PersonaPresetSnapshot) => void;
-  clearPersonaPreset: () => void;
 
   // 重置为默认配置
   resetToDefaults: () => void;
@@ -134,8 +125,6 @@ export function useSessionConfig(
         options.getDefaultDisabledMcpTools?.() ??
         [],
       agentOptions: options.getDefaultAgentOptions(),
-      personaPresetId: persisted?.personaPresetId ?? null,
-      personaSnapshot: persisted?.personaSnapshot ?? null,
     };
   });
 
@@ -160,14 +149,10 @@ export function useSessionConfig(
     persistConfig({
       disabledSkills: config.disabledSkills,
       disabledMcpTools: config.disabledMcpTools,
-      personaPresetId: config.personaPresetId,
-      personaSnapshot: config.personaSnapshot,
     });
   }, [
     config.disabledSkills,
     config.disabledMcpTools,
-    config.personaPresetId,
-    config.personaSnapshot,
   ]);
 
   // Toggle skill (add/remove from disabled list)
@@ -243,33 +228,12 @@ export function useSessionConfig(
     [],
   );
 
-  const setPersonaPreset = useCallback(
-    (presetId: string, snapshot: PersonaPresetSnapshot) => {
-      setConfig((prev) => ({
-        ...prev,
-        personaPresetId: presetId,
-        personaSnapshot: snapshot,
-      }));
-    },
-    [],
-  );
-
-  const clearPersonaPreset = useCallback(() => {
-    setConfig((prev) => ({
-      ...prev,
-      personaPresetId: null,
-      personaSnapshot: null,
-    }));
-  }, []);
-
   // Reset to defaults (new conversation)
   const resetToDefaults = useCallback(() => {
     const defaults = {
       disabledSkills: options.getDefaultDisabledSkills?.() || [],
       disabledMcpTools: options.getDefaultDisabledMcpTools?.() || [],
       agentOptions: defaultAgentOptionsRef.current,
-      personaPresetId: null,
-      personaSnapshot: null,
     };
     setConfig(defaults);
     persistConfig(defaults);
@@ -287,8 +251,6 @@ export function useSessionConfig(
       agentOptions:
         normalizeAgentOptionValues(sessionConfig.agent_options) ||
         defaultAgentOptionsRef.current,
-      personaPresetId: sessionConfig.persona_preset_id || null,
-      personaSnapshot: sessionConfig.persona_snapshot || null,
     };
     setConfig(restored);
     persistConfig(restored);
@@ -318,8 +280,6 @@ export function useSessionConfig(
     setDisabledSkills,
     setDisabledMcpTools,
     setAgentOptions,
-    setPersonaPreset,
-    clearPersonaPreset,
     resetToDefaults,
     restoreConfig,
     isSkillEnabled,

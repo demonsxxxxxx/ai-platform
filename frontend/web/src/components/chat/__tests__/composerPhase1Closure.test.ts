@@ -142,7 +142,6 @@ test("authenticated workbench popovers avoid legacy heavy overlays", () => {
     "src/components/chat/ChatMessage/FeedbackDialog.tsx",
     "src/components/layout/UserMenu.tsx",
     "src/components/notification/NotificationDialog.tsx",
-    "src/components/selectors/AgentModeSelector.tsx",
     "src/components/selectors/SkillSelector.tsx",
     "src/components/selectors/ToolSelector.tsx",
   ];
@@ -165,7 +164,6 @@ test("governed composer selector sheets use one workbench token palette", () => 
   const selectorFiles = [
     "src/components/chat/ComposerModelPanel.tsx",
     "src/components/chat/ComposerUnavailablePanel.tsx",
-    "src/components/selectors/AgentModeSelector.tsx",
     "src/components/selectors/SkillSelector.tsx",
     "src/components/selectors/ToolSelector.tsx",
   ];
@@ -188,7 +186,6 @@ test("governed selector primary controls use theme foreground contrast", () => {
   const theme = read("src/styles/base.css");
   const selectorFiles = [
     "src/components/chat/ComposerModelPanel.tsx",
-    "src/components/selectors/AgentModeSelector.tsx",
     "src/components/selectors/SkillSelector.tsx",
     "src/components/selectors/ToolSelector.tsx",
   ];
@@ -255,10 +252,6 @@ test("authenticated chat support surfaces use restrained enterprise workbench to
     [
       "SkillsList",
       read("src/components/panels/SkillsPanel/SkillsList.tsx"),
-    ],
-    [
-      "AgentConfigPanel",
-      read("src/components/panels/AgentPanel/AgentConfigPanel.tsx"),
     ],
     ["FeedbackPanel", read("src/components/panels/FeedbackPanel.tsx")],
   ]);

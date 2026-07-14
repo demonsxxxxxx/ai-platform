@@ -22,10 +22,9 @@ import { JsonSchemaEditor } from "./JsonSchemaEditor";
 import { SystemHealthSection } from "./SystemHealthSection";
 import { AdminRuntimeCapacitySection } from "./AdminRuntimeCapacitySection";
 import { useAuth } from "../../hooks/useAuth";
-import { agentApi } from "../../services/api/agent";
 import { roleApi } from "../../services/api/role";
 import { modelPublicApi, type ModelOption } from "../../services/api/modelPublic";
-import { Permission, type AgentInfo } from "../../types";
+import { Permission } from "../../types";
 import { formatDateTime } from "../../utils/datetime";
 import type {
   SettingItem,
@@ -130,7 +129,6 @@ export function SettingsPanel() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [roles, setRoles] = useState<Role[]>([]);
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [availableModels, setAvailableModels] = useState<ModelOption[]>([]);
   const [showAbout, setShowAbout] = useState(false);
 
@@ -152,19 +150,6 @@ export function SettingsPanel() {
       }
     };
     fetchRoles();
-  }, []);
-
-  // Fetch agents for DEFAULT_AGENT dropdown
-  useEffect(() => {
-    const fetchAgents = async () => {
-      try {
-        const data = await agentApi.list();
-        setAgents(data.agents || []);
-      } catch (err) {
-        console.error("Failed to fetch agents:", err);
-      }
-    };
-    fetchAgents();
   }, []);
 
   // Fetch model configs for settings that reference admin model configuration IDs
@@ -728,10 +713,12 @@ export function SettingsPanel() {
                                 disabled={!canManage}
                                 options={
                                   setting.key === "DEFAULT_AGENT"
-                                    ? agents.map((agent) => ({
-                                        value: agent.id,
-                                        label: t(agent.name || agent.id),
-                                      }))
+                                    ? [
+                                        {
+                                          value: "general-agent",
+                                          label: "general-agent",
+                                        },
+                                      ]
                                     : setting.key === "DEFAULT_USER_ROLE"
                                       ? roles.map((role) => ({
                                           value: role.name,

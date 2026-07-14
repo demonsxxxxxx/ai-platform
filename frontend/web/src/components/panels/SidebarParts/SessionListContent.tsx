@@ -8,10 +8,7 @@ import {
   Server,
   Bot,
   Cpu,
-  MessageCircle,
-  UserRound,
   FileStack,
-  SquareTerminal,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -120,22 +117,10 @@ export function SessionListContent({
       onClick: () => navigate("/skills"),
     },
     {
-      key: "persona",
-      icon: UserRound,
-      label: t("nav.persona"),
-      onClick: () => navigate("/persona"),
-    },
-    {
       key: "files",
       icon: FileStack,
       label: t("nav.files"),
       onClick: () => navigate("/files"),
-    },
-    {
-      key: "agent-workspace",
-      icon: SquareTerminal,
-      label: t("nav.agentWorkspace"),
-      onClick: () => navigate("/agent-workspace"),
     },
   ];
   const governanceNavItems: Array<{
@@ -149,18 +134,6 @@ export function SessionListContent({
       icon: Server,
       label: t("featureMenu.mcpTools"),
       onClick: () => navigate("/mcp"),
-    },
-    {
-      key: "channels",
-      icon: MessageCircle,
-      label: t("nav.channels"),
-      onClick: () => navigate("/channels"),
-    },
-    {
-      key: "agents",
-      icon: Bot,
-      label: t("nav.agents"),
-      onClick: () => navigate("/agents"),
     },
     {
       key: "models",

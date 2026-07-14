@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useLocation, useSearchParams } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import { History } from "lucide-react";
 import { BlockPreviewPortal } from "../../chat/ChatMessage/items/McpBlockPreview";
 import { SessionSidebar } from "../../panels/SessionSidebar";
@@ -12,14 +12,11 @@ import { useAuth } from "../../../hooks/useAuth";
 import { useTools } from "../../../hooks/useTools";
 import { useSkills } from "../../../hooks/useSkills";
 import { useSelectedSkillTask } from "../../../hooks/useSelectedSkillTask";
-import { usePersonaPresets } from "../../../hooks/usePersonaPresets";
 import { useProjectManager } from "../../../hooks/useProjectManager";
 import { useSessionConfig } from "../../../hooks/useSessionConfig";
 import {
   Permission,
   type ToolCategory,
-  type PersonaPreset,
-  type PersonaPresetSnapshot,
 } from "../../../types";
 import { useDragAndDrop } from "./useDragAndDrop";
 import { useWebSocketNotifications } from "./useWebSocketNotifications";
@@ -43,10 +40,10 @@ import {
 import { AppShell } from "./AppShell";
 import { ChatView } from "./ChatView";
 import { WorkbenchShell } from "../../workbench/WorkbenchShell";
+import { CHAT_AGENT_OPTION_DEFINITIONS } from "../../../types/agentOptions";
 import { shouldShowMessageOutline } from "./messageOutline";
 import { RunPlaybackPanel } from "./RunPlaybackPanel";
 import { openPersistentToolPanel } from "../../chat/ChatMessage/items/persistentToolPanelState";
-import { readSessionConfigStorage } from "../../../utils/sessionConfigStorage";
 
 export interface ChatAppContentProps {
   showProfileModal: boolean;
@@ -71,7 +68,6 @@ export function ChatAppContent({
 }: ChatAppContentProps) {
   const { t } = useTranslation();
   const location = useLocation();
-  const [searchParams, setSearchParams] = useSearchParams();
   const { enableSkills, settings, availableModels, defaultModel } =
     useSettingsContext();
   const { hasPermission, isAuthenticated } = useAuth();
@@ -105,7 +101,6 @@ export function ChatAppContent({
     isLoading: toolsLoading,
     totalCount: totalToolsCount,
     getDisabledToolNames,
-    refreshToolsForAgent,
   } = useTools({ enabled: true });
 
   const {
@@ -140,51 +135,10 @@ export function ChatAppContent({
     enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
-  const canReadPersonaPresets = hasPermission(Permission.PERSONA_PRESET_READ);
-  const canManagePersonaPresets =
-    hasPermission(Permission.PERSONA_PRESET_WRITE) ||
-    hasPermission(Permission.PERSONA_PRESET_ADMIN);
-  const [personaPresetPage, setPersonaPresetPage] = useState(1);
-  const [personaPresetQuery, setPersonaPresetQuery] = useState("");
-  const [personaPresetTag, setPersonaPresetTag] = useState<string | null>(null);
-  const personaPresetPageSize = 12;
-  const personaPresetListParams = useMemo(
-    () => ({
-      skip: (personaPresetPage - 1) * personaPresetPageSize,
-      limit: personaPresetPageSize,
-      q: personaPresetQuery.trim() || undefined,
-      tag: personaPresetTag || undefined,
-    }),
-    [personaPresetPage, personaPresetQuery, personaPresetTag],
-  );
-  const {
-    presets: personaPresets,
-    total: personaPresetsTotal,
-    isLoading: personaPresetsLoading,
-    isMutating: personaPresetsMutating,
-    usePreset: activatePersonaPreset,
-    updatePreference: updatePersonaPreference,
-    copyPreset: copyPersonaPreset,
-    createPreset: createPersonaPreset,
-    updatePreset: updatePersonaPreset,
-  } = usePersonaPresets({
-    enabled: canReadPersonaPresets,
-    listParams: personaPresetListParams,
-  });
-
-  const handlePersonaPresetSearchChange = useCallback((query: string) => {
-    setPersonaPresetQuery(query);
-  }, []);
-  const handlePersonaPresetTagChange = useCallback((tag: string | null) => {
-    setPersonaPresetTag(tag);
-  }, []);
-
   const projectManager = useProjectManager();
 
   const sessionConfigRef = useRef({
     disabledSkills: [] as string[],
-    enabledSkills: undefined as string[] | undefined,
-    personaPresetId: null as string | null,
     disabledMcpTools: [] as string[],
     agentOptions: {} as Record<string, boolean | string | number>,
   });
@@ -195,15 +149,11 @@ export function ChatAppContent({
     currentRunId,
     isLoading,
     isLoadingHistory,
-    agents,
-    currentAgent,
-    allowedModelIds: agentAllowedModelIds,
     connectionStatus,
     newlyCreatedSession,
     sendMessage,
     stopGeneration,
     clearMessages,
-    switchAgent,
     loadHistory,
     currentProjectId,
   } = useAgent({
@@ -222,8 +172,6 @@ export function ChatAppContent({
     },
     getEnabledTools: getDisabledToolNames,
     getDisabledSkills: () => sessionConfigRef.current.disabledSkills,
-    getEnabledSkills: () => sessionConfigRef.current.enabledSkills,
-    getPersonaPresetId: () => sessionConfigRef.current.personaPresetId,
     getDisabledMcpTools: () => sessionConfigRef.current.disabledMcpTools,
     getAgentOptions: () => sessionConfigRef.current.agentOptions,
     onSkillAdded: (
@@ -238,20 +186,7 @@ export function ChatAppContent({
     },
   });
 
-  const prevAgentRef = useRef(currentAgent);
-  useEffect(() => {
-    if (prevAgentRef.current !== currentAgent) {
-      prevAgentRef.current = currentAgent;
-      refreshToolsForAgent(currentAgent);
-    }
-  }, [currentAgent, refreshToolsForAgent]);
-
-  const filteredModels = useMemo(() => {
-    if (!availableModels) return null;
-    if (agentAllowedModelIds === null) return availableModels;
-    if (agentAllowedModelIds.length === 0) return [];
-    return availableModels.filter((m) => agentAllowedModelIds.includes(m.id));
-  }, [availableModels, agentAllowedModelIds]);
+  const filteredModels = availableModels ?? null;
 
   const {
     agentOptionValues,
@@ -259,14 +194,12 @@ export function ChatAppContent({
     handleToggleAgentOption,
     restoreAgentOptions,
     resetAgentOptionDefaults,
-  } = useAgentOptions(agents, currentAgent);
+  } = useAgentOptions(CHAT_AGENT_OPTION_DEFINITIONS);
 
   const {
     config: sessionConfig,
     toggleMcpTool: toggleSessionMcpTool,
     setAgentOption: setSessionAgentOption,
-    setPersonaPreset,
-    clearPersonaPreset,
     resetToDefaults,
     restoreConfig: restoreSessionConfig,
   } = useSessionConfig({
@@ -281,43 +214,6 @@ export function ChatAppContent({
   );
 
   const isSessionRestoredRef = useRef(false);
-
-  // Restore persona from localStorage when navigating from /persona page
-  useEffect(() => {
-    const personaId = searchParams.get("persona");
-    if (!personaId) return;
-    const state = location.state as
-      | {
-          personaPresetId?: string;
-          personaSnapshot?: PersonaPresetSnapshot;
-        }
-      | null
-      | undefined;
-    setSearchParams(
-      (prev) => {
-        prev.delete("persona");
-        return prev;
-      },
-      { replace: true },
-    );
-    if (
-      state?.personaPresetId === personaId &&
-      state.personaSnapshot?.preset_id === personaId
-    ) {
-      setPersonaPreset(personaId, state.personaSnapshot);
-      return;
-    }
-    try {
-      const raw = readSessionConfigStorage();
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (parsed.personaPresetId === personaId && parsed.personaSnapshot) {
-        setPersonaPreset(personaId, parsed.personaSnapshot);
-      }
-    } catch {
-      /* ignore */
-    }
-  }, [location.state, searchParams, setSearchParams, setPersonaPreset]);
 
   useEffect(() => {
     if (isSessionRestoredRef.current) return;
@@ -366,64 +262,12 @@ export function ChatAppContent({
   // can cause model_id to be missing when using the default model.
   sessionConfigRef.current = {
     ...sessionConfig,
-    enabledSkills: sessionConfig.personaSnapshot
-      ? sessionConfig.personaSnapshot.skill_names
-      : undefined,
-    personaPresetId: sessionConfig.personaPresetId,
     agentOptions: {
       ...agentOptionValues,
       ...(currentModelValue ? { model: currentModelValue } : {}),
       ...(currentModelId ? { model_id: currentModelId } : {}),
     },
   };
-
-  const handleUsePersonaPreset = useCallback(
-    async (preset: PersonaPreset) => {
-      const snapshot = await activatePersonaPreset(preset.id);
-      if (snapshot) {
-        setPersonaPreset(preset.id, snapshot);
-      }
-      return snapshot;
-    },
-    [activatePersonaPreset, setPersonaPreset],
-  );
-
-  const handleCopyPersonaPreset = useCallback(
-    async (preset: PersonaPreset) => {
-      await copyPersonaPreset(preset.id);
-    },
-    [copyPersonaPreset],
-  );
-
-  const handleTogglePersonaPreference = useCallback(
-    async (
-      preset: PersonaPreset,
-      preference: { is_favorite?: boolean; is_pinned?: boolean },
-    ) => {
-      await updatePersonaPreference(preset.id, preference);
-    },
-    [updatePersonaPreference],
-  );
-
-  const handleSavePersonaPreset = useCallback(
-    async (
-      preset: PersonaPreset | null,
-      data: {
-        name: string;
-        description: string;
-        system_prompt: string;
-        tags: string[];
-        skill_names: string[];
-      },
-    ) => {
-      if (preset) {
-        await updatePersonaPreset(preset.id, data);
-      } else {
-        await createPersonaPreset(data);
-      }
-    },
-    [createPersonaPreset, updatePersonaPreset],
-  );
 
   const effectiveTools = useMemo(() => {
     const sessionDisabled = new Set(sessionConfig.disabledMcpTools);
@@ -438,13 +282,11 @@ export function ChatAppContent({
     return buildEffectiveSkills({
       skills,
       skillsLoading,
-      personaSkillNames: sessionConfig.personaSnapshot?.skill_names,
       disabledSkillNames: sessionConfig.disabledSkills,
     });
   }, [
     skills,
     sessionConfig.disabledSkills,
-    sessionConfig.personaSnapshot,
     skillsLoading,
   ]);
 
@@ -584,23 +426,14 @@ export function ChatAppContent({
 
   const handleConfigRestored = useCallback(
     (config: {
-      agent_id?: string;
       agent_options?: Record<string, boolean | string | number>;
       disabled_skills?: string[];
-      enabled_skills?: string[];
-      persona_preset_id?: string;
-      persona_preset_name?: string;
-      persona_snapshot?: import("../../../types").PersonaPresetSnapshot;
       disabled_mcp_tools?: string[];
       disabled_tools?: string[];
     }) => {
       console.log("[AppContent] Restoring session config:", config);
 
       isSessionRestoredRef.current = true;
-
-      if (config.agent_id) {
-        switchAgent(config.agent_id);
-      }
 
       restoreSessionConfig(config);
 
@@ -616,7 +449,7 @@ export function ChatAppContent({
         }
       }
     },
-    [restoreSessionConfig, restoreAgentOptions, switchAgent],
+    [restoreSessionConfig, restoreAgentOptions],
   );
 
   const { handleSelectSession, handleNewSession } = useSessionSync({
@@ -776,29 +609,9 @@ export function ChatAppContent({
           enabledSkillsCount={countEnabledSkills(effectiveSkills)}
           totalSkillsCount={effectiveSkills.length}
           enableSkills={composerSkillsAvailability.enableComposerSkills}
-          personaPresets={personaPresets}
-          personaPresetsTotal={personaPresetsTotal}
-          personaPresetsPage={personaPresetPage}
-          onPersonaPresetsPageChange={setPersonaPresetPage}
-          onPersonaPresetsSearchChange={handlePersonaPresetSearchChange}
-          onPersonaPresetsTagChange={handlePersonaPresetTagChange}
-          selectedPersonaPresetId={sessionConfig.personaPresetId}
-          selectedPersonaName={sessionConfig.personaSnapshot?.name || null}
-          selectedPersonaSnapshot={sessionConfig.personaSnapshot}
-          personaPresetsLoading={personaPresetsLoading}
-          personaPresetsMutating={personaPresetsMutating}
-          onUsePersonaPreset={handleUsePersonaPreset}
-          onTogglePersonaPreference={handleTogglePersonaPreference}
-          onCopyPersonaPreset={handleCopyPersonaPreset}
-          onSavePersonaPreset={handleSavePersonaPreset}
-          onClearPersonaPreset={clearPersonaPreset}
-          canManagePersonaPresets={canManagePersonaPresets}
           agentOptions={currentAgentOptions}
           agentOptionValues={agentOptionValues}
           onToggleAgentOption={handleToggleAgentOption}
-          agents={agents}
-          currentAgent={currentAgent}
-          onSelectAgent={switchAgent}
           availableModels={filteredModels ?? []}
           currentModelId={currentModelId}
           onSelectModel={handleSelectModel}

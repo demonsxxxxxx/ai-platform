@@ -16,10 +16,6 @@ test("translates shared backend error codes", () => {
     "translated:errors.modelNotFound",
   );
   assert.equal(
-    translateBackendError("persona_preset_no_delete_permission", t),
-    "translated:personaPresets.noDeletePermission",
-  );
-  assert.equal(
     translateBackendError("File not found", t),
     "translated:backendErrors.fileNotFound",
   );

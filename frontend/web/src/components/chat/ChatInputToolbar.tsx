@@ -1,12 +1,7 @@
 import { useRef, useCallback, useEffect, useState } from "react";
-import { ArrowUp, Square, Lock, X, ChevronDown } from "lucide-react";
+import { ArrowUp, Square, Lock } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { FeatureMenu, type FeaturePanel } from "../selectors/FeatureMenu";
-import {
-  PersonaAvatarIcon,
-  PersonaAvatarImage,
-} from "../persona/PersonaAvatarIcon";
-import { isEmojiAvatar, getEmojiAvatarUrl } from "../persona/personaAvatar";
 import type { FileCategory } from "../../types";
 import type { UploadLimits } from "../../hooks/useFileUpload";
 
@@ -21,10 +16,6 @@ export interface ChatInputToolbarProps {
   totalToolsCount: number;
   enabledSkillsCount: number;
   totalSkillsCount: number;
-  hasPersonaSelector: boolean;
-  personaName?: string | null;
-  hasAgentSelector: boolean;
-  agentName?: string;
   hasThinkingOption: boolean;
   thinkingLabel?: string;
   thinkingLevel?: string;
@@ -32,9 +23,6 @@ export interface ChatInputToolbarProps {
   uploadLimits: UploadLimits | null;
   uploadFiles: (files: FileList | File[], category?: FileCategory) => void;
   onFileCommandReady?: (openFileCommand: () => void) => void;
-  selectedPersonaName?: string | null;
-  personaAvatar: { avatar?: string; primaryTag: string } | null;
-  onClearPersonaPreset?: () => void;
   onStopClick: () => void;
   onNoPermissionClick: () => void;
 }
@@ -57,10 +45,6 @@ export function ChatInputToolbar({
   totalToolsCount,
   enabledSkillsCount,
   totalSkillsCount,
-  hasPersonaSelector,
-  personaName,
-  hasAgentSelector,
-  agentName,
   hasThinkingOption,
   thinkingLabel,
   thinkingLevel,
@@ -68,9 +52,6 @@ export function ChatInputToolbar({
   uploadLimits,
   uploadFiles,
   onFileCommandReady,
-  selectedPersonaName,
-  personaAvatar,
-  onClearPersonaPreset,
   onStopClick,
   onNoPermissionClick,
 }: ChatInputToolbarProps) {
@@ -124,10 +105,6 @@ export function ChatInputToolbar({
           totalToolsCount={totalToolsCount}
           enabledSkillsCount={enabledSkillsCount}
           totalSkillsCount={totalSkillsCount}
-          hasPersonaSelector={hasPersonaSelector}
-          personaName={personaName}
-          hasAgentSelector={hasAgentSelector}
-          agentName={agentName}
           hasThinkingOption={hasThinkingOption}
           uploadCategories={uploadCategories}
           uploadLimits={uploadLimits}
@@ -135,57 +112,6 @@ export function ChatInputToolbar({
           thinkingLabel={thinkingLabel}
           thinkingLevel={thinkingLevel}
         />
-        {selectedPersonaName && (
-          <button
-            type="button"
-            className="chat-tool-btn group shrink min-w-0"
-            onClick={() => onActivePanelChange("persona")}
-            title={selectedPersonaName}
-          >
-            <div className="flex flex-row items-center gap-1.5 min-w-0">
-              <span className="relative w-[18px] h-[18px] shrink-0 inline-flex items-center justify-center">
-                {personaAvatar?.avatar &&
-                (personaAvatar.avatar.startsWith("http") ||
-                  personaAvatar.avatar.startsWith("/") ||
-                  isEmojiAvatar(personaAvatar.avatar)) ? (
-                  <PersonaAvatarImage
-                    avatar={
-                      isEmojiAvatar(personaAvatar.avatar)
-                        ? getEmojiAvatarUrl(personaAvatar.avatar)
-                        : personaAvatar.avatar
-                    }
-                    alt=""
-                    className="w-[18px] h-[18px] rounded-full object-cover group-hover:opacity-0 transition-opacity"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).style.display = "none";
-                    }}
-                  />
-                ) : (
-                  <PersonaAvatarIcon
-                    avatar={personaAvatar?.avatar}
-                    primaryTag={personaAvatar?.primaryTag ?? ""}
-                    size={18}
-                    className="transition-transform duration-200 group-hover:opacity-0"
-                  />
-                )}
-                {onClearPersonaPreset && (
-                  <X
-                    size={18}
-                    className="absolute inset-0 m-auto opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onClearPersonaPreset();
-                    }}
-                  />
-                )}
-              </span>
-              <span className="max-w-40 truncate text-sm font-medium text-[var(--theme-text-secondary)] group-hover:text-[var(--theme-text)]">
-                {selectedPersonaName}
-              </span>
-              <ChevronDown size={14} className="opacity-50 shrink-0" />
-            </div>
-          </button>
-        )}
       </div>
 
       <div className="self-end flex space-x-1.5 flex-shrink-0">

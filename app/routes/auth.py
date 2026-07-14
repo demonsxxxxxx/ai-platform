@@ -21,7 +21,6 @@ AI_USER_PERMISSIONS = [
     "skill:read",
     "marketplace:read",
     "mcp:read",
-    "persona_preset:read",
     "avatar:upload",
     "feedback:write",
     "notification:read",
@@ -31,8 +30,6 @@ AI_USER_PERMISSIONS = [
 ]
 
 AI_ADMIN_PERMISSIONS = [
-    "agent:read",
-    "agent:admin",
     "model:admin",
     "settings:read",
     "settings:manage",
@@ -48,12 +45,6 @@ AI_ADMIN_PERMISSIONS = [
     "mcp:write_sandbox",
     "mcp:delete",
     "mcp:admin",
-    "persona_preset:write",
-    "persona_preset:admin",
-    "channel:read",
-    "channel:write",
-    "channel:delete",
-    "channel:admin",
     "user:read",
     "user:write",
     "user:delete",

@@ -1,16 +1,12 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { Settings, ChevronRight, Check } from "lucide-react";
-import { toast } from "react-hot-toast";
 import { useTheme } from "../../../contexts/ThemeContext";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
 import { authApi } from "../../../services/api/auth";
-import { agentApi } from "../../../services/api/agent";
 import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../../layout/AppContent/useAgentOptions";
 import { SkeletonLine } from "../../skeletons";
-import { useAuth } from "../../../hooks/useAuth";
-import type { AgentInfo } from "../../../types";
 
 const NEWLINE_MODIFIER_KEY = "newlineModifier";
 
@@ -146,7 +142,6 @@ export function ProfilePreferencesTab() {
   const { t, i18n } = useTranslation();
   const { theme, setTheme } = useTheme();
   const { availableModels, defaultModel } = useSettingsContext();
-  const { user, refreshUser } = useAuth();
 
   // Dropdown open states
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
@@ -182,37 +177,6 @@ export function ProfilePreferencesTab() {
   const [, setSelectedModelValue] = useState<string>(() => {
     return localStorage.getItem("defaultModel") || defaultModel;
   });
-
-  // Agent preference
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [currentAgentPref, setCurrentAgentPref] = useState<string | null>(null);
-  const [selectedAgent, setSelectedAgent] = useState<string>("");
-  const [agentsLoading, setAgentsLoading] = useState(true);
-  const [agentsSaving, setAgentsSaving] = useState(false);
-
-  const loadAgents = useCallback(async () => {
-    setAgentsLoading(true);
-    try {
-      const agentsRes = await agentApi.list();
-      const metadataDefaultAgentId =
-        typeof user?.metadata?.defaultAgentId === "string"
-          ? user.metadata.defaultAgentId
-          : localStorage.getItem("defaultAgentId");
-      setAgents(agentsRes.agents || []);
-      setCurrentAgentPref(metadataDefaultAgentId || null);
-      setSelectedAgent(
-        metadataDefaultAgentId || agentsRes.default_agent || "",
-      );
-    } catch {
-      // silent — dropdown will show empty
-    } finally {
-      setAgentsLoading(false);
-    }
-  }, [user?.metadata?.defaultAgentId]);
-
-  useEffect(() => {
-    loadAgents();
-  }, [loadAgents]);
 
   // Handlers
   const handleLanguageChange = (code: string) => {
@@ -253,29 +217,6 @@ export function ProfilePreferencesTab() {
     setOpenDropdown(null);
   };
 
-  const handleAgentChange = async (agentId: string) => {
-    setSelectedAgent(agentId);
-    setOpenDropdown(null);
-    setAgentsSaving(true);
-    try {
-      await authApi.updateMetadata({ defaultAgentId: agentId });
-      localStorage.setItem("defaultAgentId", agentId);
-      setCurrentAgentPref(agentId);
-      void refreshUser();
-      toast.success(t("agentConfig.preferenceSaved"));
-      window.dispatchEvent(
-        new CustomEvent("agent-preference-updated", {
-          detail: { agentId },
-        }),
-      );
-    } catch (err) {
-      toast.error((err as Error).message || t("agentConfig.saveFailed"));
-      setSelectedAgent(currentAgentPref || "");
-    } finally {
-      setAgentsSaving(false);
-    }
-  };
-
   const handleThinkingLevelChange = (level: ThinkingLevel) => {
     setDefaultThinkingLevel(level);
     localStorage.setItem(DEFAULT_THINKING_LEVEL_STORAGE_KEY, level);
@@ -286,16 +227,6 @@ export function ProfilePreferencesTab() {
       }),
     );
     setOpenDropdown(null);
-  };
-
-  const agentOptions = agents.map((a) => ({
-    key: a.id,
-    labelKey: a.name,
-  }));
-
-  const renderAgentLabel = (key: string) => {
-    const agent = agents.find((a) => a.id === key);
-    return agent ? t(agent.name) : key;
   };
 
   return (
@@ -330,17 +261,6 @@ export function ProfilePreferencesTab() {
           open={openDropdown === "theme"}
           onToggle={() => toggle("theme")}
           onSelect={handleThemeChange}
-        />
-
-        <SelectRow
-          label={t("agentConfig.defaultAgent")}
-          value={selectedAgent}
-          options={agentOptions}
-          open={openDropdown === "agent"}
-          onToggle={() => toggle("agent")}
-          onSelect={handleAgentChange}
-          loading={agentsLoading || agentsSaving}
-          renderLabel={renderAgentLabel}
         />
 
         {availableModels && availableModels.length > 0 && (

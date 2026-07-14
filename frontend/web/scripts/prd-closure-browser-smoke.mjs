@@ -12,9 +12,7 @@ const DEFAULT_ROUTES = [
   "/apps",
   "/skills",
   "/mcp",
-  "/persona",
   "/files",
-  "/channels",
   "/settings",
   "/shared/smoke-denied",
 ];
@@ -42,9 +40,7 @@ const ROUTE_CONTENT_SELECTORS = new Map([
   ["/apps", "[data-launchpad-directory-shell], [data-frontend-governance-state]"],
   ["/skills", "[data-skill-workbench-shell], [data-frontend-governance-state]"],
   ["/mcp", "[data-mcp-directory-shell]"],
-  ["/persona", "[data-persona-workbench-shell]"],
   ["/files", "[data-files-workbench-shell]"],
-  ["/channels", "[data-channel-workbench-shell]"],
   ["/settings", '[data-workbench-projection-page="settings"], [data-workbench-projection-page]'],
   ["/shared/smoke-denied", '[data-shared-page], [data-frontend-governance-state="forbidden"]'],
 ]);
@@ -814,7 +810,7 @@ function summarizeOrdinaryWorkflow(composerEvidence, routeEvidence) {
 
 function summarizeAdminWorkflow(routeEvidence) {
   const adminRoutes = routeEvidence.filter((item) =>
-    ["/skills", "/mcp", "/channels", "/settings"].includes(item.route),
+    ["/skills", "/mcp", "/settings"].includes(item.route),
   );
   return {
     routesChecked: adminRoutes.map((item) => item.route),

@@ -19,34 +19,14 @@ const ModelCatalogPanel = lazy(() =>
     default: m.ModelCatalogPanel,
   })),
 );
-const ChannelImportPanel = lazy(() =>
-  import("../../channels/ChannelImportPanel").then((m) => ({
-    default: m.ChannelImportPanel,
-  })),
-);
 const MemoryPanel = lazy(() =>
   import("../../panels/MemoryPanel").then((m) => ({
     default: m.MemoryPanel,
   })),
 );
-const PersonaWorkbenchPanel = lazy(() =>
-  import("../../persona/PersonaWorkbenchPanel").then((m) => ({
-    default: m.PersonaWorkbenchPanel,
-  })),
-);
 const RevealedFilesWorkbenchPanel = lazy(() =>
   import("../../fileLibrary/RevealedFilesWorkbenchPanel").then((m) => ({
     default: m.RevealedFilesWorkbenchPanel,
-  })),
-);
-const AgentWorkspacePanel = lazy(() =>
-  import("../../agentWorkspace/AgentWorkspacePanel").then((m) => ({
-    default: m.AgentWorkspacePanel,
-  })),
-);
-const AgentDirectoryPanel = lazy(() =>
-  import("../../panels/AgentDirectoryPanel").then((m) => ({
-    default: m.AgentDirectoryPanel,
   })),
 );
 const LaunchpadPanel = lazy(() =>
@@ -86,12 +66,8 @@ const panelMap: Record<
   settings: WorkbenchSettingsProjectionPanel,
   mcp: MCPPanel,
   feedback: WorkbenchFeedbackProjectionPanel,
-  channels: ChannelImportPanel,
-  agents: AgentDirectoryPanel,
   models: ModelCatalogPanel,
-  persona: PersonaWorkbenchPanel,
   files: RevealedFilesWorkbenchPanel,
-  "agent-workspace": AgentWorkspacePanel,
   notifications: WorkbenchNotificationsProjectionPanel,
   memory: MemoryPanel,
 };

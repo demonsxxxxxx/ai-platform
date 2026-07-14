@@ -11,6 +11,8 @@ import type {
 import { API_BASE } from "./config";
 import { authFetch } from "./fetch";
 
+export const DEFAULT_CHAT_AGENT_ID = "general-agent";
+
 // Backend Session type (matches backend Session schema)
 export interface BackendSession {
   id: string;
@@ -109,7 +111,6 @@ export function buildSubmitChatBody({
   projectId,
   disabledSkills,
   enabledSkills,
-  personaPresetId,
   disabledMcpTools,
   userTimezone,
   selectedSkill,
@@ -121,7 +122,6 @@ export function buildSubmitChatBody({
   projectId?: string;
   disabledSkills?: string[];
   enabledSkills?: string[];
-  personaPresetId?: string | null;
   disabledMcpTools?: string[];
   userTimezone?: string;
   selectedSkill?: SelectedSkillRequest | null;
@@ -133,7 +133,6 @@ export function buildSubmitChatBody({
     attachments,
     disabled_skills: selectedSkill ? undefined : disabledSkills,
     enabled_skills: selectedSkill ? undefined : enabledSkills,
-    persona_preset_id: personaPresetId || undefined,
     disabled_mcp_tools: disabledMcpTools,
   };
 
@@ -170,6 +169,11 @@ export function buildSessionRunsUrl(
 
 export function buildRunCancelUrl(runId: string): string {
   return `${API_BASE}/api/ai/runs/${runId}/cancel`;
+}
+
+/** Build the single supported Chat submission endpoint. */
+export function buildSubmitChatUrl(): string {
+  return `${API_BASE}/api/chat/stream?agent_id=${DEFAULT_CHAT_AGENT_ID}`;
 }
 
 export function buildSessionListUrl(params?: {
@@ -343,7 +347,6 @@ export const sessionApi = {
    * Submit a chat message (returns immediately)
    */
   async submitChat(
-    agentId: string,
     message: string,
     sessionId?: string,
     agentOptions?: Record<string, boolean | string | number>,
@@ -351,8 +354,6 @@ export const sessionApi = {
     projectId?: string,
     disabledSkills?: string[],
     disabledMcpTools?: string[],
-    personaPresetId?: string | null,
-    enabledSkills?: string[],
     selectedSkill?: SelectedSkillRequest | null,
   ): Promise<ChatStreamResponse> {
     const body = buildSubmitChatBody({
@@ -362,13 +363,11 @@ export const sessionApi = {
       attachments,
       projectId,
       disabledSkills,
-      enabledSkills,
-      personaPresetId,
       disabledMcpTools,
       userTimezone: getBrowserTimezone(),
       selectedSkill,
     });
-    return authFetch(`${API_BASE}/api/chat/stream?agent_id=${agentId}`, {
+    return authFetch(buildSubmitChatUrl(), {
       method: "POST",
       body: JSON.stringify(body),
     });

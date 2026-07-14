@@ -6,35 +6,23 @@ import {
 export type WorkbenchNavItem =
   | "apps"
   | "skills"
-  | "persona"
   | "files"
-  | "agent-workspace"
   | "mcp"
-  | "channels"
-  | "agents"
   | "models";
 
 const routeToNavItem: Array<[RegExp, WorkbenchNavItem]> = [
   [/^\/apps(?:\/|$)/, "apps"],
   [/^\/skills(?:\/|$)/, "skills"],
-  [/^\/persona(?:\/|$)/, "persona"],
   [/^\/files(?:\/|$)/, "files"],
-  [/^\/agent-workspace(?:\/|$)/, "agent-workspace"],
   [/^\/mcp(?:\/|$)/, "mcp"],
-  [/^\/channels(?:\/|$)/, "channels"],
-  [/^\/agents(?:\/|$)/, "agents"],
   [/^\/models(?:\/|$)/, "models"],
 ];
 
 const navItemToPath: Record<WorkbenchNavItem, string> = {
   apps: "/apps",
   skills: "/skills",
-  persona: "/persona",
   files: "/files",
-  "agent-workspace": "/agent-workspace",
   mcp: "/mcp",
-  channels: "/channels",
-  agents: "/agents",
   models: "/models",
 };
 

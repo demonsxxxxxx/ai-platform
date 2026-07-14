@@ -12,7 +12,6 @@ export {
   WelcomeSkeleton,
 } from "./ChatSkeletons";
 export { FilesContentSkeleton, FilesPageSkeleton } from "./FilesSkeletons";
-export { PersonaPlazaSkeleton, PersonaPageSkeleton } from "./PersonaSkeletons";
 export { PanelHeaderSkeleton } from "./PanelHeaderSkeleton";
 export {
   SkillsPanelSkeleton,

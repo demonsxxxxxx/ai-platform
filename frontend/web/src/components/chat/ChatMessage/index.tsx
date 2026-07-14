@@ -71,8 +71,6 @@ interface ChatMessageProps {
   runId?: string;
   isLastMessage?: boolean;
   onStop?: () => void;
-  personaAvatar?: string | null;
-  personaName?: string | null;
   activePreview?: RevealPreviewRequest | null;
   latestAutoPreview?: AutoPreviewTarget | null;
   onOpenPreview?: (
@@ -243,8 +241,6 @@ export const ChatMessage = memo(function ChatMessage({
   sessionId,
   runId,
   isLastMessage,
-  personaAvatar,
-  personaName,
   activePreview,
   latestAutoPreview,
   onOpenPreview,
@@ -313,15 +309,12 @@ export const ChatMessage = memo(function ChatMessage({
         <div className="min-w-0 min-h-0 py-1 sm:py-2">
           {/* Header: Avatar + Role label + Stop button */}
           <div className="mb-3 flex items-center gap-2">
-            <AssistantAvatar
-              className="size-6 shrink-0 rounded-full"
-              personaAvatar={personaAvatar}
-            />
+            <AssistantAvatar className="size-6 shrink-0 rounded-full" />
             <span
               className="text-base sm:text-lg font-semibold tracking-tight font-serif"
               style={{ color: "var(--theme-text)" }}
             >
-              {personaName || t("chat.message.assistant")}
+              {t("chat.message.assistant")}
             </span>
             {message.timestamp && (
               <span
