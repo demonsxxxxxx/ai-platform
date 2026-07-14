@@ -1,5 +1,18 @@
 # OpenSandbox Provider Adapter Phase Status
 
+## #430 external-egress capability admission (source contract only)
+
+Scope: before an `opensandbox` lease is created or reused, the provider must fetch an
+expiry-bound, versioned capability profile from an authenticated endpoint and fail
+closed unless it proves the configured OpenSandbox endpoint, `runsc` runtime
+identity, external gateway/policy subject, and callback-boundary subject. A requested
+OpenSandbox `networkPolicy` together with this gVisor/runsc profile is rejected as an
+unsupported combination; `defaultAction=deny` remains a request projection, not
+enforcement proof. Runtime evidence must bind the run, sandbox identity, executor
+image, ai-platform runtime subject, gateway-policy subject, deny audit/counter,
+callback, and cleanup. This change is source-tested only: it does not verify s72,
+211, B2, or data-plane egress enforcement. Integration is blocked pending #429.
+
 Status:
 - [x] local provider adapter wired behind `SandboxProvider`/`ContainerProvider`. Evidence: `tests/test_sandbox_container_provider.py` covers `opensandbox` provider selection, lease field mapping, stop/cleanup, startup file/command probes, byte readback compatibility, command exit-code failure, endpoint private headers, scheme-less endpoint URL normalization, and sanitized failure projection.
 - [x] platform source of truth preserved. Evidence: OpenSandbox only implements `ContainerProvider`; `SandboxRuntime` still owns `SandboxRuntimeRequest`, `ContainerLease`, DB lease creation/release, callback token derivation, executor dispatch, and result timing projection. OpenSandbox private endpoint headers are stored only in process-local `ContainerLease.executor_headers` and are excluded from `model_dump()`/DB lease payload/Admin projections.

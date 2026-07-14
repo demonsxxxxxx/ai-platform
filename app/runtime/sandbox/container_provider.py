@@ -11,7 +11,7 @@ import socket
 import stat
 import time
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 from typing import Any, Callable, Protocol
@@ -57,6 +57,13 @@ class OpenSandboxUnavailableError(SandboxRuntimeError):
 
     def __init__(self, message: str = "OpenSandbox SDK is unavailable") -> None:
         super().__init__("opensandbox_unavailable", message)
+
+
+class OpenSandboxCapabilityAdmissionError(SandboxRuntimeError):
+    """Raised before OpenSandbox dispatch when external-egress capability is unproven."""
+
+    def __init__(self, message: str = "OpenSandbox external-egress capability admission failed") -> None:
+        super().__init__("opensandbox_capability_admission_failed", message)
 
 
 class DockerPermissionDeniedError(SandboxRuntimeError):
@@ -534,6 +541,191 @@ def _opensandbox_resource_limits(resource_limits: dict[str, Any]) -> dict[str, s
     return resource
 
 
+OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_SCHEMA_VERSION = "ai-platform.opensandbox.external-egress-capability.v1"
+OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY = "runsc"
+CapabilityProfileFetcher = Callable[[str, dict[str, str], float], dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class OpenSandboxExternalEgressCapability:
+    """Validated, non-secret profile values bound to an OpenSandbox lease."""
+
+    profile_id: str
+    endpoint: str
+    runtime_identity: str
+    runtime_subject: str
+    gateway_policy_subject: str
+    callback_boundary_subject: str
+    deny_audit_subject: str
+    deny_counter_subject: str
+    expires_at: str
+
+    def lease_labels(self) -> dict[str, str]:
+        return {
+            "ai-platform.external_egress.profile_version": "v1",
+            "ai-platform.external_egress.profile_id": self.profile_id,
+            "ai-platform.external_egress.endpoint": self.endpoint,
+            "ai-platform.external_egress.runtime_identity": self.runtime_identity,
+            "ai-platform.runtime_subject": self.runtime_subject,
+            "ai-platform.external_egress.gateway_policy_subject": self.gateway_policy_subject,
+            "ai-platform.external_egress.callback_boundary_subject": self.callback_boundary_subject,
+            "ai-platform.external_egress.deny_audit_subject": self.deny_audit_subject,
+            "ai-platform.external_egress.deny_counter_subject": self.deny_counter_subject,
+            "ai-platform.external_egress.profile_expires_at": self.expires_at,
+        }
+
+
+def _required_capability_value(value: object, *, field: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise OpenSandboxCapabilityAdmissionError(f"OpenSandbox capability profile {field} is missing")
+    return normalized
+
+
+def _opensandbox_endpoint_subject(settings: Any) -> str:
+    protocol = _required_capability_value(getattr(settings, "opensandbox_protocol", ""), field="endpoint protocol")
+    domain = _required_capability_value(getattr(settings, "opensandbox_domain", ""), field="endpoint domain")
+    parsed = urlsplit(f"{protocol}://{domain}")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint configuration is invalid")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint configuration is invalid") from exc
+    host = parsed.hostname.lower()
+    netloc = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    if port is not None:
+        netloc = f"{netloc}:{port}"
+    return f"{parsed.scheme.lower()}://{netloc}"
+
+
+def _parse_profile_timestamp(value: object, *, field: str) -> datetime:
+    raw = _required_capability_value(value, field=field)
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise OpenSandboxCapabilityAdmissionError(f"OpenSandbox capability profile {field} is invalid") from exc
+    if parsed.tzinfo is None:
+        raise OpenSandboxCapabilityAdmissionError(f"OpenSandbox capability profile {field} is invalid")
+    return parsed.astimezone(timezone.utc)
+
+
+def _default_opensandbox_capability_profile_fetcher(
+    url: str,
+    headers: dict[str, str],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    with httpx.Client(timeout=max(float(timeout_seconds), 1.0)) as client:
+        response = client.get(url, headers=headers)
+        response.raise_for_status()
+        payload = response.json()
+    if not isinstance(payload, dict):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile is malformed")
+    return payload
+
+
+def _validate_opensandbox_external_egress_profile(
+    profile: object,
+    *,
+    settings: Any,
+) -> OpenSandboxExternalEgressCapability:
+    if not isinstance(profile, dict):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile is malformed")
+    if profile.get("schema_version") != OPENSANDBOX_EXTERNAL_EGRESS_CAPABILITY_SCHEMA_VERSION:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile schema is unsupported")
+    if profile.get("provider") != "opensandbox":
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile provider mismatch")
+    issued_at = _parse_profile_timestamp(profile.get("issued_at"), field="issued_at")
+    expires_at = _parse_profile_timestamp(profile.get("expires_at"), field="expires_at")
+    now = datetime.now(timezone.utc)
+    if issued_at > now or expires_at <= now or expires_at <= issued_at:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile is expired or not yet valid")
+
+    endpoint = _required_capability_value(profile.get("opensandbox_endpoint"), field="opensandbox_endpoint")
+    if endpoint != _opensandbox_endpoint_subject(settings):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile endpoint drift detected")
+    runtime_identity = _required_capability_value(profile.get("runtime_identity"), field="runtime_identity")
+    if runtime_identity != OPENSANDBOX_EXTERNAL_EGRESS_RUNTIME_IDENTITY:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile runtime identity must be runsc")
+
+    runtime_subject = _required_capability_value(
+        getattr(settings, "sandbox_runtime_subject", ""), field="configured runtime subject"
+    )
+    if _required_capability_value(profile.get("ai_platform_runtime_subject"), field="ai_platform_runtime_subject") != runtime_subject:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile runtime subject drift detected")
+    gateway_policy_subject = _required_capability_value(profile.get("gateway_policy_subject"), field="gateway_policy_subject")
+    if gateway_policy_subject != _required_capability_value(
+        getattr(settings, "opensandbox_external_egress_gateway_policy_subject", ""),
+        field="configured gateway policy subject",
+    ):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile gateway policy subject drift detected")
+    callback_boundary_subject = _required_capability_value(
+        profile.get("callback_boundary_subject"), field="callback_boundary_subject"
+    )
+    if callback_boundary_subject != _required_capability_value(
+        getattr(settings, "opensandbox_external_egress_callback_boundary_subject", ""),
+        field="configured callback boundary subject",
+    ):
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability profile callback boundary subject drift detected")
+    return OpenSandboxExternalEgressCapability(
+        profile_id=_required_capability_value(profile.get("profile_id"), field="profile_id"),
+        endpoint=endpoint,
+        runtime_identity=runtime_identity,
+        runtime_subject=runtime_subject,
+        gateway_policy_subject=gateway_policy_subject,
+        callback_boundary_subject=callback_boundary_subject,
+        deny_audit_subject=_required_capability_value(profile.get("deny_audit_subject"), field="deny_audit_subject"),
+        deny_counter_subject=_required_capability_value(profile.get("deny_counter_subject"), field="deny_counter_subject"),
+        expires_at=str(profile.get("expires_at")),
+    )
+
+
+async def _admit_opensandbox_external_egress_capability(
+    *,
+    settings: Any,
+    fetcher: CapabilityProfileFetcher,
+) -> OpenSandboxExternalEgressCapability:
+    if getattr(settings, "sandbox_egress_policy_enabled", False) is True:
+        raise OpenSandboxCapabilityAdmissionError(
+            "gVisor/runsc OpenSandbox external-egress does not support OpenSandbox networkPolicy"
+        )
+    capability_url = _required_capability_value(
+        getattr(settings, "opensandbox_external_egress_capability_url", ""),
+        field="authenticated endpoint",
+    )
+    parsed_url = urlsplit(capability_url)
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname or parsed_url.username or parsed_url.password:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability authenticated endpoint is invalid")
+    capability_token = _required_capability_value(
+        getattr(settings, "opensandbox_external_egress_capability_token", ""),
+        field="authentication credential",
+    )
+    try:
+        profile = await asyncio.to_thread(
+            fetcher,
+            capability_url,
+            {"Authorization": f"Bearer {capability_token}"},
+            float(getattr(settings, "opensandbox_request_timeout_seconds", 30.0) or 30.0),
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {401, 403}:
+            raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint authentication failed") from exc
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint request failed") from exc
+    except OpenSandboxCapabilityAdmissionError:
+        raise
+    except Exception as exc:
+        raise OpenSandboxCapabilityAdmissionError("OpenSandbox capability endpoint request failed") from exc
+    return _validate_opensandbox_external_egress_profile(profile, settings=settings)
+
+
 def _platform_metadata(request: SandboxRuntimeRequest) -> dict[str, str]:
     return {
         "ai-platform.owner": "sandbox-runtime",
@@ -547,15 +739,16 @@ def _platform_metadata(request: SandboxRuntimeRequest) -> dict[str, str]:
     }
 
 
-def _opensandbox_labels(settings: Any, request: SandboxRuntimeRequest) -> dict[str, str]:
+def _opensandbox_labels(
+    settings: Any,
+    request: SandboxRuntimeRequest,
+    capability: OpenSandboxExternalEgressCapability,
+) -> dict[str, str]:
     labels = _platform_metadata(request)
     labels["ai-platform.provider_backend"] = "opensandbox"
+    labels["ai-platform.executor.image"] = _opensandbox_image(settings)
     labels.update(_executor_identity_labels())
-    if getattr(settings, "sandbox_egress_policy_enabled", False) is True:
-        labels["ai-platform.egress.policy"] = "opensandbox-network-policy"
-        callback_host = _callback_policy_host(settings)
-        if callback_host:
-            labels["ai-platform.egress.callback_host"] = callback_host
+    labels.update(capability.lease_labels())
     return labels
 
 
@@ -1464,6 +1657,7 @@ class OpenSandboxContainerProvider:
         sandbox_filter_class: Any | None = None,
         health_probe: Callable[..., bool] | None = None,
         identity_probe: Callable[..., dict[str, int]] | None = None,
+        capability_profile_fetcher: CapabilityProfileFetcher | None = None,
         monotonic: Callable[[], float] | None = None,
     ) -> None:
         self._sandbox_class = sandbox_class
@@ -1477,6 +1671,7 @@ class OpenSandboxContainerProvider:
         self._sandbox_filter_class = sandbox_filter_class
         self._health_probe = health_probe or default_executor_health_probe
         self._identity_probe = identity_probe or default_executor_identity_probe
+        self._capability_profile_fetcher = capability_profile_fetcher or _default_opensandbox_capability_profile_fetcher
         self._monotonic = monotonic or time.monotonic
         self._sandboxes: dict[str, Any] = {}
         self._leases: dict[str, ContainerLease] = {}
@@ -1650,6 +1845,19 @@ class OpenSandboxContainerProvider:
             )
         raise ContainerCleanupFailedError("sandbox cleanup could not be confirmed")
 
+    async def _cleanup_cached_lease_after_capability_rejection(self, request: SandboxRuntimeRequest) -> None:
+        """Remove a tracked lease when its next admission profile has drifted or expired."""
+
+        cache_key = f"opensandbox-{request.run_id}"
+        cached = self._leases.get(cache_key)
+        if cached is None:
+            return
+        sandbox = self._sandboxes.get(cached.container_id)
+        if sandbox is not None and not await self._cleanup_started_sandbox(sandbox):
+            raise ContainerCleanupFailedError("cached sandbox cleanup could not be confirmed")
+        self._sandboxes.pop(cached.container_id, None)
+        self._leases.pop(cache_key, None)
+
     async def create_or_reuse(
         self,
         request: SandboxRuntimeRequest,
@@ -1657,6 +1865,14 @@ class OpenSandboxContainerProvider:
     ) -> ContainerLease:
         settings = get_settings()
         self._ensure_symbols()
+        try:
+            capability = await _admit_opensandbox_external_egress_capability(
+                settings=settings,
+                fetcher=self._capability_profile_fetcher,
+            )
+        except OpenSandboxCapabilityAdmissionError:
+            await self._cleanup_cached_lease_after_capability_rejection(request)
+            raise
         cached = self._leases.get(f"opensandbox-{request.run_id}")
         if cached is not None and cached.container_id in self._sandboxes:
             sandbox = self._sandboxes[cached.container_id]
@@ -1674,7 +1890,7 @@ class OpenSandboxContainerProvider:
                     workspace,
                     executor_url=cached.executor_url,
                 )
-                expected_lease.labels.update(_opensandbox_labels(settings, request))
+                expected_lease.labels.update(_opensandbox_labels(settings, request, capability))
                 remote_status = _opensandbox_status_from_info(info)
                 if (
                     remote_status is None
@@ -1726,7 +1942,7 @@ class OpenSandboxContainerProvider:
 
         started_at = self._monotonic()
         connection_config = self._connection_config(settings)
-        metadata = _opensandbox_labels(settings, request)
+        metadata = _opensandbox_labels(settings, request, capability)
         executor_auth_token = _generate_executor_auth_token()
         environment = _executor_environment(
             request,

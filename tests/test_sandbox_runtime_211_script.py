@@ -513,7 +513,7 @@ def test_opensandbox_provider_lifecycle_evidence_requires_first_stage_probe_fiel
     verifier = load_verifier()
     evidence = tmp_path / "evidence.json"
     lifecycle = {
-        "schema_version": "ai-platform.opensandbox-provider-lifecycle.v1",
+        "schema_version": "ai-platform.opensandbox-provider-lifecycle.v2",
         "provider": "opensandbox",
         "run_id": "run-a",
         "lifecycle": {
@@ -521,6 +521,7 @@ def test_opensandbox_provider_lifecycle_evidence_requires_first_stage_probe_fiel
             "delete_observed": True,
             "container_id_present": True,
             "executor_endpoint_present": True,
+            "sandbox_id": "sandbox-a",
         },
         "db_lease": {
             "recorded": True,
@@ -540,10 +541,42 @@ def test_opensandbox_provider_lifecycle_evidence_requires_first_stage_probe_fiel
             "pids_limit": 128,
             "policy_projection_source": "provider_request",
         },
-        "egress_policy": {
-            "policy_requested": True,
-            "callback_host_allowlisted": True,
-            "policy_projection_source": "provider_request",
+        "external_egress_capability": {
+            "source": "authenticated_capability_profile",
+            "profile_version": "v1",
+            "profile_id": "profile-a",
+            "opensandbox_endpoint": "https://opensandbox.test",
+            "runtime_identity": "runsc",
+            "ai_platform_runtime_subject": "runtime-subject-a",
+            "gateway_policy_subject": "gateway-policy-subject-a",
+            "callback_boundary_subject": "callback-boundary-subject-a",
+            "deny_audit_subject": "gateway-deny-audit-subject-a",
+            "deny_counter_subject": "gateway-deny-counter-subject-a",
+            "executor_image": "ai-platform:runtime-a",
+        },
+        "external_egress_runtime": {
+            "evidence_class": "gateway_nft_runtime_probe",
+            "run_id": "run-a",
+            "provider": "opensandbox",
+            "sandbox_id": "sandbox-a",
+            "executor_image": "ai-platform:runtime-a",
+            "ai_platform_runtime_subject": "runtime-subject-a",
+            "gateway_policy_subject": "gateway-policy-subject-a",
+            "callback_boundary_subject": "callback-boundary-subject-a",
+            "allowed_callback_delivered": True,
+            "callback_run_scoped": True,
+            "unauthorized_fqdn_denied": True,
+            "literal_ip_denied": True,
+            "dns_failure_fail_closed": True,
+            "cleanup_confirmed": True,
+            "deny_audit_counter": {
+                "observed": True,
+                "audit_subject": "gateway-deny-audit-subject-a",
+                "counter_subject": "gateway-deny-counter-subject-a",
+                "audit_id": "audit-a",
+                "counter_name": "counter-a",
+                "count": 2,
+            },
         },
         "dispatch": {
             "executor_response_present": True,
@@ -590,6 +623,65 @@ def test_opensandbox_provider_lifecycle_evidence_requires_first_stage_probe_fiel
 
     assert failed.passed is False
     assert "startup_io.command_execution_verified" in failed.message
+
+    broken = dict(lifecycle)
+    broken["external_egress_runtime"] = {**lifecycle["external_egress_runtime"], "literal_ip_denied": False}
+    evidence.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "run_id": "run-a",
+                "runtime_mode": "platform",
+                "sandbox_provider": "opensandbox",
+                "provider_lifecycle": broken,
+            }
+        ),
+        encoding="utf-8",
+    )
+    denied_literal_ip = verifier.check_opensandbox_provider_lifecycle_evidence(evidence, run_id="run-a")
+
+    assert denied_literal_ip.passed is False
+    assert "literal_ip_denied" in denied_literal_ip.message
+
+    for field, value in (
+        ("allowed_callback_delivered", False),
+        ("dns_failure_fail_closed", False),
+        ("cleanup_confirmed", False),
+        ("evidence_class", "sdk_config_readback"),
+    ):
+        broken = dict(lifecycle)
+        broken["external_egress_runtime"] = {**lifecycle["external_egress_runtime"], field: value}
+        evidence.write_text(
+            json.dumps(
+                {
+                    "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                    "run_id": "run-a",
+                    "runtime_mode": "platform",
+                    "sandbox_provider": "opensandbox",
+                    "provider_lifecycle": broken,
+                }
+            ),
+            encoding="utf-8",
+        )
+        failed_runtime_proof = verifier.check_opensandbox_provider_lifecycle_evidence(evidence, run_id="run-a")
+        assert failed_runtime_proof.passed is False
+        assert field in failed_runtime_proof.message or "gateway/nft" in failed_runtime_proof.message
+
+    evidence.write_text(
+        json.dumps(
+            {
+                "schema_version": "ai-platform.sandbox-runtime-211.v1",
+                "run_id": "run-a",
+                "runtime_mode": "platform",
+                "sandbox_provider": "fake",
+            }
+        ),
+        encoding="utf-8",
+    )
+    fake_provider = verifier.check_opensandbox_provider_lifecycle_evidence(evidence, run_id="run-a")
+
+    assert fake_provider.passed is False
+    assert "fake" in fake_provider.message
 
 
 def test_platform_runtime_evidence_rejects_hidden_or_invalid_latency_split(tmp_path):
@@ -1552,8 +1644,16 @@ def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(mon
                 workspace_container_path="/workspace",
                 labels={
                     "ai-platform.provider_backend": "opensandbox",
-                    "ai-platform.egress.policy": "opensandbox-network-policy",
-                    "ai-platform.egress.callback_host": "host.docker.internal",
+                    "ai-platform.executor.image": "ai-platform:local",
+                    "ai-platform.external_egress.profile_version": "v1",
+                    "ai-platform.external_egress.profile_id": "profile-a",
+                    "ai-platform.external_egress.endpoint": "http://opensandbox.test",
+                    "ai-platform.external_egress.runtime_identity": "runsc",
+                    "ai-platform.runtime_subject": "runtime-subject-a",
+                    "ai-platform.external_egress.gateway_policy_subject": "gateway-policy-subject-a",
+                    "ai-platform.external_egress.callback_boundary_subject": "callback-boundary-subject-a",
+                    "ai-platform.external_egress.deny_audit_subject": "gateway-deny-audit-subject-a",
+                    "ai-platform.external_egress.deny_counter_subject": "gateway-deny-counter-subject-a",
                 },
                 timings={
                     "sandbox_container_start_latency_ms": 2,
@@ -1629,6 +1729,20 @@ def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(mon
         callback_url="http://callback.test/callback",
         docker_cmd=("docker",),
         run=fake_run,
+        runtime_probe_results={
+            "opensandbox_external_egress": {
+                "evidence_class": "gateway_nft_runtime_probe",
+                "unauthorized_fqdn_denied": True,
+                "literal_ip_denied": True,
+                "dns_failure_fail_closed": True,
+                "deny_audit_counter": {
+                    "observed": True,
+                    "audit_id": "audit-a",
+                    "counter_name": "counter-a",
+                    "count": 2,
+                },
+            }
+        },
     )
 
     assert result["status"] == "accepted"
@@ -1638,6 +1752,7 @@ def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(mon
         "delete_observed": True,
         "container_id_present": True,
         "executor_endpoint_present": True,
+        "sandbox_id": "osb-run-a",
     }
     assert recorder.provider_lifecycle["startup_io"] == {
         "file_write_read_verified": True,
@@ -1645,10 +1760,43 @@ def test_run_platform_runtime_probe_records_opensandbox_lifecycle_projection(mon
         "source": "OpenSandboxContainerProvider.startup_io_probe",
     }
     assert recorder.provider_lifecycle["resource_policy"]["resource_limits_requested"] is True
-    assert recorder.provider_lifecycle["egress_policy"] == {
-        "policy_requested": True,
-        "callback_host_allowlisted": True,
-        "policy_projection_source": "provider_request",
+    assert recorder.provider_lifecycle["schema_version"] == "ai-platform.opensandbox-provider-lifecycle.v2"
+    assert recorder.provider_lifecycle["external_egress_capability"] == {
+        "source": "authenticated_capability_profile",
+        "profile_version": "v1",
+        "profile_id": "profile-a",
+        "opensandbox_endpoint": "http://opensandbox.test",
+        "runtime_identity": "runsc",
+        "ai_platform_runtime_subject": "runtime-subject-a",
+        "gateway_policy_subject": "gateway-policy-subject-a",
+        "callback_boundary_subject": "callback-boundary-subject-a",
+        "deny_audit_subject": "gateway-deny-audit-subject-a",
+        "deny_counter_subject": "gateway-deny-counter-subject-a",
+        "executor_image": "ai-platform:local",
+    }
+    assert recorder.provider_lifecycle["external_egress_runtime"] == {
+        "evidence_class": "gateway_nft_runtime_probe",
+        "run_id": "run-a",
+        "provider": "opensandbox",
+        "sandbox_id": "osb-run-a",
+        "executor_image": "ai-platform:local",
+        "ai_platform_runtime_subject": "runtime-subject-a",
+        "gateway_policy_subject": "gateway-policy-subject-a",
+        "callback_boundary_subject": "callback-boundary-subject-a",
+        "allowed_callback_delivered": True,
+        "callback_run_scoped": True,
+        "unauthorized_fqdn_denied": True,
+        "literal_ip_denied": True,
+        "dns_failure_fail_closed": True,
+        "cleanup_confirmed": True,
+        "deny_audit_counter": {
+            "observed": True,
+            "audit_subject": "gateway-deny-audit-subject-a",
+            "counter_subject": "gateway-deny-counter-subject-a",
+            "audit_id": "audit-a",
+            "counter_name": "counter-a",
+            "count": 2,
+        },
     }
     assert recorder.provider_lifecycle["dispatch"] == {
         "executor_response_present": True,

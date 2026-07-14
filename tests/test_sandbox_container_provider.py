@@ -6,6 +6,7 @@ import threading
 import time
 from typing import Any
 
+import httpx
 import pytest
 
 from app.runtime.sandbox.contracts import SandboxRuntimeRequest, WorkspaceLease
@@ -408,7 +409,7 @@ class OpenSandboxSettings:
     sandbox_executor_health_timeout_seconds = 60
     sandbox_executor_image = "ai-platform:local"
     sandbox_callback_base_url = "http://host.docker.internal:8020"
-    sandbox_egress_policy_enabled = True
+    sandbox_egress_policy_enabled = False
     sandbox_callback_host_gateway = "host.docker.internal"
     opensandbox_domain = "opensandbox.local:8080"
     opensandbox_protocol = "http"
@@ -421,9 +422,41 @@ class OpenSandboxSettings:
     opensandbox_workspace_mount_enabled = True
     opensandbox_startup_io_probe_enabled = True
     opensandbox_allowed_egress_hosts = ""
+    sandbox_runtime_subject = "runtime-subject-a"
+    opensandbox_external_egress_capability_url = "https://capabilities.test/opensandbox/external-egress"
+    opensandbox_external_egress_capability_token = "capability-test-token"
+    opensandbox_external_egress_gateway_policy_subject = "gateway-policy-subject-a"
+    opensandbox_external_egress_callback_boundary_subject = "callback-boundary-subject-a"
 
 
-def opensandbox_provider(*, health_probe=None, identity_probe=None):
+class ExternalEgressCapabilitySettings(OpenSandboxSettings):
+    """Source-test settings for the required OpenSandbox runsc gateway profile."""
+
+
+class IncompatibleOpenSandboxNetworkPolicySettings(ExternalEgressCapabilitySettings):
+    sandbox_egress_policy_enabled = True
+
+
+def external_egress_capability_profile(**overrides: Any) -> dict[str, Any]:
+    profile = {
+        "schema_version": "ai-platform.opensandbox.external-egress-capability.v1",
+        "profile_id": "profile-a",
+        "provider": "opensandbox",
+        "opensandbox_endpoint": "http://opensandbox.local:8080",
+        "runtime_identity": "runsc",
+        "ai_platform_runtime_subject": "runtime-subject-a",
+        "gateway_policy_subject": "gateway-policy-subject-a",
+        "callback_boundary_subject": "callback-boundary-subject-a",
+        "deny_audit_subject": "gateway-deny-audit-subject-a",
+        "deny_counter_subject": "gateway-deny-counter-subject-a",
+        "issued_at": "2026-07-14T00:00:00Z",
+        "expires_at": "2030-01-01T00:00:00Z",
+    }
+    profile.update(overrides)
+    return profile
+
+
+def opensandbox_provider(*, health_probe=None, identity_probe=None, capability_profile_fetcher=None):
     from app.runtime.sandbox.container_provider import OpenSandboxContainerProvider
 
     return OpenSandboxContainerProvider(
@@ -438,7 +471,127 @@ def opensandbox_provider(*, health_probe=None, identity_probe=None):
         health_probe=health_probe or (lambda executor_url, timeout_seconds: True),
         identity_probe=identity_probe
         or (lambda executor_url, timeout_seconds, executor_headers: {"uid": 10001, "gid": 10001}),
+        capability_profile_fetcher=capability_profile_fetcher or (lambda *_args: external_egress_capability_profile()),
     )
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_admits_only_authenticated_runsc_external_egress_profile(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: ExternalEgressCapabilitySettings())
+    requests: list[tuple[str, dict[str, str], float]] = []
+
+    def fetch_profile(url: str, headers: dict[str, str], timeout_seconds: float) -> dict[str, Any]:
+        requests.append((url, headers, timeout_seconds))
+        return external_egress_capability_profile()
+
+    lease = await opensandbox_provider(capability_profile_fetcher=fetch_profile).create_or_reuse(request(), workspace())
+
+    assert requests == [
+        (
+            "https://capabilities.test/opensandbox/external-egress",
+            {"Authorization": "Bearer capability-test-token"},
+            30.0,
+        )
+    ]
+    assert lease.provider == "opensandbox"
+    assert lease.labels["ai-platform.external_egress.profile_version"] == "v1"
+    assert lease.labels["ai-platform.external_egress.runtime_identity"] == "runsc"
+    assert lease.labels["ai-platform.external_egress.gateway_policy_subject"] == "gateway-policy-subject-a"
+    assert lease.labels["ai-platform.external_egress.callback_boundary_subject"] == "callback-boundary-subject-a"
+    assert lease.labels["ai-platform.runtime_subject"] == "runtime-subject-a"
+    assert "network_policy" not in FakeOpenSandbox.created[0] or FakeOpenSandbox.created[0]["network_policy"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile", "expected_message"),
+    [
+        ({}, "capability profile"),
+        ({"schema_version": "ai-platform.opensandbox.external-egress-capability.v0"}, "schema"),
+        ({"expires_at": "2020-01-01T00:00:00Z"}, "expired"),
+        ({"runtime_identity": "runc"}, "runtime identity"),
+        ({"opensandbox_endpoint": "https://drifted.test"}, "endpoint"),
+        ({"gateway_policy_subject": "gateway-policy-subject-b"}, "gateway policy subject"),
+        ({"callback_boundary_subject": "callback-boundary-subject-b"}, "callback boundary subject"),
+    ],
+)
+async def test_opensandbox_provider_fails_closed_for_missing_stale_or_drifted_external_egress_profile(
+    monkeypatch,
+    profile,
+    expected_message,
+):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: ExternalEgressCapabilitySettings())
+    payload = external_egress_capability_profile(**profile) if profile else profile
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match=expected_message):
+        await opensandbox_provider(capability_profile_fetcher=lambda *_args: payload).create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.created == []
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_fails_closed_when_capability_endpoint_rejects_auth(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: ExternalEgressCapabilitySettings())
+
+    def unauthorized_profile(*_args: Any) -> dict[str, Any]:
+        request_value = httpx.Request("GET", "https://capabilities.test/opensandbox/external-egress")
+        response = httpx.Response(401, request=request_value)
+        raise httpx.HTTPStatusError("unauthorized", request=request_value, response=response)
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="authentication failed"):
+        await opensandbox_provider(capability_profile_fetcher=unauthorized_profile).create_or_reuse(request(), workspace())
+
+    assert FakeOpenSandbox.created == []
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_rejects_gvisor_runsc_with_opensandbox_network_policy_without_fallback(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: IncompatibleOpenSandboxNetworkPolicySettings())
+    profile_fetch_attempted = False
+
+    def fetch_profile(*_args: Any) -> dict[str, Any]:
+        nonlocal profile_fetch_attempted
+        profile_fetch_attempted = True
+        return external_egress_capability_profile()
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="networkPolicy"):
+        await opensandbox_provider(capability_profile_fetcher=fetch_profile).create_or_reuse(request(), workspace())
+
+    assert profile_fetch_attempted is False
+    assert FakeOpenSandbox.created == []
+    assert FakeOpenSandbox.instances == {}
+
+
+@pytest.mark.asyncio
+async def test_opensandbox_provider_rechecks_profile_and_cleans_cached_lease_on_drift(monkeypatch):
+    container_provider = importlib.import_module("app.runtime.sandbox.container_provider")
+    FakeOpenSandbox.reset()
+    monkeypatch.setattr(container_provider, "get_settings", lambda: ExternalEgressCapabilitySettings())
+    profiles = iter(
+        [
+            external_egress_capability_profile(),
+            external_egress_capability_profile(gateway_policy_subject="gateway-policy-subject-drift"),
+        ]
+    )
+    provider = opensandbox_provider(capability_profile_fetcher=lambda *_args: next(profiles))
+
+    lease = await provider.create_or_reuse(request(), workspace())
+
+    with pytest.raises(container_provider.OpenSandboxCapabilityAdmissionError, match="gateway policy subject"):
+        await provider.create_or_reuse(request(), workspace())
+
+    assert len(FakeOpenSandbox.created) == 1
+    assert FakeOpenSandbox.instances[lease.container_id].killed is True
+    assert lease.container_id not in provider._sandboxes
+    assert f"opensandbox-{lease.run_id}" not in provider._leases
 
 
 @pytest.mark.asyncio
@@ -878,8 +1031,7 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     assert created["resource"] == {"cpu": "2", "memory": "512Mi", "pids": "64"}
     assert created["volumes"][0].host.path == workspace().workspace_host_path
     assert created["volumes"][0].mount_path == "/workspace"
-    assert created["network_policy"].kwargs["defaultAction"] == "deny"
-    assert created["network_policy"].kwargs["egress"][0].target == "host.docker.internal"
+    assert created["network_policy"] is None
 
     sandbox = FakeOpenSandbox.instances["osb-run-a"]
     assert sandbox.files.written[0].path == "/workspace/.ai-platform-opensandbox-lease.json"
@@ -893,7 +1045,8 @@ async def test_opensandbox_provider_maps_lease_and_platform_controls(monkeypatch
     assert lease.workspace_host_path == workspace().workspace_host_path
     assert lease.workspace_container_path == "/workspace"
     assert lease.labels["ai-platform.provider_backend"] == "opensandbox"
-    assert lease.labels["ai-platform.egress.policy"] == "opensandbox-network-policy"
+    assert lease.labels["ai-platform.external_egress.runtime_identity"] == "runsc"
+    assert lease.labels["ai-platform.external_egress.gateway_policy_subject"] == "gateway-policy-subject-a"
     assert not any(key.startswith("ai-platform.executor.") for key in lease.labels)
 
 

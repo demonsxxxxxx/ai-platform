@@ -56,9 +56,11 @@ RUNTIME_PROBE_RESULTS_ALLOWED_KEYS = {
     "source",
     "resource_limits",
     "egress_policy",
+    "opensandbox_external_egress",
     "security_options",
 }
 RUNTIME_PROBE_RESULTS_SECTION_KEYS = ("resource_limits", "egress_policy", "security_options")
+RUNTIME_PROBE_RESULTS_OPTIONAL_SECTION_KEYS = ("opensandbox_external_egress",)
 
 
 class SandboxEvidenceArgumentParser(argparse.ArgumentParser):
@@ -157,6 +159,26 @@ def _runtime_probe_section_error(section_name: str, section: dict[str, Any], *, 
             return "runtime probe results missing: egress_policy.policy_source"
         if section.get("probe_source") != "runtime_probe_results":
             return "runtime probe results missing: egress_policy.probe_source"
+        return None
+    if section_name == "opensandbox_external_egress":
+        if section.get("evidence_class") != "gateway_nft_runtime_probe":
+            return "runtime probe results missing: opensandbox_external_egress.evidence_class"
+        for field in (
+            "unauthorized_fqdn_denied",
+            "literal_ip_denied",
+            "dns_failure_fail_closed",
+        ):
+            if section.get(field) is not True:
+                return f"runtime probe results missing: opensandbox_external_egress.{field}"
+        deny_audit_counter = section.get("deny_audit_counter")
+        if not isinstance(deny_audit_counter, dict) or deny_audit_counter.get("observed") is not True:
+            return "runtime probe results missing: opensandbox_external_egress.deny_audit_counter"
+        for field in ("audit_id", "counter_name"):
+            if not isinstance(deny_audit_counter.get(field), str) or not deny_audit_counter[field]:
+                return f"runtime probe results missing: opensandbox_external_egress.deny_audit_counter.{field}"
+        count = deny_audit_counter.get("count")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 2:
+            return "runtime probe results missing: opensandbox_external_egress.deny_audit_counter.count"
         return None
     if section_name == "security_options":
         if section.get("privileged") is not False:
@@ -266,6 +288,15 @@ def load_runtime_probe_results(path: str | Path, *, run_id: str) -> dict[str, An
             raise RuntimeError(f"runtime probe results section must be an object: {key}")
         results[key] = dict(section)
     for key, section in results.items():
+        section_error = _runtime_probe_section_error(key, section, run_id=run_id)
+        if section_error:
+            raise RuntimeError(section_error)
+    for key in RUNTIME_PROBE_RESULTS_OPTIONAL_SECTION_KEYS:
+        if key not in payload:
+            continue
+        section = payload.get(key)
+        if not isinstance(section, dict):
+            raise RuntimeError(f"runtime probe results missing: {key}")
         section_error = _runtime_probe_section_error(key, section, run_id=run_id)
         if section_error:
             raise RuntimeError(section_error)
@@ -1065,6 +1096,7 @@ def _opensandbox_provider_lifecycle_evidence(
     recorder: EvidenceRecorder,
     captured: dict[str, Any],
     resource_limits: dict[str, Any],
+    runtime_probe_results: dict[str, Any] | None,
 ) -> dict[str, object]:
     if recorder.sandbox_provider != "opensandbox":
         return {}
@@ -1073,8 +1105,16 @@ def _opensandbox_provider_lifecycle_evidence(
     release_reason = str(captured.get("release_reason") or "")
     lease_labels = captured.get("lease_labels")
     labels = lease_labels if isinstance(lease_labels, dict) else {}
+    external_egress_probe = (
+        runtime_probe_results.get("opensandbox_external_egress")
+        if isinstance(runtime_probe_results, dict)
+        and isinstance(runtime_probe_results.get("opensandbox_external_egress"), dict)
+        else {}
+    )
+    deny_audit_counter = external_egress_probe.get("deny_audit_counter")
+    deny_audit_counter = deny_audit_counter if isinstance(deny_audit_counter, dict) else {}
     return {
-        "schema_version": "ai-platform.opensandbox-provider-lifecycle.v1",
+        "schema_version": "ai-platform.opensandbox-provider-lifecycle.v2",
         "provider": "opensandbox",
         "run_id": recorder.run_id,
         "lifecycle": {
@@ -1082,6 +1122,7 @@ def _opensandbox_provider_lifecycle_evidence(
             "delete_observed": bool(recorded_lease_id and recorded_lease_id == released_lease_id),
             "container_id_present": bool(captured.get("container_id")),
             "executor_endpoint_present": bool(captured.get("executor_url")),
+            "sandbox_id": str(captured.get("container_id") or ""),
         },
         "db_lease": {
             "recorded": bool(recorded_lease_id),
@@ -1111,10 +1152,46 @@ def _opensandbox_provider_lifecycle_evidence(
             "pids_limit": int(resource_limits.get("pids_limit") or 0),
             "policy_projection_source": "provider_request",
         },
-        "egress_policy": {
-            "policy_requested": labels.get("ai-platform.egress.policy") == "opensandbox-network-policy",
-            "callback_host_allowlisted": bool(labels.get("ai-platform.egress.callback_host")),
-            "policy_projection_source": "provider_request",
+        "external_egress_capability": {
+            "source": (
+                "authenticated_capability_profile"
+                if labels.get("ai-platform.external_egress.profile_version") == "v1"
+                else "missing_capability_profile"
+            ),
+            "profile_version": str(labels.get("ai-platform.external_egress.profile_version") or ""),
+            "profile_id": str(labels.get("ai-platform.external_egress.profile_id") or ""),
+            "opensandbox_endpoint": str(labels.get("ai-platform.external_egress.endpoint") or ""),
+            "runtime_identity": str(labels.get("ai-platform.external_egress.runtime_identity") or ""),
+            "ai_platform_runtime_subject": str(labels.get("ai-platform.runtime_subject") or ""),
+            "gateway_policy_subject": str(labels.get("ai-platform.external_egress.gateway_policy_subject") or ""),
+            "callback_boundary_subject": str(labels.get("ai-platform.external_egress.callback_boundary_subject") or ""),
+            "deny_audit_subject": str(labels.get("ai-platform.external_egress.deny_audit_subject") or ""),
+            "deny_counter_subject": str(labels.get("ai-platform.external_egress.deny_counter_subject") or ""),
+            "executor_image": str(labels.get("ai-platform.executor.image") or ""),
+        },
+        "external_egress_runtime": {
+            "evidence_class": str(external_egress_probe.get("evidence_class") or "not_runtime_verified"),
+            "run_id": recorder.run_id,
+            "provider": "opensandbox",
+            "sandbox_id": str(captured.get("container_id") or ""),
+            "executor_image": str(labels.get("ai-platform.executor.image") or ""),
+            "ai_platform_runtime_subject": str(labels.get("ai-platform.runtime_subject") or ""),
+            "gateway_policy_subject": str(labels.get("ai-platform.external_egress.gateway_policy_subject") or ""),
+            "callback_boundary_subject": str(labels.get("ai-platform.external_egress.callback_boundary_subject") or ""),
+            "allowed_callback_delivered": recorder.has_required_callbacks(),
+            "callback_run_scoped": recorder.has_required_callbacks(),
+            "unauthorized_fqdn_denied": external_egress_probe.get("unauthorized_fqdn_denied") is True,
+            "literal_ip_denied": external_egress_probe.get("literal_ip_denied") is True,
+            "dns_failure_fail_closed": external_egress_probe.get("dns_failure_fail_closed") is True,
+            "cleanup_confirmed": bool(recorded_lease_id and recorded_lease_id == released_lease_id),
+            "deny_audit_counter": {
+                "observed": deny_audit_counter.get("observed") is True,
+                "audit_subject": str(labels.get("ai-platform.external_egress.deny_audit_subject") or ""),
+                "counter_subject": str(labels.get("ai-platform.external_egress.deny_counter_subject") or ""),
+                "audit_id": str(deny_audit_counter.get("audit_id") or ""),
+                "counter_name": str(deny_audit_counter.get("counter_name") or ""),
+                "count": deny_audit_counter.get("count", 0),
+            },
         },
         "dispatch": {
             "executor_response_present": bool(recorder.executor),
@@ -1320,6 +1397,7 @@ def run_platform_runtime_probe(
         recorder=recorder,
         captured=captured,
         resource_limits={"max_seconds": 60, "memory_mb": 512, "cpu_count": 0.5, "pids_limit": 128},
+        runtime_probe_results=runtime_probe_results,
     )
     output = {
         "status": str(getattr(result, "status", "")),

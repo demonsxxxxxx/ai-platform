@@ -327,6 +327,20 @@ def test_b2_sandbox_readiness_records_source_contract_without_gate_closure(tmp_p
         "role": "B2 first-stage provider adapter",
         "does_not_close_b2": True,
     }
+    assert readiness["provider_profile"]["opensandbox_external_egress_capability_admission"] == {
+        "status": "source_tested_429_runtime_integration_required",
+        "profile_schema_version": "ai-platform.opensandbox.external-egress-capability.v1",
+        "required_bindings": [
+            "authenticated_capability_endpoint",
+            "opensandbox_endpoint",
+            "runsc_runtime_identity",
+            "ai_platform_runtime_subject",
+            "gateway_policy_subject",
+            "callback_boundary_subject",
+        ],
+        "request_default_action_deny_is_enforcement_proof": False,
+        "does_not_close_b2": True,
+    }
     assert readiness["provider_profile"]["fake_provider_counts_as_production_evidence"] is False
     assert readiness["provider_profile"]["docker_socket_default_mount_allowed"] is False
     assert readiness["runtime_acceptance"]["status"] == "missing_211_real_sandbox_smoke"
