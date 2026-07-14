@@ -22,7 +22,9 @@ remaining validity. OpenSandbox admission requires a requested immutable
 not an observed container digest or runtime enforcement result. An authenticated observer
 provided through #436/#429 is required before any runtime evidence or integration claim.
 If the compatibility digest setting is supplied, it must equal the digest in that requested
-reference and cannot override it.
+reference and cannot override it. The authenticated capability profile must carry the
+same requested executor-image digest; all three values are compared before sandbox
+creation or reuse, and the capability labels retain only the requested/profile subject.
 
 Status:
 - [x] local provider adapter wired behind `SandboxProvider`/`ContainerProvider`. Evidence: `tests/test_sandbox_container_provider.py` covers `opensandbox` provider selection, lease field mapping, stop/cleanup, startup file/command probes, byte readback compatibility, command exit-code failure, endpoint private headers, scheme-less endpoint URL normalization, and sanitized failure projection.
