@@ -46,6 +46,10 @@ export interface CapabilitySuggestion {
   reason: string;
 }
 
+export interface ChatIntentDecision {
+  agent_id?: string;
+}
+
 export interface ChatStreamQueuedResponse {
   session_id: string;
   run_id: string;
@@ -53,6 +57,7 @@ export interface ChatStreamQueuedResponse {
   status: "queued";
   queue_position?: number;
   queue_insight?: unknown;
+  intent_decision?: ChatIntentDecision;
 }
 
 export interface ChatStreamNeedsConfirmationResponse {
@@ -60,7 +65,7 @@ export interface ChatStreamNeedsConfirmationResponse {
   run_id?: null;
   status: "needs_confirmation";
   suggestions: CapabilitySuggestion[];
-  intent_decision?: unknown;
+  intent_decision?: ChatIntentDecision;
 }
 
 export type ChatStreamResponse =
@@ -75,6 +80,15 @@ export function isChatStreamNeedsConfirmation(
     response !== null &&
     (response as { status?: unknown }).status === "needs_confirmation"
   );
+}
+
+/** Prefer the authoritative routed agent while preserving a known session agent. */
+export function resolveChatSessionAgentId(
+  response: ChatStreamResponse,
+  currentAgentId: string,
+): string {
+  const routedAgentId = response.intent_decision?.agent_id?.trim();
+  return routedAgentId || currentAgentId || DEFAULT_CHAT_AGENT_ID;
 }
 
 export function buildMessageForkUrl(
@@ -172,8 +186,8 @@ export function buildRunCancelUrl(runId: string): string {
 }
 
 /** Build the single supported Chat submission endpoint. */
-export function buildSubmitChatUrl(): string {
-  return `${API_BASE}/api/chat/stream?agent_id=${DEFAULT_CHAT_AGENT_ID}`;
+export function buildSubmitChatUrl(agentId = DEFAULT_CHAT_AGENT_ID): string {
+  return `${API_BASE}/api/chat/stream?agent_id=${encodeURIComponent(agentId)}`;
 }
 
 export function buildSessionListUrl(params?: {
@@ -355,6 +369,7 @@ export const sessionApi = {
     disabledSkills?: string[],
     disabledMcpTools?: string[],
     selectedSkill?: SelectedSkillRequest | null,
+    agentId?: string,
   ): Promise<ChatStreamResponse> {
     const body = buildSubmitChatBody({
       message,
@@ -367,7 +382,7 @@ export const sessionApi = {
       userTimezone: getBrowserTimezone(),
       selectedSkill,
     });
-    return authFetch(buildSubmitChatUrl(), {
+    return authFetch(buildSubmitChatUrl(agentId), {
       method: "POST",
       body: JSON.stringify(body),
     });

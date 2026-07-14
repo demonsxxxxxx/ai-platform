@@ -6,6 +6,22 @@ export interface ToolPermissionCardState {
   error: string | null;
 }
 
+export interface OrdinaryUserToolPermissionPresentation {
+  title: string;
+  message: string;
+}
+
+/** Convert governed tool access into a product message with no approval control. */
+export function getOrdinaryUserToolPermissionPresentation(
+  _part: ToolPermissionPart,
+): OrdinaryUserToolPermissionPresentation {
+  return {
+    title: "Action unavailable",
+    message:
+      "This action could not be completed because it requires additional authorization.",
+  };
+}
+
 export function syncToolPermissionCardState(
   part: ToolPermissionPart,
   currentError: string | null,

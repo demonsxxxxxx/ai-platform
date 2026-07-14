@@ -6,16 +6,10 @@ import {
   Download,
   Eye,
   ShieldAlert,
-  ShieldCheck,
   XCircle,
 } from "lucide-react";
-import { useEffect, useState } from "react";
 import type { MessagePart } from "../../../types";
 import { useTranslation } from "react-i18next";
-import {
-  decideToolPermission,
-  type ToolPermissionDecision,
-} from "../../../services/api/toolPermission";
 import { MarkdownContent } from "./MarkdownContent";
 import { formatFileSize, getFileTypeInfo } from "../../documents/utils";
 import {
@@ -36,7 +30,7 @@ import { SummaryItem } from "./SummaryItem";
 import type { RevealPreviewRequest } from "./items/revealPreviewData";
 import type { RevealPreviewOpenSource } from "./items/revealPreviewState";
 import { createToolPartAnchorId } from "./messagePartAnchors";
-import { syncToolPermissionCardState } from "./toolPermissionCardState";
+import { getOrdinaryUserToolPermissionPresentation } from "./toolPermissionCardState";
 import { buildArtifactPreviewRequest } from "./items/artifactPreview";
 import { downloadArtifactFile } from "./items/artifactDownload";
 
@@ -466,40 +460,7 @@ function ToolPermissionCardItem({
 }: {
   part: Extract<MessagePart, { type: "tool_permission" }>;
 }) {
-  const [status, setStatus] = useState(part.status);
-  const [decision, setDecision] = useState(part.decision);
-  const [submitting, setSubmitting] =
-    useState<ToolPermissionDecision | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    const nextState = syncToolPermissionCardState(part, error);
-    setStatus(nextState.status);
-    setDecision(nextState.decision);
-    setError(nextState.error);
-  }, [part, error]);
-
-  const isDecided = status === "decided" || Boolean(decision);
-  const riskLabel = formatEventLabel(part.risk_level || "low");
-  const accessLabel = part.write_capable ? "Write capable" : "Read only";
-
-  const submitDecision = async (nextDecision: ToolPermissionDecision) => {
-    setSubmitting(nextDecision);
-    setError(null);
-    try {
-      const response = await decideToolPermission(
-        part.run_id,
-        part.permission_request_id,
-        nextDecision,
-      );
-      setStatus("decided");
-      setDecision(response.permission_request.decision || nextDecision);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Decision failed");
-    } finally {
-      setSubmitting(null);
-    }
-  };
+  const presentation = getOrdinaryUserToolPermissionPresentation(part);
 
   return (
     <div
@@ -510,104 +471,19 @@ function ToolPermissionCardItem({
       )}
     >
       <div className="flex min-w-0 items-start gap-2">
-        {isDecided ? (
-          <ShieldCheck
-            size={18}
-            className="mt-0.5 shrink-0 text-emerald-600 dark:text-emerald-400"
-          />
-        ) : (
-          <ShieldAlert
-            size={18}
-            className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400"
-          />
-        )}
+        <ShieldAlert
+          size={18}
+          className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400"
+        />
         <div className="min-w-0 flex-1">
           <div className="break-words text-sm font-semibold">
-            Tool permission required
+            {presentation.title}
           </div>
-          <div className="mt-1 break-all text-xs text-stone-600 dark:text-stone-300">
-            {part.tool_id}
-          </div>
-          <div className="mt-1 flex flex-wrap gap-2 text-xs text-stone-500 dark:text-stone-400">
-            <span>{riskLabel} risk</span>
-            <span>{accessLabel}</span>
+          <div className="mt-1 text-xs text-stone-600 dark:text-stone-300">
+            {presentation.message}
           </div>
         </div>
       </div>
-
-      {isDecided ? (
-        <div className="mt-3 rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 py-1.5 text-xs font-medium text-[var(--theme-text)] dark:bg-stone-900">
-          Decision: {formatPermissionDecision(decision)}
-        </div>
-      ) : (
-        <div className="mt-3 flex flex-wrap gap-2">
-          <PermissionDecisionButton
-            label="Allow once"
-            decision="allow_once"
-            submitting={submitting}
-            onClick={submitDecision}
-          />
-          <PermissionDecisionButton
-            label="Allow run"
-            decision="allow_for_run"
-            submitting={submitting}
-            onClick={submitDecision}
-          />
-          <PermissionDecisionButton
-            label="Deny"
-            decision="deny"
-            submitting={submitting}
-            onClick={submitDecision}
-          />
-        </div>
-      )}
-
-      {error && (
-        <div className="mt-2 break-words text-xs font-medium text-red-600 dark:text-red-300">
-          {error}
-        </div>
-      )}
     </div>
   );
-}
-
-function PermissionDecisionButton({
-  label,
-  decision,
-  submitting,
-  onClick,
-}: {
-  label: string;
-  decision: ToolPermissionDecision;
-  submitting: ToolPermissionDecision | null;
-  onClick: (decision: ToolPermissionDecision) => void;
-}) {
-  const isDeny = decision === "deny";
-  const disabled = Boolean(submitting);
-  return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={() => onClick(decision)}
-      className={clsx(
-        "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors",
-        "disabled:cursor-not-allowed disabled:opacity-60",
-        isDeny
-          ? "border-red-200 bg-[var(--theme-bg-card)] text-red-700 hover:bg-red-50 dark:border-red-900/60 dark:bg-stone-900 dark:text-red-300 dark:hover:bg-red-950/30"
-          : "border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text)] hover:bg-[var(--theme-bg-sidebar)] dark:bg-stone-900",
-      )}
-    >
-      {isDeny ? <XCircle size={14} /> : <CheckCircle size={14} />}
-      <span>{submitting === decision ? "Submitting" : label}</span>
-    </button>
-  );
-}
-
-function formatPermissionDecision(
-  decision?: ToolPermissionDecision,
-): string {
-  if (decision === "allow_once") return "Allow once";
-  if (decision === "allow_for_run") return "Allow for run";
-  if (decision === "deny") return "Deny";
-  return "Pending";
 }

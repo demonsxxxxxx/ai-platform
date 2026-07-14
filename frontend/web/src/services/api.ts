@@ -31,8 +31,10 @@ export { roleApi } from "./api/role";
 export {
   DEFAULT_CHAT_AGENT_ID,
   isChatStreamNeedsConfirmation,
+  resolveChatSessionAgentId,
   sessionApi,
   type BackendSession,
+  type ChatIntentDecision,
   type ChatStreamResponse,
   type ChatStreamNeedsConfirmationResponse,
   type ChatStreamQueuedResponse,

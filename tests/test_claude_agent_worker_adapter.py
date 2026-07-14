@@ -76,6 +76,14 @@ class FakeSdkRuntimeError:
     error = "model gateway timeout"
 
 
+class FakeSdkStopSequence:
+    used_sdk = True
+    message = "completed at the requested stop sequence"
+    session_id = "sdk-session"
+    usage = {"input_tokens": 1}
+    error = "stop_sequence"
+
+
 class FakeSdkRuntimeErrorWithSkillUse:
     used_sdk = True
     message = ""
@@ -591,6 +599,38 @@ def test_general_chat_does_not_stage_all_platform_skills_by_default():
     )
 
     assert selected == []
+
+
+@pytest.mark.asyncio
+async def test_general_chat_treats_sdk_stop_sequence_as_normal_completion(monkeypatch):
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+
+    async def sdk_stop_sequence(*args, **kwargs):
+        return FakeSdkStopSequence()
+
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_stop_sequence)
+
+    result = await adapter._run_general_chat(payload())
+
+    assert result.status == "succeeded"
+    assert result.result["message"] == "completed at the requested stop sequence"
+    assert result.result["sdk_error"] is None
+    assert result.executor_payload["sdk_terminal_reason"] == "stop_sequence"
+
+
+@pytest.mark.asyncio
+async def test_general_chat_keeps_real_sdk_errors_failed(monkeypatch):
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+
+    async def sdk_runtime_error(*args, **kwargs):
+        return FakeSdkRuntimeError()
+
+    monkeypatch.setattr(adapter, "_try_run_sdk", sdk_runtime_error)
+
+    result = await adapter._run_general_chat(payload())
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "claude_agent_sdk_runtime_error"
 
 
 @pytest.mark.asyncio

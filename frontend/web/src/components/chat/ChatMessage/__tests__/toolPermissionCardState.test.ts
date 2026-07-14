@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { ToolPermissionPart } from "../../../../types";
-import { syncToolPermissionCardState } from "../toolPermissionCardState.ts";
+import {
+  getOrdinaryUserToolPermissionPresentation,
+  syncToolPermissionCardState,
+} from "../toolPermissionCardState.ts";
 
 const pendingPart: ToolPermissionPart = {
   type: "tool_permission",
@@ -37,4 +40,12 @@ test("clears a stale local submit error when replay marks the permission decided
   assert.equal(result.status, "decided");
   assert.equal(result.decision, "allow_once");
   assert.equal(result.error, null);
+});
+
+test("projects pending governed access as a non-interactive product message", () => {
+  assert.deepEqual(getOrdinaryUserToolPermissionPresentation(pendingPart), {
+    title: "Action unavailable",
+    message:
+      "This action could not be completed because it requires additional authorization.",
+  });
 });

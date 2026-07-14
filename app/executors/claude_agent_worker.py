@@ -450,7 +450,7 @@ class ClaudeAgentWorkerAdapter:
 
     async def _run_general_chat(self, payload: RunPayload, event_sink: ExecutorEventSink | None = None) -> ExecutorResult:
         sdk_result = await self._try_run_sdk(payload, event_sink=event_sink)
-        if sdk_result and sdk_result.used_sdk and not sdk_result.error:
+        if self._sdk_completed_normally(sdk_result):
             return ExecutorResult(
                 status="succeeded",
                 adapter_version=self.adapter_version,
@@ -470,6 +470,7 @@ class ClaudeAgentWorkerAdapter:
                     "sdk_used": True,
                     "sdk_session_id": sdk_result.session_id,
                     "sdk_usage": sdk_result.usage,
+                    "sdk_terminal_reason": self._sdk_terminal_reason(sdk_result),
                     "delegate_used": False,
                     "worker_boundary": self.executor_type,
                 },
@@ -510,6 +511,18 @@ class ClaudeAgentWorkerAdapter:
         if error_text == "claude_agent_sdk_disabled":
             return "claude_agent_sdk_disabled"
         return "claude_agent_sdk_required"
+
+    def _sdk_completed_normally(self, sdk_result) -> bool:
+        if not sdk_result or not getattr(sdk_result, "used_sdk", False):
+            return False
+        return (
+            not getattr(sdk_result, "error", None)
+            or self._sdk_terminal_reason(sdk_result) == "stop_sequence"
+        )
+
+    def _sdk_terminal_reason(self, sdk_result) -> str | None:
+        error = str(getattr(sdk_result, "error", "") or "").strip()
+        return error if error == "stop_sequence" else None
 
     def _sdk_required_result(self, payload: RunPayload, sdk_result) -> ExecutorResult:
         error_code = self._sdk_failure_code(sdk_result)
@@ -1250,7 +1263,7 @@ class ClaudeAgentWorkerAdapter:
             prompt=prepared.prompt,
             staged_skill_names=prepared.staged_skill_names,
         )
-        if sdk_result and sdk_result.used_sdk and not sdk_result.error:
+        if self._sdk_completed_normally(sdk_result):
             artifacts = self._collect_workspace_artifacts(payload, prepared.workspace)
             used_skill_names = _sdk_used_skill_names(sdk_result, prepared.staged_skill_names)
             used_skills_source = _sdk_used_skills_source(sdk_result, used_skill_names)
@@ -1283,6 +1296,7 @@ class ClaudeAgentWorkerAdapter:
                     "sdk_used": True,
                     "sdk_session_id": sdk_result.session_id,
                     "sdk_usage": sdk_result.usage,
+                    "sdk_terminal_reason": self._sdk_terminal_reason(sdk_result),
                     "delegate_used": False,
                     "worker_boundary": self.executor_type,
                     "allowed_skills": prepared.allowed_skill_names,

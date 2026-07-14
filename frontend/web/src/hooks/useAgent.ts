@@ -16,6 +16,7 @@ import type {
 import {
   DEFAULT_CHAT_AGENT_ID,
   isChatStreamNeedsConfirmation,
+  resolveChatSessionAgentId,
   sessionApi,
   type BackendSession,
   type CapabilitySuggestion,
@@ -92,6 +93,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionAgentId, setSessionAgentId] = useState(DEFAULT_CHAT_AGENT_ID);
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] =
@@ -246,6 +248,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
         if (sessionData) {
           setSessionId(targetSessionId);
+          setSessionAgentId(sessionData.agent_id || DEFAULT_CHAT_AGENT_ID);
           setCurrentProjectId(
             (sessionData.metadata?.project_id as string) || null,
           );
@@ -494,6 +497,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           disabledSkills,
           disabledMcpTools,
           selectedSkill,
+          sessionAgentId,
         );
 
         if (isChatStreamNeedsConfirmation(submitData)) {
@@ -522,7 +526,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
         const newSessionId = submitData.session_id;
         const newRunId = submitData.run_id;
+        const routedAgentId = resolveChatSessionAgentId(
+          submitData,
+          sessionAgentId,
+        );
         const projectId = pendingProjectIdRef.current;
+        setSessionAgentId(routedAgentId);
 
         // Clear pending project ID after use
         pendingProjectIdRef.current = null;
@@ -542,7 +551,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           // 构建完整的对话配置
           const conversationConfig: Record<string, unknown> = {
             current_run_id: newRunId,
-            agent_id: DEFAULT_CHAT_AGENT_ID,
+            agent_id: routedAgentId,
             agent_options: fullAgentOptions,
             disabled_skills: disabledSkills,
             disabled_mcp_tools: disabledMcpTools,
@@ -553,7 +562,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
           const newSession: BackendSession = {
             id: newSessionId,
-            agent_id: DEFAULT_CHAT_AGENT_ID,
+            agent_id: routedAgentId,
             created_at: now,
             updated_at: now,
             is_active: true,
@@ -588,7 +597,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             ...((newlyCreatedSession?.metadata as Record<string, unknown>) ||
               {}),
             current_run_id: newRunId,
-            agent_id: DEFAULT_CHAT_AGENT_ID,
+            agent_id: routedAgentId,
             agent_options: fullAgentOptions,
             disabled_skills: disabledSkills,
             disabled_mcp_tools: disabledMcpTools,
@@ -598,6 +607,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             prev
               ? {
                   ...prev,
+                  agent_id: routedAgentId,
                   metadata: conversationConfig,
                   updated_at: new Date().toISOString(),
                 }
@@ -705,6 +715,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     },
     [
       sessionId,
+      sessionAgentId,
       createSSEContext,
       newlyCreatedSession?.metadata,
       options,
@@ -749,6 +760,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     streamVersionRef.current += 1;
     setMessages([]);
     setSessionId(null);
+    setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
     setError(null);
     setCurrentRunId(null);
     setConnectionStatus("disconnected");
