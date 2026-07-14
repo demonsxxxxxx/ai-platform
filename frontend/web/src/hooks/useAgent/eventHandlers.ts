@@ -71,6 +71,7 @@ const MESSAGE_EVENTS = new Set<string>([
   "agent:result",
   "thinking",
   "message:chunk",
+  "final_detail",
   "tool:start",
   "tool:result",
   "sandbox:starting",

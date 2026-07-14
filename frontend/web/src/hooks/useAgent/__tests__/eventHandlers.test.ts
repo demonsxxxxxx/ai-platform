@@ -462,3 +462,61 @@ test("streams ai-platform run event and artifact card into message parts", () =>
   );
   assert.equal(ctx.setMessagesCalls(), 2);
 });
+
+test("keeps a controlled failed final detail before exactly-once terminal convergence", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-final",
+        role: "assistant",
+        content: "",
+        timestamp: new Date("2026-07-15T01:00:00.000Z"),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-final";
+  let terminalCalls = 0;
+  ctx.onRunTerminal = () => {
+    terminalCalls += 1;
+    ctx.currentRunIdRef.current = null;
+    return true;
+  };
+
+  const acceptedDetail = handleStreamEvent(
+    {
+      event: "final_detail",
+      data: JSON.stringify({
+        run_id: "run-final",
+        detail_kind: "failed",
+        detail_code: "run_failed",
+      }),
+    } as StreamEvent,
+    "assistant-final",
+    "run-final:final",
+    "2026-07-15T01:00:01.000Z",
+    ctx,
+  );
+  const acceptedTerminal = handleStreamEvent(
+    {
+      event: "run_event",
+      data: JSON.stringify({
+        run_id: "run-final",
+        event_type: "run_failed",
+      }),
+    } as StreamEvent,
+    "assistant-final",
+    "evt-final-failed",
+    "2026-07-15T01:00:02.000Z",
+    ctx,
+  );
+
+  assert.equal(acceptedDetail, true);
+  assert.equal(acceptedTerminal, true);
+  assert.equal(terminalCalls, 1);
+  assert.match(ctx.messages()[0]?.content || "", /任务未能完成/);
+  assert.equal(ctx.messages()[0]?.isStreaming, true);
+  assert.doesNotMatch(ctx.messages()[0]?.content || "", /Executor failed/);
+});

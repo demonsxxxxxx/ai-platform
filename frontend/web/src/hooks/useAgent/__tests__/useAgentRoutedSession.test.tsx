@@ -697,10 +697,20 @@ test("useAgent finalizes a failed run once with a Chinese product failure card",
   let sseCalls = 0;
   dom.window.fetch = async () => {
     sseCalls += 1;
-    return sseEventResponse("run_event", {
-      run_id: "run-failed",
-      event_type: "run_failed",
-    });
+    return sseFramesResponse([
+      {
+        event: "final_detail",
+        data: {
+          run_id: "run-failed",
+          detail_kind: "failed",
+          detail_code: "run_failed",
+        },
+      },
+      {
+        event: "run_event",
+        data: { run_id: "run-failed", event_type: "run_failed" },
+      },
+    ]);
   };
   sessionApi.markRead = async () => {};
   sessionApi.generateTitle = async () => ({
@@ -737,7 +747,78 @@ test("useAgent finalizes a failed run once with a Chinese product failure card",
       terminalCards[0]?.type === "run_status" && terminalCards[0].message,
       "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
     );
+    const serializedMessages = JSON.stringify(harness.hook.messages);
+    assert.match(serializedMessages, /任务未能完成。请稍后重试/);
+    assert.doesNotMatch(serializedMessages, /Executor failed/);
     assert.equal(sseCalls, 1);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.generateTitle = originalGenerateTitle;
+    dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent retains final answer and artifact frames that precede a succeeded terminal", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalMarkRead = sessionApi.markRead;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalFetch = dom.window.fetch;
+  dom.window.fetch = async () =>
+    sseFramesResponse([
+      {
+        event: "artifact_card",
+        data: {
+          run_id: "run-final-success",
+          artifact_id: "artifact-final",
+          artifact_type: "report",
+          label: "最终报告",
+          size_bytes: 1,
+        },
+      },
+      {
+        event: "message:chunk",
+        data: { run_id: "run-final-success", content: "最终答复" },
+      },
+      {
+        event: "run_event",
+        data: { run_id: "run-final-success", event_type: "run_succeeded" },
+      },
+    ]);
+  sessionApi.markRead = async () => {};
+  sessionApi.generateTitle = async () => ({
+    title: "成功终态会话",
+    session_id: "session-final-success",
+  });
+  sessionApi.submitChat = (async () => ({
+    session_id: "session-final-success",
+    run_id: "run-final-success",
+    trace_id: "trace-final-success",
+    status: "queued",
+  })) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("生成最终报告");
+    });
+    await settle(harness.act);
+
+    const assistant = harness.hook.messages.find(
+      (message) => message.role === "assistant" && message.runId === "run-final-success",
+    );
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+    assert.equal(assistant?.content, "最终答复");
+    assert.equal(
+      assistant?.parts?.some(
+        (part) => part.type === "artifact" && part.artifact_id === "artifact-final",
+      ),
+      true,
+    );
   } finally {
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.markRead = originalMarkRead;

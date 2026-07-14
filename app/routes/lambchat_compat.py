@@ -74,6 +74,29 @@ def _public_terminal_text(run: dict[str, Any], principal: AuthPrincipal) -> str:
     return ""
 
 
+def _terminal_final_payload(
+    run: dict[str, Any], principal: AuthPrincipal
+) -> tuple[str, dict[str, str], str] | None:
+    """Return the safe final user-facing payload that precedes terminal replay."""
+    status = _platform_status(str(run.get("status") or ""))
+    if status == "succeeded":
+        return (
+            "message:chunk",
+            {"content": _public_terminal_text(run, principal) or "任务完成"},
+            "info",
+        )
+    if status == "failed":
+        # Keep final failure presentation code-only.  The frontend maps this
+        # controlled marker to its localized product copy and never receives
+        # executor/runtime text as a transport-like error frame.
+        return (
+            "final_detail",
+            {"detail_kind": "failed", "detail_code": "run_failed"},
+            "error",
+        )
+    return None
+
+
 def _public_error_text(run: dict[str, Any], principal: AuthPrincipal) -> str:
     if is_ai_admin(principal):
         return str(run.get("error_message") or run.get("error_code") or "")
@@ -533,58 +556,62 @@ async def session_events(
         events = []
         for run in reversed(target_runs):
             run_events = await repositories.list_run_events(conn, tenant_id=principal.tenant_id, run_id=run["id"])
+            terminal_events = []
             for event in run_events:
                 if not event_visible_to_principal(event, principal):
                     continue
                 envelope = run_event_response(str(run["id"]), event, principal=principal)
+                projected_event = {
+                    "id": event["id"],
+                    "schema_version": envelope["schema_version"],
+                    "trace_id": envelope["trace_id"],
+                    "type": envelope["type"],
+                    "event_type": envelope["event_type"],
+                    "stage": envelope["stage"],
+                    "severity": envelope["severity"],
+                    "visible_to_user": envelope["visible_to_user"],
+                    "payload": envelope["payload"],
+                    # Persisted run-event sequences remain top-level in the
+                    # history projection.  They are the replay-safe cursor
+                    # for clients reconnecting to a running run.
+                    "sequence": envelope["sequence"],
+                    "data": _event_payload(
+                        event,
+                        principal,
+                        envelope["payload"],
+                        event_type=envelope["event_type"],
+                        stage=envelope["stage"],
+                    ),
+                    "timestamp": event.get("created_at"),
+                    "run_id": run["id"],
+                }
+                if str(envelope["event_type"]) in CHAT_STREAM_TERMINAL_EVENT_TYPES:
+                    terminal_events.append(projected_event)
+                else:
+                    events.append(projected_event)
+            final_payload = _terminal_final_payload(run, principal)
+            if final_payload is not None:
+                event_type, payload, severity = final_payload
                 events.append(
                     {
-                        "id": event["id"],
-                        "schema_version": envelope["schema_version"],
-                        "trace_id": envelope["trace_id"],
-                        "type": envelope["type"],
-                        "event_type": envelope["event_type"],
-                        "stage": envelope["stage"],
-                        "severity": envelope["severity"],
-                        "visible_to_user": envelope["visible_to_user"],
-                        "payload": envelope["payload"],
-                        # Persisted run-event sequences remain top-level in the
-                        # history projection.  They are the replay-safe cursor
-                        # for clients reconnecting to a running run.
-                        "sequence": envelope["sequence"],
-                        "data": _event_payload(
-                            event,
-                            principal,
-                            envelope["payload"],
-                            event_type=envelope["event_type"],
-                            stage=envelope["stage"],
-                        ),
-                        "timestamp": event.get("created_at"),
+                        "id": f"{run['id']}:final",
+                        "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
+                        "trace_id": str(run.get("trace_id") or standard_trace_id(str(run["id"]))),
+                        "type": event_type,
+                        "event_type": event_type,
+                        "stage": "answer",
+                        "severity": severity,
+                        "visible_to_user": True,
+                        "payload": payload,
+                        "data": payload,
+                        "timestamp": run.get("finished_at"),
                         "run_id": run["id"],
                     }
                 )
-            run_status = _platform_status(str(run["status"]))
-            if run_status in {"succeeded", "failed"}:
-                answer = _public_terminal_text(run, principal)
-                if answer:
-                    event_type = "message:chunk" if run_status == "succeeded" else "error"
-                    payload = {"content": answer} if run_status == "succeeded" else {"error": answer}
-                    events.append(
-                        {
-                            "id": f"{run['id']}:answer",
-                            "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
-                            "trace_id": str(run.get("trace_id") or standard_trace_id(str(run["id"]))),
-                            "type": event_type,
-                            "event_type": event_type,
-                            "stage": "answer",
-                            "severity": "info" if run_status == "succeeded" else "error",
-                            "visible_to_user": True,
-                            "payload": payload,
-                            "data": payload,
-                            "timestamp": run.get("finished_at"),
-                            "run_id": run["id"],
-                        }
-                    )
+            # History uses the same final-payload-before-terminal ordering as
+            # the live stream.  A client must never need a reload to recover
+            # user-visible final content after converging a terminal run.
+            events.extend(terminal_events)
     return {"session_id": session_id, "run_id": run_id, "events": events}
 
 
@@ -656,6 +683,8 @@ async def chat_session_stream(
         yield _sse("metadata", {"session_id": session_id, "run_id": run_id})
         last_status = ""
         seen_event_ids: set[str] = set()
+        pending_terminal_events: dict[str, dict[str, object]] = {}
+        pending_terminal_event_order: list[str] = []
         seen_artifact_ids: set[str] = set()
         max_heartbeats = max(int(get_settings().run_event_stream_max_heartbeats), 1)
         for _ in range(max_heartbeats):
@@ -681,6 +710,7 @@ async def chat_session_stream(
                 yield _sse("done", {})
                 return
             artifacts_by_id = {str(artifact["id"]): artifact for artifact in artifacts}
+            status = _platform_status(str(run["status"]))
 
             def artifact_chunks(artifact_ids: list[object] | None = None) -> list[str]:
                 selected_ids = [str(item) for item in artifact_ids or artifacts_by_id.keys()]
@@ -705,10 +735,11 @@ async def chat_session_stream(
                 event_id = str(event["id"])
                 if event_id in seen_event_ids:
                     continue
-                seen_event_ids.add(event_id)
                 if not event_visible_to_principal(event, principal):
+                    seen_event_ids.add(event_id)
                     continue
                 if str(event.get("event_type") or "") in CHAT_STREAM_REPLAY_SKIP_EVENT_TYPES:
+                    seen_event_ids.add(event_id)
                     continue
                 try:
                     projected = run_event_response(run_id, event, principal=principal)
@@ -716,32 +747,52 @@ async def chat_session_stream(
                     yield _sse("error", {"error": str(exc.detail)})
                     yield _sse("done", {"status": "error"})
                     return
-                if str(projected.get("event_type") or "") in CHAT_STREAM_TERMINAL_EVENT_TYPES:
-                    for chunk in artifact_chunks():
-                        yield chunk
-                yield _sse("run_event", projected, event_id=event_id)
+                is_terminal_event = (
+                    str(projected.get("event_type") or "")
+                    in CHAT_STREAM_TERMINAL_EVENT_TYPES
+                )
+                if is_terminal_event:
+                    # A persisted terminal event can race the run status
+                    # projection.  Do not consume it until the authoritative
+                    # status is terminal, otherwise a later heartbeat could
+                    # lose the terminal convergence frame.
+                    if event_id not in pending_terminal_events:
+                        pending_terminal_event_order.append(event_id)
+                    pending_terminal_events[event_id] = projected
+                    continue
+                seen_event_ids.add(event_id)
                 if str(projected.get("event_type") or "") == "artifact_created":
+                    yield _sse("run_event", projected, event_id=event_id)
                     payload = projected.get("payload") if isinstance(projected.get("payload"), dict) else {}
                     artifact_id = payload.get("artifact_id")
                     for chunk in artifact_chunks([artifact_id] if artifact_id else None):
                         yield chunk
+                    continue
+                yield _sse("run_event", projected, event_id=event_id)
             for chunk in artifact_chunks():
                 yield chunk
-            status = _platform_status(str(run["status"]))
             if status != last_status and status in {"queued", "running"}:
                 yield _sse("queue_update", {"status": "processing" if status == "running" else "queued"})
                 last_status = status
-            if status == "succeeded":
-                answer = _public_terminal_text(run, principal) or "任务完成"
-                yield _sse("message:chunk", {"content": answer}, event_id=f"{run_id}:answer")
-                yield _sse("done", {"status": "succeeded"}, event_id=f"{run_id}:done")
-                return
-            if status == "failed":
-                yield _sse("error", {"error": _public_terminal_text(run, principal) or "run_failed"})
-                yield _sse("done", {"status": "failed"}, event_id=f"{run_id}:done")
-                return
-            if status == "cancelled":
-                yield _sse("done", {"status": "cancelled"}, event_id=f"{run_id}:done")
+            if status in {"succeeded", "failed", "cancelled"}:
+                final_payload = _terminal_final_payload(run, principal)
+                if final_payload is not None:
+                    event_type, payload, _ = final_payload
+                    yield _sse(
+                        event_type,
+                        {"run_id": run_id, **payload},
+                        event_id=f"{run_id}:final",
+                    )
+                for event_id in pending_terminal_event_order:
+                    if event_id in seen_event_ids:
+                        continue
+                    projected = pending_terminal_events[event_id]
+                    # The terminal frame is sent only after every persisted
+                    # artifact and final payload.  Mark it seen at emission,
+                    # never when a running status merely exposed it.
+                    seen_event_ids.add(event_id)
+                    yield _sse("run_event", projected, event_id=event_id)
+                yield _sse("done", {"status": status}, event_id=f"{run_id}:done")
                 return
             await asyncio.sleep(1)
         yield _sse("error", {"error": "stream_timeout"})

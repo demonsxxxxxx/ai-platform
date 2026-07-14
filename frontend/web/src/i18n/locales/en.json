@@ -1960,6 +1960,16 @@
     "saved": "Settings saved",
     "searchPlaceholder": "Search settings...",
     "title": "Settings",
+    "toolPermissionInbox": {
+      "alreadyDecided": "This permission request was already handled. Refresh the list.",
+      "description": "Only administrators can decide pending tool permissions for this tenant.",
+      "empty": "There are no pending tool permission requests.",
+      "forbidden": "This account cannot decide tool permission requests.",
+      "refresh": "Refresh tool permission inbox",
+      "requestFailed": "The tool permission inbox is temporarily unavailable. Please refresh later.",
+      "risk": "{{level}} risk",
+      "title": "Tool permission governance inbox"
+    },
     "APP_BASE_URL": "Public base URL for file download/upload URLs (e.g. http://10.56.0.211:18001). Required when behind a reverse proxy where request.base_url is incorrect."
   },
   "share": {

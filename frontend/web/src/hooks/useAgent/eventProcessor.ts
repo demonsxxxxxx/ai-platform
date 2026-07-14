@@ -337,6 +337,22 @@ export function processMessageEvent(
       break;
     }
 
+    // ---- Controlled terminal detail ----
+
+    case "final_detail": {
+      // This is deliberately not the generic `error` SSE envelope.  The
+      // backend may only send a code-only failed detail; unknown detail
+      // shapes fail closed instead of exposing executor text.
+      if (
+        data.detail_kind !== "failed" ||
+        data.detail_code !== "run_failed"
+      ) {
+        break;
+      }
+      result.content = i18n.t("chat.runTerminal.failed");
+      break;
+    }
+
     // ---- Tool events ----
 
     case "tool:start": {

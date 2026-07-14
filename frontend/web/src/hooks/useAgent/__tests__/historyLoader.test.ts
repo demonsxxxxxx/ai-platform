@@ -212,6 +212,53 @@ test("reconstructMessagesFromEvents replays ai-platform run events and artifact 
   );
 });
 
+test("reconstructMessagesFromEvents keeps final payloads and artifacts before terminal run events", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "terminal-first",
+        event_type: "run_event",
+        run_id: "run-terminal",
+        timestamp: "2026-07-15T01:00:00.000Z",
+        data: {
+          event_id: "terminal-first",
+          event_type: "run_failed",
+          severity: "error",
+          message: "Run failed",
+        },
+      },
+      {
+        id: "final-detail",
+        event_type: "final_detail",
+        run_id: "run-terminal",
+        timestamp: "2026-07-15T01:00:01.000Z",
+        data: { detail_kind: "failed", detail_code: "run_failed" },
+      },
+      {
+        id: "artifact-after-terminal-row",
+        event_type: "artifact_card",
+        run_id: "run-terminal",
+        timestamp: "2026-07-15T01:00:02.000Z",
+        data: {
+          artifact_id: "artifact-terminal",
+          artifact_type: "report",
+          label: "报告",
+          size_bytes: 1,
+        },
+      },
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  assert.equal(messages.length, 1);
+  assert.match(messages[0]?.content || "", /任务未能完成/);
+  assert.deepEqual(messages[0]?.parts?.map((part) => part.type), [
+    "artifact",
+    "run_status",
+  ]);
+});
+
 test("reconstructMessagesFromEvents replays tool permission request and decision cards", () => {
   const processedEventIds = new Set<string>();
   const messages = reconstructMessagesFromEvents(

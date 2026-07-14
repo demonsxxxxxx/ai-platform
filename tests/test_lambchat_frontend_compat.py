@@ -779,7 +779,73 @@ def test_lambchat_sse_stream_places_artifact_card_before_terminal_run_event(monk
     response = client.get("/api/chat/sessions/ses_a/stream?run_id=run_a", headers=auth_headers())
 
     assert response.status_code == 200
-    assert response.text.index("event: artifact_card") < response.text.index('"event_type": "run_succeeded"')
+    artifact_index = response.text.index("event: artifact_card")
+    final_index = response.text.index("event: message:chunk")
+    terminal_index = response.text.index('"event_type": "run_succeeded"')
+    done_index = response.text.index("event: done")
+    assert artifact_index < final_index < terminal_index < done_index
+
+
+def test_lambchat_sse_stream_defers_persisted_terminal_until_status_and_final_payload(monkeypatch):
+    calls = 0
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        nonlocal calls
+        calls += 1
+        return {
+            "id": run_id,
+            "session_id": "ses_a",
+            "status": "running" if calls == 1 else "succeeded",
+            "result_json": {"message": "final answer"},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "evt-succeeded",
+                "trace_id": "trace-run-a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 9,
+                "event_type": "run_succeeded",
+                "stage": "worker",
+                "message": "Run succeeded",
+                "severity": "info",
+                "visible_to_user": True,
+                "error_code": None,
+                "latency_ms": None,
+                "input_token_count": 0,
+                "output_token_count": 0,
+                "total_token_count": 0,
+                "estimated_cost_minor": 0,
+                "payload_json": {"visible_to_user": True},
+                "created_at": None,
+            }
+        ]
+
+    async def no_sleep(_seconds):
+        return None
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.lambchat_compat.get_settings", lambda: SimpleNamespace(run_event_stream_max_heartbeats=2))
+    monkeypatch.setattr("app.routes.lambchat_compat.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("app.routes.lambchat_compat.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.lambchat_compat.repositories.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.routes.lambchat_compat.repositories.list_run_artifacts", fake_list_run_artifacts)
+    client = TestClient(create_app())
+
+    response = client.get("/api/chat/sessions/ses_a/stream?run_id=run_a", headers=auth_headers())
+
+    assert response.status_code == 200
+    assert calls == 2
+    assert response.text.count('"event_type": "run_succeeded"') == 1
+    assert response.text.index("final answer") < response.text.index('"event_type": "run_succeeded"')
+    assert response.text.index('"event_type": "run_succeeded"') < response.text.index("event: done")
 
 
 def test_lambchat_sse_stream_does_not_duplicate_answer_when_assistant_delta_was_persisted(monkeypatch):
@@ -878,7 +944,10 @@ def test_lambchat_sse_stream_redacts_runtime_private_error(monkeypatch):
     assert response.status_code == 200
     assert "runtime211" not in response.text
     assert "/var/lib/ai-platform" not in response.text
-    assert '"error": "run_failed"' in response.text
+    assert "event: final_detail" in response.text
+    assert '"detail_kind": "failed"' in response.text
+    assert '"detail_code": "run_failed"' in response.text
+    assert "event: error" not in response.text
 
 
 def test_lambchat_sse_stream_terminates_cancelled_run(monkeypatch):
@@ -1483,11 +1552,97 @@ def test_lambchat_session_answer_event_redacts_runtime_private_text(monkeypatch)
 
     assert response.status_code == 200
     event = response.json()["events"][0]
-    assert event["type"] == "error"
-    assert event["payload"] == {"error": "run_failed"}
+    assert event["type"] == "final_detail"
+    assert event["payload"] == {"detail_kind": "failed", "detail_code": "run_failed"}
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(event)
     assert "/var/lib/ai-platform" not in str(event)
     assert "runtime211" not in str(event)
+
+
+def test_lambchat_history_places_artifact_and_safe_failure_detail_before_terminal(monkeypatch):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+        return [
+            {
+                "id": "run_a",
+                "trace_id": "trace_run_a",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "status": "failed",
+                "result_json": {"message": "Executor failed at /private/runtime.log"},
+                "error_code": "executor_failed",
+                "error_message": "Executor failed at /private/runtime.log",
+                "created_at": None,
+                "finished_at": None,
+            }
+        ]
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        base = {
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "latency_ms": None,
+            "input_token_count": 0,
+            "output_token_count": 0,
+            "total_token_count": 0,
+            "estimated_cost_minor": 0,
+            "created_at": None,
+        }
+        # The terminal row is deliberately listed before the artifact row to
+        # exercise the compatibility projection ordering contract.
+        return [
+            {
+                **base,
+                "id": "evt-failed",
+                "sequence": 12,
+                "event_type": "run_failed",
+                "stage": "worker",
+                "message": "Run failed",
+                "payload_json": {"visible_to_user": True},
+            },
+            {
+                **base,
+                "id": "evt-artifact",
+                "sequence": 13,
+                "event_type": "artifact_created",
+                "stage": "artifact",
+                "message": "Artifact created",
+                "payload_json": {"artifact_id": "artifact-a", "visible_to_user": True},
+            },
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        fake_list_authorized_session_runs,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        fake_list_run_events,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+
+    assert response.status_code == 200
+    events = response.json()["events"]
+    event_types = [event["event_type"] for event in events]
+    assert event_types.index("artifact_created") < event_types.index("final_detail") < event_types.index("run_failed")
+    final = events[event_types.index("final_detail")]
+    assert final["payload"] == {"detail_kind": "failed", "detail_code": "run_failed"}
+    assert "Executor failed" not in str(final)
+    terminal = events[event_types.index("run_failed")]
+    assert terminal["sequence"] == 12
 
 
 def test_lambchat_session_event_data_redacts_runtime_private_message(monkeypatch):

@@ -19,6 +19,7 @@ import type {
 import { convertAttachments, processMessageEvent } from "./eventProcessor";
 import { clearAllLoadingStates } from "./messageParts";
 import { parseDate } from "../../utils/datetime";
+import { terminalRunStatus } from "./runLifecycle";
 
 function resolveUserMessageId(
   event: HistoryEvent,
@@ -65,6 +66,12 @@ function canAttachToPreviousAssistant(
     Boolean(event.run_id) &&
     message.runId === event.run_id
   );
+}
+
+function isPersistedTerminalHistoryEvent(event: HistoryEvent): boolean {
+  if (event.event_type !== "run_event") return false;
+  const data = event.data as HistoryEventData;
+  return terminalRunStatus(data.event_type) !== null;
 }
 
 /**
@@ -199,6 +206,17 @@ export function reconstructMessagesFromEvents(
 ): Message[] {
   // Sort events by timestamp
   const sortedEvents = [...events].sort((a, b) => {
+    // A compatibility projection may persist its terminal run event before
+    // the final answer or artifact payload becomes visible.  Keep terminal
+    // convergence behind every event for the same run even when source
+    // timestamps are skewed, so history follows the live stream contract.
+    if (a.run_id && a.run_id === b.run_id) {
+      const aTerminal = isPersistedTerminalHistoryEvent(a);
+      const bTerminal = isPersistedTerminalHistoryEvent(b);
+      if (aTerminal !== bTerminal) {
+        return aTerminal ? 1 : -1;
+      }
+    }
     const timeA = parseEventTimestamp(a.timestamp, 0).getTime();
     const timeB = parseEventTimestamp(b.timestamp, 0).getTime();
     return timeA - timeB;

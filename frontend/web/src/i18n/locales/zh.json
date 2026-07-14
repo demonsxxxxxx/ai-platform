@@ -1961,6 +1961,16 @@
     "saved": "设置已保存",
     "searchPlaceholder": "搜索设置...",
     "title": "设置",
+    "toolPermissionInbox": {
+      "alreadyDecided": "该权限请求已被处理，请刷新列表。",
+      "description": "仅管理员可处理当前租户中待决的工具权限请求。",
+      "empty": "当前没有待处理的工具权限请求。",
+      "forbidden": "当前账号无权处理工具权限请求。",
+      "refresh": "刷新工具权限收件箱",
+      "requestFailed": "工具权限收件箱暂时不可用，请稍后刷新。",
+      "risk": "{{level}}风险",
+      "title": "工具权限治理收件箱"
+    },
     "APP_BASE_URL": "文件下载/上传的公共基础 URL（如 http://10.56.0.211:18001）。在反向代理导致 request.base_url 不正确时需要配置。"
   },
   "share": {

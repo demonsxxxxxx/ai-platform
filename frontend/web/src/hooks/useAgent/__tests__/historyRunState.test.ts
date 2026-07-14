@@ -163,7 +163,7 @@ test("loadHistory guards awaited history writes with the current load token", ()
 
   const eventsAwait = source.indexOf("const [eventsData, feedbackList] = await Promise.all");
   const eventsGuard = source.indexOf("if (!isCurrentHistoryLoadRequest())", eventsAwait);
-  const statusAwait = source.indexOf("const statusData = historyCurrentRunId", eventsAwait);
+  const statusAwait = source.indexOf("const statusResult = historyCurrentRunId", eventsAwait);
   const statusGuard = source.indexOf("if (!isCurrentHistoryLoadRequest())", statusAwait);
   const messagesWrite = source.indexOf("setMessages(reconstructedMessages)", statusAwait);
 
