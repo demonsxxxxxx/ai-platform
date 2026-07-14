@@ -1442,6 +1442,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
     response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
 
     assert response.status_code == 200
+    assert response.json()["current_run_id"] == "run_a"
     events = response.json()["events"]
     assert len(events) == 1
     event = events[0]
@@ -1456,6 +1457,136 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
     assert "skill_ids" not in str(event)
     assert "storage_key" not in str(event)
     assert "/tmp/" not in str(event)
+
+
+def test_lambchat_session_events_select_current_run_by_authoritative_creation_order(monkeypatch):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+        assert limit == 50
+        return [
+            {
+                "id": "run-created-newer",
+                "trace_id": "trace-newer",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "status": "succeeded",
+                "result_json": {"message": "newer finished first"},
+                "created_at": "2026-07-15T02:00:00Z",
+                "finished_at": "2026-07-15T02:05:00Z",
+            },
+            {
+                "id": "run-created-older",
+                "trace_id": "trace-older",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "status": "failed",
+                "result_json": {},
+                "error_code": "run_failed",
+                "error_message": "older finished later",
+                "created_at": "2026-07-15T01:00:00Z",
+                "finished_at": "2026-07-15T03:00:00Z",
+            },
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        fake_list_authorized_session_runs,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["current_run_id"] == "run-created-newer"
+
+
+def test_lambchat_exact_session_events_restore_an_authorized_run_beyond_the_latest_fifty(monkeypatch):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run-51")
+        return {
+            "id": run_id,
+            "session_id": "ses_a",
+            "trace_id": "trace-run-51",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "status": "succeeded",
+            "result_json": {"message": "restored exact old answer"},
+            "created_at": "2026-01-01T00:00:00Z",
+            "finished_at": "2026-01-01T00:01:00Z",
+        }
+
+    async def fail_latest_run_list(*args, **kwargs):
+        raise AssertionError("an explicit run id must not use the latest-50 list")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        fail_latest_run_list,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/sessions/ses_a/events?run_id=run-51",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["current_run_id"] == "run-51"
+    assert [event["event_type"] for event in response.json()["events"]] == [
+        "message:chunk",
+        "done",
+    ]
+    assert response.json()["events"][0]["data"]["content"] == "restored exact old answer"
+
+
+@pytest.mark.parametrize("target", [None, {"id": "run-51", "session_id": "ses_other"}])
+def test_lambchat_exact_session_events_hide_missing_or_wrong_session_runs(monkeypatch, target):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run-51")
+        return target
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/sessions/ses_a/events?run_id=run-51",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "run_not_found"
 
 
 def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):

@@ -61,4 +61,6 @@ export interface SSEEventRecord {
 
 export interface SessionEventsResponse {
   events: SSEEventRecord[];
+  /** Backend-selected latest-created run for this session projection. */
+  current_run_id?: string | null;
 }

@@ -36,6 +36,7 @@ import {
 import {
   reconstructMessagesFromEvents,
   getLastEventTimestamp,
+  mergeHydratedAssistantRunSegment,
   prepareMessagesForRunningRun,
 } from "./useAgent/historyLoader";
 import {
@@ -480,18 +481,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             return;
           }
           if (hydratedAssistant) {
-            setMessages((previous) => {
-              const existingIndex = previous.findIndex(
-                (message) =>
-                  message.role === "assistant" && message.runId === targetRunId,
-              );
-              if (existingIndex < 0) {
-                return [...previous, hydratedAssistant];
-              }
-              return previous.map((message, index) =>
-                index === existingIndex ? hydratedAssistant : message,
-              );
-            });
+            setMessages((previous) =>
+              mergeHydratedAssistantRunSegment(previous, hydratedAssistant),
+            );
           }
           finalizeTerminalRun(
             targetRunId,
@@ -593,10 +585,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     const promise = reconnectSSE(ctx).finally(() => {
       // A scheduled retry remains the same owner until terminal/clear/switch;
       // stale completions can never clear a replacement generation's owner.
+      const ownerIsCurrent =
+        sessionIdRef.current === targetSessionId &&
+        currentRunIdRef.current === targetRunId &&
+        streamVersionRef.current === streamVersion;
       if (
         reconcileOwnerRef.current === owner &&
-        reconnectTimeoutRef.current === null &&
-        currentRunIdRef.current !== targetRunId
+        (reconnectTimeoutRef.current === null || !ownerIsCurrent)
       ) {
         reconcileOwnerRef.current = null;
       }

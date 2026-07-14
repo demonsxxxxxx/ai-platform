@@ -53,10 +53,7 @@ export { versionApi } from "./api/version";
 export { healthApi } from "./api/health";
 export { projectApi } from "./api/project";
 export {
-  decideToolPermission,
   type ToolPermissionDecision,
-  type ToolPermissionDecisionResponse,
-  type ToolPermissionRequestView,
 } from "./api/toolPermission";
 export {
   revealedFileApi,

@@ -6,6 +6,7 @@ interface HistoryRunSessionData {
 
 interface HistoryRunEventsData {
   run_id?: string;
+  current_run_id?: string | null;
   events?: HistoryEvent[];
 }
 
@@ -39,8 +40,8 @@ export function resolveHistoryCurrentRunId({
 }: ResolveHistoryCurrentRunIdInput): string | null {
   return (
     normalizeRunId(targetRunId) ??
+    normalizeRunId(eventsData?.current_run_id) ??
     normalizeRunId(eventsData?.run_id) ??
-    resolveLatestEventRunId(eventsData?.events) ??
     resolveSessionMetadataRunId(sessionData?.metadata) ??
     null
   );
@@ -67,32 +68,6 @@ function resolveNestedRunId(value: unknown): string | null {
     return null;
   }
   return normalizeRunId((value as Record<string, unknown>).run_id);
-}
-
-function resolveLatestEventRunId(events: HistoryEvent[] | undefined): string | null {
-  if (!events?.length) {
-    return null;
-  }
-
-  let latestRunId: string | null = null;
-  let latestSortKey = Number.NEGATIVE_INFINITY;
-
-  events.forEach((event, index) => {
-    const runId = normalizeRunId(event.run_id);
-    if (!runId) {
-      return;
-    }
-
-    const timestampMs =
-      typeof event.timestamp === "string" ? Date.parse(event.timestamp) : NaN;
-    const sortKey = Number.isFinite(timestampMs) ? timestampMs : index;
-    if (sortKey >= latestSortKey) {
-      latestRunId = runId;
-      latestSortKey = sortKey;
-    }
-  });
-
-  return latestRunId;
 }
 
 function normalizeRunId(value: unknown): string | null {

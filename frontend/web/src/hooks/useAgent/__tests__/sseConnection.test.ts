@@ -9,6 +9,7 @@ import {
   isNonRetryableSSEAuthenticationError,
   isTerminalSSEEvent,
   MAX_CONSECUTIVE_SSE_RECONNECTS,
+  MAX_STATUS_QUERY_RETRIES,
   queryAuthoritativeRunStatus,
   reconnectSSE,
   type SSEConnectionContext,
@@ -200,6 +201,75 @@ test("uses raw_status as the authoritative compatibility status", async () => {
     }),
   });
   assert.deepEqual(bareError, { kind: "unavailable" });
+});
+
+test("times out and aborts every hung authoritative status attempt before bounded convergence", async () => {
+  let statusCalls = 0;
+  const attemptSignals: AbortSignal[] = [];
+  const guard = new Promise<never>((_resolve, reject) => {
+    setTimeout(() => reject(new Error("status timeout test guard expired")), 250);
+  });
+
+  const result = await Promise.race([
+    queryAuthoritativeRunStatus({
+      sessionId: "session-hung-status",
+      runId: "run-hung-status",
+      isCurrent: () => true,
+      statusRetryCountRef: { current: 0 },
+      attemptTimeoutMs: 5,
+      getStatus: async (_sessionId, _runId, options) => {
+        statusCalls += 1;
+        assert.ok(options?.signal, "each status attempt receives an abort signal");
+        attemptSignals.push(options.signal);
+        return new Promise((_resolve, reject) => {
+          options.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+    }),
+    guard,
+  ]);
+
+  assert.deepEqual(result, { kind: "unavailable" });
+  assert.equal(statusCalls, MAX_STATUS_QUERY_RETRIES + 1);
+  assert.equal(attemptSignals.length, MAX_STATUS_QUERY_RETRIES + 1);
+  assert.ok(attemptSignals.every((signal) => signal.aborted));
+});
+
+test("a stale generation releases a hung status attempt without unavailable side effects", async () => {
+  let current = true;
+  let statusCalls = 0;
+  let capturedSignal: AbortSignal | undefined;
+  const guard = new Promise<never>((_resolve, reject) => {
+    setTimeout(() => reject(new Error("stale status timeout test guard expired")), 250);
+  });
+
+  const query = queryAuthoritativeRunStatus({
+    sessionId: "session-stale-status",
+    runId: "run-stale-status",
+    isCurrent: () => current,
+    statusRetryCountRef: { current: 0 },
+    attemptTimeoutMs: 10,
+    getStatus: async (_sessionId, _runId, options) => {
+      statusCalls += 1;
+      capturedSignal = options?.signal;
+      return new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("aborted", "AbortError")),
+          { once: true },
+        );
+      });
+    },
+  });
+  current = false;
+
+  assert.deepEqual(await Promise.race([query, guard]), { kind: "stale" });
+  assert.equal(statusCalls, 1);
+  assert.equal(capturedSignal?.aborted, true);
 });
 
 test("connectToSSE propagates a terminal transport failure to its caller", async () => {
@@ -1121,8 +1191,6 @@ test("a scheduled reconnect reconciles a post-refresh transport failure", async 
 
 test("bounds replayed active run_event reconnects and converges unavailable once", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const originalRandom = Math.random;
-  Math.random = () => 0;
   let statusCalls = 0;
   let connectCalls = 0;
   let unavailableCalls = 0;
@@ -1167,60 +1235,57 @@ test("bounds replayed active run_event reconnects and converges unavailable once
     isReconnectFromHistoryRef: { current: boolean };
   };
   const flushAsync = async () => {
-    for (let index = 0; index < 6; index += 1) {
+    for (let index = 0; index < 20; index += 1) {
       await Promise.resolve();
     }
   };
 
-  try {
-    await reconnectSSE(context, {
-      getStatus: async () => {
-        statusCalls += 1;
-        return { session_id: "session-1", run_id: "run-1", status: "running" };
-      },
-      connect: async (sessionId, runId, messageId, reconnectContext) => {
-        connectCalls += 1;
-        await connectToSSE(
-          sessionId,
-          runId,
-          messageId,
-          reconnectContext,
-          false,
-          async (_input, init) => {
-            await init.onopen?.(new Response(null, { status: 200 }));
-            init.onmessage?.({
-              event: "run_event",
-              id: "evt-replayed-progress",
-              data: JSON.stringify({
-                run_id: "run-1",
-                sequence: 42,
-                event_type: "worker_started",
-              }),
-            } as never);
-            await init.onclose?.();
-          },
-        );
-      },
-    });
+  await reconnectSSE(context, {
+    reconnectDelay: (retryCount) => 2 ** retryCount * 1000,
+    getStatus: async () => {
+      statusCalls += 1;
+      return { session_id: "session-1", run_id: "run-1", status: "running" };
+    },
+    connect: async (sessionId, runId, messageId, reconnectContext) => {
+      connectCalls += 1;
+      await connectToSSE(
+        sessionId,
+        runId,
+        messageId,
+        reconnectContext,
+        false,
+        async (_input, init) => {
+          await init.onopen?.(new Response(null, { status: 200 }));
+          init.onmessage?.({
+            event: "run_event",
+            id: "evt-replayed-progress",
+            data: JSON.stringify({
+              run_id: "run-1",
+              sequence: 42,
+              event_type: "worker_started",
+            }),
+          } as never);
+          await init.onclose?.();
+        },
+      );
+    },
+  });
 
-    for (let attempt = 0; attempt < MAX_CONSECUTIVE_SSE_RECONNECTS; attempt += 1) {
-      t.mock.timers.tick(2 ** attempt * 1000);
-      await flushAsync();
-    }
-
-    assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
-    assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
-    assert.equal(unavailableCalls, 1);
-    assert.equal(context.reconnectTimeoutRef.current, null);
-
-    t.mock.timers.tick(60_000);
+  for (let attempt = 0; attempt < MAX_CONSECUTIVE_SSE_RECONNECTS; attempt += 1) {
+    t.mock.timers.tick(2 ** attempt * 1000);
     await flushAsync();
-    assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
-    assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
-    assert.equal(unavailableCalls, 1);
-  } finally {
-    Math.random = originalRandom;
   }
+
+  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
+  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+  assert.equal(unavailableCalls, 1);
+  assert.equal(context.reconnectTimeoutRef.current, null);
+
+  t.mock.timers.tick(60_000);
+  await flushAsync();
+  assert.equal(connectCalls, MAX_CONSECUTIVE_SSE_RECONNECTS);
+  assert.equal(statusCalls, MAX_CONSECUTIVE_SSE_RECONNECTS + 1);
+  assert.equal(unavailableCalls, 1);
 });
 
 test("resets reconnect budget only after a unique current-run progress frame", async () => {

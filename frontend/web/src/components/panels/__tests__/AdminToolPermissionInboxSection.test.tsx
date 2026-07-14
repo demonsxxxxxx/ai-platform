@@ -4,6 +4,7 @@ import test from "node:test";
 import "../../../i18n";
 import type { User } from "../../../types";
 import type { AdminToolPermissionInboxClient } from "../AdminToolPermissionInboxSection.tsx";
+import { isInboxDecisionDisabled } from "../adminToolPermissionInboxState.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 
 type Listener = (event: { type: string }) => void;
@@ -231,7 +232,7 @@ const adminUser: User = {
   username: "admin-a",
   email: "admin-a@example.test",
   roles: [],
-  permissions: [],
+  permissions: ["settings:manage"],
   is_admin: true,
   is_active: true,
   created_at: "2026-01-01T00:00:00Z",
@@ -255,6 +256,14 @@ function findButton(node: TestNode, label: string): TestElement | null {
   return null;
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 async function mountInbox(user: User, client: AdminToolPermissionInboxClient) {
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
@@ -265,20 +274,27 @@ async function mountInbox(user: User, client: AdminToolPermissionInboxClient) {
   authApi.getCurrentUser = async () => user;
   const container = document.createElement("div");
   const root = createRoot(container as never);
-  await React.act(async () => {
-    root.render(
-      React.createElement(
-        AuthProvider,
-        null,
-        React.createElement(AdminToolPermissionInboxSection, { client }),
-      ),
+  const renderClient = (nextClient: AdminToolPermissionInboxClient) =>
+    React.createElement(
+      AuthProvider,
+      null,
+      React.createElement(AdminToolPermissionInboxSection, { client: nextClient }),
     );
+  await React.act(async () => {
+    root.render(renderClient(client));
     await Promise.resolve();
     await Promise.resolve();
   });
   return {
     React,
     container,
+    async rerender(nextClient: AdminToolPermissionInboxClient) {
+      await React.act(async () => {
+        root.render(renderClient(nextClient));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    },
     async cleanup() {
       await React.act(async () => root.unmount());
       authApi.getCurrentUser = originalGetCurrentUser;
@@ -331,6 +347,111 @@ test("administrator inbox fetches, renders and decides only through its tenant i
       await Promise.resolve();
     });
     assert.deepEqual(decisions, [["tpr-a", "deny"]]);
+    assert.equal(listCalls, 2);
+    assert.doesNotMatch(textOf(mounted.container), /customer-write/);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("administrator inbox ignores an aborted stale refresh generation", async () => {
+  const staleResponse = createDeferred<Awaited<ReturnType<AdminToolPermissionInboxClient["list"]>>>();
+  let staleSignal: AbortSignal | undefined;
+  const firstClient: AdminToolPermissionInboxClient = {
+    list: async (signal) => {
+      staleSignal = signal;
+      return staleResponse.promise;
+    },
+    decide: async () => undefined,
+  };
+  const currentClient: AdminToolPermissionInboxClient = {
+    list: async () => ({
+      permission_requests: [],
+      total: 0,
+      status: "pending",
+      limit: 50,
+    }),
+    decide: async () => undefined,
+  };
+  const mounted = await mountInbox(adminUser, firstClient);
+  try {
+    await mounted.rerender(currentClient);
+    staleResponse.resolve({
+      permission_requests: [{
+        request_id: "tpr-stale",
+        run_id: "run-stale",
+        tool_id: "stale-write",
+        tool_display: "stale-write",
+        risk_level: "high",
+        write_capable: true,
+        status: "pending",
+        allowed_decisions: ["allow_once", "deny"],
+      }],
+      total: 1,
+      status: "pending",
+      limit: 50,
+    });
+    await mounted.React.act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.equal(staleSignal?.aborted, true);
+    assert.doesNotMatch(textOf(mounted.container), /stale-write/);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("administrator inbox disables every decision throughout refresh", () => {
+  assert.equal(isInboxDecisionDisabled(true, null), true);
+  assert.equal(isInboxDecisionDisabled(true, "tpr-other"), true);
+  assert.equal(isInboxDecisionDisabled(false, "tpr-other"), true);
+  assert.equal(isInboxDecisionDisabled(false, null), false);
+});
+
+test("a lagging refresh cannot resurrect a request after a successful decision", async () => {
+  const laggingRefresh = createDeferred<Awaited<ReturnType<AdminToolPermissionInboxClient["list"]>>>();
+  let listCalls = 0;
+  const pendingResponse: Awaited<ReturnType<AdminToolPermissionInboxClient["list"]>> = {
+    permission_requests: [{
+      request_id: "tpr-decided",
+      run_id: "run-owner",
+      tool_id: "customer-write",
+      tool_display: "customer-write",
+      risk_level: "high",
+      write_capable: true,
+      status: "pending",
+      allowed_decisions: ["allow_once", "deny"],
+    }],
+    total: 1,
+    status: "pending",
+    limit: 50,
+  };
+  const client: AdminToolPermissionInboxClient = {
+    list: async () => {
+      listCalls += 1;
+      if (listCalls === 1) return pendingResponse;
+      return laggingRefresh.promise;
+    },
+    decide: async () => undefined,
+  };
+  const mounted = await mountInbox(adminUser, client);
+  try {
+    const deny = findButton(mounted.container, "拒绝");
+    assert.ok(deny);
+    await mounted.React.act(async () => {
+      mounted.container.dispatchEvent({
+        type: "click",
+        target: deny,
+        button: 0,
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+      laggingRefresh.resolve(pendingResponse);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     assert.equal(listCalls, 2);
     assert.doesNotMatch(textOf(mounted.container), /customer-write/);
   } finally {
@@ -456,6 +577,28 @@ test("ordinary users do not render or fetch the administrator inbox", async () =
       },
       decide: async () => {
         throw new Error("ordinary users must not decide");
+      },
+    },
+  );
+  try {
+    assert.equal(listCalls, 0);
+    assert.doesNotMatch(textOf(mounted.container), /工具权限治理收件箱|允许一次|拒绝/);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("an admin role without settings manage capability does not render or fetch the inbox", async () => {
+  let listCalls = 0;
+  const mounted = await mountInbox(
+    { ...adminUser, permissions: [] },
+    {
+      list: async () => {
+        listCalls += 1;
+        throw new Error("capability-less admins must not fetch");
+      },
+      decide: async () => {
+        throw new Error("capability-less admins must not decide");
       },
     },
   );

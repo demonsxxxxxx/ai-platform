@@ -1,30 +1,8 @@
-import type { ToolPermissionPart, User } from "../../../types";
-import {
-  decideToolPermission,
-  type ToolPermissionDecision,
-  type ToolPermissionDecisionResponse,
-} from "../../../services/api/toolPermission";
-
-export interface ToolPermissionCardState {
-  status: ToolPermissionPart["status"];
-  decision: ToolPermissionDecision | undefined;
-  error: string | null;
-}
+import type { ToolPermissionPart } from "../../../types";
 
 export interface OrdinaryUserToolPermissionPresentation {
   titleKey: string;
   messageKey: string;
-}
-
-/**
- * Chat may expose a governed decision only to the authoritative admin
- * projection returned by useAuth.  Roles and route visibility are not a
- * permission source for this action.
- */
-export function canManageToolPermissions(
-  user: Pick<User, "is_admin"> | null | undefined,
-): boolean {
-  return user?.is_admin === true;
 }
 
 /**
@@ -63,32 +41,4 @@ export function getOrdinaryUserToolPermissionPresentation(
     titleKey: "chat.toolPermission.decided.title",
     messageKey: "chat.toolPermission.decided.message",
   };
-}
-
-/** Preserve a local submission error until the persisted card becomes decided. */
-export function syncToolPermissionCardState(
-  part: ToolPermissionPart,
-  currentError: string | null,
-): ToolPermissionCardState {
-  const isDecided = part.status === "decided" || Boolean(part.decision);
-  return {
-    status: part.status,
-    decision: part.decision,
-    error: isDecided ? null : currentError,
-  };
-}
-
-type ToolPermissionDecisionClient = (
-  runId: string,
-  requestId: string,
-  decision: ToolPermissionDecision,
-) => Promise<ToolPermissionDecisionResponse>;
-
-/** Submit a card decision through the governed tool-permission API. */
-export async function submitToolPermissionDecision(
-  part: ToolPermissionPart,
-  decision: ToolPermissionDecision,
-  client: ToolPermissionDecisionClient = decideToolPermission,
-): Promise<ToolPermissionDecisionResponse> {
-  return client(part.run_id, part.permission_request_id, decision);
 }

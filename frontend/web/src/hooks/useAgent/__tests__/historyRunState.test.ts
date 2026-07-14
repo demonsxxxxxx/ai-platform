@@ -34,7 +34,7 @@ test("resolveHistoryCurrentRunId clears stale previous run when the target sessi
   );
 });
 
-test("resolveHistoryCurrentRunId restores an explicit run first, then the latest event-backed candidate", () => {
+test("resolveHistoryCurrentRunId prefers explicit and backend-created run subjects without timestamp guessing", () => {
   assert.equal(
     resolveHistoryCurrentRunId({
       targetRunId: "run-explicit",
@@ -47,9 +47,13 @@ test("resolveHistoryCurrentRunId restores an explicit run first, then the latest
   assert.equal(
     resolveHistoryCurrentRunId({
       sessionData: { metadata: { current_run_id: "run-current" } },
-      eventsData: { run_id: "run-events", events: [] },
+      eventsData: {
+        current_run_id: "run-latest-created",
+        run_id: "run-events",
+        events: [],
+      },
     }),
-    "run-events",
+    "run-latest-created",
   );
 
   assert.equal(
@@ -78,25 +82,48 @@ test("resolveHistoryCurrentRunId restores an explicit run first, then the latest
 
   assert.equal(
     resolveHistoryCurrentRunId({
-      sessionData: { metadata: {} },
+      sessionData: { metadata: { current_run_id: "run-created-newer" } },
       eventsData: {
         events: [
           {
-            event_type: "user:message",
+            event_type: "done",
             run_id: "run-older",
-            timestamp: "2026-06-03T01:00:00.000Z",
-            data: {},
+            timestamp: "2026-06-03T03:00:00.000Z",
+            data: { status: "failed" },
           },
           {
-            event_type: "complete",
-            run_id: "run-newer",
+            event_type: "done",
+            run_id: "run-created-newer",
             timestamp: "2026-06-03T02:00:00.000Z",
-            data: {},
+            data: { status: "succeeded" },
           },
         ],
       },
     }),
-    "run-newer",
+    "run-created-newer",
+  );
+
+  assert.equal(
+    resolveHistoryCurrentRunId({
+      sessionData: { metadata: {} },
+      eventsData: {
+        events: [
+          {
+            event_type: "done",
+            run_id: "run-older-finishes-last",
+            timestamp: "2026-06-03T03:00:00.000Z",
+            data: { status: "failed" },
+          },
+          {
+            event_type: "done",
+            run_id: "run-newer-finishes-first",
+            timestamp: "2026-06-03T02:00:00.000Z",
+            data: { status: "succeeded" },
+          },
+        ],
+      },
+    }),
+    null,
   );
 });
 

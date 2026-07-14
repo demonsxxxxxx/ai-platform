@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
@@ -12,13 +13,18 @@ async def fake_transaction():
     yield object()
 
 
-def headers(*, user_id="user-a", roles="user", tenant_id="tenant-a"):
-    return {
+def headers(*, user_id="user-a", roles="user", tenant_id="tenant-a", permissions=None):
+    if permissions is None and set(roles.split(",")).intersection({"admin", "developer", "platform_admin"}):
+        permissions = "settings:manage"
+    result = {
         "X-AI-User-ID": user_id,
         "X-AI-User-Name": user_id,
         "X-AI-Roles": roles,
         "X-AI-Tenant-ID": tenant_id,
     }
+    if permissions:
+        result["X-AI-Permissions"] = permissions
+    return result
 
 
 def permission_row(**overrides):
@@ -394,30 +400,16 @@ def test_tool_permission_response_hides_internal_request_and_decision_payloads(m
     assert "bash:write-system" not in str(permission_request)
 
 
-def test_tool_permission_inbox_lists_current_user_requests(monkeypatch):
-    calls = []
-
-    async def fake_list_tool_permission_inbox(conn, *, tenant_id, user_id, status, limit):
-        calls.append((tenant_id, user_id, status, limit))
-        return [
-            permission_row(
-                id="tpr-pending",
-                run_id="run-a",
-                tool_call_id="call-pending",
-                status="pending",
-                reason="operator command token=secret-token /var/lib/ai-platform/run-a",
-                request_payload_json={
-                    "source": "claude_agent_sdk_hook",
-                    "command": "python private.py",
-                    "command_sha256": "a" * 64,
-                    "input_sha256": "b" * 64,
-                },
-            )
-        ]
+def test_tool_permission_inbox_rejects_ordinary_users_without_fetching(monkeypatch):
+    async def fail_inbox_lookup(*args, **kwargs):
+        raise AssertionError("unauthorized principals must not query the governance inbox")
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.tool_permissions.repositories.list_tool_permission_inbox", fake_list_tool_permission_inbox)
+    monkeypatch.setattr(
+        "app.routes.tool_permissions.repositories.list_tool_permission_inbox_for_tenant",
+        fail_inbox_lookup,
+    )
     client = TestClient(create_app())
 
     response = client.get(
@@ -425,23 +417,63 @@ def test_tool_permission_inbox_lists_current_user_requests(monkeypatch):
         headers=headers(),
     )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert calls == [("tenant-a", "user-a", "pending", 10)]
-    assert body["total"] == 1
-    assert body["permission_requests"][0]["request_id"] == "tpr-pending"
-    assert body["permission_requests"][0]["allowed_decisions"] == [
-        "allow_once",
-        "allow_for_run",
-        "deny",
+    assert response.status_code == 403
+    assert response.json()["detail"] == "not_ai_admin"
+
+
+@pytest.mark.parametrize(
+    "roles,permissions,expected_detail",
+    [
+        ("admin", "", "missing_permission:settings:manage"),
+        ("user", "settings:manage", "not_ai_admin"),
+    ],
+)
+def test_tool_permission_governance_requires_admin_and_settings_manage_capability(
+    monkeypatch,
+    roles,
+    permissions,
+    expected_detail,
+):
+    async def fail_lookup(*args, **kwargs):
+        raise AssertionError("failed-closed governance must reject before repository access")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.tool_permissions.repositories.list_tool_permission_inbox_for_tenant",
+        fail_lookup,
+    )
+    monkeypatch.setattr(
+        "app.routes.tool_permissions.repositories.get_tool_permission_request_for_tenant",
+        fail_lookup,
+    )
+    monkeypatch.setattr(
+        "app.routes.tool_permissions.repositories.get_tool_permission_request_by_id_for_tenant",
+        fail_lookup,
+    )
+    client = TestClient(create_app())
+    auth = headers(user_id="principal-a", roles=roles, permissions=permissions)
+
+    responses = [
+        client.get("/api/ai/tool-permissions/inbox", headers=auth),
+        client.post(
+            "/api/ai/runs/run-a/tool-permissions/tpr-a/decision",
+            headers=auth,
+            json={"decision": "deny"},
+        ),
+        client.post(
+            "/api/ai/tool-permissions/inbox/tpr-a/decision",
+            headers=auth,
+            json={"decision": "deny"},
+        ),
     ]
-    assert "request_payload" not in body["permission_requests"][0]
-    assert "decision_payload" not in body["permission_requests"][0]
-    serialized = str(body)
-    assert "secret-token" not in serialized
-    assert "/var/lib/ai-platform" not in serialized
-    assert "python private.py" not in serialized
-    assert "aaaaaaaa" not in serialized
+
+    assert [response.status_code for response in responses] == [403, 403, 403]
+    assert [response.json()["detail"] for response in responses] == [
+        expected_detail,
+        expected_detail,
+        expected_detail,
+    ]
 
 
 def test_tool_permission_inbox_lists_tenant_requests_for_admin(monkeypatch):
@@ -536,22 +568,22 @@ def test_tool_permission_inbox_allows_run_scope_only_for_a_fingerprinted_request
 def test_tool_permission_inbox_status_filters_pass_through(monkeypatch):
     calls = []
 
-    async def fake_list_tool_permission_inbox(conn, *, tenant_id, user_id, status, limit):
+    async def fake_list_tool_permission_inbox(conn, *, tenant_id, status, limit):
         calls.append((status, limit))
         return []
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr("app.routes.tool_permissions.transaction", fake_transaction)
-    monkeypatch.setattr("app.routes.tool_permissions.repositories.list_tool_permission_inbox", fake_list_tool_permission_inbox)
+    monkeypatch.setattr("app.routes.tool_permissions.repositories.list_tool_permission_inbox_for_tenant", fake_list_tool_permission_inbox)
     client = TestClient(create_app())
 
     decided_response = client.get(
         "/api/ai/tool-permissions/inbox?status=decided&limit=7",
-        headers=headers(),
+        headers=headers(user_id="admin-a", roles="admin"),
     )
     all_response = client.get(
         "/api/ai/tool-permissions/inbox?status=all&limit=9",
-        headers=headers(),
+        headers=headers(user_id="admin-a", roles="admin"),
     )
 
     assert decided_response.status_code == 200

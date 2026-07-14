@@ -1,5 +1,5 @@
 import { RefreshCw, ShieldCheck } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../hooks/useAuth";
 import {
@@ -10,9 +10,11 @@ import {
   type ToolPermissionInboxResponse,
 } from "../../services/api/toolPermission";
 import { ApiRequestError } from "../../services/api/fetch";
+import { Permission } from "../../types";
+import { isInboxDecisionDisabled } from "./adminToolPermissionInboxState";
 
 export interface AdminToolPermissionInboxClient {
-  list: () => Promise<ToolPermissionInboxResponse>;
+  list: (signal?: AbortSignal) => Promise<ToolPermissionInboxResponse>;
   decide: (
     requestId: string,
     decision: ToolPermissionDecision,
@@ -20,7 +22,7 @@ export interface AdminToolPermissionInboxClient {
 }
 
 const defaultClient: AdminToolPermissionInboxClient = {
-  list: () => listToolPermissionInbox("pending"),
+  list: (signal) => listToolPermissionInbox("pending", { signal }),
   decide: (requestId, decision) =>
     decideToolPermissionInbox(requestId, decision),
 };
@@ -70,38 +72,72 @@ export function AdminToolPermissionInboxSection({
   client?: AdminToolPermissionInboxClient;
 }) {
   const { t } = useTranslation();
-  const { user } = useAuth();
-  const isAdmin = user?.is_admin === true;
+  const { user, hasPermission } = useAuth();
+  const canGovern =
+    user?.is_admin === true && hasPermission(Permission.SETTINGS_MANAGE);
   const [requests, setRequests] = useState<ToolPermissionInboxRequestView[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const [errorKey, setErrorKey] = useState<string | null>(null);
+  const refreshGenerationRef = useRef(0);
+  const refreshAbortControllerRef = useRef<AbortController | null>(null);
+  const decidedRequestIdsRef = useRef(new Set<string>());
+
+  const invalidateRefresh = useCallback(() => {
+    refreshGenerationRef.current += 1;
+    refreshAbortControllerRef.current?.abort();
+    refreshAbortControllerRef.current = null;
+  }, []);
 
   const refresh = useCallback(async () => {
+    const refreshGeneration = refreshGenerationRef.current + 1;
+    refreshGenerationRef.current = refreshGeneration;
+    refreshAbortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    refreshAbortControllerRef.current = abortController;
+    const isCurrentRefresh = () =>
+      refreshGenerationRef.current === refreshGeneration &&
+      refreshAbortControllerRef.current === abortController &&
+      !abortController.signal.aborted;
     setIsLoading(true);
     setErrorKey(null);
     try {
-      const response = await client.list();
-      setRequests(response.permission_requests);
+      const response = await client.list(abortController.signal);
+      if (!isCurrentRefresh()) return;
+      setRequests(
+        response.permission_requests.filter(
+          (request) => !decidedRequestIdsRef.current.has(request.request_id),
+        ),
+      );
     } catch (error) {
+      if (!isCurrentRefresh()) return;
       setErrorKey(inboxErrorKey(error));
     } finally {
-      setIsLoading(false);
+      if (isCurrentRefresh()) {
+        refreshAbortControllerRef.current = null;
+        setIsLoading(false);
+      }
     }
   }, [client]);
 
   useEffect(() => {
-    if (isAdmin) {
-      void refresh();
+    if (!canGovern) {
+      invalidateRefresh();
+      return;
     }
-  }, [isAdmin, refresh]);
+    void refresh();
+    return invalidateRefresh;
+  }, [canGovern, invalidateRefresh, refresh]);
 
   const decide = useCallback(
     async (requestId: string, decision: ToolPermissionDecision) => {
+      if (isInboxDecisionDisabled(isLoading, decidingId)) return;
       setDecidingId(requestId);
       setErrorKey(null);
       try {
         await client.decide(requestId, decision);
+        decidedRequestIdsRef.current.add(requestId);
+        invalidateRefresh();
         setRequests((previous) =>
           previous.filter(
             (request) => request.request_id !== requestId,
@@ -116,12 +152,12 @@ export function AdminToolPermissionInboxSection({
         setDecidingId(null);
       }
     },
-    [client, refresh],
+    [client, decidingId, invalidateRefresh, isLoading, refresh],
   );
 
   // This strict projection is the only frontend authorization gate.  It
   // ensures ordinary users do not see or fetch the tenant governance inbox.
-  if (!isAdmin) return null;
+  if (!canGovern) return null;
 
   return (
     <section className="panel-card mb-4 p-0" aria-label={t("settings.toolPermissionInbox.title")}>
@@ -174,7 +210,7 @@ export function AdminToolPermissionInboxSection({
                     key={decision}
                     type="button"
                     onClick={() => void decide(request.request_id, decision)}
-                    disabled={decidingId !== null}
+                    disabled={isInboxDecisionDisabled(isLoading, decidingId)}
                     className={
                       decision === "deny"
                         ? "rounded-md border border-red-200 px-2 py-1 text-xs font-medium text-red-700 disabled:opacity-50 dark:border-red-800 dark:text-red-300"

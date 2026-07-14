@@ -341,10 +341,12 @@ export const sessionApi = {
   async getStatus(
     sessionId: string,
     runId?: string,
+    options: { signal?: AbortSignal } = {},
   ): Promise<ChatRunStatusResponse> {
     const params = runId ? `?run_id=${runId}` : "";
     return authFetch(
       `${API_BASE}/api/chat/sessions/${sessionId}/status${params}`,
+      { signal: options.signal },
     );
   },
 

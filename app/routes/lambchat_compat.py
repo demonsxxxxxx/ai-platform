@@ -702,14 +702,29 @@ async def session_events(
         )
         if session is None:
             raise HTTPException(status_code=404, detail="session_not_found")
-        rows = await repositories.list_authorized_session_runs(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            session_id=session_id,
-            limit=50,
-        )
-        target_runs = [row for row in rows if run_id is None or row["id"] == run_id]
+        if run_id is not None:
+            target = await repositories.get_authorized_run(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                run_id=run_id,
+            )
+            if target is None or target.get("session_id") != session_id:
+                raise HTTPException(status_code=404, detail="run_not_found")
+            target_runs = [target]
+            current_run_id = run_id
+        else:
+            # Repository order is the authoritative run creation order. Event
+            # completion timestamps can arrive late for an older overlapping
+            # run and must never select the current subject.
+            target_runs = await repositories.list_authorized_session_runs(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+                limit=50,
+            )
+            current_run_id = str(target_runs[0]["id"]) if target_runs else None
         events = []
         for run in reversed(target_runs):
             run_events = await repositories.list_run_events(conn, tenant_id=principal.tenant_id, run_id=run["id"])
@@ -727,7 +742,12 @@ async def session_events(
                     principal,
                 )
             )
-    return {"session_id": session_id, "run_id": run_id, "events": events}
+    return {
+        "session_id": session_id,
+        "run_id": run_id,
+        "current_run_id": current_run_id,
+        "events": events,
+    }
 
 
 @router.post("/sessions/{session_id}/generate-title")

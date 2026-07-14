@@ -644,6 +644,7 @@ test("useAgent clear invalidates delayed history get, events, and status continu
       await Promise.resolve();
     });
     resolveEvents({
+      current_run_id: "run-delayed",
       events: [
         {
           id: "evt-delayed",
@@ -1414,6 +1415,7 @@ test("useAgent history restore fails closed for non-retryable SSE authentication
     metadata: {},
   });
   sessionApi.getEvents = async () => ({
+    current_run_id: "run-history-auth",
     events: [
       {
         id: "evt-history-auth-user",
@@ -1535,7 +1537,7 @@ test("useAgent releases the active state for succeeded and cancelled terminals",
   }
 });
 
-test("useAgent derives an events-only failed reload run before normalizing its product card", async () => {
+test("useAgent uses the backend current run subject before normalizing a failed reload card", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -1559,6 +1561,7 @@ test("useAgent derives an events-only failed reload run before normalizing its p
     metadata: {},
   });
   sessionApi.getEvents = async (_sessionId, options) => ({
+    current_run_id: "run-history-failed",
     events: options?.run_id
       ? [{
           id: "run-history-failed:final",
@@ -1644,7 +1647,7 @@ test("useAgent derives an events-only failed reload run before normalizing its p
   }
 });
 
-test("useAgent reconnects only the events-derived active run after reload", async () => {
+test("useAgent reconnects only the backend-selected active run after reload", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -1664,6 +1667,7 @@ test("useAgent reconnects only the events-derived active run after reload", asyn
     metadata: {},
   });
   sessionApi.getEvents = async () => ({
+    current_run_id: "run-history-active",
     events: [
       {
         id: "evt-history-active",
@@ -1730,6 +1734,7 @@ test("useAgent reconciles a reload SSE interruption to its failed run status", a
     metadata: {},
   });
   sessionApi.getEvents = async (_sessionId, options) => ({
+    current_run_id: "run-history-interrupted",
     events: options?.run_id
       ? [{
           id: "run-history-interrupted:final",
@@ -1812,6 +1817,7 @@ test("useAgent hydrates the exact terminal run compatibility history before conv
     eventQueries.push(options?.run_id);
     if (!options?.run_id) {
       return {
+        current_run_id: "run-terminal-hydrate",
         events: [{
           id: "terminal-hydrate:user",
           event_type: "user:message",
@@ -1822,6 +1828,7 @@ test("useAgent hydrates the exact terminal run compatibility history before conv
       };
     }
     return {
+      current_run_id: "run-terminal-hydrate",
       events: [
         {
           id: "terminal-hydrate:progress",
@@ -1904,6 +1911,123 @@ test("useAgent hydrates the exact terminal run compatibility history before conv
   }
 });
 
+test("useAgent keeps overlapping run segments separate and trusts latest-created current_run_id", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const statusRunIds: Array<string | undefined> = [];
+  const eventQueries: Array<string | undefined> = [];
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-overlapping-runs",
+    agent_id: "general-agent",
+    created_at: "2026-07-15T00:00:00Z",
+    updated_at: "2026-07-15T03:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async (_sessionId, options) => {
+    eventQueries.push(options?.run_id);
+    if (options?.run_id) {
+      return {
+        current_run_id: "run-created-newer",
+        events: [
+          {
+            id: "newer:final",
+            event_type: "message:chunk",
+            run_id: "run-created-newer",
+            timestamp: "2026-07-15T02:00:00Z",
+            data: { run_id: "run-created-newer", content: "新运行最终答案" },
+          },
+          {
+            id: "newer:terminal",
+            event_type: "done",
+            run_id: "run-created-newer",
+            timestamp: "2026-07-15T02:01:00Z",
+            data: { run_id: "run-created-newer", status: "succeeded" },
+          },
+        ],
+      };
+    }
+    return {
+      current_run_id: "run-created-newer",
+      events: [
+        {
+          id: "older:final",
+          event_type: "message:chunk",
+          run_id: "run-created-older",
+          timestamp: "2026-07-15T03:00:00Z",
+          data: { run_id: "run-created-older", content: "旧运行稍后结束" },
+        },
+        {
+          id: "older:terminal",
+          event_type: "done",
+          run_id: "run-created-older",
+          timestamp: "2026-07-15T03:01:00Z",
+          data: { run_id: "run-created-older", status: "failed" },
+        },
+        {
+          id: "newer:initial-final",
+          event_type: "message:chunk",
+          run_id: "run-created-newer",
+          timestamp: "2026-07-15T02:00:00Z",
+          data: { run_id: "run-created-newer", content: "新运行最终答案" },
+        },
+        {
+          id: "newer:initial-terminal",
+          event_type: "done",
+          run_id: "run-created-newer",
+          timestamp: "2026-07-15T02:01:00Z",
+          data: { run_id: "run-created-newer", status: "succeeded" },
+        },
+      ],
+    };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async (_sessionId, runId) => {
+    statusRunIds.push(runId);
+    return {
+      session_id: "session-overlapping-runs",
+      run_id: runId,
+      status: "completed",
+      raw_status: "succeeded",
+    };
+  }) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-overlapping-runs");
+    });
+    await settle(harness.act);
+
+    const assistants = harness.hook.messages.filter(
+      (message) => message.role === "assistant",
+    );
+    assert.deepEqual(statusRunIds, ["run-created-newer"]);
+    assert.deepEqual(eventQueries, [undefined, "run-created-newer"]);
+    assert.deepEqual(
+      assistants.map((message) => message.runId),
+      ["run-created-older", "run-created-newer"],
+    );
+    assert.deepEqual(
+      assistants.map((message) => message.content),
+      ["旧运行稍后结束", "新运行最终答案"],
+    );
+    assert.equal(
+      assistants.filter((message) => message.runId === "run-created-newer").length,
+      1,
+    );
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent presents a safe local card when terminal history hydration fails", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -1925,6 +2049,7 @@ test("useAgent presents a safe local card when terminal history hydration fails"
     eventQueries += 1;
     if (eventQueries === 1) {
       return {
+        current_run_id: "run-terminal-hydrate-failure",
         events: [{
           id: "terminal-hydrate-failure:user",
           event_type: "user:message",
@@ -1989,6 +2114,7 @@ test("useAgent fails closed after initial reload status retries are exhausted", 
     metadata: {},
   });
   sessionApi.getEvents = async () => ({
+    current_run_id: "run-initial-status-unavailable",
     events: [
       {
         id: "evt-initial-status-unavailable",
@@ -2449,6 +2575,7 @@ test("useAgent preserves replay-safe reconnect budget from production-shaped his
     metadata: {},
   });
   sessionApi.getEvents = async () => ({
+    current_run_id: "run-reconnect-budget",
     events: [
       {
         id: "evt-reconnect-budget",

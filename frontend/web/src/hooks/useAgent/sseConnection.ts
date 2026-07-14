@@ -130,11 +130,15 @@ function isRefreshRetryRequested(error: unknown): error is RefreshRetryRequested
 }
 
 export const MAX_STATUS_QUERY_RETRIES = 2;
+/** Per-attempt ceiling for an authoritative run status read. */
+export const AUTHORITATIVE_STATUS_ATTEMPT_TIMEOUT_MS = 8_000;
 /** Maximum reconnects after continuous transport loss for one session/run. */
 export const MAX_CONSECUTIVE_SSE_RECONNECTS = 3;
 type ReconnectDependencies = {
   getStatus?: typeof sessionApi.getStatus;
   connect?: typeof connectToSSE;
+  statusAttemptTimeoutMs?: number;
+  reconnectDelay?: typeof getReconnectDelay;
 };
 
 export type AuthoritativeStatusQueryResult =
@@ -156,16 +160,32 @@ export async function queryAuthoritativeRunStatus({
   isCurrent,
   statusRetryCountRef,
   getStatus = sessionApi.getStatus,
+  attemptTimeoutMs = AUTHORITATIVE_STATUS_ATTEMPT_TIMEOUT_MS,
 }: {
   sessionId: string;
   runId: string;
   isCurrent: () => boolean;
   statusRetryCountRef: React.MutableRefObject<number>;
   getStatus?: typeof sessionApi.getStatus;
+  attemptTimeoutMs?: number;
 }): Promise<AuthoritativeStatusQueryResult> {
   while (isCurrent()) {
+    const attemptAbortController = new AbortController();
+    let attemptTimeout: ReturnType<typeof setTimeout> | null = null;
     try {
-      const data = await getStatus(sessionId, runId);
+      const statusRequest = getStatus(sessionId, runId, {
+        signal: attemptAbortController.signal,
+      });
+      const timeout = new Promise<never>((_resolve, reject) => {
+        attemptTimeout = setTimeout(() => {
+          attemptAbortController.abort();
+          reject(new Error("authoritative_status_query_timed_out"));
+        }, Math.max(1, attemptTimeoutMs));
+      });
+      // Promise.race installs rejection handlers on both inputs, so a request
+      // implementation which ignores abort cannot later create an unhandled
+      // rejection after this owner has converged.
+      const data = await Promise.race([statusRequest, timeout]);
       if (!isCurrent()) {
         return { kind: "stale" };
       }
@@ -180,6 +200,11 @@ export async function queryAuthoritativeRunStatus({
         return { kind: "stale" };
       }
       console.error("[SSE] Failed to check task status:", error);
+    } finally {
+      if (attemptTimeout !== null) {
+        clearTimeout(attemptTimeout);
+      }
+      attemptAbortController.abort();
     }
 
     if (statusRetryCountRef.current >= MAX_STATUS_QUERY_RETRIES) {
@@ -612,6 +637,7 @@ export async function reconnectSSE(
     isCurrent: isCurrentReconnect,
     statusRetryCountRef,
     getStatus: dependencies.getStatus,
+    attemptTimeoutMs: dependencies.statusAttemptTimeoutMs,
   });
   if (statusResult.kind === "stale") {
     return;
@@ -652,7 +678,9 @@ export async function reconnectSSE(
 
   setConnectionStatus("reconnecting");
 
-  const delay = getReconnectDelay(retryCountRef.current);
+  const delay = (dependencies.reconnectDelay || getReconnectDelay)(
+    retryCountRef.current,
+  );
   retryCountRef.current += 1;
   console.log(
     `[SSE] Scheduling reconnect in ${delay}ms (retry ${retryCountRef.current})`,

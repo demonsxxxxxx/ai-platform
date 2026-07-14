@@ -6,12 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import "../../../../i18n";
 import type { ToolPermissionPart } from "../../../../types";
 import { AuthProvider } from "../../../../hooks/useAuth.tsx";
-import {
-  canManageToolPermissions,
-  getOrdinaryUserToolPermissionPresentation,
-  submitToolPermissionDecision,
-  syncToolPermissionCardState,
-} from "../toolPermissionCardState.ts";
+import { getOrdinaryUserToolPermissionPresentation } from "../toolPermissionCardState.ts";
 import {
   MessagePartRenderer,
   ToolPermissionCardItem,
@@ -82,51 +77,46 @@ test("uses a decided fallback when the history has no known decision", () => {
   );
 });
 
-test("only the authoritative is_admin projection authorizes a chat decision", () => {
-  assert.equal(canManageToolPermissions({ is_admin: true }), true);
-  assert.equal(canManageToolPermissions({ is_admin: false }), false);
-  assert.equal(canManageToolPermissions(null), false);
-  const roleNamedAdmin = { is_admin: false, roles: ["ai-admin"] };
-  assert.equal(canManageToolPermissions(roleNamedAdmin), false);
-});
-
-test("renders governed controls for administrators while keeping ordinary history read-only", () => {
+test("renders every chat permission history card read-only even when legacy callers claim admin governance", () => {
+  const ReadOnlyCard = ToolPermissionCardItem as React.ComponentType<
+    Record<string, unknown>
+  >;
   const adminPendingMarkup = renderToStaticMarkup(
-    React.createElement(ToolPermissionCardItem, {
+    React.createElement(ReadOnlyCard, {
       part: pendingPart,
       canManageToolPermissions: true,
     }),
   );
   const ordinaryPendingMarkup = renderToStaticMarkup(
-    React.createElement(ToolPermissionCardItem, {
+    React.createElement(ReadOnlyCard, {
       part: pendingPart,
       canManageToolPermissions: false,
     }),
   );
   const ordinaryDeniedMarkup = renderToStaticMarkup(
-    React.createElement(ToolPermissionCardItem, {
+    React.createElement(ReadOnlyCard, {
       part: { ...pendingPart, status: "decided", decision: "deny" },
       canManageToolPermissions: false,
     }),
   );
-  const adminDecidedMarkup = renderToStaticMarkup(
-    React.createElement(ToolPermissionCardItem, {
-      part: { ...pendingPart, status: "decided", decision: "deny" },
+  const adminAllowedMarkup = renderToStaticMarkup(
+    React.createElement(ReadOnlyCard, {
+      part: { ...pendingPart, status: "decided", decision: "allow_for_run" },
       canManageToolPermissions: true,
     }),
   );
 
-  assert.match(adminPendingMarkup, /工具权限治理/);
-  assert.match(adminPendingMarkup, /允许一次/);
-  assert.match(adminPendingMarkup, /允许本次运行/);
-  assert.match(adminPendingMarkup, /拒绝/);
-  assert.match(adminPendingMarkup, /ragflow-knowledge-search/);
-  assert.doesNotMatch(ordinaryPendingMarkup, /<button\b/i);
-  assert.doesNotMatch(ordinaryPendingMarkup, /ragflow-knowledge-search|高风险|可写操作|允许一次|拒绝/);
+  for (const markup of [adminPendingMarkup, ordinaryPendingMarkup, ordinaryDeniedMarkup, adminAllowedMarkup]) {
+    assert.doesNotMatch(markup, /<button\b/i);
+    assert.doesNotMatch(
+      markup,
+      /ragflow-knowledge-search|高风险|可写操作|允许一次|允许本次运行/,
+    );
+  }
+  assert.match(adminPendingMarkup, /正在等待管理员处理/);
   assert.match(ordinaryPendingMarkup, /正在等待管理员处理/);
   assert.match(ordinaryDeniedMarkup, /操作未获授权/);
-  assert.doesNotMatch(adminDecidedMarkup, /<button\b/i);
-  assert.match(adminDecidedMarkup, /已记录决策：拒绝/);
+  assert.match(adminAllowedMarkup, /本次运行已获授权/);
 });
 
 test("the shared chat renderer fails closed while no authoritative admin is present", () => {
@@ -144,53 +134,4 @@ test("the shared chat renderer fails closed while no authoritative admin is pres
   assert.doesNotMatch(markup, /<button\b/i);
   assert.doesNotMatch(markup, /ragflow-knowledge-search|高风险|可写操作/);
   assert.match(markup, /正在等待管理员处理/);
-});
-
-test("preserves a localized admin submission error until the recorded decision arrives", () => {
-  assert.deepEqual(
-    syncToolPermissionCardState(pendingPart, "提交权限决策失败，请稍后重试。"),
-    {
-      status: "pending",
-      decision: undefined,
-      error: "提交权限决策失败，请稍后重试。",
-    },
-  );
-  assert.deepEqual(
-    syncToolPermissionCardState(
-      { ...pendingPart, status: "decided", decision: "allow_once" },
-      "提交权限决策失败，请稍后重试。",
-    ),
-    {
-      status: "decided",
-      decision: "allow_once",
-      error: null,
-    },
-  );
-});
-
-test("submits a decision only through the governed API seam", async () => {
-  const calls: Array<[string, string, string]> = [];
-
-  const response = await submitToolPermissionDecision(
-    pendingPart,
-    "allow_for_run",
-    async (runId, requestId, decision) => {
-      calls.push([runId, requestId, decision]);
-      return {
-        permission_request: {
-          permission_request_id: requestId,
-          run_id: runId,
-          tool_id: pendingPart.tool_id,
-          tool_call_id: pendingPart.tool_call_id,
-          risk_level: pendingPart.risk_level,
-          write_capable: pendingPart.write_capable,
-          status: "decided",
-          decision,
-        },
-      };
-    },
-  );
-
-  assert.deepEqual(calls, [["run-a", "tpr-a", "allow_for_run"]]);
-  assert.equal(response.permission_request.decision, "allow_for_run");
 });

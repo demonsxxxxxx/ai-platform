@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { MessagePart } from "../../../types";
-import { reconstructMessagesFromEvents } from "../historyLoader.ts";
+import {
+  mergeHydratedAssistantRunSegment,
+  reconstructMessagesFromEvents,
+} from "../historyLoader.ts";
 import type { HistoryEvent } from "../types.ts";
 
 test("reconstructMessagesFromEvents preserves backend user message ids", () => {
@@ -26,6 +29,107 @@ test("reconstructMessagesFromEvents preserves backend user message ids", () => {
   assert.equal(messages.length, 1);
   assert.equal(messages[0]?.id, "user-message-1");
   assert.equal(messages[0]?.runId, "run-1");
+});
+
+test("reconstructMessagesFromEvents keeps overlapping runs in independent backend-ordered assistant segments", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "run-old:chunk",
+        event_type: "message:chunk",
+        run_id: "run-old",
+        timestamp: "2026-07-15T03:00:00.000Z",
+        data: { run_id: "run-old", content: "旧运行答案" },
+      },
+      {
+        id: "run-old:artifact",
+        event_type: "artifact_card",
+        run_id: "run-old",
+        timestamp: "2026-07-15T03:00:01.000Z",
+        data: {
+          run_id: "run-old",
+          artifact_id: "artifact-old",
+          artifact_type: "report",
+          label: "旧运行产物",
+          content_type: "text/plain",
+          size_bytes: 10,
+          download_url: "/api/ai/artifacts/artifact-old/download",
+        },
+      },
+      {
+        id: "run-new:chunk",
+        event_type: "message:chunk",
+        run_id: "run-new",
+        timestamp: "2026-07-15T02:00:00.000Z",
+        data: { run_id: "run-new", content: "新运行答案" },
+      },
+      {
+        id: "run-new:terminal",
+        event_type: "done",
+        run_id: "run-new",
+        timestamp: "2026-07-15T02:00:01.000Z",
+        data: { run_id: "run-new", status: "succeeded" },
+      },
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  const assistants = messages.filter((message) => message.role === "assistant");
+  assert.deepEqual(assistants.map((message) => message.runId), ["run-old", "run-new"]);
+  assert.equal(assistants[0]?.content, "旧运行答案");
+  assert.equal(assistants[1]?.content, "新运行答案");
+  assert.deepEqual(
+    assistants.map((message) =>
+      (message.parts || [])
+        .filter((part) => part.type === "artifact")
+        .map((part) => part.type === "artifact" && part.artifact_id),
+    ),
+    [["artifact-old"], []],
+  );
+});
+
+test("exact terminal hydration replaces one run segment without duplicating or touching adjacent runs", () => {
+  const existing = [
+    {
+      id: "assistant-old",
+      role: "assistant" as const,
+      runId: "run-old",
+      content: "旧运行答案",
+      timestamp: new Date("2026-07-15T01:00:00Z"),
+      parts: [],
+    },
+    {
+      id: "assistant-new-partial",
+      role: "assistant" as const,
+      runId: "run-new",
+      content: "部分答案",
+      timestamp: new Date("2026-07-15T02:00:00Z"),
+      parts: [],
+    },
+    {
+      id: "assistant-new-replay",
+      role: "assistant" as const,
+      runId: "run-new",
+      content: "重复片段",
+      timestamp: new Date("2026-07-15T02:00:01Z"),
+      parts: [],
+    },
+  ];
+  const hydrated = {
+    id: "assistant-new-final",
+    role: "assistant" as const,
+    runId: "run-new",
+    content: "完整答案",
+    timestamp: new Date("2026-07-15T02:00:00Z"),
+    parts: [],
+  };
+
+  const merged = mergeHydratedAssistantRunSegment(existing, hydrated);
+
+  assert.deepEqual(merged.map((message) => message.runId), ["run-old", "run-new"]);
+  assert.equal(merged[0]?.content, "旧运行答案");
+  assert.equal(merged[1]?.content, "完整答案");
 });
 
 test("reconstructMessagesFromEvents treats timezone-less backend timestamps as UTC", () => {

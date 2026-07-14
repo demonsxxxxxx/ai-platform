@@ -249,27 +249,45 @@ export function reconstructMessagesFromEvents(
   opts: ProcessHistoryOptions,
 ): Message[] {
   // A run's compatibility projection is ordered by persisted sequence, then
-  // artifact/final payload, then its synthetic terminal.  Different runs keep
-  // their normal chronological ordering.
-  const sortedEvents = [...events].sort((a, b) => {
-    if (a.run_id && a.run_id === b.run_id) {
-      const rankA = compatibilityHistoryRank(a);
-      const rankB = compatibilityHistoryRank(b);
+  // artifact/final payload, then its synthetic terminal. Across runs, retain
+  // the backend's authoritative creation-order grouping: completion timestamps
+  // from an older overlapping run are not a run-generation signal.
+  const runOrder = new Map<string, number>();
+  events.forEach((event) => {
+    if (event.run_id && !runOrder.has(event.run_id)) {
+      runOrder.set(event.run_id, runOrder.size);
+    }
+  });
+  const sortedEvents = events.map((event, index) => ({ event, index })).sort((a, b) => {
+    const runOrderA = a.event.run_id
+      ? (runOrder.get(a.event.run_id) ?? a.index)
+      : runOrder.size + a.index;
+    const runOrderB = b.event.run_id
+      ? (runOrder.get(b.event.run_id) ?? b.index)
+      : runOrder.size + b.index;
+    if (runOrderA !== runOrderB) {
+      return runOrderA - runOrderB;
+    }
+    const eventA = a.event;
+    const eventB = b.event;
+    if (eventA.run_id && eventA.run_id === eventB.run_id) {
+      const rankA = compatibilityHistoryRank(eventA);
+      const rankB = compatibilityHistoryRank(eventB);
       if (rankA !== rankB) {
         return rankA - rankB;
       }
       if (rankA === 0) {
-        const sequenceA = typeof a.sequence === "number" ? a.sequence : null;
-        const sequenceB = typeof b.sequence === "number" ? b.sequence : null;
+        const sequenceA = typeof eventA.sequence === "number" ? eventA.sequence : null;
+        const sequenceB = typeof eventB.sequence === "number" ? eventB.sequence : null;
         if (sequenceA !== null && sequenceB !== null && sequenceA !== sequenceB) {
           return sequenceA - sequenceB;
         }
       }
     }
-    const timeA = parseEventTimestamp(a.timestamp, 0).getTime();
-    const timeB = parseEventTimestamp(b.timestamp, 0).getTime();
-    return timeA - timeB;
-  });
+    const timeA = parseEventTimestamp(eventA.timestamp, 0).getTime();
+    const timeB = parseEventTimestamp(eventB.timestamp, 0).getTime();
+    return timeA === timeB ? a.index - b.index : timeA - timeB;
+  }).map(({ event }) => event);
 
   const reconstructedMessages: Message[] = [];
   let currentAssistantMessage: Message | null = null;
@@ -277,6 +295,16 @@ export function reconstructMessagesFromEvents(
   for (const event of sortedEvents) {
     const eventType = event.event_type;
     const eventData = event.data as HistoryEventData;
+
+    if (
+      currentAssistantMessage?.runId &&
+      event.run_id &&
+      currentAssistantMessage.runId !== event.run_id
+    ) {
+      reconstructedMessages.push(currentAssistantMessage);
+      currentAssistantMessage = null;
+      opts.activeSubagentStack.splice(0, opts.activeSubagentStack.length);
+    }
 
     // Handle user message separately
     if (eventType === "user:message") {
@@ -368,6 +396,34 @@ export function reconstructMessagesFromEvents(
   }
 
   return reconstructedMessages;
+}
+
+/** Replace exactly one assistant run segment during terminal history hydration. */
+export function mergeHydratedAssistantRunSegment(
+  messages: Message[],
+  hydratedAssistant: Message,
+): Message[] {
+  const runId = hydratedAssistant.runId;
+  if (hydratedAssistant.role !== "assistant" || !runId) {
+    return messages;
+  }
+  const firstIndex = messages.findIndex(
+    (message) => message.role === "assistant" && message.runId === runId,
+  );
+  if (firstIndex < 0) {
+    return [...messages, hydratedAssistant];
+  }
+  const merged: Message[] = [];
+  messages.forEach((message, index) => {
+    if (message.role === "assistant" && message.runId === runId) {
+      if (index === firstIndex) {
+        merged.push(hydratedAssistant);
+      }
+      return;
+    }
+    merged.push(message);
+  });
+  return merged;
 }
 
 export interface RunningAssistantPreparationResult {
