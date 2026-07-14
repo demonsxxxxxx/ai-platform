@@ -15,6 +15,38 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+function createTokenRefreshContext() {
+  const connectionStates: string[] = [];
+  const context: SSEConnectionContext = {
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    streamingMessageIdRef: { current: "assistant-old" },
+    reconnectTimeoutRef: { current: null },
+    retryCountRef: { current: 0 },
+    messagesRef: { current: [] },
+    sessionIdRef: { current: "session-old" },
+    currentRunIdRef: { current: "run-old" },
+    processedEventIdsRef: { current: new Set<string>() },
+    lastHistoryTimestampRef: { current: null },
+    activeSubagentStackRef: { current: [] },
+    streamVersionRef: { current: 5 },
+    setSessionId: () => undefined,
+    setMessages: () => undefined,
+    setConnectionStatus: (status) => connectionStates.push(status),
+    setIsInitializingSandbox: () => undefined,
+    setSandboxError: () => undefined,
+  };
+  return { context, connectionStates };
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 test("SSE uses the same explicit cookie-session credential boundary", () => {
   const source = readFileSync(resolve(__dirname, "../sseConnection.ts"), "utf8");
   assert.match(source, /credentials:\s*"include"/);
@@ -527,6 +559,178 @@ test("drops a delayed non-terminal application error after its stream generation
 
   assert.deepEqual(connectionStates, []);
   assert.equal(context.isConnectingRef.current, false);
+});
+
+test("does not let a deferred stale 401 refresh mutate a replacement SSE stream", async () => {
+  const { context, connectionStates } = createTokenRefreshContext();
+  const refreshStarted = createDeferred<void>();
+  const refreshed = createDeferred<string>();
+  let fetchCalls = 0;
+  let refreshCalls = 0;
+  let oldSignal: AbortSignal | null | undefined;
+
+  const oldConnection = connectToSSE(
+    "session-old",
+    "run-old",
+    "assistant-old",
+    context,
+    false,
+    async (_input, init) => {
+      fetchCalls += 1;
+      oldSignal = init.signal;
+      await init.onopen?.(new Response(null, { status: 401 }));
+    },
+    {
+      getValidAccessToken: async () => "old-access",
+      getRefreshToken: () => "refresh-marker",
+      refreshAccessToken: async () => {
+        refreshCalls += 1;
+        refreshStarted.resolve();
+        return refreshed.promise;
+      },
+    },
+  );
+
+  await refreshStarted.promise;
+  const replacementController = new AbortController();
+  context.sessionIdRef.current = "session-new";
+  context.currentRunIdRef.current = "run-new";
+  context.streamVersionRef.current += 1;
+  context.abortControllerRef.current = replacementController;
+  context.isConnectingRef.current = true;
+  context.streamingMessageIdRef.current = "assistant-new";
+  connectionStates.length = 0;
+  refreshed.resolve("new-access");
+  await oldConnection;
+
+  assert.equal(refreshCalls, 1);
+  assert.equal(fetchCalls, 1);
+  assert.equal(oldSignal?.aborted, false);
+  assert.equal(replacementController.signal.aborted, false);
+  assert.equal(context.abortControllerRef.current, replacementController);
+  assert.equal(context.isConnectingRef.current, true);
+  assert.equal(context.streamingMessageIdRef.current, "assistant-new");
+  assert.equal(context.reconnectTimeoutRef.current, null);
+  assert.deepEqual(connectionStates, []);
+});
+
+test("retries a current 401 once and aborts only its captured stream controller", async () => {
+  const { context, connectionStates } = createTokenRefreshContext();
+  const signals: AbortSignal[] = [];
+  let fetchCalls = 0;
+  let refreshCalls = 0;
+
+  await connectToSSE(
+    "session-old",
+    "run-old",
+    "assistant-old",
+    context,
+    false,
+    async (_input, init) => {
+      fetchCalls += 1;
+      if (!init.signal) {
+        throw new Error("missing test stream abort signal");
+      }
+      signals.push(init.signal);
+      await init.onopen?.(
+        new Response(null, { status: fetchCalls === 1 ? 401 : 200 }),
+      );
+    },
+    {
+      getValidAccessToken: async () => "access",
+      getRefreshToken: () => "refresh-marker",
+      refreshAccessToken: async () => {
+        refreshCalls += 1;
+        return "refreshed-access";
+      },
+    },
+  );
+
+  assert.equal(refreshCalls, 1);
+  assert.equal(fetchCalls, 2);
+  assert.equal(signals[0].aborted, true);
+  assert.equal(signals[1].aborted, false);
+  assert.equal(context.abortControllerRef.current?.signal, signals[1]);
+  assert.equal(context.isConnectingRef.current, false);
+  assert.equal(connectionStates.at(-1), "connected");
+});
+
+test("fails closed when the refreshed SSE retry is still unauthorized", async () => {
+  const { context, connectionStates } = createTokenRefreshContext();
+  let fetchCalls = 0;
+  let refreshCalls = 0;
+
+  await assert.rejects(
+    connectToSSE(
+      "session-old",
+      "run-old",
+      "assistant-old",
+      context,
+      false,
+      async (_input, init) => {
+        fetchCalls += 1;
+        await init.onopen?.(new Response(null, { status: 401 }));
+      },
+      {
+        getValidAccessToken: async () => "access",
+        getRefreshToken: () => "refresh-marker",
+        refreshAccessToken: async () => {
+          refreshCalls += 1;
+          return "refreshed-access";
+        },
+      },
+    ),
+    /SSE unauthorized after token refresh/,
+  );
+
+  assert.equal(refreshCalls, 1);
+  assert.equal(fetchCalls, 2);
+  assert.equal(context.isConnectingRef.current, false);
+  assert.equal(connectionStates.at(-1), "disconnected");
+});
+
+test("fails closed when a current 401 has no refresh marker or refresh fails", async () => {
+  for (const scenario of [
+    {
+      name: "no refresh marker",
+      getRefreshToken: () => null,
+      refreshAccessToken: async () => "unused",
+      expected: /SSE unauthorized: no refresh token/,
+    },
+    {
+      name: "refresh failure",
+      getRefreshToken: () => "refresh-marker",
+      refreshAccessToken: async () => {
+        throw new Error("refresh failed");
+      },
+      expected: /SSE unauthorized: token refresh failed/,
+    },
+  ]) {
+    const { context, connectionStates } = createTokenRefreshContext();
+
+    await assert.rejects(
+      connectToSSE(
+        "session-old",
+        "run-old",
+        "assistant-old",
+        context,
+        false,
+        async (_input, init) => {
+          await init.onopen?.(new Response(null, { status: 401 }));
+        },
+        {
+          getValidAccessToken: async () => "access",
+          getRefreshToken: scenario.getRefreshToken,
+          refreshAccessToken: scenario.refreshAccessToken,
+        },
+      ),
+      scenario.expected,
+      scenario.name,
+    );
+
+    assert.equal(context.isConnectingRef.current, false);
+    assert.equal(connectionStates.at(-1), "disconnected");
+  }
 });
 
 test("bounds replayed active run_event reconnects and converges unavailable once", async (t) => {

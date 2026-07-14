@@ -63,6 +63,12 @@ export function clearReconnectTimeout(
 
 export type SSECloseAction = "terminal" | "retry";
 export type SSEFetchEventSource = typeof fetchEventSource;
+/** Injectable token operations keep the 401 handoff race testable. */
+export interface SSETokenDependencies {
+  getValidAccessToken?: typeof getValidAccessToken;
+  getRefreshToken?: typeof getRefreshToken;
+  refreshAccessToken?: typeof refreshAccessToken;
+}
 export const MAX_STATUS_QUERY_RETRIES = 2;
 /** Maximum reconnects after continuous transport loss for one session/run. */
 export const MAX_CONSECUTIVE_SSE_RECONNECTS = 3;
@@ -195,6 +201,7 @@ export async function connectToSSE(
   ctx: SSEConnectionContext,
   hasRetried = false,
   fetchStream: SSEFetchEventSource = fetchEventSource,
+  tokenDependencies: SSETokenDependencies = {},
 ): Promise<void> {
   const {
     abortControllerRef,
@@ -204,6 +211,11 @@ export async function connectToSSE(
     retryCountRef,
     streamVersionRef,
   } = ctx;
+  const getCurrentAccessToken =
+    tokenDependencies.getValidAccessToken || getValidAccessToken;
+  const getCurrentRefreshToken = tokenDependencies.getRefreshToken || getRefreshToken;
+  const refreshCurrentAccessToken =
+    tokenDependencies.refreshAccessToken || refreshAccessToken;
 
   // Never let a deferred connection for an old session/run abort the active
   // stream. The target check also gives run-less terminal SSE frames a stream
@@ -229,7 +241,7 @@ export async function connectToSSE(
     abortControllerRef.current === streamAbortController &&
     isCurrentSSETarget(ctx, targetSessionId, targetRunId, streamVersion);
 
-  const token = await getValidAccessToken();
+  const token = await getCurrentAccessToken();
   if (!isCurrentStream()) {
     return;
   }
@@ -244,6 +256,10 @@ export async function connectToSSE(
 
   let receivedTerminalEvent = false;
   let receivedNonTerminalApplicationError = false;
+  // A retry connection replaces this stream's controller.  If that new,
+  // current connection fails, preserve its error through this old stream's
+  // guarded catch instead of incorrectly treating it as a stale no-op.
+  let refreshRetryError: unknown = null;
 
   setConnectionStatus("connecting");
 
@@ -265,24 +281,45 @@ export async function connectToSSE(
               // if needed, so just abort and throw
               throw new Error("SSE unauthorized after token refresh");
             }
-            if (!getRefreshToken()) {
+            if (!getCurrentRefreshToken()) {
               throw new Error("SSE unauthorized: no refresh token");
             }
             try {
-              await refreshAccessToken();
+              await refreshCurrentAccessToken();
             } catch {
               throw new Error("SSE unauthorized: token refresh failed");
             }
-            abortControllerRef.current?.abort();
+            // Refresh is asynchronous. A session switch, clear, unmount, or
+            // replacement stream can happen while it is pending; an old
+            // callback must not touch the replacement controller or state.
+            if (!isCurrentStream()) {
+              return;
+            }
+            // Abort only this callback's controller, never the shared ref:
+            // it may already belong to a newer stream.
+            streamAbortController.abort();
+            if (
+              abortControllerRef.current !== streamAbortController ||
+              !isCurrentSSETarget(ctx, targetSessionId, targetRunId, streamVersion)
+            ) {
+              return;
+            }
+            abortControllerRef.current = null;
             isConnectingRef.current = false;
-            await connectToSSE(
-              targetSessionId,
-              targetRunId,
-              messageId,
-              ctx,
-              true,
-              fetchStream,
-            );
+            try {
+              await connectToSSE(
+                targetSessionId,
+                targetRunId,
+                messageId,
+                ctx,
+                true,
+                fetchStream,
+                tokenDependencies,
+              );
+            } catch (error) {
+              refreshRetryError = error;
+              throw error;
+            }
             return;
           }
           if (!response.ok) {
@@ -417,6 +454,9 @@ export async function connectToSSE(
     );
   } catch (err) {
     if (!isCurrentStream()) {
+      if (refreshRetryError !== null) {
+        throw refreshRetryError;
+      }
       return;
     }
     if (
