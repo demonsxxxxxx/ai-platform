@@ -43,6 +43,9 @@ def test_repo_local_compose_is_the_only_frontend_owner_and_binds_one_commit():
         assert services[service_name]["environment"]["AI_PLATFORM_RUNTIME_COMMIT"] == (
             "${AI_PLATFORM_SOURCE_COMMIT:?set AI_PLATFORM_SOURCE_COMMIT}"
         )
+        assert services[service_name]["environment"]["SANDBOX_EXECUTOR_IMAGE"] == (
+            "${SANDBOX_EXECUTOR_IMAGE:-ai-platform:local}"
+        )
 
 
 def test_release_authority_rejects_non_authoritative_origin(monkeypatch, tmp_path):
@@ -266,13 +269,42 @@ def test_parity_report_verifies_one_clean_repo_local_compose_commit():
         source={"commit": commit, "dirty": False},
         images=images,
         containers=containers,
-        runtime={"api_commit": commit, "api_health_status": "ok", "worker_commit": commit, "worker_running": True, "frontend_commit": commit},
+        runtime={
+            "api_commit": commit,
+            "api_health_status": "ok",
+            "worker_commit": commit,
+            "worker_running": True,
+            "frontend_commit": commit,
+            "api_sandbox_executor_image_matches_expected": True,
+            "worker_sandbox_executor_image_matches_expected": True,
+            "api_worker_sandbox_executor_images_match": True,
+        },
         expected_compose_dir=compose_dir,
         expected_repository=repository,
     )
 
     assert report["verified"] is True
     assert report["mismatches"] == []
+
+
+def test_parity_report_rejects_api_worker_executor_image_drift():
+    commit = "a" * 40
+    report = build_parity_report(
+        expected_commit=commit,
+        source={},
+        images={},
+        containers={},
+        runtime={
+            "api_sandbox_executor_image_matches_expected": True,
+            "worker_sandbox_executor_image_matches_expected": False,
+            "api_worker_sandbox_executor_images_match": False,
+        },
+        expected_compose_dir="/srv/ai-platform/deploy/ai-platform",
+        expected_repository=AUTHORITATIVE_REPOSITORY,
+    )
+
+    assert "worker_sandbox_executor_image_mismatch" in report["mismatches"]
+    assert "api_worker_sandbox_executor_image_mismatch" in report["mismatches"]
 
 
 def test_parity_report_rejects_stopped_release_container():
@@ -599,9 +631,16 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
                     "com.docker.compose.service": role,
                 },
                 "Env": (
-                    ["UNRELATED_ENV=private-marker", "TMPDIR=/home/ai-platform/tmp"]
+                    [
+                        "UNRELATED_ENV=private-marker",
+                        "TMPDIR=/home/ai-platform/tmp",
+                        f"SANDBOX_EXECUTOR_IMAGE=ai-platform:{commit}",
+                    ]
                     if name.endswith("worker")
-                    else ["PATH=/usr/bin"]
+                    else [
+                        "PATH=/usr/bin",
+                        f"SANDBOX_EXECUTOR_IMAGE=ai-platform:{commit}",
+                    ]
                 ),
             },
             "State": {
@@ -700,10 +739,10 @@ def test_collect_live_parity_derives_repo_local_compose_and_live_endpoints(monke
     ]
     assert worker_name_binding["ai-platform-worker"] == replacement_worker_id
     assert worker_probe_targets == [inspected_worker_id, inspected_worker_id]
-    serialized_containers = json.dumps(report["containers"])
-    assert "private-marker" not in serialized_containers
-    assert inspected_worker_id not in serialized_containers
-    assert replacement_worker_id not in serialized_containers
+    serialized_report = json.dumps(report)
+    assert "private-marker" not in serialized_report
+    assert inspected_worker_id not in serialized_report
+    assert replacement_worker_id not in serialized_report
 
 
 def test_collect_live_parity_rejects_stale_worker_heartbeat(monkeypatch, tmp_path):
@@ -947,6 +986,105 @@ def test_deploy_reuses_valid_existing_commit_tag_without_rebuilding(monkeypatch,
     assert build_commands == []
 
 
+def test_sandbox_executor_preflight_requires_exact_clean_backend_image(monkeypatch):
+    commit = "7" * 40
+    reference = f"ai-platform:{commit}"
+    valid_labels = {
+        "ai-platform.source-commit": commit,
+        "org.opencontainers.image.revision": commit,
+        "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
+        "ai-platform.build-dirty": "false",
+        "ai-platform.release-role": "backend",
+    }
+
+    with pytest.raises(ReleaseAuthorityError, match="sandbox executor image is missing"):
+        monkeypatch.setattr(
+            "tools.release_authority._image_record",
+            lambda docker, image: (_ for _ in ()).throw(
+                subprocess.CalledProcessError(1, [*docker, "image", "inspect", image])
+            ),
+        )
+        release_authority._require_sandbox_executor_image(
+            ["docker"],
+            reference,
+            commit=commit,
+            repository=AUTHORITATIVE_REPOSITORY,
+        )
+
+    with pytest.raises(ReleaseAuthorityError, match="exact immutable backend reference"):
+        release_authority._require_sandbox_executor_image(
+            ["docker"],
+            "ai-platform:local",
+            commit=commit,
+            repository=AUTHORITATIVE_REPOSITORY,
+        )
+
+    for stale_labels in (
+        {**valid_labels, "ai-platform.source-commit": "8" * 40},
+        {**valid_labels, "ai-platform.build-dirty": "true"},
+        {**valid_labels, "ai-platform.release-role": "frontend"},
+        {**valid_labels, "ai-platform.source-repository": "https://example.invalid/fork.git"},
+    ):
+        monkeypatch.setattr(
+            "tools.release_authority._image_record",
+            lambda docker, image, labels=stale_labels: {"id": "sha256:backend", "labels": labels},
+        )
+        with pytest.raises(ReleaseAuthorityError, match="sandbox executor image provenance mismatch"):
+            release_authority._require_sandbox_executor_image(
+                ["docker"],
+                reference,
+                commit=commit,
+                repository=AUTHORITATIVE_REPOSITORY,
+            )
+
+
+def test_deploy_rejects_executor_preflight_without_compose_mutation(monkeypatch, tmp_path):
+    commit = "6" * 40
+    commands: list[list[str]] = []
+    env_file = tmp_path / ".env"
+    backend_inspections = 0
+
+    monkeypatch.setattr("tools.release_authority.assert_clean_commit", lambda repo, requested: commit)
+    monkeypatch.setattr("tools.release_authority._git", lambda repo, *args: AUTHORITATIVE_REPOSITORY + "\n")
+    def fake_image_record(docker, image):
+        nonlocal backend_inspections
+        if image == f"ai-platform:{commit}":
+            backend_inspections += 1
+            if backend_inspections == 2:
+                raise subprocess.CalledProcessError(1, [*docker, "image", "inspect", image])
+        return {
+            "id": "sha256:frontend" if "frontend" in image else "sha256:backend",
+            "labels": {
+                "ai-platform.source-commit": commit,
+                "org.opencontainers.image.revision": commit,
+                "ai-platform.source-repository": AUTHORITATIVE_REPOSITORY,
+                "ai-platform.build-dirty": "false",
+                "ai-platform.release-role": "frontend" if "frontend" in image else "backend",
+            },
+        }
+
+    monkeypatch.setattr("tools.release_authority._image_record", fake_image_record)
+    monkeypatch.setattr(
+        "tools.release_authority._run",
+        lambda command, **kwargs: (
+            commands.append(list(command))
+            or subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        ),
+    )
+
+    with pytest.raises(ReleaseAuthorityError, match="sandbox executor image is missing"):
+        deploy_clean_commit(
+            tmp_path,
+            commit,
+            docker_cmd="docker",
+            env_file=env_file,
+            replace_known_manual_frontend=False,
+        )
+
+    assert not env_file.exists()
+    assert not any("compose" in command for command in commands)
+
+
 def test_deploy_rejects_existing_commit_tag_with_wrong_provenance(monkeypatch, tmp_path):
     commit = "3" * 40
     repository = AUTHORITATIVE_REPOSITORY
@@ -1134,6 +1272,7 @@ def test_deploy_uses_211_sudo_env_compose_command(monkeypatch, tmp_path):
     assert compose[:3] == ["sudo", "-n", "env"]
     assert f"AI_PLATFORM_IMAGE=ai-platform:{commit}" in compose
     assert f"AI_PLATFORM_FRONTEND_IMAGE=ai-platform-frontend:{commit}" in compose
+    assert f"SANDBOX_EXECUTOR_IMAGE=ai-platform:{commit}" in compose
     assert compose[compose.index("compose") :] == [
         "compose",
         "-p",

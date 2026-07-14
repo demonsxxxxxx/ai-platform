@@ -365,6 +365,12 @@ def build_parity_report(
     for role in ("api", "worker", "frontend"):
         if runtime.get(f"{role}_commit") != commit:
             mismatches.append(f"{role}_runtime_commit_mismatch")
+    if runtime.get("api_sandbox_executor_image_matches_expected") is not True:
+        mismatches.append("api_sandbox_executor_image_mismatch")
+    if runtime.get("worker_sandbox_executor_image_matches_expected") is not True:
+        mismatches.append("worker_sandbox_executor_image_mismatch")
+    if runtime.get("api_worker_sandbox_executor_images_match") is not True:
+        mismatches.append("api_worker_sandbox_executor_image_mismatch")
     if runtime.get("api_health_status") != "ok":
         mismatches.append("api_health_not_ok")
     if runtime.get("worker_running") is not True:
@@ -432,6 +438,37 @@ def _existing_release_image(
     return image
 
 
+def _require_sandbox_executor_image(
+    docker: list[str],
+    reference: str,
+    *,
+    commit: str,
+    repository: str,
+) -> dict[str, Any]:
+    """Require the exact clean backend image used by Docker sandbox executors."""
+    expected_reference = build_image_references(commit)["backend"]
+    if reference != expected_reference:
+        raise ReleaseAuthorityError(
+            "sandbox executor image must be the exact immutable backend reference"
+        )
+    try:
+        image = _image_record(docker, reference)
+    except (OSError, subprocess.CalledProcessError, IndexError, json.JSONDecodeError):
+        raise ReleaseAuthorityError("sandbox executor image is missing") from None
+    if not str(image.get("id") or "").strip():
+        raise ReleaseAuthorityError("sandbox executor image ID is missing")
+    try:
+        _validate_release_image(
+            image,
+            commit=commit,
+            repository=repository,
+            role="backend",
+        )
+    except ReleaseAuthorityError:
+        raise ReleaseAuthorityError("sandbox executor image provenance mismatch") from None
+    return image
+
+
 def _container_inspect_record(
     docker: list[str],
     name: str,
@@ -454,6 +491,28 @@ def _container_inspect_record(
 def _container_record(docker: list[str], name: str) -> dict[str, Any]:
     record, _ = _container_inspect_record(docker, name)
     return record
+
+
+def _container_sandbox_executor_image(inspected: dict[str, Any]) -> str | None:
+    """Read one executor reference without retaining unrelated container environment."""
+    config = inspected.get("Config")
+    if not isinstance(config, dict):
+        return None
+    environment = config.get("Env")
+    if not isinstance(environment, list) or any(
+        not isinstance(entry, str) for entry in environment
+    ):
+        return None
+    entries = [
+        entry
+        for entry in environment
+        if entry == "SANDBOX_EXECUTOR_IMAGE"
+        or entry.startswith("SANDBOX_EXECUTOR_IMAGE=")
+    ]
+    if len(entries) != 1 or not entries[0].startswith("SANDBOX_EXECUTOR_IMAGE="):
+        return None
+    value = entries[0].partition("=")[2]
+    return value or None
 
 
 def _container_file_commit(docker: list[str], name: str, path: str) -> str:
@@ -606,12 +665,18 @@ def collect_live_parity(
     normalized = assert_clean_commit(repo_root, commit)
     docker = _docker_base(docker_cmd)
     refs = build_image_references(normalized)
+    repository = authoritative_repository(repo_root)
     images = {
-        "backend": _image_record(docker, refs["backend"]),
+        "backend": _require_sandbox_executor_image(
+            docker,
+            refs["backend"],
+            commit=normalized,
+            repository=repository,
+        ),
         "frontend": _image_record(docker, refs["frontend"]),
     }
     worker_name = "ai-platform-worker"
-    api_container = _container_record(docker, "ai-platform-api")
+    api_container, api_inspect = _container_inspect_record(docker, "ai-platform-api")
     worker_container, worker_inspect = _container_inspect_record(docker, worker_name)
     worker_container_id = _worker_container_id(worker_inspect)
     frontend_container = _container_record(docker, "ai-platform-frontend")
@@ -647,16 +712,22 @@ def collect_live_parity(
             worker_heartbeat.get("pid"),
         ),
     )
+    api_executor_image = _container_sandbox_executor_image(api_inspect)
+    worker_executor_image = _container_sandbox_executor_image(worker_inspect)
     runtime = {
         "api_commit": str(api_health.get("runtime_commit") or ""),
         "api_health_status": api_health.get("status"),
         "worker_heartbeat": worker_heartbeat,
         "worker_running": containers["worker"].get("running") is True,
         "frontend_commit": str(frontend_provenance.get("git", {}).get("commit") or ""),
+        "api_sandbox_executor_image_matches_expected": api_executor_image == refs["backend"],
+        "worker_sandbox_executor_image_matches_expected": worker_executor_image == refs["backend"],
     }
+    runtime["api_worker_sandbox_executor_images_match"] = (
+        api_executor_image == worker_executor_image and api_executor_image is not None
+    )
     runtime["worker_commit"] = str(runtime["worker_heartbeat"].get("runtime_commit") or "")
     compose_dir = (repo_root.resolve() / DEFAULT_COMPOSE_RELATIVE_PATH).parent.as_posix()
-    repository = authoritative_repository(repo_root)
     return build_parity_report(
         expected_commit=normalized,
         source={"commit": normalized, "dirty": False, "path": str(repo_root.resolve())},
@@ -712,6 +783,13 @@ def deploy_clean_commit(
             )
         images[role] = image
 
+    images["backend"] = _require_sandbox_executor_image(
+        docker,
+        refs["backend"],
+        commit=normalized,
+        repository=repository,
+    )
+
     existing = _run([*docker, "container", "inspect", "ai-platform-frontend"], check=False)
     if existing.returncode == 0:
         payload = json.loads(existing.stdout)[0]
@@ -743,6 +821,7 @@ def deploy_clean_commit(
     compose_environment = [
         f"AI_PLATFORM_IMAGE={refs['backend']}",
         f"AI_PLATFORM_FRONTEND_IMAGE={refs['frontend']}",
+        f"SANDBOX_EXECUTOR_IMAGE={refs['backend']}",
         f"AI_PLATFORM_SOURCE_COMMIT={normalized}",
         f"AI_PLATFORM_BUILD_COMMIT={normalized}",
         "AI_PLATFORM_BUILD_DIRTY=false",
