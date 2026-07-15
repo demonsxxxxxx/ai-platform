@@ -34,11 +34,12 @@ open, or close ordinary-user platform-level multi-run product exposure.
   outcome, current subject, writable paths, required checks, and the single
   owner of each item. Eliminate duplicate work before dispatch; do not retain
   duplicate tests, searches, or probes merely to occupy agents.
-- Every write lane fails closed before editing. Record that its isolated
-  worktree is clean; the recorded base, `origin/main`, merge-base, and `HEAD`
-  equal the required current subject; and its writable paths are explicit. A
-  dirty coordination root is never an implementation source or deliverable; it
-  may only be inspected as a fail-closed comparison.
+- Every write lane fails closed before editing. Record expected base and
+  expected starting head. Require `origin/main` == expected base, merge-base ==
+  expected base, and `HEAD` == expected starting head; verify clean status and
+  exact writable paths. On any mismatch, do not edit and fail closed. A dirty
+  coordination root is never an implementation source or deliverable; it may
+  only be inspected as a fail-closed comparison.
 - Persistent implementation tasks may only make source edits and run affected
   tests, commit, push, and open a Draft PR from that clean isolated worktree
   and explicit write envelope; an implementer cannot be the final reviewer.
@@ -130,10 +131,9 @@ open, or close ordinary-user platform-level multi-run product exposure.
   remote runtime, or destructive operations.
 - No subagent or ordinary persistent task gains credentials, broad remote
   mutation, cleanup, deployment, or final authority. The only delegated
-  exceptions are the bounded persistent implementation envelope and the
-  dedicated runtime verifier's fixed-host/test-key-prefix/TTL/no-real-key-read/
-  exact-cleanup probe envelope; neither exception permits broad remote or
-  release work.
+  exceptions are the bounded persistent implementation envelope and the dedicated
+  runtime verifier's fixed-host/test-key-prefix/TTL/no-real-key-read/exact-cleanup
+  probe envelope; neither exception permits broad remote or release work.
 - Do not delegate tasks that are tightly coupled, require continuous cross-file
   design judgment, or would immediately block the main agent.
 

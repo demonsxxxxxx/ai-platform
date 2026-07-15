@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -246,93 +247,235 @@ def test_agent_rules_keep_main_session_authority_separate_from_subagents():
 def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
     workflow_text = read(MULTI_AGENT_CONTEXT_WORKFLOW)
 
-    def section_bullets(heading: str) -> list[str]:
-        section = workflow_text.split(f"## {heading}\n", 1)[1].split("\n## ", 1)[0]
+    def section_bullets(document: str, heading: str) -> list[str]:
+        marker = f"## {heading}\n"
+        if marker not in document:
+            return []
+        section = document.split(marker, 1)[1].split("\n## ", 1)[0]
         return [" ".join(bullet.split()) for bullet in section.split("\n- ")[1:]]
 
-    def assert_normative_rule(bullets: list[str], *clauses: str) -> None:
-        assert any(all(clause in bullet for clause in clauses) for bullet in bullets), clauses
+    def replace_clause(document: str, heading: str, clause: str, replacement: str) -> str:
+        marker = f"## {heading}\n"
+        before, section_and_after = document.split(marker, 1)
+        section, after = section_and_after.split("\n## ", 1)
+        pattern = r"\s+".join(re.escape(part) for part in clause.split())
+        mutated_section, replacements = re.subn(pattern, replacement, section, count=1)
+        assert replacements == 1, clause
+        return f"{before}{marker}{mutated_section}\n## {after}"
 
-    work_lane_rules = section_bullets("Work Lanes, Preflight, And Evidence Ownership")
-    runtime_rules = section_bullets("Runtime, Deployment, And Review Boundaries")
-    evidence_rules = section_bullets("Evidence Intake, Close Sweep, And Rotation")
+    normative_rules = (
+        (
+            "Work Lanes, Preflight, And Evidence Ownership",
+            (
+                "Before delegation, the controller must make one task inventory",
+                "Eliminate duplicate work before dispatch",
+                "do not retain duplicate tests, searches, or probes merely to occupy agents",
+            ),
+        ),
+        (
+            "Work Lanes, Preflight, And Evidence Ownership",
+            (
+                "Every write lane fails closed before editing",
+                "Record expected base and expected starting head",
+                "`origin/main` == expected base",
+                "merge-base == expected base",
+                "`HEAD` == expected starting head",
+                "clean status",
+                "exact writable paths",
+                "On any mismatch, do not edit and fail closed",
+                "dirty coordination root is never an implementation source or deliverable",
+            ),
+        ),
+        (
+            "Work Lanes, Preflight, And Evidence Ownership",
+            (
+                "Persistent implementation tasks may only",
+                "clean isolated worktree",
+                "source edits",
+                "affected tests",
+                "commit",
+                "push",
+                "Draft PR",
+                "cannot be the final reviewer",
+                "No subagent or ordinary persistent task may access browser/user credentials",
+                "broad remote mutation, cleanup, deployment, or final authority",
+            ),
+        ),
+        (
+            "Work Lanes, Preflight, And Evidence Ownership",
+            (
+                "Disposable agents are read-only context compressors",
+                "large logs or test output",
+                "peripheral material",
+                "never perform remote writes, deployment, cleanup, credential access, or final release decisions",
+            ),
+        ),
+        (
+            "Work Lanes, Preflight, And Evidence Ownership",
+            (
+                "Evidence has a default owner:",
+                "implementer runs affected tests, compile, and `git diff --check`",
+                "CI owns standard regression",
+                "reviewer owns code review plus a small number of high-risk attack or concurrency probes",
+                "controller fills only uncovered final gates",
+            ),
+        ),
+        (
+            "Runtime, Deployment, And Review Boundaries",
+            (
+                "Confirmed or inherited filesystem, network, or approval capability",
+                "technical prerequisite",
+                "never grants authorization",
+            ),
+        ),
+        (
+            "Runtime, Deployment, And Review Boundaries",
+            (
+                "dedicated persistent runtime verifier or the controller",
+                "fixed host",
+                "test-key prefix",
+                "TTL",
+                "prohibition on real-key reads",
+                "exact cleanup",
+                "failure evidence",
+            ),
+        ),
+        (
+            "Runtime, Deployment, And Review Boundaries",
+            (
+                "Only the named controller or deployment owner may",
+                "browser/user credentials",
+                "mark Ready",
+                "merge",
+                "deploy",
+                "211 build/recreate/cleanup",
+                "release or final claims",
+            ),
+        ),
+        (
+            "Runtime, Deployment, And Review Boundaries",
+            (
+                "The default review cadence is:",
+                "invariant preflight",
+                "one implementation",
+                "complete independent review",
+                "consolidated Critical/Important repair batch",
+                "final re-review",
+                "Do not turn review into parallel, repetitive fix cycles",
+            ),
+        ),
+        (
+            "Evidence Intake, Close Sweep, And Rotation",
+            (
+                "controller consumes compressed evidence",
+                "not raw long logs or scripts",
+                "command",
+                "subject",
+                "observed time",
+                "decisive lines/result",
+                "artifact location",
+            ),
+        ),
+        (
+            "Evidence Intake, Close Sweep, And Rotation",
+            (
+                "close-sweep inventory",
+                "task or archive state",
+                "worktree classification",
+                "process ownership",
+                "without exact ownership proof",
+            ),
+        ),
+        (
+            "Evidence Intake, Close Sweep, And Rotation",
+            (
+                "Record a lessons ledger entry as:",
+                "incident -> root cause -> new guardrail -> enforcement point -> verification",
+                "Repeated or high-impact lessons must become a policy rule or an automated check",
+                "rather than remaining a chat-only reminder",
+            ),
+        ),
+        (
+            "Evidence Intake, Close Sweep, And Rotation",
+            (
+                "Rotate the controller at every major phase handoff, repeated compaction, or material authority change",
+                "mandatory handoff packet",
+                "objective and non-goals",
+                "`origin/main`",
+                "runtime subject",
+                "active owners and leases",
+                "accepted and stale evidence",
+                "risks",
+                "next gates",
+                "cleanup classifications",
+            ),
+        ),
+        (
+            "Delegation Rules",
+            (
+                "main-thread authorization is a direct-operation allowance",
+                "not a delegation allowance",
+                "technical prerequisite only",
+                "never grants a subagent authorization for credentials, remote mutation, cleanup, deployment, or final authority",
+            ),
+        ),
+        (
+            "Delegation Rules",
+            (
+                "No subagent or ordinary persistent task gains credentials, broad remote mutation, cleanup, deployment, or final authority",
+                "only delegated exceptions are the bounded persistent implementation envelope",
+                "dedicated runtime verifier's fixed-host/test-key-prefix/TTL/no-real-key-read/exact-cleanup probe envelope",
+                "neither exception permits broad remote or release work",
+            ),
+        ),
+    )
 
-    assert_normative_rule(
-        work_lane_rules,
-        "Every write lane fails closed before editing",
-        "isolated worktree is clean",
-        "`origin/main`",
-        "recorded base",
-        "merge-base",
-        "`HEAD`",
-        "current subject",
-        "writable paths are explicit",
-        "dirty coordination root is never an implementation source or deliverable",
+    def contract_holds(document: str) -> bool:
+        for heading, clauses in normative_rules:
+            bullets = section_bullets(document, heading)
+            if not any(all(clause in bullet for clause in clauses) for bullet in bullets):
+                return False
+
+        delegation_rules = section_bullets(document, "Delegation Rules")
+        unauthorized_grants = (
+            "A subagent may access browser/user credentials",
+            "A subagent may perform broad remote mutation",
+            "A subagent may deploy",
+        )
+        return not any(
+            grant in bullet for grant in unauthorized_grants for bullet in delegation_rules
+        )
+
+    assert contract_holds(workflow_text)
+
+    decisive_clauses = []
+    for heading, clauses in normative_rules:
+        for clause in clauses:
+            if (heading, clause) not in decisive_clauses:
+                decisive_clauses.append((heading, clause))
+    for heading, clause in decisive_clauses:
+        assert not contract_holds(replace_clause(workflow_text, heading, clause, "[removed]"))
+
+    assert not contract_holds(
+        replace_clause(
+            workflow_text,
+            "Work Lanes, Preflight, And Evidence Ownership",
+            "`origin/main` == expected base",
+            "`origin/main` is based on expected base",
+        )
     )
-    assert_normative_rule(
-        work_lane_rules,
-        "Persistent implementation tasks may only",
-        "clean isolated worktree",
-        "source edits",
-        "affected tests",
-        "commit",
-        "push",
-        "Draft PR",
-        "cannot be the final reviewer",
-        "No subagent or ordinary persistent task may access browser/user credentials",
-        "broad remote mutation, cleanup, deployment, or final authority",
+    assert not contract_holds(
+        workflow_text.replace(
+            "- Do not delegate tasks that are tightly coupled, require continuous cross-file\n",
+            "- A subagent may access browser/user credentials, may perform broad remote mutation, and may deploy.\n"
+            "- Do not delegate tasks that are tightly coupled, require continuous cross-file\n",
+        )
     )
-    assert_normative_rule(
-        work_lane_rules,
-        "Evidence has a default owner:",
-        "implementer runs affected tests, compile, and `git diff --check`",
-        "CI owns standard regression",
-        "reviewer owns code review plus a small number of high-risk attack or concurrency probes",
-        "controller fills only uncovered final gates",
-    )
-    assert_normative_rule(
-        runtime_rules,
-        "Confirmed or inherited filesystem, network, or approval capability",
-        "technical prerequisite",
-        "never grants authorization",
-    )
-    assert_normative_rule(
-        runtime_rules,
-        "dedicated persistent runtime verifier or the controller",
-        "fixed host",
-        "test-key prefix",
-        "TTL",
-        "prohibition on real-key reads",
-        "exact cleanup",
-        "failure evidence",
-    )
-    assert_normative_rule(
-        runtime_rules,
-        "Only the named controller or deployment owner may",
-        "browser/user credentials",
-        "mark Ready",
-        "merge",
-        "deploy",
-        "211 build/recreate/cleanup",
-        "release or final claims",
-    )
-    assert_normative_rule(
-        evidence_rules,
-        "controller consumes compressed evidence",
-        "not raw long logs or scripts",
-        "command",
-        "subject",
-        "observed time",
-        "decisive lines/result",
-        "artifact location",
-    )
-    assert_normative_rule(
-        evidence_rules,
-        "close-sweep inventory",
-        "task or archive state",
-        "worktree classification",
-        "process ownership",
-        "without exact ownership proof",
+    assert contract_holds(
+        workflow_text.replace(
+            "This file governs how agents should use sub-agents while working in this\nrepository.",
+            "This workflow describes how agents should use sub-agents in this repository.",
+        )
     )
 
 
