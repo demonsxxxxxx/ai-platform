@@ -1459,7 +1459,7 @@ async def test_archive_distribution_rejects_invalid_actor_before_database_write(
 
 
 @pytest.mark.asyncio
-async def test_batch_lifecycle_locks_use_canonical_order_without_duplicates():
+async def test_batch_lifecycle_locks_use_canonical_order_without_duplicates(monkeypatch):
     class Cursor:
         async def fetchone(self):
             return None
@@ -1470,9 +1470,16 @@ async def test_batch_lifecycle_locks_use_canonical_order_without_duplicates():
 
         async def execute(self, sql, params):
             self.calls.append((" ".join(sql.split()), params))
+            events.append(("lock", params[0]))
             return Cursor()
 
     conn = Connection()
+    events = []
+
+    async def completed_backfill(conn, *, tenant_id):
+        events.append(("ensure", tenant_id))
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", completed_backfill)
     await repositories.acquire_capability_distribution_lifecycle_locks(
         conn,
         tenant_id="tenant-a",
@@ -1480,9 +1487,10 @@ async def test_batch_lifecycle_locks_use_canonical_order_without_duplicates():
         capability_ids=["skill-b", "skill-a", "skill-b"],
     )
 
-    assert [params[0] for _, params in conn.calls] == [
-        '{"capability_id":"skill-a","capability_kind":"skill","tenant_id":"tenant-a"}',
-        '{"capability_id":"skill-b","capability_kind":"skill","tenant_id":"tenant-a"}',
+    assert events == [
+        ("ensure", "tenant-a"),
+        ("lock", '{"capability_id":"skill-a","capability_kind":"skill","tenant_id":"tenant-a"}'),
+        ("lock", '{"capability_id":"skill-b","capability_kind":"skill","tenant_id":"tenant-a"}'),
     ]
 
 

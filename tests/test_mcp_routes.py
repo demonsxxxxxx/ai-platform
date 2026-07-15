@@ -688,12 +688,16 @@ def test_shared_mcp_lifecycle_writes_authoritative_distribution(monkeypatch):
     deleted = client.delete("/api/mcp/scoped", headers=headers(roles="admin"))
 
     assert [response.status_code for response in (created, updated, toggled, deleted)] == [200, 200, 200, 200]
-    distribution_writes = [call for call in calls if call[0] in {"upsert_distribution", "set_distribution_status"}]
+    distribution_writes = [
+        call
+        for call in calls
+        if call[0] in {"upsert_distribution", "set_distribution_status", "archive_distribution"}
+    ]
     assert [name for name, _ in distribution_writes] == [
         "upsert_distribution",
         "upsert_distribution",
         "set_distribution_status",
-        "set_distribution_status",
+        "archive_distribution",
     ]
     assert distribution_writes[0][1]["status"] == "disabled"
     assert distribution_writes[0][1]["allowed_roles"] == ["qa_operator"]
@@ -702,7 +706,55 @@ def test_shared_mcp_lifecycle_writes_authoritative_distribution(monkeypatch):
     assert distribution_writes[1][1]["allowed_roles"] == ["reviewer"]
     assert distribution_writes[1][1]["department_ids"] == ["rd"]
     assert distribution_writes[2][1]["status"] == "disabled"
-    assert distribution_writes[3][1]["status"] == "disabled"
+    assert distribution_writes[3][1] == {
+        "tenant_id": "default",
+        "capability_kind": "mcp_server",
+        "capability_id": "scoped",
+        "archived_by": "ordinary",
+    }
+    assert sum(name == "set_distribution_status" for name, _ in calls) == 1
+
+
+@pytest.mark.parametrize("path", ["/api/mcp/ragflow", "/api/admin/mcp/ragflow"])
+def test_mcp_delete_routes_archive_distribution_and_repair_actor_evidence(monkeypatch, path):
+    calls = install_mcp_route_fakes(
+        monkeypatch,
+        distribution_rows=[
+            {
+                "capability_kind": "mcp_server",
+                "capability_id": "ragflow",
+                "status": "disabled",
+                "visible_to_user": False,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+                "metadata_json": {
+                    "archived_at": "2026-07-15T00:00:00.000Z",
+                    "archived_by": "   ",
+                },
+            }
+        ],
+    )
+    client = TestClient(create_app())
+
+    response = client.delete(path, headers=headers(roles="admin"))
+
+    assert response.status_code == 200
+    assert response.json()["visible_to_user"] is False
+    archive_calls = [payload for name, payload in calls if name == "archive_distribution"]
+    assert archive_calls == [
+        {
+            "tenant_id": "default",
+            "capability_kind": "mcp_server",
+            "capability_id": "ragflow",
+            "archived_by": "ordinary",
+        }
+    ]
+    assert not any(name == "set_distribution_status" for name, _ in calls)
+    assert any(
+        name == "audit" and payload["action"].endswith("mcp.server.deleted")
+        for name, payload in calls
+    )
 
 
 @pytest.mark.parametrize(
@@ -1048,12 +1100,16 @@ def test_mcp_status_mutations_map_distribution_errors_without_audit_or_partial_c
         else:
             transaction_events.append("commit")
 
-    async def fail_status_mutation(conn, **kwargs):
-        calls.append(("set_distribution_status_failed", dict(kwargs)))
+    async def fail_distribution_mutation(conn, **kwargs):
+        seam = "archive_distribution_failed" if method == "delete" else "set_distribution_status_failed"
+        calls.append((seam, dict(kwargs)))
         raise error
 
     monkeypatch.setattr(mcp, "transaction", recording_transaction)
-    monkeypatch.setattr(mcp.repositories, "set_capability_distribution_status", fail_status_mutation)
+    mutation_name = (
+        "archive_capability_distribution_row" if method == "delete" else "set_capability_distribution_status"
+    )
+    monkeypatch.setattr(mcp.repositories, mutation_name, fail_distribution_mutation)
     client = TestClient(create_app())
 
     response = (
@@ -1065,4 +1121,6 @@ def test_mcp_status_mutations_map_distribution_errors_without_audit_or_partial_c
     assert (response.status_code, response.json()["detail"]) == (expected_status, expected_detail)
     assert transaction_events == ["enter", "rollback"]
     assert not any(name == "audit" for name, _ in calls)
-    assert [name for name, _ in calls][-1] == "set_distribution_status_failed"
+    assert [name for name, _ in calls][-1] == (
+        "archive_distribution_failed" if method == "delete" else "set_distribution_status_failed"
+    )

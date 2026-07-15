@@ -1241,8 +1241,9 @@ async def acquire_capability_distribution_lifecycle_locks(
     capability_kind: str,
     capability_ids: list[str],
 ) -> None:
-    """Pre-acquire distinct lifecycle keys in canonical order for one batch transaction."""
+    """Finish tenant backfill before pre-acquiring ordered lifecycle keys for one batch."""
 
+    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
     for capability_id in sorted(set(capability_ids)):
         await _acquire_capability_distribution_lifecycle_lock(
             conn,

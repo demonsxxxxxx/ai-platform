@@ -716,13 +716,12 @@ async def delete_mcp_server(
                 name=safe_name,
                 updated_by=principal.user_id,
             )
-            distribution = await repositories.set_capability_distribution_status(
+            distribution = await repositories.archive_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="mcp_server",
                 capability_id=safe_name,
-                status="disabled",
-                updated_by=principal.user_id,
+                archived_by=principal.user_id,
             )
             await repositories.append_audit_log(
                 conn,
@@ -900,13 +899,12 @@ async def delete_admin_mcp_server(
                 name=safe_name,
                 updated_by=principal.user_id,
             )
-            distribution = await repositories.set_capability_distribution_status(
+            distribution = await repositories.archive_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="mcp_server",
                 capability_id=safe_name,
-                status="disabled",
-                updated_by=principal.user_id,
+                archived_by=principal.user_id,
             )
             await repositories.append_audit_log(
                 conn,
