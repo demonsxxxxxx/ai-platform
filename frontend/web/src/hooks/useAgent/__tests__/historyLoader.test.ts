@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { MessagePart } from "../../../types";
-import { reconstructMessagesFromEvents } from "../historyLoader.ts";
+import {
+  mergeHydratedRunSegment,
+  reconstructMessagesFromEvents,
+} from "../historyLoader.ts";
 import type { HistoryEvent } from "../types.ts";
 
 test("reconstructMessagesFromEvents preserves backend user message ids", () => {
@@ -26,6 +29,207 @@ test("reconstructMessagesFromEvents preserves backend user message ids", () => {
   assert.equal(messages.length, 1);
   assert.equal(messages[0]?.id, "user-message-1");
   assert.equal(messages[0]?.runId, "run-1");
+});
+
+test("production compatibility history reconstructs each persisted user turn before its run answer", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "msg-old-user",
+        type: "user:message",
+        event_type: "user:message",
+        run_id: "run-old",
+        timestamp: "2026-07-15T01:00:00.000Z",
+        data: {
+          message_id: "msg-old-user",
+          run_id: "run-old",
+          content: "第一轮问题",
+        },
+      },
+      {
+        id: "run-old:final",
+        type: "message:chunk",
+        event_type: "message:chunk",
+        run_id: "run-old",
+        timestamp: "2026-07-15T01:01:00.000Z",
+        data: { run_id: "run-old", content: "第一轮回答" },
+      },
+      {
+        id: "msg-new-user",
+        type: "user:message",
+        event_type: "user:message",
+        run_id: "run-new",
+        timestamp: "2026-07-15T02:00:00.000Z",
+        data: {
+          message_id: "msg-new-user",
+          run_id: "run-new",
+          content: "第二轮问题",
+        },
+      },
+      {
+        id: "run-new:final",
+        type: "message:chunk",
+        event_type: "message:chunk",
+        run_id: "run-new",
+        timestamp: "2026-07-15T02:01:00.000Z",
+        data: { run_id: "run-new", content: "第二轮回答" },
+      },
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  assert.deepEqual(
+    messages.map((message) => [message.role, message.runId, message.content]),
+    [
+      ["user", "run-old", "第一轮问题"],
+      ["assistant", "run-old", "第一轮回答"],
+      ["user", "run-new", "第二轮问题"],
+      ["assistant", "run-new", "第二轮回答"],
+    ],
+  );
+});
+
+test("reconstructMessagesFromEvents keeps overlapping runs in independent backend-ordered assistant segments", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "run-old:chunk",
+        event_type: "message:chunk",
+        run_id: "run-old",
+        timestamp: "2026-07-15T03:00:00.000Z",
+        data: { run_id: "run-old", content: "旧运行答案" },
+      },
+      {
+        id: "run-old:artifact",
+        event_type: "artifact_card",
+        run_id: "run-old",
+        timestamp: "2026-07-15T03:00:01.000Z",
+        data: {
+          run_id: "run-old",
+          artifact_id: "artifact-old",
+          artifact_type: "report",
+          label: "旧运行产物",
+          content_type: "text/plain",
+          size_bytes: 10,
+          download_url: "/api/ai/artifacts/artifact-old/download",
+        },
+      },
+      {
+        id: "run-new:chunk",
+        event_type: "message:chunk",
+        run_id: "run-new",
+        timestamp: "2026-07-15T02:00:00.000Z",
+        data: { run_id: "run-new", content: "新运行答案" },
+      },
+      {
+        id: "run-new:terminal",
+        event_type: "done",
+        run_id: "run-new",
+        timestamp: "2026-07-15T02:00:01.000Z",
+        data: { run_id: "run-new", status: "succeeded" },
+      },
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  const assistants = messages.filter((message) => message.role === "assistant");
+  assert.deepEqual(assistants.map((message) => message.runId), ["run-old", "run-new"]);
+  assert.equal(assistants[0]?.content, "旧运行答案");
+  assert.equal(assistants[1]?.content, "新运行答案");
+  assert.deepEqual(
+    assistants.map((message) =>
+      (message.parts || [])
+        .filter((part) => part.type === "artifact")
+        .map((part) => part.type === "artifact" && part.artifact_id),
+    ),
+    [["artifact-old"], []],
+  );
+});
+
+test("exact terminal hydration replaces one run segment without duplicating or touching adjacent runs", () => {
+  const existing = [
+    {
+      id: "assistant-old",
+      role: "assistant" as const,
+      runId: "run-old",
+      content: "旧运行答案",
+      timestamp: new Date("2026-07-15T01:00:00Z"),
+      parts: [],
+    },
+    {
+      id: "message-new-orphan",
+      role: "user" as const,
+      runId: "run-new",
+      content: "旧问题",
+      timestamp: new Date("2026-07-15T02:00:00Z"),
+    },
+    {
+      id: "assistant-new-partial",
+      role: "assistant" as const,
+      runId: "run-new",
+      content: "部分答案",
+      timestamp: new Date("2026-07-15T02:00:00Z"),
+      parts: [],
+    },
+    {
+      id: "assistant-new-replay",
+      role: "assistant" as const,
+      runId: "run-new",
+      content: "重复片段",
+      timestamp: new Date("2026-07-15T02:00:01Z"),
+      parts: [],
+    },
+  ];
+  const hydrated = [
+    {
+      id: "message-new",
+      role: "user" as const,
+      runId: "run-new",
+      content: "问题草稿",
+      timestamp: new Date("2026-07-15T02:00:00Z"),
+    },
+    {
+      id: "message-new",
+      role: "user" as const,
+      runId: "run-new",
+      content: "完整问题",
+      timestamp: new Date("2026-07-15T02:00:00Z"),
+    },
+    {
+      id: "assistant-new-partial-hydrated",
+      role: "assistant" as const,
+      runId: "run-new",
+      content: "水合中的答案",
+      timestamp: new Date("2026-07-15T02:00:00Z"),
+      parts: [],
+    },
+    {
+      id: "assistant-new-final",
+      role: "assistant" as const,
+      runId: "run-new",
+      content: "完整答案",
+      timestamp: new Date("2026-07-15T02:00:01Z"),
+      parts: [],
+    },
+  ];
+
+  const merged = mergeHydratedRunSegment(existing, hydrated, "run-new");
+
+  assert.deepEqual(merged.map((message) => message.runId), [
+    "run-old",
+    "run-new",
+    "run-new",
+  ]);
+  assert.equal(merged[0]?.content, "旧运行答案");
+  assert.deepEqual(
+    merged.slice(1).map((message) => [message.role, message.content]),
+    [
+      ["user", "完整问题"],
+      ["assistant", "完整答案"],
+    ],
+  );
 });
 
 test("reconstructMessagesFromEvents treats timezone-less backend timestamps as UTC", () => {
@@ -209,6 +413,112 @@ test("reconstructMessagesFromEvents replays ai-platform run events and artifact 
   assert.doesNotMatch(
     JSON.stringify(messages[1]?.parts),
     /storage_key|tenants\/default/,
+  );
+});
+
+test("reconstructMessagesFromEvents accepts production outer event types and keeps final payloads before the synthetic terminal", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "persisted-progress",
+        sequence: 41,
+        event_type: "worker_started",
+        run_id: "run-terminal",
+        timestamp: "2026-07-15T01:00:00.000Z",
+        data: {
+          event_id: "persisted-progress",
+          run_id: "run-terminal",
+          event_type: "worker_started",
+          stage: "worker",
+          severity: "info",
+          content: "开始处理",
+        },
+      },
+      {
+        id: "final-detail",
+        event_type: "final_detail",
+        run_id: "run-terminal",
+        timestamp: "2026-07-15T01:00:01.000Z",
+        data: { detail_kind: "failed", detail_code: "run_failed" },
+      },
+      {
+        id: "artifact-card",
+        event_type: "artifact_card",
+        run_id: "run-terminal",
+        timestamp: "2026-07-15T01:00:02.000Z",
+        data: {
+          artifact_id: "artifact-terminal",
+          artifact_type: "report",
+          label: "报告",
+          size_bytes: 1,
+          download_url: "/api/ai/artifacts/artifact-terminal/download",
+        },
+      },
+      {
+        id: "run-terminal:terminal:failed",
+        event_type: "done",
+        run_id: "run-terminal",
+        timestamp: "2026-07-15T01:00:03.000Z",
+        data: { run_id: "run-terminal", status: "failed" },
+      },
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  assert.equal(messages.length, 1);
+  assert.match(messages[0]?.content || "", /任务未能完成/);
+  assert.deepEqual(messages[0]?.parts?.map((part) => part.type), [
+    "artifact",
+  ]);
+});
+
+test("reconstructMessagesFromEvents replays a production outer permission event through the compatibility envelope", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "outer-permission:user",
+        event_type: "user:message",
+        run_id: "run-outer-permission",
+        timestamp: "2026-07-15T00:00:00Z",
+        data: { content: "执行工具" },
+      },
+      {
+        id: "outer-permission:request",
+        sequence: 12,
+        event_type: "tool_permission_requested",
+        run_id: "run-outer-permission",
+        timestamp: "2026-07-15T00:00:01Z",
+        data: {
+          event_id: "outer-permission:request",
+          run_id: "run-outer-permission",
+          event_type: "tool_permission_requested",
+          tool_permission_card: {
+            permission_request_id: "permission-outer",
+            run_id: "run-outer-permission",
+            tool_id: "Bash",
+            tool_call_id: "call-outer",
+            risk_level: "high",
+            write_capable: true,
+            status: "pending",
+          },
+        },
+      },
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  const assistant = messages.find(
+    (message) => message.role === "assistant" && message.runId === "run-outer-permission",
+  );
+  assert.equal(
+    assistant?.parts?.some(
+      (part) =>
+        part.type === "tool_permission" &&
+        part.permission_request_id === "permission-outer",
+    ),
+    true,
   );
 });
 

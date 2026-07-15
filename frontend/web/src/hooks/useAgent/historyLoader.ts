@@ -67,6 +67,56 @@ function canAttachToPreviousAssistant(
   );
 }
 
+function compatibilityHistoryRank(event: HistoryEvent): number {
+  if (event.event_type === "user:message") return -1;
+  if (typeof event.sequence === "number") return 0;
+  if (event.event_type === "artifact_card") return 1;
+  if (
+    event.event_type === "message:chunk" ||
+    event.event_type === "final_detail"
+  ) {
+    return 2;
+  }
+  if (event.event_type === "done") return 3;
+  return 0;
+}
+
+const DIRECT_HISTORY_PROCESSOR_EVENTS = new Set([
+  "agent:call",
+  "agent:result",
+  "thinking",
+  "message:chunk",
+  "final_detail",
+  "tool:start",
+  "tool:result",
+  "sandbox:starting",
+  "sandbox:ready",
+  "sandbox:error",
+  "token:usage",
+  "todo:updated",
+  "summary",
+  "artifact_card",
+]);
+
+/**
+ * Persisted compatibility history intentionally exposes its production event
+ * type at the outer level.  The message processor's durable status and tool
+ * permission projection still uses the `run_event` envelope, so translate
+ * only sequenced persisted rows that have no dedicated visual processor.
+ */
+function historyProcessorEventType(
+  event: HistoryEvent,
+  data: HistoryEventData,
+): string {
+  if (
+    typeof event.sequence === "number" &&
+    !DIRECT_HISTORY_PROCESSOR_EVENTS.has(event.event_type)
+  ) {
+    return "run_event";
+  }
+  return event.event_type || data.event_type || "run_event";
+}
+
 /**
  * Process a single history event and update message state.
  * Returns updated currentAssistantMessage or new message.
@@ -141,12 +191,13 @@ function processHistoryEvent(
     event_id: eventData.event_id || (event.id ? event.id.toString() : undefined),
     run_id: eventData.run_id || event.run_id,
     event_type: eventData.event_type || event.event_type,
+    sequence: event.sequence ?? eventData.sequence,
     timestamp: eventData.timestamp || event.timestamp,
     ...eventData,
   } as EventData;
 
   const result = processMessageEvent(
-    eventType,
+    historyProcessorEventType(event, eventData),
     eventDataWithEnvelope,
     msg.parts || [],
     msg.content,
@@ -197,12 +248,46 @@ export function reconstructMessagesFromEvents(
   processedEventIds: Set<string>,
   opts: ProcessHistoryOptions,
 ): Message[] {
-  // Sort events by timestamp
-  const sortedEvents = [...events].sort((a, b) => {
-    const timeA = parseEventTimestamp(a.timestamp, 0).getTime();
-    const timeB = parseEventTimestamp(b.timestamp, 0).getTime();
-    return timeA - timeB;
+  // A run's compatibility projection is ordered by persisted sequence, then
+  // artifact/final payload, then its synthetic terminal. Across runs, retain
+  // the backend's authoritative creation-order grouping: completion timestamps
+  // from an older overlapping run are not a run-generation signal.
+  const runOrder = new Map<string, number>();
+  events.forEach((event) => {
+    if (event.run_id && !runOrder.has(event.run_id)) {
+      runOrder.set(event.run_id, runOrder.size);
+    }
   });
+  const sortedEvents = events.map((event, index) => ({ event, index })).sort((a, b) => {
+    const runOrderA = a.event.run_id
+      ? (runOrder.get(a.event.run_id) ?? a.index)
+      : runOrder.size + a.index;
+    const runOrderB = b.event.run_id
+      ? (runOrder.get(b.event.run_id) ?? b.index)
+      : runOrder.size + b.index;
+    if (runOrderA !== runOrderB) {
+      return runOrderA - runOrderB;
+    }
+    const eventA = a.event;
+    const eventB = b.event;
+    if (eventA.run_id && eventA.run_id === eventB.run_id) {
+      const rankA = compatibilityHistoryRank(eventA);
+      const rankB = compatibilityHistoryRank(eventB);
+      if (rankA !== rankB) {
+        return rankA - rankB;
+      }
+      if (rankA === 0) {
+        const sequenceA = typeof eventA.sequence === "number" ? eventA.sequence : null;
+        const sequenceB = typeof eventB.sequence === "number" ? eventB.sequence : null;
+        if (sequenceA !== null && sequenceB !== null && sequenceA !== sequenceB) {
+          return sequenceA - sequenceB;
+        }
+      }
+    }
+    const timeA = parseEventTimestamp(eventA.timestamp, 0).getTime();
+    const timeB = parseEventTimestamp(eventB.timestamp, 0).getTime();
+    return timeA === timeB ? a.index - b.index : timeA - timeB;
+  }).map(({ event }) => event);
 
   const reconstructedMessages: Message[] = [];
   let currentAssistantMessage: Message | null = null;
@@ -210,6 +295,16 @@ export function reconstructMessagesFromEvents(
   for (const event of sortedEvents) {
     const eventType = event.event_type;
     const eventData = event.data as HistoryEventData;
+
+    if (
+      currentAssistantMessage?.runId &&
+      event.run_id &&
+      currentAssistantMessage.runId !== event.run_id
+    ) {
+      reconstructedMessages.push(currentAssistantMessage);
+      currentAssistantMessage = null;
+      opts.activeSubagentStack.splice(0, opts.activeSubagentStack.length);
+    }
 
     // Handle user message separately
     if (eventType === "user:message") {
@@ -301,6 +396,88 @@ export function reconstructMessagesFromEvents(
   }
 
   return reconstructedMessages;
+}
+
+function hydratedMessageIdentity(message: Message, runId: string): string | null {
+  if (message.runId !== runId) return null;
+  if (message.role === "assistant") return `assistant:${runId}`;
+  return message.id ? `${message.role}:${message.id}` : null;
+}
+
+/** Replace exactly one complete run segment using stable message/run identities. */
+export function mergeHydratedRunSegment(
+  messages: Message[],
+  hydratedMessages: Message[],
+  runId: string,
+): Message[] {
+  const identities: string[] = [];
+  const authoritativeByIdentity = new Map<string, Message>();
+  for (const message of hydratedMessages) {
+    const identity = hydratedMessageIdentity(message, runId);
+    if (!identity) continue;
+    if (!authoritativeByIdentity.has(identity)) identities.push(identity);
+    authoritativeByIdentity.set(identity, message);
+  }
+  const authoritativeSegment = identities
+    .map((identity) => authoritativeByIdentity.get(identity))
+    .filter((message): message is Message => Boolean(message));
+  if (authoritativeSegment.length === 0) return messages;
+
+  const firstIndex = messages.findIndex(
+    (message) => message.runId === runId,
+  );
+  if (firstIndex < 0) {
+    return [...messages, ...authoritativeSegment];
+  }
+  const merged: Message[] = [];
+  let inserted = false;
+  messages.forEach((message, index) => {
+    if (message.runId === runId) {
+      if (!inserted && index === firstIndex) {
+        merged.push(...authoritativeSegment);
+        inserted = true;
+      }
+      return;
+    }
+    merged.push(message);
+  });
+  return merged;
+}
+
+/** Ensure a confirmed terminal run has an assistant presentation owner. */
+export function ensureTerminalAssistantSegment(
+  messages: Message[],
+  runId: string,
+  messageId: string,
+): Message[] {
+  if (
+    messages.some(
+      (message) => message.role === "assistant" && message.runId === runId,
+    )
+  ) {
+    return messages;
+  }
+  const lastRunIndex = messages.reduce(
+    (lastIndex, message, index) =>
+      message.runId === runId ? index : lastIndex,
+    -1,
+  );
+  const assistant: Message = {
+    id: messageId || runId,
+    runId,
+    role: "assistant",
+    content: "",
+    timestamp:
+      lastRunIndex >= 0 ? messages[lastRunIndex].timestamp : new Date(),
+    isStreaming: false,
+    parts: [],
+  };
+  if (lastRunIndex < 0) return [...messages, assistant];
+  return [
+    ...messages.slice(0, lastRunIndex + 1),
+    assistant,
+    ...messages.slice(lastRunIndex + 1),
+  ];
 }
 
 export interface RunningAssistantPreparationResult {

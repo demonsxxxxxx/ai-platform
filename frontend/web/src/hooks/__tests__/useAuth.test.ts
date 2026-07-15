@@ -8,11 +8,14 @@ const useAuthSource = readFileSync(
 );
 
 test("useAuth bootstraps browser auth from the backend cookie session probe", () => {
-  assert.match(useAuthSource, /const hadSessionMarker = !!getAccessToken\(\);/);
-  assert.match(useAuthSource, /const currentUser = await authApi\.getCurrentUser\(\);/);
+  assert.match(useAuthSource, /const hadSessionMarker = !!owner\.expectedMarker;/);
   assert.match(
     useAuthSource,
-    /if \(!hadSessionMarker\) \{[\s\S]*setTokens\("cookie-session"\);[\s\S]*}\s*applyAuthenticatedUser\(currentUser\);[\s\S]*if \(!hadSessionMarker\) \{[\s\S]*new CustomEvent\("auth:login"\)/,
+    /const currentUser = await authApi\.getCurrentUser\(\{[\s\S]*signal: owner\.abortController\.signal/,
+  );
+  assert.match(
+    useAuthSource,
+    /if \(!hadSessionMarker && !establishLocalSession\(owner\)\) return;[\s\S]*applyAuthenticatedUser\(currentUser, owner\)/,
   );
   assert.doesNotMatch(
     useAuthSource,
@@ -24,27 +27,54 @@ test("useAuth listens for cross-tab cookie-session marker changes", () => {
   assert.match(useAuthSource, /window\.addEventListener\("storage", handleStorage\)/);
   assert.match(
     useAuthSource,
-    /const handleStorage = \(event: StorageEvent\) => \{[\s\S]*handleBrowserAuthStorageEvent\(event, refreshUser\);[\s\S]*};/,
+    /const handleStorage = \(event: StorageEvent\) => \{[\s\S]*classifyBrowserAuthStorageEvent\(event\);[\s\S]*clearAuthPresentation\(owner, false\);[\s\S]*hydrateOwnedUser\(owner, true\);[\s\S]*};/,
   );
-  const applyAuthenticatedUserBlock = useAuthSource.match(
-    /const applyAuthenticatedUser = useCallback\(\(currentUser: User\) => \{[\s\S]*?\}, \[\]\);/,
+  assert.match(
+    useAuthSource,
+    /const applyAuthenticatedUser = useCallback\([\s\S]*if \(!isCurrentAuthOperation\(owner\)\) return false;/,
   );
-  assert.ok(applyAuthenticatedUserBlock);
-  assert.doesNotMatch(applyAuthenticatedUserBlock[0], /setTokens\("cookie-session"\)/);
+  assert.match(
+    useAuthSource,
+    /const beginAuthOperation = useCallback\([\s\S]*invalidateAuthOperation\(\);[\s\S]*new AbortController\(\)/,
+  );
 });
 
 test("useAuth rolls back the backend session when login or OAuth hydration fails", () => {
-  assert.match(useAuthSource, /const rollbackServerSession = useCallback\(async \(\) => \{/);
-  assert.match(useAuthSource, /await authApi\.logout\(\);/);
   assert.match(
     useAuthSource,
-    /const currentUser = await authApi\.getCurrentUser\(\);[\s\S]*} catch \(error\) \{[\s\S]*await rollbackServerSession\(\);[\s\S]*throw error;[\s\S]*}/,
+    /let sessionEstablished = false;[\s\S]*sessionEstablished = true;[\s\S]*if \(sessionEstablished\) \{[\s\S]*await rollbackOwnedSession\(owner\);[\s\S]*throw error;/,
+  );
+});
+
+test("useAuth owner is fenced by both generation and the exact session marker", () => {
+  assert.match(
+    useAuthSource,
+    /interface AuthOperationOwner \{[\s\S]*expectedMarker: string \| null;/,
+  );
+  assert.match(
+    useAuthSource,
+    /isOwnedAuthOperation\(owner\) && getAccessToken\(\) === owner\.expectedMarker/,
   );
 });
 
 test("useAuth login resumes the redirect path saved by revoked-session handling", () => {
   assert.match(
     useAuthSource,
-    /const redirectPath = getRedirectPath\(\);[\s\S]*if \(redirectPath\) \{[\s\S]*clearRedirectPath\(\);[\s\S]*}[\s\S]*return redirectPath \?\? null;/,
+    /const redirectPath = getRedirectPath\(\);[\s\S]*if \(redirectPath\) \{[\s\S]*clearRedirectPath\(\);[\s\S]*}[\s\S]*return completedAuthOperation\(redirectPath \?\? null\);/,
+  );
+});
+
+test("useAuth exposes explicit cancellation instead of null or void success sentinels", () => {
+  assert.match(
+    useAuthSource,
+    /export type AuthOperationOutcome<[\s\S]*status: "cancelled"/,
+  );
+  assert.match(
+    useAuthSource,
+    /if \(!isCurrentAuthOperation\(owner\)\) return cancelledAuthOperation\(\);/,
+  );
+  assert.doesNotMatch(
+    useAuthSource,
+    /if \(!isCurrentAuthOperation\(owner\)\) return null;/,
   );
 });

@@ -238,8 +238,14 @@ def _file_paths(row: dict[str, Any]) -> list[str]:
     return [item.path for item in _project_files(row)]
 
 
-def _public_skill_item(row: dict[str, Any]) -> PublicSkillResponse:
-    files = _file_paths(row)
+def _public_skill_item(
+    row: dict[str, Any],
+    *,
+    include_file_metadata: bool,
+) -> PublicSkillResponse:
+    """Project a Skill catalog item without disclosing package structure by default."""
+
+    files = _file_paths(row) if include_file_metadata else []
     status = str(row.get("status") or "active")
     skill_name = str(row.get("skill_id") or "")
     input_modes = [str(mode) for mode in row.get("input_modes") or []]
@@ -263,7 +269,7 @@ def _public_skill_item(row: dict[str, Any]) -> PublicSkillResponse:
 
 
 def _skill_detail(row: dict[str, Any]) -> PublicSkillDetailResponse:
-    item = _public_skill_item(row)
+    item = _public_skill_item(row, include_file_metadata=True)
     return PublicSkillDetailResponse(
         files=item.files,
         enabled=item.enabled,
@@ -279,7 +285,7 @@ def _skill_detail(row: dict[str, Any]) -> PublicSkillDetailResponse:
 
 
 def _marketplace_item(row: dict[str, Any], principal: AuthPrincipal) -> MarketplaceSkillResponse:
-    files = _file_paths(row)
+    files = _file_paths(row) if is_ai_admin(principal) else []
     created_by = str(row.get("created_by") or "") or None
     return MarketplaceSkillResponse(
         skill_name=str(row.get("skill_id") or ""),
@@ -882,7 +888,10 @@ async def list_skills(
     filtered = _filter_rows(rows, query=q, tags=tags)
     page = filtered[skip : skip + limit]
     return PublicSkillsResponse(
-        skills=[_public_skill_item(row) for row in page],
+        skills=[
+            _public_skill_item(row, include_file_metadata=is_ai_admin(principal))
+            for row in page
+        ],
         total=len(filtered),
         skip=skip,
         limit=limit,
@@ -945,7 +954,7 @@ async def batch_delete_skills(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
 ) -> dict[str, object]:
-    """Disable multiple tenant-visible skills through the existing availability contract."""
+    """Archive multiple tenant-visible Skill bindings in the current tenant."""
 
     _require_permission(principal, "skill:delete")
     _require_ai_admin(principal)
@@ -953,15 +962,20 @@ async def batch_delete_skills(
     deleted: list[str] = []
     errors: list[dict[str, str]] = []
     async with transaction() as conn:
+        await repositories.acquire_capability_distribution_lifecycle_locks(
+            conn,
+            tenant_id=principal.tenant_id,
+            capability_kind="skill",
+            capability_ids=names,
+        )
         for skill_name in names:
             try:
-                await repositories.toggle_capability_distribution_row(
+                await repositories.archive_capability_distribution_row(
                     conn,
                     tenant_id=principal.tenant_id,
                     capability_kind="skill",
                     capability_id=skill_name,
-                    enabled=False,
-                    updated_by=principal.user_id,
+                    archived_by=principal.user_id,
                 )
                 await repositories.append_audit_log(
                     conn,
@@ -994,6 +1008,12 @@ async def batch_toggle_skills(
     updated: list[str] = []
     errors: list[dict[str, str]] = []
     async with transaction() as conn:
+        await repositories.acquire_capability_distribution_lifecycle_locks(
+            conn,
+            tenant_id=principal.tenant_id,
+            capability_kind="skill",
+            capability_ids=names,
+        )
         for skill_name in names:
             try:
                 await repositories.toggle_capability_distribution_row(
@@ -1027,6 +1047,8 @@ async def get_skill(
     """Return public skill detail without exposing admin release controls."""
 
     _require_permission(principal, "skill:read")
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=404, detail="skill_not_found")
     safe_skill_name = _safe_skill_name(skill_name)
     return _skill_detail(await _public_skill_row(principal=principal, skill_name=safe_skill_name))
 
@@ -1040,6 +1062,8 @@ async def get_skill_file(
     """Return a public skill file from the effective version snapshot."""
 
     _require_permission(principal, "skill:read")
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=404, detail="skill_not_found")
     safe_skill_name = _safe_skill_name(skill_name)
     row = await _public_skill_row(
         principal=principal,
@@ -1208,20 +1232,19 @@ async def delete_skill(
     skill_name: str,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, str]:
-    """Map public skill uninstall to tenant availability disablement."""
+    """Archive the current tenant Skill binding without deleting global evidence."""
 
     _require_permission(principal, "skill:delete")
     _require_ai_admin(principal)
     safe_skill_name = _safe_skill_name(skill_name)
     try:
         async with transaction() as conn:
-            await repositories.toggle_capability_distribution_row(
+            await repositories.archive_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="skill",
                 capability_id=safe_skill_name,
-                enabled=False,
-                updated_by=principal.user_id,
+                archived_by=principal.user_id,
             )
             await repositories.append_audit_log(
                 conn,
@@ -1502,20 +1525,19 @@ async def delete_marketplace_skill_direct(
     skill_name: str,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
-    """Disable tenant Marketplace availability without deleting global Skill records."""
+    """Archive the tenant Marketplace binding without deleting global Skill records."""
 
     _require_permission(principal, "marketplace:admin")
     _require_ai_admin(principal)
     safe_skill_name = _safe_skill_name(skill_name)
     try:
         async with transaction() as conn:
-            await repositories.toggle_capability_distribution_row(
+            await repositories.archive_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="skill",
                 capability_id=safe_skill_name,
-                enabled=False,
-                updated_by=principal.user_id,
+                archived_by=principal.user_id,
             )
             await repositories.append_audit_log(
                 conn,
@@ -1539,6 +1561,8 @@ async def list_marketplace_files(
     """Return marketplace skill file paths for preview."""
 
     _require_permission(principal, "marketplace:read")
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=404, detail="skill_not_found")
     safe_skill_name = _safe_skill_name(skill_name)
     return MarketplaceSkillFilesResponse(
         files=_file_paths(
@@ -1560,6 +1584,8 @@ async def get_marketplace_file(
     """Return marketplace skill file content for preview."""
 
     _require_permission(principal, "marketplace:read")
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=404, detail="skill_not_found")
     safe_skill_name = _safe_skill_name(skill_name)
     return _file_response(
         await _public_skill_row(

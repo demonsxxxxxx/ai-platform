@@ -29,9 +29,12 @@ from app.repositories import (
     list_context_share_snapshots_for_target_session,
     get_latest_tool_permission_decision,
     get_tool_permission_request_by_id,
+    get_tool_permission_request_by_id_for_tenant,
+    get_tool_permission_request_for_tenant,
     get_run_identity,
     list_multi_agent_dispatch_candidate_run_ids,
     list_tool_permission_inbox,
+    list_tool_permission_inbox_for_tenant,
     list_run_events,
     list_run_artifacts,
     list_scoped_context_messages,
@@ -142,6 +145,124 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
     assert "tenant_id = %s and session_id = %s" in messages_sql
     assert "order by created_at asc, id asc" in messages_sql
     assert messages_params == ("tenant-a", "session-a")
+
+
+@pytest.mark.asyncio
+async def test_authorized_session_runs_use_canonical_legacy_tie_break_order():
+    conn = RecordingConnection()
+
+    await repositories.list_authorized_session_runs(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        limit=50,
+    )
+
+    sql, params = conn.calls[-1]
+    assert "queue_admission_ordinal" in sql
+    assert "event_type = 'queued'" in sql
+    assert "payload_json->>'queue_admission_ordinal'" in sql
+    assert "~ '^[0-9]+$'" in sql
+    assert "length(run_events.payload_json->>'queue_admission_ordinal') <= 19" in sql
+    assert "<= '9223372036854775807'" in sql
+    assert "case when" in sql
+    created_at_order = sql.index("runs.created_at desc")
+    ordinal_order = sql.index("queue_admission.queue_admission_ordinal desc nulls last")
+    queued_at_order = sql.index("runs.queued_at desc nulls last")
+    id_order = sql.index("runs.id desc")
+    assert created_at_order < ordinal_order < queued_at_order < id_order
+    assert params == ("tenant-a", "user-a", "session-a", 50)
+
+
+@pytest.mark.parametrize(
+    "raw,expected_valid",
+    [
+        ("0", True),
+        ("9223372036854775807", True),
+        ("9223372036854775808", False),
+        ("999999999999999999999999", False),
+        ("-1", False),
+        ("not-a-number", False),
+    ],
+)
+def test_queue_admission_ordinal_bigint_guard_boundaries(raw, expected_valid):
+    valid = (
+        raw.isdigit()
+        and len(raw) <= 19
+        and (len(raw) < 19 or raw <= "9223372036854775807")
+    )
+    assert valid is expected_valid
+
+
+@pytest.mark.asyncio
+async def test_authorized_messages_bind_tenant_session_owner_and_stable_order():
+    conn = RecordingConnection()
+
+    await repositories.list_authorized_messages(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+    )
+
+    sql, params = conn.calls[-1]
+    assert "join sessions" in sql
+    assert "messages.tenant_id = %s" in sql
+    assert "messages.session_id = %s" in sql
+    assert "sessions.user_id = %s" in sql
+    assert "order by messages.created_at asc, messages.id asc" in sql
+    assert params == ("tenant-a", "session-a", "user-a")
+
+
+@pytest.mark.asyncio
+async def test_authorized_user_messages_for_runs_minimize_and_scope_in_sql():
+    query = getattr(repositories, "list_authorized_user_messages_for_runs", None)
+    assert callable(query), "dedicated authorized run-message projection is missing"
+    conn = RecordingConnection()
+
+    rows = await query(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_ids=["run-b", "run-a", "run-b", ""],
+    )
+
+    assert rows == []
+    sql, params = conn.calls[-1]
+    select_clause = sql.split("from messages", 1)[0]
+    assert "messages.id" in select_clause
+    assert "messages.run_id" in select_clause
+    assert "messages.content" in select_clause
+    assert "messages.created_at" in select_clause
+    assert "metadata" not in select_clause
+    assert "role" not in select_clause
+    assert "join sessions" in sql
+    assert "messages.tenant_id = %s" in sql
+    assert "messages.session_id = %s" in sql
+    assert "sessions.user_id = %s" in sql
+    assert "messages.role = 'user'" in sql
+    assert "messages.run_id = any(%s::text[])" in sql
+    assert params == ("tenant-a", "session-a", "user-a", ["run-b", "run-a"])
+
+
+@pytest.mark.asyncio
+async def test_authorized_user_messages_for_runs_empty_target_is_query_free():
+    query = getattr(repositories, "list_authorized_user_messages_for_runs", None)
+    assert callable(query), "dedicated authorized run-message projection is missing"
+    conn = RecordingConnection()
+
+    rows = await query(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_ids=[],
+    )
+
+    assert rows == []
+    assert conn.calls == []
 
 
 @pytest.mark.asyncio
@@ -1016,6 +1137,63 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("is_admin", [False, True])
+async def test_principal_agent_projection_hides_archived_default_skill_for_every_principal(monkeypatch, is_admin):
+    async def fake_list_agents(conn, *, tenant_id):
+        return [
+            {"id": "general-agent", "default_skill_id": "general-chat", "status": "active"},
+            {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer", "status": "active"},
+        ]
+
+    async def fake_list_distributions(conn, **kwargs):
+        return [
+            {
+                "capability_kind": "skill",
+                "capability_id": "general-chat",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+                "metadata_json": {},
+            },
+            {
+                "capability_kind": "skill",
+                "capability_id": "qa-file-reviewer",
+                "status": "disabled",
+                "visible_to_user": False,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+                "metadata": {"archived_at": "2026-07-15T00:00:00.000Z"},
+            },
+        ]
+
+    audits = []
+
+    async def fake_append_audit(conn, **kwargs):
+        audits.append(kwargs)
+        return "audit"
+
+    monkeypatch.setattr(repositories, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(repositories, "list_capability_distribution_rows", fake_list_distributions)
+    monkeypatch.setattr(repositories, "append_audit_log", fake_append_audit)
+
+    rows = await repositories.list_principal_lambchat_agents(
+        object(),
+        tenant_id="tenant-a",
+        actor_user_id="admin-a" if is_admin else "user-a",
+        department_id="platform" if is_admin else "qa",
+        roles=["admin"] if is_admin else ["qa_operator"],
+        is_admin=is_admin,
+        permissions=["chat:read"],
+    )
+
+    assert [row["id"] for row in rows] == ["general-agent"]
+    assert [audit["target_id"] for audit in audits] == (["general-chat"] if is_admin else [])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("previous_status", ["draft", "reviewed", "disabled", "deprecated"])
 async def test_principal_agent_projection_hides_non_runnable_rollout_selected_previous_version(
     monkeypatch,
@@ -1148,6 +1326,518 @@ async def test_capability_distribution_upsert_and_toggle_raise_controlled_not_fo
         )
     with pytest.raises(RepositoryNotFoundError, match="capability_distribution_not_found"):
         await toggle(conn, **kwargs, enabled=False, updated_by="admin-a")
+
+
+@pytest.mark.asyncio
+async def test_archive_capability_distribution_is_tenant_scoped_and_idempotent(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+            self.rows = {
+                ("tenant-a", "skill", "qa-file-reviewer"): {
+                    "id": "capdist-a",
+                    "tenant_id": "tenant-a",
+                    "capability_kind": "skill",
+                    "capability_id": "qa-file-reviewer",
+                    "status": "active",
+                    "visible_to_user": True,
+                    "scope_mode": "allowlist",
+                    "department_ids": [],
+                    "allowed_roles": [],
+                    "metadata_json": {},
+                    "updated_by": None,
+                },
+                ("tenant-b", "skill", "qa-file-reviewer"): {
+                    "id": "capdist-b",
+                    "tenant_id": "tenant-b",
+                    "capability_kind": "skill",
+                    "capability_id": "qa-file-reviewer",
+                    "status": "active",
+                    "visible_to_user": True,
+                    "scope_mode": "allowlist",
+                    "department_ids": [],
+                    "allowed_roles": [],
+                    "metadata_json": {},
+                    "updated_by": None,
+                },
+            }
+
+        async def execute(self, sql, params=()):
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            if "pg_advisory_xact_lock" in compact:
+                return Cursor(None)
+            if compact.startswith("select metadata_json"):
+                tenant_id, capability_kind, capability_id = params
+                row = self.rows.get((tenant_id, capability_kind, capability_id))
+                return Cursor({"metadata_json": row["metadata_json"]} if row is not None else None)
+            assert compact.startswith("update tenant_capability_distributions")
+            preserve_existing_evidence, _, archived_by, updated_by, tenant_id, capability_kind, capability_id = params
+            row = self.rows.get((tenant_id, capability_kind, capability_id))
+            if row is None:
+                return Cursor(None)
+            metadata_json = row["metadata_json"]
+            if not preserve_existing_evidence:
+                metadata_json["archived_at"] = "2026-07-15T00:00:00.000Z"
+                metadata_json["archived_by"] = archived_by[:255]
+            row["status"] = "disabled"
+            row["visible_to_user"] = False
+            row["updated_by"] = updated_by
+            return Cursor(dict(row))
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    conn = Connection()
+
+    first = await repositories.archive_capability_distribution_row(
+        conn,
+        tenant_id="tenant-a",
+        capability_kind="skill",
+        capability_id="qa-file-reviewer",
+        archived_by="admin-a",
+    )
+    second = await repositories.archive_capability_distribution_row(
+        conn,
+        tenant_id="tenant-a",
+        capability_kind="skill",
+        capability_id="qa-file-reviewer",
+        archived_by="admin-b",
+    )
+
+    assert first["status"] == second["status"] == "disabled"
+    assert first["visible_to_user"] is second["visible_to_user"] is False
+    assert second["metadata_json"] == {
+        "archived_at": "2026-07-15T00:00:00.000Z",
+        "archived_by": "admin-a",
+    }
+    assert conn.rows[("tenant-b", "skill", "qa-file-reviewer")]["status"] == "active"
+    assert conn.rows[("tenant-b", "skill", "qa-file-reviewer")]["metadata_json"] == {}
+    assert all("delete from" not in sql for sql, _ in conn.calls)
+    assert all(
+        forbidden not in " ".join(sql for sql, _ in conn.calls)
+        for forbidden in ("skill_versions", "package_objects", "run_skill_snapshots")
+    )
+
+
+@pytest.mark.parametrize(
+    "archive_marker",
+    [None, "", "invalid", "2026-02-30T00:00:00.000Z", [], {}, False],
+)
+def test_repository_archive_predicate_matches_strict_shared_timestamp_semantics(archive_marker):
+    assert repositories.is_capability_distribution_archived(
+        {"metadata_json": {"archived_at": archive_marker}}
+    ) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("existing_metadata", "preserve_evidence"),
+    [
+        (
+            {"archived_at": "2026-07-15T00:00:00.000Z", "archived_by": "admin-a"},
+            True,
+        ),
+        (
+            {"archived_at": "invalid", "archived_by": ["admin-a"]},
+            False,
+        ),
+        (
+            {"archived_at": "2026-07-15T00:00:00.000Z", "archived_by": ["admin-a"]},
+            False,
+        ),
+    ],
+)
+async def test_archive_distribution_preserves_only_valid_first_evidence(
+    monkeypatch,
+    existing_metadata,
+    preserve_evidence,
+):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        async def execute(self, sql, params=()):
+            compact = " ".join(sql.split())
+            if "pg_advisory_xact_lock" in compact:
+                return Cursor(None)
+            if compact.startswith("select metadata_json"):
+                return Cursor({"metadata_json": existing_metadata})
+            assert compact.startswith("update tenant_capability_distributions")
+            assert "case when %s::boolean" in compact
+            assert params[0:2] == (preserve_evidence, preserve_evidence)
+            metadata_json = (
+                existing_metadata
+                if preserve_evidence
+                else {"archived_at": "2026-07-15T01:02:03.004Z", "archived_by": "admin-b"}
+            )
+            return Cursor(
+                {
+                    "id": "capdist-a",
+                    "tenant_id": "tenant-a",
+                    "capability_kind": "skill",
+                    "capability_id": "qa-file-reviewer",
+                    "status": "disabled",
+                    "visible_to_user": False,
+                    "scope_mode": "allowlist",
+                    "department_ids": [],
+                    "allowed_roles": [],
+                    "metadata_json": metadata_json,
+                    "updated_by": "admin-b",
+                }
+            )
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    archived = await repositories.archive_capability_distribution_row(
+        Connection(),
+        tenant_id="tenant-a",
+        capability_kind="skill",
+        capability_id="qa-file-reviewer",
+        archived_by="admin-b",
+    )
+
+    assert archived["metadata_json"]["archived_at"] != "invalid"
+    assert archived["metadata_json"]["archived_by"] == ("admin-a" if preserve_evidence else "admin-b")
+
+
+@pytest.mark.asyncio
+async def test_invalid_archive_marker_does_not_block_distribution_status_update(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        async def execute(self, sql, params=()):
+            compact = " ".join(sql.split())
+            if compact.startswith("select metadata_json"):
+                return Cursor({"metadata_json": {"archived_at": "invalid"}})
+            assert "metadata_json ? 'archived_at'" not in compact
+            return Cursor(
+                {
+                    "id": "capdist-a",
+                    "tenant_id": "tenant-a",
+                    "capability_kind": "skill",
+                    "capability_id": "qa-file-reviewer",
+                    "status": "active",
+                    "visible_to_user": True,
+                    "scope_mode": "allowlist",
+                    "department_ids": [],
+                    "allowed_roles": [],
+                    "metadata_json": {"archived_at": "invalid"},
+                }
+            )
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    row = await repositories.toggle_capability_distribution_row(
+        Connection(),
+        tenant_id="tenant-a",
+        capability_kind="skill",
+        capability_id="qa-file-reviewer",
+        enabled=True,
+        updated_by="admin-a",
+    )
+
+    assert row["status"] == "active"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actor", [None, "", "   ", [], "x" * 256])
+async def test_archive_distribution_rejects_invalid_actor_before_database_write(monkeypatch, actor):
+    async def fail_backfill(*args, **kwargs):
+        raise AssertionError("invalid archive actor must fail before database access")
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", fail_backfill)
+
+    with pytest.raises(RepositoryConflictError, match="capability_distribution_archive_actor_invalid"):
+        await repositories.archive_capability_distribution_row(
+            object(),
+            tenant_id="tenant-a",
+            capability_kind="skill",
+            capability_id="qa-file-reviewer",
+            archived_by=actor,
+        )
+
+
+@pytest.mark.asyncio
+async def test_batch_lifecycle_locks_use_canonical_order_without_duplicates(monkeypatch):
+    class Cursor:
+        async def fetchone(self):
+            return None
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            events.append(("lock", params[0]))
+            return Cursor()
+
+    conn = Connection()
+    events = []
+
+    async def completed_backfill(conn, *, tenant_id):
+        events.append(("ensure", tenant_id))
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", completed_backfill)
+    await repositories.acquire_capability_distribution_lifecycle_locks(
+        conn,
+        tenant_id="tenant-a",
+        capability_kind="skill",
+        capability_ids=["skill-b", "skill-a", "skill-b"],
+    )
+
+    assert events == [
+        ("ensure", "tenant-a"),
+        ("lock", '{"capability_id":"skill-a","capability_kind":"skill","tenant_id":"tenant-a"}'),
+        ("lock", '{"capability_id":"skill-b","capability_kind":"skill","tenant_id":"tenant-a"}'),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["archive", "upsert", "toggle", "set_status"])
+async def test_capability_distribution_lifecycle_lock_precedes_row_lock_and_write(monkeypatch, operation):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params=()):
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            if "pg_advisory_xact_lock" in compact:
+                return Cursor(None)
+            if compact.startswith("select metadata_json"):
+                return Cursor(
+                    {"metadata_json": {}}
+                    if operation in {"archive", "toggle"}
+                    else None
+                )
+            return Cursor(
+                {
+                    "id": "capdist-a",
+                    "tenant_id": "tenant-a",
+                    "capability_kind": "skill",
+                    "capability_id": "qa-file-reviewer",
+                    "status": "disabled" if operation == "archive" else "active",
+                    "visible_to_user": operation != "archive",
+                    "scope_mode": "allowlist",
+                    "department_ids": [],
+                    "allowed_roles": [],
+                    "metadata_json": {},
+                }
+            )
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    conn = Connection()
+    kwargs = {
+        "tenant_id": "tenant-a",
+        "capability_kind": "skill",
+        "capability_id": "qa-file-reviewer",
+    }
+
+    if operation == "archive":
+        await repositories.archive_capability_distribution_row(conn, **kwargs, archived_by="admin-a")
+    elif operation == "upsert":
+        await repositories.upsert_capability_distribution_row(
+            conn,
+            **kwargs,
+            status="active",
+            visible_to_user=True,
+            scope_mode="allowlist",
+            department_ids=[],
+            allowed_roles=[],
+            metadata_json={},
+            updated_by="admin-a",
+        )
+    elif operation == "toggle":
+        await repositories.toggle_capability_distribution_row(conn, **kwargs, enabled=True, updated_by="admin-a")
+    else:
+        await repositories.set_capability_distribution_status(conn, **kwargs, status="active", updated_by="admin-a")
+
+    assert "pg_advisory_xact_lock" in conn.calls[0][0]
+    assert conn.calls[0][1] == ('{"capability_id":"qa-file-reviewer","capability_kind":"skill","tenant_id":"tenant-a"}',)
+    assert conn.calls[1][0].startswith("select metadata_json")
+    assert conn.calls[1][0].endswith("for update")
+    assert conn.calls[2][0].startswith(("insert into tenant_capability_distributions", "update tenant_capability_distributions"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["toggle", "set_status", "upsert"])
+async def test_archived_capability_distribution_rejects_reactivation(monkeypatch, operation):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params=()):
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            if compact.startswith("select metadata_json"):
+                return Cursor({"metadata_json": {"archived_at": "2026-07-15T00:00:00.000Z"}})
+            return Cursor(None)
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    conn = Connection()
+    kwargs = {
+        "tenant_id": "tenant-a",
+        "capability_kind": "skill",
+        "capability_id": "qa-file-reviewer",
+    }
+
+    with pytest.raises(RepositoryConflictError, match="capability_distribution_archived"):
+        if operation == "toggle":
+            await repositories.toggle_capability_distribution_row(conn, **kwargs, enabled=True, updated_by="admin-a")
+        elif operation == "set_status":
+            await repositories.set_capability_distribution_status(conn, **kwargs, status="active", updated_by="admin-a")
+        else:
+            await repositories.upsert_capability_distribution_row(
+                conn,
+                **kwargs,
+                status="active",
+                visible_to_user=True,
+                scope_mode="allowlist",
+                department_ids=[],
+                allowed_roles=[],
+                metadata_json={},
+                updated_by="admin-a",
+            )
+
+    assert any(sql.startswith("select metadata_json") and sql.endswith("for update") for sql, _ in conn.calls)
+    assert not any("metadata_json ? 'archived_at'" in sql for sql, _ in conn.calls)
+
+
+@pytest.mark.asyncio
+async def test_list_public_skill_catalog_hides_archived_but_keeps_disabled_distribution(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    def row(skill_id, *, status, metadata_json):
+        return {
+            "skill_id": skill_id,
+            "name": skill_id,
+            "version": f"{skill_id}-hash",
+            "expected_version": f"{skill_id}-hash",
+            "description": skill_id,
+            "input_modes": [],
+            "lifecycle_status": "active",
+            "status": status,
+            "visible_to_user": status == "active",
+            "department_ids": [],
+            "allowed_roles": [],
+            "distribution_metadata_json": metadata_json,
+            "version_status": "active",
+            "source_json": {"kind": "builtin", "files": []},
+            "dependency_ids": [],
+            "created_by": "admin-a",
+            "created_at": None,
+            "updated_at": None,
+        }
+
+    class Cursor:
+        async def fetchall(self):
+            return [
+                row("archived-skill", status="disabled", metadata_json={"archived_at": "2026-07-15T00:00:00.000Z"}),
+                row("disabled-skill", status="disabled", metadata_json={}),
+            ]
+
+    class Connection:
+        async def execute(self, sql, params):
+            return Cursor()
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    rows = await repositories.list_public_skill_catalog(
+        Connection(),
+        tenant_id="tenant-a",
+        include_disabled=True,
+    )
+
+    assert [row["skill_id"] for row in rows] == ["disabled-skill"]
+
+
+@pytest.mark.asyncio
+async def test_authorize_selected_run_capabilities_fails_closed_for_archived_distribution(monkeypatch):
+    async def resolve_selected(conn, *, tenant_id, agent_id, skill_id):
+        return {
+            "agent_id": agent_id,
+            "skill_id": skill_id,
+            "skill_status": "active",
+            "skill_version": "hash-v1",
+            "skill_content_hash": "hash-v1",
+            "skill_version_status": "active",
+            "release_policy_version": None,
+            "release_policy_previous_version": None,
+            "release_policy_rollout_percent": 100,
+            "executor_type": "claude-agent-worker",
+            "input_modes": [],
+        }
+
+    async def archived_distribution(conn, **kwargs):
+        return {
+            "status": "disabled",
+            "visible_to_user": False,
+            "scope_mode": "allowlist",
+            "department_ids": [],
+            "allowed_roles": [],
+            "metadata_json": {"archived_at": "2026-07-15T00:00:00.000Z"},
+        }
+
+    monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", archived_distribution)
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.authorize_selected_run_capabilities(
+            object(),
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            skill_id="qa-file-reviewer",
+            expected_version="hash-v1",
+            rollout_key="admin-a",
+            normalized_input={},
+            principal_department_id="platform",
+            principal_roles=["admin"],
+            is_admin=True,
+            permissions=["skill:write"],
+        )
 
 
 @pytest.mark.asyncio
@@ -5047,6 +5737,26 @@ async def test_list_tool_permission_inbox_filters_current_user_and_status():
 
 
 @pytest.mark.asyncio
+async def test_list_tool_permission_inbox_for_tenant_excludes_admin_user_filter():
+    conn = RecordingConnection()
+
+    rows = await list_tool_permission_inbox_for_tenant(
+        conn,
+        tenant_id="tenant-a",
+        status="pending",
+        limit=25,
+    )
+
+    sql, params = conn.calls[0]
+    assert "from run_tool_permission_requests" in sql
+    assert "where tenant_id = %s" in sql
+    assert "user_id =" not in sql
+    assert "(%s = 'all' or status = %s)" in sql
+    assert params == ("tenant-a", "pending", "pending", 25)
+    assert rows == []
+
+
+@pytest.mark.asyncio
 async def test_get_tool_permission_request_by_id_scopes_to_user_without_run():
     conn = RecordingConnection()
 
@@ -5062,6 +5772,43 @@ async def test_get_tool_permission_request_by_id_scopes_to_user_without_run():
     assert "where tenant_id = %s and user_id = %s and id = %s" in sql
     assert "run_id =" not in sql
     assert params == ("tenant-a", "user-a", "tpr-a")
+    assert row["id"] == "step-a"
+
+
+@pytest.mark.asyncio
+async def test_admin_tool_permission_lookup_scopes_to_tenant_run_and_request_not_admin_user():
+    conn = RecordingConnection()
+
+    row = await get_tool_permission_request_for_tenant(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        request_id="tpr-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "from run_tool_permission_requests" in sql
+    assert "where tenant_id = %s and run_id = %s and id = %s" in sql
+    assert "user_id =" not in sql
+    assert params == ("tenant-a", "run-a", "tpr-a")
+    assert row["id"] == "step-a"
+
+
+@pytest.mark.asyncio
+async def test_admin_tool_permission_inbox_lookup_scopes_to_tenant_and_request_not_admin_user():
+    conn = RecordingConnection()
+
+    row = await get_tool_permission_request_by_id_for_tenant(
+        conn,
+        tenant_id="tenant-a",
+        request_id="tpr-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "from run_tool_permission_requests" in sql
+    assert "where tenant_id = %s and id = %s" in sql
+    assert "user_id =" not in sql
+    assert params == ("tenant-a", "tpr-a")
     assert row["id"] == "step-a"
 
 
@@ -7547,10 +8294,12 @@ async def test_set_uploaded_workbench_skill_status_creates_authoritative_distrib
     )
 
     assert row["skill_id"] == "new-research-skill"
-    assert "insert into tenant_capability_distributions" in conn.calls[0][0]
+    assert "pg_advisory_xact_lock" in conn.calls[0][0]
+    assert "select metadata_json" in conn.calls[1][0]
+    assert "insert into tenant_capability_distributions" in conn.calls[2][0]
     assert "tenant_workbench_skills" not in " ".join(sql for sql, _ in conn.calls)
-    assert conn.calls[0][1][1:5] == ("default", "skill", "new-research-skill", "active")
-    assert conn.calls[1][1] == ("default", "new-research-skill")
+    assert conn.calls[2][1][1:5] == ("default", "skill", "new-research-skill", "active")
+    assert conn.calls[3][1] == ("default", "new-research-skill")
 
 
 @pytest.mark.asyncio
@@ -7622,7 +8371,9 @@ async def test_set_public_skill_enabled_updates_existing_authoritative_distribut
     )
 
     assert row["skill_id"] == "new-research-skill"
-    assert "insert into tenant_capability_distributions" in conn.calls[0][0]
+    assert "pg_advisory_xact_lock" in conn.calls[0][0]
+    assert "select metadata_json" in conn.calls[1][0]
+    assert "insert into tenant_capability_distributions" in conn.calls[2][0]
     assert "tenant_workbench_skills" not in " ".join(sql for sql, _ in conn.calls)
 
 

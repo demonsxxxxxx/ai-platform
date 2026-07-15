@@ -1,16 +1,7 @@
-/**
- * Authenticated fetch wrapper with token refresh support
- */
+/** Cookie-session fetch wrapper with caller-owned identity recovery. */
 
 import i18n from "i18next";
-import { getAccessToken, getRefreshToken } from "./token";
-import {
-  redirectToLogin,
-  rememberRedirectPathForLogin,
-  refreshAccessToken,
-  clearAuthState,
-} from "./tokenManager";
-import { translateBackendError } from "../../utils/backendErrors";
+import { projectSafeBackendError } from "../../utils/backendErrors";
 
 // ============================================
 // 带认证的 fetch 封装
@@ -18,13 +9,66 @@ import { translateBackendError } from "../../utils/backendErrors";
 
 interface FetchOptions extends RequestInit {
   skipAuth?: boolean;
-  _retry?: boolean;
+}
+
+/** A sanitized server status/code pair for callers that need safe recovery. */
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
+/** Convert an untrusted HTTP response into the shared safe error contract. */
+export async function apiRequestErrorFromResponse(
+  response: Response,
+  status = response.status,
+): Promise<ApiRequestError> {
+  const payload: unknown = await response.json().catch(() => null);
+  const detail =
+    payload !== null &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    Object.prototype.hasOwnProperty.call(payload, "detail")
+      ? (payload as { detail?: unknown }).detail
+      : undefined;
+  const projection = projectSafeBackendError(
+    detail,
+    status,
+    i18n.t.bind(i18n),
+  );
+  return new ApiRequestError(projection.message, status, projection.code);
+}
+
+/**
+ * The single browser cookie-session transport seam.
+ *
+ * It performs exactly one request and never refreshes, replays, redirects, or
+ * mutates browser auth state. Callers own response interpretation.
+ */
+export async function cookieSessionFetch(
+  input: RequestInfo | URL,
+  options: RequestInit = {},
+): Promise<Response> {
+  const headers = new Headers(options.headers);
+  headers.set("Accept-Language", i18n.language || "en");
+  headers.delete("Authorization");
+  return fetch(input, {
+    ...options,
+    credentials: options.credentials ?? "include",
+    headers,
+  });
 }
 
 /**
  * 带认证的 fetch 封装
  * 浏览器生产路径只依赖同源 cookie session，不再附带脚本可读 bearer token。
- * 处理 401 响应
+ * 401/403 and forced re-login responses are returned as safe typed errors;
+ * callers own any identity-state transition.
  */
 export async function authFetch<T>(
   url: string,
@@ -33,7 +77,6 @@ export async function authFetch<T>(
   const {
     skipAuth = false,
     headers = {},
-    _retry = false,
     ...restOptions
   } = options;
 
@@ -43,57 +86,23 @@ export async function authFetch<T>(
   }
   finalHeaders.set("Accept-Language", i18n.language || "en");
   finalHeaders.delete("Authorization");
+  // Retained only as a source-compatible option for public auth endpoints.
+  // Cookie-session transport behavior is identical either way.
+  void skipAuth;
 
-  if (!skipAuth) {
-    // Touch the marker path so legacy bearer keys are eagerly scrubbed.
-    getAccessToken();
-  }
-
-  const response = await fetch(url, {
+  const response = await cookieSessionFetch(url, {
     ...restOptions,
-    credentials: restOptions.credentials ?? "include",
     headers: finalHeaders,
   });
 
-  // 检查当前用户是否被修改（需要重新登录）
-  if (!skipAuth && response.headers.get("X-Force-Relogin") === "true") {
-    clearAuthState();
-    throw new Error("用户权限已变更，请重新登录");
-  }
-
-  // 处理 401 未授权响应
-  if (response.status === 401 && !skipAuth) {
-    if (getRefreshToken() && !_retry) {
-      try {
-        await refreshAccessToken();
-      } catch (error) {
-        if (error instanceof Error && /Unauthorized/i.test(error.message)) {
-          rememberRedirectPathForLogin();
-        } else {
-          redirectToLogin();
-        }
-        throw error;
-      }
-      return authFetch<T>(url, { ...options, skipAuth: false, _retry: true });
-    }
-
-    redirectToLogin();
-    throw new Error("Unauthorized");
+  // Cookie-session callers own identity recovery. This transport never
+  // refreshes, replays, redirects, clears caches, or dispatches auth events.
+  if (response.headers.get("X-Force-Relogin") === "true") {
+    throw await apiRequestErrorFromResponse(response, 401);
   }
 
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    // 处理 detail 为对象或字符串的情况
-    let errorMessage: string;
-    if (typeof errorData.detail === "object" && errorData.detail !== null) {
-      // 如果 detail 是对象，提取 message 字段
-      errorMessage =
-        errorData.detail.message || JSON.stringify(errorData.detail);
-    } else {
-      errorMessage =
-        errorData.detail || `Request failed: ${response.statusText}`;
-    }
-    throw new Error(translateBackendError(errorMessage, i18n.t.bind(i18n)));
+    throw await apiRequestErrorFromResponse(response);
   }
 
   // 处理空响应

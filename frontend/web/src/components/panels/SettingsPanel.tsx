@@ -21,6 +21,7 @@ import { useSettingsContext } from "../../contexts/SettingsContext";
 import { JsonSchemaEditor } from "./JsonSchemaEditor";
 import { SystemHealthSection } from "./SystemHealthSection";
 import { AdminRuntimeCapacitySection } from "./AdminRuntimeCapacitySection";
+import { AdminToolPermissionInboxSection } from "./AdminToolPermissionInboxSection";
 import { useAuth } from "../../hooks/useAuth";
 import { roleApi } from "../../services/api/role";
 import { modelPublicApi, type ModelOption } from "../../services/api/modelPublic";
@@ -637,6 +638,7 @@ export function SettingsPanel() {
             {/* System Health Monitor */}
             <SystemHealthSection />
             <AdminRuntimeCapacitySection />
+            <AdminToolPermissionInboxSection />
 
             {isLoading && !settings ? (
               <PanelLoadingState text={t("settings.loading")} />

@@ -6440,6 +6440,35 @@ async def test_worker_registered_tools_never_receive_partially_authorized_mcp_se
 
 
 @pytest.mark.asyncio
+async def test_worker_reauthorization_denies_archived_skill_before_admin_bypass(monkeypatch):
+    raw, registry, state, calls = _install_task6_worker_fakes(
+        monkeypatch,
+        principal_roles=["admin"],
+        principal_department_id="platform",
+    )
+    state["distributions"][("skill", "qa-file-reviewer")]["metadata_json"] = {
+        "archived_at": "2026-07-15T00:00:00.000Z",
+        "archived_by": "admin-a",
+    }
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    _task6_assert_no_executor_calls(calls)
+    denied_event = next(
+        call[1]
+        for call in calls
+        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
+    )
+    assert denied_event["payload"]["reason"] == "distribution_archived"
+    assert not any(
+        call[0] == "audit" and call[1]["action"] == "capability_distribution.admin_bypass"
+        for call in calls
+    )
+
+
+@pytest.mark.asyncio
 async def test_worker_capability_distribution_admin_bypass_is_auditable(monkeypatch):
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,

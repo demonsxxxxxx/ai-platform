@@ -129,6 +129,71 @@ def test_resolver_admin_bypass_precedes_distribution_checks_and_audit_payload_is
     }
 
 
+@pytest.mark.parametrize("capability_kind", ["skill", "mcp_server", "mcp_tool"])
+@pytest.mark.parametrize("is_admin", [False, True])
+def test_resolver_denies_archived_distribution_before_admin_bypass(capability_kind, is_admin):
+    module = _module()
+    subject = _subject(
+        module,
+        capability_kind=capability_kind,
+        capability_id="qa-mcp:search" if capability_kind == "mcp_tool" else "qa-file-reviewer",
+        inherited_distribution_source="mcp_server:qa-mcp" if capability_kind == "mcp_tool" else None,
+        distribution={"metadata_json": '{"archived_at":"2026-07-15T00:00:00.000Z"}'},
+    )
+
+    decision = module.resolve_capability_access(
+        _context(module, is_admin=is_admin),
+        subject,
+        intent="use",
+    )
+
+    assert subject.is_archived is True
+    assert decision.decision_reason == "distribution_archived"
+    assert (decision.visible, decision.usable, decision.manageable, decision.admin_bypass) == (False, False, False, False)
+
+
+def test_resolver_reads_legacy_metadata_safely_without_treating_malformed_json_as_archived():
+    module = _module()
+
+    archived = _subject(module, distribution={"metadata": {"archived_at": "2026-07-15T00:00:00.000Z"}})
+    malformed = _subject(module, distribution={"metadata_json": "{not-json"})
+
+    assert archived.is_archived is True
+    assert malformed.is_archived is False
+
+
+@pytest.mark.parametrize(
+    "archive_marker",
+    [
+        None,
+        "",
+        "not-a-timestamp",
+        "2026-07-15T00:00:00Z",
+        "2026-07-15T00:00:00.000+00:00",
+        "2026-02-30T00:00:00.000Z",
+        "2026-07-15T24:00:00.000Z",
+        [],
+        {},
+        True,
+    ],
+)
+def test_resolver_accepts_only_semantically_valid_archive_writer_timestamps(archive_marker):
+    module = _module()
+    subject = _subject(module, distribution={"metadata_json": {"archived_at": archive_marker}})
+
+    assert subject.is_archived is False
+
+
+def test_resolver_accepts_archive_writer_utc_millisecond_timestamp_exactly():
+    module = _module()
+    subject = _subject(
+        module,
+        distribution={"metadata": {"archived_at": "2026-07-15T12:34:56.789Z"}},
+    )
+
+    assert subject.is_archived is True
+
+
 def test_mcp_tool_uses_its_inherited_mcp_server_distribution():
     module = _module()
     subject = _subject(

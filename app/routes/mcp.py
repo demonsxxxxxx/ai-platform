@@ -117,6 +117,13 @@ def _lifecycle_not_backed() -> None:
     raise HTTPException(status_code=409, detail="mcp_lifecycle_contract_not_backed")
 
 
+def _distribution_status_mutation_http_exception(exc: repositories.RepositoryConflictError) -> HTTPException:
+    """Map distribution status conflicts without exposing repository-internal details."""
+
+    detail = "capability_distribution_archived" if str(exc) == "capability_distribution_archived" else "mcp_server_conflict"
+    return HTTPException(status_code=409, detail=detail)
+
+
 def _request_model(model_type: type[BaseModel], payload: Any) -> BaseModel:
     try:
         return model_type.model_validate(payload or {})
@@ -212,6 +219,36 @@ def _server_response(
         "updated_at": row.get("updated_at"),
         "contract_version": MCP_LIFECYCLE_CONTRACT_VERSION,
     }
+
+
+def _ordinary_server_response(
+    row: dict[str, Any],
+    *,
+    distribution: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Return the bounded MCP directory projection for an authorized ordinary user."""
+
+    status = str((distribution or {}).get("status") or row.get("status") or "disabled")
+    enabled = status == "active"
+    return {
+        "name": _server_name(row),
+        "status": "active" if enabled else "disabled",
+        "enabled": enabled,
+        "can_edit": False,
+    }
+
+
+def _server_read_response(
+    row: dict[str, Any],
+    *,
+    distribution: dict[str, Any] | None,
+    principal: AuthPrincipal,
+) -> dict[str, Any]:
+    """Keep admin governance reads separate from the ordinary catalog projection."""
+
+    if is_ai_admin(principal):
+        return _server_response(row, distribution=distribution, can_edit=True)
+    return _ordinary_server_response(row, distribution=distribution)
 
 
 def _legacy_server_response(name: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -440,10 +477,10 @@ async def _public_projected_servers(principal: AuthPrincipal) -> list[dict[str, 
                 ),
             )
     return [
-        _server_response(
+        _server_read_response(
             row,
             distribution=distribution_map.get(_server_name(row)),
-            can_edit=is_ai_admin(principal),
+            principal=principal,
         )
         for row in authorized
     ]
@@ -635,10 +672,10 @@ async def get_mcp_server(
 
     safe_name = _safe_name(name)
     row, distribution, _ = await _public_server_access(principal=principal, name=safe_name)
-    return _server_response(
+    return _server_read_response(
         row,
         distribution=distribution,
-        can_edit=is_ai_admin(principal),
+        principal=principal,
     )
 
 
@@ -679,13 +716,12 @@ async def delete_mcp_server(
                 name=safe_name,
                 updated_by=principal.user_id,
             )
-            distribution = await repositories.set_capability_distribution_status(
+            distribution = await repositories.archive_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="mcp_server",
                 capability_id=safe_name,
-                status="disabled",
-                updated_by=principal.user_id,
+                archived_by=principal.user_id,
             )
             await repositories.append_audit_log(
                 conn,
@@ -699,6 +735,8 @@ async def delete_mcp_server(
             )
     except repositories.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except repositories.RepositoryConflictError as exc:
+        raise _distribution_status_mutation_http_exception(exc) from exc
     return _server_response(row, distribution=distribution, can_edit=True)
 
 
@@ -742,6 +780,8 @@ async def toggle_mcp_server(
             )
     except repositories.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except repositories.RepositoryConflictError as exc:
+        raise _distribution_status_mutation_http_exception(exc) from exc
     server = _server_response(row, distribution=distribution, can_edit=True)
     return {"server": server, "message": "mcp_server_toggled"}
 
@@ -859,13 +899,12 @@ async def delete_admin_mcp_server(
                 name=safe_name,
                 updated_by=principal.user_id,
             )
-            distribution = await repositories.set_capability_distribution_status(
+            distribution = await repositories.archive_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="mcp_server",
                 capability_id=safe_name,
-                status="disabled",
-                updated_by=principal.user_id,
+                archived_by=principal.user_id,
             )
             await repositories.append_audit_log(
                 conn,
@@ -879,6 +918,8 @@ async def delete_admin_mcp_server(
             )
     except repositories.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except repositories.RepositoryConflictError as exc:
+        raise _distribution_status_mutation_http_exception(exc) from exc
     return _server_response(row, distribution=distribution, can_edit=True)
 
 

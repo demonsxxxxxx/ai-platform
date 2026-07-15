@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
+import "../../../../i18n";
 import type { ToolPermissionPart } from "../../../../types";
-import { syncToolPermissionCardState } from "../toolPermissionCardState.ts";
+import { AuthProvider } from "../../../../hooks/useAuth.tsx";
+import { getOrdinaryUserToolPermissionPresentation } from "../toolPermissionCardState.ts";
+import {
+  MessagePartRenderer,
+  ToolPermissionCardItem,
+} from "../MessagePartRenderer.tsx";
 
 const pendingPart: ToolPermissionPart = {
   type: "tool_permission",
@@ -16,25 +24,114 @@ const pendingPart: ToolPermissionPart = {
   status: "pending",
 };
 
-test("keeps a local submit error while the permission request is still pending", () => {
-  const result = syncToolPermissionCardState(pendingPart, "network failed");
-
-  assert.equal(result.status, "pending");
-  assert.equal(result.decision, undefined);
-  assert.equal(result.error, "network failed");
-});
-
-test("clears a stale local submit error when replay marks the permission decided", () => {
-  const result = syncToolPermissionCardState(
-    {
+test("projects each ordinary-user permission history state without approval controls", () => {
+  assert.deepEqual(getOrdinaryUserToolPermissionPresentation(pendingPart), {
+    titleKey: "chat.toolPermission.pending.title",
+    messageKey: "chat.toolPermission.pending.message",
+  });
+  assert.deepEqual(
+    getOrdinaryUserToolPermissionPresentation({
       ...pendingPart,
       status: "decided",
       decision: "allow_once",
+    }),
+    {
+      titleKey: "chat.toolPermission.allowedOnce.title",
+      messageKey: "chat.toolPermission.allowedOnce.message",
     },
-    "network failed",
+  );
+  assert.deepEqual(
+    getOrdinaryUserToolPermissionPresentation({
+      ...pendingPart,
+      status: "decided",
+      decision: "allow_for_run",
+    }),
+    {
+      titleKey: "chat.toolPermission.allowedForRun.title",
+      messageKey: "chat.toolPermission.allowedForRun.message",
+    },
+  );
+  assert.deepEqual(
+    getOrdinaryUserToolPermissionPresentation({
+      ...pendingPart,
+      status: "decided",
+      decision: "deny",
+    }),
+    {
+      titleKey: "chat.toolPermission.denied.title",
+      messageKey: "chat.toolPermission.denied.message",
+    },
+  );
+});
+
+test("uses a decided fallback when the history has no known decision", () => {
+  assert.deepEqual(
+    getOrdinaryUserToolPermissionPresentation({
+      ...pendingPart,
+      status: "decided",
+    }),
+    {
+      titleKey: "chat.toolPermission.decided.title",
+      messageKey: "chat.toolPermission.decided.message",
+    },
+  );
+});
+
+test("renders every chat permission history card read-only even when legacy callers claim admin governance", () => {
+  const ReadOnlyCard = ToolPermissionCardItem as React.ComponentType<
+    Record<string, unknown>
+  >;
+  const adminPendingMarkup = renderToStaticMarkup(
+    React.createElement(ReadOnlyCard, {
+      part: pendingPart,
+      canManageToolPermissions: true,
+    }),
+  );
+  const ordinaryPendingMarkup = renderToStaticMarkup(
+    React.createElement(ReadOnlyCard, {
+      part: pendingPart,
+      canManageToolPermissions: false,
+    }),
+  );
+  const ordinaryDeniedMarkup = renderToStaticMarkup(
+    React.createElement(ReadOnlyCard, {
+      part: { ...pendingPart, status: "decided", decision: "deny" },
+      canManageToolPermissions: false,
+    }),
+  );
+  const adminAllowedMarkup = renderToStaticMarkup(
+    React.createElement(ReadOnlyCard, {
+      part: { ...pendingPart, status: "decided", decision: "allow_for_run" },
+      canManageToolPermissions: true,
+    }),
   );
 
-  assert.equal(result.status, "decided");
-  assert.equal(result.decision, "allow_once");
-  assert.equal(result.error, null);
+  for (const markup of [adminPendingMarkup, ordinaryPendingMarkup, ordinaryDeniedMarkup, adminAllowedMarkup]) {
+    assert.doesNotMatch(markup, /<button\b/i);
+    assert.doesNotMatch(
+      markup,
+      /ragflow-knowledge-search|高风险|可写操作|允许一次|允许本次运行/,
+    );
+  }
+  assert.match(adminPendingMarkup, /正在等待管理员处理/);
+  assert.match(ordinaryPendingMarkup, /正在等待管理员处理/);
+  assert.match(ordinaryDeniedMarkup, /操作未获授权/);
+  assert.match(adminAllowedMarkup, /本次运行已获授权/);
+});
+
+test("the shared chat renderer fails closed while no authoritative admin is present", () => {
+  const markup = renderToStaticMarkup(
+    React.createElement(
+      AuthProvider,
+      null,
+      React.createElement(MessagePartRenderer, {
+        part: pendingPart,
+        isLast: true,
+      }),
+    ),
+  );
+
+  assert.doesNotMatch(markup, /<button\b/i);
+  assert.doesNotMatch(markup, /ragflow-knowledge-search|高风险|可写操作/);
+  assert.match(markup, /正在等待管理员处理/);
 });

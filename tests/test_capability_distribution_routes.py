@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.repositories import RepositoryNotFoundError
+from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import Settings
 
 
@@ -225,6 +225,25 @@ def test_admin_updates_skill_distribution_normalizes_scopes_and_audits(monkeypat
     assert "env-secret" not in str(calls[1][1]["payload_json"])
 
 
+@pytest.mark.parametrize("reserved_key", ["archived_at", "archived_by"])
+def test_admin_update_rejects_reserved_archive_metadata_before_repository_write(monkeypatch, reserved_key):
+    async def fail(*args, **kwargs):
+        raise AssertionError("reserved archive metadata must not reach repositories")
+
+    route_module = configure_admin_route(monkeypatch)
+    patch_repository(monkeypatch, route_module, "get_skill", fail)
+    patch_repository(monkeypatch, route_module, "upsert_capability_distribution_row", fail)
+    client = TestClient(create_app())
+
+    response = client.put(
+        "/api/admin/capability-distributions/skill/qa-file-reviewer",
+        headers=admin_headers(),
+        json={"metadata": {reserved_key: "forged"}},
+    )
+
+    assert (response.status_code, response.json()["detail"]) == (400, "capability_distribution_metadata_reserved")
+
+
 def test_admin_updates_mcp_distribution_only_for_tenant_registry_server(monkeypatch):
     async def fake_list_names(conn, *, tenant_id):
         assert tenant_id == "tenant-a"
@@ -318,6 +337,35 @@ def test_missing_toggle_distribution_is_controlled_404(monkeypatch):
     )
 
     assert (response.status_code, response.json()["detail"]) == (404, "capability_distribution_not_found")
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "replacement"),
+    [
+        ("put", "/api/admin/capability-distributions/skill/qa-file-reviewer", "upsert_capability_distribution_row"),
+        (
+            "patch",
+            "/api/admin/capability-distributions/skill/qa-file-reviewer/toggle",
+            "toggle_capability_distribution_row",
+        ),
+    ],
+    ids=["update", "toggle"],
+)
+def test_archived_distribution_mutations_are_bounded_conflicts(monkeypatch, method, path, replacement):
+    async def fake_get_skill(conn, *, skill_id):
+        return {"skill_id": skill_id}
+
+    async def archived_conflict(conn, **kwargs):
+        raise RepositoryConflictError("capability_distribution_archived")
+
+    route_module = configure_admin_route(monkeypatch)
+    patch_repository(monkeypatch, route_module, "get_skill", fake_get_skill)
+    patch_repository(monkeypatch, route_module, replacement, archived_conflict)
+    client = TestClient(create_app())
+
+    response = getattr(client, method)(path, headers=admin_headers(), json={})
+
+    assert (response.status_code, response.json()["detail"]) == (409, "capability_distribution_archived")
 
 
 def test_toggle_aliases_update_distribution_and_audit(monkeypatch):

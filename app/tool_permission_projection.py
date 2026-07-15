@@ -72,6 +72,39 @@ def permission_response(row: dict[str, Any], *, decision_endpoint: str | None = 
     }
 
 
+def inbox_permission_response(row: dict[str, Any]) -> dict[str, Any]:
+    """Return the tenant-inbox allowlist without owner-controlled request details."""
+    run_id = str(row["run_id"])
+    request_id = str(row["id"])
+    tool_id = _public_text(row.get("tool_id")) or "tool"
+    return {
+        "request_id": request_id,
+        "run_id": run_id,
+        "tool_id": tool_id,
+        "tool_display": tool_id,
+        "risk_level": _risk_level(row.get("risk_level")),
+        "write_capable": bool(row.get("write_capable")),
+        "status": str(row.get("status") or "pending"),
+        "expires_at": row.get("expires_at"),
+        "allowed_decisions": inbox_allowed_decisions(row),
+    }
+
+
+def inbox_allowed_decisions(row: dict[str, Any]) -> list[str]:
+    """Expose run-scoped approval only when its exact replay fingerprint exists."""
+    decisions = ["allow_once"]
+    payload = row.get("request_payload_json")
+    payload = payload if isinstance(payload, dict) else {}
+    has_replay_fingerprint = any(
+        isinstance(payload.get(key), str) and bool(payload[key].strip())
+        for key in ("command_sha256", "input_sha256")
+    )
+    if has_replay_fingerprint:
+        decisions.append("allow_for_run")
+    decisions.append("deny")
+    return decisions
+
+
 def tool_permission_public_event_payload(
     *,
     run_id: str,

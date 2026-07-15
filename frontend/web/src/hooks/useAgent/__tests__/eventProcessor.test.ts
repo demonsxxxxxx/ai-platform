@@ -717,6 +717,94 @@ test("sanitizes legacy raw tool result events before rendering output", () => {
   );
 });
 
+test("sanitizes unknown diagnostics across chat error-bearing event parts", () => {
+  const diagnostic = "C:\\private\\worker.log?token=secret <html>proxy</html>";
+  const agentCall = processMessageEvent(
+    "agent:call",
+    { agent_id: "agent-safe", agent_name: "Safe Agent", input: "task" },
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+  const results = [
+    processMessageEvent(
+      "error",
+      { error: diagnostic },
+      [],
+      "",
+      [],
+      0,
+      [],
+      true,
+      "message-1",
+    ),
+    processMessageEvent(
+      "sandbox:error",
+      { error: diagnostic },
+      [],
+      "",
+      [],
+      0,
+      [],
+      true,
+      "message-1",
+    ),
+    processMessageEvent(
+      "tool:result",
+      {
+        tool: "execute",
+        tool_call_id: "call-error",
+        success: false,
+        error: diagnostic,
+        result: "",
+      },
+      [
+        {
+          type: "tool",
+          id: "call-error",
+          name: "execute",
+          args: {},
+          isPending: true,
+        },
+      ],
+      "",
+      [],
+      0,
+      [],
+      true,
+      "message-1",
+    ),
+    processMessageEvent(
+      "agent:result",
+      {
+        agent_id: "agent-safe",
+        success: false,
+        result: "",
+        error: diagnostic,
+      },
+      agentCall.parts,
+      "",
+      [],
+      0,
+      [],
+      true,
+      "message-1",
+    ),
+  ];
+
+  for (const result of results) {
+    const serialized = JSON.stringify(result);
+    assert.doesNotMatch(
+      serialized,
+      /private|token|proxy|html|worker\.log/i,
+    );
+  }
+});
+
 test("dedupes ai-platform artifact cards by artifact id", () => {
   const first = processMessageEvent(
     "artifact_card",

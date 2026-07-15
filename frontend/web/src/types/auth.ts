@@ -71,6 +71,8 @@ export enum Permission {
 // 用户信息
 export interface User {
   id: string;
+  /** Stable authenticated tenant identity from the principal projection. */
+  tenant_id?: string;
   username: string;
   email: string;
   avatar_url?: string;

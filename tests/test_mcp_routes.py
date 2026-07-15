@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.main import create_app
+from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import Settings
 
 
@@ -186,6 +187,19 @@ def install_mcp_route_fakes(
         distributions[kwargs["capability_id"]] = row
         return dict(row)
 
+    async def fake_archive_distribution(conn, **kwargs):
+        calls.append(("archive_distribution", dict(kwargs)))
+        row = dict(distributions.get(kwargs["capability_id"], {}))
+        row.update(
+            capability_kind=kwargs["capability_kind"],
+            capability_id=kwargs["capability_id"],
+            status="disabled",
+            visible_to_user=False,
+            metadata_json={"archived_at": "2026-07-15T00:00:00.000Z", "archived_by": kwargs["archived_by"]},
+        )
+        distributions[kwargs["capability_id"]] = row
+        return dict(row)
+
     async def fake_toggle_server(conn, **kwargs):
         calls.append(("toggle_server", dict(kwargs)))
         server = dict(servers[kwargs["name"]])
@@ -243,6 +257,7 @@ def install_mcp_route_fakes(
         fake_set_distribution_status,
         raising=False,
     )
+    monkeypatch.setattr(mcp.repositories, "archive_capability_distribution_row", fake_archive_distribution, raising=False)
     monkeypatch.setattr(mcp.repositories, "toggle_mcp_server_registry", fake_toggle_server, raising=False)
     monkeypatch.setattr(mcp.repositories, "delete_mcp_server_registry", fake_delete_server, raising=False)
     monkeypatch.setattr(mcp.repositories, "record_mcp_server_credential", fake_record_credential, raising=False)
@@ -251,7 +266,7 @@ def install_mcp_route_fakes(
     return calls
 
 
-def test_mcp_read_contract_projects_visible_tools_without_lifecycle_write(monkeypatch):
+def test_mcp_read_contract_bounds_ordinary_catalog_and_keeps_tool_discovery(monkeypatch):
     calls = install_mcp_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
@@ -261,20 +276,9 @@ def test_mcp_read_contract_projects_visible_tools_without_lifecycle_write(monkey
         "servers": [
             {
                 "name": "ragflow",
-                "transport": "streamable_http",
                 "status": "active",
                 "enabled": True,
-                "visible_to_user": True,
-                "is_system": True,
                 "can_edit": False,
-                "allowed_roles": ["user"],
-                "allowed_departments": [],
-                "role_quotas": {},
-                "credential_state": "platform_managed",
-                "credential_metadata": {},
-                "created_at": None,
-                "updated_at": "2026-06-23T00:00:00Z",
-                "contract_version": "ai-platform.mcp-lifecycle.v1",
             }
         ],
         "total": 1,
@@ -284,8 +288,23 @@ def test_mcp_read_contract_projects_visible_tools_without_lifecycle_write(monkey
 
     detail_response = client.get("/api/mcp/ragflow", headers=headers())
     assert detail_response.status_code == 200
-    assert detail_response.json()["name"] == "ragflow"
-    assert detail_response.json()["can_edit"] is False
+    assert detail_response.json() == list_response.json()["servers"][0]
+
+    export_response = client.get("/api/mcp/export", headers=headers())
+    assert export_response.status_code == 200
+    assert export_response.json() == {"servers": {"ragflow": detail_response.json()}}
+    forbidden_fields = {
+        "credential_state",
+        "credential_metadata",
+        "allowed_roles",
+        "allowed_departments",
+        "role_quotas",
+        "created_at",
+        "updated_at",
+        "transport",
+        "is_system",
+    }
+    assert forbidden_fields.isdisjoint(detail_response.json())
 
     tools_response = client.get("/api/mcp/ragflow/tools", headers=headers())
     assert tools_response.status_code == 200
@@ -345,6 +364,33 @@ def test_mcp_distribution_omits_cross_department_and_returns_not_found_for_direc
     assert client.get("/api/mcp/", headers=unauthorized).json()["servers"] == []
     assert client.get("/api/mcp/ragflow", headers=unauthorized).status_code == 404
     assert client.get("/api/mcp/ragflow/tools", headers=unauthorized).status_code == 404
+
+
+def test_mcp_cross_tenant_server_and_tool_reads_fail_closed(monkeypatch):
+    install_mcp_route_fakes(monkeypatch)
+
+    async def tenant_scoped_servers(conn, *, tenant_id, include_disabled=True):
+        if tenant_id != "default":
+            return []
+        return [
+            {
+                "name": "ragflow",
+                "transport": "streamable_http",
+                "status": "active",
+                "is_system": True,
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.routes.mcp.repositories.list_tenant_mcp_server_registry",
+        tenant_scoped_servers,
+    )
+    client = TestClient(create_app())
+    foreign_headers = {**headers(), "X-AI-Tenant-ID": "tenant-b"}
+
+    assert client.get("/api/mcp/", headers=foreign_headers).json()["servers"] == []
+    assert client.get("/api/mcp/ragflow", headers=foreign_headers).status_code == 404
+    assert client.get("/api/mcp/ragflow/tools", headers=foreign_headers).status_code == 404
 
 
 def test_mcp_distribution_denies_role_hidden_disabled_and_missing_rows(monkeypatch):
@@ -454,6 +500,25 @@ def test_mcp_response_projects_authoritative_distribution_over_registry_scope(mo
     assert server["visible_to_user"] is False
     assert server["allowed_roles"] == ["reviewer"]
     assert server["allowed_departments"] == ["rd"]
+
+
+def test_mcp_admin_read_and_export_keep_redacted_governance_metadata(monkeypatch):
+    install_mcp_route_fakes(
+        monkeypatch,
+        distribution_rows=[_mcp_distribution(department_ids=["rd"], allowed_roles=["reviewer"])],
+    )
+    client = TestClient(create_app())
+    admin_headers = headers(roles="admin", department_id="platform")
+
+    detail_response = client.get("/api/mcp/ragflow", headers=admin_headers)
+    export_response = client.get("/api/mcp/export", headers=admin_headers)
+
+    assert detail_response.status_code == 200
+    assert detail_response.json()["can_edit"] is True
+    assert detail_response.json()["allowed_roles"] == ["reviewer"]
+    assert detail_response.json()["allowed_departments"] == ["rd"]
+    assert detail_response.json()["credential_state"] == "platform_managed"
+    assert "credential_metadata" not in export_response.json()["servers"]["ragflow"]
 
 
 def test_authorized_mcp_registration_entries_exclude_denied_parent_servers():
@@ -623,12 +688,16 @@ def test_shared_mcp_lifecycle_writes_authoritative_distribution(monkeypatch):
     deleted = client.delete("/api/mcp/scoped", headers=headers(roles="admin"))
 
     assert [response.status_code for response in (created, updated, toggled, deleted)] == [200, 200, 200, 200]
-    distribution_writes = [call for call in calls if call[0] in {"upsert_distribution", "set_distribution_status"}]
+    distribution_writes = [
+        call
+        for call in calls
+        if call[0] in {"upsert_distribution", "set_distribution_status", "archive_distribution"}
+    ]
     assert [name for name, _ in distribution_writes] == [
         "upsert_distribution",
         "upsert_distribution",
         "set_distribution_status",
-        "set_distribution_status",
+        "archive_distribution",
     ]
     assert distribution_writes[0][1]["status"] == "disabled"
     assert distribution_writes[0][1]["allowed_roles"] == ["qa_operator"]
@@ -637,7 +706,55 @@ def test_shared_mcp_lifecycle_writes_authoritative_distribution(monkeypatch):
     assert distribution_writes[1][1]["allowed_roles"] == ["reviewer"]
     assert distribution_writes[1][1]["department_ids"] == ["rd"]
     assert distribution_writes[2][1]["status"] == "disabled"
-    assert distribution_writes[3][1]["status"] == "disabled"
+    assert distribution_writes[3][1] == {
+        "tenant_id": "default",
+        "capability_kind": "mcp_server",
+        "capability_id": "scoped",
+        "archived_by": "ordinary",
+    }
+    assert sum(name == "set_distribution_status" for name, _ in calls) == 1
+
+
+@pytest.mark.parametrize("path", ["/api/mcp/ragflow", "/api/admin/mcp/ragflow"])
+def test_mcp_delete_routes_archive_distribution_and_repair_actor_evidence(monkeypatch, path):
+    calls = install_mcp_route_fakes(
+        monkeypatch,
+        distribution_rows=[
+            {
+                "capability_kind": "mcp_server",
+                "capability_id": "ragflow",
+                "status": "disabled",
+                "visible_to_user": False,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+                "metadata_json": {
+                    "archived_at": "2026-07-15T00:00:00.000Z",
+                    "archived_by": "   ",
+                },
+            }
+        ],
+    )
+    client = TestClient(create_app())
+
+    response = client.delete(path, headers=headers(roles="admin"))
+
+    assert response.status_code == 200
+    assert response.json()["visible_to_user"] is False
+    archive_calls = [payload for name, payload in calls if name == "archive_distribution"]
+    assert archive_calls == [
+        {
+            "tenant_id": "default",
+            "capability_kind": "mcp_server",
+            "capability_id": "ragflow",
+            "archived_by": "ordinary",
+        }
+    ]
+    assert not any(name == "set_distribution_status" for name, _ in calls)
+    assert any(
+        name == "audit" and payload["action"].endswith("mcp.server.deleted")
+        for name, payload in calls
+    )
 
 
 @pytest.mark.parametrize(
@@ -938,3 +1055,72 @@ def test_mcp_lifecycle_route_matrix_fails_closed_after_admin_gate(monkeypatch):
             )
         assert response.status_code == 409
         assert response.json()["detail"] == "mcp_lifecycle_contract_not_backed"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("patch", "/api/mcp/ragflow/toggle", {"enabled": False}),
+        ("delete", "/api/mcp/ragflow", None),
+        ("delete", "/api/admin/mcp/ragflow", None),
+    ],
+    ids=["toggle", "delete", "admin-delete"],
+)
+@pytest.mark.parametrize(
+    ("error", "expected_status", "expected_detail"),
+    [
+        (RepositoryNotFoundError("capability_distribution_not_found"), 404, "capability_distribution_not_found"),
+        (RepositoryConflictError("capability_distribution_archived"), 409, "capability_distribution_archived"),
+        (RepositoryConflictError("unexpected_conflict"), 409, "mcp_server_conflict"),
+    ],
+    ids=["missing", "archived", "other-conflict"],
+)
+def test_mcp_status_mutations_map_distribution_errors_without_audit_or_partial_commit(
+    monkeypatch,
+    method,
+    path,
+    payload,
+    error,
+    expected_status,
+    expected_detail,
+):
+    from app.routes import mcp
+
+    calls = install_mcp_route_fakes(monkeypatch)
+    transaction_events = []
+
+    @asynccontextmanager
+    async def recording_transaction():
+        transaction_events.append("enter")
+        try:
+            yield object()
+        except Exception:
+            transaction_events.append("rollback")
+            raise
+        else:
+            transaction_events.append("commit")
+
+    async def fail_distribution_mutation(conn, **kwargs):
+        seam = "archive_distribution_failed" if method == "delete" else "set_distribution_status_failed"
+        calls.append((seam, dict(kwargs)))
+        raise error
+
+    monkeypatch.setattr(mcp, "transaction", recording_transaction)
+    mutation_name = (
+        "archive_capability_distribution_row" if method == "delete" else "set_capability_distribution_status"
+    )
+    monkeypatch.setattr(mcp.repositories, mutation_name, fail_distribution_mutation)
+    client = TestClient(create_app())
+
+    response = (
+        client.delete(path, headers=headers(roles="admin"))
+        if method == "delete"
+        else client.patch(path, json=payload, headers=headers(roles="admin"))
+    )
+
+    assert (response.status_code, response.json()["detail"]) == (expected_status, expected_detail)
+    assert transaction_events == ["enter", "rollback"]
+    assert not any(name == "audit" for name, _ in calls)
+    assert [name for name, _ in calls][-1] == (
+        "archive_distribution_failed" if method == "delete" else "set_distribution_status_failed"
+    )

@@ -57,7 +57,7 @@ EXPECTED_COMPANY_ADMIN_PERMISSIONS = EXPECTED_COMPANY_USER_PERMISSIONS + [
 
 def auth_settings(**overrides):
     values = {
-        "ai_session_secret": "secret",
+        "ai_session_secret": "test-session-secret-with-at-least-32-bytes",
         "ai_session_max_age_seconds": 28800,
         "ai_session_cookie_name": "ai_platform_session",
         "ai_session_cookie_secure": False,
@@ -70,6 +70,59 @@ def auth_settings(**overrides):
 @asynccontextmanager
 async def fake_transaction():
     yield object()
+
+
+@pytest.fixture(autouse=True)
+def fake_browser_auth_context(monkeypatch):
+    """Keep legacy route tests focused on principal projections, not Redis I/O."""
+
+    from app.auth_sessions import AuthOperation
+
+    operations: dict[str, AuthOperation] = {}
+    principals: dict[str, dict[str, object] | None] = {}
+
+    async def fake_bootstrap(
+        context_handle,
+        _nonce,
+        _settings,
+        *,
+        request_has_matching_context=False,
+    ):
+        del request_has_matching_context
+        principals.setdefault(context_handle, None)
+        return "created"
+
+    async def fake_begin(context_handle, kind, _settings):
+        previous = operations.get(context_handle)
+        operation = AuthOperation(
+            context_handle=context_handle,
+            epoch=(previous.epoch if previous else 0) + 1,
+            token=f"test-operation-{len(operations) + 1}",
+            kind=kind,
+        )
+        operations[context_handle] = operation
+        return operation
+
+    async def fake_commit(operation, principal):
+        if operations.get(operation.context_handle) != operation:
+            return "superseded"
+        principals[operation.context_handle] = dict(principal) if principal is not None else None
+        return "committed"
+
+    async def fake_principal(context_handle, _settings):
+        return principals.get(context_handle)
+
+    monkeypatch.setattr("app.routes.auth.bootstrap_auth_context", fake_bootstrap)
+    monkeypatch.setattr("app.routes.auth.begin_auth_operation", fake_begin)
+    monkeypatch.setattr("app.routes.auth.commit_auth_operation", fake_commit)
+    monkeypatch.setattr("app.auth.principal_for_context", fake_principal)
+
+
+def browser_client() -> TestClient:
+    client = TestClient(create_app(), base_url="https://testserver")
+    response = client.post("/api/ai/auth/bootstrap", json={"nonce": "A" * 43})
+    assert response.status_code == 200
+    return client
 
 
 def test_ai_admin_maps_admin_and_developer_roles():
@@ -138,7 +191,7 @@ def test_signed_session_roundtrip_preserves_principal(monkeypatch):
     assert principal.source == "company-login"
 
 
-def test_require_principal_accepts_signed_session_cookie(monkeypatch):
+def test_require_principal_accepts_signed_session_bearer(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", lambda: auth_settings())
     token = sign_principal_session(AuthPrincipal("W001", "Zhang San", "default", source="company-login"))
     app = FastAPI()
@@ -147,13 +200,13 @@ def test_require_principal_accepts_signed_session_cookie(monkeypatch):
     async def probe(principal: AuthPrincipal = Depends(require_principal)):
         return {"user_id": principal.user_id, "source": principal.source}
 
-    response = TestClient(app).get("/probe", cookies={"ai_platform_session": token})
+    response = TestClient(app).get("/probe", headers={"Authorization": f"Bearer {token}"})
 
     assert response.status_code == 200
     assert response.json() == {"user_id": "W001", "source": "company-login"}
 
 
-def test_login_sets_cookie_and_returns_ai_role(monkeypatch):
+def test_login_returns_ai_role_without_mutating_context_cookie(monkeypatch):
     async def fake_login(username, password):
         assert username == "dev001"
         assert password == "pw"
@@ -185,20 +238,15 @@ def test_login_sets_cookie_and_returns_ai_role(monkeypatch):
     monkeypatch.setattr("app.routes.auth.ensure_user", fake_ensure_user)
     monkeypatch.setattr("app.routes.auth.append_audit_log", fake_append_audit_log)
 
-    response = TestClient(create_app()).post("/api/ai/auth/login", json={"user_name": "dev001", "password": "pw"})
+    client = browser_client()
+    response = client.post("/api/ai/auth/login", json={"user_name": "dev001", "password": "pw"})
 
     assert response.status_code == 200
     assert response.json()["is_admin"] is True
     assert response.json()["roles"] == ["admin"]
     assert response.json()["permissions"] == EXPECTED_COMPANY_ADMIN_PERMISSIONS
     assert response.json()["user_id"] == "dev001"
-    assert "ai_platform_session=" in response.headers["set-cookie"]
-    set_cookie = response.headers["set-cookie"].lower()
-    assert "httponly" in set_cookie
-    assert "samesite=lax" in set_cookie
-    assert "max-age=28800" in set_cookie
-    assert "path=/" in set_cookie
-    assert "secure" in set_cookie
+    assert "set-cookie" not in response.headers
 
 
 def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
@@ -219,7 +267,7 @@ def test_company_user_login_gets_baseline_ai_permissions(monkeypatch):
     monkeypatch.setattr("app.routes.auth.ensure_user", noop)
     monkeypatch.setattr("app.routes.auth.append_audit_log", noop)
 
-    client = TestClient(create_app())
+    client = browser_client()
     response = client.post("/api/ai/auth/login", json={"user_name": "user001", "password": "pw"})
 
     assert response.status_code == 200
@@ -328,7 +376,7 @@ def test_company_login_trusted_department_reaches_session_and_skill_projection(m
         {"roles": ["user"], "department": " QA "},
         qa_department_id="QA",
     )
-    client = TestClient(create_app())
+    client = browser_client()
 
     login_response = client.post(
         "/api/ai/auth/login",
@@ -337,9 +385,7 @@ def test_company_login_trusted_department_reaches_session_and_skill_projection(m
     )
 
     assert login_response.status_code == 200
-    token = login_response.cookies[settings.ai_session_cookie_name]
-    principal = verify_principal_session(token)
-    assert principal.department_id == "QA"
+    assert client.get("/api/ai/auth/me").json()["user_id"] == "user001"
 
     skills_response = client.get("/api/skills/")
 
@@ -352,7 +398,7 @@ def test_company_login_department_authorization_is_case_sensitive(monkeypatch):
         monkeypatch,
         {"roles": ["user"], "department": " QA "},
     )
-    client = TestClient(create_app())
+    client = browser_client()
 
     login_response = client.post(
         "/api/ai/auth/login",
@@ -360,8 +406,7 @@ def test_company_login_department_authorization_is_case_sensitive(monkeypatch):
     )
 
     assert login_response.status_code == 200
-    token = login_response.cookies[settings.ai_session_cookie_name]
-    assert verify_principal_session(token).department_id == "QA"
+    assert client.get("/api/ai/auth/me").json()["user_id"] == "user001"
 
     skills_response = client.get("/api/skills/")
 
@@ -388,7 +433,7 @@ def test_company_login_ignores_unsupported_alias_metadata_when_top_level_departm
         user_info,
         qa_department_id="QA",
     )
-    client = TestClient(create_app())
+    client = browser_client()
 
     login_response = client.post(
         "/api/ai/auth/login",
@@ -396,8 +441,7 @@ def test_company_login_ignores_unsupported_alias_metadata_when_top_level_departm
     )
 
     assert login_response.status_code == 200
-    token = login_response.cookies[settings.ai_session_cookie_name]
-    assert verify_principal_session(token).department_id == "QA"
+    assert client.get("/api/ai/auth/me").json()["user_id"] == "user001"
 
     skills_response = client.get("/api/skills/")
 
@@ -411,13 +455,13 @@ def test_company_login_rejects_client_department_field(monkeypatch):
         {"roles": ["user"], "department": "qa"},
     )
 
-    response = TestClient(create_app()).post(
+    response = browser_client().post(
         "/api/ai/auth/login",
         json={"user_name": "user001", "password": "pw", "department": "rd"},
     )
 
     assert response.status_code == 422
-    assert "ai_platform_session=" not in response.headers.get("set-cookie", "")
+    assert "set-cookie" not in response.headers
 
 
 @pytest.mark.parametrize(
@@ -436,7 +480,7 @@ def test_company_login_rejects_client_department_field(monkeypatch):
 )
 def test_company_login_invalid_or_ambiguous_department_fails_closed(monkeypatch, user_info):
     settings = _install_company_department_login_fakes(monkeypatch, user_info)
-    client = TestClient(create_app())
+    client = browser_client()
 
     login_response = client.post(
         "/api/ai/auth/login",
@@ -445,8 +489,7 @@ def test_company_login_invalid_or_ambiguous_department_fails_closed(monkeypatch,
     )
 
     assert login_response.status_code == 200
-    token = login_response.cookies[settings.ai_session_cookie_name]
-    assert verify_principal_session(token).department_id == ""
+    assert client.get("/api/ai/auth/me").json()["user_id"] == "user001"
 
     skills_response = client.get("/api/skills/")
 
@@ -475,14 +518,14 @@ def test_company_login_does_not_project_large_enterprise_permissions_into_sessio
     monkeypatch.setattr("app.routes.auth.ensure_user", noop)
     monkeypatch.setattr("app.routes.auth.append_audit_log", noop)
 
-    client = TestClient(create_app())
+    client = browser_client()
     response = client.post("/api/ai/auth/login", json={"user_name": "user001", "password": "pw"})
 
     assert response.status_code == 200
     body = response.json()
     assert body["roles"] == ["user"]
     assert body["permissions"] == EXPECTED_COMPANY_USER_PERMISSIONS
-    assert len(response.headers["set-cookie"]) < 8192
+    assert "set-cookie" not in response.headers
 
     me_response = client.get("/api/ai/auth/me")
 
@@ -633,11 +676,14 @@ def test_company_developer_login_gets_admin_ai_permissions(monkeypatch):
     assert body["permissions"] == EXPECTED_COMPANY_ADMIN_PERMISSIONS
 
 
-def test_auth_me_returns_cookie_principal(monkeypatch):
+def test_auth_me_returns_bearer_principal(monkeypatch):
     monkeypatch.setattr("app.auth.get_settings", lambda: auth_settings())
     token = sign_principal_session(AuthPrincipal("W002", "Normal User", "default", roles=["user"], source="company-login"))
 
-    response = TestClient(create_app()).get("/api/ai/auth/me", cookies={"ai_platform_session": token})
+    response = TestClient(create_app()).get(
+        "/api/ai/auth/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
 
     assert response.status_code == 200
     assert response.json()["user_id"] == "W002"

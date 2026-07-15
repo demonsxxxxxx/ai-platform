@@ -25,6 +25,7 @@ router = APIRouter()
 
 CapabilityKind = Literal["skill", "mcp_server"]
 _CAPABILITY_KINDS = {"skill", "mcp_server"}
+_RESERVED_ARCHIVE_METADATA_KEYS = frozenset({"archived_at", "archived_by"})
 
 
 def _require_admin(principal: AuthPrincipal) -> None:
@@ -43,6 +44,14 @@ def _safe_capability_id(capability_id: str) -> str:
         return assert_safe_id(capability_id, "capability_id")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _require_unreserved_distribution_metadata(request: CapabilityDistributionUpdateRequest) -> None:
+    """Keep archive evidence writable only through the archive lifecycle repository seam."""
+
+    metadata = request.metadata if isinstance(request.metadata, dict) else {}
+    if _RESERVED_ARCHIVE_METADATA_KEYS.intersection(metadata):
+        raise HTTPException(status_code=400, detail="capability_distribution_metadata_reserved")
 
 
 async def _require_existing_capability(
@@ -102,6 +111,8 @@ async def _write_distribution(
     capability_id: str,
     request: CapabilityDistributionUpdateRequest | CapabilityDistributionToggleRequest,
 ) -> CapabilityDistributionWriteResponse:
+    if isinstance(request, CapabilityDistributionUpdateRequest):
+        _require_unreserved_distribution_metadata(request)
     action = (
         "capability_distribution.updated"
         if isinstance(request, CapabilityDistributionUpdateRequest)
@@ -161,6 +172,13 @@ async def _write_distribution(
             )
     except repositories.RepositoryNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except repositories.RepositoryConflictError as exc:
+        detail = (
+            "capability_distribution_archived"
+            if str(exc) == "capability_distribution_archived"
+            else "capability_distribution_conflict"
+        )
+        raise HTTPException(status_code=409, detail=detail) from exc
     return response
 
 

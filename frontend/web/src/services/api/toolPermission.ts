@@ -2,19 +2,27 @@ import { authFetch } from "./fetch";
 
 export type ToolPermissionDecision = "allow_once" | "allow_for_run" | "deny";
 
-export interface ToolPermissionRequestView {
-  permission_request_id: string;
+export interface ToolPermissionInboxResponse {
+  permission_requests: ToolPermissionInboxRequestView[];
+  total: number;
+  status: "pending" | "decided" | "all" | string;
+  limit: number;
+}
+
+export interface ToolPermissionInboxRequestView {
+  request_id: string;
   run_id: string;
   tool_id: string;
-  tool_call_id: string;
+  tool_display: string;
   risk_level: string;
   write_capable: boolean;
   status: "pending" | "decided" | string;
-  decision?: ToolPermissionDecision | null;
+  expires_at?: string | null;
+  allowed_decisions: ToolPermissionDecision[];
 }
 
-export interface ToolPermissionDecisionResponse {
-  permission_request: ToolPermissionRequestView;
+export interface ToolPermissionInboxDecisionResponse {
+  permission_request: ToolPermissionInboxRequestView;
 }
 
 type ToolPermissionRequestFn = <T>(
@@ -24,15 +32,38 @@ type ToolPermissionRequestFn = <T>(
 
 export interface DecideToolPermissionOptions {
   request?: ToolPermissionRequestFn;
+  signal?: AbortSignal;
 }
 
-export async function decideToolPermission(
-  runId: string,
+export interface ListToolPermissionInboxOptions {
+  limit?: number;
+  request?: ToolPermissionRequestFn;
+  signal?: AbortSignal;
+}
+
+/** List tenant-wide permission requests for the governed administrator inbox. */
+export async function listToolPermissionInbox(
+  status: "pending" | "decided" | "all" = "pending",
+  options: ListToolPermissionInboxOptions = {},
+): Promise<ToolPermissionInboxResponse> {
+  const request = options.request || authFetch;
+  const params = new URLSearchParams({ status });
+  if (options.limit !== undefined) {
+    params.set("limit", String(options.limit));
+  }
+  return request<ToolPermissionInboxResponse>(
+    `/api/ai/tool-permissions/inbox?${params.toString()}`,
+    { signal: options.signal },
+  );
+}
+
+/** Submit a decision through the tenant-scoped administrator inbox endpoint. */
+export async function decideToolPermissionInbox(
   requestId: string,
   decision: ToolPermissionDecision,
   reason?: string,
   options: DecideToolPermissionOptions = {},
-): Promise<ToolPermissionDecisionResponse> {
+): Promise<ToolPermissionInboxDecisionResponse> {
   const request = options.request || authFetch;
   const body: { decision: ToolPermissionDecision; reason?: string } = {
     decision,
@@ -40,13 +71,12 @@ export async function decideToolPermission(
   if (reason) {
     body.reason = reason;
   }
-  return request<ToolPermissionDecisionResponse>(
-    `/api/ai/runs/${encodeURIComponent(runId)}/tool-permissions/${encodeURIComponent(
-      requestId,
-    )}/decision`,
+  return request<ToolPermissionInboxDecisionResponse>(
+    `/api/ai/tool-permissions/inbox/${encodeURIComponent(requestId)}/decision`,
     {
       method: "POST",
       body: JSON.stringify(body),
+      signal: options.signal,
     },
   );
 }

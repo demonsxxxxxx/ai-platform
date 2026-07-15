@@ -11,10 +11,9 @@ import type {
   RegisterResponse,
 } from "../../types";
 import { API_BASE } from "./config";
-import { clearAuthScopedCaches } from "./authCacheInvalidation";
-import { authFetch } from "./fetch";
-import { setTokens } from "./token";
-import { clearAuthState, refreshTokens } from "./tokenManager";
+import { ApiRequestError, authFetch } from "./fetch";
+import { refreshTokens } from "./tokenManager";
+import { projectSafeBackendError } from "../../utils/backendErrors";
 import i18n from "../../i18n";
 
 interface PrincipalResponseWire {
@@ -31,6 +30,7 @@ interface PrincipalResponseWire {
 function mapPrincipalToUser(principal: PrincipalResponseWire): User {
   return {
     id: principal.user_id,
+    tenant_id: principal.tenant_id,
     username: principal.user_name || principal.user_id,
     email: "",
     avatar_url: undefined,
@@ -47,17 +47,34 @@ function mapPrincipalToUser(principal: PrincipalResponseWire): User {
   };
 }
 
-export function buildOAuthLoginUrl(provider: string): string {
-  return `${API_BASE}/api/auth/oauth/${provider}`;
+export function buildOAuthLoginUrl(provider: string, state?: string): string {
+  const safeProvider = encodeURIComponent(provider);
+  const suffix = state ? `?state=${encodeURIComponent(state)}` : "";
+  return `${API_BASE}/api/auth/oauth/${safeProvider}${suffix}`;
 }
 
 export const authApi = {
+  /**
+   * Establish the stable HttpOnly browser auth context before any mutation.
+   */
+  async bootstrapAuthContext(nonce: string, signal?: AbortSignal): Promise<void> {
+    await authFetch<{ status: string }>(`${API_BASE}/api/ai/auth/bootstrap`, {
+      method: "POST",
+      skipAuth: true,
+      credentials: "include",
+      body: JSON.stringify({ nonce }),
+      headers: { "Content-Type": "application/json" },
+      signal,
+    });
+  },
+
   /**
    * 用户登录
    */
   async login(
     credentials: LoginRequest,
     turnstileToken?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -74,12 +91,10 @@ export const authApi = {
         credentials: "include",
         body: JSON.stringify(credentials),
         headers,
+        signal,
       },
     );
 
-    clearAuthScopedCaches();
-    setTokens("cookie-session");
-    window.dispatchEvent(new CustomEvent("auth:login"));
   },
 
   /**
@@ -119,9 +134,14 @@ export const authApi = {
   /**
    * 获取当前用户信息
    */
-  async getCurrentUser(): Promise<User> {
+  async getCurrentUser(options: { signal?: AbortSignal } = {}): Promise<User> {
     const principal = await authFetch<PrincipalResponseWire>(
       `${API_BASE}/api/ai/auth/me`,
+      {
+        skipAuth: true,
+        credentials: "include",
+        signal: options.signal,
+      },
     );
     return mapPrincipalToUser(principal);
   },
@@ -129,25 +149,35 @@ export const authApi = {
   /**
    * 登出
    */
-  async logout(): Promise<void> {
+  async logout(signal?: AbortSignal): Promise<void> {
     const response = await fetch(`${API_BASE}/api/ai/auth/logout`, {
       method: "POST",
       credentials: "include",
       headers: {
         "Accept-Language": i18n.language || "en",
       },
+      signal,
     });
-    if (response.ok || response.status === 401 || response.status === 403) {
-      clearAuthState();
-      return;
-    }
+    if (response.ok || response.status === 401 || response.status === 403) return;
 
-    const errorData = await response.json().catch(() => ({}));
+    const payload: unknown = await response.json().catch(() => null);
     const detail =
-      typeof errorData.detail === "string"
-        ? errorData.detail
-        : `Request failed: ${response.statusText}`;
-    throw new Error(detail);
+      payload !== null &&
+      typeof payload === "object" &&
+      !Array.isArray(payload) &&
+      Object.prototype.hasOwnProperty.call(payload, "detail")
+        ? (payload as { detail?: unknown }).detail
+        : undefined;
+    const projection = projectSafeBackendError(
+      detail,
+      response.status,
+      i18n.t.bind(i18n),
+    );
+    throw new ApiRequestError(
+      projection.message,
+      response.status,
+      projection.code,
+    );
   },
 
   /**
@@ -224,31 +254,42 @@ export const authApi = {
   },
 
   /**
+   * Begin a server-fenced OAuth operation and receive opaque provider state.
+   */
+  async beginOAuth(
+    provider: string,
+    signal?: AbortSignal,
+  ): Promise<{ state: string }> {
+    return authFetch<{ state: string }>(
+      `${API_BASE}/api/ai/auth/oauth/${encodeURIComponent(provider)}/begin`,
+      {
+        method: "POST",
+        skipAuth: true,
+        credentials: "include",
+        signal,
+      },
+    );
+  },
+
+  /**
    * 处理 OAuth 回调
    */
   async handleOAuthCallback(
     provider: string,
     code: string,
     state: string,
-  ): Promise<TokenResponse> {
+    signal?: AbortSignal,
+  ): Promise<void> {
     await authFetch<Record<string, unknown>>(
-      `${API_BASE}/api/auth/oauth/${provider}/callback`,
+      `${API_BASE}/api/ai/auth/oauth/${encodeURIComponent(provider)}/callback`,
       {
         method: "POST",
         skipAuth: true,
         credentials: "include",
         body: JSON.stringify({ code, state }),
+        signal,
       },
     );
-
-    clearAuthScopedCaches();
-    setTokens("cookie-session");
-    window.dispatchEvent(new CustomEvent("auth:login"));
-
-    return {
-      access_token: "cookie-session",
-      token_type: "bearer",
-    };
   },
 
   /**

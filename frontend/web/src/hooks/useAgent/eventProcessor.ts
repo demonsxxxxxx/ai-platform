@@ -191,6 +191,11 @@ export interface ProcessMessageEventResult {
   cancelled?: boolean;
 }
 
+function safeEventError(error: unknown): string | undefined {
+  if (typeof error !== "string" || !error) return undefined;
+  return translateBackendError(error, i18n.t.bind(i18n));
+}
+
 /**
  * Unified message event processor.
  */
@@ -237,7 +242,7 @@ export function processMessageEvent(
         String(data.result || ""),
         data.success !== false,
         depth,
-        data.error,
+        safeEventError(data.error),
         data.timestamp,
       );
       break;
@@ -337,6 +342,22 @@ export function processMessageEvent(
       break;
     }
 
+    // ---- Controlled terminal detail ----
+
+    case "final_detail": {
+      // This is deliberately not the generic `error` SSE envelope.  The
+      // backend may only send a code-only failed detail; unknown detail
+      // shapes fail closed instead of exposing executor text.
+      if (
+        data.detail_kind !== "failed" ||
+        data.detail_code !== "run_failed"
+      ) {
+        break;
+      }
+      result.content = i18n.t("chat.runTerminal.failed");
+      break;
+    }
+
     // ---- Tool events ----
 
     case "tool:start": {
@@ -375,7 +396,7 @@ export function processMessageEvent(
       const toolCallId = data.tool_call_id as string | undefined;
       const toolName = data.tool || "";
       const isSuccess = data.success !== false;
-      const errorMsg = data.error as string | undefined;
+      const errorMsg = safeEventError(data.error);
       const resultContent = sanitizeToolResult(data.result || "");
 
       if (depth > 0 || toolCallId) {
@@ -446,7 +467,7 @@ export function processMessageEvent(
       const errorPart: SandboxPart = {
         type: "sandbox",
         status: "error",
-        error: data.error,
+        error: safeEventError(data.error),
         timestamp: data.timestamp,
       };
       result.parts = upsertSandboxPart(parts, errorPart);
@@ -495,7 +516,12 @@ export function processMessageEvent(
         }
       }
       if (data.event_type === "tool_permission_requested") {
-        const permissionPart = createToolPermissionRequestedPart(data);
+        // Public persisted history projects permission requests as a
+        // controlled card.  Live legacy frames may still carry the older
+        // direct payload, so accept both without reintroducing action rights.
+        const permissionPart =
+          createToolPermissionCardPart(data) ??
+          createToolPermissionRequestedPart(data);
         if (permissionPart) {
           result.parts = upsertToolPermissionPart(parts, permissionPart);
           break;

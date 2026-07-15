@@ -1,7 +1,7 @@
 /**
  * OAuth 回调处理页面
  *
- * 处理 OAuth 提供商重定向回来的请求，从 URL fragment 中提取 token 并完成登录。
+ * 处理 OAuth provider code/state 回调，服务器才可建立浏览器会话。
  */
 
 import { useEffect, useRef } from "react";
@@ -9,58 +9,58 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../hooks/useAuth";
 import {
-  setTokens,
   getRedirectPath,
   clearRedirectPath,
 } from "../../services/api";
-import { clearAuthScopedCaches } from "../../services/api/authCacheInvalidation";
 import { Loading } from "../common";
 
 export function OAuthCallback() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { refreshUser } = useAuth();
-  const processedRef = useRef(false);
+  const { handleOAuthCallback } = useAuth();
+  const callbackGenerationRef = useRef(0);
 
   useEffect(() => {
-    // 防止 React Strict Mode 双重调用
-    if (processedRef.current) return;
-    processedRef.current = true;
+    const callbackGeneration = callbackGenerationRef.current + 1;
+    callbackGenerationRef.current = callbackGeneration;
+    let isCurrent = true;
+    const ownsCallback = () =>
+      isCurrent && callbackGenerationRef.current === callbackGeneration;
 
     const handleCallback = async () => {
-      // 从 URL fragment 中提取 token (#access_token=xxx&refresh_token=xxx)
-      const hash = window.location.hash.substring(1); // 移除开头的 #
-      const params = new URLSearchParams(hash);
-
-      const accessToken = params.get("access_token");
-      const refreshToken = params.get("refresh_token");
-
-      // 检查是否有错误参数（从 query 参数中获取）
+      // StrictMode cleanup invalidates the first effect before it can mutate
+      // auth state; only the remounted generation continues.
+      await Promise.resolve();
+      if (!ownsCallback()) return;
       const error = searchParams.get("error");
+      const code = searchParams.get("code");
+      const state = searchParams.get("state");
 
       if (error) {
-        console.error("OAuth callback error:", error);
-        navigate(`/auth/login?error=${error}`, { replace: true });
+        navigate("/auth/login?error=oauth_processing_failed", { replace: true });
         return;
       }
 
-      if (!accessToken || !refreshToken) {
-        console.error("No tokens found in callback URL");
+      if (!code || !state || window.location.hash) {
         navigate("/auth/login?error=oauth_no_token", { replace: true });
         return;
       }
 
       try {
-        // 保存 token
-        clearAuthScopedCaches();
-        setTokens(accessToken, refreshToken);
-
-        // 通知其他模块（如 settings）重新加载数据
-        window.dispatchEvent(new CustomEvent("auth:login"));
-
-        // 刷新用户信息
-        await refreshUser();
+        const callbackOutcome = await handleOAuthCallback(
+          searchParams.get("provider") || "unknown",
+          code,
+          state,
+        );
+        if (!ownsCallback()) return;
+        if (callbackOutcome.status === "cancelled") return;
+        if (callbackOutcome.status !== "completed") {
+          navigate("/auth/login?error=oauth_processing_failed", {
+            replace: true,
+          });
+          return;
+        }
 
         // 获取重定向路径
         const redirectPath = getRedirectPath() || "/chat";
@@ -68,16 +68,19 @@ export function OAuthCallback() {
 
         // 导航到目标页面
         navigate(redirectPath, { replace: true });
-      } catch (err) {
-        console.error("OAuth callback processing error:", err);
+      } catch {
+        if (!ownsCallback()) return;
         navigate("/auth/login?error=oauth_processing_failed", {
           replace: true,
         });
       }
     };
 
-    handleCallback();
-  }, [navigate, refreshUser, searchParams]);
+    void handleCallback();
+    return () => {
+      isCurrent = false;
+    };
+  }, [handleOAuthCallback, navigate, searchParams]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-stone-50 dark:bg-stone-900">

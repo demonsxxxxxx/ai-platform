@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.repositories import RepositoryNotFoundError
+from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import Settings
 
 
@@ -157,6 +157,17 @@ def install_route_fakes(
         )
         rows = []
         for row in catalog_rows:
+            distribution = next(
+                (
+                    item
+                    for item in distributions
+                    if item.get("capability_kind") == "skill"
+                    and item.get("capability_id") == row["skill_id"]
+                ),
+                None,
+            )
+            if skills_marketplace.repositories.is_capability_distribution_archived(distribution):
+                continue
             projected = dict(row)
             if release_policy and release_policy["skill_id"] == row["skill_id"]:
                 version = str(release_policy["current_version"])
@@ -219,10 +230,46 @@ def install_route_fakes(
         )
         for row in distributions:
             if row.get("capability_kind") == capability_kind and row.get("capability_id") == capability_id:
+                if skills_marketplace.repositories.is_capability_distribution_archived(row):
+                    raise RepositoryConflictError("capability_distribution_archived")
                 current = str(row.get("status") or "disabled")
                 row["status"] = "active" if (enabled if enabled is not None else current != "active") else "disabled"
                 return dict(row)
         raise RepositoryNotFoundError("capability_distribution_not_found")
+
+    async def fake_archive_distribution(conn, *, tenant_id, capability_kind, capability_id, archived_by):
+        calls.append(
+            (
+                "archive_distribution",
+                {
+                    "tenant_id": tenant_id,
+                    "capability_kind": capability_kind,
+                    "capability_id": capability_id,
+                    "archived_by": archived_by,
+                },
+            )
+        )
+        for row in distributions:
+            if row.get("capability_kind") == capability_kind and row.get("capability_id") == capability_id:
+                metadata_json = row.setdefault("metadata_json", {})
+                metadata_json.setdefault("archived_at", "2026-07-15T00:00:00.000Z")
+                metadata_json.setdefault("archived_by", archived_by)
+                row["status"] = "disabled"
+                row["visible_to_user"] = False
+                return dict(row)
+        raise RepositoryNotFoundError("capability_distribution_not_found")
+
+    async def fake_acquire_distribution_locks(conn, *, tenant_id, capability_kind, capability_ids):
+        calls.append(
+            (
+                "acquire_distribution_locks",
+                {
+                    "tenant_id": tenant_id,
+                    "capability_kind": capability_kind,
+                    "capability_ids": list(capability_ids),
+                },
+            )
+        )
 
     async def fake_list_overlays(conn, *, tenant_id, user_id, skill_ids, include_content=False):
         calls.append(
@@ -411,6 +458,8 @@ def install_route_fakes(
     monkeypatch.setattr(skills_marketplace.repositories, "list_capability_distribution_rows", fake_list_distributions)
     monkeypatch.setattr(skills_marketplace.repositories, "get_capability_distribution_row", fake_get_distribution)
     monkeypatch.setattr(skills_marketplace.repositories, "toggle_capability_distribution_row", fake_toggle_distribution)
+    monkeypatch.setattr(skills_marketplace.repositories, "archive_capability_distribution_row", fake_archive_distribution)
+    monkeypatch.setattr(skills_marketplace.repositories, "acquire_capability_distribution_lifecycle_locks", fake_acquire_distribution_locks)
     monkeypatch.setattr(skills_marketplace.repositories, "list_user_skill_file_overlays", fake_list_overlays)
     monkeypatch.setattr(skills_marketplace.repositories, "upsert_user_skill_file", fake_upsert_file)
     monkeypatch.setattr(skills_marketplace.repositories, "delete_user_skill_file", fake_delete_file)
@@ -475,7 +524,7 @@ def assert_admin_bypass_audit(
     return payload_json
 
 
-def test_skills_and_marketplace_read_contracts_project_catalog_and_files(monkeypatch):
+def test_skills_and_marketplace_read_contracts_bound_source_metadata_by_role(monkeypatch):
     calls = install_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
@@ -493,9 +542,9 @@ def test_skills_and_marketplace_read_contracts_project_catalog_and_files(monkeyp
         "requires_file": True,
         "description": "Review Word documents.",
         "tags": ["document"],
-        "files": ["SKILL.md", "references/guide.md"],
+        "files": [],
         "enabled": True,
-        "file_count": 2,
+        "file_count": 0,
         "installed_from": "marketplace",
         "published_marketplace_name": "qa-file-reviewer",
         "created_at": "2026-06-22T00:00:00Z",
@@ -510,13 +559,15 @@ def test_skills_and_marketplace_read_contracts_project_catalog_and_files(monkeyp
         "marketplace:publish",
     ]
 
-    detail_response = client.get("/api/skills/qa-file-reviewer", headers=headers())
-    assert detail_response.status_code == 200
-    detail_body = detail_response.json()
-    assert detail_body["files"] == ["SKILL.md", "references/guide.md"]
-    assert detail_body["expected_version"] == "hash-a"
-    assert detail_body["input_modes"] == ["docx"]
-    assert detail_body["requires_file"] is True
+    for path in (
+        "/api/skills/qa-file-reviewer",
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        "/api/marketplace/qa-file-reviewer/files",
+        "/api/marketplace/qa-file-reviewer/files/references%2Fguide.md",
+    ):
+        response = client.get(path, headers=headers())
+        assert response.status_code == 404
+        assert response.json() == {"detail": "skill_not_found"}
 
     internal_fields = {
         "allowed_roles",
@@ -531,12 +582,6 @@ def test_skills_and_marketplace_read_contracts_project_catalog_and_files(monkeyp
         "visible_to_user",
     }
     assert internal_fields.isdisjoint(skills_body["skills"][0])
-    assert internal_fields.isdisjoint(detail_body)
-
-    file_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=headers())
-    assert file_response.status_code == 200
-    assert "Review Word documents." in file_response.json()["content"]
-
     marketplace_response = client.get("/api/marketplace/", headers=headers())
     assert marketplace_response.status_code == 200
     marketplace_body = marketplace_response.json()
@@ -546,25 +591,47 @@ def test_skills_and_marketplace_read_contracts_project_catalog_and_files(monkeyp
     assert marketplace_body["available_tags"] == ["document"]
     assert marketplace_body["effective_permissions"] == ["skill:read", "marketplace:read"]
     assert marketplace_body["skills"][0]["skill_name"] == "qa-file-reviewer"
-    assert marketplace_body["skills"][0]["file_count"] == 2
+    assert marketplace_body["skills"][0]["file_count"] == 0
 
     tags_response = client.get("/api/marketplace/tags", headers=headers())
     assert tags_response.status_code == 200
     assert tags_response.json() == {"tags": ["document"]}
 
-    marketplace_files_response = client.get("/api/marketplace/qa-file-reviewer/files", headers=headers())
+    admin_headers = headers(roles="admin")
+    admin_skills_response = client.get("/api/skills/", headers=admin_headers)
+    assert admin_skills_response.status_code == 200
+    assert admin_skills_response.json()["skills"][0]["files"] == ["SKILL.md", "references/guide.md"]
+    assert admin_skills_response.json()["skills"][0]["file_count"] == 2
+
+    detail_response = client.get("/api/skills/qa-file-reviewer", headers=admin_headers)
+    assert detail_response.status_code == 200
+    detail_body = detail_response.json()
+    assert detail_body["files"] == ["SKILL.md", "references/guide.md"]
+    assert detail_body["expected_version"] == "hash-a"
+    assert detail_body["input_modes"] == ["docx"]
+    assert detail_body["requires_file"] is True
+    assert internal_fields.isdisjoint(detail_body)
+
+    file_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=admin_headers)
+    assert file_response.status_code == 200
+    assert "Review Word documents." in file_response.json()["content"]
+
+    marketplace_files_response = client.get(
+        "/api/marketplace/qa-file-reviewer/files",
+        headers=admin_headers,
+    )
     assert marketplace_files_response.status_code == 200
     assert marketplace_files_response.json() == {"files": ["SKILL.md", "references/guide.md"]}
 
     marketplace_file_response = client.get(
         "/api/marketplace/qa-file-reviewer/files/references%2Fguide.md",
-        headers=headers(),
+        headers=admin_headers,
     )
     assert marketplace_file_response.status_code == 200
     assert marketplace_file_response.json()["content"] == "Review guide"
 
     assert any(name == "list" and payload["tenant_id"] == "default" for name, payload in calls)
-    assert not any(
+    assert any(
         name == "audit" and payload["action"] == "capability_distribution.admin_bypass"
         for name, payload in calls
     )
@@ -580,13 +647,42 @@ def test_public_skill_projection_derives_requires_file_from_docx_input_mode(inpu
     row = dict(_catalog_rows()[0])
     row["input_modes"] = input_modes
 
-    item = skills_marketplace._public_skill_item(row)
+    item = skills_marketplace._public_skill_item(row, include_file_metadata=False)
     detail = skills_marketplace._skill_detail(row)
 
     assert item.input_modes == input_modes
     assert detail.input_modes == input_modes
     assert item.requires_file is requires_file
     assert detail.requires_file is requires_file
+
+
+def test_skill_source_reads_require_same_tenant_admin_scope(monkeypatch):
+    install_route_fakes(monkeypatch)
+
+    async def tenant_scoped_catalog(conn, *, tenant_id, include_disabled=False, rollout_key=None):
+        if tenant_id != "default":
+            return []
+        return _catalog_rows()
+
+    monkeypatch.setattr(
+        "app.routes.skills_marketplace.repositories.list_public_skill_catalog",
+        tenant_scoped_catalog,
+    )
+    client = TestClient(create_app())
+
+    same_tenant = client.get(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        headers=headers(roles="admin"),
+    )
+    other_tenant = client.get(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        headers={**headers(roles="admin"), "X-AI-Tenant-ID": "tenant-b"},
+    )
+
+    assert same_tenant.status_code == 200
+    assert "Review Word documents." in same_tenant.json()["content"]
+    assert other_tenant.status_code == 404
+    assert other_tenant.json() == {"detail": "skill_not_found"}
 
 
 def test_public_skill_reads_hide_disabled_tenant_availability(monkeypatch):
@@ -1103,6 +1199,7 @@ def test_shared_skill_lifecycle_requires_admin_and_marketplace_install_stays_use
     assert install_response.status_code == 200
     assert update_response.status_code == 200
     assert not any(name == "toggle_distribution" for name, _ in calls)
+    assert not any(name == "archive_distribution" for name, _ in calls)
 
     distributions[0]["visible_to_user"] = False
     assert client.post("/api/marketplace/qa-file-reviewer/install", headers=ordinary).status_code == 404
@@ -1260,6 +1357,132 @@ def test_skill_toggle_and_marketplace_install_update_tenant_availability(monkeyp
     ]
 
 
+def test_skill_delete_must_hide_archived_distribution_from_admin_refresh(monkeypatch):
+    """A delete must remove the tenant binding from the next admin projection."""
+
+    install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+    admin_headers = headers("skill:read,skill:delete", roles="admin")
+
+    deleted = client.delete("/api/skills/qa-file-reviewer", headers=admin_headers)
+    refreshed = client.get("/api/skills/qa-file-reviewer", headers=admin_headers)
+
+    assert deleted.status_code == 200
+    assert refreshed.status_code == 404
+
+
+def test_skill_batch_delete_must_hide_each_archived_distribution_from_admin_refresh(monkeypatch):
+    """Batch delete has the same tenant archive semantics as single delete."""
+
+    install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+    admin_headers = headers("skill:read,skill:delete", roles="admin")
+
+    deleted = client.post(
+        "/api/skills/batch/delete",
+        json={"names": ["qa-file-reviewer"]},
+        headers=admin_headers,
+    )
+    refreshed = client.get("/api/skills/qa-file-reviewer", headers=admin_headers)
+
+    assert deleted.status_code == 200
+    assert refreshed.status_code == 404
+
+
+def test_archived_skill_toggle_is_rejected_without_reactivation(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+    admin_headers = headers("skill:read,skill:write,skill:delete", roles="admin")
+
+    assert client.delete("/api/skills/qa-file-reviewer", headers=admin_headers).status_code == 200
+    response = client.patch(
+        "/api/skills/qa-file-reviewer/toggle",
+        json={"enabled": True},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "capability_distribution_archived"
+    assert [name for name, _ in calls].count("archive_distribution") == 1
+    assert [name for name, _ in calls].count("toggle_distribution") == 1
+
+
+def test_skill_batch_delete_returns_partial_results_inside_one_transaction(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    transaction_id = 0
+
+    @asynccontextmanager
+    async def recording_transaction():
+        nonlocal transaction_id
+        transaction_id += 1
+        calls.append(("tx_enter", {"id": transaction_id}))
+        try:
+            yield object()
+        except Exception:
+            calls.append(("tx_rollback", {"id": transaction_id}))
+            raise
+        else:
+            calls.append(("tx_commit", {"id": transaction_id}))
+
+    async def archive_partial(conn, *, tenant_id, capability_kind, capability_id, archived_by):
+        if capability_id == "missing-skill":
+            raise RepositoryNotFoundError("capability_distribution_not_found")
+        calls.append(("archive_distribution", {"capability_id": capability_id, "tenant_id": tenant_id}))
+        return {"capability_id": capability_id, "status": "disabled", "visible_to_user": False}
+
+    monkeypatch.setattr("app.routes.skills_marketplace.transaction", recording_transaction)
+    monkeypatch.setattr("app.routes.skills_marketplace.repositories.archive_capability_distribution_row", archive_partial)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/skills/batch/delete",
+        json={"names": ["qa-file-reviewer", "missing-skill"]},
+        headers=headers("skill:delete", roles="admin"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "deleted": ["qa-file-reviewer"],
+        "errors": [{"name": "missing-skill", "reason": "capability_distribution_not_found"}],
+    }
+    assert [name for name, _ in calls].count("tx_enter") == 1
+    assert [name for name, _ in calls].count("tx_commit") == 1
+    assert "tx_rollback" not in [name for name, _ in calls]
+    assert [payload["target_id"] for name, payload in calls if name == "audit"] == ["qa-file-reviewer"]
+
+
+def test_skill_batch_delete_rolls_back_when_audit_write_fails(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+
+    @asynccontextmanager
+    async def recording_transaction():
+        calls.append(("tx_enter", {}))
+        try:
+            yield object()
+        except Exception:
+            calls.append(("tx_rollback", {}))
+            raise
+        else:
+            calls.append(("tx_commit", {}))
+
+    async def fail_audit(conn, **kwargs):
+        calls.append(("audit_failed", kwargs))
+        raise RuntimeError("audit_write_failed")
+
+    monkeypatch.setattr("app.routes.skills_marketplace.transaction", recording_transaction)
+    monkeypatch.setattr("app.routes.skills_marketplace.repositories.append_audit_log", fail_audit)
+    client = TestClient(create_app(), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/skills/batch/delete",
+        json={"names": ["qa-file-reviewer"]},
+        headers=headers("skill:delete", roles="admin"),
+    )
+
+    assert response.status_code == 500
+    assert [name for name, _ in calls if name.startswith("tx_")] == ["tx_enter", "tx_rollback"]
+
+
 def test_public_skill_write_routes_map_missing_skill_to_stable_json_404(monkeypatch):
     install_route_fakes(monkeypatch)
 
@@ -1318,16 +1541,24 @@ def test_public_skill_file_write_routes_persist_user_overlay(monkeypatch):
         "size": len("updated"),
     }
 
-    public_file_response = client.get(
+    ordinary_file_response = client.get(
         "/api/skills/qa-file-reviewer/files/SKILL.md",
         headers=headers(),
     )
-    assert public_file_response.status_code == 200
-    assert public_file_response.json()["content"] == "updated"
+    assert ordinary_file_response.status_code == 404
+    assert ordinary_file_response.json() == {"detail": "skill_not_found"}
+
+    admin_headers = headers(roles="admin")
+    admin_file_response = client.get(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        headers=admin_headers,
+    )
+    assert admin_file_response.status_code == 200
+    assert admin_file_response.json()["content"] == "updated"
 
     marketplace_file_response = client.get(
         "/api/marketplace/qa-file-reviewer/files/SKILL.md",
-        headers=headers(),
+        headers=admin_headers,
     )
     assert marketplace_file_response.status_code == 200
     assert "Review Word documents." in marketplace_file_response.json()["content"]
@@ -1364,17 +1595,25 @@ def test_public_skill_file_delete_marks_user_overlay_deleted(monkeypatch):
         "size": None,
     }
 
-    detail_response = client.get("/api/skills/qa-file-reviewer", headers=headers())
+    admin_headers = headers(roles="admin")
+    detail_response = client.get("/api/skills/qa-file-reviewer", headers=admin_headers)
     assert detail_response.status_code == 200
     assert detail_response.json()["files"] == ["references/guide.md"]
 
-    public_file_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=headers())
-    assert public_file_response.status_code == 404
-    assert public_file_response.json()["detail"] == "skill_file_not_found"
+    ordinary_file_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=headers())
+    assert ordinary_file_response.status_code == 404
+    assert ordinary_file_response.json()["detail"] == "skill_not_found"
+
+    admin_file_response = client.get(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        headers=admin_headers,
+    )
+    assert admin_file_response.status_code == 404
+    assert admin_file_response.json()["detail"] == "skill_file_not_found"
 
     marketplace_file_response = client.get(
         "/api/marketplace/qa-file-reviewer/files/SKILL.md",
-        headers=headers(),
+        headers=admin_headers,
     )
     assert marketplace_file_response.status_code == 200
     assert "Review Word documents." in marketplace_file_response.json()["content"]
@@ -1389,7 +1628,7 @@ def test_public_skill_file_delete_marks_user_overlay_deleted(monkeypatch):
     )
 
 
-def test_public_skill_overlay_is_scoped_to_principal_user_and_tenant(monkeypatch):
+def test_public_skill_source_reads_stay_hidden_after_user_overlay_write(monkeypatch):
     install_route_fakes(monkeypatch)
     client = TestClient(create_app())
 
@@ -1400,25 +1639,16 @@ def test_public_skill_overlay_is_scoped_to_principal_user_and_tenant(monkeypatch
     )
     assert write_response.status_code == 200
 
-    same_user_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=headers())
-    assert same_user_response.status_code == 200
-    assert same_user_response.json()["content"] == "user a overlay"
+    ordinary_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=headers())
+    assert ordinary_response.status_code == 404
+    assert ordinary_response.json() == {"detail": "skill_not_found"}
 
-    other_user_headers = {
-        **headers(),
-        "X-AI-User-ID": "other-user",
-    }
-    other_user_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=other_user_headers)
-    assert other_user_response.status_code == 200
-    assert "Review Word documents." in other_user_response.json()["content"]
-
-    other_tenant_headers = {
-        **headers(),
-        "X-AI-Tenant-ID": "tenant-b",
-    }
-    other_tenant_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=other_tenant_headers)
-    assert other_tenant_response.status_code == 200
-    assert "Review Word documents." in other_tenant_response.json()["content"]
+    admin_response = client.get(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        headers=headers(roles="admin"),
+    )
+    assert admin_response.status_code == 200
+    assert admin_response.json()["content"] == "user a overlay"
 
 
 def test_public_skill_overlay_keeps_fallback_skill_md_when_snapshot_has_no_files(monkeypatch):
@@ -1443,11 +1673,15 @@ def test_public_skill_overlay_keeps_fallback_skill_md_when_snapshot_has_no_files
     )
     assert put_response.status_code == 200
 
-    detail_response = client.get("/api/skills/qa-file-reviewer", headers=headers())
+    admin_headers = headers(roles="admin")
+    detail_response = client.get("/api/skills/qa-file-reviewer", headers=admin_headers)
     assert detail_response.status_code == 200
     assert detail_response.json()["files"] == ["SKILL.md", "notes.md"]
 
-    fallback_response = client.get("/api/skills/qa-file-reviewer/files/SKILL.md", headers=headers())
+    fallback_response = client.get(
+        "/api/skills/qa-file-reviewer/files/SKILL.md",
+        headers=admin_headers,
+    )
     assert fallback_response.status_code == 200
     assert "# qa-file-reviewer" in fallback_response.json()["content"]
 
@@ -1495,7 +1729,10 @@ def test_public_skill_batch_routes_map_to_tenant_availability(monkeypatch):
     assert delete_response.status_code == 200
     assert delete_response.json() == {"deleted": ["qa-file-reviewer"], "errors": []}
 
-    assert [payload["enabled"] for name, payload in calls if name == "toggle_distribution"] == [False, False]
+    assert [payload["enabled"] for name, payload in calls if name == "toggle_distribution"] == [False]
+    assert [payload["capability_id"] for name, payload in calls if name == "archive_distribution"] == [
+        "qa-file-reviewer"
+    ]
 
 
 def test_public_skill_zip_preview_projects_package_without_persistence(monkeypatch):
@@ -1661,12 +1898,15 @@ def test_public_skill_zip_upload_persists_package_as_user_overlay(monkeypatch):
 
     public_file_response = client.get(
         "/api/skills/qa-file-reviewer/files/references/imported.md",
-        headers=headers(),
+        headers=headers(roles="admin"),
     )
     assert public_file_response.status_code == 200
     assert public_file_response.json()["content"] == "Imported guide"
 
-    marketplace_files_response = client.get("/api/marketplace/qa-file-reviewer/files", headers=headers())
+    marketplace_files_response = client.get(
+        "/api/marketplace/qa-file-reviewer/files",
+        headers=headers(roles="admin"),
+    )
     assert marketplace_files_response.status_code == 200
     assert marketplace_files_response.json() == {"files": ["SKILL.md", "references/guide.md"]}
 
@@ -1895,7 +2135,7 @@ def test_public_skill_github_preview_keeps_files_before_skill_md_in_archive(monk
 
     public_file_response = client.get(
         "/api/skills/qa-file-reviewer/files/references/first.md",
-        headers=headers(),
+        headers=headers(roles="admin"),
     )
     assert public_file_response.status_code == 200
     assert public_file_response.json()["content"] == "first file"
@@ -1925,7 +2165,7 @@ def test_public_skill_github_preview_does_not_absorb_sibling_prefix_paths(monkey
 
     sibling_response = client.get(
         "/api/skills/qa-file-reviewer/files/-extra/private.md",
-        headers=headers(),
+        headers=headers(roles="admin"),
     )
     assert sibling_response.status_code == 404
 
@@ -1958,12 +2198,15 @@ def test_public_skill_github_install_persists_selected_existing_skill_overlay(mo
 
     public_file_response = client.get(
         "/api/skills/qa-file-reviewer/files/references/github.md",
-        headers=headers(),
+        headers=headers(roles="admin"),
     )
     assert public_file_response.status_code == 200
     assert public_file_response.json()["content"] == "GitHub guide"
 
-    marketplace_files_response = client.get("/api/marketplace/qa-file-reviewer/files", headers=headers())
+    marketplace_files_response = client.get(
+        "/api/marketplace/qa-file-reviewer/files",
+        headers=headers(roles="admin"),
+    )
     assert marketplace_files_response.status_code == 200
     assert marketplace_files_response.json() == {"files": ["SKILL.md", "references/guide.md"]}
 
@@ -2139,7 +2382,10 @@ def test_public_skill_direct_marketplace_lifecycle_updates_catalog_release_polic
         and payload["previous_version"] == "hash-marketplace"
         for name, payload in calls
     )
-    assert [payload["enabled"] for name, payload in calls if name == "toggle_distribution"] == [False, True, False]
+    assert [payload["enabled"] for name, payload in calls if name == "toggle_distribution"] == [False, True]
+    assert [payload["capability_id"] for name, payload in calls if name == "archive_distribution"] == [
+        "qa-file-reviewer"
+    ]
     audit_actions = [payload["action"] for name, payload in calls if name == "audit"]
     assert "marketplace.skill.created" in audit_actions
     assert "marketplace.skill.updated" in audit_actions

@@ -1,16 +1,22 @@
-import { clearAuthState } from "../services/api/tokenManager";
 import { parseAuthStorageEvent } from "../services/api/token";
 
-export function handleBrowserAuthStorageEvent(
+export type BrowserAuthStorageChange =
+  | { type: "login" | "replacement"; marker: string }
+  | { type: "logout" };
+
+/** Classify a cross-tab marker change without mutating shared auth state. */
+export function classifyBrowserAuthStorageEvent(
   event: StorageEvent,
-  refreshUser: () => void | Promise<void>,
-): void {
+): BrowserAuthStorageChange | null {
   const authEvent = parseAuthStorageEvent(event);
   if (authEvent === "logout") {
-    clearAuthState();
-    return;
+    return { type: "logout" };
   }
-  if (authEvent === "login") {
-    void refreshUser();
+  if (
+    (authEvent === "login" || authEvent === "replacement") &&
+    event.newValue
+  ) {
+    return { type: authEvent, marker: event.newValue };
   }
+  return null;
 }
