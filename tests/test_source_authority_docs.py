@@ -246,6 +246,35 @@ def test_agent_rules_keep_main_session_authority_separate_from_subagents():
     )
 
 
+def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
+    workflow_text = read(MULTI_AGENT_CONTEXT_WORKFLOW)
+    compact_workflow_text = " ".join(workflow_text.split())
+
+    for expected in (
+        "Eliminate duplicate work before dispatch",
+        "Every write lane fails closed before editing",
+        "A dirty coordination root is never an implementation source or deliverable",
+        "Persistent implementation tasks may implement, run affected tests, commit, push, and open a Draft PR",
+        "Disposable agents are read-only context compressors",
+        "remote writes, deployment, cleanup, credential access, or final release decisions",
+        "the implementer runs affected tests, compile, and `git diff --check`",
+        "CI owns standard regression",
+        "reviewer owns code review plus a small number of high-risk attack or concurrency probes",
+        "State-mutating Redis, Lua, or runtime probes require a dedicated persistent runtime verifier or the controller",
+        "fixed host, test-key prefix, TTL, prohibition on real-key reads, exact cleanup, and failure evidence",
+        "One controller or deployment owner exclusively owns 211 build/recreate/ cleanup",
+        "The default review cadence is: invariant preflight; one implementation; one complete independent review; one consolidated Critical/Important repair batch; and one final re-review",
+        "After every completed batch, run a close-sweep inventory",
+        "without exact ownership proof",
+        "The controller consumes compressed evidence, not raw long logs or scripts",
+        "incident -> root cause -> new guardrail -> enforcement point -> verification",
+        "Repeated or high-impact lessons must become a policy rule or an automated check",
+        "Rotate the controller at every major phase handoff, repeated compaction, or material authority change",
+        "objective and non-goals, `origin/main`, runtime subject, active owners and leases, accepted and stale evidence, risks, next gates, and cleanup classifications",
+    ):
+        assert expected in compact_workflow_text
+
+
 def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
     prd_text = read(PRD)
     old_prd_text = read(OLD_PRD)

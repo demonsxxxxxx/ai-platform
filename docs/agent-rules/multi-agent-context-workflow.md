@@ -28,6 +28,65 @@ open, or close ordinary-user platform-level multi-run product exposure.
   outputs or a high-risk result needs an extra review pass. The main agent still
   owns the final conclusion.
 
+## Work Lanes, Preflight, And Evidence Ownership
+
+- Before delegation, the controller must make one task inventory: the intended
+  outcome, current subject, writable paths, required checks, and the single
+  owner of each item. Eliminate duplicate work before dispatch; do not retain
+  duplicate tests, searches, or probes merely to occupy agents.
+- Every write lane fails closed before editing. Record that its isolated
+  worktree is clean, `origin/main`, merge-base, and `HEAD` are the required
+  subject, and its writable paths are explicit. A dirty coordination root is
+  never an implementation source or deliverable; it may only be inspected as
+  a fail-closed comparison.
+- Persistent implementation tasks may implement, run affected tests, commit,
+  push, and open a Draft PR only from that clean isolated worktree and explicit
+  write envelope. An implementer cannot be the final reviewer.
+- Disposable agents are read-only context compressors. They may summarize
+  large logs or test output and search peripheral material, but never perform
+  remote writes, deployment, cleanup, credential access, or final release
+  decisions.
+- Evidence has a default owner: the implementer runs affected tests, compile,
+  and `git diff --check`; CI owns standard regression; the reviewer owns code
+  review plus a small number of high-risk attack or concurrency probes; the
+  controller fills only final gates that those owners did not cover.
+
+## Runtime, Deployment, And Review Boundaries
+
+- State-mutating Redis, Lua, or runtime probes require a dedicated persistent
+  runtime verifier or the controller. The probe envelope must name the fixed
+  host, test-key prefix, TTL, prohibition on real-key reads, exact cleanup, and
+  failure evidence before execution. Do not improvise a state-mutating probe
+  from a disposable agent or an unbounded shell session.
+- One controller or deployment owner exclusively owns 211 build/recreate/
+  cleanup, credentialed browser acceptance, and Ready, merge, deploy, or
+  release claims. Other agents may supply read-only evidence but may not share
+  this authority.
+- The default review cadence is: invariant preflight; one implementation; one
+  complete independent review; one consolidated Critical/Important repair
+  batch; and one final re-review. Do not turn review into parallel, repetitive
+  fix cycles unless a new material risk is recorded.
+
+## Evidence Intake, Close Sweep, And Rotation
+
+- The controller consumes compressed evidence, not raw long logs or scripts.
+  Each evidence item records command, subject, observed time, decisive
+  lines/result, and artifact location; label stale or historical evidence as
+  such instead of re-presenting it as current.
+- After every completed batch, run a close-sweep inventory covering task or
+  archive state, worktree classification, and process ownership. Do not bulk
+  clean up tasks, worktrees, containers, or artifacts without exact ownership
+  proof.
+- Record a lessons ledger entry as: `incident -> root cause -> new guardrail ->
+  enforcement point -> verification`. Repeated or high-impact lessons must
+  become a policy rule or an automated check, rather than remaining a chat-only
+  reminder.
+- Rotate the controller at every major phase handoff, repeated compaction, or
+  material authority change. The mandatory handoff packet contains the
+  objective and non-goals, `origin/main`, runtime subject, active owners and
+  leases, accepted and stale evidence, risks, next gates, and cleanup
+  classifications.
+
 ## Delegation Rules
 
 - Delegate only when the active user request, repository rules, and available
