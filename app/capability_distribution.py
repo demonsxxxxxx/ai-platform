@@ -179,9 +179,19 @@ def has_valid_capability_distribution_archive_evidence(distribution: dict[str, A
 
     return any(
         is_valid_archive_timestamp(metadata.get("archived_at"))
-        and isinstance(metadata.get("archived_by"), str)
-        and len(metadata["archived_by"]) <= _ARCHIVED_BY_MAX_LENGTH
+        and is_valid_archive_actor(metadata.get("archived_by"))
         for metadata in _distribution_metadata_values(distribution)
+    )
+
+
+def is_valid_archive_actor(value: Any) -> bool:
+    """Accept only a bounded, non-blank actor identifier emitted by archive lifecycle writes."""
+
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and value == value.strip()
+        and len(value) <= _ARCHIVED_BY_MAX_LENGTH
     )
 
 

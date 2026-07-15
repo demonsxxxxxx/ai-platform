@@ -438,7 +438,6 @@ async def test_capability_distribution_lifecycle_lock_serializes_missing_row_arc
             )
 
         async def second_writer():
-            await upsert_active(second_conn, updated_by="writer-b")
             return await repositories.archive_capability_distribution_row(
                 second_conn,
                 tenant_id=tenant_id,

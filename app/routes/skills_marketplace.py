@@ -962,6 +962,12 @@ async def batch_delete_skills(
     deleted: list[str] = []
     errors: list[dict[str, str]] = []
     async with transaction() as conn:
+        await repositories.acquire_capability_distribution_lifecycle_locks(
+            conn,
+            tenant_id=principal.tenant_id,
+            capability_kind="skill",
+            capability_ids=names,
+        )
         for skill_name in names:
             try:
                 await repositories.archive_capability_distribution_row(
@@ -1002,6 +1008,12 @@ async def batch_toggle_skills(
     updated: list[str] = []
     errors: list[dict[str, str]] = []
     async with transaction() as conn:
+        await repositories.acquire_capability_distribution_lifecycle_locks(
+            conn,
+            tenant_id=principal.tenant_id,
+            capability_kind="skill",
+            capability_ids=names,
+        )
         for skill_name in names:
             try:
                 await repositories.toggle_capability_distribution_row(

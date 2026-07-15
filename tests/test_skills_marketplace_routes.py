@@ -259,6 +259,18 @@ def install_route_fakes(
                 return dict(row)
         raise RepositoryNotFoundError("capability_distribution_not_found")
 
+    async def fake_acquire_distribution_locks(conn, *, tenant_id, capability_kind, capability_ids):
+        calls.append(
+            (
+                "acquire_distribution_locks",
+                {
+                    "tenant_id": tenant_id,
+                    "capability_kind": capability_kind,
+                    "capability_ids": list(capability_ids),
+                },
+            )
+        )
+
     async def fake_list_overlays(conn, *, tenant_id, user_id, skill_ids, include_content=False):
         calls.append(
             (
@@ -447,6 +459,7 @@ def install_route_fakes(
     monkeypatch.setattr(skills_marketplace.repositories, "get_capability_distribution_row", fake_get_distribution)
     monkeypatch.setattr(skills_marketplace.repositories, "toggle_capability_distribution_row", fake_toggle_distribution)
     monkeypatch.setattr(skills_marketplace.repositories, "archive_capability_distribution_row", fake_archive_distribution)
+    monkeypatch.setattr(skills_marketplace.repositories, "acquire_capability_distribution_lifecycle_locks", fake_acquire_distribution_locks)
     monkeypatch.setattr(skills_marketplace.repositories, "list_user_skill_file_overlays", fake_list_overlays)
     monkeypatch.setattr(skills_marketplace.repositories, "upsert_user_skill_file", fake_upsert_file)
     monkeypatch.setattr(skills_marketplace.repositories, "delete_user_skill_file", fake_delete_file)

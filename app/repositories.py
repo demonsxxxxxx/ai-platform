@@ -15,6 +15,7 @@ from app.capability_distribution import (
     capability_distribution_audit_payload,
     has_valid_capability_distribution_archive_evidence,
     is_capability_distribution_archived as shared_capability_distribution_archived,
+    is_valid_archive_actor,
     resolve_capability_access,
 )
 from app.control_plane_contracts import (
@@ -1233,6 +1234,24 @@ async def _acquire_capability_distribution_lifecycle_lock(
     )
 
 
+async def acquire_capability_distribution_lifecycle_locks(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str,
+    capability_ids: list[str],
+) -> None:
+    """Pre-acquire distinct lifecycle keys in canonical order for one batch transaction."""
+
+    for capability_id in sorted(set(capability_ids)):
+        await _acquire_capability_distribution_lifecycle_lock(
+            conn,
+            tenant_id=tenant_id,
+            capability_kind=capability_kind,
+            capability_id=capability_id,
+        )
+
+
 async def _lock_capability_distribution_metadata(
     conn: AsyncConnection,
     *,
@@ -1614,6 +1633,8 @@ async def archive_capability_distribution_row(
 ) -> dict[str, Any]:
     """Archive one tenant capability binding without mutating global Skill evidence."""
 
+    if not is_valid_archive_actor(archived_by):
+        raise RepositoryConflictError("capability_distribution_archive_actor_invalid")
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
     await _acquire_capability_distribution_lifecycle_lock(
         conn,

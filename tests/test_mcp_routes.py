@@ -187,6 +187,19 @@ def install_mcp_route_fakes(
         distributions[kwargs["capability_id"]] = row
         return dict(row)
 
+    async def fake_archive_distribution(conn, **kwargs):
+        calls.append(("archive_distribution", dict(kwargs)))
+        row = dict(distributions.get(kwargs["capability_id"], {}))
+        row.update(
+            capability_kind=kwargs["capability_kind"],
+            capability_id=kwargs["capability_id"],
+            status="disabled",
+            visible_to_user=False,
+            metadata_json={"archived_at": "2026-07-15T00:00:00.000Z", "archived_by": kwargs["archived_by"]},
+        )
+        distributions[kwargs["capability_id"]] = row
+        return dict(row)
+
     async def fake_toggle_server(conn, **kwargs):
         calls.append(("toggle_server", dict(kwargs)))
         server = dict(servers[kwargs["name"]])
@@ -244,6 +257,7 @@ def install_mcp_route_fakes(
         fake_set_distribution_status,
         raising=False,
     )
+    monkeypatch.setattr(mcp.repositories, "archive_capability_distribution_row", fake_archive_distribution, raising=False)
     monkeypatch.setattr(mcp.repositories, "toggle_mcp_server_registry", fake_toggle_server, raising=False)
     monkeypatch.setattr(mcp.repositories, "delete_mcp_server_registry", fake_delete_server, raising=False)
     monkeypatch.setattr(mcp.repositories, "record_mcp_server_credential", fake_record_credential, raising=False)

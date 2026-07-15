@@ -1441,6 +1441,52 @@ async def test_invalid_archive_marker_does_not_block_distribution_status_update(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("actor", [None, "", "   ", [], "x" * 256])
+async def test_archive_distribution_rejects_invalid_actor_before_database_write(monkeypatch, actor):
+    async def fail_backfill(*args, **kwargs):
+        raise AssertionError("invalid archive actor must fail before database access")
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", fail_backfill)
+
+    with pytest.raises(RepositoryConflictError, match="capability_distribution_archive_actor_invalid"):
+        await repositories.archive_capability_distribution_row(
+            object(),
+            tenant_id="tenant-a",
+            capability_kind="skill",
+            capability_id="qa-file-reviewer",
+            archived_by=actor,
+        )
+
+
+@pytest.mark.asyncio
+async def test_batch_lifecycle_locks_use_canonical_order_without_duplicates():
+    class Cursor:
+        async def fetchone(self):
+            return None
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return Cursor()
+
+    conn = Connection()
+    await repositories.acquire_capability_distribution_lifecycle_locks(
+        conn,
+        tenant_id="tenant-a",
+        capability_kind="skill",
+        capability_ids=["skill-b", "skill-a", "skill-b"],
+    )
+
+    assert [params[0] for _, params in conn.calls] == [
+        '{"capability_id":"skill-a","capability_kind":"skill","tenant_id":"tenant-a"}',
+        '{"capability_id":"skill-b","capability_kind":"skill","tenant_id":"tenant-a"}',
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["archive", "upsert", "toggle", "set_status"])
 async def test_capability_distribution_lifecycle_lock_precedes_row_lock_and_write(monkeypatch, operation):
     async def no_backfill(conn, *, tenant_id):
