@@ -22,9 +22,16 @@ export interface OrdinaryMcpToolDiscoveryResult {
 
 export interface OrdinaryMcpToolDiscoveryState {
   generation: number;
+  serverSetKey: string;
   toolsByServer: Record<string, MCPToolInfo[]>;
   toolsLoading: boolean;
   toolsUnavailable: boolean;
+}
+
+/** Builds the stable identity used to match discovery state to the current server set. */
+// eslint-disable-next-line react-refresh/only-export-components -- shared with pure discovery coverage.
+export function buildOrdinaryMcpServerSetKey(serverNames: string[]): string {
+  return Array.from(new Set(serverNames.filter(Boolean))).sort().join("\u0000");
 }
 
 /** Collects all public tool descriptions with a bounded number of active requests. */
@@ -32,6 +39,7 @@ export interface OrdinaryMcpToolDiscoveryState {
 export async function collectOrdinaryMcpTools(
   serverNames: string[],
   discoverTools: (serverName: string) => Promise<MCPToolInfo[]>,
+  shouldContinue: () => boolean = () => true,
 ): Promise<OrdinaryMcpToolDiscoveryResult> {
   const uniqueServerNames = Array.from(new Set(serverNames)).filter(Boolean);
   const toolsByServer: Record<string, MCPToolInfo[]> = {};
@@ -44,7 +52,9 @@ export async function collectOrdinaryMcpTools(
 
   await Promise.all(
     Array.from({ length: workerCount }, async () => {
-      while (nextIndex < uniqueServerNames.length) {
+      while (true) {
+        if (!shouldContinue()) return;
+        if (nextIndex >= uniqueServerNames.length) return;
         const serverName = uniqueServerNames[nextIndex];
         nextIndex += 1;
         try {
@@ -67,6 +77,7 @@ export function beginOrdinaryMcpToolDiscovery(
 ): OrdinaryMcpToolDiscoveryState {
   return {
     generation,
+    serverSetKey: buildOrdinaryMcpServerSetKey(serverNames),
     toolsByServer: {},
     toolsLoading: serverNames.length > 0,
     toolsUnavailable: false,
@@ -83,9 +94,27 @@ export function publishOrdinaryMcpToolDiscovery(
   if (state.generation !== generation) return state;
   return {
     generation,
+    serverSetKey: state.serverSetKey,
     toolsByServer: result.toolsByServer,
     toolsLoading: false,
     toolsUnavailable: result.unavailable,
+  };
+}
+
+/** Hides discovery output that belongs to a different current server set. */
+// eslint-disable-next-line react-refresh/only-export-components -- shared with pure discovery coverage.
+export function resolveVisibleOrdinaryMcpToolDiscovery(
+  state: OrdinaryMcpToolDiscoveryState,
+  serverNames: string[],
+): OrdinaryMcpToolDiscoveryState {
+  const serverSetKey = buildOrdinaryMcpServerSetKey(serverNames);
+  if (state.serverSetKey === serverSetKey) return state;
+  return {
+    generation: state.generation,
+    serverSetKey,
+    toolsByServer: {},
+    toolsLoading: false,
+    toolsUnavailable: false,
   };
 }
 
@@ -102,7 +131,7 @@ export function OrdinaryMcpCatalog({
       beginOrdinaryMcpToolDiscovery(0, []),
     );
   const serverNames = useMemo(
-    () => servers.map((server) => server.name).sort(),
+    () => Array.from(new Set(servers.map((server) => server.name))).sort(),
     [servers],
   );
 
@@ -110,14 +139,17 @@ export function OrdinaryMcpCatalog({
     const generation = discoveryGenerationRef.current + 1;
     discoveryGenerationRef.current = generation;
     setToolDiscovery(beginOrdinaryMcpToolDiscovery(generation, serverNames));
-    if (serverNames.length === 0) {
-      return;
-    }
+    const isCurrentGeneration = () =>
+      discoveryGenerationRef.current === generation;
+    const invalidateGeneration = () => {
+      if (isCurrentGeneration()) discoveryGenerationRef.current += 1;
+    };
+    if (serverNames.length === 0) return invalidateGeneration;
 
     void collectOrdinaryMcpTools(serverNames, async (serverName) => {
       const response = await mcpApi.discoverTools(serverName);
       return response.tools;
-    })
+    }, isCurrentGeneration)
       .then((result) => {
         if (discoveryGenerationRef.current !== generation) return;
         setToolDiscovery((current) =>
@@ -133,9 +165,11 @@ export function OrdinaryMcpCatalog({
           }),
         );
       });
+    return invalidateGeneration;
   }, [serverNames]);
 
-  const { toolsByServer, toolsLoading, toolsUnavailable } = toolDiscovery;
+  const { toolsByServer, toolsLoading, toolsUnavailable } =
+    resolveVisibleOrdinaryMcpToolDiscovery(toolDiscovery, serverNames);
 
   const catalog = servers
     .map((server) =>

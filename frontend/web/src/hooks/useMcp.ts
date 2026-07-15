@@ -70,6 +70,16 @@ export function buildMcpRequestScope({
   })}`;
 }
 
+/** Allocates the next request only when the callback still owns the active scope. */
+export function allocateMcpCatalogRequest(
+  activeScope: string,
+  callbackScope: string,
+  currentEpoch: number,
+): McpCatalogRequestToken | null {
+  if (activeScope !== callbackScope) return null;
+  return { scope: callbackScope, epoch: currentEpoch + 1 };
+}
+
 function isMcpCatalogRequestCurrent(
   state: McpCatalogState,
   request: McpCatalogRequestToken,
@@ -263,15 +273,20 @@ export function useMCP(options?: {
   }));
   const [operationIsLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const beginCatalogRequest = useCallback((): McpCatalogRequestToken => {
-    const request = {
-      scope: activeRequestScopeRef.current,
-      epoch: requestEpochRef.current + 1,
-    };
-    requestEpochRef.current = request.epoch;
-    setCatalogState((current) => beginMcpCatalogRequest(current, request));
-    return request;
-  }, []);
+  const beginCatalogRequest = useCallback(
+    (callbackScope: string): McpCatalogRequestToken | null => {
+      const request = allocateMcpCatalogRequest(
+        activeRequestScopeRef.current,
+        callbackScope,
+        requestEpochRef.current,
+      );
+      if (!request) return null;
+      requestEpochRef.current = request.epoch;
+      setCatalogState((current) => beginMcpCatalogRequest(current, request));
+      return request;
+    },
+    [],
+  );
   const isActiveCatalogRequest = useCallback((request: McpCatalogRequestToken) => {
     return (
       activeRequestScopeRef.current === request.scope &&
@@ -296,7 +311,14 @@ export function useMCP(options?: {
   const fetchServers = useCallback(
     async (params?: MCPListParams) => {
       if (!enabled) return;
-      const request = beginCatalogRequest();
+      const requestParams = params ?? listParams;
+      const callbackScope = buildMcpRequestScope({
+        enabled,
+        allAuthorizedCatalog,
+        listParams: requestParams,
+      });
+      const request = beginCatalogRequest(callbackScope);
+      if (!request) return;
       setError(null);
       try {
         const data = allAuthorizedCatalog
@@ -304,7 +326,7 @@ export function useMCP(options?: {
               authFetch<MCPServersResponse>(buildMCPListUrl(pageParams)),
             )
           : await authFetch<MCPServersResponse>(
-              buildMCPListUrl(params ?? listParams ?? {}),
+              buildMCPListUrl(requestParams ?? {}),
             );
         if (!isActiveCatalogRequest(request)) return;
         setCatalogState((current) =>

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import type { MCPServerResponse, MCPServersResponse } from "../../types";
 import {
+  allocateMcpCatalogRequest,
   beginMcpCatalogRequest,
   buildMcpRequestScope,
   collectAllAuthorizedMcpServers,
@@ -189,4 +190,63 @@ test("a changed MCP request scope exposes no prior servers before its request st
   assert.equal(visible.total, 0);
   assert.equal(visible.isLoading, true);
   assert.equal(visible.error, null);
+});
+
+test("a stale refresh callback cannot allocate or publish into a newer scope", () => {
+  const scopeA = buildMcpRequestScope({
+    enabled: true,
+    allAuthorizedCatalog: false,
+    listParams: { skip: 0, limit: 20, q: "A" },
+  });
+  const scopeB = buildMcpRequestScope({
+    enabled: true,
+    allAuthorizedCatalog: false,
+    listParams: { skip: 20, limit: 20, q: "B" },
+  });
+  const state = {
+    request: { scope: scopeB, epoch: 7 },
+    servers: [server("current-B")],
+    total: 1,
+    isLoading: false,
+    error: null,
+  };
+
+  assert.equal(allocateMcpCatalogRequest(scopeB, scopeA, 7), null);
+  assert.deepEqual(
+    publishMcpCatalogSuccess(
+      state,
+      { scope: scopeA, epoch: 8 },
+      page([server("stale-A")], 1, 0, 20),
+    ),
+    state,
+  );
+});
+
+test("a current-scope refresh allocates the next epoch and can publish", () => {
+  const scope = buildMcpRequestScope({
+    enabled: true,
+    allAuthorizedCatalog: false,
+    listParams: { skip: 20, limit: 20, q: "B" },
+  });
+  const request = allocateMcpCatalogRequest(scope, scope, 7);
+  assert.deepEqual(request, { scope, epoch: 8 });
+  assert.ok(request);
+  const started = beginMcpCatalogRequest(
+    {
+      request: { scope, epoch: 7 },
+      servers: [server("previous-B")],
+      total: 1,
+      isLoading: false,
+      error: null,
+    },
+    request,
+  );
+
+  const completed = publishMcpCatalogSuccess(
+    started,
+    request,
+    page([server("refreshed-B")], 1, 20, 20),
+  );
+  assert.deepEqual(completed.servers.map((item) => item.name), ["refreshed-B"]);
+  assert.equal(completed.isLoading, false);
 });

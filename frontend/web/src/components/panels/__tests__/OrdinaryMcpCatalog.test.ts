@@ -4,9 +4,11 @@ import test from "node:test";
 import type { MCPToolInfo } from "../../../types";
 import {
   beginOrdinaryMcpToolDiscovery,
+  buildOrdinaryMcpServerSetKey,
   collectOrdinaryMcpTools,
   ORDINARY_MCP_TOOL_DISCOVERY_CONCURRENCY,
   publishOrdinaryMcpToolDiscovery,
+  resolveVisibleOrdinaryMcpToolDiscovery,
 } from "../OrdinaryMcpCatalog.tsx";
 
 function tool(serverName: string): MCPToolInfo {
@@ -46,6 +48,29 @@ test("an older ordinary MCP tool generation cannot publish after a newer one", (
   assert.deepEqual(published, current);
 });
 
+test("cancelled ordinary discovery does not dequeue after its active workers finish", async () => {
+  const serverNames = Array.from({ length: 20 }, (_, index) => `server-${index}`);
+  const started: string[] = [];
+  const resolvers: Array<(tools: MCPToolInfo[]) => void> = [];
+  let activeGeneration = true;
+
+  const pending = collectOrdinaryMcpTools(
+    serverNames,
+    async (serverName) => {
+      started.push(serverName);
+      return new Promise<MCPToolInfo[]>((resolve) => resolvers.push(resolve));
+    },
+    () => activeGeneration,
+  );
+
+  assert.equal(started.length, ORDINARY_MCP_TOOL_DISCOVERY_CONCURRENCY);
+  activeGeneration = false;
+  resolvers.forEach((resolve, index) => resolve([tool(`active-${index}`)]));
+  await pending;
+
+  assert.equal(started.length, ORDINARY_MCP_TOOL_DISCOVERY_CONCURRENCY);
+});
+
 test("an empty ordinary MCP catalog clears tools, unavailable state, and loading", () => {
   const loading = beginOrdinaryMcpToolDiscovery(4, ["stale"]);
   const empty = beginOrdinaryMcpToolDiscovery(5, []);
@@ -53,6 +78,25 @@ test("an empty ordinary MCP catalog clears tools, unavailable state, and loading
   assert.equal(loading.toolsLoading, true);
   assert.deepEqual(empty, {
     generation: 5,
+    serverSetKey: buildOrdinaryMcpServerSetKey([]),
+    toolsByServer: {},
+    toolsLoading: false,
+    toolsUnavailable: false,
+  });
+});
+
+test("a mismatched ordinary server set synchronously masks prior discovery state", () => {
+  const prior = {
+    ...beginOrdinaryMcpToolDiscovery(8, ["old-server"]),
+    toolsByServer: { "old-server": [tool("old-server")] },
+    toolsLoading: true,
+    toolsUnavailable: true,
+  };
+  const visible = resolveVisibleOrdinaryMcpToolDiscovery(prior, ["new-server"]);
+
+  assert.deepEqual(visible, {
+    generation: 8,
+    serverSetKey: buildOrdinaryMcpServerSetKey(["new-server"]),
     toolsByServer: {},
     toolsLoading: false,
     toolsUnavailable: false,
