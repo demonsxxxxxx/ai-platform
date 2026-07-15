@@ -156,6 +156,7 @@
   "auth": {
     "account": "账号",
     "backToLogin": "返回登录",
+    "browserCoordinationUnavailable": "当前浏览器或站点地址无法安全协调登录。请改用受信任的公司 HTTPS 地址，或联系管理员。",
     "checkInboxStep": "检查您的收件箱（也请检查垃圾邮件文件夹）",
     "checkYourEmail": "检查您的邮箱",
     "clickVerifyLinkStep": "点击邮件中的验证链接",

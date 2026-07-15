@@ -156,6 +156,7 @@
   "auth": {
     "account": "Account",
     "backToLogin": "Back to Login",
+    "browserCoordinationUnavailable": "This browser or site address cannot safely coordinate sign-in. Use a trusted company HTTPS address if one is available, or contact your administrator.",
     "checkInboxStep": "Check your inbox (also check spam folder)",
     "checkYourEmail": "Check Your Email",
     "clickVerifyLinkStep": "Click the verification link in the email",

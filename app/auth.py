@@ -9,7 +9,7 @@ from typing import Iterable, Mapping
 
 from fastapi import HTTPException, Request, status
 
-from app.auth_sessions import AuthContextError, principal_for_context
+from app.auth_sessions import AuthContextError, principal_for_context, principal_for_cookie
 from app.settings import get_settings
 
 
@@ -192,7 +192,13 @@ async def require_principal(request: Request) -> AuthPrincipal:
         )
         if context_handle:
             try:
-                snapshot = await principal_for_context(context_handle, settings)
+                # Keep V1 trusted-context behavior intact. V2 parses and
+                # snapshots cookie, authority, and context in one Lua read.
+                snapshot = await (
+                    principal_for_cookie(context_handle, settings)
+                    if context_handle.startswith("v2.")
+                    else principal_for_context(context_handle, settings)
+                )
             except AuthContextError as exc:
                 raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
             if snapshot is not None:
