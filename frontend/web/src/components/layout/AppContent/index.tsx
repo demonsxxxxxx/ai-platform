@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { useVersion } from "../../../hooks/useVersion";
 import { SIDEBAR_COLLAPSED_STORAGE_KEY } from "../../../hooks/useAuth";
 import { authApi } from "../../../services/api";
 import { ChatAppContent } from "./ChatAppContent";
@@ -17,13 +16,11 @@ interface AppContentProps {
 }
 
 export function AppContent({ activeTab, routeUnavailable }: AppContentProps) {
-  const { versionInfo } = useVersion();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     const saved = localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY);
     return saved !== null ? saved === "true" : false;
   });
-  const [showProfileModal, setShowProfileModal] = useState(false);
 
   const handleSetSidebarCollapsed = useCallback(
     (collapsed: boolean | ((prev: boolean) => boolean)) => {
@@ -64,23 +61,13 @@ export function AppContent({ activeTab, routeUnavailable }: AppContentProps) {
     };
   }, [sidebarCollapsed]);
 
-  const handleCloseProfileModal = useCallback(
-    () => setShowProfileModal(false),
-    [],
-  );
-  const handleShowProfile = useCallback(() => setShowProfileModal(true), []);
-
   if (activeTab === "chat") {
     return (
       <ChatAppContent
-        showProfileModal={showProfileModal}
-        onCloseProfileModal={handleCloseProfileModal}
-        versionInfo={versionInfo}
         sidebarCollapsed={sidebarCollapsed}
         setSidebarCollapsed={handleSetSidebarCollapsed}
         mobileSidebarOpen={mobileSidebarOpen}
         setMobileSidebarOpen={setMobileSidebarOpen}
-        onShowProfile={handleShowProfile}
       />
     );
   }
@@ -88,14 +75,10 @@ export function AppContent({ activeTab, routeUnavailable }: AppContentProps) {
   return (
     <NonChatAppContent
       activeTab={activeTab}
-      showProfileModal={showProfileModal}
-      onCloseProfileModal={handleCloseProfileModal}
-      versionInfo={versionInfo}
       sidebarCollapsed={sidebarCollapsed}
       setSidebarCollapsed={handleSetSidebarCollapsed}
       mobileSidebarOpen={mobileSidebarOpen}
       setMobileSidebarOpen={setMobileSidebarOpen}
-      onShowProfile={handleShowProfile}
       routeUnavailable={routeUnavailable}
     />
   );

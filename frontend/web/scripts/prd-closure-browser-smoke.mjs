@@ -38,8 +38,11 @@ const ROUTE_READY_SELECTOR =
 const ROUTE_CONTENT_SELECTORS = new Map([
   ["/chat", "[data-librechat-shell]"],
   ["/apps", "[data-launchpad-directory-shell], [data-frontend-governance-state]"],
-  ["/skills", "[data-skill-workbench-shell], [data-frontend-governance-state]"],
-  ["/mcp", "[data-mcp-directory-shell]"],
+  [
+    "/skills",
+    "[data-skill-workbench-shell], [data-ordinary-skills-catalog], [data-frontend-governance-state]",
+  ],
+  ["/mcp", "[data-mcp-directory-shell], [data-ordinary-mcp-catalog]"],
   ["/files", "[data-files-workbench-shell]"],
   ["/settings", '[data-workbench-projection-page="settings"], [data-workbench-projection-page]'],
   ["/shared/smoke-denied", '[data-shared-page], [data-frontend-governance-state="forbidden"]'],

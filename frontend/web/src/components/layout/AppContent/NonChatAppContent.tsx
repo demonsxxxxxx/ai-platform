@@ -7,27 +7,19 @@ import type { RouteUnavailableConfig, TabType } from "./types";
 
 export interface NonChatAppContentProps {
   activeTab: Exclude<TabType, "chat">;
-  showProfileModal: boolean;
-  onCloseProfileModal: () => void;
-  versionInfo: import("../../../types").VersionInfo | null;
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (collapsed: boolean) => void;
   mobileSidebarOpen: boolean;
   setMobileSidebarOpen: (open: boolean) => void;
-  onShowProfile: () => void;
   routeUnavailable?: RouteUnavailableConfig;
 }
 
 export function NonChatAppContent({
   activeTab,
-  showProfileModal,
-  onCloseProfileModal,
-  versionInfo,
   sidebarCollapsed,
   setSidebarCollapsed,
   mobileSidebarOpen,
   setMobileSidebarOpen,
-  onShowProfile,
   routeUnavailable,
 }: NonChatAppContentProps) {
   const navigate = useNavigate();
@@ -51,14 +43,10 @@ export function NonChatAppContent({
   return (
     <AppShell
       activeTab={activeTab}
-      showProfileModal={showProfileModal}
-      onCloseProfileModal={onCloseProfileModal}
-      versionInfo={versionInfo}
       setMobileSidebarOpen={setMobileSidebarOpen}
       currentProjectId={null}
       projectManager={{ projects: [] }}
       onNewSession={handleNewSession}
-      onShowProfile={onShowProfile}
       sidebar={
         <SessionSidebar
           currentSessionId={null}
@@ -69,7 +57,6 @@ export function NonChatAppContent({
           onMobileClose={handleMobileClose}
           isCollapsed={sidebarCollapsed}
           onToggleCollapsed={setSidebarCollapsed}
-          onShowProfile={onShowProfile}
         />
       }
     >

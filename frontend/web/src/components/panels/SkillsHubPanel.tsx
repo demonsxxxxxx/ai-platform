@@ -13,6 +13,8 @@ import { GovernanceAvailabilityBadge } from "../governance/GovernanceAvailabilit
 import { resolveGroupAvailability } from "../governance/groupAvailability";
 import { buildFrontendGovernanceSmokeAttributes } from "../governance/frontendGovernanceState";
 import { workbenchSurface } from "../workbench/workbenchSurface";
+import { isAiAdminUser } from "./capabilityAdmin";
+import { AvailableSkillsPanel } from "./AvailableSkillsPanel";
 
 const TAB_PATHS: Record<SkillsHubTab, string> = {
   skills: "/skills",
@@ -32,6 +34,7 @@ export function SkillsHubPanel() {
   const location = useLocation();
   const navigate = useNavigate();
   const {
+    user,
     hasAnyPermission,
     isAuthenticated,
     isLoading: authLoading,
@@ -154,6 +157,10 @@ export function SkillsHubPanel() {
     },
     [requestedTab],
   );
+
+  if (!isAiAdminUser(user)) {
+    return <AvailableSkillsPanel />;
+  }
 
   return (
     <div

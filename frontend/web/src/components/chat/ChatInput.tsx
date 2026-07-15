@@ -691,12 +691,8 @@ export const ChatInput = memo(function ChatInput({
         kind: "skill",
         label: selectedSkill.name,
         state,
-        referenceId: selectedSkill.expected_version.slice(0, 8),
-        description: `v${selectedSkill.expected_version.slice(0, 8)} · ${fileRequirement}`,
-        visibleDetails: [
-          `v${selectedSkill.expected_version.slice(0, 8)}`,
-          fileRequirement,
-        ],
+        description: fileRequirement,
+        visibleDetails: [fileRequirement],
       },
     });
   }, [selectedSkillState, t]);
@@ -861,7 +857,7 @@ export const ChatInput = memo(function ChatInput({
                 {selectedSkillState.recoveryCode === "skill_selection_stale"
                   ? t(
                       "skillSelector.staleSelection",
-                      "This Skill version changed. Open Skills and confirm the current version before submitting again.",
+                      "This Skill was updated. Select it again before submitting.",
                     )
                   : selectedSkillState.recoveryCode ===
                       "capability_not_authorized"

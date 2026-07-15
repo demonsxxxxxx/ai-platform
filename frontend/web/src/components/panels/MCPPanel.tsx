@@ -34,6 +34,7 @@ import type { MCPServerCreate, MCPServerResponse } from "../../types";
 import { MCPServerForm } from "../mcp/MCPServerForm";
 import { canManageMcpLifecycle, isAiAdminUser } from "./capabilityAdmin";
 import { resolveMcpGovernanceState } from "./mcpGovernanceState";
+import { OrdinaryMcpCatalog } from "./OrdinaryMcpCatalog";
 
 function roleQuotaCount(server: MCPServerResponse): number {
   return Object.values(server.role_quotas ?? {}).filter(Boolean).length;
@@ -227,6 +228,16 @@ export function MCPPanel() {
       toast.success(t("mcp.admin.deleteSuccess"));
     }
   };
+
+  if (!isAiAdmin) {
+    return (
+      <OrdinaryMcpCatalog
+        servers={servers}
+        isLoading={directoryIsLoading}
+        listError={error}
+      />
+    );
+  }
 
   if (mcpGovernance.pageState === "loading") {
     return (

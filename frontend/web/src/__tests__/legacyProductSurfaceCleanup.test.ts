@@ -26,6 +26,7 @@ test("legacy product URLs resolve through the active route manifest to NotFound"
     "/agents/legacy",
     "/channels",
     "/channels/feishu/legacy",
+    "/profile",
   ]) {
     assert.equal(resolveAppRoute(route), "notFound", route);
   }
@@ -50,6 +51,14 @@ test("legacy product surfaces are absent from navigation and lazy imports", () =
   ]) {
     assert.doesNotMatch(tabContent, new RegExp(legacyModule), legacyModule);
   }
+});
+
+test("legacy profile product surface is absent from account navigation and source", () => {
+  const accountMenu = read("components/layout/UserMenu.tsx");
+  const appShell = read("components/layout/AppContent/AppShell.tsx");
+
+  assert.doesNotMatch(accountMenu, /onShowProfile|navItems|["'`]\/skills["'`]/);
+  assert.doesNotMatch(appShell, /ProfileModal|showProfileModal/);
 });
 
 let chatHookSnapshot: ReturnType<typeof useAgent> | null = null;

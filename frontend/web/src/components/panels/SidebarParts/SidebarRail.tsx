@@ -17,13 +17,17 @@ import {
 } from "./navigationState";
 import { LibreChatRailButton } from "../../../librechat-ui/Rail";
 import { canAccessWorkbenchItem } from "../../governance/workbenchAccessPolicy";
+import { isAiAdminUser } from "../capabilityAdmin";
 
 const railBtn = "";
 
 interface SidebarRailProps {
-  user: { username?: string; avatar_url?: string; is_admin?: boolean } | null;
-  imgError: boolean;
-  onImgError: () => void;
+  user: {
+    username?: string;
+    avatar_url?: string;
+    roles?: string[];
+    is_admin?: boolean;
+  } | null;
   isExpanded?: boolean;
   onExpand: () => void;
   onCollapse: () => void;
@@ -36,13 +40,10 @@ interface SidebarRailProps {
   onOpenModels: () => void;
   onOpenFiles: () => void;
   recentChatsBtnRef: React.RefObject<HTMLButtonElement | null>;
-  onShowProfile: () => void;
 }
 
 export function SidebarRail({
   user,
-  imgError,
-  onImgError,
   isExpanded = false,
   onExpand,
   onCollapse,
@@ -55,12 +56,17 @@ export function SidebarRail({
   onOpenModels,
   onOpenFiles,
   recentChatsBtnRef,
-  onShowProfile,
 }: SidebarRailProps) {
   const { t } = useTranslation();
   const location = useLocation();
   const activeRailItem = getWorkbenchNavItemFromPathname(location.pathname);
   const showActiveRailState = !isExpanded;
+  const isAiAdmin = isAiAdminUser(
+    user ? { roles: user.roles ?? [], is_admin: user.is_admin } : null,
+  );
+  const skillsNavigationLabel = isAiAdmin
+    ? t("nav.skillManagement")
+    : t("skills.available.title");
   const isRailItemActive = (item: WorkbenchNavItem) =>
     showActiveRailState && activeRailItem === item;
 
@@ -156,8 +162,8 @@ export function SidebarRail({
           onClick={onOpenSkills}
           className={railBtn}
           aria-current={isRailItemActive("skills") ? "page" : undefined}
-          title={t("nav.skillManagement")}
-          aria-label={t("nav.skillManagement")}
+          title={skillsNavigationLabel}
+          aria-label={skillsNavigationLabel}
           itemKey="skills"
           active={isRailItemActive("skills")}
         >
@@ -210,39 +216,6 @@ export function SidebarRail({
           aria-label={t("sidebar.recentChats")}
         >
           <Clock size={20} />
-        </LibreChatRailButton>
-      </div>
-
-      {/* Profile avatar */}
-      <div
-        className="shrink-0 py-4 border-t flex flex-col items-center w-full"
-        style={{ borderColor: "var(--theme-border)" }}
-      >
-        <LibreChatRailButton
-          onClick={onShowProfile}
-          className={`${railBtn} rounded-full transition cursor-pointer`}
-          aria-label={t("sidebar.expandSidebar")}
-        >
-          <div
-            className="shrink-0 w-8 h-8 rounded-full overflow-hidden transition"
-            style={{ boxShadow: "0 0 0 1px var(--theme-border)" }}
-          >
-            {user?.avatar_url && !imgError ? (
-              <img
-                src={user.avatar_url}
-                alt={user?.username || "User"}
-                className="w-full h-full object-cover rounded-full"
-                onError={onImgError}
-                draggable={false}
-              />
-            ) : (
-              <div className="flex h-full w-full items-center justify-center rounded-full bg-[var(--theme-primary)]">
-                <span className="text-xs font-semibold text-[var(--theme-primary-foreground)]">
-                  {user?.username?.charAt(0).toUpperCase() || "U"}
-                </span>
-              </div>
-            )}
-          </div>
         </LibreChatRailButton>
       </div>
     </nav>

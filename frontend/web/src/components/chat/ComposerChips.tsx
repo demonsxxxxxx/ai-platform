@@ -42,9 +42,9 @@ function TaskSelectedSkillChip({
       data-librechat-composer-chip
       data-task-selected-skill-chip
       data-composer-chip-kind="skill"
-      data-composer-chip-reference={selection.referenceId ?? selection.id}
+      data-composer-chip-reference={selection.id}
       data-composer-chip-state={selection.state}
-      title={selection.description}
+      title={selection.label}
     >
       <Sparkles size={13} className="shrink-0" />
       <span className="truncate font-medium">{selection.label}</span>

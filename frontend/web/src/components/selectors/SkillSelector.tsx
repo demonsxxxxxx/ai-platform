@@ -3,17 +3,19 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
+  ArrowRight,
   Check,
   FileText,
   Search,
-  Settings2,
   Sparkles,
   X,
 } from "lucide-react";
 
 import type { PublicSkillResponse } from "../../types";
 import { skillMatchesQuery } from "../../utils/skillFilters";
+import { useAuth } from "../../hooks/useAuth";
 import { useSwipeToClose } from "../../hooks/useSwipeToClose";
+import { isAiAdminUser } from "../panels/capabilityAdmin";
 
 interface SkillSelectorProps {
   skills: PublicSkillResponse[];
@@ -23,10 +25,6 @@ interface SkillSelectorProps {
   isOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
   searchSeed?: string;
-}
-
-function shortVersion(version: string): string {
-  return version.slice(0, 8);
 }
 
 export function SkillSelector({
@@ -39,6 +37,7 @@ export function SkillSelector({
   searchSeed,
 }: SkillSelectorProps) {
   const { t } = useTranslation();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [internalOpen, setInternalOpen] = useState(false);
   const isOpen = externalIsOpen ?? internalOpen;
@@ -92,6 +91,9 @@ export function SkillSelector({
     : selectionIsCurrent
       ? "selected"
       : "reconfirm";
+  const skillsLinkLabel = isAiAdminUser(user)
+    ? t("nav.skillManagement")
+    : t("skillSelector.viewSkills", "View Skills");
 
   const handleDialogKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Escape") {
@@ -159,7 +161,7 @@ export function SkillSelector({
                 : selectionSummary === "reconfirm"
                   ? t(
                       "skillSelector.taskReconfirm",
-                      "Reconfirm the current Skill version",
+                      "This Skill was updated. Select it again.",
                     )
                   : t("skillSelector.taskOptional", "Optional for this task")}
             </p>
@@ -229,12 +231,6 @@ export function SkillSelector({
                     <span className="min-w-0 truncate text-sm font-medium text-[var(--theme-text)]">
                       {skill.name}
                     </span>
-                    <span
-                      className="font-mono text-xs text-[var(--theme-text-secondary)]"
-                      data-composer-skill-version={skill.expected_version}
-                    >
-                      v{shortVersion(skill.expected_version)}
-                    </span>
                     {skill.requires_file && (
                       <span
                         className="inline-flex items-center gap-1 text-xs text-[var(--theme-warning)]"
@@ -276,8 +272,8 @@ export function SkillSelector({
           }}
           className="inline-flex h-11 items-center gap-1.5 rounded-lg px-2 text-xs font-medium text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)] sm:h-9"
         >
-          <Settings2 size={14} />
-          {t("skillSelector.manage", "Manage")}
+          <ArrowRight size={14} />
+          {skillsLinkLabel}
         </button>
         <button
           type="button"

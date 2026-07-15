@@ -180,7 +180,7 @@ export function useTools(options?: { enabled?: boolean }) {
     fetchTools();
   }, [fetchTools]);
 
-  // 监听 MCP 工具偏好变更事件（来自 ProfileToolsTab 等）
+  // 监听 MCP 工具目录变更事件
   useEffect(() => {
     const handleMcpToolsChanged = () => {
       fetchTools();

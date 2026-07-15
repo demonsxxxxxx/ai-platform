@@ -36,6 +36,20 @@ test("skills hub exposes governed catalog status without composer help copy", ()
   assert.match(source, /marketplace:\s*"\/marketplace"/);
   assert.match(source, /data-auth-projection-has-permission/);
   assert.match(source, /onCatalogStateChange/);
+  assert.match(source, /isAiAdminUser\(user\)/);
+  assert.match(source, /AvailableSkillsPanel/);
+
+  const ordinarySkills = readFileSync(
+    join(root, "src/components/panels/AvailableSkillsPanel.tsx"),
+    "utf8",
+  );
+  assert.match(ordinarySkills, /data-ordinary-skills-catalog/);
+  assert.match(ordinarySkills, /skills\.available\.title/);
+  assert.match(ordinarySkills, /skills\.available\.fileTypes/);
+  assert.doesNotMatch(
+    ordinarySkills,
+    /expected_version|file_count|skill\.content|skill\.files|is_published|marketplace_is_active/,
+  );
 });
 
 test("mcp panel gives AI admins lifecycle controls while keeping the ordinary directory redacted", () => {
@@ -45,6 +59,10 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   );
   const form = readFileSync(
     join(root, "src/components/mcp/MCPServerForm.tsx"),
+    "utf8",
+  );
+  const ordinaryCatalog = readFileSync(
+    join(root, "src/components/panels/OrdinaryMcpCatalog.tsx"),
     "utf8",
   );
   assert.match(source, /GovernanceAvailabilityBadge/);
@@ -64,6 +82,8 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   assert.match(source, /ConfirmDialog/);
   assert.match(source, /canManageMcp && !mcpGovernance\.governedUnavailable/);
   assert.match(source, /data-mcp-admin-controls/);
+  assert.match(source, /if \(!isAiAdmin\)/);
+  assert.match(source, /OrdinaryMcpCatalog/);
   assert.match(source, /data-mcp-summary-status/);
   assert.equal(
     (source.match(/<GovernanceAvailabilityBadge/g) ?? []).length,
@@ -110,6 +130,13 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
       form.indexOf("{/* ── Sandbox-specific fields ── */}"),
     "write-only re-entry warning must apply to every transport",
   );
+  assert.match(ordinaryCatalog, /data-ordinary-mcp-catalog/);
+  assert.match(ordinaryCatalog, /mcp\.available\.empty/);
+  assert.match(ordinaryCatalog, /mcpApi\.discoverTools/);
+  assert.doesNotMatch(
+    ordinaryCatalog,
+    /allowed_roles|role_quotas|credential|transport|server\.enabled|can_edit/,
+  );
 });
 
 test("mcp governance copy exists across shipped workbench locales", () => {
@@ -148,6 +175,8 @@ test("mcp governance copy exists across shipped workbench locales", () => {
   }
   assert.equal(typeof locale("en").mcp.form.removeRole, "string");
   assert.equal(typeof locale("zh").mcp.form.removeRole, "string");
+  assert.equal(locale("zh").mcp.available.empty, "暂无可用工具");
+  assert.equal(locale("en").mcp.available.empty, "No tools available");
 });
 
 test("share dialog fails closed until ai-platform share ACL projection exists", () => {

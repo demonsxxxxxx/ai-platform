@@ -1,5 +1,4 @@
 import { useEffect, type ReactNode } from "react";
-import { ProfileModal } from "../../profile/ProfileModal";
 import { Header } from "./Header";
 import {
   getAppViewportState,
@@ -12,7 +11,7 @@ import {
   shouldNudgeBrowserChrome,
 } from "./appBrowserChrome";
 import { isMobileDevice } from "../../../utils/mobile";
-import type { Project, VersionInfo } from "../../../types";
+import type { Project } from "../../../types";
 import type { TabType } from "./types";
 
 function isEditableElementFocused(): boolean {
@@ -49,14 +48,10 @@ function isStandaloneDisplayMode(): boolean {
 
 export interface AppShellProps {
   activeTab: TabType;
-  showProfileModal: boolean;
-  onCloseProfileModal: () => void;
-  versionInfo: VersionInfo | null;
   setMobileSidebarOpen: (open: boolean) => void;
   currentProjectId: string | null;
   projectManager: { projects: Project[] };
   onNewSession: () => void;
-  onShowProfile: () => void;
   sidebar?: ReactNode;
   children: ReactNode;
   // Model selection
@@ -83,14 +78,10 @@ export interface AppShellProps {
 
 export function AppShell({
   activeTab,
-  showProfileModal,
-  onCloseProfileModal,
-  versionInfo,
   setMobileSidebarOpen,
   currentProjectId,
   projectManager,
   onNewSession,
-  onShowProfile,
   sidebar,
   children,
   availableModels,
@@ -280,12 +271,6 @@ export function AppShell({
 
   return (
     <>
-      <ProfileModal
-        showProfileModal={showProfileModal}
-        onCloseProfileModal={onCloseProfileModal}
-        versionInfo={versionInfo}
-      />
-
       <div
         className="flex w-full overflow-hidden"
         style={{
@@ -303,7 +288,6 @@ export function AppShell({
             currentProjectId={currentProjectId}
             projectManager={projectManager}
             onNewSession={onNewSession}
-            onShowProfile={onShowProfile}
             availableModels={availableModels}
             currentModelId={currentModelId}
             onSelectModel={onSelectModel}

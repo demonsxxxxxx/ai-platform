@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { APP_ROUTE_PATHS } from "../appRouteManifest.ts";
 
@@ -43,7 +43,6 @@ test("all workbench navigation renderers reuse the central access policy", () =>
     "components/panels/SessionSidebar.tsx",
     "components/panels/SidebarParts/SidebarRail.tsx",
     "components/panels/SidebarParts/SessionListContent.tsx",
-    "components/layout/UserMenu.tsx",
   ]) {
     const source = read(relativePath);
     assert.match(source, /workbenchAccessPolicy/, relativePath);
@@ -51,11 +50,22 @@ test("all workbench navigation renderers reuse the central access policy", () =>
   }
 });
 
-test("profile renders only canonical role labels through existing locale keys", () => {
-  const profile = read("components/profile/tabs/ProfileInfoTab.tsx");
-  assert.match(profile, /getCanonicalCompanyRoleCode\(user\)/);
-  assert.match(profile, /workbench\.governance\.roleLabels\./);
-  assert.doesNotMatch(profile, /\{role\}\s*<\/span>/);
+test("account menu has no duplicate workbench navigation or profile entry", () => {
+  const userMenu = read("components/layout/UserMenu.tsx");
+
+  assert.match(userMenu, /data-user-menu-identity/);
+  assert.match(userMenu, /auth\.logout/);
+  assert.doesNotMatch(userMenu, /useNavigate|navItems|onShowProfile/);
+  assert.doesNotMatch(userMenu, /["'`]\/(?:chat|skills|mcp)["'`]/);
+});
+
+test("legacy profile source is absent from the authenticated workbench", () => {
+  assert.equal(
+    existsSync(resolve(src, "components/profile/ProfileModal.tsx")),
+    false,
+  );
+  assert.doesNotMatch(read("components/layout/AppContent/AppShell.tsx"), /ProfileModal/);
+  assert.doesNotMatch(read("components/layout/AppContent/index.tsx"), /showProfileModal/);
 });
 
 test("no-preference and fallback language are Chinese while explicit preference stays first", () => {

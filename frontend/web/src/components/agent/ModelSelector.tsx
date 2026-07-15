@@ -144,10 +144,10 @@ const ModelItem = memo(function ModelItem({
           } ${!canPin && !isPinned ? "cursor-not-allowed" : "cursor-pointer"}`}
           title={
             isPinned
-              ? t("profile.unpinModel")
+              ? t("models.unpinModel")
               : canPin
-                ? t("profile.pinModel")
-                : t("profile.maxPinnedModels", { max: MAX_PINNED })
+                ? t("models.pinModel")
+                : t("models.maxPinnedModels", { max: MAX_PINNED })
           }
         >
           {isPinned ? (
@@ -210,7 +210,7 @@ const ModelSelector = memo(function ModelSelector({
       }),
     );
     setDefaultTick((t) => t + 1);
-    toast.success(t("profile.defaultModelSet"));
+    toast.success(t("models.defaultModelSet"));
   }, [currentModelId, currentModelInfo, t]);
 
   useEffect(() => {
@@ -302,7 +302,7 @@ const ModelSelector = memo(function ModelSelector({
           onClick={handleSetDefault}
           className="absolute left-[1px] top-full mt-[1px] text-[0.7rem] text-stone-400 hover:text-stone-600 dark:text-stone-500 dark:hover:text-stone-300 transition-colors cursor-pointer select-none"
         >
-          {t("profile.setDefault")}
+          {t("models.setDefault")}
         </button>
       )}
 

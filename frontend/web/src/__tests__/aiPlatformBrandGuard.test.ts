@@ -24,7 +24,6 @@ const activeFiles = [
   "src/hooks/useSessionConfig.ts",
   "src/utils/sessionTitleEvents.ts",
   "src/components/common/selectionActionPrompt.ts",
-  "src/components/profile/ProfileModal.tsx",
   "src/components/chat/ChatInputHelpMenu.tsx",
   "src/components/chat/WelcomePage.tsx",
   "src/components/share/SharedPage.tsx",
