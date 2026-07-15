@@ -2,6 +2,8 @@ import type { TFunction } from "i18next";
 
 const BACKEND_ERROR_KEYS: Record<string, string> = {
   // Stable backend error codes
+  invalid_credentials: "backendErrors.invalidCredentials",
+  unauthorized: "backendErrors.unauthenticated",
   model_not_found: "errors.modelNotFound",
   model_disabled: "errors.modelDisabled",
   model_not_allowed: "errors.modelNotAllowed",
@@ -119,6 +121,49 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
   "models must be a non-empty list": "backendErrors.modelsRequired",
   "A model cannot be its own fallback": "backendErrors.modelFallbackSelf",
 };
+
+const SAFE_ERROR_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+
+function safeBackendErrorCode(detail: unknown): string | undefined {
+  const candidate =
+    typeof detail === "string"
+      ? detail
+      : detail !== null &&
+          typeof detail === "object" &&
+          !Array.isArray(detail) &&
+          Object.prototype.hasOwnProperty.call(detail, "code")
+        ? (detail as { code?: unknown }).code
+        : undefined;
+  return typeof candidate === "string" &&
+    SAFE_ERROR_CODE_PATTERN.test(candidate)
+    ? candidate
+    : undefined;
+}
+
+function statusFallbackKey(status: number): string {
+  if (status === 401) return "backendErrors.unauthenticated";
+  if (status === 403) return "errors.noPermission";
+  if (status === 429) return "backendErrors.tooManyRequests";
+  return "chat.requestFailed";
+}
+
+/** Project untrusted backend detail to an allowlisted translation or safe status copy. */
+export function projectSafeBackendError(
+  detail: unknown,
+  status: number,
+  t: TFunction,
+): { message: string; code?: string } {
+  const code = safeBackendErrorCode(detail);
+  const exactDetail = typeof detail === "string" ? detail : undefined;
+  const translationKey =
+    (code ? BACKEND_ERROR_KEYS[code] : undefined) ??
+    (exactDetail ? BACKEND_ERROR_KEYS[exactDetail] : undefined) ??
+    statusFallbackKey(status);
+  return {
+    message: t(translationKey, translationKey),
+    ...(code ? { code } : {}),
+  };
+}
 
 const BACKEND_ERROR_PATTERNS: Array<{
   pattern: RegExp;

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { ApiRequestError, authFetch } from "../fetch.ts";
+import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
 
 function installFetchAuthStubs({
   fetchImpl,
@@ -195,7 +196,57 @@ test("authFetch exposes only the safe server status and detail code to governanc
   }
 });
 
-test("authFetch clears browser auth state after cookie session revocation returns 401", async () => {
+test("authFetch never replays a stale POST or mutates a replacement marker after 401", async () => {
+  const calls: Array<{ url: string; body: BodyInit | null | undefined }> = [];
+  const stubs = installFetchAuthStubs({
+    initialLocalStorage: {
+      ai_platform_session_present: "marker-a",
+    },
+    fetchImpl: async (input, init) => {
+      calls.push({ url: String(input), body: init?.body });
+      localStorage.setItem("ai_platform_session_present", "marker-b");
+      return new Response(JSON.stringify({ detail: "unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+  let cacheClears = 0;
+  const unregister = registerAuthScopedCacheClearer(() => {
+    cacheClears += 1;
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        authFetch("/api/sessions", {
+          method: "POST",
+          body: JSON.stringify({ owner: "a", value: "must-not-replay" }),
+        }),
+      (error: unknown) => {
+        assert.equal(error instanceof ApiRequestError, true);
+        assert.equal((error as ApiRequestError).status, 401);
+        return true;
+      },
+    );
+    assert.deepEqual(calls, [
+      {
+        url: "/api/sessions",
+        body: JSON.stringify({ owner: "a", value: "must-not-replay" }),
+      },
+    ]);
+    assert.equal(stubs.store.get("ai_platform_session_present"), "marker-b");
+    assert.deepEqual(stubs.events, []);
+    assert.equal(cacheClears, 0);
+    assert.deepEqual(stubs.removedKeys, []);
+    assert.equal(stubs.sessionStore.has("redirect_after_login"), false);
+  } finally {
+    unregister();
+    stubs.restore();
+  }
+});
+
+test("authFetch treats force-relogin as a typed safe error without global side effects", async () => {
   const calls: string[] = [];
   const stubs = installFetchAuthStubs({
     initialLocalStorage: {
@@ -203,72 +254,93 @@ test("authFetch clears browser auth state after cookie session revocation return
     },
     fetchImpl: async (input) => {
       calls.push(String(input));
-      return new Response(JSON.stringify({ detail: "unauthorized" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ detail: { message: "proxy token=private" } }),
+        {
+        status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Force-Relogin": "true",
+          },
+        },
+      );
     },
   });
 
   try {
-    await assert.rejects(() => authFetch("/api/sessions"), /Unauthorized/);
-    assert.deepEqual(calls, ["/api/sessions", "/api/ai/auth/me"]);
-    assert.deepEqual(stubs.events, ["auth:logout"]);
-    assert.deepEqual(stubs.removedKeys, ["ai_platform_session_present"]);
-    assert.equal(stubs.sessionStore.get("redirect_after_login"), "/chat");
+    await assert.rejects(
+      () => authFetch("/api/sessions"),
+      (error: unknown) => {
+        assert.equal(error instanceof ApiRequestError, true);
+        assert.equal((error as ApiRequestError).status, 401);
+        assert.doesNotMatch((error as Error).message, /proxy|token|private/i);
+        return true;
+      },
+    );
+    assert.deepEqual(calls, ["/api/sessions"]);
+    assert.equal(
+      stubs.store.get("ai_platform_session_present"),
+      "session-marker",
+    );
+    assert.deepEqual(stubs.events, []);
+    assert.deepEqual(stubs.removedKeys, []);
+    assert.equal(stubs.sessionStore.size, 0);
   } finally {
     stubs.restore();
   }
 });
 
-test("authFetch retries once when the cookie session probe succeeds after a 401", async () => {
-  const calls: string[] = [];
+test("authFetch preserves AbortError without translating or wrapping it", async () => {
+  const abort = new DOMException("aborted", "AbortError");
   const stubs = installFetchAuthStubs({
-    initialLocalStorage: {
-      ai_platform_session_present: "session-marker",
-    },
-    fetchImpl: async (input) => {
-      const url = String(input);
-      calls.push(url);
-      if (calls.length === 1) {
-        return new Response(JSON.stringify({ detail: "unauthorized" }), {
-          status: 401,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      if (url === "/api/ai/auth/me") {
-        return new Response(
-          JSON.stringify({
-            user_id: "dev001",
-            user_name: "dev001",
-            display_name: "Dev",
-            tenant_id: "default",
-            roles: ["user"],
-            permissions: ["agent:use"],
-            is_admin: false,
-            source: "company-login",
-          }),
-          {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          },
-        );
-      }
-      return new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+    fetchImpl: async () => {
+      throw abort;
     },
   });
 
   try {
-    const response = await authFetch<{ ok: boolean }>("/api/sessions");
-
-    assert.deepEqual(response, { ok: true });
-    assert.deepEqual(calls, ["/api/sessions", "/api/ai/auth/me", "/api/sessions"]);
-    assert.deepEqual(stubs.events, []);
+    await assert.rejects(
+      () => authFetch("/api/sessions"),
+      (error: unknown) => error === abort,
+    );
   } finally {
     stubs.restore();
+  }
+});
+
+test("authFetch never projects raw response diagnostics into ApiRequestError messages", async () => {
+  const cases: Array<{ status: number; body: string; contentType?: string }> = [
+    { status: 401, body: JSON.stringify({ detail: "/srv/private?token=secret" }) },
+    { status: 403, body: JSON.stringify({ detail: { message: "Bearer private" } }) },
+    { status: 429, body: JSON.stringify({ detail: { nested: { code: "invalid_credentials" } } }) },
+    { status: 502, body: "<html>proxy diagnostics token=secret</html>", contentType: "text/html" },
+  ];
+
+  for (const item of cases) {
+    const stubs = installFetchAuthStubs({
+      fetchImpl: async () =>
+        new Response(item.body, {
+          status: item.status,
+          statusText: "private upstream token=secret",
+          headers: { "Content-Type": item.contentType ?? "application/json" },
+        }),
+    });
+    try {
+      await assert.rejects(
+        () => authFetch("/api/sessions"),
+        (error: unknown) => {
+          assert.equal(error instanceof ApiRequestError, true);
+          assert.equal((error as ApiRequestError).status, item.status);
+          assert.doesNotMatch(
+            (error as Error).message,
+            /private|token|proxy|html|upstream|srv/i,
+          );
+          return true;
+        },
+      );
+    } finally {
+      stubs.restore();
+    }
   }
 });
 

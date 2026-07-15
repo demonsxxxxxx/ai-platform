@@ -147,7 +147,7 @@ test("cross-tab auth storage parsing treats session marker removal as logout", (
       oldValue: "old-marker",
       newValue: "new-marker",
     }),
-    "login",
+    "replacement",
   );
   assert.equal(
     parseAuthStorageEvent({

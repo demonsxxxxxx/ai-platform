@@ -148,7 +148,7 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
 
 
 @pytest.mark.asyncio
-async def test_authorized_session_runs_use_persisted_queue_admission_order_for_created_at_ties():
+async def test_authorized_session_runs_use_canonical_legacy_tie_break_order():
     conn = RecordingConnection()
 
     await repositories.list_authorized_session_runs(
@@ -167,7 +167,11 @@ async def test_authorized_session_runs_use_persisted_queue_admission_order_for_c
     assert "length(run_events.payload_json->>'queue_admission_ordinal') <= 19" in sql
     assert "<= '9223372036854775807'" in sql
     assert "case when" in sql
-    assert "order by runs.created_at desc, queue_admission.queue_admission_ordinal desc nulls last" in sql
+    created_at_order = sql.index("runs.created_at desc")
+    ordinal_order = sql.index("queue_admission.queue_admission_ordinal desc nulls last")
+    queued_at_order = sql.index("runs.queued_at desc nulls last")
+    id_order = sql.index("runs.id desc")
+    assert created_at_order < ordinal_order < queued_at_order < id_order
     assert params == ("tenant-a", "user-a", "session-a", 50)
 
 

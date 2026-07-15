@@ -8931,8 +8931,12 @@ async def list_authorized_session_runs(
         where runs.tenant_id = %s
           and runs.user_id = %s
           and runs.session_id = %s
+        -- queued_at and id are canonical deterministic fallbacks for legacy
+        -- exact ties only; they are not durable run-creation authority (#438).
         order by runs.created_at desc,
-                 queue_admission.queue_admission_ordinal desc nulls last
+                 queue_admission.queue_admission_ordinal desc nulls last,
+                 runs.queued_at desc nulls last,
+                 runs.id desc
         limit %s
         """,
         (tenant_id, user_id, session_id, limit),

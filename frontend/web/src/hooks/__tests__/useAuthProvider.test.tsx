@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ApiRequestError } from "../../services/api/fetch.ts";
+import { registerAuthScopedCacheClearer } from "../../services/api/authCacheInvalidation.ts";
 import type { User } from "../../types/auth.ts";
 
 type Listener = (event: { type: string }) => void;
@@ -370,6 +371,7 @@ async function mountAuthPageHarness(
     getOAuthProviders: authApi.getOAuthProviders,
     updateMetadata: authApi.updateMetadata,
     toastSuccess: toast.success,
+    toastError: toast.error,
   };
   configure(authApi);
   authApi.getOAuthProviders = async () => ({
@@ -390,10 +392,15 @@ async function mountAuthPageHarness(
   let snapshot: ReturnType<typeof useAuth> | null = null;
   const successfulRedirects: Array<string | undefined> = [];
   const successToasts: unknown[] = [];
+  const errorToasts: unknown[] = [];
   toast.success = ((message: unknown) => {
     successToasts.push(message);
     return "test-toast";
   }) as typeof toast.success;
+  toast.error = ((message: unknown) => {
+    errorToasts.push(message);
+    return "test-error-toast";
+  }) as typeof toast.error;
   function Probe() {
     snapshot = useAuth();
     return null;
@@ -429,6 +436,7 @@ async function mountAuthPageHarness(
     container,
     successfulRedirects,
     successToasts,
+    errorToasts,
     get auth() {
       assert.ok(snapshot, "auth page provider probe is mounted");
       return snapshot;
@@ -443,6 +451,7 @@ async function mountAuthPageHarness(
         updateMetadata: originals.updateMetadata,
       });
       toast.success = originals.toastSuccess;
+      toast.error = originals.toastError;
       storage.clear();
     },
   };
@@ -612,6 +621,278 @@ test("the current auth owner handles 401 by clearing only its local session stat
     assert.equal(mounted.auth.user, null);
     assert.equal(mounted.auth.isAuthenticated, false);
     assert.equal(storage.has("ai_platform_session_present"), false);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("cross-tab marker replacement clears principal and caches before hydrating the new subject", async () => {
+  const replacement = deferred<User>();
+  let currentUserCalls = 0;
+  let replacementSignal: AbortSignal | undefined;
+  let cacheClears = 0;
+  const unregister = registerAuthScopedCacheClearer(() => {
+    cacheClears += 1;
+  });
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async (options?: { signal?: AbortSignal }) => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      replacementSignal = options?.signal;
+      return replacement.promise;
+    };
+  });
+  try {
+    assert.equal(mounted.auth.user?.id, "admin-a");
+    await mounted.React.act(async () => {
+      storage.set("ai_platform_session_present", "marker-b");
+      windowTarget.dispatchEvent(
+        Object.assign(
+          { type: "storage" },
+          {
+            key: "ai_platform_session_present",
+            oldValue: "test-session-marker",
+            newValue: "marker-b",
+          },
+        ),
+      );
+      await Promise.resolve();
+    });
+
+    assert.equal(mounted.auth.user, null);
+    assert.equal(mounted.auth.token, null);
+    assert.deepEqual(mounted.auth.permissions, []);
+    assert.equal(cacheClears, 1);
+    assert.equal(storage.get("ai_platform_session_present"), "marker-b");
+    assert.equal(replacementSignal?.aborted, false);
+
+    replacement.resolve(authUser("admin-b", "tenant-b"));
+    await mounted.flush();
+    assert.equal((mounted.auth.user as User | null)?.id, "admin-b");
+    assert.equal((mounted.auth.user as User | null)?.tenant_id, "tenant-b");
+    assert.equal(storage.get("ai_platform_session_present"), "marker-b");
+  } finally {
+    unregister();
+    await mounted.cleanup();
+  }
+});
+
+test("current cross-tab replacement hydration failure removes the replacement marker", async () => {
+  let currentUserCalls = 0;
+  let cacheClears = 0;
+  const unregister = registerAuthScopedCacheClearer(() => {
+    cacheClears += 1;
+  });
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      throw new Error("replacement transport unavailable");
+    };
+  });
+  try {
+    await mounted.React.act(async () => {
+      storage.set("ai_platform_session_present", "marker-b-failed");
+      windowTarget.dispatchEvent(
+        Object.assign(
+          { type: "storage" },
+          {
+            key: "ai_platform_session_present",
+            oldValue: "test-session-marker",
+            newValue: "marker-b-failed",
+          },
+        ),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.equal(mounted.auth.user, null);
+    assert.equal(mounted.auth.token, null);
+    assert.deepEqual(mounted.auth.permissions, []);
+    assert.equal(storage.has("ai_platform_session_present"), false);
+    assert.equal(cacheClears, 2);
+  } finally {
+    unregister();
+    await mounted.cleanup();
+  }
+});
+
+test("marker epoch fences a stale 401 before its storage event can clear the new subject", async () => {
+  const initial = deferred<User>();
+  let cacheClears = 0;
+  const unregister = registerAuthScopedCacheClearer(() => {
+    cacheClears += 1;
+  });
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => initial.promise;
+  });
+  try {
+    storage.set("ai_platform_session_present", "marker-b");
+    initial.reject(new ApiRequestError("safe", 401, "unauthorized"));
+    await mounted.flush();
+
+    assert.equal(storage.get("ai_platform_session_present"), "marker-b");
+    assert.equal(cacheClears, 0);
+    assert.equal(mounted.auth.user, null);
+  } finally {
+    unregister();
+    await mounted.cleanup();
+  }
+});
+
+test("login hydration rollback preserves the original error and fails closed when logout fails", async () => {
+  const hydrationError = new ApiRequestError("safe hydration failure", 500);
+  const logoutError = new Error("logout transport failure");
+  let currentUserCalls = 0;
+  let logoutCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      throw hydrationError;
+    };
+    api.login = async () => undefined;
+    api.logout = async () => {
+      logoutCalls += 1;
+      throw logoutError;
+    };
+  });
+  try {
+    await mounted.React.act(async () => {
+      await assert.rejects(
+        () => mounted.auth.login({ username: "admin-b", password: "safe-test" }),
+        (error: unknown) => error === hydrationError,
+      );
+    });
+
+    assert.equal(logoutCalls, 1);
+    assert.equal(mounted.auth.user, null);
+    assert.equal(mounted.auth.token, null);
+    assert.deepEqual(mounted.auth.permissions, []);
+    assert.equal(storage.has("ai_platform_session_present"), false);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("current login rollback fails closed for logout success, 500, network, and abort", async () => {
+  const logoutOutcomes: Array<unknown | null> = [
+    null,
+    new ApiRequestError("safe logout failure", 500),
+    new Error("network unavailable"),
+    new DOMException("aborted", "AbortError"),
+  ];
+
+  for (const [index, logoutFailure] of logoutOutcomes.entries()) {
+    const hydrationError = new ApiRequestError(
+      `safe hydration failure ${index}`,
+      500,
+    );
+    let currentUserCalls = 0;
+    let logoutCalls = 0;
+    const mounted = await mountAuthHarness((api) => {
+      api.getCurrentUser = async () => {
+        currentUserCalls += 1;
+        if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+        throw hydrationError;
+      };
+      api.login = async () => undefined;
+      api.logout = async () => {
+        logoutCalls += 1;
+        if (logoutFailure) throw logoutFailure;
+      };
+    });
+    try {
+      await mounted.React.act(async () => {
+        await assert.rejects(
+          () => mounted.auth.login({ username: "admin-b", password: "safe-test" }),
+          (error: unknown) => error === hydrationError,
+        );
+      });
+      assert.equal(logoutCalls, 1);
+      assert.equal(mounted.auth.user, null);
+      assert.equal(mounted.auth.token, null);
+      assert.deepEqual(mounted.auth.permissions, []);
+      assert.equal(storage.has("ai_platform_session_present"), false);
+    } finally {
+      await mounted.cleanup();
+    }
+  }
+});
+
+test("OAuth code-state hydration rollback preserves the original error when logout fails", async () => {
+  const hydrationError = new ApiRequestError("safe OAuth hydration failure", 500);
+  let currentUserCalls = 0;
+  let logoutCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      throw hydrationError;
+    };
+    api.handleOAuthCallback = async () => ({
+      access_token: "cookie-session",
+      token_type: "bearer",
+    });
+    api.logout = async () => {
+      logoutCalls += 1;
+      throw new Error("OAuth rollback logout failure");
+    };
+  });
+  try {
+    await mounted.React.act(async () => {
+      await assert.rejects(
+        () => mounted.auth.handleOAuthCallback("github", "code", "state"),
+        (error: unknown) => error === hydrationError,
+      );
+    });
+
+    assert.equal(logoutCalls, 1);
+    assert.equal(mounted.auth.user, null);
+    assert.equal(mounted.auth.token, null);
+    assert.deepEqual(mounted.auth.permissions, []);
+    assert.equal(storage.has("ai_platform_session_present"), false);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("marker replacement before rollback skips server logout and preserves the replacement subject", async () => {
+  const loginHydration = deferred<User>();
+  const hydrationError = new ApiRequestError("safe hydration failure", 500);
+  let currentUserCalls = 0;
+  let logoutCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      return loginHydration.promise;
+    };
+    api.login = async () => undefined;
+    api.logout = async () => {
+      logoutCalls += 1;
+    };
+  });
+  try {
+    let loginPromise!: ReturnType<typeof mounted.auth.login>;
+    await mounted.React.act(async () => {
+      loginPromise = mounted.auth.login({
+        username: "admin-b",
+        password: "safe-test",
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    storage.set("ai_platform_session_present", "marker-cross-tab-b");
+    loginHydration.reject(hydrationError);
+    const outcome = await loginPromise;
+    await mounted.flush();
+
+    assert.deepEqual(outcome, { status: "cancelled" });
+    assert.equal(logoutCalls, 0);
+    assert.equal(storage.get("ai_platform_session_present"), "marker-cross-tab-b");
+    assert.equal(mounted.auth.user?.id, "admin-a");
   } finally {
     await mounted.cleanup();
   }
@@ -821,18 +1102,26 @@ test("OAuth callback unmount fence prevents deferred completion navigation", asy
 
 test("current OAuth fragment hydration failure clears the previous principal and marker", async () => {
   let currentUserCalls = 0;
+  let logoutCalls = 0;
   const mounted = await mountAuthHarness((api) => {
     api.getCurrentUser = async () => {
       currentUserCalls += 1;
       if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
       throw new Error("test transport failure");
     };
+    api.logout = async () => {
+      logoutCalls += 1;
+      throw new Error("rollback logout failure");
+    };
   });
   try {
-    const outcome = await mounted.auth.completeOAuthSession(
-      "oauth-access",
-      "oauth-refresh",
-    );
+    let outcome!: Awaited<ReturnType<typeof mounted.auth.completeOAuthSession>>;
+    await mounted.React.act(async () => {
+      outcome = await mounted.auth.completeOAuthSession(
+        "oauth-access",
+        "oauth-refresh",
+      );
+    });
     await mounted.flush();
 
     assert.deepEqual(outcome, { status: "failed" });
@@ -840,6 +1129,7 @@ test("current OAuth fragment hydration failure clears the previous principal and
     assert.equal(mounted.auth.token, null);
     assert.deepEqual(mounted.auth.permissions, []);
     assert.equal(storage.has("ai_platform_session_present"), false);
+    assert.equal(logoutCalls, 1);
   } finally {
     await mounted.cleanup();
   }
@@ -848,6 +1138,7 @@ test("current OAuth fragment hydration failure clears the previous principal and
 test("stale OAuth fragment failure cannot clear a newer login principal", async () => {
   const staleOAuthHydration = deferred<User>();
   let currentUserCalls = 0;
+  let logoutCalls = 0;
   const mounted = await mountAuthHarness((api) => {
     api.getCurrentUser = async () => {
       currentUserCalls += 1;
@@ -856,6 +1147,9 @@ test("stale OAuth fragment failure cannot clear a newer login principal", async 
       return authUser("admin-b", "tenant-b");
     };
     api.login = async () => undefined;
+    api.logout = async () => {
+      logoutCalls += 1;
+    };
   });
   try {
     let oauthPromise!: ReturnType<typeof mounted.auth.completeOAuthSession>;
@@ -877,6 +1171,7 @@ test("stale OAuth fragment failure cannot clear a newer login principal", async 
     assert.equal(mounted.auth.user?.id, "admin-b");
     assert.equal(mounted.auth.user?.tenant_id, "tenant-b");
     assert.equal(storage.has("ai_platform_session_present"), true);
+    assert.equal(logoutCalls, 0);
   } finally {
     await mounted.cleanup();
   }
@@ -1032,6 +1327,45 @@ test("unmount resolves a pending login hydration as cancelled without an unhandl
     assert.deepEqual(unhandled, []);
   } finally {
     process.off("unhandledRejection", onUnhandled);
+    await mounted.cleanup();
+  }
+});
+
+test("AuthPage projects unknown transport diagnostics to existing localized generic copy", async () => {
+  const mounted = await mountAuthPageHarness((api) => {
+    api.getCurrentUser = async () => authUser("admin-a", "tenant-a");
+    api.login = async () => {
+      throw new Error("/private/auth.log token=secret proxy diagnostic");
+    };
+  });
+  try {
+    const inputs = findElements(mounted.container, "input");
+    const usernameInput = inputs[0];
+    const passwordInput = inputs[1];
+    const form = findElements(mounted.container, "form")[0];
+    assert.ok(usernameInput && passwordInput && form);
+
+    await mounted.React.act(async () => {
+      usernameInput.value = "admin-b";
+      reactProps(usernameInput).onChange?.({ target: usernameInput } as never);
+      passwordInput.value = "safe-test";
+      reactProps(passwordInput).onChange?.({ target: passwordInput } as never);
+      await Promise.resolve();
+    });
+    await mounted.React.act(async () => {
+      reactProps(form).onSubmit?.({ preventDefault() {} } as never);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.equal(mounted.errorToasts.length, 1);
+    assert.doesNotMatch(
+      String(mounted.errorToasts[0]),
+      /private|token|secret|proxy|diagnostic/i,
+    );
+    assert.deepEqual(mounted.successToasts, []);
+    assert.deepEqual(mounted.successfulRedirects, []);
+  } finally {
     await mounted.cleanup();
   }
 });

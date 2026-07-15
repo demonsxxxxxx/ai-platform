@@ -1778,23 +1778,24 @@ async def test_lambchat_session_events_use_persisted_message_repository_contract
     assert "不得跨 tenant 投影" not in response.text
 
 
-def test_lambchat_session_events_select_current_run_by_authoritative_queue_order_when_created_at_ties(monkeypatch):
+def test_lambchat_routes_keep_running_latest_run_stable_with_legacy_queued_at_ties(monkeypatch):
     async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
         return {"id": session_id}
 
     async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
-        assert limit == 50
+        assert limit in (10, 50)
         return [
             {
                 "id": "run-created-newer",
                 "trace_id": "trace-newer",
                 "agent_id": "general-agent",
                 "skill_id": "general-chat",
-                "status": "succeeded",
-                "result_json": {"message": "newer finished first"},
+                "status": "running",
+                "result_json": {},
                 "created_at": "2026-07-15T02:00:00Z",
-                "queue_admission_ordinal": 42,
-                "finished_at": "2026-07-15T02:05:00Z",
+                "queue_admission_ordinal": None,
+                "queued_at": "2026-07-15T02:00:02Z",
+                "finished_at": None,
             },
             {
                 "id": "run-created-older",
@@ -1806,7 +1807,8 @@ def test_lambchat_session_events_select_current_run_by_authoritative_queue_order
                 "error_code": "run_failed",
                 "error_message": "older finished later",
                 "created_at": "2026-07-15T02:00:00Z",
-                "queue_admission_ordinal": 41,
+                "queue_admission_ordinal": None,
+                "queued_at": "2026-07-15T02:00:01Z",
                 "finished_at": "2026-07-15T03:00:00Z",
             },
         ]
@@ -1823,10 +1825,25 @@ def test_lambchat_session_events_select_current_run_by_authoritative_queue_order
     )
     client = TestClient(create_app())
 
-    response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+    first_events = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+    second_events = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+    first_status = client.get("/api/chat/sessions/ses_a/status", headers=auth_headers())
+    second_status = client.get("/api/chat/sessions/ses_a/status", headers=auth_headers())
 
-    assert response.status_code == 200
-    assert response.json()["current_run_id"] == "run-created-newer"
+    assert [response.status_code for response in (first_events, second_events, first_status, second_status)] == [
+        200,
+        200,
+        200,
+        200,
+    ]
+    assert [first_events.json()["current_run_id"], second_events.json()["current_run_id"]] == [
+        "run-created-newer",
+        "run-created-newer",
+    ]
+    assert [first_status.json()["raw_status"], second_status.json()["raw_status"]] == [
+        "running",
+        "running",
+    ]
 
 
 def test_lambchat_exact_session_events_restore_an_authorized_run_beyond_the_latest_fifty(monkeypatch):

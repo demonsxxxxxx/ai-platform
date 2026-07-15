@@ -11,10 +11,9 @@ import type {
   RegisterResponse,
 } from "../../types";
 import { API_BASE } from "./config";
-import { clearAuthScopedCaches } from "./authCacheInvalidation";
-import { authFetch } from "./fetch";
-import { setTokens } from "./token";
-import { clearAuthState, refreshTokens } from "./tokenManager";
+import { ApiRequestError, authFetch } from "./fetch";
+import { refreshTokens } from "./tokenManager";
+import { projectSafeBackendError } from "../../utils/backendErrors";
 import i18n from "../../i18n";
 
 interface PrincipalResponseWire {
@@ -80,9 +79,6 @@ export const authApi = {
       },
     );
 
-    clearAuthScopedCaches();
-    setTokens("cookie-session");
-    window.dispatchEvent(new CustomEvent("auth:login"));
   },
 
   /**
@@ -146,17 +142,26 @@ export const authApi = {
       },
       signal,
     });
-    if (response.ok || response.status === 401 || response.status === 403) {
-      clearAuthState();
-      return;
-    }
+    if (response.ok || response.status === 401 || response.status === 403) return;
 
-    const errorData = await response.json().catch(() => ({}));
+    const payload: unknown = await response.json().catch(() => null);
     const detail =
-      typeof errorData.detail === "string"
-        ? errorData.detail
-        : `Request failed: ${response.statusText}`;
-    throw new Error(detail);
+      payload !== null &&
+      typeof payload === "object" &&
+      !Array.isArray(payload) &&
+      Object.prototype.hasOwnProperty.call(payload, "detail")
+        ? (payload as { detail?: unknown }).detail
+        : undefined;
+    const projection = projectSafeBackendError(
+      detail,
+      response.status,
+      i18n.t.bind(i18n),
+    );
+    throw new ApiRequestError(
+      projection.message,
+      response.status,
+      projection.code,
+    );
   },
 
   /**
@@ -251,10 +256,6 @@ export const authApi = {
         signal,
       },
     );
-
-    clearAuthScopedCaches();
-    setTokens("cookie-session");
-    window.dispatchEvent(new CustomEvent("auth:login"));
 
     return {
       access_token: "cookie-session",

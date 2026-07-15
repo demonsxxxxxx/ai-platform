@@ -8,14 +8,14 @@ const useAuthSource = readFileSync(
 );
 
 test("useAuth bootstraps browser auth from the backend cookie session probe", () => {
-  assert.match(useAuthSource, /const hadSessionMarker = !!getAccessToken\(\);/);
+  assert.match(useAuthSource, /const hadSessionMarker = !!owner\.expectedMarker;/);
   assert.match(
     useAuthSource,
     /const currentUser = await authApi\.getCurrentUser\(\{[\s\S]*signal: owner\.abortController\.signal/,
   );
   assert.match(
     useAuthSource,
-    /if \(!hadSessionMarker\) \{[\s\S]*setTokens\("cookie-session"\);[\s\S]*applyAuthenticatedUser\(currentUser, owner\)/,
+    /if \(!hadSessionMarker && !establishLocalSession\(owner\)\) return;[\s\S]*applyAuthenticatedUser\(currentUser, owner\)/,
   );
   assert.doesNotMatch(
     useAuthSource,
@@ -27,7 +27,7 @@ test("useAuth listens for cross-tab cookie-session marker changes", () => {
   assert.match(useAuthSource, /window\.addEventListener\("storage", handleStorage\)/);
   assert.match(
     useAuthSource,
-    /const handleStorage = \(event: StorageEvent\) => \{[\s\S]*handleBrowserAuthStorageEvent\(event, refreshUser\);[\s\S]*};/,
+    /const handleStorage = \(event: StorageEvent\) => \{[\s\S]*classifyBrowserAuthStorageEvent\(event\);[\s\S]*clearAuthPresentation\(owner, false\);[\s\S]*hydrateOwnedUser\(owner, true\);[\s\S]*};/,
   );
   assert.match(
     useAuthSource,
@@ -42,7 +42,18 @@ test("useAuth listens for cross-tab cookie-session marker changes", () => {
 test("useAuth rolls back the backend session when login or OAuth hydration fails", () => {
   assert.match(
     useAuthSource,
-    /let sessionEstablished = false;[\s\S]*sessionEstablished = true;[\s\S]*if \(sessionEstablished\) \{[\s\S]*await authApi\.logout\(owner\.abortController\.signal\);[\s\S]*throw error;/,
+    /let sessionEstablished = false;[\s\S]*sessionEstablished = true;[\s\S]*if \(sessionEstablished\) \{[\s\S]*await rollbackOwnedSession\(owner\);[\s\S]*throw error;/,
+  );
+});
+
+test("useAuth owner is fenced by both generation and the exact session marker", () => {
+  assert.match(
+    useAuthSource,
+    /interface AuthOperationOwner \{[\s\S]*expectedMarker: string \| null;/,
+  );
+  assert.match(
+    useAuthSource,
+    /isOwnedAuthOperation\(owner\) && getAccessToken\(\) === owner\.expectedMarker/,
   );
 });
 

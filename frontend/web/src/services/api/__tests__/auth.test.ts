@@ -157,7 +157,7 @@ test("subject-changing auth transports forward their operation abort signal", as
   }
 });
 
-test("login clears auth-scoped preview caches and marks cookie session without storing bearer tokens", async () => {
+test("login transport leaves cache, marker, and identity events to the auth owner", async () => {
   const stubs = installAuthApiBrowserStubs();
   let clearCount = 0;
   const unregister = registerAuthScopedCacheClearer(() => {
@@ -167,23 +167,20 @@ test("login clears auth-scoped preview caches and marks cookie session without s
   try {
     await authApi.login({ username: "user@example.com", password: "secret" });
 
-    assert.equal(clearCount, 1);
+    assert.equal(clearCount, 0);
     assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/login"]);
     assert.equal(stubs.fetchInit[0].credentials, "include");
-    assert.match(
-      stubs.stored.get("ai_platform_session_present") ?? "",
-      /^\d+-[a-z0-9]+$/i,
-    );
+    assert.equal(stubs.stored.get("ai_platform_session_present"), undefined);
     assert.equal(stubs.stored.get("access_token"), undefined);
     assert.equal(stubs.stored.get("refresh_token"), undefined);
-    assert.deepEqual(stubs.events, ["auth:login"]);
+    assert.deepEqual(stubs.events, []);
   } finally {
     unregister();
     stubs.restore();
   }
 });
 
-test("OAuth token callback clears auth-scoped preview caches before marking cookie session", async () => {
+test("OAuth callback transport leaves local auth state to the auth owner", async () => {
   const stubs = installAuthApiBrowserStubs();
   let clearCount = 0;
   const unregister = registerAuthScopedCacheClearer(() => {
@@ -193,11 +190,8 @@ test("OAuth token callback clears auth-scoped preview caches before marking cook
   try {
     await authApi.handleOAuthCallback("github", "code", "state");
 
-    assert.equal(clearCount, 1);
-    assert.match(
-      stubs.stored.get("ai_platform_session_present") ?? "",
-      /^\d+-[a-z0-9]+$/i,
-    );
+    assert.equal(clearCount, 0);
+    assert.equal(stubs.stored.get("ai_platform_session_present"), undefined);
     assert.equal(stubs.stored.get("access_token"), undefined);
     assert.equal(stubs.stored.get("refresh_token"), undefined);
   } finally {
@@ -242,7 +236,7 @@ test("cookie-session probe clears auth-scoped preview caches without restoring b
   }
 });
 
-test("logout calls backend logout before clearing browser auth state", async () => {
+test("logout transport does not clear owner-managed browser auth state", async () => {
   const stubs = installAuthApiBrowserStubs({ status: "logged_out" });
   stubs.stored.set("ai_platform_session_present", "session-marker");
   stubs.stored.set("access_token", "legacy-access");
@@ -254,24 +248,32 @@ test("logout calls backend logout before clearing browser auth state", async () 
     assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/logout"]);
     assert.equal(stubs.fetchInit[0].method, "POST");
     assert.equal(stubs.fetchInit[0].credentials, "include");
-    assert.equal(stubs.stored.get("ai_platform_session_present"), undefined);
-    assert.equal(stubs.stored.get("access_token"), undefined);
-    assert.equal(stubs.stored.get("refresh_token"), undefined);
-    assert.deepEqual(stubs.events, ["auth:logout"]);
+    assert.equal(stubs.stored.get("ai_platform_session_present"), "session-marker");
+    assert.equal(stubs.stored.get("access_token"), "legacy-access");
+    assert.equal(stubs.stored.get("refresh_token"), "legacy-refresh");
+    assert.deepEqual(stubs.events, []);
   } finally {
     stubs.restore();
   }
 });
 
-test("logout keeps browser auth state when backend logout fails", async () => {
+test("logout transport failure is typed and never exposes raw backend detail", async () => {
   const stubs = installAuthApiBrowserStubs(
-    { detail: "logout_failed" },
+    { detail: { message: "logout failed /private/token=secret" } },
     500,
   );
   stubs.stored.set("ai_platform_session_present", "session-marker");
 
   try {
-    await assert.rejects(() => authApi.logout(), /logout_failed/i);
+    await assert.rejects(
+      () => authApi.logout(),
+      (error: unknown) => {
+        assert.equal(error instanceof ApiRequestError, true);
+        assert.equal((error as ApiRequestError).status, 500);
+        assert.doesNotMatch((error as Error).message, /logout|private|token|secret/i);
+        return true;
+      },
+    );
 
     assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/logout"]);
     assert.equal(stubs.stored.get("ai_platform_session_present"), "session-marker");
@@ -290,6 +292,6 @@ test("OAuth fragment completion is owned before clearing caches and setting the 
   assert.match(useAuthSource, /const completeOAuthSession = useCallback/);
   assert.match(
     useAuthSource,
-    /const owner = beginAuthOperation\(\);[\s\S]*clearAuthScopedCaches\(\);[\s\S]*setTokens\(accessToken, refreshToken\);[\s\S]*signal: owner\.abortController\.signal/,
+    /const owner = beginAuthOperation\(\);[\s\S]*establishLocalSession\(owner, accessToken, refreshToken\)[\s\S]*signal: owner\.abortController\.signal/,
   );
 });

@@ -154,12 +154,15 @@ export function setRedirectPath(path: string): void {
 
 export function parseAuthStorageEvent(
   event: StorageEventLike,
-): "login" | "logout" | null {
+): "login" | "replacement" | "logout" | null {
   if (event.key !== AUTH_SESSION_MARKER_KEY) {
     return null;
   }
-  if (event.newValue && event.oldValue !== event.newValue) {
+  if (event.newValue && !event.oldValue) {
     return "login";
+  }
+  if (event.newValue && event.oldValue !== event.newValue) {
+    return "replacement";
   }
   if (event.oldValue && !event.newValue) {
     return "logout";

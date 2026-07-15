@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TFunction } from "i18next";
-import { translateBackendError } from "../backendErrors.ts";
+import {
+  projectSafeBackendError,
+  translateBackendError,
+} from "../backendErrors.ts";
 
 const t = ((key: string, options?: { permission?: string }) =>
   options?.permission
@@ -80,4 +83,55 @@ test("returns unknown backend messages unchanged", () => {
     translateBackendError("unexpected_backend_error", t),
     "unexpected_backend_error",
   );
+});
+
+test("safe error projection translates only allowlisted exact detail or code", () => {
+  assert.deepEqual(projectSafeBackendError("invalid_credentials", 401, t), {
+    code: "invalid_credentials",
+    message: "translated:backendErrors.invalidCredentials",
+  });
+  assert.deepEqual(
+    projectSafeBackendError(
+      { code: "invalid_credentials", message: "token=private" },
+      401,
+      t,
+    ),
+    {
+      code: "invalid_credentials",
+      message: "translated:backendErrors.invalidCredentials",
+    },
+  );
+  assert.deepEqual(
+    projectSafeBackendError("unexpected_backend_error", 500, t),
+    {
+      code: "unexpected_backend_error",
+      message: "translated:chat.requestFailed",
+    },
+  );
+});
+
+test("safe error projection rejects private diagnostics and uses status-localized fallbacks", () => {
+  const privateValues: unknown[] = [
+    "C:\\private\\agent.log?token=secret",
+    "<html>proxy diagnostic</html>",
+    { message: "Bearer private-token" },
+    { detail: { code: "invalid_credentials" } },
+    { code: "a".repeat(65) },
+    ["invalid_credentials"],
+  ];
+  const expectedKeys = new Map([
+    [401, "backendErrors.unauthenticated"],
+    [403, "errors.noPermission"],
+    [429, "backendErrors.tooManyRequests"],
+    [500, "chat.requestFailed"],
+  ]);
+
+  for (const [status, key] of expectedKeys) {
+    for (const detail of privateValues) {
+      const projection = projectSafeBackendError(detail, status, t);
+      assert.equal(projection.code, undefined);
+      assert.equal(projection.message, `translated:${key}`);
+      assert.doesNotMatch(projection.message, /private|token|proxy|html/i);
+    }
+  }
 });

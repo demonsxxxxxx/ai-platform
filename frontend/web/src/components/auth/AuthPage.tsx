@@ -9,6 +9,7 @@ import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import { Turnstile } from "react-turnstile";
 import { useAuth } from "../../hooks/useAuth";
+import { ApiRequestError } from "../../services/api/fetch";
 import { useTheme } from "../../contexts/ThemeContext";
 import { Loading, LoadingSpinner } from "../common/LoadingSpinner";
 import { ContactAdminDialog } from "../common/ContactAdminDialog";
@@ -257,7 +258,10 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
       }
     } catch (err) {
       if (!mountedRef.current) return;
-      const errorMessage = (err as Error).message || t("auth.operationFailed");
+      const errorMessage =
+        err instanceof ApiRequestError
+          ? err.message
+          : t("auth.operationFailed");
 
       // 检查是否是邮箱未验证或账户未激活错误，跳转到验证页面
       if (

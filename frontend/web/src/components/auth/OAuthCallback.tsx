@@ -44,8 +44,7 @@ export function OAuthCallback() {
       const error = searchParams.get("error");
 
       if (error) {
-        console.error("OAuth callback error:", error);
-        navigate(`/auth/login?error=${error}`, { replace: true });
+        navigate("/auth/login?error=oauth_processing_failed", { replace: true });
         return;
       }
 
@@ -72,9 +71,9 @@ export function OAuthCallback() {
 
         // 导航到目标页面
         navigate(redirectPath, { replace: true });
-      } catch (err) {
+      } catch {
         if (!ownsCallback()) return;
-        console.error("OAuth callback processing error:", err);
+        console.error("[OAuthCallback] OAuth processing failed");
         navigate("/auth/login?error=oauth_processing_failed", {
           replace: true,
         });

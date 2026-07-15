@@ -744,9 +744,9 @@ async def session_events(
             target_runs = [target]
             current_run_id = run_id
         else:
-            # Repository order is the authoritative run creation order. Event
-            # completion timestamps can arrive late for an older overlapping
-            # run and must never select the current subject.
+            # Reuse the repository's canonical compatibility ordering. Its
+            # queued_at/id fallback prevents legacy exact-tie query flips but
+            # intentionally does not claim durable creation authority (#438).
             target_runs = await repositories.list_authorized_session_runs(
                 conn,
                 tenant_id=principal.tenant_id,
