@@ -156,6 +156,7 @@
   "auth": {
     "account": "Account",
     "backToLogin": "Back to Login",
+    "browserCoordinationUnavailable": "This browser cannot safely coordinate sign-in. Use a supported browser, enable site data for this site, then try again or contact your administrator.",
     "checkInboxStep": "Check your inbox (also check spam folder)",
     "checkYourEmail": "Check Your Email",
     "clickVerifyLinkStep": "Click the verification link in the email",

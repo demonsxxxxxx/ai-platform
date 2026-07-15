@@ -1436,3 +1436,47 @@ test("AuthPage projects unknown transport diagnostics to existing localized gene
     await mounted.cleanup();
   }
 });
+
+test("AuthPage renders actionable localized copy when secure browser auth coordination is unavailable", async () => {
+  const { BrowserAuthCoordinatorError } = await import("../browserAuthCoordinator.ts");
+  let bootstrapCalls = 0;
+  const mounted = await mountAuthPageHarness((api) => {
+    api.getCurrentUser = async () => authUser("admin-a", "tenant-a");
+    api.bootstrapAuthContext = async () => {
+      bootstrapCalls += 1;
+      if (bootstrapCalls > 1) {
+        throw new BrowserAuthCoordinatorError(
+          "auth_context_coordination_unavailable",
+        );
+      }
+    };
+    api.login = async () => undefined;
+  });
+  try {
+    const inputs = findElements(mounted.container, "input");
+    const usernameInput = inputs[0];
+    const passwordInput = inputs[1];
+    const form = findElements(mounted.container, "form")[0];
+    assert.ok(usernameInput && passwordInput && form);
+
+    await mounted.React.act(async () => {
+      usernameInput.value = "admin-b";
+      reactProps(usernameInput).onChange?.({ target: usernameInput } as never);
+      passwordInput.value = "safe-test";
+      reactProps(passwordInput).onChange?.({ target: passwordInput } as never);
+      await Promise.resolve();
+    });
+    await mounted.React.act(async () => {
+      reactProps(form).onSubmit?.({ preventDefault() {} } as never);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.equal(mounted.errorToasts.length, 1);
+    assert.match(String(mounted.errorToasts[0]), /浏览器|站点数据|联系管理员/);
+    assert.deepEqual(mounted.successToasts, []);
+    assert.deepEqual(mounted.successfulRedirects, []);
+  } finally {
+    await mounted.cleanup();
+  }
+});
