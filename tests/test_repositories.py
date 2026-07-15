@@ -148,6 +148,27 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
 
 
 @pytest.mark.asyncio
+async def test_authorized_session_runs_use_persisted_queue_admission_order_for_created_at_ties():
+    conn = RecordingConnection()
+
+    await repositories.list_authorized_session_runs(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        limit=50,
+    )
+
+    sql, params = conn.calls[-1]
+    assert "queue_admission_ordinal" in sql
+    assert "event_type = 'queued'" in sql
+    assert "payload_json->>'queue_admission_ordinal'" in sql
+    assert "~ '^[0-9]+$'" in sql
+    assert "order by runs.created_at desc, queue_admission.queue_admission_ordinal desc nulls last" in sql
+    assert params == ("tenant-a", "user-a", "session-a", 50)
+
+
+@pytest.mark.asyncio
 async def test_capability_distribution_backfill_marks_completion_and_never_recreates_after_rerun():
     backfill = getattr(repositories, "ensure_tenant_capability_distribution_backfill", None)
     assert callable(backfill), "ensure_tenant_capability_distribution_backfill missing"

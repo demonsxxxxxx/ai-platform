@@ -11,21 +11,50 @@ import {
 } from "../../services/api/toolPermission";
 import { ApiRequestError } from "../../services/api/fetch";
 import { Permission } from "../../types";
-import { isInboxDecisionDisabled } from "./adminToolPermissionInboxState";
+import {
+  governanceInboxSubjectKey,
+  isInboxDecisionDisabled,
+} from "./adminToolPermissionInboxState";
 
 export interface AdminToolPermissionInboxClient {
   list: (signal?: AbortSignal) => Promise<ToolPermissionInboxResponse>;
   decide: (
     requestId: string,
     decision: ToolPermissionDecision,
+    signal?: AbortSignal,
   ) => Promise<unknown>;
 }
 
 const defaultClient: AdminToolPermissionInboxClient = {
   list: (signal) => listToolPermissionInbox("pending", { signal }),
-  decide: (requestId, decision) =>
-    decideToolPermissionInbox(requestId, decision),
+  decide: (requestId, decision, signal) =>
+    decideToolPermissionInbox(requestId, decision, undefined, { signal }),
 };
+
+interface InboxOwnedState {
+  subjectKey: string | null;
+  requests: ToolPermissionInboxRequestView[];
+  isLoading: boolean;
+  decidingId: string | null;
+  errorKey: string | null;
+}
+
+function emptyInboxState(subjectKey: string | null): InboxOwnedState {
+  return {
+    subjectKey,
+    requests: [],
+    isLoading: false,
+    decidingId: null,
+    errorKey: null,
+  };
+}
+
+function isAlreadyDecidedConflict(error: unknown): boolean {
+  return (
+    error instanceof ApiRequestError &&
+    error.code === "tool_permission_request_not_pending"
+  );
+}
 
 function inboxErrorKey(error: unknown): string {
   if (!(error instanceof ApiRequestError)) {
@@ -75,89 +104,191 @@ export function AdminToolPermissionInboxSection({
   const { user, hasPermission } = useAuth();
   const canGovern =
     user?.is_admin === true && hasPermission(Permission.SETTINGS_MANAGE);
-  const [requests, setRequests] = useState<ToolPermissionInboxRequestView[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [decidingId, setDecidingId] = useState<string | null>(null);
-  const [errorKey, setErrorKey] = useState<string | null>(null);
+  const subjectKey = governanceInboxSubjectKey(user, canGovern);
+  const [ownedState, setOwnedState] = useState<InboxOwnedState>(() =>
+    emptyInboxState(null),
+  );
+  const currentSubjectKeyRef = useRef<string | null>(subjectKey);
+  currentSubjectKeyRef.current = subjectKey;
+  const subjectGenerationRef = useRef(0);
   const refreshGenerationRef = useRef(0);
+  const decisionGenerationRef = useRef(0);
   const refreshAbortControllerRef = useRef<AbortController | null>(null);
+  const decisionAbortControllerRef = useRef<AbortController | null>(null);
   const decidedRequestIdsRef = useRef(new Set<string>());
 
-  const invalidateRefresh = useCallback(() => {
+  const abortOwnedWork = useCallback(() => {
     refreshGenerationRef.current += 1;
+    decisionGenerationRef.current += 1;
     refreshAbortControllerRef.current?.abort();
     refreshAbortControllerRef.current = null;
+    decisionAbortControllerRef.current?.abort();
+    decisionAbortControllerRef.current = null;
   }, []);
 
-  const refresh = useCallback(async () => {
+  const isCurrentSubject = useCallback(
+    (targetSubjectKey: string, targetSubjectGeneration: number) =>
+      currentSubjectKeyRef.current === targetSubjectKey &&
+      subjectGenerationRef.current === targetSubjectGeneration,
+    [],
+  );
+
+  const refreshOwnedSubject = useCallback(async (
+    targetSubjectKey: string,
+    targetSubjectGeneration: number,
+  ) => {
+    if (!isCurrentSubject(targetSubjectKey, targetSubjectGeneration)) return;
     const refreshGeneration = refreshGenerationRef.current + 1;
     refreshGenerationRef.current = refreshGeneration;
     refreshAbortControllerRef.current?.abort();
     const abortController = new AbortController();
     refreshAbortControllerRef.current = abortController;
     const isCurrentRefresh = () =>
+      isCurrentSubject(targetSubjectKey, targetSubjectGeneration) &&
       refreshGenerationRef.current === refreshGeneration &&
       refreshAbortControllerRef.current === abortController &&
       !abortController.signal.aborted;
-    setIsLoading(true);
-    setErrorKey(null);
+    setOwnedState((previous) =>
+      previous.subjectKey === targetSubjectKey
+        ? { ...previous, isLoading: true, errorKey: null }
+        : { ...emptyInboxState(targetSubjectKey), isLoading: true },
+    );
     try {
       const response = await client.list(abortController.signal);
       if (!isCurrentRefresh()) return;
-      setRequests(
-        response.permission_requests.filter(
-          (request) => !decidedRequestIdsRef.current.has(request.request_id),
-        ),
+      setOwnedState((previous) =>
+        previous.subjectKey === targetSubjectKey
+          ? {
+              ...previous,
+              requests: response.permission_requests.filter(
+                (request) =>
+                  !decidedRequestIdsRef.current.has(request.request_id),
+              ),
+            }
+          : previous,
       );
     } catch (error) {
       if (!isCurrentRefresh()) return;
-      setErrorKey(inboxErrorKey(error));
+      setOwnedState((previous) =>
+        previous.subjectKey === targetSubjectKey
+          ? { ...previous, errorKey: inboxErrorKey(error) }
+          : previous,
+      );
     } finally {
       if (isCurrentRefresh()) {
         refreshAbortControllerRef.current = null;
-        setIsLoading(false);
+        setOwnedState((previous) =>
+          previous.subjectKey === targetSubjectKey
+            ? { ...previous, isLoading: false }
+            : previous,
+        );
       }
     }
-  }, [client]);
+  }, [client, isCurrentSubject]);
 
   useEffect(() => {
-    if (!canGovern) {
-      invalidateRefresh();
-      return;
+    abortOwnedWork();
+    subjectGenerationRef.current += 1;
+    const subjectGeneration = subjectGenerationRef.current;
+    decidedRequestIdsRef.current.clear();
+    setOwnedState(emptyInboxState(subjectKey));
+    if (subjectKey) {
+      void refreshOwnedSubject(subjectKey, subjectGeneration);
     }
-    void refresh();
-    return invalidateRefresh;
-  }, [canGovern, invalidateRefresh, refresh]);
+    return () => {
+      if (subjectGenerationRef.current === subjectGeneration) {
+        subjectGenerationRef.current += 1;
+      }
+      abortOwnedWork();
+    };
+  }, [abortOwnedWork, refreshOwnedSubject, subjectKey]);
+
+  const stateBelongsToSubject = ownedState.subjectKey === subjectKey;
+  const requests = stateBelongsToSubject ? ownedState.requests : [];
+  const isLoading = stateBelongsToSubject
+    ? ownedState.isLoading
+    : subjectKey !== null;
+  const decidingId = stateBelongsToSubject ? ownedState.decidingId : null;
+  const errorKey = stateBelongsToSubject ? ownedState.errorKey : null;
 
   const decide = useCallback(
     async (requestId: string, decision: ToolPermissionDecision) => {
+      const targetSubjectKey = currentSubjectKeyRef.current;
+      const targetSubjectGeneration = subjectGenerationRef.current;
+      if (!targetSubjectKey) return;
       if (isInboxDecisionDisabled(isLoading, decidingId)) return;
-      setDecidingId(requestId);
-      setErrorKey(null);
+      const decisionGeneration = decisionGenerationRef.current + 1;
+      decisionGenerationRef.current = decisionGeneration;
+      decisionAbortControllerRef.current?.abort();
+      const abortController = new AbortController();
+      decisionAbortControllerRef.current = abortController;
+      const isCurrentDecision = () =>
+        isCurrentSubject(targetSubjectKey, targetSubjectGeneration) &&
+        decisionGenerationRef.current === decisionGeneration &&
+        decisionAbortControllerRef.current === abortController &&
+        !abortController.signal.aborted;
+      setOwnedState((previous) =>
+        previous.subjectKey === targetSubjectKey
+          ? { ...previous, decidingId: requestId, errorKey: null }
+          : previous,
+      );
       try {
-        await client.decide(requestId, decision);
+        await client.decide(requestId, decision, abortController.signal);
+        if (!isCurrentDecision()) return;
         decidedRequestIdsRef.current.add(requestId);
-        invalidateRefresh();
-        setRequests((previous) =>
-          previous.filter(
-            (request) => request.request_id !== requestId,
-          ),
+        setOwnedState((previous) =>
+          previous.subjectKey === targetSubjectKey
+            ? {
+                ...previous,
+                requests: previous.requests.filter(
+                  (request) => request.request_id !== requestId,
+                ),
+              }
+            : previous,
         );
         // A refresh makes a concurrent/duplicate server decision converge
         // without relying on the owner-scoped chat session endpoint.
-        await refresh();
+        await refreshOwnedSubject(targetSubjectKey, targetSubjectGeneration);
       } catch (error) {
-        setErrorKey(inboxErrorKey(error));
+        if (!isCurrentDecision()) return;
+        if (isAlreadyDecidedConflict(error)) {
+          decidedRequestIdsRef.current.add(requestId);
+          setOwnedState((previous) =>
+            previous.subjectKey === targetSubjectKey
+              ? {
+                  ...previous,
+                  requests: previous.requests.filter(
+                    (request) => request.request_id !== requestId,
+                  ),
+                  errorKey: null,
+                }
+              : previous,
+          );
+          await refreshOwnedSubject(targetSubjectKey, targetSubjectGeneration);
+          return;
+        }
+        setOwnedState((previous) =>
+          previous.subjectKey === targetSubjectKey
+            ? { ...previous, errorKey: inboxErrorKey(error) }
+            : previous,
+        );
       } finally {
-        setDecidingId(null);
+        if (isCurrentDecision()) {
+          decisionAbortControllerRef.current = null;
+          setOwnedState((previous) =>
+            previous.subjectKey === targetSubjectKey
+              ? { ...previous, decidingId: null }
+              : previous,
+          );
+        }
       }
     },
-    [client, decidingId, invalidateRefresh, isLoading, refresh],
+    [client, decidingId, isCurrentSubject, isLoading, refreshOwnedSubject],
   );
 
   // This strict projection is the only frontend authorization gate.  It
   // ensures ordinary users do not see or fetch the tenant governance inbox.
-  if (!canGovern) return null;
+  if (!subjectKey) return null;
 
   return (
     <section className="panel-card mb-4 p-0" aria-label={t("settings.toolPermissionInbox.title")}>
@@ -177,7 +308,9 @@ export function AdminToolPermissionInboxSection({
         </div>
         <button
           type="button"
-          onClick={() => void refresh()}
+          onClick={() =>
+            void refreshOwnedSubject(subjectKey, subjectGenerationRef.current)
+          }
           disabled={isLoading || decidingId !== null}
           className="enterprise-icon-button disabled:opacity-50"
           aria-label={t("settings.toolPermissionInbox.refresh")}

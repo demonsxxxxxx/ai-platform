@@ -1459,7 +1459,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
     assert "/tmp/" not in str(event)
 
 
-def test_lambchat_session_events_select_current_run_by_authoritative_creation_order(monkeypatch):
+def test_lambchat_session_events_select_current_run_by_authoritative_queue_order_when_created_at_ties(monkeypatch):
     async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
         return {"id": session_id}
 
@@ -1474,6 +1474,7 @@ def test_lambchat_session_events_select_current_run_by_authoritative_creation_or
                 "status": "succeeded",
                 "result_json": {"message": "newer finished first"},
                 "created_at": "2026-07-15T02:00:00Z",
+                "queue_admission_ordinal": 42,
                 "finished_at": "2026-07-15T02:05:00Z",
             },
             {
@@ -1485,7 +1486,8 @@ def test_lambchat_session_events_select_current_run_by_authoritative_creation_or
                 "result_json": {},
                 "error_code": "run_failed",
                 "error_message": "older finished later",
-                "created_at": "2026-07-15T01:00:00Z",
+                "created_at": "2026-07-15T02:00:00Z",
+                "queue_admission_ordinal": 41,
                 "finished_at": "2026-07-15T03:00:00Z",
             },
         ]

@@ -229,6 +229,7 @@ Object.defineProperty(globalThis, "navigator", {
 
 const adminUser: User = {
   id: "admin-a",
+  tenant_id: "tenant-a",
   username: "admin-a",
   email: "admin-a@example.test",
   roles: [],
@@ -256,29 +257,57 @@ function findButton(node: TestNode, label: string): TestElement | null {
   return null;
 }
 
+function findRefreshButton(node: TestNode): TestElement | null {
+  if (
+    node instanceof TestElement &&
+    node.tagName === "button" &&
+    node.hasAttribute("aria-label")
+  ) {
+    return node;
+  }
+  for (const child of node.childNodes) {
+    const button = findRefreshButton(child);
+    if (button) return button;
+  }
+  return null;
+}
+
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 async function mountInbox(user: User, client: AdminToolPermissionInboxClient) {
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
-  const { AuthProvider } = await import("../../../hooks/useAuth.tsx");
+  const { AuthProvider, useAuth } = await import("../../../hooks/useAuth.tsx");
   const { authApi } = await import("../../../services/api/auth.ts");
   const { AdminToolPermissionInboxSection } = await import("../AdminToolPermissionInboxSection.tsx");
   const originalGetCurrentUser = authApi.getCurrentUser;
-  authApi.getCurrentUser = async () => user;
+  let currentUser = user;
+  let refreshAuthenticatedUser: (() => Promise<void>) | null = null;
+  authApi.getCurrentUser = async () => currentUser;
   const container = document.createElement("div");
   const root = createRoot(container as never);
+  function AuthRefreshCapture() {
+    refreshAuthenticatedUser = useAuth().refreshUser;
+    return null;
+  }
   const renderClient = (nextClient: AdminToolPermissionInboxClient) =>
     React.createElement(
       AuthProvider,
       null,
-      React.createElement(AdminToolPermissionInboxSection, { client: nextClient }),
+      React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(AuthRefreshCapture),
+        React.createElement(AdminToolPermissionInboxSection, { client: nextClient }),
+      ),
     );
   await React.act(async () => {
     root.render(renderClient(client));
@@ -291,6 +320,15 @@ async function mountInbox(user: User, client: AdminToolPermissionInboxClient) {
     async rerender(nextClient: AdminToolPermissionInboxClient) {
       await React.act(async () => {
         root.render(renderClient(nextClient));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    },
+    async switchUser(nextUser: User) {
+      currentUser = nextUser;
+      assert.ok(refreshAuthenticatedUser, "auth refresh seam is mounted");
+      await React.act(async () => {
+        await refreshAuthenticatedUser?.();
         await Promise.resolve();
         await Promise.resolve();
       });
@@ -403,6 +441,279 @@ test("administrator inbox ignores an aborted stale refresh generation", async ()
   }
 });
 
+test("governance subject switch clears tenant A immediately and ignores its deferred refresh", async () => {
+  const staleTenantA = createDeferred<Awaited<ReturnType<AdminToolPermissionInboxClient["list"]>>>();
+  const currentTenantB = createDeferred<Awaited<ReturnType<AdminToolPermissionInboxClient["list"]>>>();
+  const signals: Array<AbortSignal | undefined> = [];
+  let listCalls = 0;
+  const client: AdminToolPermissionInboxClient = {
+    list: async (signal) => {
+      listCalls += 1;
+      signals.push(signal);
+      if (listCalls === 1) {
+        return {
+          permission_requests: [{
+            request_id: "tpr-a",
+            run_id: "run-a",
+            tool_id: "tenant-a-write",
+            tool_display: "tenant-a-write",
+            risk_level: "high",
+            write_capable: true,
+            status: "pending",
+            allowed_decisions: ["allow_once", "deny"],
+          }],
+          total: 1,
+          status: "pending",
+          limit: 50,
+        };
+      }
+      return listCalls === 2 ? staleTenantA.promise : currentTenantB.promise;
+    },
+    decide: async () => undefined,
+  };
+  const mounted = await mountInbox(adminUser, client);
+  try {
+    assert.match(textOf(mounted.container), /tenant-a-write/);
+    const refreshButton = findRefreshButton(mounted.container);
+    assert.ok(refreshButton);
+    await mounted.React.act(async () => {
+      mounted.container.dispatchEvent({
+        type: "click",
+        target: refreshButton,
+        button: 0,
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+    });
+    assert.equal(listCalls, 2);
+
+    await mounted.switchUser({
+      ...adminUser,
+      id: "admin-b",
+      username: "admin-b",
+      tenant_id: "tenant-b",
+    });
+
+    assert.equal(listCalls, 3);
+    assert.equal(signals[1]?.aborted, true);
+    assert.doesNotMatch(textOf(mounted.container), /tenant-a-write/);
+
+    staleTenantA.resolve({
+      permission_requests: [{
+        request_id: "tpr-stale-a",
+        run_id: "run-a",
+        tool_id: "stale-tenant-a-write",
+        tool_display: "stale-tenant-a-write",
+        risk_level: "high",
+        write_capable: true,
+        status: "pending",
+        allowed_decisions: ["allow_once", "deny"],
+      }],
+      total: 1,
+      status: "pending",
+      limit: 50,
+    });
+    currentTenantB.resolve({
+      permission_requests: [{
+        request_id: "tpr-b",
+        run_id: "run-b",
+        tool_id: "tenant-b-read",
+        tool_display: "tenant-b-read",
+        risk_level: "low",
+        write_capable: false,
+        status: "pending",
+        allowed_decisions: ["allow_once", "deny"],
+      }],
+      total: 1,
+      status: "pending",
+      limit: 50,
+    });
+    await mounted.React.act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.match(textOf(mounted.container), /tenant-b-read/);
+    assert.doesNotMatch(textOf(mounted.container), /stale-tenant-a-write/);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("current-subject already-decided conflict removes the stale pending action", async () => {
+  const conflict = createDeferred<never>();
+  let listCalls = 0;
+  const client: AdminToolPermissionInboxClient = {
+    list: async () => {
+      listCalls += 1;
+      return {
+        permission_requests: listCalls === 1
+          ? [{
+              request_id: "tpr-conflict",
+              run_id: "run-owner",
+              tool_id: "conflicted-write",
+              tool_display: "conflicted-write",
+              risk_level: "high",
+              write_capable: true,
+              status: "pending",
+              allowed_decisions: ["allow_once", "deny"],
+            }]
+          : [],
+        total: listCalls === 1 ? 1 : 0,
+        status: "pending",
+        limit: 50,
+      };
+    },
+    decide: async () => conflict.promise,
+  };
+  const mounted = await mountInbox(adminUser, client);
+  try {
+    const deny = findButton(mounted.container, "拒绝");
+    assert.ok(deny);
+    await mounted.React.act(async () => {
+      mounted.container.dispatchEvent({
+        type: "click",
+        target: deny,
+        button: 0,
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+      conflict.reject(
+        new ApiRequestError(
+          "private-server-detail",
+          409,
+          "tool_permission_request_not_pending",
+        ),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.equal(listCalls, 2);
+    assert.doesNotMatch(textOf(mounted.container), /conflicted-write|该权限请求已被处理/);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("stale tenant A decision conflict cannot remove tenant B state", async () => {
+  const staleDecision = createDeferred<never>();
+  let decisionSignal: AbortSignal | undefined;
+  let listCalls = 0;
+  const client: AdminToolPermissionInboxClient = {
+    list: async () => {
+      listCalls += 1;
+      return {
+        permission_requests: [{
+          request_id: "tpr-shared",
+          run_id: listCalls === 1 ? "run-a" : "run-b",
+          tool_id: listCalls === 1 ? "tenant-a-write" : "tenant-b-write",
+          tool_display: listCalls === 1 ? "tenant-a-write" : "tenant-b-write",
+          risk_level: "high",
+          write_capable: true,
+          status: "pending",
+          allowed_decisions: ["allow_once", "deny"],
+        }],
+        total: 1,
+        status: "pending",
+        limit: 50,
+      };
+    },
+    decide: async (_requestId, _decision, signal?: AbortSignal) => {
+      decisionSignal = signal;
+      return staleDecision.promise;
+    },
+  };
+  const mounted = await mountInbox(adminUser, client);
+  try {
+    const deny = findButton(mounted.container, "拒绝");
+    assert.ok(deny);
+    await mounted.React.act(async () => {
+      mounted.container.dispatchEvent({
+        type: "click",
+        target: deny,
+        button: 0,
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+    });
+
+    await mounted.switchUser({
+      ...adminUser,
+      id: "admin-b",
+      username: "admin-b",
+      tenant_id: "tenant-b",
+    });
+    assert.equal(decisionSignal?.aborted, true);
+    assert.match(textOf(mounted.container), /tenant-b-write/);
+
+    staleDecision.reject(
+      new ApiRequestError(
+        "private-server-detail",
+        409,
+        "tool_permission_request_not_pending",
+      ),
+    );
+    await mounted.React.act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.match(textOf(mounted.container), /tenant-b-write/);
+    assert.doesNotMatch(textOf(mounted.container), /该权限请求已被处理/);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("permission loss and unmount abort owned inbox work without restoring state", async () => {
+  const permissionLossResponse = createDeferred<Awaited<ReturnType<AdminToolPermissionInboxClient["list"]>>>();
+  let permissionLossSignal: AbortSignal | undefined;
+  const client: AdminToolPermissionInboxClient = {
+    list: async (signal) => {
+      permissionLossSignal = signal;
+      return permissionLossResponse.promise;
+    },
+    decide: async () => undefined,
+  };
+  const mounted = await mountInbox(adminUser, client);
+  await mounted.switchUser({ ...adminUser, permissions: [] });
+  assert.equal(permissionLossSignal?.aborted, true);
+  assert.equal(textOf(mounted.container), "");
+  permissionLossResponse.resolve({
+    permission_requests: [],
+    total: 0,
+    status: "pending",
+    limit: 50,
+  });
+  await mounted.React.act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  assert.equal(textOf(mounted.container), "");
+  await mounted.cleanup();
+
+  const unmountResponse = createDeferred<Awaited<ReturnType<AdminToolPermissionInboxClient["list"]>>>();
+  let unmountSignal: AbortSignal | undefined;
+  const unmounted = await mountInbox(adminUser, {
+    list: async (signal) => {
+      unmountSignal = signal;
+      return unmountResponse.promise;
+    },
+    decide: async () => undefined,
+  });
+  await unmounted.cleanup();
+  assert.equal(unmountSignal?.aborted, true);
+  unmountResponse.resolve({
+    permission_requests: [],
+    total: 0,
+    status: "pending",
+    limit: 50,
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+});
+
 test("administrator inbox disables every decision throughout refresh", () => {
   assert.equal(isInboxDecisionDisabled(true, null), true);
   assert.equal(isInboxDecisionDisabled(true, "tpr-other"), true);
@@ -459,7 +770,7 @@ test("a lagging refresh cannot resurrect a request after a successful decision",
   }
 });
 
-test("administrator inbox keeps 403 and 409 errors localized and free of raw server text", async () => {
+test("administrator inbox keeps 403 and unexpected 409 errors localized and free of raw server text", async () => {
   let mode: "forbidden" | "conflict" = "forbidden";
   const client: AdminToolPermissionInboxClient = {
     list: async () => {
@@ -486,7 +797,7 @@ test("administrator inbox keeps 403 and 409 errors localized and free of raw ser
       throw new ApiRequestError(
         "private-server-detail",
         409,
-        "tool_permission_request_not_pending",
+        "unexpected_conflict",
       );
     },
   };
@@ -513,7 +824,7 @@ test("administrator inbox keeps 403 and 409 errors localized and free of raw ser
       await Promise.resolve();
       await Promise.resolve();
     });
-    assert.match(textOf(conflict.container), /该权限请求已被处理/);
+    assert.match(textOf(conflict.container), /工具权限收件箱暂时不可用，请稍后刷新/);
     assert.doesNotMatch(textOf(conflict.container), /private-server-detail/);
   } finally {
     await conflict.cleanup();

@@ -32,6 +32,7 @@ type ToolPermissionRequestFn = <T>(
 
 export interface DecideToolPermissionOptions {
   request?: ToolPermissionRequestFn;
+  signal?: AbortSignal;
 }
 
 export interface ListToolPermissionInboxOptions {
@@ -75,6 +76,7 @@ export async function decideToolPermissionInbox(
     {
       method: "POST",
       body: JSON.stringify(body),
+      signal: options.signal,
     },
   );
 }

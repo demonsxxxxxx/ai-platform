@@ -92,6 +92,18 @@ test("buildOAuthLoginUrl keeps same-origin deployments relative", () => {
   assert.equal(buildOAuthLoginUrl("google"), "/api/auth/oauth/google");
 });
 
+test("current-user projection preserves the authenticated tenant subject", async () => {
+  const stubs = installAuthApiBrowserStubs();
+  try {
+    const user = await authApi.getCurrentUser();
+
+    assert.equal(user.id, "dev001");
+    assert.equal(user.tenant_id, "default");
+  } finally {
+    stubs.restore();
+  }
+});
+
 test("login clears auth-scoped preview caches and marks cookie session without storing bearer tokens", async () => {
   const stubs = installAuthApiBrowserStubs();
   let clearCount = 0;

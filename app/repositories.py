@@ -8905,13 +8905,27 @@ async def list_authorized_session_runs(
 ) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """
-        select id, trace_id, schema_version, agent_id, skill_id, status, error_code, error_message,
-               created_at, queued_at, started_at, finished_at, result_json
+        select runs.id, runs.trace_id, runs.schema_version, runs.agent_id, runs.skill_id,
+               runs.status, runs.error_code, runs.error_message, runs.created_at, runs.queued_at,
+               runs.started_at, runs.finished_at, runs.result_json,
+               queue_admission.queue_admission_ordinal
         from runs
-        where tenant_id = %s
-          and user_id = %s
-          and session_id = %s
-        order by created_at desc
+        left join lateral (
+          select (run_events.payload_json->>'queue_admission_ordinal')::bigint
+                 as queue_admission_ordinal
+          from run_events
+          where run_events.tenant_id = runs.tenant_id
+            and run_events.run_id = runs.id
+            and run_events.event_type = 'queued'
+            and run_events.payload_json->>'queue_admission_ordinal' ~ '^[0-9]+$'
+          order by run_events.sequence desc
+          limit 1
+        ) queue_admission on true
+        where runs.tenant_id = %s
+          and runs.user_id = %s
+          and runs.session_id = %s
+        order by runs.created_at desc,
+                 queue_admission.queue_admission_ordinal desc nulls last
         limit %s
         """,
         (tenant_id, user_id, session_id, limit),

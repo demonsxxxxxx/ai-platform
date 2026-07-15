@@ -48,8 +48,10 @@ test("uses only the tenant administrator inbox endpoints for inbox list and deci
     request,
     signal: controller.signal,
   });
+  const decisionController = new AbortController();
   const decision = await decideToolPermissionInbox("tpr-inbox", "deny", undefined, {
     request,
+    signal: decisionController.signal,
   });
 
   assert.equal(inbox.total, 0);
@@ -65,7 +67,7 @@ test("uses only the tenant administrator inbox endpoints for inbox list and deci
       url: "/api/ai/tool-permissions/inbox/tpr-inbox/decision",
       method: "POST",
       body: { decision: "deny" },
-      signal: undefined,
+      signal: decisionController.signal,
     },
   ]);
   assert.equal(calls.some(({ url }) => url.includes("/runs/")), false);

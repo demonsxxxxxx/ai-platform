@@ -31,6 +31,7 @@ interface PrincipalResponseWire {
 function mapPrincipalToUser(principal: PrincipalResponseWire): User {
   return {
     id: principal.user_id,
+    tenant_id: principal.tenant_id,
     username: principal.user_name || principal.user_id,
     email: "",
     avatar_url: undefined,

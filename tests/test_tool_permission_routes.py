@@ -8,6 +8,19 @@ from app.main import create_app
 from app.settings import Settings
 
 
+INBOX_PERMISSION_RESPONSE_KEYS = {
+    "request_id",
+    "run_id",
+    "tool_id",
+    "tool_display",
+    "risk_level",
+    "write_capable",
+    "status",
+    "expires_at",
+    "allowed_decisions",
+}
+
+
 @asynccontextmanager
 async def fake_transaction():
     yield object()
@@ -187,8 +200,23 @@ def test_same_tenant_admin_decides_another_users_request_and_audits_actor(monkey
     )
 
     assert response.status_code == 200
-    assert response.json()["permission_request"]["decision"] == "allow_once"
-    assert response.json()["permission_request"]["expires_at"] == "2026-06-05T12:15:00Z"
+    permission_request = response.json()["permission_request"]
+    assert set(permission_request) == INBOX_PERMISSION_RESPONSE_KEYS
+    assert permission_request["request_id"] == "tpr-a"
+    assert permission_request["status"] == "decided"
+    assert permission_request["expires_at"] == "2026-06-05T12:15:00Z"
+    assert permission_request["allowed_decisions"] == ["allow_once", "allow_for_run", "deny"]
+    for private_key in (
+        "tenant_id",
+        "workspace_id",
+        "user_id",
+        "session_id",
+        "trace_id",
+        "tool_call_id",
+        "reason",
+        "decision",
+    ):
+        assert private_key not in permission_request
     assert "operator-secret-command" not in response.text
     assert calls[0][1]["expires_in_seconds"] == 900
     assert calls[0][1]["user_id"] == "run-owner"
@@ -515,17 +543,7 @@ def test_tool_permission_inbox_lists_tenant_requests_for_admin(monkeypatch):
     inbox_request = body["permission_requests"][0]
     assert inbox_request["request_id"] == "tpr-a"
     assert inbox_request["allowed_decisions"] == ["allow_once", "deny"]
-    assert set(inbox_request) == {
-        "request_id",
-        "run_id",
-        "tool_id",
-        "tool_display",
-        "risk_level",
-        "write_capable",
-        "status",
-        "expires_at",
-        "allowed_decisions",
-    }
+    assert set(inbox_request) == INBOX_PERMISSION_RESPONSE_KEYS
     serialized = str(body)
     assert "admin-inbox-secret" not in serialized
     assert "admin-inbox-secret-command" not in serialized
@@ -639,8 +657,10 @@ def test_tool_permission_inbox_admin_decision_writes_event_and_audit(monkeypatch
     )
 
     assert response.status_code == 200
-    assert response.json()["permission_request"]["request_id"] == "tpr-a"
-    assert response.json()["permission_request"]["allowed_decisions"] == [
+    permission_request = response.json()["permission_request"]
+    assert set(permission_request) == INBOX_PERMISSION_RESPONSE_KEYS
+    assert permission_request["request_id"] == "tpr-a"
+    assert permission_request["allowed_decisions"] == [
         "allow_once",
         "allow_for_run",
         "deny",

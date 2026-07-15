@@ -242,7 +242,7 @@ async def decide_tool_permission(
             decision=request.decision,
             reason=request.reason,
         )
-    return {"permission_request": permission_response(row)}
+    return {"permission_request": _permission_response_for_inbox(row)}
 
 
 @router.post("/tool-permissions/inbox/{request_id}/decision")
