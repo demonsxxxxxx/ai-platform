@@ -8,7 +8,7 @@ import { projectOrdinarySkillCatalogItem } from "./ordinaryCatalogPolicy";
 /** Read-only catalog used by ordinary company accounts. */
 export function AvailableSkillsPanel() {
   const { t } = useTranslation();
-  const { skills, isLoading, error } = useSkills();
+  const { skills, isLoading, error } = useSkills({ allAuthorizedCatalog: true });
   const catalog = skills
     .map((skill) =>
       projectOrdinarySkillCatalogItem({

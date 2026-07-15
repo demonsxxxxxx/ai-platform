@@ -44,6 +44,7 @@ test("skills hub exposes governed catalog status without composer help copy", ()
     "utf8",
   );
   assert.match(ordinarySkills, /data-ordinary-skills-catalog/);
+  assert.match(ordinarySkills, /useSkills\(\{ allAuthorizedCatalog: true \}\)/);
   assert.match(ordinarySkills, /skills\.available\.title/);
   assert.match(ordinarySkills, /skills\.available\.fileTypes/);
   assert.doesNotMatch(
@@ -83,6 +84,7 @@ test("mcp panel gives AI admins lifecycle controls while keeping the ordinary di
   assert.match(source, /canManageMcp && !mcpGovernance\.governedUnavailable/);
   assert.match(source, /data-mcp-admin-controls/);
   assert.match(source, /if \(!isAiAdmin\)/);
+  assert.match(source, /allAuthorizedCatalog: !isAiAdmin/);
   assert.match(source, /OrdinaryMcpCatalog/);
   assert.match(source, /data-mcp-summary-status/);
   assert.equal(

@@ -25,6 +25,16 @@ test("ordinary Skills catalog retains only display metadata", () => {
   });
 });
 
+test("ordinary Skills catalog excludes chat while retaining actual file modes", () => {
+  const item = projectOrdinarySkillCatalogItem({
+    name: "文档审阅",
+    description: "检查文档。",
+    inputModes: ["chat", "docx", "pdf"],
+  });
+
+  assert.deepEqual(item.applicableFileTypes, ["docx", "pdf"]);
+});
+
 test("ordinary catalog policy rejects malformed and empty public values", () => {
   assert.deepEqual(
     projectOrdinarySkillCatalogItem({
@@ -60,5 +70,24 @@ test("ordinary MCP catalog retains server and tool public descriptions only", ()
   assert.deepEqual(item, {
     name: "文档工具",
     tools: [{ name: "提取摘要", description: "从文档中提取摘要。" }],
+  });
+});
+
+test("ordinary MCP catalog retains every public tool returned by governed discovery", () => {
+  const tools = Array.from({ length: 51 }, (_, index) => ({
+    name: `工具 ${index + 1}`,
+    description: `公开说明 ${index + 1}`,
+    parameters: [{ name: "internal", type: "string" }],
+  }));
+
+  const item = projectOrdinaryMcpCatalogItem({
+    name: "完整工具目录",
+    tools,
+  });
+
+  assert.equal(item.tools.length, 51);
+  assert.deepEqual(item.tools.at(-1), {
+    name: "工具 51",
+    description: "公开说明 51",
   });
 });

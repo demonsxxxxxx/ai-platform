@@ -55,6 +55,7 @@ export function MCPPanel() {
     isAuthenticated,
     isLoading: authLoading,
   } = useAuth();
+  const isAiAdmin = isAiAdminUser(user);
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
   const [permissionDenied, setPermissionDenied] = useState(false);
@@ -90,6 +91,7 @@ export function MCPPanel() {
   } = useMCP({
     enabled: !permissionDenied,
     listParams,
+    allAuthorizedCatalog: !isAiAdmin,
   });
   editorLoadingRef.current = isLoading;
 
@@ -98,7 +100,6 @@ export function MCPPanel() {
       setPermissionDenied(true);
     }
   }, [error]);
-  const isAiAdmin = isAiAdminUser(user);
   const canManageMcp = canManageMcpLifecycle({
     hasExplicitMcpPermission: hasAnyPermission([
       Permission.MCP_ADMIN,

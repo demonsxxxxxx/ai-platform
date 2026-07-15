@@ -20,6 +20,14 @@ interface MCPListParams {
   q?: string;
 }
 
+const AUTHORIZED_MCP_PAGE_LIMIT = 200;
+const AUTHORIZED_MCP_MAX_PAGES = 1_000;
+
+type McpPageLoader = (params: {
+  skip: number;
+  limit: number;
+}) => Promise<MCPServersResponse>;
+
 function buildMCPListUrl(params: MCPListParams = {}): string {
   const searchParams = new URLSearchParams();
   if (params.skip !== undefined) searchParams.set("skip", String(params.skip));
@@ -30,12 +38,103 @@ function buildMCPListUrl(params: MCPListParams = {}): string {
   return `${API_BASE}/${query ? `?${query}` : ""}`;
 }
 
+/** Clear stale entries when a complete authorized catalog read cannot finish. */
+export function resolveMcpServersAfterListFailure(
+  current: MCPServerResponse[],
+  allAuthorizedCatalog: boolean,
+): MCPServerResponse[] {
+  return allAuthorizedCatalog ? [] : current;
+}
+
+/** Load every authorized MCP server without exposing a partial page. */
+export async function collectAllAuthorizedMcpServers(
+  listPage: McpPageLoader,
+): Promise<MCPServersResponse> {
+  const serversByName = new Map<string, MCPServerResponse>();
+  let expectedTotal: number | null = null;
+  let skip = 0;
+
+  for (
+    let pageCount = 0;
+    pageCount < AUTHORIZED_MCP_MAX_PAGES;
+    pageCount += 1
+  ) {
+    const page = await listPage({
+      skip,
+      limit: AUTHORIZED_MCP_PAGE_LIMIT,
+    });
+    if (page.skip !== skip) {
+      throw new Error("authorized_mcp_catalog_offset_mismatch");
+    }
+    if (
+      !Number.isInteger(page.total) ||
+      page.total < 0 ||
+      page.limit !== AUTHORIZED_MCP_PAGE_LIMIT ||
+      page.servers.length > AUTHORIZED_MCP_PAGE_LIMIT
+    ) {
+      throw new Error("authorized_mcp_catalog_invalid_page");
+    }
+    if (expectedTotal === null) {
+      expectedTotal = page.total;
+    } else if (page.total !== expectedTotal) {
+      throw new Error("authorized_mcp_catalog_total_mismatch");
+    }
+
+    const nextSkip = page.skip + page.servers.length;
+    if (nextSkip > expectedTotal) {
+      throw new Error("authorized_mcp_catalog_invalid_progress");
+    }
+    if (page.servers.length === 0) {
+      if (expectedTotal === 0) {
+        return {
+          servers: [],
+          total: 0,
+          skip: 0,
+          limit: AUTHORIZED_MCP_PAGE_LIMIT,
+        };
+      }
+      throw new Error("authorized_mcp_catalog_incomplete");
+    }
+
+    const priorUniqueCount = serversByName.size;
+    for (const server of page.servers) {
+      if (!server.name.trim()) {
+        throw new Error("authorized_mcp_catalog_invalid_server");
+      }
+      serversByName.set(server.name, server);
+    }
+    if (serversByName.size === priorUniqueCount) {
+      throw new Error("authorized_mcp_catalog_no_progress");
+    }
+    if (serversByName.size === expectedTotal) {
+      if (nextSkip !== expectedTotal) {
+        throw new Error("authorized_mcp_catalog_incomplete");
+      }
+      const servers = Array.from(serversByName.values());
+      return {
+        servers,
+        total: servers.length,
+        skip: 0,
+        limit: AUTHORIZED_MCP_PAGE_LIMIT,
+      };
+    }
+    if (nextSkip >= expectedTotal) {
+      throw new Error("authorized_mcp_catalog_incomplete");
+    }
+    skip = nextSkip;
+  }
+
+  throw new Error("authorized_mcp_catalog_page_limit");
+}
+
 export function useMCP(options?: {
   listParams?: MCPListParams;
   enabled?: boolean;
+  allAuthorizedCatalog?: boolean;
 }) {
   const enabled = options?.enabled !== false;
   const listParams = options?.listParams;
+  const allAuthorizedCatalog = options?.allAuthorizedCatalog === true;
   const [servers, setServers] = useState<MCPServerResponse[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
@@ -48,20 +147,28 @@ export function useMCP(options?: {
       setIsLoading(true);
       setError(null);
       try {
-        const data: MCPServersResponse = await authFetch(
-          buildMCPListUrl(params ?? listParams ?? {}),
-        );
+        const data = allAuthorizedCatalog
+          ? await collectAllAuthorizedMcpServers((pageParams) =>
+              authFetch<MCPServersResponse>(buildMCPListUrl(pageParams)),
+            )
+          : await authFetch<MCPServersResponse>(
+              buildMCPListUrl(params ?? listParams ?? {}),
+            );
         setServers(data.servers ?? []);
         setTotal(data.total);
       } catch (err) {
         setError(
           err instanceof Error ? err.message : "Failed to fetch MCP servers",
         );
+        setServers((current) =>
+          resolveMcpServersAfterListFailure(current, allAuthorizedCatalog),
+        );
+        if (allAuthorizedCatalog) setTotal(0);
       } finally {
         setIsLoading(false);
       }
     },
-    [enabled, listParams],
+    [allAuthorizedCatalog, enabled, listParams],
   );
 
   // Get single server

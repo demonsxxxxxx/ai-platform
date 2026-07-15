@@ -37,7 +37,9 @@ export function projectOrdinarySkillCatalogItem(input: {
   return {
     displayName: normalizedText(input.name),
     description: normalizedText(input.description),
-    applicableFileTypes: normalizedStrings(input.inputModes, 8),
+    applicableFileTypes: normalizedStrings(input.inputModes, 8).filter(
+      (inputMode) => inputMode.toLowerCase() !== "chat",
+    ),
   };
 }
 
@@ -55,8 +57,7 @@ export function projectOrdinaryMcpCatalogItem(input: {
         description: normalizedText(candidate.description),
       };
     })
-    .filter((tool) => tool.name.length > 0)
-    .slice(0, 50);
+    .filter((tool) => tool.name.length > 0);
 
   return {
     name: normalizedText(input.name),
