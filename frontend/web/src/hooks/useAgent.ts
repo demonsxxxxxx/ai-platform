@@ -758,8 +758,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           const feedbackPromise = canReadFeedback
             ? feedbackApi
                 .list(0, 100, undefined, undefined, targetSessionId)
-                .catch((e) => {
-                  console.warn("[loadHistory] Failed to load feedback:", e);
+                .catch(() => {
+                  console.warn("[loadHistory] Failed to load feedback");
                   return null;
                 })
             : Promise.resolve(null);
@@ -975,11 +975,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 );
                 return;
               }
-              reconcileCurrentRun().catch((reconcileError) => {
-                console.warn(
-                  "[loadHistory] SSE reconciliation failed:",
-                  reconcileError,
-                );
+              reconcileCurrentRun().catch(() => {
+                console.warn("[loadHistory] SSE reconciliation failed");
               });
             });
           }
@@ -989,9 +986,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
           return sessionConfig;
         }
-      } catch (err) {
+      } catch {
         if (isCurrentHistoryLoadRequest()) {
-          console.error("Failed to load session:", err);
+          console.error("[loadHistory] Failed to load session");
           setError(i18n.t("chat.requestFailed"));
         }
       } finally {
@@ -1218,8 +1215,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 title: result.title,
               });
             })
-            .catch((err) => {
-              console.warn("[sendMessage] Failed to generate title:", err);
+            .catch(() => {
+              console.warn("[sendMessage] Failed to generate title");
             });
         } else if (requestSessionId && newRunId) {
           // 更新现有 session 的 metadata
@@ -1394,11 +1391,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
     try {
       await sessionApi.cancelRun(currentRunId);
-    } catch (error) {
-      console.error(
-        "[stopGeneration] Failed to call backend cancel API:",
-        error,
-      );
+    } catch {
+      console.error("[stopGeneration] Failed to call backend cancel API");
     }
   }, [options]);
 

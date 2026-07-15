@@ -22,6 +22,7 @@ import {
   type TerminalRunStatus,
 } from "./runLifecycle";
 import type { ChatRunStatusResponse } from "../../services/api/session";
+import { formatSafeDiagnosticLog } from "../../utils/backendErrors";
 
 /**
  * SSE Connection context
@@ -194,12 +195,17 @@ export async function queryAuthoritativeRunStatus({
         statusRetryCountRef.current = 0;
         return { kind: "resolved", data, status };
       }
-      console.warn("[SSE] Unknown authoritative run status:", status);
+      console.warn("[SSE] Authoritative run status is unknown");
     } catch (error) {
       if (!isCurrent()) {
         return { kind: "stale" };
       }
-      console.error("[SSE] Failed to check task status:", error);
+      console.error(
+        formatSafeDiagnosticLog(
+          "[SSE] Authoritative status check failed",
+          error,
+        ),
+      );
     } finally {
       if (attemptTimeout !== null) {
         clearTimeout(attemptTimeout);
@@ -484,7 +490,9 @@ export async function connectToSSE(
           if (!isCurrentStream()) {
             return;
           }
-          console.error("[SSE] Connection error:", err);
+          console.error(
+            formatSafeDiagnosticLog("[SSE] Connection failed", err),
+          );
           setConnectionStatus("reconnecting");
           // fetch-event-source retries unless the handler throws. Let the
           // generation-aware caller reconcile authoritative status instead.
@@ -551,7 +559,7 @@ export async function connectToSSE(
       console.log("[SSE] Connection aborted");
       return;
     }
-    console.error("[SSE] Connection error:", err);
+    console.error(formatSafeDiagnosticLog("[SSE] Connection failed", err));
     setConnectionStatus("disconnected");
     if (receivedNonTerminalApplicationError) {
       streamAbortController.abort();

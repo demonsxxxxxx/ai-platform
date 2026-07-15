@@ -100,7 +100,7 @@ function installFetchAuthStubs({
   };
 }
 
-test("authFetch uses cookie credentials and never sends legacy bearer headers", async () => {
+test("authFetch uses cookie credentials without mutating legacy auth storage", async () => {
   const calls: Array<{ input: string; init?: RequestInit }> = [];
   const stubs = installFetchAuthStubs({
     initialLocalStorage: {
@@ -128,7 +128,9 @@ test("authFetch uses cookie credentials and never sends legacy bearer headers", 
       new Headers(calls[0].init?.headers).has("Authorization"),
       false,
     );
-    assert.deepEqual(stubs.removedKeys, ["access_token", "refresh_token"]);
+    assert.deepEqual(stubs.removedKeys, []);
+    assert.equal(stubs.store.get("access_token"), "legacy-access-token");
+    assert.equal(stubs.store.get("refresh_token"), "legacy-refresh-token");
   } finally {
     stubs.restore();
   }

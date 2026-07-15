@@ -467,6 +467,7 @@ async function mountOAuthCallbackHarness(
   const { OAuthCallback } = await import("../../components/auth/OAuthCallback.tsx");
   const { authApi } = await import("../../services/api/auth.ts");
   const originalGetCurrentUser = authApi.getCurrentUser;
+  const originalLogout = authApi.logout;
   configure(authApi);
   storage.clear();
   sessionStorageValues.clear();
@@ -475,8 +476,11 @@ async function mountOAuthCallbackHarness(
 
   let setVisible: ((visible: boolean) => void) | null = null;
   let currentPath = "";
+  let currentSearch = "";
   function LocationProbe() {
-    currentPath = useLocation().pathname;
+    const location = useLocation();
+    currentPath = location.pathname;
+    currentSearch = location.search;
     return null;
   }
   function CallbackGate() {
@@ -513,6 +517,9 @@ async function mountOAuthCallbackHarness(
     get currentPath() {
       return currentPath;
     },
+    get currentSearch() {
+      return currentSearch;
+    },
     async show() {
       assert.ok(setVisible);
       await React.act(async () => {
@@ -543,6 +550,7 @@ async function mountOAuthCallbackHarness(
     async cleanup() {
       await React.act(async () => root.unmount());
       authApi.getCurrentUser = originalGetCurrentUser;
+      authApi.logout = originalLogout;
       storage.clear();
       sessionStorageValues.clear();
       windowTarget.location.hash = "";
@@ -1101,13 +1109,16 @@ test("OAuth callback unmount fence prevents deferred completion navigation", asy
 });
 
 test("current OAuth fragment hydration failure clears the previous principal and marker", async () => {
+  const hydrationError = new Error(
+    "C:\\private\\oauth.log?token=secret <html>proxy</html>",
+  );
   let currentUserCalls = 0;
   let logoutCalls = 0;
   const mounted = await mountAuthHarness((api) => {
     api.getCurrentUser = async () => {
       currentUserCalls += 1;
       if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
-      throw new Error("test transport failure");
+      throw hydrationError;
     };
     api.logout = async () => {
       logoutCalls += 1;
@@ -1124,12 +1135,40 @@ test("current OAuth fragment hydration failure clears the previous principal and
     });
     await mounted.flush();
 
-    assert.deepEqual(outcome, { status: "failed" });
+    assert.equal(outcome.status, "failed");
+    assert.equal(outcome.status === "failed" && outcome.error, hydrationError);
     assert.equal(mounted.auth.user, null);
     assert.equal(mounted.auth.token, null);
     assert.deepEqual(mounted.auth.permissions, []);
     assert.equal(storage.has("ai_platform_session_present"), false);
     assert.equal(logoutCalls, 1);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("OAuth fragment UI keeps hydration diagnostics out of navigation state", async () => {
+  const diagnostic = "C:\\private\\oauth.log?token=secret <html>proxy</html>";
+  let currentUserCalls = 0;
+  const mounted = await mountOAuthCallbackHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      throw new Error(diagnostic);
+    };
+    api.logout = async () => undefined;
+  });
+
+  try {
+    await mounted.show();
+    await mounted.flush();
+
+    assert.equal(mounted.currentPath, "/auth/login");
+    assert.equal(mounted.currentSearch, "?error=oauth_processing_failed");
+    assert.doesNotMatch(
+      `${mounted.currentPath}${mounted.currentSearch}`,
+      /private|token|proxy|html|oauth\.log/i,
+    );
   } finally {
     await mounted.cleanup();
   }

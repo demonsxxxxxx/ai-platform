@@ -62,7 +62,10 @@ export function OAuthCallback() {
         if (!ownsCallback()) return;
         if (refreshOutcome.status === "cancelled") return;
         if (refreshOutcome.status !== "completed") {
-          throw new Error("auth_hydration_failed");
+          navigate("/auth/login?error=oauth_processing_failed", {
+            replace: true,
+          });
+          return;
         }
 
         // 获取重定向路径

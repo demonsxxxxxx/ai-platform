@@ -28,26 +28,39 @@ export interface AvailableModelListResponse {
   default_model_id?: string | null;
 }
 
+interface ModelPublicRequestOptions {
+  signal?: AbortSignal;
+}
+
 export const modelPublicApi = {
-  async listAvailable(): Promise<AvailableModelListResponse> {
+  async listAvailable(
+    options: ModelPublicRequestOptions = {},
+  ): Promise<AvailableModelListResponse> {
     return authFetch<AvailableModelListResponse>(
       `${API_BASE}/api/agent/models/available`,
+      { signal: options.signal },
     );
   },
 
-  async getPinnedModelIds(): Promise<string[]> {
+  async getPinnedModelIds(
+    options: ModelPublicRequestOptions = {},
+  ): Promise<string[]> {
     const user = await authFetch<{
       metadata?: { pinned_model_ids?: string[] };
-    }>(`${API_BASE}/api/auth/profile`);
+    }>(`${API_BASE}/api/auth/profile`, { signal: options.signal });
     return user.metadata?.pinned_model_ids ?? [];
   },
 
-  async updatePinnedModelIds(ids: string[]): Promise<string[]> {
+  async updatePinnedModelIds(
+    ids: string[],
+    options: ModelPublicRequestOptions = {},
+  ): Promise<string[]> {
     const user = await authFetch<{
       metadata?: { pinned_model_ids?: string[] };
     }>(`${API_BASE}/api/auth/profile/metadata`, {
       method: "PUT",
       body: JSON.stringify({ metadata: { pinned_model_ids: ids } }),
+      signal: options.signal,
     });
     return user.metadata?.pinned_model_ids ?? [];
   },

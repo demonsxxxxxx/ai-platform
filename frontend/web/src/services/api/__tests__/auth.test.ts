@@ -5,7 +5,12 @@ import { readFileSync } from "node:fs";
 import { authApi, buildOAuthLoginUrl } from "../auth.ts";
 import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
 import { ApiRequestError } from "../fetch.ts";
-import { refreshTokens } from "../tokenManager.ts";
+import {
+  CookieSessionRefreshUnsupportedError,
+  refreshAccessToken,
+  refreshTokens,
+} from "../tokenManager.ts";
+import { uploadApi } from "../upload.ts";
 
 function installAuthApiBrowserStubs(
   responseBody: Record<string, unknown> = {
@@ -200,7 +205,7 @@ test("OAuth callback transport leaves local auth state to the auth owner", async
   }
 });
 
-test("cookie-session probe clears auth-scoped preview caches without restoring bearer tokens", async () => {
+test("legacy refresh functions fail closed without network or global auth side effects", async () => {
   const stubs = installAuthApiBrowserStubs({
     user_id: "dev001",
     user_name: "dev001",
@@ -219,19 +224,92 @@ test("cookie-session probe clears auth-scoped preview caches without restoring b
   stubs.stored.set("ai_platform_session_present", "existing-marker");
 
   try {
-    const refreshed = await refreshTokens();
+    for (const operation of [refreshTokens, refreshAccessToken]) {
+      await assert.rejects(
+        () => operation(),
+        (error: unknown) =>
+          error instanceof CookieSessionRefreshUnsupportedError,
+      );
+    }
 
-    assert.equal(clearCount, 1);
-    assert.equal(refreshed.access_token, "cookie-session");
-    assert.match(
-      stubs.stored.get("ai_platform_session_present") ?? "",
-      /^\d+-[a-z0-9]+$/i,
+    assert.equal(clearCount, 0);
+    assert.equal(
+      stubs.stored.get("ai_platform_session_present"),
+      "existing-marker",
     );
-    assert.equal(stubs.stored.get("access_token"), undefined);
-    assert.equal(stubs.stored.get("refresh_token"), undefined);
-    assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/me"]);
+    assert.deepEqual(stubs.events, []);
+    assert.deepEqual(stubs.fetchCalls, []);
   } finally {
     unregister();
+    stubs.restore();
+  }
+});
+
+test("legacy upload 401 cannot refresh or replay through the compatibility firewall", async () => {
+  const stubs = installAuthApiBrowserStubs();
+  const originalXhr = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "XMLHttpRequest",
+  );
+  let sendCalls = 0;
+
+  class UnauthorizedUploadRequest {
+    status = 401;
+    statusText = "Unauthorized";
+    responseText = JSON.stringify({ detail: "unauthorized" });
+    withCredentials = false;
+    readonly upload = { addEventListener: () => undefined };
+    private readonly listeners = new Map<
+      string,
+      Array<(event: Event) => void>
+    >();
+
+    addEventListener(type: string, listener: (event: Event) => void) {
+      const listeners = this.listeners.get(type) ?? [];
+      listeners.push(listener);
+      this.listeners.set(type, listeners);
+    }
+
+    open() {}
+    setRequestHeader() {}
+    abort() {}
+
+    send() {
+      sendCalls += 1;
+      queueMicrotask(() => {
+        for (const listener of this.listeners.get("load") ?? []) {
+          listener(new Event("load"));
+        }
+      });
+    }
+  }
+
+  Object.defineProperty(globalThis, "XMLHttpRequest", {
+    configurable: true,
+    value: UnauthorizedUploadRequest as unknown as typeof XMLHttpRequest,
+  });
+  stubs.stored.set("ai_platform_session_present", "existing-marker");
+
+  try {
+    const handle = uploadApi.uploadFile(
+      new File(["fixture"], "fixture.txt", { type: "text/plain" }),
+    );
+    await assert.rejects(handle.promise);
+
+    assert.equal(sendCalls, 1);
+    assert.deepEqual(stubs.fetchCalls, []);
+    assert.equal(
+      stubs.stored.get("ai_platform_session_present"),
+      "existing-marker",
+    );
+    assert.deepEqual(stubs.events, []);
+  } finally {
+    if (originalXhr) {
+      Object.defineProperty(globalThis, "XMLHttpRequest", originalXhr);
+    } else {
+      delete (globalThis as { XMLHttpRequest?: typeof XMLHttpRequest })
+        .XMLHttpRequest;
+    }
     stubs.restore();
   }
 });

@@ -1,7 +1,6 @@
 /** Cookie-session fetch wrapper with caller-owned identity recovery. */
 
 import i18n from "i18next";
-import { getAccessToken } from "./token";
 import { projectSafeBackendError } from "../../utils/backendErrors";
 
 // ============================================
@@ -24,7 +23,8 @@ export class ApiRequestError extends Error {
   }
 }
 
-async function safeApiRequestError(
+/** Convert an untrusted HTTP response into the shared safe error contract. */
+export async function apiRequestErrorFromResponse(
   response: Response,
   status = response.status,
 ): Promise<ApiRequestError> {
@@ -42,6 +42,26 @@ async function safeApiRequestError(
     i18n.t.bind(i18n),
   );
   return new ApiRequestError(projection.message, status, projection.code);
+}
+
+/**
+ * The single browser cookie-session transport seam.
+ *
+ * It performs exactly one request and never refreshes, replays, redirects, or
+ * mutates browser auth state. Callers own response interpretation.
+ */
+export async function cookieSessionFetch(
+  input: RequestInfo | URL,
+  options: RequestInit = {},
+): Promise<Response> {
+  const headers = new Headers(options.headers);
+  headers.set("Accept-Language", i18n.language || "en");
+  headers.delete("Authorization");
+  return fetch(input, {
+    ...options,
+    credentials: options.credentials ?? "include",
+    headers,
+  });
 }
 
 /**
@@ -66,26 +86,23 @@ export async function authFetch<T>(
   }
   finalHeaders.set("Accept-Language", i18n.language || "en");
   finalHeaders.delete("Authorization");
+  // Retained only as a source-compatible option for public auth endpoints.
+  // Cookie-session transport behavior is identical either way.
+  void skipAuth;
 
-  if (!skipAuth) {
-    // Touch the marker path so legacy bearer keys are eagerly scrubbed.
-    getAccessToken();
-  }
-
-  const response = await fetch(url, {
+  const response = await cookieSessionFetch(url, {
     ...restOptions,
-    credentials: restOptions.credentials ?? "include",
     headers: finalHeaders,
   });
 
   // Cookie-session callers own identity recovery. This transport never
   // refreshes, replays, redirects, clears caches, or dispatches auth events.
   if (response.headers.get("X-Force-Relogin") === "true") {
-    throw await safeApiRequestError(response, 401);
+    throw await apiRequestErrorFromResponse(response, 401);
   }
 
   if (!response.ok) {
-    throw await safeApiRequestError(response);
+    throw await apiRequestErrorFromResponse(response);
   }
 
   // 处理空响应

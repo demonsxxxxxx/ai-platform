@@ -688,6 +688,271 @@ test("useAgent clear invalidates delayed history get, events, and status continu
   }
 });
 
+test("useAgent rejects a deferred A session GET after B history owns the hook", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalMarkRead = sessionApi.markRead;
+  let resolveA!: (value: Awaited<ReturnType<typeof sessionApi.get>>) => void;
+  let notifyAGetStarted!: () => void;
+  const aGetStarted = new Promise<void>((resolve) => {
+    notifyAGetStarted = resolve;
+  });
+  sessionApi.markRead = async () => {};
+  sessionApi.get = ((sessionId: string) => {
+    if (sessionId === "session-a") {
+      return new Promise((resolve) => {
+        resolveA = resolve;
+        notifyAGetStarted();
+      });
+    }
+    return Promise.resolve({
+      id: "session-b",
+      agent_id: "agent-b",
+      created_at: "2026-07-15T00:00:00Z",
+      updated_at: "2026-07-15T00:00:00Z",
+      is_active: true,
+      metadata: {},
+    });
+  }) as typeof sessionApi.get;
+  sessionApi.getEvents = (async (sessionId: string) => ({
+    events: [
+      {
+        id: `${sessionId}:user`,
+        event_type: "user:message",
+        timestamp: "2026-07-15T00:00:01Z",
+        data: { content: `history-${sessionId}` },
+      },
+    ],
+  })) as typeof sessionApi.getEvents;
+
+  try {
+    let loadA!: Promise<unknown>;
+    await harness.act(async () => {
+      loadA = harness.hook.loadHistory("session-a");
+      await aGetStarted;
+    });
+    let loadB!: Promise<unknown>;
+    await harness.act(async () => {
+      loadB = harness.hook.loadHistory("session-b");
+      await Promise.resolve();
+    });
+    await harness.act(async () => {
+      await loadB;
+    });
+    resolveA({
+      id: "session-a",
+      agent_id: "agent-a",
+      created_at: "2026-07-15T00:00:00Z",
+      updated_at: "2026-07-15T00:00:00Z",
+      is_active: true,
+      metadata: { current_run_id: "run-a" },
+    });
+    await harness.act(async () => {
+      await loadA;
+    });
+
+    assert.equal(harness.hook.sessionId, "session-b");
+    assert.equal(harness.hook.currentRunId, null);
+    assert.match(JSON.stringify(harness.hook.messages), /history-session-b/);
+    assert.doesNotMatch(JSON.stringify(harness.hook.messages), /session-a|run-a/);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.isLoadingHistory, false);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.markRead = originalMarkRead;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent rejects deferred A events after B history owns the hook", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  let resolveAEvents!: (
+    value: Awaited<ReturnType<typeof sessionApi.getEvents>>,
+  ) => void;
+  let notifyAEventsStarted!: () => void;
+  const aEventsStarted = new Promise<void>((resolve) => {
+    notifyAEventsStarted = resolve;
+  });
+  let statusCalls = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = (async (sessionId: string) => ({
+    id: sessionId,
+    agent_id: sessionId === "session-a" ? "agent-a" : "agent-b",
+    created_at: "2026-07-15T00:00:00Z",
+    updated_at: "2026-07-15T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  })) as typeof sessionApi.get;
+  sessionApi.getEvents = ((sessionId: string) => {
+    if (sessionId === "session-a") {
+      return new Promise((resolve) => {
+        resolveAEvents = resolve;
+        notifyAEventsStarted();
+      });
+    }
+    return Promise.resolve({
+      events: [
+          {
+            id: "session-b:user",
+            event_type: "user:message",
+          timestamp: "2026-07-15T00:00:01Z",
+          data: { content: "history-session-b" },
+        },
+      ],
+    });
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async () => {
+    statusCalls += 1;
+    return { session_id: "session-a", run_id: "run-a", status: "running" };
+  }) as typeof sessionApi.getStatus;
+
+  try {
+    let loadA!: Promise<unknown>;
+    await harness.act(async () => {
+      loadA = harness.hook.loadHistory("session-a");
+      await aEventsStarted;
+    });
+    let loadB!: Promise<unknown>;
+    await harness.act(async () => {
+      loadB = harness.hook.loadHistory("session-b");
+      await Promise.resolve();
+    });
+    await harness.act(async () => {
+      await loadB;
+    });
+    resolveAEvents({
+      current_run_id: "run-a",
+      events: [
+        {
+          id: "session-a:user",
+          run_id: "run-a",
+          event_type: "user:message",
+          timestamp: "2026-07-15T00:00:02Z",
+          data: { content: "history-session-a" },
+        },
+      ],
+    });
+    await harness.act(async () => {
+      await loadA;
+    });
+
+    assert.equal(statusCalls, 0);
+    assert.equal(harness.hook.sessionId, "session-b");
+    assert.equal(harness.hook.currentRunId, null);
+    assert.match(JSON.stringify(harness.hook.messages), /history-session-b/);
+    assert.doesNotMatch(JSON.stringify(harness.hook.messages), /history-session-a/);
+    assert.equal(harness.hook.isLoadingHistory, false);
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent rejects a deferred A status after B history owns the hook", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  let resolveAStatus!: (
+    value: Awaited<ReturnType<typeof sessionApi.getStatus>>,
+  ) => void;
+  let statusStarted!: () => void;
+  const statusStart = new Promise<void>((resolve) => {
+    statusStarted = resolve;
+  });
+  sessionApi.markRead = async () => {};
+  sessionApi.get = (async (sessionId: string) => ({
+    id: sessionId,
+    agent_id: sessionId === "session-a" ? "agent-a" : "agent-b",
+    created_at: "2026-07-15T00:00:00Z",
+    updated_at: "2026-07-15T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  })) as typeof sessionApi.get;
+  sessionApi.getEvents = (async (sessionId: string) =>
+    sessionId === "session-a"
+      ? {
+          current_run_id: "run-a",
+          events: [
+            {
+              id: "session-a:user",
+              run_id: "run-a",
+              event_type: "user:message",
+              timestamp: "2026-07-15T00:00:01Z",
+              data: { content: "history-session-a" },
+            },
+          ],
+        }
+      : {
+          events: [
+            {
+              id: "session-b:user",
+              event_type: "user:message",
+              timestamp: "2026-07-15T00:00:02Z",
+              data: { content: "history-session-b" },
+            },
+          ],
+        }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async () => {
+    statusStarted();
+    return new Promise((resolve) => {
+      resolveAStatus = resolve;
+    });
+  }) as typeof sessionApi.getStatus;
+
+  try {
+    let loadA!: Promise<unknown>;
+    await harness.act(async () => {
+      loadA = harness.hook.loadHistory("session-a");
+      await statusStart;
+    });
+    let loadB!: Promise<unknown>;
+    await harness.act(async () => {
+      loadB = harness.hook.loadHistory("session-b");
+      await Promise.resolve();
+    });
+    await harness.act(async () => {
+      await loadB;
+    });
+    resolveAStatus({
+      session_id: "session-a",
+      run_id: "run-a",
+      status: "running",
+    });
+    await harness.act(async () => {
+      await loadA;
+    });
+
+    assert.equal(harness.hook.sessionId, "session-b");
+    assert.equal(harness.hook.currentRunId, null);
+    assert.match(JSON.stringify(harness.hook.messages), /history-session-b/);
+    assert.doesNotMatch(JSON.stringify(harness.hook.messages), /history-session-a/);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.isLoadingHistory, false);
+    assert.equal(harness.hook.connectionStatus, "disconnected");
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    await harness.cleanup();
+  }
+});
+
 test("useAgent finalizes a failed run once with a Chinese product failure card", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
@@ -1295,7 +1560,7 @@ test("useAgent shares one generation-bound reconciliation owner across concurren
   }
 });
 
-test("useAgent reconciles a post-refresh transport failure from its initial stream owner", async () => {
+test("useAgent production 401 fails closed without refresh or status reconciliation", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalSubmitChat = sessionApi.submitChat;
@@ -1372,16 +1637,17 @@ test("useAgent reconciles a post-refresh transport failure from its initial stre
     await settle(harness.act);
 
     const parts = harness.hook.messages.flatMap((message) => message.parts || []);
-    assert.equal(refreshProbeCalls, 1);
-    assert.equal(streamCalls, 2);
-    assert.equal(statusCalls, 1);
+    assert.equal(refreshProbeCalls, 0);
+    assert.equal(streamCalls, 1);
+    assert.equal(statusCalls, 0);
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(
       parts.filter(
         (part) =>
           part.type === "run_status" &&
-          part.event_id === "terminal-failure:run-initial-post-refresh",
+          part.event_id ===
+            "terminal-status-unavailable:run-initial-post-refresh",
       ).length,
       1,
     );

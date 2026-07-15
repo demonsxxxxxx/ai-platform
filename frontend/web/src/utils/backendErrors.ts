@@ -123,6 +123,9 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
 };
 
 const SAFE_ERROR_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+const SAFE_PATTERN_VALUE = /^[A-Za-z0-9][A-Za-z0-9:_ .-]{0,63}$/;
+const UNSAFE_PATTERN_VALUE =
+  /(?:api[_-]?key|bearer|cookie|password|private|secret|session|token)/i;
 
 function safeBackendErrorCode(detail: unknown): string | undefined {
   const candidate =
@@ -138,6 +141,26 @@ function safeBackendErrorCode(detail: unknown): string | undefined {
     SAFE_ERROR_CODE_PATTERN.test(candidate)
     ? candidate
     : undefined;
+}
+
+/** Read only a bounded explicit code from an error-like diagnostic. */
+export function safeDiagnosticCode(error: unknown): string | undefined {
+  if (error === null || typeof error !== "object" || Array.isArray(error)) {
+    return undefined;
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && SAFE_ERROR_CODE_PATTERN.test(code)
+    ? code
+    : undefined;
+}
+
+/** Format a fixed log phase with an optional bounded code, never raw detail. */
+export function formatSafeDiagnosticLog(
+  phase: string,
+  error: unknown,
+): string {
+  const code = safeDiagnosticCode(error);
+  return code ? `${phase} code=${code}` : phase;
 }
 
 function statusFallbackKey(status: number): string {
@@ -199,12 +222,21 @@ export function translateBackendError(message: string, t: TFunction): string {
   for (const entry of BACKEND_ERROR_PATTERNS) {
     const match = message.match(entry.pattern);
     if (match) {
+      const values = entry.values ? entry.values(match) : {};
+      if (
+        Object.values(values).some(
+          (value) =>
+            !SAFE_PATTERN_VALUE.test(value) || UNSAFE_PATTERN_VALUE.test(value),
+        )
+      ) {
+        break;
+      }
       return t(entry.key, {
         defaultValue: entry.key,
-        ...(entry.values ? entry.values(match) : {}),
+        ...values,
       });
     }
   }
 
-  return message;
+  return t("chat.requestFailed", "chat.requestFailed");
 }

@@ -520,3 +520,64 @@ test("keeps a controlled failed final detail before exactly-once terminal conver
   assert.equal(ctx.messages()[0]?.isStreaming, true);
   assert.doesNotMatch(ctx.messages()[0]?.content || "", /Executor failed/);
 });
+
+test("stream error handler never renders unknown backend diagnostics", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-error",
+        role: "assistant",
+        content: "",
+        timestamp: new Date("2026-07-15T01:00:00.000Z"),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+
+  handleStreamEvent(
+    {
+      event: "error",
+      data: JSON.stringify({
+        error: "C:\\private\\executor.log?token=secret <html>proxy</html>",
+      }),
+    },
+    "assistant-error",
+    "evt-safe-error",
+    "2026-07-15T01:00:01.000Z",
+    ctx,
+  );
+
+  const content = ctx.messages()[0]?.content || "";
+  assert.ok(content.length > 0);
+  assert.doesNotMatch(content, /private|token|proxy|html|executor\.log/i);
+});
+
+test("sandbox error side effects never expose unknown backend diagnostics", () => {
+  const ctx = createContext([], null);
+  const sandboxErrors: Array<string | null> = [];
+  ctx.currentRunIdRef.current = "run-sandbox-error";
+  ctx.setSandboxError = (value) => sandboxErrors.push(value);
+
+  handleStreamEvent(
+    {
+      event: "sandbox:error",
+      data: JSON.stringify({
+        run_id: "run-sandbox-error",
+        error: "C:\\private\\sandbox.log?token=secret <html>proxy</html>",
+      }),
+    },
+    "assistant-sandbox-error",
+    "evt-sandbox-error",
+    "2026-07-15T01:00:00.000Z",
+    ctx,
+  );
+
+  assert.equal(sandboxErrors.length, 1);
+  assert.ok(sandboxErrors[0]);
+  assert.doesNotMatch(
+    String(sandboxErrors[0]),
+    /private|token|secret|proxy|html|sandbox\.log/i,
+  );
+});

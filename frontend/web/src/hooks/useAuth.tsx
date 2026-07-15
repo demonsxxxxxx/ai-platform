@@ -20,7 +20,11 @@ import {
   clearRedirectPath,
   isAuthenticated,
 } from "../services/api";
-import { clearTokens, setTokens } from "../services/api/token";
+import {
+  clearTokens,
+  migrateLegacyBearerStorage,
+  setTokens,
+} from "../services/api/token";
 import { ApiRequestError } from "../services/api/fetch";
 import { clearAuthScopedCaches } from "../services/api/authCacheInvalidation";
 import { classifyBrowserAuthStorageEvent } from "./browserAuthStorage";
@@ -98,7 +102,7 @@ function applyUserMetadata(metadata?: {
 export type AuthOperationOutcome<T = undefined> =
   | { status: "completed"; value: T }
   | { status: "cancelled" }
-  | { status: "failed" };
+  | { status: "failed"; error?: unknown };
 
 function completedAuthOperation<T>(value: T): AuthOperationOutcome<T> {
   return { status: "completed", value };
@@ -108,8 +112,8 @@ function cancelledAuthOperation<T = undefined>(): AuthOperationOutcome<T> {
   return { status: "cancelled" };
 }
 
-function failedAuthOperation<T = undefined>(): AuthOperationOutcome<T> {
-  return { status: "failed" };
+function failedAuthOperation<T = undefined>(error?: unknown): AuthOperationOutcome<T> {
+  return error === undefined ? { status: "failed" } : { status: "failed", error };
 }
 
 function isUnauthenticatedError(error: unknown): boolean {
@@ -308,6 +312,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     mountedRef.current = true;
     const owner = beginAuthOperation();
+    if (isCurrentAuthOperation(owner)) {
+      migrateLegacyBearerStorage();
+    }
     const initAuth = async () => {
       const hadSessionMarker = !!owner.expectedMarker;
 
@@ -528,11 +535,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return cancelledAuthOperation();
         }
         return completedAuthOperation(undefined);
-      } catch {
+      } catch (error) {
         if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         const converged = await rollbackOwnedSession(owner);
         if (!converged) return cancelledAuthOperation();
-        return failedAuthOperation();
+        return failedAuthOperation(error);
       } finally {
         if (isCurrentAuthOperation(owner)) setIsLoading(false);
       }

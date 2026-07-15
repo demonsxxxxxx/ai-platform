@@ -6,6 +6,7 @@ import {
   getRedirectPath,
   getRefreshToken,
   isSafeRedirectPath,
+  migrateLegacyBearerStorage,
   parseAuthStorageEvent,
   setTokens,
 } from "../token.ts";
@@ -90,7 +91,7 @@ test("getRedirectPath discards stale OAuth callback redirects", () => {
   }
 });
 
-test("legacy localStorage bearer tokens are ignored as browser auth sources", () => {
+test("token getters are pure reads and ignore legacy bearer values", () => {
   const restore = installLocalStorage({
     access_token: "legacy-access-token",
     refresh_token: "legacy-refresh-token",
@@ -99,9 +100,26 @@ test("legacy localStorage bearer tokens are ignored as browser auth sources", ()
   try {
     assert.equal(getAccessToken(), null);
     assert.equal(getRefreshToken(), null);
-    assert.deepEqual(restore.removedKeys, ["access_token", "refresh_token"]);
+    assert.deepEqual(restore.removedKeys, []);
+    assert.equal(localStorage.getItem("access_token"), "legacy-access-token");
+    assert.equal(localStorage.getItem("refresh_token"), "legacy-refresh-token");
   } finally {
     restore.restore();
+  }
+});
+
+test("legacy bearer cleanup only runs through the explicit owner operation", () => {
+  const storage = installLocalStorage({
+    access_token: "legacy-access-token",
+    refresh_token: "legacy-refresh-token",
+  });
+
+  try {
+    migrateLegacyBearerStorage();
+
+    assert.deepEqual(storage.removedKeys, ["access_token", "refresh_token"]);
+  } finally {
+    storage.restore();
   }
 });
 

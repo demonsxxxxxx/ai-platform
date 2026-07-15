@@ -169,8 +169,8 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     redirectTimerRef.current = window.setTimeout(() => {
       try {
         onSuccess?.(nextPath);
-      } catch (err) {
-        console.error("[AuthPage] Failed to redirect after login:", err);
+      } catch {
+        console.error("[AuthPage] Failed to redirect after login");
         setIsRedirecting(false);
         setIsSubmitting(false);
       }

@@ -408,7 +408,11 @@ export function handleStreamEvent(
   }
   if (eventType === "sandbox:error") {
     ctx.setIsInitializingSandbox(false);
-    ctx.setSandboxError(data.error || i18n.t("chat.sandboxInitFailed"));
+    ctx.setSandboxError(
+      data.error
+        ? translateBackendError(data.error, i18n.t.bind(i18n))
+        : i18n.t("chat.sandboxInitFailed"),
+    );
   }
 
   // Error side effects

@@ -6,6 +6,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
 } from "react";
 import { useAuth } from "../hooks/useAuth";
 import { modelPublicApi } from "../services/api/modelPublic";
@@ -46,67 +47,168 @@ interface SettingsContextValue {
 const SettingsContext = createContext<SettingsContextValue | undefined>(
   undefined,
 );
+const EMPTY_PINNED_MODEL_IDS: string[] = [];
+
+interface SubjectSettingsSnapshot {
+  subjectKey: string;
+  dbModels: AvailableModel[] | null;
+  adminDefaultModelId: string;
+  pinnedModelIds: string[];
+  isLoading: boolean;
+}
+
+interface SubjectRequestOwner {
+  subjectKey: string;
+  generation: number;
+  abortController: AbortController;
+}
+
+function emptySubjectSettings(subjectKey: string): SubjectSettingsSnapshot {
+  return {
+    subjectKey,
+    dbModels: null,
+    adminDefaultModelId: "",
+    pinnedModelIds: [],
+    isLoading: true,
+  };
+}
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
-  const { isAuthenticated } = useAuth();
-  const [error, setError] = useState<string | null>(null);
+  const { isAuthenticated, user } = useAuth();
+  const authSubjectKey =
+    isAuthenticated && user?.tenant_id
+      ? `${user.tenant_id}\u0000${user.id}`
+      : null;
+  const authSubjectKeyRef = useRef(authSubjectKey);
+  authSubjectKeyRef.current = authSubjectKey;
+  const subjectGenerationRef = useRef(0);
+  const subjectOwnerRef = useRef<SubjectRequestOwner | null>(null);
+  const [subjectSettings, setSubjectSettings] =
+    useState<SubjectSettingsSnapshot | null>(null);
+  const subjectSettingsRef = useRef(subjectSettings);
+  subjectSettingsRef.current = subjectSettings;
+  const [subjectError, setSubjectError] = useState<{
+    subjectKey: string | null;
+    message: string;
+  } | null>(null);
   const savingKeys = useMemo(() => new Set<string>(), []);
 
-  // 从 DB 的 model_configs 读取可用模型
-  const [dbModels, setDbModels] = useState<AvailableModel[] | null>(null);
-  const [adminDefaultModelId, setAdminDefaultModelId] = useState<string>("");
-
-  // 置顶模型 ID
-  const [pinnedModelIds, setPinnedModelIds] = useState<string[]>([]);
-
-  const fetchModels = useCallback(() => {
-    modelPublicApi
-      .listAvailable()
-      .then((data) => {
-        setAdminDefaultModelId(data.default_model_id || "");
-        if (data.models && data.models.length > 0) {
-          setDbModels(
-            data.models.map((m) => ({
-              id: m.id || "",
-              value: m.value,
-              provider: m.provider,
-              label: m.label,
-              description: m.description,
-            })),
-          );
-        } else {
-          setDbModels(null);
-        }
-      })
-      .catch(() => {
-        setAdminDefaultModelId("");
-        setDbModels(null);
-      });
-  }, []);
-
-  const fetchPinnedModels = useCallback(() => {
-    modelPublicApi
-      .getPinnedModelIds()
-      .then(setPinnedModelIds)
-      .catch(() => {});
+  const isCurrentSubjectOwner = useCallback((owner: SubjectRequestOwner) => {
+    return (
+      authSubjectKeyRef.current === owner.subjectKey &&
+      subjectGenerationRef.current === owner.generation &&
+      subjectOwnerRef.current === owner &&
+      !owner.abortController.signal.aborted
+    );
   }, []);
 
   useEffect(() => {
-    if (isAuthenticated) {
-      fetchModels();
-      fetchPinnedModels();
-    }
-  }, [isAuthenticated, fetchModels, fetchPinnedModels]);
+    subjectGenerationRef.current += 1;
+    subjectOwnerRef.current?.abortController.abort();
+    subjectOwnerRef.current = null;
+    setSubjectError(null);
 
-  const togglePinnedModel = useCallback((modelId: string) => {
-    setPinnedModelIds((prev) => {
-      const next = prev.includes(modelId)
-        ? prev.filter((id) => id !== modelId)
-        : [...prev, modelId];
-      modelPublicApi.updatePinnedModelIds(next).catch(() => {});
-      return next;
-    });
-  }, []);
+    if (!authSubjectKey) {
+      setSubjectSettings(null);
+      return;
+    }
+
+    const owner: SubjectRequestOwner = {
+      subjectKey: authSubjectKey,
+      generation: subjectGenerationRef.current,
+      abortController: new AbortController(),
+    };
+    subjectOwnerRef.current = owner;
+    setSubjectSettings(emptySubjectSettings(authSubjectKey));
+
+    const patchCurrentSubject = (
+      patch: Partial<Omit<SubjectSettingsSnapshot, "subjectKey">>,
+    ) => {
+      if (!isCurrentSubjectOwner(owner)) return;
+      setSubjectSettings((previous) => ({
+        ...(previous?.subjectKey === owner.subjectKey
+          ? previous
+          : emptySubjectSettings(owner.subjectKey)),
+        ...patch,
+      }));
+    };
+
+    void modelPublicApi
+      .listAvailable({ signal: owner.abortController.signal })
+      .then((data) => {
+        const dbModels =
+          data.models && data.models.length > 0
+            ? data.models.map((model) => ({
+                id: model.id || "",
+                value: model.value,
+                provider: model.provider,
+                label: model.label,
+                description: model.description,
+              }))
+            : null;
+        patchCurrentSubject({
+          adminDefaultModelId: data.default_model_id || "",
+          dbModels,
+        });
+      })
+      .catch(() => {
+        patchCurrentSubject({ adminDefaultModelId: "", dbModels: null });
+      })
+      .finally(() => patchCurrentSubject({ isLoading: false }));
+
+    void modelPublicApi
+      .getPinnedModelIds({ signal: owner.abortController.signal })
+      .then((pinnedModelIds) => patchCurrentSubject({ pinnedModelIds }))
+      .catch(() => patchCurrentSubject({ pinnedModelIds: [] }));
+
+    return () => {
+      if (subjectOwnerRef.current === owner) {
+        subjectGenerationRef.current += 1;
+        subjectOwnerRef.current = null;
+      }
+      owner.abortController.abort();
+    };
+  }, [authSubjectKey, isCurrentSubjectOwner]);
+
+  const visibleSubjectSettings =
+    authSubjectKey && subjectSettings?.subjectKey === authSubjectKey
+      ? subjectSettings
+      : null;
+  const dbModels = visibleSubjectSettings?.dbModels ?? null;
+  const adminDefaultModelId =
+    visibleSubjectSettings?.adminDefaultModelId ?? "";
+  const pinnedModelIds =
+    visibleSubjectSettings?.pinnedModelIds ?? EMPTY_PINNED_MODEL_IDS;
+
+  const togglePinnedModel = useCallback(
+    (modelId: string) => {
+      const owner = subjectOwnerRef.current;
+      if (!owner || !isCurrentSubjectOwner(owner)) return;
+      const current = subjectSettingsRef.current;
+      if (current?.subjectKey !== owner.subjectKey) return;
+      const nextPinnedModelIds = current.pinnedModelIds.includes(modelId)
+        ? current.pinnedModelIds.filter((id) => id !== modelId)
+        : [...current.pinnedModelIds, modelId];
+      setSubjectSettings({ ...current, pinnedModelIds: nextPinnedModelIds });
+      void modelPublicApi
+        .updatePinnedModelIds(nextPinnedModelIds, {
+          signal: owner.abortController.signal,
+        })
+        .then((serverPinnedModelIds) => {
+          if (!isCurrentSubjectOwner(owner)) return;
+          setSubjectSettings((previous) =>
+            previous?.subjectKey === owner.subjectKey
+              ? { ...previous, pinnedModelIds: serverPinnedModelIds }
+              : previous,
+          );
+        })
+        .catch(() => {
+          // The optimistic value remains local to this exact subject. A later
+          // authoritative hydration is the recovery route.
+        });
+    },
+    [isCurrentSubjectOwner],
+  );
 
   // Auto-clean orphaned pinned IDs (models that were deleted)
   const cleanedPinnedIds = useMemo(() => {
@@ -118,9 +220,19 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (cleanedPinnedIds.length === pinnedModelIds.length) return;
-    setPinnedModelIds(cleanedPinnedIds);
-    modelPublicApi.updatePinnedModelIds(cleanedPinnedIds).catch(() => {});
-  }, [cleanedPinnedIds, pinnedModelIds.length]);
+    const owner = subjectOwnerRef.current;
+    if (!owner || !isCurrentSubjectOwner(owner)) return;
+    setSubjectSettings((previous) =>
+      previous?.subjectKey === owner.subjectKey
+        ? { ...previous, pinnedModelIds: cleanedPinnedIds }
+        : previous,
+    );
+    void modelPublicApi
+      .updatePinnedModelIds(cleanedPinnedIds, {
+        signal: owner.abortController.signal,
+      })
+      .catch(() => {});
+  }, [cleanedPinnedIds, isCurrentSubjectOwner, pinnedModelIds.length]);
 
   // 从 DB 读取模型
   const availableModels = useMemo(() => {
@@ -138,13 +250,21 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, [adminDefaultModelId, availableModels]);
 
   const unsupportedSettingsMutation = useCallback(async () => {
-    setError("Settings management requires the phase 2 admin projection.");
+    setSubjectError({
+      subjectKey: authSubjectKeyRef.current,
+      message: "Settings management requires the phase 2 admin projection.",
+    });
     return false;
   }, []);
 
   const clearError = useCallback(() => {
-    setError(null);
+    setSubjectError(null);
   }, []);
+
+  const error =
+    subjectError?.subjectKey === authSubjectKey
+      ? subjectError.message
+      : null;
 
   const value: SettingsContextValue = {
     settings: null,
@@ -154,7 +274,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     defaultModel,
     pinnedModelIds: cleanedPinnedIds,
     togglePinnedModel,
-    isLoading: false,
+    isLoading: visibleSubjectSettings?.isLoading ?? false,
     error,
     savingKeys,
     updateSetting: unsupportedSettingsMutation,

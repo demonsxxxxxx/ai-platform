@@ -78,11 +78,22 @@ test("all shipped locales include fail-closed governance error copy", () => {
   }
 });
 
-test("returns unknown backend messages unchanged", () => {
+test("projects unknown backend messages to generic localized copy", () => {
   assert.equal(
     translateBackendError("unexpected_backend_error", t),
-    "unexpected_backend_error",
+    "translated:chat.requestFailed",
   );
+  for (const diagnostic of [
+    "C:\\private\\worker.log?token=secret",
+    "<html>proxy bearer=secret</html>",
+    "missing_permission:../../private-token",
+    "missing_permission:Bearer private-token",
+    "No permission to upload secret-token files",
+  ]) {
+    const message = translateBackendError(diagnostic, t);
+    assert.equal(message, "translated:chat.requestFailed");
+    assert.doesNotMatch(message, /private|token|proxy|html|worker/i);
+  }
 });
 
 test("safe error projection translates only allowlisted exact detail or code", () => {

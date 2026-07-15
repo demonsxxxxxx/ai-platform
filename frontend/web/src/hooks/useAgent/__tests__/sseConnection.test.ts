@@ -967,6 +967,120 @@ test("fails closed when a current 401 has no refresh marker or refresh fails", a
   }
 });
 
+test("production cookie-session SSE 401 never probes auth or opens a refreshed stream", async () => {
+  const originalFetch = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+  const originalLocalStorage = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "localStorage",
+  );
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  let authProbeCalls = 0;
+  let streamCalls = 0;
+  const markerStore = new Map([
+    ["ai_platform_session_present", "session-marker"],
+  ]);
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    value: async () => {
+      authProbeCalls += 1;
+      return new Response(JSON.stringify({ user_id: "stale-user" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+  Object.defineProperty(globalThis, "localStorage", {
+    configurable: true,
+    value: {
+      getItem: (key: string) => markerStore.get(key) ?? null,
+      setItem: (key: string, value: string) => markerStore.set(key, value),
+      removeItem: (key: string) => markerStore.delete(key),
+    },
+  });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { dispatchEvent: () => true },
+  });
+  const { context } = createTokenRefreshContext();
+
+  try {
+    await assert.rejects(
+      connectToSSE(
+        "session-old",
+        "run-old",
+        "assistant-old",
+        context,
+        false,
+        async (_input, init) => {
+          streamCalls += 1;
+          await init.onopen?.(new Response(null, { status: 401 }));
+        },
+      ),
+      (error: unknown) => {
+        assert.equal(isNonRetryableSSEAuthenticationError(error), true);
+        return true;
+      },
+    );
+
+    assert.equal(streamCalls, 1);
+    assert.equal(authProbeCalls, 0);
+    assert.equal(
+      markerStore.get("ai_platform_session_present"),
+      "session-marker",
+    );
+  } finally {
+    if (originalFetch) Object.defineProperty(globalThis, "fetch", originalFetch);
+    else delete (globalThis as { fetch?: typeof fetch }).fetch;
+    if (originalLocalStorage) {
+      Object.defineProperty(globalThis, "localStorage", originalLocalStorage);
+    } else delete (globalThis as { localStorage?: Storage }).localStorage;
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+    else delete (globalThis as { window?: Window }).window;
+  }
+});
+
+test("SSE failures log only fixed phases and bounded safe codes", async () => {
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  const logs: unknown[][] = [];
+  console.error = (...args: unknown[]) => logs.push(args);
+  console.warn = (...args: unknown[]) => logs.push(args);
+  const statusRetryCountRef = { current: MAX_STATUS_QUERY_RETRIES };
+  const diagnostic = new Error(
+    "C:\\private\\status.log?token=secret <html>proxy</html>",
+  );
+  const codedDiagnostic = Object.assign(diagnostic, {
+    code: "safe_status_unavailable",
+  });
+
+  try {
+    const result = await queryAuthoritativeRunStatus({
+      sessionId: "session-safe-log",
+      runId: "run-safe-log",
+      isCurrent: () => true,
+      statusRetryCountRef,
+      getStatus: async () => {
+        throw codedDiagnostic;
+      },
+    });
+
+    assert.equal(result.kind, "unavailable");
+    assert.ok(logs.length > 0);
+    for (const entry of logs) {
+      assert.equal(entry.length, 1);
+      assert.equal(typeof entry[0], "string");
+      assert.doesNotMatch(
+        String(entry[0]),
+        /private|token|proxy|html|status\.log/i,
+      );
+    }
+    assert.match(logs.map(String).join(" "), /safe_status_unavailable/);
+  } finally {
+    console.error = originalError;
+    console.warn = originalWarn;
+  }
+});
+
 test("a scheduled reconnect converges non-retryable auth without another status read", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const originalRandom = Math.random;

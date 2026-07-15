@@ -21,7 +21,8 @@ function browserSessionStorage(): Storage | null {
   return typeof sessionStorage === "undefined" ? null : sessionStorage;
 }
 
-function clearLegacyBearerStorage(): void {
+/** Explicit owner operation for removing obsolete script-readable credentials. */
+export function migrateLegacyBearerStorage(): void {
   const storage = browserLocalStorage();
   if (!storage) {
     return;
@@ -52,7 +53,6 @@ export function isSafeRedirectPath(path: string): boolean {
  * 这里仅返回一个非秘密的 cookie-session 存在标记，供 UI 判断是否需要探测服务端会话。
  */
 export function getAccessToken(): string | null {
-  clearLegacyBearerStorage();
   return browserLocalStorage()?.getItem(AUTH_SESSION_MARKER_KEY) ?? null;
 }
 
@@ -60,7 +60,6 @@ export function getAccessToken(): string | null {
  * 为了兼容旧调用方，这里返回与 access token 相同的非秘密会话标记。
  */
 export function getRefreshToken(): string | null {
-  clearLegacyBearerStorage();
   return browserLocalStorage()?.getItem(AUTH_SESSION_MARKER_KEY) ?? null;
 }
 
@@ -72,7 +71,7 @@ export function setTokens(_access_token: string, _refresh_token?: string): void 
   if (!storage) {
     return;
   }
-  clearLegacyBearerStorage();
+  migrateLegacyBearerStorage();
   storage.setItem(AUTH_SESSION_MARKER_KEY, createSessionMarker());
 }
 
@@ -85,7 +84,7 @@ export function clearTokens(): void {
     return;
   }
   storage.removeItem(AUTH_SESSION_MARKER_KEY);
-  clearLegacyBearerStorage();
+  migrateLegacyBearerStorage();
 }
 
 /**
