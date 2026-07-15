@@ -1,5 +1,31 @@
 # OpenSandbox Provider Adapter Phase Status
 
+## #430 external-egress capability admission (source contract only)
+
+Scope: before an `opensandbox` lease is created or reused, the provider must fetch an
+expiry-bound, versioned capability profile from an authenticated endpoint and fail
+closed unless it proves the configured OpenSandbox endpoint, `runsc` runtime
+identity, external gateway/policy subject, and callback-boundary subject. A requested
+OpenSandbox `networkPolicy` together with this gVisor/runsc profile is rejected as an
+unsupported combination; `defaultAction=deny` remains a request projection, not
+enforcement proof. This change is source-tested only: it does not verify s72, 211, B2,
+or data-plane egress enforcement. Observer-backed external-egress runtime evidence is
+unsupported and missing pending #436/#429; no caller-supplied JSON is accepted as that
+evidence.
+
+Generation-3 source boundary: capability transport permits only a normalized, literal
+loopback/private IPv4 target (with no DNS hostname resolution), never follows redirects,
+does not trust proxy environment variables, has hard request/response-size ceilings, and
+does not expose credentials or response details. Profiles are bounded in age, TTL, and
+remaining validity. OpenSandbox admission requires a requested immutable
+`repository@sha256:<digest>` image reference; labels record that requested subject only,
+not an observed container digest or runtime enforcement result. An authenticated observer
+provided through #436/#429 is required before any runtime evidence or integration claim.
+The configured requested-image digest is mandatory and must equal the digest in that
+requested reference; it cannot override it. The authenticated capability profile must carry the
+same requested executor-image digest; all three values are compared before sandbox
+creation or reuse, and the capability labels retain only the requested/profile subject.
+
 Status:
 - [x] local provider adapter wired behind `SandboxProvider`/`ContainerProvider`. Evidence: `tests/test_sandbox_container_provider.py` covers `opensandbox` provider selection, lease field mapping, stop/cleanup, startup file/command probes, byte readback compatibility, command exit-code failure, endpoint private headers, scheme-less endpoint URL normalization, and sanitized failure projection.
 - [x] platform source of truth preserved. Evidence: OpenSandbox only implements `ContainerProvider`; `SandboxRuntime` still owns `SandboxRuntimeRequest`, `ContainerLease`, DB lease creation/release, callback token derivation, executor dispatch, and result timing projection. OpenSandbox private endpoint headers are stored only in process-local `ContainerLease.executor_headers` and are excluded from `model_dump()`/DB lease payload/Admin projections.
