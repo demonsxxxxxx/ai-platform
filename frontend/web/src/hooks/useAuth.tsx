@@ -20,7 +20,9 @@ import {
   clearRedirectPath,
   isAuthenticated,
 } from "../services/api";
-import { setTokens } from "../services/api/token";
+import { clearTokens, setTokens } from "../services/api/token";
+import { ApiRequestError } from "../services/api/fetch";
+import { clearAuthScopedCaches } from "../services/api/authCacheInvalidation";
 import { handleBrowserAuthStorageEvent } from "./browserAuthStorage";
 import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../components/layout/AppContent/useAgentOptions";
 import {
@@ -92,12 +94,38 @@ function applyUserMetadata(metadata?: {
   }
 }
 
+/** Explicit completion contract for caller-visible identity operations. */
+export type AuthOperationOutcome<T = undefined> =
+  | { status: "completed"; value: T }
+  | { status: "cancelled" }
+  | { status: "failed" };
+
+function completedAuthOperation<T>(value: T): AuthOperationOutcome<T> {
+  return { status: "completed", value };
+}
+
+function cancelledAuthOperation<T = undefined>(): AuthOperationOutcome<T> {
+  return { status: "cancelled" };
+}
+
+function failedAuthOperation<T = undefined>(): AuthOperationOutcome<T> {
+  return { status: "failed" };
+}
+
+function isUnauthenticatedError(error: unknown): boolean {
+  return (
+    (error instanceof ApiRequestError &&
+      (error.status === 401 || error.status === 403)) ||
+    (error instanceof Error && /Unauthorized/i.test(error.message))
+  );
+}
+
 // 认证上下文类型
 interface AuthContextType extends AuthState {
   login: (
     credentials: LoginRequest,
     turnstileToken?: string,
-  ) => Promise<string | null>;
+  ) => Promise<AuthOperationOutcome<string | null>>;
   register: (
     userData: UserCreate,
     turnstileToken?: string,
@@ -107,9 +135,13 @@ interface AuthContextType extends AuthState {
     provider: string,
     code: string,
     state: string,
-  ) => Promise<void>;
+  ) => Promise<AuthOperationOutcome>;
+  completeOAuthSession: (
+    accessToken: string,
+    refreshToken: string,
+  ) => Promise<AuthOperationOutcome>;
   logout: () => Promise<boolean>;
-  refreshUser: () => Promise<void>;
+  refreshUser: () => Promise<AuthOperationOutcome>;
   hasPermission: (permission: Permission) => boolean;
   hasAnyPermission: (permissions: Permission[]) => boolean;
   hasAllPermissions: (permissions: Permission[]) => boolean;
@@ -184,28 +216,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const applyLoggedOut = useCallback((owner: AuthOperationOwner): boolean => {
     if (!isCurrentAuthOperation(owner)) return false;
+    clearTokens();
+    clearAuthScopedCaches();
     setToken(null);
     setUser(null);
     setDynamicPermissions([]);
     return true;
   }, [isCurrentAuthOperation]);
 
-  const refreshUser = useCallback(async () => {
-    if (!isAuthenticated()) return;
+  const refreshUser = useCallback(async (): Promise<AuthOperationOutcome> => {
+    if (!isAuthenticated()) return completedAuthOperation(undefined);
     const owner = beginAuthOperation();
     if (isCurrentAuthOperation(owner)) setIsLoading(true);
     try {
       const currentUser = await authApi.getCurrentUser({
         signal: owner.abortController.signal,
       });
-      applyAuthenticatedUser(currentUser, owner);
+      if (!applyAuthenticatedUser(currentUser, owner)) {
+        return cancelledAuthOperation();
+      }
+      return completedAuthOperation(undefined);
     } catch (error) {
-      if (!isCurrentAuthOperation(owner)) return;
-      if (error instanceof Error && /Unauthorized/i.test(error.message)) {
+      if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
+      if (isUnauthenticatedError(error)) {
         applyLoggedOut(owner);
-        return;
+        return failedAuthOperation();
       }
       console.error("Failed to refresh user info:", error);
+      return failedAuthOperation();
     } finally {
       if (isCurrentAuthOperation(owner)) setIsLoading(false);
     }
@@ -231,7 +269,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       } catch (err) {
         if (!isCurrentAuthOperation(owner)) return;
-        if (err instanceof Error && /Unauthorized/i.test(err.message)) {
+        if (isUnauthenticatedError(err)) {
           applyLoggedOut(owner);
           return;
         }
@@ -276,7 +314,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // 登录
   const login = useCallback(
-    async (credentials: LoginRequest, turnstileToken?: string) => {
+    async (
+      credentials: LoginRequest,
+      turnstileToken?: string,
+    ): Promise<AuthOperationOutcome<string | null>> => {
       const owner = beginAuthOperation();
       if (isCurrentAuthOperation(owner)) setIsLoading(true);
       let sessionEstablished = false;
@@ -286,21 +327,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           turnstileToken,
           owner.abortController.signal,
         );
-        if (!isCurrentAuthOperation(owner)) return null;
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         sessionEstablished = true;
         const currentUser = await authApi.getCurrentUser({
           signal: owner.abortController.signal,
         });
-        if (!applyAuthenticatedUser(currentUser, owner)) return null;
+        if (!applyAuthenticatedUser(currentUser, owner)) {
+          return cancelledAuthOperation();
+        }
 
         // 登录成功后，跳转到之前的页面
         const redirectPath = getRedirectPath();
         if (redirectPath) {
           clearRedirectPath();
         }
-        return redirectPath ?? null;
+        return completedAuthOperation(redirectPath ?? null);
       } catch (error) {
-        if (!isCurrentAuthOperation(owner)) return null;
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         if (sessionEstablished) {
           await authApi.logout(owner.abortController.signal);
         }
@@ -340,7 +383,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // 处理 OAuth 回调
   const handleOAuthCallback = useCallback(
-    async (provider: string, code: string, state: string) => {
+    async (
+      provider: string,
+      code: string,
+      state: string,
+    ): Promise<AuthOperationOutcome> => {
       const owner = beginAuthOperation();
       if (isCurrentAuthOperation(owner)) setIsLoading(true);
       let sessionEstablished = false;
@@ -351,14 +398,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           state,
           owner.abortController.signal,
         );
-        if (!isCurrentAuthOperation(owner)) return;
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         sessionEstablished = true;
         const currentUser = await authApi.getCurrentUser({
           signal: owner.abortController.signal,
         });
-        applyAuthenticatedUser(currentUser, owner);
+        if (!applyAuthenticatedUser(currentUser, owner)) {
+          return cancelledAuthOperation();
+        }
+        return completedAuthOperation(undefined);
       } catch (error) {
-        if (!isCurrentAuthOperation(owner)) return;
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         if (sessionEstablished) {
           await authApi.logout(owner.abortController.signal);
         }
@@ -368,6 +418,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     },
     [applyAuthenticatedUser, beginAuthOperation, isCurrentAuthOperation],
+  );
+
+  const completeOAuthSession = useCallback(
+    async (
+      accessToken: string,
+      refreshToken: string,
+    ): Promise<AuthOperationOutcome> => {
+      const owner = beginAuthOperation();
+      if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
+      setIsLoading(true);
+      clearAuthScopedCaches();
+      setTokens(accessToken, refreshToken);
+      window.dispatchEvent(new CustomEvent("auth:login"));
+      try {
+        const currentUser = await authApi.getCurrentUser({
+          signal: owner.abortController.signal,
+        });
+        if (!applyAuthenticatedUser(currentUser, owner)) {
+          return cancelledAuthOperation();
+        }
+        return completedAuthOperation(undefined);
+      } catch {
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
+        applyLoggedOut(owner);
+        return failedAuthOperation();
+      } finally {
+        if (isCurrentAuthOperation(owner)) setIsLoading(false);
+      }
+    },
+    [
+      applyAuthenticatedUser,
+      applyLoggedOut,
+      beginAuthOperation,
+      isCurrentAuthOperation,
+    ],
   );
 
   // 登出
@@ -423,6 +508,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     register,
     loginWithOAuth,
     handleOAuthCallback,
+    completeOAuthSession,
     logout,
     refreshUser,
     hasPermission,

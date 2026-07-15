@@ -135,7 +135,6 @@ def _compatibility_events_for_run(
         if (
             not message_id
             or str(message.get("run_id") or "") != run_id
-            or str(message.get("role") or "") != "user"
         ):
             continue
         message_data = {
@@ -756,19 +755,20 @@ async def session_events(
                 limit=50,
             )
             current_run_id = str(target_runs[0]["id"]) if target_runs else None
-        authorized_messages = await repositories.list_authorized_messages(
+        target_run_ids = [str(run["id"]) for run in target_runs]
+        authorized_user_messages = await repositories.list_authorized_user_messages_for_runs(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             session_id=session_id,
+            run_ids=target_run_ids,
         )
-        target_run_ids = {str(run["id"]) for run in target_runs}
         user_messages_by_run: dict[str, list[dict[str, Any]]] = {
             target_run_id: [] for target_run_id in target_run_ids
         }
-        for message in authorized_messages:
+        for message in authorized_user_messages:
             message_run_id = str(message.get("run_id") or "")
-            if message_run_id in target_run_ids and str(message.get("role") or "") == "user":
+            if message_run_id in user_messages_by_run:
                 user_messages_by_run[message_run_id].append(message)
         events = []
         for run in reversed(target_runs):

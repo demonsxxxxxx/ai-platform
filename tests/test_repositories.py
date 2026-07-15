@@ -212,6 +212,56 @@ async def test_authorized_messages_bind_tenant_session_owner_and_stable_order():
 
 
 @pytest.mark.asyncio
+async def test_authorized_user_messages_for_runs_minimize_and_scope_in_sql():
+    query = getattr(repositories, "list_authorized_user_messages_for_runs", None)
+    assert callable(query), "dedicated authorized run-message projection is missing"
+    conn = RecordingConnection()
+
+    rows = await query(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_ids=["run-b", "run-a", "run-b", ""],
+    )
+
+    assert rows == []
+    sql, params = conn.calls[-1]
+    select_clause = sql.split("from messages", 1)[0]
+    assert "messages.id" in select_clause
+    assert "messages.run_id" in select_clause
+    assert "messages.content" in select_clause
+    assert "messages.created_at" in select_clause
+    assert "metadata" not in select_clause
+    assert "role" not in select_clause
+    assert "join sessions" in sql
+    assert "messages.tenant_id = %s" in sql
+    assert "messages.session_id = %s" in sql
+    assert "sessions.user_id = %s" in sql
+    assert "messages.role = 'user'" in sql
+    assert "messages.run_id = any(%s::text[])" in sql
+    assert params == ("tenant-a", "session-a", "user-a", ["run-b", "run-a"])
+
+
+@pytest.mark.asyncio
+async def test_authorized_user_messages_for_runs_empty_target_is_query_free():
+    query = getattr(repositories, "list_authorized_user_messages_for_runs", None)
+    assert callable(query), "dedicated authorized run-message projection is missing"
+    conn = RecordingConnection()
+
+    rows = await query(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_ids=[],
+    )
+
+    assert rows == []
+    assert conn.calls == []
+
+
+@pytest.mark.asyncio
 async def test_capability_distribution_backfill_marks_completion_and_never_recreates_after_rerun():
     backfill = getattr(repositories, "ensure_tenant_capability_distribution_backfill", None)
     assert callable(backfill), "ensure_tenant_capability_distribution_backfill missing"

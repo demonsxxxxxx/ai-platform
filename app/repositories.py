@@ -8983,3 +8983,35 @@ async def list_authorized_messages(
         (tenant_id, session_id, user_id),
     )
     return list(await cursor.fetchall())
+
+
+async def list_authorized_user_messages_for_runs(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    session_id: str,
+    run_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Project minimal persisted user turns for authorized target runs."""
+
+    target_run_ids = list(
+        dict.fromkeys(run_id.strip() for run_id in run_ids if run_id.strip())
+    )
+    if not target_run_ids:
+        return []
+    cursor = await conn.execute(
+        """
+        select messages.id, messages.run_id, messages.content, messages.created_at
+        from messages
+        join sessions on sessions.id = messages.session_id and sessions.tenant_id = messages.tenant_id
+        where messages.tenant_id = %s
+          and messages.session_id = %s
+          and sessions.user_id = %s
+          and messages.role = 'user'
+          and messages.run_id = any(%s::text[])
+        order by messages.created_at asc, messages.id asc
+        """,
+        (tenant_id, session_id, user_id, target_run_ids),
+    )
+    return list(await cursor.fetchall())

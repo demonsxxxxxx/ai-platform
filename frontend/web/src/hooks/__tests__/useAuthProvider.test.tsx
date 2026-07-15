@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { ApiRequestError } from "../../services/api/fetch.ts";
 import type { User } from "../../types/auth.ts";
 
 type Listener = (event: { type: string }) => void;
@@ -67,11 +68,32 @@ class TestNode extends TestEventTarget {
 class TestElement extends TestNode {
   readonly nodeType = 1;
   readonly namespaceURI = "http://www.w3.org/1999/xhtml";
-  readonly style: Record<string, string> = {};
+  readonly style = Object.assign({}, {
+    setProperty: (name: string, value: string) => {
+      (this.style as unknown as Record<string, unknown>)[name] = value;
+    },
+    removeProperty: (name: string) => {
+      delete (this.style as unknown as Record<string, unknown>)[name];
+    },
+  }) as unknown as CSSStyleDeclaration;
   readonly attributes = new Map<string, string>();
   ownerDocument!: TestDocument;
   className = "";
   id = "";
+  value = "";
+  checked = false;
+  private readonly classes = new Set<string>();
+  readonly classList = {
+    add: (...names: string[]) => names.forEach((name) => this.classes.add(name)),
+    remove: (...names: string[]) => names.forEach((name) => this.classes.delete(name)),
+    contains: (name: string) => this.classes.has(name),
+    toggle: (name: string, force?: boolean) => {
+      const next = force ?? !this.classes.has(name);
+      if (next) this.classes.add(name);
+      else this.classes.delete(name);
+      return next;
+    },
+  };
 
   constructor(readonly tagName: string) {
     super();
@@ -88,6 +110,14 @@ class TestElement extends TestNode {
   removeAttribute(name: string) {
     this.attributes.delete(name);
   }
+
+  getAttribute(name: string) {
+    return this.attributes.get(name) || null;
+  }
+
+  hasAttribute(name: string) {
+    return this.attributes.has(name);
+  }
 }
 
 class TestText extends TestNode {
@@ -97,6 +127,15 @@ class TestText extends TestNode {
 
   constructor(value: string) {
     super();
+    this.nodeValue = value;
+    this.textContent = value;
+  }
+
+  get data() {
+    return this.nodeValue || "";
+  }
+
+  set data(value: string) {
     this.nodeValue = value;
     this.textContent = value;
   }
@@ -127,6 +166,9 @@ class TestDocument extends TestNode {
   createElement(tagName: string) {
     const element = new TestElement(tagName);
     element.ownerDocument = this;
+    if (tagName.toLowerCase() === "style") {
+      element.appendChild(this.createTextNode(""));
+    }
     return element;
   }
 
@@ -143,12 +185,15 @@ class TestDocument extends TestNode {
 
 const document = new TestDocument();
 const storage = new Map<string, string>();
+const sessionStorageValues = new Map<string, string>();
 const windowTarget = new TestEventTarget() as TestEventTarget & {
   document: TestDocument;
   location: { href: string; pathname: string; search: string; hash: string };
   localStorage: Storage;
+  sessionStorage: Storage;
   clearTimeout: typeof clearTimeout;
   setTimeout: typeof setTimeout;
+  matchMedia: (query: string) => MediaQueryList;
 };
 windowTarget.document = document;
 windowTarget.location = { href: "http://test.local/", pathname: "/", search: "", hash: "" };
@@ -162,8 +207,28 @@ windowTarget.localStorage = {
     return storage.size;
   },
 };
+windowTarget.sessionStorage = {
+  getItem: (key) => sessionStorageValues.get(key) || null,
+  setItem: (key, value) => sessionStorageValues.set(key, value),
+  removeItem: (key) => sessionStorageValues.delete(key),
+  clear: () => sessionStorageValues.clear(),
+  key: (index) => [...sessionStorageValues.keys()][index] || null,
+  get length() {
+    return sessionStorageValues.size;
+  },
+};
 windowTarget.clearTimeout = clearTimeout;
 windowTarget.setTimeout = setTimeout;
+windowTarget.matchMedia = (query: string) => ({
+  matches: false,
+  media: query,
+  onchange: null,
+  addListener() {},
+  removeListener() {},
+  addEventListener() {},
+  removeEventListener() {},
+  dispatchEvent: () => true,
+});
 Object.assign(windowTarget, {
   Element: TestElement,
   HTMLElement: TestElement,
@@ -175,6 +240,7 @@ Object.assign(globalThis, {
   window: windowTarget,
   document,
   localStorage: windowTarget.localStorage,
+  sessionStorage: windowTarget.sessionStorage,
   Node: TestNode,
   Element: TestElement,
   HTMLElement: TestElement,
@@ -271,6 +337,210 @@ async function mountAuthHarness(
   };
 }
 
+function findElements(root: TestNode, tagName: string): TestElement[] {
+  const matches: TestElement[] = [];
+  const visit = (node: TestNode) => {
+    if (node instanceof TestElement && node.tagName === tagName) matches.push(node);
+    node.childNodes.forEach(visit);
+  };
+  visit(root);
+  return matches;
+}
+
+function reactProps(element: TestElement): Record<string, (...args: never[]) => unknown> {
+  const key = Object.keys(element).find((name) => name.startsWith("__reactProps$"));
+  assert.ok(key, `React props are attached to <${element.tagName}>`);
+  return (element as unknown as Record<string, Record<string, (...args: never[]) => unknown>>)[key];
+}
+
+async function mountAuthPageHarness(
+  configure: (api: typeof import("../../services/api/auth.ts").authApi) => void,
+) {
+  const React = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { AuthProvider, useAuth } = await import("../useAuth.tsx");
+  const { ThemeProvider } = await import("../../contexts/ThemeContext.tsx");
+  const { AuthPage } = await import("../../components/auth/AuthPage.tsx");
+  const { authApi } = await import("../../services/api/auth.ts");
+  const toast = (await import("react-hot-toast")).default;
+  const originals = {
+    getCurrentUser: authApi.getCurrentUser,
+    login: authApi.login,
+    logout: authApi.logout,
+    getOAuthProviders: authApi.getOAuthProviders,
+    updateMetadata: authApi.updateMetadata,
+    toastSuccess: toast.success,
+  };
+  configure(authApi);
+  authApi.getOAuthProviders = async () => ({
+    providers: [],
+    registration_enabled: true,
+    turnstile: {
+      enabled: false,
+      site_key: "",
+      require_on_login: false,
+      require_on_register: false,
+      require_on_password_change: false,
+    },
+  });
+  authApi.updateMetadata = async () => authUser("admin-a", "tenant-a");
+  storage.clear();
+  storage.set("ai_platform_session_present", "test-session-marker");
+
+  let snapshot: ReturnType<typeof useAuth> | null = null;
+  const successfulRedirects: Array<string | undefined> = [];
+  const successToasts: unknown[] = [];
+  toast.success = ((message: unknown) => {
+    successToasts.push(message);
+    return "test-toast";
+  }) as typeof toast.success;
+  function Probe() {
+    snapshot = useAuth();
+    return null;
+  }
+
+  const container = document.createElement("div");
+  const root = createRoot(container as never);
+  await React.act(async () => {
+    root.render(
+      React.createElement(
+        ThemeProvider,
+        null,
+        React.createElement(
+          AuthProvider,
+          null,
+          React.createElement(
+            React.Fragment,
+            null,
+            React.createElement(Probe),
+            React.createElement(AuthPage, {
+              onSuccess: (path?: string) => successfulRedirects.push(path),
+            }),
+          ),
+        ),
+      ),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  return {
+    React,
+    container,
+    successfulRedirects,
+    successToasts,
+    get auth() {
+      assert.ok(snapshot, "auth page provider probe is mounted");
+      return snapshot;
+    },
+    async cleanup() {
+      await React.act(async () => root.unmount());
+      Object.assign(authApi, {
+        getCurrentUser: originals.getCurrentUser,
+        login: originals.login,
+        logout: originals.logout,
+        getOAuthProviders: originals.getOAuthProviders,
+        updateMetadata: originals.updateMetadata,
+      });
+      toast.success = originals.toastSuccess;
+      storage.clear();
+    },
+  };
+}
+
+async function mountOAuthCallbackHarness(
+  configure: (api: typeof import("../../services/api/auth.ts").authApi) => void,
+) {
+  const React = await import("react");
+  const { createRoot } = await import("react-dom/client");
+  const { MemoryRouter, useLocation } = await import("react-router-dom");
+  const { AuthProvider } = await import("../useAuth.tsx");
+  const { OAuthCallback } = await import("../../components/auth/OAuthCallback.tsx");
+  const { authApi } = await import("../../services/api/auth.ts");
+  const originalGetCurrentUser = authApi.getCurrentUser;
+  configure(authApi);
+  storage.clear();
+  sessionStorageValues.clear();
+  storage.set("ai_platform_session_present", "test-session-marker");
+  windowTarget.location.hash = "#access_token=test-access&refresh_token=test-refresh";
+
+  let setVisible: ((visible: boolean) => void) | null = null;
+  let currentPath = "";
+  function LocationProbe() {
+    currentPath = useLocation().pathname;
+    return null;
+  }
+  function CallbackGate() {
+    const [visible, setVisibleState] = React.useState(false);
+    setVisible = setVisibleState;
+    return visible ? React.createElement(OAuthCallback) : null;
+  }
+
+  const container = document.createElement("div");
+  const root = createRoot(container as never);
+  await React.act(async () => {
+    root.render(
+      React.createElement(
+        AuthProvider,
+        null,
+        React.createElement(
+          MemoryRouter,
+          { initialEntries: ["/auth/oauth/callback"] },
+          React.createElement(
+            React.Fragment,
+            null,
+            React.createElement(LocationProbe),
+            React.createElement(CallbackGate),
+          ),
+        ),
+      ),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
+  return {
+    React,
+    get currentPath() {
+      return currentPath;
+    },
+    async show() {
+      assert.ok(setVisible);
+      await React.act(async () => {
+        setVisible?.(true);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    },
+    async hide() {
+      assert.ok(setVisible);
+      await React.act(async () => {
+        setVisible?.(false);
+        await Promise.resolve();
+      });
+    },
+    async logout() {
+      await React.act(async () => {
+        windowTarget.dispatchEvent({ type: "auth:logout" });
+        await Promise.resolve();
+      });
+    },
+    async flush() {
+      await React.act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    },
+    async cleanup() {
+      await React.act(async () => root.unmount());
+      authApi.getCurrentUser = originalGetCurrentUser;
+      storage.clear();
+      sessionStorageValues.clear();
+      windowTarget.location.hash = "";
+    },
+  };
+}
+
 test("a newer login hydration owns auth state over deferred initial principal A", async () => {
   const initialA = deferred<User>();
   let initialSignal: AbortSignal | undefined;
@@ -301,6 +571,312 @@ test("a newer login hydration owns auth state over deferred initial principal A"
     assert.equal(loginSignal?.aborted, false);
     assert.equal(mounted.auth.user?.id, "admin-b");
     assert.equal(mounted.auth.user?.tenant_id, "tenant-b");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("a stale initial 401 cannot log out a newer authenticated principal", async () => {
+  const initialA = deferred<User>();
+  let currentUserCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return initialA.promise;
+      return authUser("admin-b", "tenant-b");
+    };
+    api.login = async () => undefined;
+  });
+  try {
+    await mounted.React.act(async () => {
+      await mounted.auth.login({ username: "admin-b", password: "safe-test" });
+    });
+    initialA.reject(new ApiRequestError("unauthorized", 401, "unauthorized"));
+    await mounted.flush();
+
+    assert.equal(mounted.auth.user?.id, "admin-b");
+    assert.equal(mounted.auth.user?.tenant_id, "tenant-b");
+    assert.equal(storage.has("ai_platform_session_present"), true);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("the current auth owner handles 401 by clearing only its local session state", async () => {
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => {
+      throw new ApiRequestError("unauthorized", 401, "unauthorized");
+    };
+  });
+  try {
+    assert.equal(mounted.auth.user, null);
+    assert.equal(mounted.auth.isAuthenticated, false);
+    assert.equal(storage.has("ai_platform_session_present"), false);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("a login hydration superseded by logout returns an explicit cancelled outcome", async () => {
+  const loginHydration = deferred<User>();
+  let currentUserCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      return loginHydration.promise;
+    };
+    api.login = async () => undefined;
+    api.logout = async () => undefined;
+  });
+  try {
+    let loginPromise!: ReturnType<typeof mounted.auth.login>;
+    await mounted.React.act(async () => {
+      loginPromise = mounted.auth.login({
+        username: "admin-b",
+        password: "safe-test",
+      });
+      await Promise.resolve();
+    });
+    await mounted.React.act(async () => {
+      await mounted.auth.logout();
+    });
+    loginHydration.resolve(authUser("admin-b", "tenant-b"));
+    const outcome = await loginPromise;
+    await mounted.flush();
+
+    assert.deepEqual(outcome, { status: "cancelled" });
+    assert.equal(mounted.auth.user, null);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("a refresh superseded by login returns cancelled instead of normal completion", async () => {
+  const staleRefresh = deferred<User>();
+  let currentUserCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      if (currentUserCalls === 2) return staleRefresh.promise;
+      return authUser("admin-b", "tenant-b");
+    };
+    api.login = async () => undefined;
+  });
+  try {
+    let refreshPromise!: ReturnType<typeof mounted.auth.refreshUser>;
+    await mounted.React.act(async () => {
+      refreshPromise = mounted.auth.refreshUser();
+      await Promise.resolve();
+    });
+    await mounted.React.act(async () => {
+      await mounted.auth.login({ username: "admin-b", password: "safe-test" });
+    });
+    staleRefresh.resolve(authUser("admin-stale", "tenant-stale"));
+    const outcome = await refreshPromise;
+    await mounted.flush();
+
+    assert.deepEqual(outcome, { status: "cancelled" });
+    assert.equal(mounted.auth.user?.id, "admin-b");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("an OAuth hydration superseded by logout returns an explicit cancelled outcome", async () => {
+  const oauthHydration = deferred<User>();
+  let currentUserCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      return oauthHydration.promise;
+    };
+    api.handleOAuthCallback = async () => ({
+      access_token: "cookie-session",
+      token_type: "bearer",
+    });
+    api.logout = async () => undefined;
+  });
+  try {
+    let oauthPromise!: ReturnType<typeof mounted.auth.handleOAuthCallback>;
+    await mounted.React.act(async () => {
+      oauthPromise = mounted.auth.handleOAuthCallback("github", "code", "state");
+      await Promise.resolve();
+    });
+    await mounted.React.act(async () => {
+      await mounted.auth.logout();
+    });
+    oauthHydration.resolve(authUser("oauth-stale", "tenant-stale"));
+    const outcome = await oauthPromise;
+    await mounted.flush();
+
+    assert.deepEqual(outcome, { status: "cancelled" });
+    assert.equal(mounted.auth.user, null);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("AuthPage silently stops a deferred login that loses auth ownership", async () => {
+  const loginHydration = deferred<User>();
+  let currentUserCalls = 0;
+  let loginCalls = 0;
+  const mounted = await mountAuthPageHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      return loginHydration.promise;
+    };
+    api.login = async () => {
+      loginCalls += 1;
+    };
+    api.logout = async () => undefined;
+  });
+  try {
+    const inputs = findElements(mounted.container, "input");
+    const usernameInput = inputs[0];
+    const passwordInput = inputs[1];
+    const form = findElements(mounted.container, "form")[0];
+    assert.ok(usernameInput && passwordInput && form);
+
+    await mounted.React.act(async () => {
+      usernameInput.value = "admin-b";
+      reactProps(usernameInput).onChange?.({ target: usernameInput } as never);
+      passwordInput.value = "safe-test";
+      reactProps(passwordInput).onChange?.({ target: passwordInput } as never);
+      await Promise.resolve();
+    });
+    await mounted.React.act(async () => {
+      reactProps(form).onSubmit?.({
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(loginCalls, 1);
+
+    await mounted.React.act(async () => {
+      await mounted.auth.logout();
+    });
+    loginHydration.resolve(authUser("admin-b", "tenant-b"));
+    await mounted.React.act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(mounted.successToasts, []);
+    assert.deepEqual(mounted.successfulRedirects, []);
+    const submit = findElements(form, "button").at(-1);
+    assert.equal(submit?.hasAttribute("disabled"), false);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("OAuth callback silently stops when deferred hydration loses auth ownership", async () => {
+  const oauthHydration = deferred<User>();
+  let currentUserCalls = 0;
+  const mounted = await mountOAuthCallbackHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      return oauthHydration.promise;
+    };
+  });
+  try {
+    await mounted.show();
+    await mounted.logout();
+    oauthHydration.resolve(authUser("oauth-stale", "tenant-stale"));
+    await mounted.flush();
+
+    assert.equal(mounted.currentPath, "/auth/oauth/callback");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("OAuth callback unmount fence prevents deferred completion navigation", async () => {
+  const oauthHydration = deferred<User>();
+  let currentUserCalls = 0;
+  const mounted = await mountOAuthCallbackHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      return oauthHydration.promise;
+    };
+  });
+  try {
+    await mounted.show();
+    await mounted.hide();
+    oauthHydration.resolve(authUser("oauth-b", "tenant-b"));
+    await mounted.flush();
+
+    assert.equal(mounted.currentPath, "/auth/oauth/callback");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("current OAuth fragment hydration failure clears the previous principal and marker", async () => {
+  let currentUserCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      throw new Error("test transport failure");
+    };
+  });
+  try {
+    const outcome = await mounted.auth.completeOAuthSession(
+      "oauth-access",
+      "oauth-refresh",
+    );
+    await mounted.flush();
+
+    assert.deepEqual(outcome, { status: "failed" });
+    assert.equal(mounted.auth.user, null);
+    assert.equal(mounted.auth.token, null);
+    assert.deepEqual(mounted.auth.permissions, []);
+    assert.equal(storage.has("ai_platform_session_present"), false);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("stale OAuth fragment failure cannot clear a newer login principal", async () => {
+  const staleOAuthHydration = deferred<User>();
+  let currentUserCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      if (currentUserCalls === 2) return staleOAuthHydration.promise;
+      return authUser("admin-b", "tenant-b");
+    };
+    api.login = async () => undefined;
+  });
+  try {
+    let oauthPromise!: ReturnType<typeof mounted.auth.completeOAuthSession>;
+    await mounted.React.act(async () => {
+      oauthPromise = mounted.auth.completeOAuthSession(
+        "oauth-stale-access",
+        "oauth-stale-refresh",
+      );
+      await Promise.resolve();
+    });
+    await mounted.React.act(async () => {
+      await mounted.auth.login({ username: "admin-b", password: "safe-test" });
+    });
+    staleOAuthHydration.reject(new Error("stale transport failure"));
+    const outcome = await oauthPromise;
+    await mounted.flush();
+
+    assert.deepEqual(outcome, { status: "cancelled" });
+    assert.equal(mounted.auth.user?.id, "admin-b");
+    assert.equal(mounted.auth.user?.tenant_id, "tenant-b");
+    assert.equal(storage.has("ai_platform_session_present"), true);
   } finally {
     await mounted.cleanup();
   }
@@ -415,6 +991,44 @@ test("unmount aborts pending initial hydration without an unhandled rejection", 
     await Promise.resolve();
 
     assert.equal(initialSignal?.aborted, true);
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    await mounted.cleanup();
+  }
+});
+
+test("unmount resolves a pending login hydration as cancelled without an unhandled rejection", async () => {
+  let currentUserCalls = 0;
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async (options?: { signal?: AbortSignal }) => {
+      currentUserCalls += 1;
+      if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
+      return new Promise<User>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      });
+    };
+    api.login = async () => undefined;
+  });
+  try {
+    let loginPromise!: ReturnType<typeof mounted.auth.login>;
+    await mounted.React.act(async () => {
+      loginPromise = mounted.auth.login({
+        username: "admin-b",
+        password: "safe-test",
+      });
+      await Promise.resolve();
+    });
+    await mounted.unmount();
+    const outcome = await loginPromise;
+    await Promise.resolve();
+
+    assert.deepEqual(outcome, { status: "cancelled" });
     assert.deepEqual(unhandled, []);
   } finally {
     process.off("unhandledRejection", onUnhandled);

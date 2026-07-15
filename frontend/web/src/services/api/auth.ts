@@ -125,7 +125,11 @@ export const authApi = {
   async getCurrentUser(options: { signal?: AbortSignal } = {}): Promise<User> {
     const principal = await authFetch<PrincipalResponseWire>(
       `${API_BASE}/api/ai/auth/me`,
-      { signal: options.signal },
+      {
+        skipAuth: true,
+        credentials: "include",
+        signal: options.signal,
+      },
     );
     return mapPrincipalToUser(principal);
   },

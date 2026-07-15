@@ -290,7 +290,7 @@ async function mountInbox(user: User, client: AdminToolPermissionInboxClient) {
   const { AdminToolPermissionInboxSection } = await import("../AdminToolPermissionInboxSection.tsx");
   const originalGetCurrentUser = authApi.getCurrentUser;
   let currentUser = user;
-  let refreshAuthenticatedUser: (() => Promise<void>) | null = null;
+  let refreshAuthenticatedUser: ReturnType<typeof useAuth>["refreshUser"] | null = null;
   authApi.getCurrentUser = async () => currentUser;
   const container = document.createElement("div");
   const root = createRoot(container as never);

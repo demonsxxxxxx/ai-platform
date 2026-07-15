@@ -34,9 +34,10 @@ import {
   type UseAgentReturn,
 } from "./useAgent/types";
 import {
+  ensureTerminalAssistantSegment,
   reconstructMessagesFromEvents,
   getLastEventTimestamp,
-  mergeHydratedAssistantRunSegment,
+  mergeHydratedRunSegment,
   prepareMessagesForRunningRun,
 } from "./useAgent/historyLoader";
 import {
@@ -465,12 +466,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           });
           if (!isCurrentTerminalHydration()) return;
           const events = (eventsData.events || []) as HistoryEvent[];
-          const hydratedMessages = reconstructMessagesFromEvents(
+          let hydratedMessages = reconstructMessagesFromEvents(
             events,
             processedEventIdsRef.current,
             { options, activeSubagentStack: activeSubagentStackRef.current },
           );
-          const hydratedAssistant = [...hydratedMessages]
+          let hydratedAssistant = [...hydratedMessages]
             .reverse()
             .find(
               (message) =>
@@ -480,11 +481,20 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             finalizeTerminalResultUnavailable(targetRunId, fallbackMessageId);
             return;
           }
-          if (hydratedAssistant) {
-            setMessages((previous) =>
-              mergeHydratedAssistantRunSegment(previous, hydratedAssistant),
+          if (!hydratedAssistant) {
+            hydratedMessages = ensureTerminalAssistantSegment(
+              hydratedMessages,
+              targetRunId,
+              fallbackMessageId,
+            );
+            hydratedAssistant = hydratedMessages.find(
+              (message) =>
+                message.role === "assistant" && message.runId === targetRunId,
             );
           }
+          setMessages((previous) =>
+            mergeHydratedRunSegment(previous, hydratedMessages, targetRunId),
+          );
           finalizeTerminalRun(
             targetRunId,
             status,
@@ -741,7 +751,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
           // Event history determines the exact latest run before its status is
           // queried. Session metadata can be absent or stale in production.
-          const eventsPromise = sessionApi.getEvents(targetSessionId);
+          const eventsPromise = sessionApi.getEvents(
+            targetSessionId,
+            targetRunId ? { run_id: targetRunId } : undefined,
+          );
           const feedbackPromise = canReadFeedback
             ? feedbackApi
                 .list(0, 100, undefined, undefined, targetSessionId)
@@ -829,6 +842,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 { options, activeSubagentStack: activeSubagentStackRef.current },
               )
             : [];
+          if (targetRunId) {
+            reconstructedMessages = mergeHydratedRunSegment(
+              [],
+              reconstructedMessages,
+              targetRunId,
+            );
+          }
 
           if (feedbackList && feedbackList.items.length > 0) {
             const feedbackMap = new Map(
@@ -884,17 +904,50 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
               historyMessageId || historyCurrentRunId,
             );
           } else if (terminalStatus && historyCurrentRunId) {
-            // The status projection confirms only the lifecycle. Rehydrate the
-            // exact run through the compatibility history contract before the
-            // terminal converger can abort the stream or clear presentation.
+            // An explicit target already arrived through the exact history
+            // contract. Default history still hydrates that exact run before
+            // terminal convergence can clear presentation.
             currentRunIdRef.current = historyCurrentRunId;
             setCurrentRunId(historyCurrentRunId);
-            await hydrateTerminalRun(
-              targetSessionId,
-              historyCurrentRunId,
-              terminalStatus,
-              historyMessageId || historyCurrentRunId,
-            );
+            if (targetRunId) {
+              let exactAssistant = reconstructedMessages.find(
+                (message) =>
+                  message.role === "assistant" &&
+                  message.runId === historyCurrentRunId,
+              );
+              if (!exactAssistant && terminalStatus !== "cancelled") {
+                finalizeTerminalResultUnavailable(
+                  historyCurrentRunId,
+                  historyMessageId || historyCurrentRunId,
+                );
+              } else {
+                if (!exactAssistant) {
+                  reconstructedMessages = ensureTerminalAssistantSegment(
+                    reconstructedMessages,
+                    historyCurrentRunId,
+                    historyMessageId || historyCurrentRunId,
+                  );
+                  setMessages(reconstructedMessages);
+                  exactAssistant = reconstructedMessages.find(
+                    (message) =>
+                      message.role === "assistant" &&
+                      message.runId === historyCurrentRunId,
+                  );
+                }
+                finalizeTerminalRun(
+                  historyCurrentRunId,
+                  terminalStatus,
+                  exactAssistant?.id || historyMessageId || historyCurrentRunId,
+                );
+              }
+            } else {
+              await hydrateTerminalRun(
+                targetSessionId,
+                historyCurrentRunId,
+                terminalStatus,
+                historyMessageId || historyCurrentRunId,
+              );
+            }
           } else {
             setCurrentRunId(activeHistoryRunId);
             currentRunIdRef.current = activeHistoryRunId;
@@ -956,6 +1009,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       createSSEContext,
       canReadFeedback,
       finalizeRunStatusUnavailable,
+      finalizeTerminalResultUnavailable,
+      finalizeTerminalRun,
       hydrateTerminalRun,
       reconcileCurrentRun,
       clearReconcileOwners,
@@ -1017,7 +1072,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       lastHistoryTimestampRef.current = null;
 
       const previousMessages = messagesRef.current;
-      const { messages: optimisticMessages, assistantMessageId } =
+      const {
+        messages: optimisticMessages,
+        userMessageId,
+        assistantMessageId,
+      } =
         createOptimisticMessagesForSend({
           previousMessages,
           content,
@@ -1197,7 +1256,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           currentRunIdRef.current = newRunId;
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === assistantMessageId
+              m.id === userMessageId
+                ? { ...m, runId: newRunId }
+                : m.id === assistantMessageId
                 ? {
                     ...m,
                     id: newRunId,

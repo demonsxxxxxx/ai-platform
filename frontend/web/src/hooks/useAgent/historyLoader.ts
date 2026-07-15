@@ -398,32 +398,86 @@ export function reconstructMessagesFromEvents(
   return reconstructedMessages;
 }
 
-/** Replace exactly one assistant run segment during terminal history hydration. */
-export function mergeHydratedAssistantRunSegment(
+function hydratedMessageIdentity(message: Message, runId: string): string | null {
+  if (message.runId !== runId) return null;
+  if (message.role === "assistant") return `assistant:${runId}`;
+  return message.id ? `${message.role}:${message.id}` : null;
+}
+
+/** Replace exactly one complete run segment using stable message/run identities. */
+export function mergeHydratedRunSegment(
   messages: Message[],
-  hydratedAssistant: Message,
+  hydratedMessages: Message[],
+  runId: string,
 ): Message[] {
-  const runId = hydratedAssistant.runId;
-  if (hydratedAssistant.role !== "assistant" || !runId) {
-    return messages;
+  const identities: string[] = [];
+  const authoritativeByIdentity = new Map<string, Message>();
+  for (const message of hydratedMessages) {
+    const identity = hydratedMessageIdentity(message, runId);
+    if (!identity) continue;
+    if (!authoritativeByIdentity.has(identity)) identities.push(identity);
+    authoritativeByIdentity.set(identity, message);
   }
+  const authoritativeSegment = identities
+    .map((identity) => authoritativeByIdentity.get(identity))
+    .filter((message): message is Message => Boolean(message));
+  if (authoritativeSegment.length === 0) return messages;
+
   const firstIndex = messages.findIndex(
-    (message) => message.role === "assistant" && message.runId === runId,
+    (message) => message.runId === runId,
   );
   if (firstIndex < 0) {
-    return [...messages, hydratedAssistant];
+    return [...messages, ...authoritativeSegment];
   }
   const merged: Message[] = [];
+  let inserted = false;
   messages.forEach((message, index) => {
-    if (message.role === "assistant" && message.runId === runId) {
-      if (index === firstIndex) {
-        merged.push(hydratedAssistant);
+    if (message.runId === runId) {
+      if (!inserted && index === firstIndex) {
+        merged.push(...authoritativeSegment);
+        inserted = true;
       }
       return;
     }
     merged.push(message);
   });
   return merged;
+}
+
+/** Ensure a confirmed terminal run has an assistant presentation owner. */
+export function ensureTerminalAssistantSegment(
+  messages: Message[],
+  runId: string,
+  messageId: string,
+): Message[] {
+  if (
+    messages.some(
+      (message) => message.role === "assistant" && message.runId === runId,
+    )
+  ) {
+    return messages;
+  }
+  const lastRunIndex = messages.reduce(
+    (lastIndex, message, index) =>
+      message.runId === runId ? index : lastIndex,
+    -1,
+  );
+  const assistant: Message = {
+    id: messageId || runId,
+    runId,
+    role: "assistant",
+    content: "",
+    timestamp:
+      lastRunIndex >= 0 ? messages[lastRunIndex].timestamp : new Date(),
+    isStreaming: false,
+    parts: [],
+  };
+  if (lastRunIndex < 0) return [...messages, assistant];
+  return [
+    ...messages.slice(0, lastRunIndex + 1),
+    assistant,
+    ...messages.slice(lastRunIndex + 1),
+  ];
 }
 
 export interface RunningAssistantPreparationResult {

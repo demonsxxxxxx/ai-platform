@@ -40,11 +40,14 @@ interface AuthPageProps {
 
 export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
   const { t } = useTranslation();
+  const mountedRef = useRef(true);
 
   // 覆盖全局 overflow: hidden，允许登录页面滚动
   useEffect(() => {
+    mountedRef.current = true;
     document.documentElement.classList.add("allow-scroll");
     return () => {
+      mountedRef.current = false;
       document.documentElement.classList.remove("allow-scroll");
     };
   }, []);
@@ -224,13 +227,16 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
 
     try {
       if (mode === "login") {
-        const redirectPath = await login(
+        const loginOutcome = await login(
           { username, password },
           turnstileToken || undefined,
         );
+        if (!mountedRef.current) return;
+        if (loginOutcome.status === "cancelled") return;
+        if (loginOutcome.status !== "completed") return;
         toast.success(t("auth.loginSuccess"));
         startedRedirect = true;
-        beginSuccessRedirect(redirectPath);
+        beginSuccessRedirect(loginOutcome.value);
       } else {
         const result = await register(
           { username, email, password },
@@ -250,6 +256,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
         beginSuccessRedirect();
       }
     } catch (err) {
+      if (!mountedRef.current) return;
       const errorMessage = (err as Error).message || t("auth.operationFailed");
 
       // 检查是否是邮箱未验证或账户未激活错误，跳转到验证页面
@@ -282,7 +289,7 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
       setTurnstileToken(null);
       setTurnstileKey((prev) => prev + 1);
     } finally {
-      if (!startedRedirect) {
+      if (mountedRef.current && !startedRedirect) {
         setIsSubmitting(false);
       }
     }

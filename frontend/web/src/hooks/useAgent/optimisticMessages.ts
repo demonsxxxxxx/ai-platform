@@ -12,6 +12,7 @@ interface CreateOptimisticMessagesForSendOptions {
 
 interface CreateOptimisticMessagesForSendResult {
   messages: Message[];
+  userMessageId: string;
   assistantMessageId: string;
 }
 
@@ -42,6 +43,7 @@ export function createOptimisticMessagesForSend({
 
   return {
     messages: [...previousMessages, userMessage, assistantMessage],
+    userMessageId: userMessage.id,
     assistantMessageId: assistantMessage.id,
   };
 }

@@ -3,7 +3,7 @@ import { parseAuthStorageEvent } from "../services/api/token";
 
 export function handleBrowserAuthStorageEvent(
   event: StorageEvent,
-  refreshUser: () => void | Promise<void>,
+  refreshUser: () => void | Promise<unknown>,
 ): void {
   const authEvent = parseAuthStorageEvent(event);
   if (authEvent === "logout") {

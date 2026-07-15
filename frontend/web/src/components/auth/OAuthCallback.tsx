@@ -9,26 +9,30 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useAuth } from "../../hooks/useAuth";
 import {
-  setTokens,
   getRedirectPath,
   clearRedirectPath,
 } from "../../services/api";
-import { clearAuthScopedCaches } from "../../services/api/authCacheInvalidation";
 import { Loading } from "../common";
 
 export function OAuthCallback() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { refreshUser } = useAuth();
-  const processedRef = useRef(false);
+  const { completeOAuthSession } = useAuth();
+  const callbackGenerationRef = useRef(0);
 
   useEffect(() => {
-    // 防止 React Strict Mode 双重调用
-    if (processedRef.current) return;
-    processedRef.current = true;
+    const callbackGeneration = callbackGenerationRef.current + 1;
+    callbackGenerationRef.current = callbackGeneration;
+    let isCurrent = true;
+    const ownsCallback = () =>
+      isCurrent && callbackGenerationRef.current === callbackGeneration;
 
     const handleCallback = async () => {
+      // StrictMode cleanup invalidates the first effect before it can mutate
+      // auth state; only the remounted generation continues.
+      await Promise.resolve();
+      if (!ownsCallback()) return;
       // 从 URL fragment 中提取 token (#access_token=xxx&refresh_token=xxx)
       const hash = window.location.hash.substring(1); // 移除开头的 #
       const params = new URLSearchParams(hash);
@@ -52,15 +56,15 @@ export function OAuthCallback() {
       }
 
       try {
-        // 保存 token
-        clearAuthScopedCaches();
-        setTokens(accessToken, refreshToken);
-
-        // 通知其他模块（如 settings）重新加载数据
-        window.dispatchEvent(new CustomEvent("auth:login"));
-
-        // 刷新用户信息
-        await refreshUser();
+        const refreshOutcome = await completeOAuthSession(
+          accessToken,
+          refreshToken,
+        );
+        if (!ownsCallback()) return;
+        if (refreshOutcome.status === "cancelled") return;
+        if (refreshOutcome.status !== "completed") {
+          throw new Error("auth_hydration_failed");
+        }
 
         // 获取重定向路径
         const redirectPath = getRedirectPath() || "/chat";
@@ -69,6 +73,7 @@ export function OAuthCallback() {
         // 导航到目标页面
         navigate(redirectPath, { replace: true });
       } catch (err) {
+        if (!ownsCallback()) return;
         console.error("OAuth callback processing error:", err);
         navigate("/auth/login?error=oauth_processing_failed", {
           replace: true,
@@ -76,8 +81,11 @@ export function OAuthCallback() {
       }
     };
 
-    handleCallback();
-  }, [navigate, refreshUser, searchParams]);
+    void handleCallback();
+    return () => {
+      isCurrent = false;
+    };
+  }, [completeOAuthSession, navigate, searchParams]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-stone-50 dark:bg-stone-900">

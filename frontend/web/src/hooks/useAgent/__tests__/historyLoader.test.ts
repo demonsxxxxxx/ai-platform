@@ -3,7 +3,7 @@ import test from "node:test";
 
 import type { MessagePart } from "../../../types";
 import {
-  mergeHydratedAssistantRunSegment,
+  mergeHydratedRunSegment,
   reconstructMessagesFromEvents,
 } from "../historyLoader.ts";
 import type { HistoryEvent } from "../types.ts";
@@ -159,6 +159,13 @@ test("exact terminal hydration replaces one run segment without duplicating or t
       parts: [],
     },
     {
+      id: "message-new-orphan",
+      role: "user" as const,
+      runId: "run-new",
+      content: "旧问题",
+      timestamp: new Date("2026-07-15T02:00:00Z"),
+    },
+    {
       id: "assistant-new-partial",
       role: "assistant" as const,
       runId: "run-new",
@@ -175,20 +182,54 @@ test("exact terminal hydration replaces one run segment without duplicating or t
       parts: [],
     },
   ];
-  const hydrated = {
-    id: "assistant-new-final",
-    role: "assistant" as const,
-    runId: "run-new",
-    content: "完整答案",
-    timestamp: new Date("2026-07-15T02:00:00Z"),
-    parts: [],
-  };
+  const hydrated = [
+    {
+      id: "message-new",
+      role: "user" as const,
+      runId: "run-new",
+      content: "问题草稿",
+      timestamp: new Date("2026-07-15T02:00:00Z"),
+    },
+    {
+      id: "message-new",
+      role: "user" as const,
+      runId: "run-new",
+      content: "完整问题",
+      timestamp: new Date("2026-07-15T02:00:00Z"),
+    },
+    {
+      id: "assistant-new-partial-hydrated",
+      role: "assistant" as const,
+      runId: "run-new",
+      content: "水合中的答案",
+      timestamp: new Date("2026-07-15T02:00:00Z"),
+      parts: [],
+    },
+    {
+      id: "assistant-new-final",
+      role: "assistant" as const,
+      runId: "run-new",
+      content: "完整答案",
+      timestamp: new Date("2026-07-15T02:00:01Z"),
+      parts: [],
+    },
+  ];
 
-  const merged = mergeHydratedAssistantRunSegment(existing, hydrated);
+  const merged = mergeHydratedRunSegment(existing, hydrated, "run-new");
 
-  assert.deepEqual(merged.map((message) => message.runId), ["run-old", "run-new"]);
+  assert.deepEqual(merged.map((message) => message.runId), [
+    "run-old",
+    "run-new",
+    "run-new",
+  ]);
   assert.equal(merged[0]?.content, "旧运行答案");
-  assert.equal(merged[1]?.content, "完整答案");
+  assert.deepEqual(
+    merged.slice(1).map((message) => [message.role, message.content]),
+    [
+      ["user", "完整问题"],
+      ["assistant", "完整答案"],
+    ],
+  );
 });
 
 test("reconstructMessagesFromEvents treats timezone-less backend timestamps as UTC", () => {

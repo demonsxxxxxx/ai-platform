@@ -1138,6 +1138,16 @@ test("useAgent reconciles an ordinary transport interruption authoritatively", a
   sessionApi.getEvents = (async (_sessionId, options) => ({
     events: options?.run_id
       ? [{
+          id: "message-transport-interruption",
+          event_type: "user:message",
+          run_id: "run-transport-interruption",
+          timestamp: "2026-07-15T00:00:00Z",
+          data: {
+            message_id: "message-transport-interruption",
+            run_id: "run-transport-interruption",
+            content: "普通网络中断需要核对状态",
+          },
+        }, {
           id: "run-transport-interruption:final",
           event_type: "final_detail",
           run_id: "run-transport-interruption",
@@ -1162,6 +1172,14 @@ test("useAgent reconciles an ordinary transport interruption authoritatively", a
     assert.equal(statusCalls, 1);
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
+    assert.equal(
+      harness.hook.messages.filter(
+        (message) =>
+          message.role === "user" &&
+          message.content === "普通网络中断需要核对状态",
+      ).length,
+      1,
+    );
     assert.equal(
       parts.filter(
         (part) =>
@@ -1831,6 +1849,17 @@ test("useAgent hydrates the exact terminal run compatibility history before conv
       current_run_id: "run-terminal-hydrate",
       events: [
         {
+          id: "terminal-hydrate:user",
+          event_type: "user:message",
+          run_id: "run-terminal-hydrate",
+          timestamp: "2026-07-15T00:00:00Z",
+          data: {
+            message_id: "terminal-hydrate:user",
+            run_id: "run-terminal-hydrate",
+            content: "恢复终态",
+          },
+        },
+        {
           id: "terminal-hydrate:progress",
           sequence: 9,
           event_type: "worker_started",
@@ -1890,10 +1919,14 @@ test("useAgent hydrates the exact terminal run compatibility history before conv
     const assistant = harness.hook.messages.find(
       (message) => message.runId === "run-terminal-hydrate" && message.role === "assistant",
     );
+    const user = harness.hook.messages.find(
+      (message) => message.runId === "run-terminal-hydrate" && message.role === "user",
+    );
     assert.deepEqual(eventQueries, [undefined, "run-terminal-hydrate"]);
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.isLoading, false);
     assert.equal(assistant?.content, "最终答案");
+    assert.equal(user?.content, "恢复终态");
     assert.equal(
       assistant?.parts?.some(
         (part) =>
@@ -1902,6 +1935,211 @@ test("useAgent hydrates the exact terminal run compatibility history before conv
       ),
       true,
     );
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent loads an exact old run as one complete deduplicated segment from the first request", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const eventQueries: Array<string | undefined> = [];
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-exact-old",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-07-15T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async (_sessionId, options) => {
+    eventQueries.push(options?.run_id);
+    if (options?.run_id !== "run-51") {
+      return {
+        current_run_id: "run-latest",
+        events: [{
+          id: "run-latest:final",
+          event_type: "message:chunk",
+          run_id: "run-latest",
+          timestamp: "2026-07-15T10:00:00Z",
+          data: { run_id: "run-latest", content: "最近五十条中的回答" },
+        }],
+      };
+    }
+    return {
+      run_id: "run-51",
+      current_run_id: "run-51",
+      events: [
+        {
+          id: "message-run-51",
+          event_type: "user:message",
+          run_id: "run-51",
+          timestamp: "2026-01-01T00:00:00Z",
+          data: {
+            message_id: "message-run-51",
+            run_id: "run-51",
+            content: "第 51 条旧问题",
+          },
+        },
+        {
+          id: "run-51:artifact",
+          event_type: "artifact_card",
+          run_id: "run-51",
+          timestamp: "2026-01-01T00:00:01Z",
+          data: {
+            run_id: "run-51",
+            artifact_id: "artifact-run-51",
+            artifact_type: "report",
+            label: "旧运行报告",
+            download_url: "/api/ai/artifacts/artifact-run-51/download",
+          },
+        },
+        {
+          id: "run-51:final",
+          event_type: "message:chunk",
+          run_id: "run-51",
+          timestamp: "2026-01-01T00:00:02Z",
+          data: { run_id: "run-51", content: "第 51 条旧回答" },
+        },
+        {
+          id: "run-51:terminal:succeeded",
+          event_type: "done",
+          run_id: "run-51",
+          timestamp: "2026-01-01T00:00:03Z",
+          data: { run_id: "run-51", status: "succeeded" },
+        },
+      ],
+    };
+  }) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async (_sessionId, runId) => ({
+    session_id: "session-exact-old",
+    run_id: runId,
+    status: "error",
+    raw_status: "succeeded",
+  })) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-exact-old", "run-51");
+    });
+    await settle(harness.act);
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-exact-old", "run-51");
+    });
+    await settle(harness.act);
+
+    assert.deepEqual(eventQueries, ["run-51", "run-51"]);
+    assert.deepEqual(
+      harness.hook.messages.map((message) => [
+        message.role,
+        message.runId,
+        message.content,
+      ]),
+      [
+        ["user", "run-51", "第 51 条旧问题"],
+        ["assistant", "run-51", "第 51 条旧回答"],
+      ],
+    );
+    assert.equal(
+      harness.hook.messages[1]?.parts?.some(
+        (part) =>
+          part.type === "artifact" &&
+          part.artifact_id === "artifact-run-51",
+      ),
+      true,
+    );
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent renders a payload-free exact cancelled run as a complete user and assistant segment", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-exact-cancelled",
+    agent_id: "general-agent",
+    created_at: "2026-07-15T00:00:00Z",
+    updated_at: "2026-07-15T00:00:01Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = (async (_sessionId, options) => ({
+    run_id: options?.run_id,
+    current_run_id: "run-exact-cancelled",
+    events: [{
+      id: "message-exact-cancelled",
+      event_type: "user:message",
+      run_id: "run-exact-cancelled",
+      timestamp: "2026-07-15T00:00:00Z",
+      data: {
+        message_id: "message-exact-cancelled",
+        run_id: "run-exact-cancelled",
+        content: "取消这个任务",
+      },
+    }, {
+      id: "run-exact-cancelled:terminal:cancelled",
+      event_type: "done",
+      run_id: "run-exact-cancelled",
+      timestamp: "2026-07-15T00:00:01Z",
+      data: { run_id: "run-exact-cancelled", status: "cancelled" },
+    }],
+  })) as typeof sessionApi.getEvents;
+  sessionApi.getStatus = (async (_sessionId, runId) => ({
+    session_id: "session-exact-cancelled",
+    run_id: runId,
+    status: "error",
+    raw_status: "cancelled",
+  })) as typeof sessionApi.getStatus;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory(
+        "session-exact-cancelled",
+        "run-exact-cancelled",
+      );
+    });
+    await settle(harness.act);
+
+    assert.deepEqual(
+      harness.hook.messages.map((message) => [
+        message.role,
+        message.runId,
+        message.content,
+      ]),
+      [
+        ["user", "run-exact-cancelled", "取消这个任务"],
+        ["assistant", "run-exact-cancelled", ""],
+      ],
+    );
+    assert.equal(
+      harness.hook.messages[1]?.parts?.filter(
+        (part) => part.type === "cancelled",
+      ).length,
+      1,
+    );
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.isLoading, false);
   } finally {
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;

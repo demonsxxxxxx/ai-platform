@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 
 import { authApi, buildOAuthLoginUrl } from "../auth.ts";
 import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
+import { ApiRequestError } from "../fetch.ts";
 import { refreshTokens } from "../tokenManager.ts";
 
 function installAuthApiBrowserStubs(
@@ -99,6 +100,30 @@ test("current-user projection preserves the authenticated tenant subject", async
 
     assert.equal(user.id, "dev001");
     assert.equal(user.tenant_id, "default");
+  } finally {
+    stubs.restore();
+  }
+});
+
+test("current-user hydration returns owned 401 without legacy refresh or logout side effects", async () => {
+  const stubs = installAuthApiBrowserStubs({ detail: "unauthorized" }, 401);
+  stubs.stored.set("ai_platform_session_present", "owned-session-marker");
+  try {
+    await assert.rejects(
+      () => authApi.getCurrentUser(),
+      (error: unknown) => {
+        assert.equal(error instanceof ApiRequestError, true);
+        assert.equal((error as ApiRequestError).status, 401);
+        return true;
+      },
+    );
+
+    assert.deepEqual(stubs.fetchCalls, ["/api/ai/auth/me"]);
+    assert.equal(
+      stubs.stored.get("ai_platform_session_present"),
+      "owned-session-marker",
+    );
+    assert.deepEqual(stubs.events, []);
   } finally {
     stubs.restore();
   }
@@ -256,15 +281,15 @@ test("logout keeps browser auth state when backend logout fails", async () => {
   }
 });
 
-test("OAuth callback page clears auth-scoped caches before setting fragment tokens", () => {
-  const callbackSource = readFileSync(
-    new URL("../../../components/auth/OAuthCallback.tsx", import.meta.url),
+test("OAuth fragment completion is owned before clearing caches and setting the session marker", () => {
+  const useAuthSource = readFileSync(
+    new URL("../../../hooks/useAuth.tsx", import.meta.url),
     "utf8",
   );
 
-  assert.match(callbackSource, /clearAuthScopedCaches/);
+  assert.match(useAuthSource, /const completeOAuthSession = useCallback/);
   assert.match(
-    callbackSource,
-    /clearAuthScopedCaches\(\)[\s\S]*setTokens\(accessToken,\s*refreshToken\)/,
+    useAuthSource,
+    /const owner = beginAuthOperation\(\);[\s\S]*clearAuthScopedCaches\(\);[\s\S]*setTokens\(accessToken, refreshToken\);[\s\S]*signal: owner\.abortController\.signal/,
   );
 });

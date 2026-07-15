@@ -49,6 +49,21 @@ test("useAuth rolls back the backend session when login or OAuth hydration fails
 test("useAuth login resumes the redirect path saved by revoked-session handling", () => {
   assert.match(
     useAuthSource,
-    /const redirectPath = getRedirectPath\(\);[\s\S]*if \(redirectPath\) \{[\s\S]*clearRedirectPath\(\);[\s\S]*}[\s\S]*return redirectPath \?\? null;/,
+    /const redirectPath = getRedirectPath\(\);[\s\S]*if \(redirectPath\) \{[\s\S]*clearRedirectPath\(\);[\s\S]*}[\s\S]*return completedAuthOperation\(redirectPath \?\? null\);/,
+  );
+});
+
+test("useAuth exposes explicit cancellation instead of null or void success sentinels", () => {
+  assert.match(
+    useAuthSource,
+    /export type AuthOperationOutcome<[\s\S]*status: "cancelled"/,
+  );
+  assert.match(
+    useAuthSource,
+    /if \(!isCurrentAuthOperation\(owner\)\) return cancelledAuthOperation\(\);/,
+  );
+  assert.doesNotMatch(
+    useAuthSource,
+    /if \(!isCurrentAuthOperation\(owner\)\) return null;/,
   );
 });
