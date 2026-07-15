@@ -1208,6 +1208,31 @@ def is_capability_distribution_archived(row: dict[str, Any] | None) -> bool:
     return shared_capability_distribution_archived(row)
 
 
+async def _acquire_capability_distribution_lifecycle_lock(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str,
+    capability_id: str,
+) -> None:
+    """Serialize one distribution lifecycle key, including writes for currently missing rows."""
+
+    lock_scope = json.dumps(
+        {
+            "capability_id": capability_id,
+            "capability_kind": capability_kind,
+            "tenant_id": tenant_id,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    await conn.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s::text, 0::bigint))",
+        (lock_scope,),
+    )
+
+
 async def _lock_capability_distribution_metadata(
     conn: AsyncConnection,
     *,
@@ -1282,7 +1307,7 @@ async def ensure_tenant_capability_distribution_backfill(
     *,
     tenant_id: str,
 ) -> None:
-    """Backfill one tenant exactly once and record the completion boundary."""
+    """Backfill one tenant exactly once; insert-only conflicts cannot overwrite lifecycle state."""
 
     completion_cursor = await conn.execute(
         """
@@ -1521,6 +1546,12 @@ async def upsert_capability_distribution_row(
     """Create or update one authoritative capability distribution row."""
 
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    await _acquire_capability_distribution_lifecycle_lock(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+    )
     await _require_unarchived_capability_distribution(
         conn,
         tenant_id=tenant_id,
@@ -1584,6 +1615,12 @@ async def archive_capability_distribution_row(
     """Archive one tenant capability binding without mutating global Skill evidence."""
 
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    await _acquire_capability_distribution_lifecycle_lock(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+    )
     metadata_json = await _lock_capability_distribution_metadata(
         conn,
         tenant_id=tenant_id,
@@ -1648,6 +1685,12 @@ async def toggle_capability_distribution_row(
     """Toggle or set the status of one authoritative distribution row."""
 
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    await _acquire_capability_distribution_lifecycle_lock(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+    )
     await _require_unarchived_capability_distribution(
         conn,
         tenant_id=tenant_id,
@@ -1697,6 +1740,12 @@ async def set_capability_distribution_status(
     if status not in {"active", "disabled"}:
         raise RepositoryConflictError("invalid_capability_distribution_status")
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    await _acquire_capability_distribution_lifecycle_lock(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+    )
     await _require_unarchived_capability_distribution(
         conn,
         tenant_id=tenant_id,

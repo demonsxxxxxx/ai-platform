@@ -374,3 +374,117 @@ async def test_capability_distribution_schema_backfill_and_completed_marker_conc
     finally:
         await admin_conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await admin_conn.close()
+
+
+@pytest.mark.asyncio
+async def test_capability_distribution_lifecycle_lock_serializes_missing_row_archive(monkeypatch):
+    dsn = _postgres_dsn()
+    schema_name = f"capdist_lifecycle_lock_{uuid.uuid4().hex}"
+    schema_sql = Path("app/schema.sql").read_text(encoding="utf-8")
+    admin_conn = await psycopg.AsyncConnection.connect(dsn, autocommit=True, row_factory=dict_row)
+    first_conn = None
+    second_conn = None
+    first_task = None
+    second_task = None
+    try:
+        await admin_conn.execute(sql.SQL("create schema {}").format(sql.Identifier(schema_name)))
+        await _set_search_path(admin_conn, schema_name)
+        await admin_conn.execute(schema_sql)
+        tenant_id = f"tenant-lifecycle-{uuid.uuid4().hex}"
+        capability_id = "missing-row-race"
+        await admin_conn.execute(
+            "insert into tenants(id, name) values (%s, %s)",
+            (tenant_id, "Lifecycle Lock Test"),
+        )
+        await admin_conn.execute(
+            "insert into tenant_capability_distribution_backfills(tenant_id, completed_at) values (%s, now())",
+            (tenant_id,),
+        )
+
+        first_conn = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        second_conn = await psycopg.AsyncConnection.connect(dsn, row_factory=dict_row)
+        await _set_search_path(first_conn, schema_name)
+        await _set_search_path(second_conn, schema_name)
+        await first_conn.execute("set local statement_timeout = '5s'")
+        await second_conn.execute("set local statement_timeout = '5s'")
+        first_pid = int((await (await first_conn.execute("select pg_backend_pid() as pid")).fetchone())["pid"])
+        second_pid = int((await (await second_conn.execute("select pg_backend_pid() as pid")).fetchone())["pid"])
+
+        original_require_unarchived = repositories._require_unarchived_capability_distribution
+        negative_lookup_complete = asyncio.Event()
+        release_first_writer = asyncio.Event()
+
+        async def pause_first_writer(conn, **kwargs):
+            await original_require_unarchived(conn, **kwargs)
+            if conn is first_conn:
+                negative_lookup_complete.set()
+                await release_first_writer.wait()
+
+        monkeypatch.setattr(repositories, "_require_unarchived_capability_distribution", pause_first_writer)
+
+        async def upsert_active(conn, *, updated_by):
+            return await repositories.upsert_capability_distribution_row(
+                conn,
+                tenant_id=tenant_id,
+                capability_kind="mcp_server",
+                capability_id=capability_id,
+                status="active",
+                visible_to_user=True,
+                scope_mode="allowlist",
+                department_ids=[],
+                allowed_roles=[],
+                metadata_json={},
+                updated_by=updated_by,
+            )
+
+        async def second_writer():
+            await upsert_active(second_conn, updated_by="writer-b")
+            return await repositories.archive_capability_distribution_row(
+                second_conn,
+                tenant_id=tenant_id,
+                capability_kind="mcp_server",
+                capability_id=capability_id,
+                archived_by="writer-b",
+            )
+
+        first_task = asyncio.create_task(upsert_active(first_conn, updated_by="writer-a"))
+        await asyncio.wait_for(negative_lookup_complete.wait(), timeout=2.0)
+        second_task = asyncio.create_task(second_writer())
+        await _wait_for_lock_blocker(admin_conn, waiter_pid=second_pid, blocker_pid=first_pid)
+        assert not second_task.done()
+
+        release_first_writer.set()
+        await asyncio.wait_for(first_task, timeout=2.0)
+        await first_conn.commit()
+        archived = await asyncio.wait_for(second_task, timeout=2.0)
+        await second_conn.commit()
+
+        assert archived["status"] == "disabled"
+        final_cursor = await admin_conn.execute(
+            """
+            select status, visible_to_user, metadata_json
+            from tenant_capability_distributions
+            where tenant_id = %s and capability_kind = 'mcp_server' and capability_id = %s
+            """,
+            (tenant_id, capability_id),
+        )
+        final_row = await final_cursor.fetchone()
+        assert final_row is not None
+        assert final_row["status"] == "disabled"
+        assert final_row["visible_to_user"] is False
+        assert repositories.is_capability_distribution_archived(final_row) is True
+        assert final_row["metadata_json"]["archived_by"] == "writer-b"
+    finally:
+        for task in (first_task, second_task):
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        for conn in (first_conn, second_conn):
+            if conn is not None:
+                await conn.rollback()
+                await conn.close()
+        await admin_conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
+        await admin_conn.close()
