@@ -728,6 +728,11 @@ test("an expired pending ticket is reissued under the same owner and target nonc
         assert.equal(v2.rotation_ticket, "T".repeat(43));
         throw new ApiRequestError("expired ticket", 409, "auth_context_stale");
       case 3:
+        assert.equal(v2.generation, 2);
+        assert.equal(v2.rotation_ticket, undefined);
+        assert.equal(v2.nonce, submitted[1].nonce);
+        throw new ApiRequestError("authority remains base", 409, "auth_context_rebootstrap_required");
+      case 4:
         assert.equal(v2.generation, 1);
         assert.equal(v2.rotation_ticket, undefined);
         assert.equal(v2.nonce, submitted[1].nonce);
@@ -737,7 +742,7 @@ test("an expired pending ticket is reissued under the same owner and target nonc
           generation: 1,
           rotation_ticket: "U".repeat(43),
         };
-      case 4:
+      case 5:
         assert.equal(v2.generation, 2);
         assert.equal(v2.rotation_ticket, "U".repeat(43));
         return { status: "ready", protocol_version: 2, generation: 2 };
@@ -748,7 +753,7 @@ test("an expired pending ticket is reissued under the same owner and target nonc
 
   try {
     await ensureBrowserAuthContext();
-    assert.equal(submitted.length, 4);
+    assert.equal(submitted.length, 5);
     const state = idb.currentState() as {
       currentGeneration: number;
       confirmedGeneration: number;
@@ -815,6 +820,132 @@ test("server-proven target reconciliation promotes a pending rotation after loca
     assert.equal(reconciled.currentGeneration, 2);
     assert.equal(reconciled.confirmedGeneration, 2);
     assert.equal(reconciled.pendingRotation, undefined);
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    idb.restore();
+    stubs.restore();
+  }
+});
+
+test("a lost ticketed rotation response repairs the committed target while the cookie is still base", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const idb = installTransactionalIndexedDb();
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  const submitted: Array<Record<string, unknown>> = [];
+  let serverCommittedTarget = false;
+  let cookieJar = "base";
+  authApi.bootstrapAuthContext = async (request) => {
+    assert.notEqual(typeof request, "string");
+    const v2 = request as Record<string, unknown>;
+    submitted.push(v2);
+    switch (submitted.length) {
+      case 1:
+        return {
+          status: "rebootstrap_required",
+          protocol_version: 2,
+          generation: 1,
+          rotation_ticket: "T".repeat(43),
+        };
+      case 2:
+        assert.equal(v2.generation, 2);
+        assert.equal(v2.rotation_ticket, "T".repeat(43));
+        serverCommittedTarget = true;
+        // Redis committed the target, but fetch abort/loss prevents its
+        // response headers from applying the target HttpOnly cookie.
+        throw new ApiRequestError("lost rotation response", 503, "auth_context_unavailable");
+      case 3:
+        assert.equal(serverCommittedTarget, true);
+        assert.equal(cookieJar, "base");
+        assert.equal(v2.generation, 2);
+        assert.equal(v2.rotation_ticket, undefined);
+        assert.equal(v2.nonce, submitted[1].nonce);
+        cookieJar = "target";
+        return { status: "ready", protocol_version: 2, generation: 2 };
+      default:
+        throw new Error("target repair must be bounded to one request");
+    }
+  };
+
+  try {
+    await ensureBrowserAuthContext();
+    assert.equal(submitted.length, 3);
+    assert.equal(cookieJar, "target");
+    const state = idb.currentState() as {
+      currentGeneration: number;
+      confirmedGeneration: number;
+      pendingRotation?: unknown;
+    };
+    assert.equal(state.currentGeneration, 2);
+    assert.equal(state.confirmedGeneration, 2);
+    assert.equal(state.pendingRotation, undefined);
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    idb.restore();
+    stubs.restore();
+  }
+});
+
+test("an uncommitted target repair performs one base ticket reissue and does not loop", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const idb = installTransactionalIndexedDb();
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  const submitted: Array<Record<string, unknown>> = [];
+  authApi.bootstrapAuthContext = async (request) => {
+    assert.notEqual(typeof request, "string");
+    const v2 = request as Record<string, unknown>;
+    submitted.push(v2);
+    switch (submitted.length) {
+      case 1:
+        return {
+          status: "rebootstrap_required",
+          protocol_version: 2,
+          generation: 1,
+          rotation_ticket: "T".repeat(43),
+        };
+      case 2:
+        assert.equal(v2.generation, 2);
+        assert.equal(v2.rotation_ticket, "T".repeat(43));
+        throw new ApiRequestError("ticket is stale", 409, "auth_context_stale");
+      case 3:
+        assert.equal(v2.generation, 2);
+        assert.equal(v2.rotation_ticket, undefined);
+        throw new ApiRequestError("authority remains base", 409, "auth_context_rebootstrap_required");
+      case 4:
+        assert.equal(v2.generation, 1);
+        assert.equal(v2.rotation_ticket, undefined);
+        assert.equal(v2.nonce, submitted[1].nonce);
+        return {
+          status: "rebootstrap_required",
+          protocol_version: 2,
+          generation: 1,
+          rotation_ticket: "U".repeat(43),
+        };
+      case 5:
+        assert.equal(v2.generation, 2);
+        assert.equal(v2.rotation_ticket, "U".repeat(43));
+        return { status: "ready", protocol_version: 2, generation: 2 };
+      default:
+        throw new Error("recovery must not loop");
+    }
+  };
+
+  try {
+    await ensureBrowserAuthContext();
+    assert.equal(submitted.length, 5);
+    assert.equal(
+      submitted.filter((request) => request.generation === 2 && request.rotation_ticket === undefined).length,
+      1,
+    );
+    const state = idb.currentState() as {
+      currentGeneration: number;
+      confirmedGeneration: number;
+      pendingRotation?: unknown;
+    };
+    assert.equal(state.currentGeneration, 2);
+    assert.equal(state.confirmedGeneration, 2);
+    assert.equal(state.pendingRotation, undefined);
   } finally {
     authApi.bootstrapAuthContext = originalBootstrap;
     idb.restore();

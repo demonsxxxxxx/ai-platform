@@ -48,7 +48,9 @@ exact current-owner repair, or successful rotation.  A stale, mismatch,
 invalid-ticket, missing, corrupt, or Redis-failure result never sets or clears
 a cookie.  An already-at-target rotation reconciliation returns `ready` but
 does not refresh `Set-Cookie`, because the signed target cookie is the proof
-that the original response reached the browser.
+that the original response reached the browser. A separate base-cookie target
+repair can return `ready` with only the target cookie when the rotation committed
+server-side but its response headers never reached the browser.
 
 ## Redis authority and Lua/CAS seams
 
@@ -86,9 +88,15 @@ The following operations are single Lua transactions:
    acknowledge only a signed target cookie whose `(i, g + 1, h-next)` is
    already equal to both records; it never consumes/reissues a ticket or
    changes a TTL.
-4. V2 principal snapshots over authority and context.  There is no Python
+4. Base-cookie target repair over authority, old context, and target context.
+   It accepts only a signed `(i, base, h-old)` cookie and exact
+   `(i, base + 1, h-next)` authority/target records, then reissues only the
+   target cookie with remaining `PTTL`. It never mutates Redis or consumes a
+   ticket. If—and only if—authority is still exact base with no target context,
+   it returns the typed signal permitting one normal base ticket reissue.
+5. V2 principal snapshots over authority and context.  There is no Python
    get-then-get validation.
-5. Begin and commit auth operations, OAuth state issue/consume, OAuth callback,
+6. Begin and commit auth operations, OAuth state issue/consume, OAuth callback,
    and logout.  The operation and OAuth state carry the V2 identity, so a
    generation transition supersedes old work in the same atomic operation.
 
@@ -116,13 +124,17 @@ fails before bootstrap with the localized safe-coordination UI.
 
 If a rotation response succeeds server-side but local IDB promotion is aborted,
 expired, or versionchanged, the next owner retries the persisted pending target.
-The server accepts it only when its signed cookie, authority, and target context
-are exactly the expected `(i, base + 1, next-handle)`; then the owner may promote
-IDB without clearing browser storage.  If authority remains at `base` but the
-pending ticket has expired or was late-replaced, that same authorized owner may
-obtain one fresh ticket for the same pending nonce and atomically replace only
-the matching pending record.  A different successor handle or generation never
-promotes local state and fails closed instead of guessing.
+A signed target cookie can reconcile without a cookie write. If fetch aborted or
+the response was lost before `Set-Cookie`, the signed cookie remains base: after
+one stale/unknown ticketed result, the owner makes exactly one no-ticket target
+repair. The server must prove old signed `(i, base, h-old)` plus authority and
+target context `(i, base + 1, h-next)` before it reissues the target cookie and
+the owner promotes IDB without clearing browser storage. If the server instead
+proves authority is still exact base and no target exists, the owner may make
+one normal base ticket reissue for the same nonce, then one final ticketed
+rotation. Any other state, a changed owner/base/pending nonce, or a second
+recovery branch fails closed; no recovery loop or business-mutation replay is
+allowed.
 
 Lease expiry does not let an old owner publish, rotate, or release a newer
 record.  Each IndexedDB transaction accepts a signal/deadline, is aborted for
@@ -158,6 +170,8 @@ sessions).  It must not rewrite V2 cookies as V1.
   expired ticket, malformed/partial ticket tuple, malformed Redis state,
   authority/context mismatch, Redis loss, and V2 context TTL loss: fail closed
   without `Set-Cookie`.
+- A target repair rejects wrong incarnation, old or next handle, target
+  generation gap, missing/corrupt target, and any authority/target TTL mismatch.
 - Same nonce/context is deduplicated atomically.
 - Two same-profile no-cookie tabs share the one IndexedDB state and bootstrap
   identity; independent browser profiles have distinct, unauthenticated
@@ -168,14 +182,16 @@ sessions).  It must not rewrite V2 cookies as V1.
 ## TDD and verification matrix
 
 Backend tests cover strict parser/MAC checks, V1 compatibility and migration,
-same-nonce dedupe, context/generation conflicts, target-only reconciliation,
-ticket single-use/reissue/late-response ordering/expiry, TTL preservation,
+same-nonce dedupe, context/generation conflicts, target-cookie reconciliation,
+base-cookie committed-target repair, ticket single-use/reissue/late-response
+ordering/expiry, TTL preservation,
 partial ticket tuples, Redis loss/corruption, stale-cookie reversed arrival,
 principal/login/logout/OAuth/commit fencing, and different-user operation
 races. Frontend tests use an asynchronous IDB/transaction/cookie-jar double
 for shared tabs, rollback/abort, blocked-to-late-upgrade/success, explicit
-versionchange transaction abort, lease expiry, reconciliation, ticket reissue,
-rotation, and stale-repair semantics. The double is not proof of the real
+versionchange transaction abort, lease expiry, target repair after a lost
+rotation response, bounded base ticket reissue, rotation, and stale-repair
+semantics. The double is not proof of the real
 HTTP-IP browser race or actual Redis execution.
 
 Focused gates are auth session/routes/principal pytest; coordinator/provider/

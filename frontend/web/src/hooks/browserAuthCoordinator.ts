@@ -144,6 +144,10 @@ function isAuthContextStale(error: unknown): boolean {
   return error instanceof ApiRequestError && error.code === "auth_context_stale";
 }
 
+function isUnknownRotationResult(error: unknown): boolean {
+  return error instanceof ApiRequestError && error.code === "auth_context_unavailable";
+}
+
 function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
     throw signal.reason ?? new DOMException("Browser auth coordination aborted", "AbortError");
@@ -573,6 +577,25 @@ async function replacePendingRotationTicket(
   return { state: next, ownerToken: owned.ownerToken };
 }
 
+function pendingRotationMatches(
+  state: BrowserAuthV2State,
+  pending: PendingRotation,
+): boolean {
+  return state.pendingRotation?.baseGeneration === pending.baseGeneration
+    && state.pendingRotation.nextNonce === pending.nextNonce
+    && state.pendingRotation.ticket === pending.ticket;
+}
+
+async function assertPendingV2Owner(
+  owned: OwnedV2State,
+  pending: PendingRotation,
+  signal?: AbortSignal,
+): Promise<OwnedV2State> {
+  const current = await assertV2Owner(owned, signal);
+  if (!pendingRotationMatches(current, pending)) throw unavailable();
+  return { state: current, ownerToken: owned.ownerToken };
+}
+
 async function completeV2Rotation(
   owned: OwnedV2State,
   pending: PendingRotation,
@@ -631,6 +654,7 @@ function assertV2Ready(
 async function rotateV2Owner(
   owned: OwnedV2State,
   signal?: AbortSignal,
+  allowTargetRepair = true,
   allowTicketReissue = true,
 ): Promise<void> {
   const current = await assertV2Owner(owned, signal);
@@ -651,15 +675,54 @@ async function rotateV2Owner(
       signal,
     );
   } catch (error) {
-    if (!allowTicketReissue || !isAuthContextStale(error)) throw error;
-    // A consumed, expired, or late-replaced ticket can be renewed only while
-    // the same current V2 cookie still proves the base generation. Re-read
-    // the lease-owned IDB record before replacing the pending ticket.
+    if (!allowTargetRepair || (!isAuthContextStale(error) && !isUnknownRotationResult(error))) {
+      throw error;
+    }
+    // A ticketed request may have committed Redis while its response or cookie
+    // write was lost. Try exactly one no-ticket target repair before deciding
+    // that the authority is still at base and a fresh ticket is appropriate.
+    const afterTicketFailure = await assertPendingV2Owner(
+      { state: current, ownerToken: owned.ownerToken },
+      pending,
+      signal,
+    );
+    try {
+      const repaired = await authApi.bootstrapAuthContext(
+        {
+          nonce: pending.nextNonce,
+          protocol_version: 2,
+          browser_incarnation: afterTicketFailure.state.incarnation,
+          generation: pending.baseGeneration + 1,
+        },
+        signal,
+      );
+      const afterRepair = await assertPendingV2Owner(
+        afterTicketFailure,
+        pending,
+        signal,
+      );
+      assertV2Ready(repaired, pending.baseGeneration + 1);
+      await completeV2Rotation(afterRepair, pending, signal);
+      return;
+    } catch (repairError) {
+      if (!allowTicketReissue || !isRebootstrapRequired(repairError)) {
+        throw repairError;
+      }
+    }
+
+    // The target-repair Lua branch proved authority remains at base. One
+    // base-generation reissue is bounded to this recovery attempt; replacing
+    // the ticket itself rechecks owner/base/nonce atomically in IndexedDB.
+    const beforeReissue = await assertPendingV2Owner(
+      { state: current, ownerToken: owned.ownerToken },
+      pending,
+      signal,
+    );
     const renewal = await authApi.bootstrapAuthContext(
       {
         nonce: pending.nextNonce,
         protocol_version: 2,
-        browser_incarnation: current.incarnation,
+        browser_incarnation: beforeReissue.state.incarnation,
         generation: pending.baseGeneration,
       },
       signal,
@@ -674,17 +737,22 @@ async function rotateV2Owner(
       throw unavailable();
     }
     const renewed = await replacePendingRotationTicket(
-      { state: current, ownerToken: owned.ownerToken },
+      beforeReissue,
       pending,
       renewal.rotation_ticket,
       signal,
     );
-    await rotateV2Owner(renewed, signal, false);
+    await rotateV2Owner(renewed, signal, false, false);
     return;
   }
+  const afterTicketResponse = await assertPendingV2Owner(
+    { state: current, ownerToken: owned.ownerToken },
+    pending,
+    signal,
+  );
   assertV2Ready(response, pending.baseGeneration + 1);
   await completeV2Rotation(
-    { state: current, ownerToken: owned.ownerToken },
+    afterTicketResponse,
     pending,
     signal,
   );

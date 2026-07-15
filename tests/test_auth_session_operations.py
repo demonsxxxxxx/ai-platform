@@ -357,6 +357,77 @@ class FakeAuthRedis:
                     return json.dumps({"status": "stale"})
                 return json.dumps({"status": "reconciled"})
 
+            if "ai-platform:auth-context-rotate-target-repair:v2" in script:
+                (
+                    authority_key,
+                    old_context_key,
+                    target_context_key,
+                    digest,
+                    base_generation,
+                    target_generation,
+                    old_handle,
+                    target_handle,
+                ) = args
+                now_value = self.now
+                authority_raw = self._get(str(authority_key), now_value)
+                old_raw = self._get(str(old_context_key), now_value)
+                target_raw = self._get(str(target_context_key), now_value)
+                if authority_raw is None or old_raw is None:
+                    return json.dumps({"status": "stale"})
+                try:
+                    authority = json.loads(authority_raw)
+                    old_context = json.loads(old_raw)
+                    target_context = json.loads(target_raw) if target_raw is not None else None
+                except json.JSONDecodeError:
+                    return json.dumps({"status": "stale"})
+                if (
+                    not self._is_valid_v2_context_record(old_context)
+                    or old_context.get("incarnation_digest") != digest
+                    or old_context.get("generation") != base_generation
+                ):
+                    return json.dumps({"status": "stale"})
+                if target_context is not None:
+                    if (
+                        not self._v2_records_match(
+                            authority,
+                            target_context,
+                            digest,
+                            target_generation,
+                            target_handle,
+                        )
+                        or not self._v2_ttl_consistent(
+                            str(authority_key),
+                            str(target_context_key),
+                            now_value,
+                        )
+                    ):
+                        return json.dumps({"status": "stale"})
+                    return json.dumps(
+                        {
+                            "status": "target_repaired",
+                            "ttl_milliseconds": min(
+                                self._pttl(str(authority_key), now_value),
+                                self._pttl(str(target_context_key), now_value),
+                            ),
+                        }
+                    )
+                if (
+                    self._v2_records_match(
+                        authority,
+                        old_context,
+                        digest,
+                        base_generation,
+                        old_handle,
+                    )
+                    and self._v2_ttl_consistent(
+                        str(authority_key),
+                        str(old_context_key),
+                        now_value,
+                    )
+                ):
+                    return json.dumps({"status": "authority_base"})
+                return json.dumps({"status": "stale"})
+
             if "ai-platform:auth-context-rotate:v2" in script:
                 (
                     authority_key,
@@ -1053,6 +1124,128 @@ async def test_v2_rotation_reconciles_only_the_exact_server_accepted_target(monk
             settings,
             rotation_ticket=ticket.rotation_ticket,
         )
+
+
+@pytest.mark.asyncio
+async def test_v2_target_repair_reissues_only_the_exact_committed_target_for_a_base_cookie(monkeypatch):
+    """A lost rotation response repairs only the old handle that Redis moved from."""
+
+    redis = FakeAuthRedis()
+    settings = install_auth_context_dependencies(monkeypatch, redis)
+    incarnation = "I" * 43
+    old = await auth_sessions.bootstrap_auth_context_v2("A" * 43, incarnation, 1, "", settings)
+    assert old.identity is not None
+    old_cookie = auth_sessions.auth_context_v2_cookie_for_identity(old.identity, settings)
+    ticket = await auth_sessions.bootstrap_auth_context_v2("B" * 43, incarnation, 1, old_cookie, settings)
+    assert ticket.rotation_ticket
+    rotated = await auth_sessions.bootstrap_auth_context_v2(
+        "C" * 43,
+        incarnation,
+        2,
+        old_cookie,
+        settings,
+        rotation_ticket=ticket.rotation_ticket,
+    )
+    assert rotated.identity is not None
+    authority_key = next(key for key in redis.values if key.startswith("ai-platform:auth-browser-authority:"))
+    original_authority = redis.values[authority_key]
+    target_key = f"ai-platform:auth-context:{rotated.identity.context_handle}"
+    original_target = redis.values[target_key]
+
+    repaired = await auth_sessions.bootstrap_auth_context_v2("C" * 43, incarnation, 2, old_cookie, settings)
+    assert repaired.status == "ready"
+    assert repaired.identity == rotated.identity
+    assert repaired.set_cookie is True
+    assert repaired.cookie_max_age_seconds is not None
+    assert redis.values[authority_key] == original_authority
+    assert redis.values[target_key] == original_target
+
+    forged_old_cookie = auth_sessions.auth_context_v2_cookie_for_identity(
+        auth_sessions.V2AuthContextIdentity(
+            incarnation=incarnation,
+            incarnation_digest=rotated.identity.incarnation_digest,
+            generation=1,
+            context_handle=auth_sessions.auth_context_handle_for_nonce("D" * 43, settings),
+        ),
+        settings,
+    )
+    with pytest.raises(auth_sessions.AuthContextError, match="auth_context_stale"):
+        await auth_sessions.bootstrap_auth_context_v2("C" * 43, incarnation, 2, forged_old_cookie, settings)
+
+
+@pytest.mark.asyncio
+async def test_v2_target_repair_rejects_wrong_target_and_exposes_only_the_base_reissue_branch(monkeypatch):
+    """Only exact base authority may ask the client to reissue a base ticket."""
+
+    redis = FakeAuthRedis()
+    settings = install_auth_context_dependencies(monkeypatch, redis)
+    incarnation = "I" * 43
+    base = await auth_sessions.bootstrap_auth_context_v2("A" * 43, incarnation, 1, "", settings)
+    assert base.identity is not None
+    base_cookie = auth_sessions.auth_context_v2_cookie_for_identity(base.identity, settings)
+
+    with pytest.raises(auth_sessions.AuthContextError, match="auth_context_rebootstrap_required"):
+        await auth_sessions.bootstrap_auth_context_v2("B" * 43, incarnation, 2, base_cookie, settings)
+
+    ticket = await auth_sessions.bootstrap_auth_context_v2("B" * 43, incarnation, 1, base_cookie, settings)
+    assert ticket.rotation_ticket
+    await auth_sessions.bootstrap_auth_context_v2(
+        "C" * 43,
+        incarnation,
+        2,
+        base_cookie,
+        settings,
+        rotation_ticket=ticket.rotation_ticket,
+    )
+    for nonce, request_incarnation, request_generation in (
+        ("D" * 43, incarnation, 2),
+        ("C" * 43, "J" * 43, 2),
+        ("C" * 43, incarnation, 3),
+    ):
+        with pytest.raises(auth_sessions.AuthContextError, match="auth_context_stale"):
+            await auth_sessions.bootstrap_auth_context_v2(
+                nonce,
+                request_incarnation,
+                request_generation,
+                base_cookie,
+                settings,
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing", "corrupt", "ttl_mismatch"])
+async def test_v2_target_repair_rejects_missing_corrupt_or_ttl_mismatched_target(monkeypatch, failure):
+    """Target repair has no best-effort path when its target proof is incomplete."""
+
+    redis = FakeAuthRedis()
+    settings = install_auth_context_dependencies(monkeypatch, redis)
+    incarnation = "I" * 43
+    base = await auth_sessions.bootstrap_auth_context_v2("A" * 43, incarnation, 1, "", settings)
+    assert base.identity is not None
+    base_cookie = auth_sessions.auth_context_v2_cookie_for_identity(base.identity, settings)
+    ticket = await auth_sessions.bootstrap_auth_context_v2("B" * 43, incarnation, 1, base_cookie, settings)
+    assert ticket.rotation_ticket
+    rotated = await auth_sessions.bootstrap_auth_context_v2(
+        "C" * 43,
+        incarnation,
+        2,
+        base_cookie,
+        settings,
+        rotation_ticket=ticket.rotation_ticket,
+    )
+    assert rotated.identity is not None
+    target_key = f"ai-platform:auth-context:{rotated.identity.context_handle}"
+    if failure == "missing":
+        redis.values.pop(target_key)
+    else:
+        target_raw, target_expiry = redis.values[target_key]
+        if failure == "corrupt":
+            redis.values[target_key] = ("{corrupt", target_expiry)
+        else:
+            redis.values[target_key] = (target_raw, target_expiry - 2)
+
+    with pytest.raises(auth_sessions.AuthContextError, match="auth_context_stale"):
+        await auth_sessions.bootstrap_auth_context_v2("C" * 43, incarnation, 2, base_cookie, settings)
 
 
 @pytest.mark.asyncio

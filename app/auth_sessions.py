@@ -651,6 +651,69 @@ return cjson.encode({status = "reconciled"})
 """
 
 
+V2_REPAIR_ROTATION_TARGET_SCRIPT = """
+-- ai-platform:auth-context-rotate-target-repair:v2
+""" + V2_LUA_HELPERS + """
+local authority_key = KEYS[1]
+local old_context_key = KEYS[2]
+local target_context_key = KEYS[3]
+local incarnation_digest = ARGV[1]
+local base_generation = tonumber(ARGV[2])
+local target_generation = tonumber(ARGV[3])
+local old_context_handle = ARGV[4]
+local target_context_handle = ARGV[5]
+if authority_key == old_context_key or authority_key == target_context_key
+  or old_context_key == target_context_key
+  or type(incarnation_digest) ~= "string" or incarnation_digest == ""
+  or not epoch(base_generation) or base_generation < 1
+  or not epoch(target_generation) or target_generation ~= base_generation + 1
+  or type(old_context_handle) ~= "string" or old_context_handle == ""
+  or type(target_context_handle) ~= "string" or target_context_handle == ""
+then return cjson.encode({status = "corrupt"}) end
+
+local authority = decode(redis.call("GET", authority_key))
+local old_context = decode(redis.call("GET", old_context_key))
+local target_context = decode(redis.call("GET", target_context_key))
+if authority == false or old_context == false or target_context == false
+  or not authority or not old_context
+  or not valid_authority(authority) or not valid_v2(old_context)
+  or old_context["incarnation_digest"] ~= incarnation_digest
+  or old_context["generation"] ~= base_generation
+then return cjson.encode({status = "stale"}) end
+
+-- The ticketed request committed. The signed base cookie identifies the old
+-- context key; authority and the target context must prove exactly its g+1
+-- successor before this response is allowed to repair the cookie.
+if target_context then
+  local target_ttl = ttl_consistent(authority_key, target_context_key)
+  if not valid_v2(target_context)
+    or not target_ttl
+    or not same_authority(
+      authority,
+      target_context,
+      incarnation_digest,
+      target_generation,
+      target_context_handle
+    )
+  then return cjson.encode({status = "stale"}) end
+  return cjson.encode({status = "target_repaired", ttl_milliseconds = target_ttl})
+end
+
+-- No target record may exist while authority is still the exact base. This is
+-- the only response that permits the client to ask for one fresh base ticket.
+if same_authority(
+  authority,
+  old_context,
+  incarnation_digest,
+  base_generation,
+  old_context_handle
+) and ttl_consistent(authority_key, old_context_key) then
+  return cjson.encode({status = "authority_base"})
+end
+return cjson.encode({status = "stale"})
+"""
+
+
 V2_ISSUE_ROTATION_TICKET_SCRIPT = """
 -- ai-platform:auth-context-rotation-ticket:v2
 """ + V2_LUA_HELPERS + """
@@ -1348,6 +1411,44 @@ async def bootstrap_auth_context_v2(
                 set_cookie=True,
                 cookie_max_age_seconds=_cookie_max_age_from_result(result),
             )
+        _raise_for_store_status("bootstrap", status)
+        raise AssertionError("unreachable")
+
+    # A ticketed request can commit Redis while its browser response is lost.
+    # With no ticket, only the signed base cookie and exact base->target CAS
+    # proof may reissue the target cookie or indicate that authority is still
+    # at base and one normal ticket reissue is safe.
+    if (
+        supplied_identity is not None
+        and supplied_identity.incarnation == incarnation
+        and generation == supplied_identity.generation + 1
+        and context_handle != supplied_identity.context_handle
+    ):
+        result = await _eval(
+            V2_REPAIR_ROTATION_TARGET_SCRIPT,
+            [
+                _authority_key(supplied_identity.incarnation_digest),
+                _context_key(supplied_identity.context_handle),
+                _context_key(context_handle),
+            ],
+            [
+                incarnation_digest,
+                supplied_identity.generation,
+                generation,
+                supplied_identity.context_handle,
+                context_handle,
+            ],
+        )
+        status = str(result.get("status") or "")
+        if status == "target_repaired":
+            return AuthBootstrapResult(
+                "ready",
+                requested_identity,
+                set_cookie=True,
+                cookie_max_age_seconds=_cookie_max_age_from_result(result),
+            )
+        if status == "authority_base":
+            raise AuthContextError("auth_context_rebootstrap_required", 409)
         _raise_for_store_status("bootstrap", status)
         raise AssertionError("unreachable")
 
