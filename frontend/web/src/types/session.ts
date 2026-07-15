@@ -52,6 +52,7 @@ export interface SessionListResponse {
 
 export interface SSEEventRecord {
   id: string;
+  sequence?: number;
   event_type: string;
   data: Record<string, unknown>;
   timestamp: string;
@@ -60,4 +61,6 @@ export interface SSEEventRecord {
 
 export interface SessionEventsResponse {
   events: SSEEventRecord[];
+  /** Backend-selected latest-created run for this session projection. */
+  current_run_id?: string | null;
 }

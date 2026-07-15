@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TFunction } from "i18next";
-import { translateBackendError } from "../backendErrors.ts";
+import {
+  projectSafeBackendError,
+  translateBackendError,
+} from "../backendErrors.ts";
 
 const t = ((key: string, options?: { permission?: string }) =>
   options?.permission
@@ -75,9 +78,71 @@ test("all shipped locales include fail-closed governance error copy", () => {
   }
 });
 
-test("returns unknown backend messages unchanged", () => {
+test("projects unknown backend messages to generic localized copy", () => {
   assert.equal(
     translateBackendError("unexpected_backend_error", t),
-    "unexpected_backend_error",
+    "translated:chat.requestFailed",
   );
+  for (const diagnostic of [
+    "C:\\private\\worker.log?token=secret",
+    "<html>proxy bearer=secret</html>",
+    "missing_permission:../../private-token",
+    "missing_permission:Bearer private-token",
+    "No permission to upload secret-token files",
+  ]) {
+    const message = translateBackendError(diagnostic, t);
+    assert.equal(message, "translated:chat.requestFailed");
+    assert.doesNotMatch(message, /private|token|proxy|html|worker/i);
+  }
+});
+
+test("safe error projection translates only allowlisted exact detail or code", () => {
+  assert.deepEqual(projectSafeBackendError("invalid_credentials", 401, t), {
+    code: "invalid_credentials",
+    message: "translated:backendErrors.invalidCredentials",
+  });
+  assert.deepEqual(
+    projectSafeBackendError(
+      { code: "invalid_credentials", message: "token=private" },
+      401,
+      t,
+    ),
+    {
+      code: "invalid_credentials",
+      message: "translated:backendErrors.invalidCredentials",
+    },
+  );
+  assert.deepEqual(
+    projectSafeBackendError("unexpected_backend_error", 500, t),
+    {
+      code: "unexpected_backend_error",
+      message: "translated:chat.requestFailed",
+    },
+  );
+});
+
+test("safe error projection rejects private diagnostics and uses status-localized fallbacks", () => {
+  const privateValues: unknown[] = [
+    "C:\\private\\agent.log?token=secret",
+    "<html>proxy diagnostic</html>",
+    { message: "Bearer private-token" },
+    { detail: { code: "invalid_credentials" } },
+    { code: "a".repeat(65) },
+    ["invalid_credentials"],
+  ];
+  const expectedKeys = new Map([
+    [401, "backendErrors.unauthenticated"],
+    [403, "errors.noPermission"],
+    [429, "backendErrors.tooManyRequests"],
+    [500, "chat.requestFailed"],
+  ]);
+
+  for (const [status, key] of expectedKeys) {
+    for (const detail of privateValues) {
+      const projection = projectSafeBackendError(detail, status, t);
+      assert.equal(projection.code, undefined);
+      assert.equal(projection.message, `translated:${key}`);
+      assert.doesNotMatch(projection.message, /private|token|proxy|html/i);
+    }
+  }
 });

@@ -3,27 +3,41 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app import repositories
-from app.auth import AuthPrincipal, require_principal
+from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import sanitize_public_text, standard_trace_id
 from app.db import transaction
 from app.models import ToolPermissionDecisionRequest, ToolPermissionRequest
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.tool_policy import max_risk
-from app.tool_permission_projection import permission_response
+from app.tool_permission_projection import inbox_allowed_decisions, inbox_permission_response, permission_response
 
 router = APIRouter()
+TOOL_PERMISSION_GOVERNANCE_PERMISSION = "settings:manage"
+
+
+def _require_tool_permission_governance(principal: AuthPrincipal) -> None:
+    """Require both an administrator principal and the established settings capability."""
+
+    if not is_ai_admin(principal):
+        raise HTTPException(status_code=403, detail="not_ai_admin")
+    if TOOL_PERMISSION_GOVERNANCE_PERMISSION not in set(principal.permissions):
+        raise HTTPException(
+            status_code=403,
+            detail=f"missing_permission:{TOOL_PERMISSION_GOVERNANCE_PERMISSION}",
+        )
 
 
 def _event_timestamp(value: object) -> object:
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
-def _inbox_decision_endpoint(request_id: str) -> str:
-    return f"/api/ai/tool-permissions/inbox/{request_id}/decision"
-
-
 def _permission_response_for_inbox(row: dict[str, object]) -> dict[str, object]:
-    return permission_response(row, decision_endpoint=_inbox_decision_endpoint(str(row["id"])))
+    return inbox_permission_response(row)
+
+
+def _raise_if_unsupported_decision(row: dict[str, object], decision: str) -> None:
+    if decision == "allow_for_run" and decision not in inbox_allowed_decisions(row):
+        raise HTTPException(status_code=409, detail="tool_permission_decision_not_supported")
 
 
 async def _append_decision_event_and_audit(
@@ -153,12 +167,12 @@ async def list_tool_permission_inbox(
     limit: int = Query(default=50, ge=1, le=200),
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
-    """Return current-user tool permission requests across runs."""
+    """Return the allowlisted tenant governance inbox to capable administrators."""
+    _require_tool_permission_governance(principal)
     async with transaction() as conn:
-        rows = await repositories.list_tool_permission_inbox(
+        rows = await repositories.list_tool_permission_inbox_for_tenant(
             conn,
             tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
             status=status,
             limit=limit,
         )
@@ -196,20 +210,21 @@ async def decide_tool_permission(
     request: ToolPermissionDecisionRequest,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
+    _require_tool_permission_governance(principal)
     async with transaction() as conn:
-        existing = await repositories.get_tool_permission_request(
+        existing = await repositories.get_tool_permission_request_for_tenant(
             conn,
             tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
             run_id=run_id,
             request_id=request_id,
         )
         if existing is None:
             raise HTTPException(status_code=404, detail="tool_permission_request_not_found")
+        _raise_if_unsupported_decision(existing, request.decision)
         row = await repositories.decide_tool_permission_request(
             conn,
             tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
+            user_id=str(existing["user_id"]),
             run_id=run_id,
             request_id=request_id,
             decision=request.decision,
@@ -227,7 +242,7 @@ async def decide_tool_permission(
             decision=request.decision,
             reason=request.reason,
         )
-    return {"permission_request": permission_response(row)}
+    return {"permission_request": _permission_response_for_inbox(row)}
 
 
 @router.post("/tool-permissions/inbox/{request_id}/decision")
@@ -236,21 +251,22 @@ async def decide_tool_permission_from_inbox(
     request: ToolPermissionDecisionRequest,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
-    """Decide a current-user tool permission request from the standalone inbox."""
+    """Decide a tenant request from the administrator permission inbox."""
+    _require_tool_permission_governance(principal)
     async with transaction() as conn:
-        existing = await repositories.get_tool_permission_request_by_id(
+        existing = await repositories.get_tool_permission_request_by_id_for_tenant(
             conn,
             tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
             request_id=request_id,
         )
         if existing is None:
             raise HTTPException(status_code=404, detail="tool_permission_request_not_found")
+        _raise_if_unsupported_decision(existing, request.decision)
         run_id = str(existing["run_id"])
         row = await repositories.decide_tool_permission_request(
             conn,
             tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
+            user_id=str(existing["user_id"]),
             run_id=run_id,
             request_id=request_id,
             decision=request.decision,

@@ -4,6 +4,10 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from app.repositories import append_message as real_append_message
+from app.repositories import (
+    list_authorized_user_messages_for_runs as real_list_authorized_user_messages_for_runs,
+)
 from app.main import create_app
 from app.models import ChatStreamRequest
 
@@ -35,6 +39,27 @@ def action_headers(*, user_id="user-a", tenant_id="default", roles="user"):
         "x-ai-roles": roles,
         "x-ai-gateway-secret": "test-secret",
     }
+
+
+@pytest.fixture(autouse=True)
+def empty_authorized_history_messages(monkeypatch):
+    async def empty_messages(conn, *, tenant_id, user_id, session_id):
+        return []
+
+    async def empty_user_messages_for_runs(
+        conn, *, tenant_id, user_id, session_id, run_ids
+    ):
+        return []
+
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_messages",
+        empty_messages,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        empty_user_messages_for_runs,
+        raising=False,
+    )
 
 
 @pytest.mark.asyncio
@@ -779,7 +804,73 @@ def test_lambchat_sse_stream_places_artifact_card_before_terminal_run_event(monk
     response = client.get("/api/chat/sessions/ses_a/stream?run_id=run_a", headers=auth_headers())
 
     assert response.status_code == 200
-    assert response.text.index("event: artifact_card") < response.text.index('"event_type": "run_succeeded"')
+    artifact_index = response.text.index("event: artifact_card")
+    final_index = response.text.index("event: message:chunk")
+    terminal_index = response.text.index("event: done")
+    assert artifact_index < final_index < terminal_index
+    assert '"event_type": "run_succeeded"' not in response.text
+    assert '"run_id": "run_a", "status": "succeeded"' in response.text
+
+
+def test_lambchat_sse_stream_defers_persisted_terminal_until_status_and_final_payload(monkeypatch):
+    calls = 0
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        nonlocal calls
+        calls += 1
+        return {
+            "id": run_id,
+            "session_id": "ses_a",
+            "status": "running" if calls == 1 else "succeeded",
+            "result_json": {"message": "final answer"},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "evt-succeeded",
+                "trace_id": "trace-run-a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 9,
+                "event_type": "run_succeeded",
+                "stage": "worker",
+                "message": "Run succeeded",
+                "severity": "info",
+                "visible_to_user": True,
+                "error_code": None,
+                "latency_ms": None,
+                "input_token_count": 0,
+                "output_token_count": 0,
+                "total_token_count": 0,
+                "estimated_cost_minor": 0,
+                "payload_json": {"visible_to_user": True},
+                "created_at": None,
+            }
+        ]
+
+    async def no_sleep(_seconds):
+        return None
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.lambchat_compat.get_settings", lambda: SimpleNamespace(run_event_stream_max_heartbeats=2))
+    monkeypatch.setattr("app.routes.lambchat_compat.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("app.routes.lambchat_compat.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.lambchat_compat.repositories.list_run_events", fake_list_run_events)
+    monkeypatch.setattr("app.routes.lambchat_compat.repositories.list_run_artifacts", fake_list_run_artifacts)
+    client = TestClient(create_app())
+
+    response = client.get("/api/chat/sessions/ses_a/stream?run_id=run_a", headers=auth_headers())
+
+    assert response.status_code == 200
+    assert calls == 2
+    assert '"event_type": "run_succeeded"' not in response.text
+    assert response.text.index("final answer") < response.text.index("event: done")
 
 
 def test_lambchat_sse_stream_does_not_duplicate_answer_when_assistant_delta_was_persisted(monkeypatch):
@@ -878,7 +969,10 @@ def test_lambchat_sse_stream_redacts_runtime_private_error(monkeypatch):
     assert response.status_code == 200
     assert "runtime211" not in response.text
     assert "/var/lib/ai-platform" not in response.text
-    assert '"error": "run_failed"' in response.text
+    assert "event: final_detail" in response.text
+    assert '"detail_kind": "failed"' in response.text
+    assert '"detail_code": "run_failed"' in response.text
+    assert "event: error" not in response.text
 
 
 def test_lambchat_sse_stream_terminates_cancelled_run(monkeypatch):
@@ -947,21 +1041,15 @@ def test_lambchat_status_normalizes_platform_terminal_statuses(monkeypatch):
         assert user_id == "user-a"
         return {"id": session_id}
 
-    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
-        return [
-            {
-                "id": "run_succeeded",
-                "status": "succeeded",
-            },
-            {
-                "id": "run_failed",
-                "status": "failed",
-            },
-            {
-                "id": "run_cancelled",
-                "status": "canceled",
-            },
-        ]
+    statuses = {
+        "run_succeeded": "succeeded",
+        "run_failed": "failed",
+        "run_cancelled": "canceled",
+    }
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id) == ("default", "user-a")
+        return {"id": run_id, "session_id": "ses_a", "status": statuses[run_id]}
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
@@ -970,8 +1058,8 @@ def test_lambchat_status_normalizes_platform_terminal_statuses(monkeypatch):
         fake_get_authorized_lambchat_session,
     )
     monkeypatch.setattr(
-        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
-        fake_list_authorized_session_runs,
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
     )
     client = TestClient(create_app())
 
@@ -988,6 +1076,150 @@ def test_lambchat_status_normalizes_platform_terminal_statuses(monkeypatch):
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == "cancelled"
     assert cancelled.json()["raw_status"] == "cancelled"
+
+
+def test_lambchat_status_rejects_an_absent_explicit_run_without_falling_back(monkeypatch):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        assert (tenant_id, user_id, session_id) == ("default", "user-a", "ses_a")
+        return {"id": session_id}
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run-requested")
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/chat/sessions/ses_a/status?run_id=run-requested",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "run_not_found"
+
+
+def test_lambchat_status_uses_exact_authorized_run_beyond_latest_list_and_rejects_scope_mismatch(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        calls.append(("session", tenant_id, user_id, session_id))
+        return {"id": session_id} if (tenant_id, user_id) == ("default", "user-a") else None
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        calls.append(("run", tenant_id, user_id, run_id))
+        if run_id == "run-old":
+            return {"id": run_id, "session_id": "ses_a", "status": "succeeded"}
+        if run_id == "run-other-session":
+            return {"id": run_id, "session_id": "ses_other", "status": "running"}
+        return None
+
+    async def unexpected_recent_list(*args, **kwargs):
+        raise AssertionError("explicit run lookup must not use the latest-ten list")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        unexpected_recent_list,
+    )
+    client = TestClient(create_app())
+
+    old = client.get("/api/chat/sessions/ses_a/status?run_id=run-old", headers=auth_headers())
+    wrong_session = client.get(
+        "/api/chat/sessions/ses_a/status?run_id=run-other-session",
+        headers=auth_headers(),
+    )
+    wrong_user = client.get(
+        "/api/chat/sessions/ses_a/status?run_id=run-old",
+        headers=action_headers(user_id="user-b"),
+    )
+    wrong_tenant = client.get(
+        "/api/chat/sessions/ses_a/status?run_id=run-old",
+        headers=action_headers(tenant_id="other-tenant"),
+    )
+
+    assert old.status_code == 200
+    assert old.json() == {
+        "session_id": "ses_a",
+        "run_id": "run-old",
+        "status": "completed",
+        "raw_status": "succeeded",
+    }
+    assert wrong_session.status_code == 404
+    assert wrong_user.status_code == 404
+    assert wrong_tenant.status_code == 404
+    assert calls == [
+        ("session", "default", "user-a", "ses_a"),
+        ("run", "default", "user-a", "run-old"),
+        ("session", "default", "user-a", "ses_a"),
+        ("run", "default", "user-a", "run-other-session"),
+        ("session", "default", "user-b", "ses_a"),
+        ("session", "other-tenant", "user-a", "ses_a"),
+    ]
+
+
+def test_lambchat_status_keeps_latest_selection_scoped_to_tenant_and_user(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        calls.append(("session", tenant_id, user_id, session_id))
+        return {"id": session_id} if (tenant_id, user_id) == ("default", "user-a") else None
+
+    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+        calls.append(("runs", tenant_id, user_id, session_id, limit))
+        return [{"id": "run-latest", "status": "running"}]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        fake_list_authorized_session_runs,
+    )
+    client = TestClient(create_app())
+
+    owner = client.get("/api/chat/sessions/ses_a/status", headers=auth_headers())
+    other_user = client.get(
+        "/api/chat/sessions/ses_a/status",
+        headers=action_headers(user_id="user-b"),
+    )
+    other_tenant = client.get(
+        "/api/chat/sessions/ses_a/status",
+        headers=action_headers(tenant_id="other-tenant"),
+    )
+
+    assert owner.status_code == 200
+    assert owner.json()["status"] == "running"
+    assert owner.json()["run_id"] is None
+    assert other_user.status_code == 404
+    assert other_tenant.status_code == 404
+    assert calls == [
+        ("session", "default", "user-a", "ses_a"),
+        ("runs", "default", "user-a", "ses_a", 10),
+        ("session", "default", "user-b", "ses_a"),
+        ("session", "other-tenant", "user-a", "ses_a"),
+    ]
 
 
 def test_lambchat_session_runs_normalizes_legacy_canceled_status(monkeypatch):
@@ -1169,6 +1401,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
         return [
             {
                 "id": "evt_a",
+                "sequence": 37,
                 "trace_id": "trace_run_a",
                 "schema_version": "ai-platform.event-envelope.v1",
                 "event_type": "skill_selected",
@@ -1234,6 +1467,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
     response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
 
     assert response.status_code == 200
+    assert response.json()["current_run_id"] == "run_a"
     events = response.json()["events"]
     assert len(events) == 1
     event = events[0]
@@ -1241,11 +1475,506 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
     assert event["trace_id"] == "trace_run_a"
     assert event["type"] == "capability_selected"
     assert event["event_type"] == "capability_selected"
+    assert event["sequence"] == 37
+    assert "sequence" not in event["data"]
     assert event["payload"]["capability_id"] == "document_review"
     assert "skill_id" not in str(event)
     assert "skill_ids" not in str(event)
     assert "storage_key" not in str(event)
     assert "/tmp/" not in str(event)
+
+
+def test_lambchat_session_events_restore_two_real_user_turns_before_each_run(monkeypatch):
+    message_calls = []
+
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+        return [
+            {
+                "id": "run-new",
+                "trace_id": "trace-new",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "status": "succeeded",
+                "result_json": {"message": "第二轮回答"},
+                "created_at": "2026-07-15T02:00:00Z",
+                "finished_at": "2026-07-15T02:01:00Z",
+            },
+            {
+                "id": "run-old",
+                "trace_id": "trace-old",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "status": "succeeded",
+                "result_json": {"message": "第一轮回答"},
+                "created_at": "2026-07-15T01:00:00Z",
+                "finished_at": "2026-07-15T01:01:00Z",
+            },
+        ]
+
+    async def fake_list_authorized_user_messages_for_runs(
+        conn, *, tenant_id, user_id, session_id, run_ids
+    ):
+        message_calls.append((tenant_id, user_id, session_id, run_ids))
+        return [
+            {
+                "id": "msg-old-user",
+                "run_id": "run-old",
+                "content": "第一轮问题",
+                "created_at": "2026-07-15T01:00:00Z",
+            },
+            {
+                "id": "msg-new-user",
+                "run_id": "run-new",
+                "content": "第二轮问题",
+                "created_at": "2026-07-15T02:00:00Z",
+            },
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        fake_list_authorized_session_runs,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        fake_list_authorized_user_messages_for_runs,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+
+    assert response.status_code == 200
+    assert message_calls == [
+        ("default", "user-a", "ses_a", ["run-new", "run-old"])
+    ]
+    events = response.json()["events"]
+    assert [event["event_type"] for event in events] == [
+        "user:message",
+        "message:chunk",
+        "done",
+        "user:message",
+        "message:chunk",
+        "done",
+    ]
+    user_events = [event for event in events if event["event_type"] == "user:message"]
+    assert [event["data"]["content"] for event in user_events] == ["第一轮问题", "第二轮问题"]
+    assert [event["data"]["message_id"] for event in user_events] == [
+        "msg-old-user",
+        "msg-new-user",
+    ]
+    assert set(user_events[0]) == {"id", "type", "event_type", "timestamp", "run_id", "data"}
+    assert set(user_events[0]["data"]) == {"message_id", "run_id", "content"}
+    serialized = str(events)
+    assert "metadata_json" not in serialized
+
+
+def test_lambchat_default_history_queries_user_messages_for_only_latest_fifty_runs(monkeypatch):
+    target_runs = [
+        {
+            "id": f"run-{index:02d}",
+            "trace_id": f"trace-{index:02d}",
+            "status": "succeeded",
+            "result_json": {"message": f"answer-{index:02d}"},
+            "created_at": f"2026-07-15T{index % 24:02d}:00:00Z",
+        }
+        for index in range(50)
+    ]
+    message_queries = []
+
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+        assert limit == 50
+        return target_runs
+
+    async def fake_list_authorized_user_messages_for_runs(
+        conn, *, tenant_id, user_id, session_id, run_ids
+    ):
+        message_queries.append(run_ids)
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        fake_list_authorized_session_runs,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        fake_list_authorized_user_messages_for_runs,
+    )
+
+    response = TestClient(create_app()).get(
+        "/api/sessions/ses_a/events",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert message_queries == [[f"run-{index:02d}" for index in range(50)]]
+    assert "run-50" not in str(message_queries)
+
+
+@pytest.mark.asyncio
+async def test_lambchat_session_events_use_persisted_message_repository_contract(monkeypatch):
+    class MessageCursor:
+        def __init__(self, rows=None):
+            self.rows = rows or []
+
+        async def fetchall(self):
+            return self.rows
+
+    class MessageConnection:
+        def __init__(self):
+            self.messages = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            if normalized.startswith("insert into messages"):
+                message_id, tenant_id, session_id, run_id, role, content, metadata_json = params
+                self.messages.append(
+                    {
+                        "id": message_id,
+                        "tenant_id": tenant_id,
+                        "session_id": session_id,
+                        "run_id": run_id,
+                        "role": role,
+                        "content": content,
+                        "metadata_json": metadata_json,
+                        "created_at": f"2026-07-15T0{len(self.messages) + 1}:00:00Z",
+                    }
+                )
+                return MessageCursor()
+            if normalized.startswith("update sessions set updated_at"):
+                return MessageCursor()
+            if normalized.startswith("select messages.id"):
+                tenant_id, session_id, user_id, run_ids = params
+                assert user_id == "user-a"
+                rows = [
+                    {
+                        key: row[key]
+                        for key in (
+                            "id",
+                            "run_id",
+                            "content",
+                            "created_at",
+                        )
+                    }
+                    for row in self.messages
+                    if row["tenant_id"] == tenant_id
+                    and row["session_id"] == session_id
+                    and row["role"] == "user"
+                    and row["run_id"] in run_ids
+                ]
+                rows.sort(key=lambda row: (row["created_at"], row["id"]))
+                return MessageCursor(rows)
+            raise AssertionError(f"unexpected message repository SQL: {normalized}")
+
+    conn = MessageConnection()
+    old_message_id = await real_append_message(
+        conn,
+        tenant_id="default",
+        session_id="ses_a",
+        run_id="run-old",
+        role="user",
+        content="持久化第一轮问题",
+        metadata_json={"file_ids": ["private-file-id"]},
+    )
+    await real_append_message(
+        conn,
+        tenant_id="default",
+        session_id="ses_a",
+        run_id="run-old",
+        role="assistant",
+        content="不得从持久化 assistant message 重建",
+    )
+    new_message_id = await real_append_message(
+        conn,
+        tenant_id="default",
+        session_id="ses_a",
+        run_id="run-new",
+        role="user",
+        content="持久化第二轮问题",
+        metadata_json={"skill_id": "private-skill"},
+    )
+    await real_append_message(
+        conn,
+        tenant_id="tenant-b",
+        session_id="ses_a",
+        run_id="run-new",
+        role="user",
+        content="不得跨 tenant 投影",
+    )
+
+    @asynccontextmanager
+    async def message_transaction():
+        yield conn
+
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+        return [
+            {
+                "id": "run-new",
+                "trace_id": "trace-new",
+                "status": "succeeded",
+                "result_json": {"message": "第二轮回答"},
+                "created_at": "2026-07-15T04:00:00Z",
+            },
+            {
+                "id": "run-old",
+                "trace_id": "trace-old",
+                "status": "succeeded",
+                "result_json": {"message": "第一轮回答"},
+                "created_at": "2026-07-15T01:00:00Z",
+            },
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", message_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        fake_list_authorized_session_runs,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        real_list_authorized_user_messages_for_runs,
+    )
+
+    response = TestClient(create_app()).get(
+        "/api/sessions/ses_a/events",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    user_events = [
+        event for event in response.json()["events"] if event["event_type"] == "user:message"
+    ]
+    assert [event["id"] for event in user_events] == [old_message_id, new_message_id]
+    assert [event["data"]["content"] for event in user_events] == [
+        "持久化第一轮问题",
+        "持久化第二轮问题",
+    ]
+    assert "private-file-id" not in response.text
+    assert "private-skill" not in response.text
+    assert "不得从持久化 assistant message 重建" not in response.text
+    assert "不得跨 tenant 投影" not in response.text
+
+
+def test_lambchat_routes_keep_running_latest_run_stable_with_legacy_queued_at_ties(monkeypatch):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+        assert limit in (10, 50)
+        return [
+            {
+                "id": "run-created-newer",
+                "trace_id": "trace-newer",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "status": "running",
+                "result_json": {},
+                "created_at": "2026-07-15T02:00:00Z",
+                "queue_admission_ordinal": None,
+                "queued_at": "2026-07-15T02:00:02Z",
+                "finished_at": None,
+            },
+            {
+                "id": "run-created-older",
+                "trace_id": "trace-older",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "status": "failed",
+                "result_json": {},
+                "error_code": "run_failed",
+                "error_message": "older finished later",
+                "created_at": "2026-07-15T02:00:00Z",
+                "queue_admission_ordinal": None,
+                "queued_at": "2026-07-15T02:00:01Z",
+                "finished_at": "2026-07-15T03:00:00Z",
+            },
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        fake_list_authorized_session_runs,
+    )
+    client = TestClient(create_app())
+
+    first_events = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+    second_events = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+    first_status = client.get("/api/chat/sessions/ses_a/status", headers=auth_headers())
+    second_status = client.get("/api/chat/sessions/ses_a/status", headers=auth_headers())
+
+    assert [response.status_code for response in (first_events, second_events, first_status, second_status)] == [
+        200,
+        200,
+        200,
+        200,
+    ]
+    assert [first_events.json()["current_run_id"], second_events.json()["current_run_id"]] == [
+        "run-created-newer",
+        "run-created-newer",
+    ]
+    assert [first_status.json()["raw_status"], second_status.json()["raw_status"]] == [
+        "running",
+        "running",
+    ]
+
+
+def test_lambchat_exact_session_events_restore_an_authorized_run_beyond_the_latest_fifty(monkeypatch):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run-51")
+        return {
+            "id": run_id,
+            "session_id": "ses_a",
+            "trace_id": "trace-run-51",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "status": "succeeded",
+            "result_json": {"message": "restored exact old answer"},
+            "created_at": "2026-01-01T00:00:00Z",
+            "finished_at": "2026-01-01T00:01:00Z",
+        }
+
+    async def fail_latest_run_list(*args, **kwargs):
+        raise AssertionError("an explicit run id must not use the latest-50 list")
+
+    async def fake_list_authorized_user_messages_for_runs(
+        conn, *, tenant_id, user_id, session_id, run_ids
+    ):
+        assert (tenant_id, user_id, session_id) == ("default", "user-a", "ses_a")
+        assert run_ids == ["run-51"]
+        return [
+            {
+                "id": "msg-run-51",
+                "run_id": "run-51",
+                "content": "恢复旧问题",
+                "created_at": "2026-01-01T00:00:00Z",
+            },
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        fail_latest_run_list,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        fake_list_authorized_user_messages_for_runs,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/sessions/ses_a/events?run_id=run-51",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["current_run_id"] == "run-51"
+    assert [event["event_type"] for event in response.json()["events"]] == [
+        "user:message",
+        "message:chunk",
+        "done",
+    ]
+    assert response.json()["events"][0]["data"]["content"] == "恢复旧问题"
+    assert response.json()["events"][1]["data"]["content"] == "restored exact old answer"
+    assert "metadata_json" not in response.text
+
+
+def test_lambchat_session_events_reject_cross_tenant_before_listing_messages(monkeypatch):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        assert (tenant_id, user_id, session_id) == ("tenant-b", "user-b", "ses_a")
+        return None
+
+    async def fail_list_authorized_user_messages_for_runs(*args, **kwargs):
+        raise AssertionError("unauthorized session must not list messages")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_user_messages_for_runs",
+        fail_list_authorized_user_messages_for_runs,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/sessions/ses_a/events",
+        headers=action_headers(user_id="user-b", tenant_id="tenant-b"),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "session_not_found"
+
+
+@pytest.mark.parametrize("target", [None, {"id": "run-51", "session_id": "ses_other"}])
+def test_lambchat_exact_session_events_hide_missing_or_wrong_session_runs(monkeypatch, target):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run-51")
+        return target
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/sessions/ses_a/events?run_id=run-51",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "run_not_found"
 
 
 def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
@@ -1294,8 +2023,9 @@ def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
     assert event["trace_id"] == "trace_run_a"
     assert event["type"] == "message:chunk"
     assert event["stage"] == "answer"
-    assert event["payload"] == {"content": "hello"}
-    assert event["data"] == {"content": "hello"}
+    assert event["payload"] == {"run_id": "run_a", "content": "hello"}
+    assert event["data"] == {"run_id": "run_a", "content": "hello"}
+    assert "sequence" not in event
 
 
 def test_lambchat_session_answer_event_redacts_runtime_private_text(monkeypatch):
@@ -1341,11 +2071,132 @@ def test_lambchat_session_answer_event_redacts_runtime_private_text(monkeypatch)
 
     assert response.status_code == 200
     event = response.json()["events"][0]
-    assert event["type"] == "error"
-    assert event["payload"] == {"error": "run_failed"}
+    assert event["type"] == "final_detail"
+    assert event["payload"] == {
+        "run_id": "run_a",
+        "detail_kind": "failed",
+        "detail_code": "run_failed",
+    }
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(event)
     assert "/var/lib/ai-platform" not in str(event)
     assert "runtime211" not in str(event)
+
+
+def test_lambchat_history_places_artifact_and_safe_failure_detail_before_terminal(monkeypatch):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+        return [
+            {
+                "id": "run_a",
+                "trace_id": "trace_run_a",
+                "agent_id": "general-agent",
+                "skill_id": "general-chat",
+                "status": "failed",
+                "result_json": {"message": "Executor failed at /private/runtime.log"},
+                "error_code": "executor_failed",
+                "error_message": "Executor failed at /private/runtime.log",
+                "created_at": None,
+                "finished_at": None,
+            }
+        ]
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        base = {
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "latency_ms": None,
+            "input_token_count": 0,
+            "output_token_count": 0,
+            "total_token_count": 0,
+            "estimated_cost_minor": 0,
+            "created_at": None,
+        }
+        # The terminal row is deliberately listed before the artifact row to
+        # exercise the compatibility projection ordering contract.
+        return [
+            {
+                **base,
+                "id": "evt-failed",
+                "sequence": 12,
+                "event_type": "run_failed",
+                "stage": "worker",
+                "message": "Run failed",
+                "payload_json": {"visible_to_user": True},
+            },
+            {
+                **base,
+                "id": "evt-artifact",
+                "sequence": 13,
+                "event_type": "artifact_created",
+                "stage": "artifact",
+                "message": "Artifact created",
+                "payload_json": {"artifact_id": "artifact-a", "visible_to_user": True},
+            },
+        ]
+
+    async def fake_list_run_artifacts(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "artifact-a",
+                "trace_id": "trace_run_a",
+                "artifact_type": "report",
+                "label": "失败报告",
+                "content_type": "text/plain",
+                "storage_key": "tenants/tenant-a/runs/run_a/private.txt",
+                "size_bytes": 42,
+                "manifest_version": "ai-platform.artifact-manifest.v1",
+                "manifest_json": {"local_path": "/var/lib/private.txt"},
+                "created_at": None,
+            }
+        ]
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        fake_list_authorized_session_runs,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        fake_list_run_events,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        fake_list_run_artifacts,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+
+    assert response.status_code == 200
+    events = response.json()["events"]
+    event_types = [event["event_type"] for event in events]
+    assert event_types.index("artifact_created") < event_types.index("artifact_card") < event_types.index("final_detail") < event_types.index("done")
+    final = events[event_types.index("final_detail")]
+    assert final["payload"] == {
+        "run_id": "run_a",
+        "detail_kind": "failed",
+        "detail_code": "run_failed",
+    }
+    assert final["data"]["run_id"] == "run_a"
+    assert "Executor failed" not in str(final)
+    artifact = events[event_types.index("artifact_card")]
+    assert artifact["data"]["artifact_id"] == "artifact-a"
+    assert artifact["data"]["download_url"] == "/api/ai/artifacts/artifact-a/download"
+    assert "storage_key" not in str(artifact)
+    terminal = events[event_types.index("done")]
+    assert terminal["data"] == {"run_id": "run_a", "status": "failed"}
+    assert "sequence" not in terminal
+    assert all(event["event_type"] != "run_failed" for event in events)
 
 
 def test_lambchat_session_event_data_redacts_runtime_private_message(monkeypatch):

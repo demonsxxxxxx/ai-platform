@@ -15,8 +15,8 @@ export function clearAuthScopedCaches(): void {
   for (const clearer of authScopedCacheClearers) {
     try {
       clearer();
-    } catch (error) {
-      console.warn("Failed to clear auth-scoped cache:", error);
+    } catch {
+      console.warn("Failed to clear auth-scoped cache");
     }
   }
 }

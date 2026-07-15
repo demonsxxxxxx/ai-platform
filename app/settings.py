@@ -89,6 +89,11 @@ class Settings(BaseSettings):
     ai_session_cookie_name: str = Field(default="ai_platform_session")
     ai_session_cookie_secure: bool = Field(default=False)
     ai_session_max_age_seconds: int = Field(default=8 * 60 * 60)
+    auth_context_secret: str = Field(default="")
+    auth_context_cookie_name: str = Field(default="ai_platform_auth_context")
+    auth_context_cookie_secure: bool = Field(default=False)
+    auth_context_max_age_seconds: int = Field(default=8 * 60 * 60)
+    auth_context_lease_seconds: int = Field(default=90)
     artifact_default_retention_days: int = Field(default=90)
 
     llm_gateway_provider: str = Field(default="openai_compatible")

@@ -16,6 +16,7 @@ export type SubmissionOutcome =
 export type EventType =
   | "metadata"
   | "message:chunk"
+  | "final_detail"
   | "user:message"
   | "user:cancel"
   | "thinking"
@@ -53,6 +54,8 @@ export interface EventData {
   result?: string | Record<string, unknown>;
   success?: boolean;
   content?: string;
+  detail_kind?: string;
+  detail_code?: string;
   thinking_id?: string;
   error?: string;
   type?: string;
@@ -159,6 +162,8 @@ export interface SubagentStackItem {
 // History event data structure
 export interface HistoryEventData {
   content?: string;
+  detail_kind?: string;
+  detail_code?: string;
   tool?: string;
   tool_call_id?: string;
   args?: Record<string, unknown>;
@@ -211,6 +216,10 @@ export interface HistoryEventData {
 // History event from backend
 export interface HistoryEvent {
   id?: string | number;
+  /** Production compatibility history mirrors the public outer event type. */
+  type?: string;
+  /** Monotonic persisted run-event cursor; synthetic history entries omit it. */
+  sequence?: number;
   event_type: string;
   data: HistoryEventData | unknown;
   timestamp?: string;

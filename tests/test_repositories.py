@@ -29,9 +29,12 @@ from app.repositories import (
     list_context_share_snapshots_for_target_session,
     get_latest_tool_permission_decision,
     get_tool_permission_request_by_id,
+    get_tool_permission_request_by_id_for_tenant,
+    get_tool_permission_request_for_tenant,
     get_run_identity,
     list_multi_agent_dispatch_candidate_run_ids,
     list_tool_permission_inbox,
+    list_tool_permission_inbox_for_tenant,
     list_run_events,
     list_run_artifacts,
     list_scoped_context_messages,
@@ -142,6 +145,124 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
     assert "tenant_id = %s and session_id = %s" in messages_sql
     assert "order by created_at asc, id asc" in messages_sql
     assert messages_params == ("tenant-a", "session-a")
+
+
+@pytest.mark.asyncio
+async def test_authorized_session_runs_use_canonical_legacy_tie_break_order():
+    conn = RecordingConnection()
+
+    await repositories.list_authorized_session_runs(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        limit=50,
+    )
+
+    sql, params = conn.calls[-1]
+    assert "queue_admission_ordinal" in sql
+    assert "event_type = 'queued'" in sql
+    assert "payload_json->>'queue_admission_ordinal'" in sql
+    assert "~ '^[0-9]+$'" in sql
+    assert "length(run_events.payload_json->>'queue_admission_ordinal') <= 19" in sql
+    assert "<= '9223372036854775807'" in sql
+    assert "case when" in sql
+    created_at_order = sql.index("runs.created_at desc")
+    ordinal_order = sql.index("queue_admission.queue_admission_ordinal desc nulls last")
+    queued_at_order = sql.index("runs.queued_at desc nulls last")
+    id_order = sql.index("runs.id desc")
+    assert created_at_order < ordinal_order < queued_at_order < id_order
+    assert params == ("tenant-a", "user-a", "session-a", 50)
+
+
+@pytest.mark.parametrize(
+    "raw,expected_valid",
+    [
+        ("0", True),
+        ("9223372036854775807", True),
+        ("9223372036854775808", False),
+        ("999999999999999999999999", False),
+        ("-1", False),
+        ("not-a-number", False),
+    ],
+)
+def test_queue_admission_ordinal_bigint_guard_boundaries(raw, expected_valid):
+    valid = (
+        raw.isdigit()
+        and len(raw) <= 19
+        and (len(raw) < 19 or raw <= "9223372036854775807")
+    )
+    assert valid is expected_valid
+
+
+@pytest.mark.asyncio
+async def test_authorized_messages_bind_tenant_session_owner_and_stable_order():
+    conn = RecordingConnection()
+
+    await repositories.list_authorized_messages(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+    )
+
+    sql, params = conn.calls[-1]
+    assert "join sessions" in sql
+    assert "messages.tenant_id = %s" in sql
+    assert "messages.session_id = %s" in sql
+    assert "sessions.user_id = %s" in sql
+    assert "order by messages.created_at asc, messages.id asc" in sql
+    assert params == ("tenant-a", "session-a", "user-a")
+
+
+@pytest.mark.asyncio
+async def test_authorized_user_messages_for_runs_minimize_and_scope_in_sql():
+    query = getattr(repositories, "list_authorized_user_messages_for_runs", None)
+    assert callable(query), "dedicated authorized run-message projection is missing"
+    conn = RecordingConnection()
+
+    rows = await query(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_ids=["run-b", "run-a", "run-b", ""],
+    )
+
+    assert rows == []
+    sql, params = conn.calls[-1]
+    select_clause = sql.split("from messages", 1)[0]
+    assert "messages.id" in select_clause
+    assert "messages.run_id" in select_clause
+    assert "messages.content" in select_clause
+    assert "messages.created_at" in select_clause
+    assert "metadata" not in select_clause
+    assert "role" not in select_clause
+    assert "join sessions" in sql
+    assert "messages.tenant_id = %s" in sql
+    assert "messages.session_id = %s" in sql
+    assert "sessions.user_id = %s" in sql
+    assert "messages.role = 'user'" in sql
+    assert "messages.run_id = any(%s::text[])" in sql
+    assert params == ("tenant-a", "session-a", "user-a", ["run-b", "run-a"])
+
+
+@pytest.mark.asyncio
+async def test_authorized_user_messages_for_runs_empty_target_is_query_free():
+    query = getattr(repositories, "list_authorized_user_messages_for_runs", None)
+    assert callable(query), "dedicated authorized run-message projection is missing"
+    conn = RecordingConnection()
+
+    rows = await query(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_ids=[],
+    )
+
+    assert rows == []
+    assert conn.calls == []
 
 
 @pytest.mark.asyncio
@@ -5616,6 +5737,26 @@ async def test_list_tool_permission_inbox_filters_current_user_and_status():
 
 
 @pytest.mark.asyncio
+async def test_list_tool_permission_inbox_for_tenant_excludes_admin_user_filter():
+    conn = RecordingConnection()
+
+    rows = await list_tool_permission_inbox_for_tenant(
+        conn,
+        tenant_id="tenant-a",
+        status="pending",
+        limit=25,
+    )
+
+    sql, params = conn.calls[0]
+    assert "from run_tool_permission_requests" in sql
+    assert "where tenant_id = %s" in sql
+    assert "user_id =" not in sql
+    assert "(%s = 'all' or status = %s)" in sql
+    assert params == ("tenant-a", "pending", "pending", 25)
+    assert rows == []
+
+
+@pytest.mark.asyncio
 async def test_get_tool_permission_request_by_id_scopes_to_user_without_run():
     conn = RecordingConnection()
 
@@ -5631,6 +5772,43 @@ async def test_get_tool_permission_request_by_id_scopes_to_user_without_run():
     assert "where tenant_id = %s and user_id = %s and id = %s" in sql
     assert "run_id =" not in sql
     assert params == ("tenant-a", "user-a", "tpr-a")
+    assert row["id"] == "step-a"
+
+
+@pytest.mark.asyncio
+async def test_admin_tool_permission_lookup_scopes_to_tenant_run_and_request_not_admin_user():
+    conn = RecordingConnection()
+
+    row = await get_tool_permission_request_for_tenant(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        request_id="tpr-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "from run_tool_permission_requests" in sql
+    assert "where tenant_id = %s and run_id = %s and id = %s" in sql
+    assert "user_id =" not in sql
+    assert params == ("tenant-a", "run-a", "tpr-a")
+    assert row["id"] == "step-a"
+
+
+@pytest.mark.asyncio
+async def test_admin_tool_permission_inbox_lookup_scopes_to_tenant_and_request_not_admin_user():
+    conn = RecordingConnection()
+
+    row = await get_tool_permission_request_by_id_for_tenant(
+        conn,
+        tenant_id="tenant-a",
+        request_id="tpr-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "from run_tool_permission_requests" in sql
+    assert "where tenant_id = %s and id = %s" in sql
+    assert "user_id =" not in sql
+    assert params == ("tenant-a", "tpr-a")
     assert row["id"] == "step-a"
 
 

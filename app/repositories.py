@@ -4249,6 +4249,25 @@ async def get_tool_permission_request(
     return await cursor.fetchone()
 
 
+async def get_tool_permission_request_for_tenant(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    request_id: str,
+) -> dict[str, Any] | None:
+    """Fetch one permission request for tenant-scoped administrator governance."""
+    cursor = await conn.execute(
+        """
+        select *
+        from run_tool_permission_requests
+        where tenant_id = %s and run_id = %s and id = %s
+        """,
+        (tenant_id, run_id, request_id),
+    )
+    return await cursor.fetchone()
+
+
 async def get_tool_permission_request_by_id(
     conn: AsyncConnection,
     *,
@@ -4264,6 +4283,24 @@ async def get_tool_permission_request_by_id(
         where tenant_id = %s and user_id = %s and id = %s
         """,
         (tenant_id, user_id, request_id),
+    )
+    return await cursor.fetchone()
+
+
+async def get_tool_permission_request_by_id_for_tenant(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    request_id: str,
+) -> dict[str, Any] | None:
+    """Fetch one tenant request for the admin inbox without owner filtering."""
+    cursor = await conn.execute(
+        """
+        select *
+        from run_tool_permission_requests
+        where tenant_id = %s and id = %s
+        """,
+        (tenant_id, request_id),
     )
     return await cursor.fetchone()
 
@@ -4287,6 +4324,28 @@ async def list_tool_permission_inbox(
         limit %s
         """,
         (tenant_id, user_id, status, status, int(limit)),
+    )
+    return list(await cursor.fetchall())
+
+
+async def list_tool_permission_inbox_for_tenant(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    status: str = "pending",
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """List tenant permission requests for the administrator governance inbox."""
+    cursor = await conn.execute(
+        """
+        select *
+        from run_tool_permission_requests
+        where tenant_id = %s
+          and (%s = 'all' or status = %s)
+        order by created_at desc, id desc
+        limit %s
+        """,
+        (tenant_id, status, status, int(limit)),
     )
     return list(await cursor.fetchall())
 
@@ -9103,13 +9162,38 @@ async def list_authorized_session_runs(
 ) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """
-        select id, trace_id, schema_version, agent_id, skill_id, status, error_code, error_message,
-               created_at, queued_at, started_at, finished_at, result_json
+        select runs.id, runs.trace_id, runs.schema_version, runs.agent_id, runs.skill_id,
+               runs.status, runs.error_code, runs.error_message, runs.created_at, runs.queued_at,
+               runs.started_at, runs.finished_at, runs.result_json,
+               queue_admission.queue_admission_ordinal
         from runs
-        where tenant_id = %s
-          and user_id = %s
-          and session_id = %s
-        order by created_at desc
+        left join lateral (
+          select case
+            when run_events.payload_json->>'queue_admission_ordinal' ~ '^[0-9]+$'
+             and length(run_events.payload_json->>'queue_admission_ordinal') <= 19
+             and (
+               length(run_events.payload_json->>'queue_admission_ordinal') < 19
+               or run_events.payload_json->>'queue_admission_ordinal' <= '9223372036854775807'
+             )
+            then (run_events.payload_json->>'queue_admission_ordinal')::bigint
+            else null
+          end as queue_admission_ordinal
+          from run_events
+          where run_events.tenant_id = runs.tenant_id
+            and run_events.run_id = runs.id
+            and run_events.event_type = 'queued'
+          order by run_events.sequence desc
+          limit 1
+        ) queue_admission on true
+        where runs.tenant_id = %s
+          and runs.user_id = %s
+          and runs.session_id = %s
+        -- queued_at and id are canonical deterministic fallbacks for legacy
+        -- exact ties only; they are not durable run-creation authority (#438).
+        order by runs.created_at desc,
+                 queue_admission.queue_admission_ordinal desc nulls last,
+                 runs.queued_at desc nulls last,
+                 runs.id desc
         limit %s
         """,
         (tenant_id, user_id, session_id, limit),
@@ -9155,8 +9239,40 @@ async def list_authorized_messages(
         where messages.tenant_id = %s
           and messages.session_id = %s
           and sessions.user_id = %s
-        order by messages.created_at asc
+        order by messages.created_at asc, messages.id asc
         """,
         (tenant_id, session_id, user_id),
+    )
+    return list(await cursor.fetchall())
+
+
+async def list_authorized_user_messages_for_runs(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    session_id: str,
+    run_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Project minimal persisted user turns for authorized target runs."""
+
+    target_run_ids = list(
+        dict.fromkeys(run_id.strip() for run_id in run_ids if run_id.strip())
+    )
+    if not target_run_ids:
+        return []
+    cursor = await conn.execute(
+        """
+        select messages.id, messages.run_id, messages.content, messages.created_at
+        from messages
+        join sessions on sessions.id = messages.session_id and sessions.tenant_id = messages.tenant_id
+        where messages.tenant_id = %s
+          and messages.session_id = %s
+          and sessions.user_id = %s
+          and messages.role = 'user'
+          and messages.run_id = any(%s::text[])
+        order by messages.created_at asc, messages.id asc
+        """,
+        (tenant_id, session_id, user_id, target_run_ids),
     )
     return list(await cursor.fetchall())

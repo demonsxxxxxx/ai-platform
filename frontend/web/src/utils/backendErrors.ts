@@ -2,6 +2,8 @@ import type { TFunction } from "i18next";
 
 const BACKEND_ERROR_KEYS: Record<string, string> = {
   // Stable backend error codes
+  invalid_credentials: "backendErrors.invalidCredentials",
+  unauthorized: "backendErrors.unauthenticated",
   model_not_found: "errors.modelNotFound",
   model_disabled: "errors.modelDisabled",
   model_not_allowed: "errors.modelNotAllowed",
@@ -120,6 +122,72 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
   "A model cannot be its own fallback": "backendErrors.modelFallbackSelf",
 };
 
+const SAFE_ERROR_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
+const SAFE_PATTERN_VALUE = /^[A-Za-z0-9][A-Za-z0-9:_ .-]{0,63}$/;
+const UNSAFE_PATTERN_VALUE =
+  /(?:api[_-]?key|bearer|cookie|password|private|secret|session|token)/i;
+
+function safeBackendErrorCode(detail: unknown): string | undefined {
+  const candidate =
+    typeof detail === "string"
+      ? detail
+      : detail !== null &&
+          typeof detail === "object" &&
+          !Array.isArray(detail) &&
+          Object.prototype.hasOwnProperty.call(detail, "code")
+        ? (detail as { code?: unknown }).code
+        : undefined;
+  return typeof candidate === "string" &&
+    SAFE_ERROR_CODE_PATTERN.test(candidate)
+    ? candidate
+    : undefined;
+}
+
+/** Read only a bounded explicit code from an error-like diagnostic. */
+export function safeDiagnosticCode(error: unknown): string | undefined {
+  if (error === null || typeof error !== "object" || Array.isArray(error)) {
+    return undefined;
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && SAFE_ERROR_CODE_PATTERN.test(code)
+    ? code
+    : undefined;
+}
+
+/** Format a fixed log phase with an optional bounded code, never raw detail. */
+export function formatSafeDiagnosticLog(
+  phase: string,
+  error: unknown,
+): string {
+  const code = safeDiagnosticCode(error);
+  return code ? `${phase} code=${code}` : phase;
+}
+
+function statusFallbackKey(status: number): string {
+  if (status === 401) return "backendErrors.unauthenticated";
+  if (status === 403) return "errors.noPermission";
+  if (status === 429) return "backendErrors.tooManyRequests";
+  return "chat.requestFailed";
+}
+
+/** Project untrusted backend detail to an allowlisted translation or safe status copy. */
+export function projectSafeBackendError(
+  detail: unknown,
+  status: number,
+  t: TFunction,
+): { message: string; code?: string } {
+  const code = safeBackendErrorCode(detail);
+  const exactDetail = typeof detail === "string" ? detail : undefined;
+  const translationKey =
+    (code ? BACKEND_ERROR_KEYS[code] : undefined) ??
+    (exactDetail ? BACKEND_ERROR_KEYS[exactDetail] : undefined) ??
+    statusFallbackKey(status);
+  return {
+    message: t(translationKey, translationKey),
+    ...(code ? { code } : {}),
+  };
+}
+
 const BACKEND_ERROR_PATTERNS: Array<{
   pattern: RegExp;
   key: string;
@@ -154,12 +222,21 @@ export function translateBackendError(message: string, t: TFunction): string {
   for (const entry of BACKEND_ERROR_PATTERNS) {
     const match = message.match(entry.pattern);
     if (match) {
+      const values = entry.values ? entry.values(match) : {};
+      if (
+        Object.values(values).some(
+          (value) =>
+            !SAFE_PATTERN_VALUE.test(value) || UNSAFE_PATTERN_VALUE.test(value),
+        )
+      ) {
+        break;
+      }
       return t(entry.key, {
         defaultValue: entry.key,
-        ...(entry.values ? entry.values(match) : {}),
+        ...values,
       });
     }
   }
 
-  return message;
+  return t("chat.requestFailed", "chat.requestFailed");
 }

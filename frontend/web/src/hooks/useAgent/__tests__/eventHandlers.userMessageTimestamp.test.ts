@@ -14,6 +14,7 @@ function createContext(messages: Message[]): {
   return {
     ctx: {
       sessionIdRef: { current: "session-1" },
+      currentRunIdRef: { current: null },
       processedEventIdsRef: { current: new Set<string>() },
       lastHistoryTimestampRef: { current: null },
       activeSubagentStackRef: { current: [] },

@@ -7,8 +7,10 @@ import {
   buildRunCancelUrl,
   buildSessionListUrl,
   buildSessionRunsUrl,
+  buildSubmitChatUrl,
   buildSubmitChatBody,
   isChatStreamNeedsConfirmation,
+  resolveChatSessionAgentId,
 } from "../session.ts";
 
 test("fails closed instead of sending unsupported project or favorite filters", () => {
@@ -114,6 +116,42 @@ test("detects chat stream confirmation responses without a run id", () => {
       ],
     }),
     true,
+  );
+});
+
+test("uses the routed agent for same-tab session continuation", () => {
+  const routedAgentId = resolveChatSessionAgentId(
+    {
+      session_id: "session-translation",
+      run_id: "run-translation",
+      trace_id: "trace-translation",
+      status: "queued",
+      intent_decision: {
+        agent_id: "baoyu-translate",
+      },
+    },
+    "general-agent",
+  );
+
+  assert.equal(routedAgentId, "baoyu-translate");
+  assert.equal(
+    buildSubmitChatUrl(routedAgentId),
+    "/api/chat/stream?agent_id=baoyu-translate",
+  );
+});
+
+test("keeps the current agent when the response has no authoritative routed agent", () => {
+  assert.equal(
+    resolveChatSessionAgentId(
+      {
+        session_id: "session-a",
+        run_id: "run-a",
+        trace_id: "trace-a",
+        status: "queued",
+      },
+      "baoyu-translate",
+    ),
+    "baoyu-translate",
   );
 });
 

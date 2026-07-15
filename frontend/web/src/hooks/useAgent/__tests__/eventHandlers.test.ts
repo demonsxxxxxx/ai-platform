@@ -20,7 +20,11 @@ function createContext(
 
   return {
     sessionIdRef: { current: "session-1" },
+    currentRunIdRef: { current: null },
     processedEventIdsRef: { current: new Set<string>() },
+    acceptedRunEventSequenceRef: {
+      current: { sessionId: null, runId: null, sequence: null },
+    },
     lastHistoryTimestampRef: { current: lastHistoryTimestamp },
     activeSubagentStackRef: { current: [] },
     streamVersionRef: { current: 0 },
@@ -56,9 +60,16 @@ test("terminal stream events dismiss a queued admission toast", () => {
     const ctx = createContext([], null, () => {
       dismissCalls += 1;
     });
+    ctx.currentRunIdRef.current = "run-active";
 
     handleStreamEvent(
-      { event: terminalEvent, data: "{}" },
+      {
+        event: terminalEvent,
+        data: JSON.stringify({
+          run_id: "run-active",
+          ...(terminalEvent === "error" ? { error: "run_failed" } : {}),
+        }),
+      },
       "assistant-1",
       `terminal-${terminalEvent}`,
       "2026-07-11T01:02:03.000Z",
@@ -67,6 +78,74 @@ test("terminal stream events dismiss a queued admission toast", () => {
 
     assert.equal(dismissCalls, 1, `${terminalEvent} must clear chat-queue`);
   }
+});
+
+test("does not let a stale run terminal event finalize the active run", () => {
+  const ctx = createContext([], null);
+  ctx.currentRunIdRef.current = "run-new";
+  const terminalCalls: Array<[string, string, string]> = [];
+  ctx.onRunTerminal = (runId, status, messageId) => {
+    terminalCalls.push([runId, status, messageId]);
+    return true;
+  };
+
+  handleStreamEvent(
+    {
+      event: "run_event",
+      data: JSON.stringify({
+        run_id: "run-old",
+        event_type: "run_failed",
+      }),
+    } as StreamEvent,
+    "assistant-old",
+    "evt-old-terminal",
+    "2026-07-14T02:00:00.000Z",
+    ctx,
+  );
+
+  assert.deepEqual(terminalCalls, []);
+  assert.equal(ctx.setMessagesCalls(), 0);
+});
+
+test("delegates an active run terminal event once to the lifecycle owner", () => {
+  const ctx = createContext([], null);
+  ctx.currentRunIdRef.current = "run-active";
+  let terminalCalls = 0;
+  ctx.onRunTerminal = (runId, status, messageId) => {
+    terminalCalls += 1;
+    assert.deepEqual([runId, status, messageId], [
+      "run-active",
+      "failed",
+      "assistant-active",
+    ]);
+    ctx.currentRunIdRef.current = null;
+    return true;
+  };
+
+  const terminalEvent = {
+    event: "run_event",
+    data: JSON.stringify({
+      run_id: "run-active",
+      event_type: "run_failed",
+    }),
+  } as StreamEvent;
+  handleStreamEvent(
+    terminalEvent,
+    "assistant-active",
+    "evt-terminal-1",
+    "2026-07-14T02:00:00.000Z",
+    ctx,
+  );
+  handleStreamEvent(
+    { ...terminalEvent, data: terminalEvent.data },
+    "assistant-active",
+    "evt-terminal-2",
+    "2026-07-14T02:00:01.000Z",
+    ctx,
+  );
+
+  assert.equal(terminalCalls, 1);
+  assert.equal(ctx.setMessagesCalls(), 0);
 });
 
 test("skips replayed SSE events at the history timestamp boundary", () => {
@@ -93,6 +172,153 @@ test("skips replayed SSE events at the history timestamp boundary", () => {
   handleStreamEvent(event, "assistant-1", "redis-event-1", timestamp, ctx);
 
   assert.equal(ctx.setMessagesCalls(), 0);
+});
+
+test("reports acceptance only after current-run validation and deduplication", () => {
+  const ctx = createContext([], new Date("2026-04-19T01:02:03.456Z"));
+  ctx.currentRunIdRef.current = "run-active";
+
+  const accepted = handleStreamEvent(
+    {
+      event: "run_event",
+      data: JSON.stringify({
+        run_id: "run-active",
+        sequence: 4,
+        event_type: "worker_started",
+      }),
+    } as StreamEvent,
+    "assistant-1",
+    "evt-current",
+    "2026-04-19T01:02:04.000Z",
+    ctx,
+    { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
+  );
+  assert.equal(accepted, true);
+  assert.equal(
+    handleStreamEvent(
+      {
+        event: "run_event",
+        data: JSON.stringify({
+          run_id: "run-active",
+          sequence: 5,
+          event_type: "worker_started",
+        }),
+      } as StreamEvent,
+      "assistant-1",
+      "evt-current",
+      "2026-04-19T01:02:05.000Z",
+      ctx,
+      { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
+    ),
+    false,
+  );
+  assert.equal(
+    handleStreamEvent(
+      {
+        event: "run_event",
+        data: JSON.stringify({
+          run_id: "run-foreign",
+          sequence: 6,
+          event_type: "worker_started",
+        }),
+      } as StreamEvent,
+      "assistant-1",
+      "evt-foreign",
+      "2026-04-19T01:02:06.000Z",
+      ctx,
+      { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
+    ),
+    false,
+  );
+  assert.equal(
+    handleStreamEvent(
+      { event: "run_event", data: "not-json" } as StreamEvent,
+      "assistant-1",
+      "evt-invalid",
+      "2026-04-19T01:02:07.000Z",
+      ctx,
+      { sessionId: "session-1", runId: "run-active", streamVersion: 0 },
+    ),
+    false,
+  );
+  assert.equal(
+    handleStreamEvent(
+      { event: "done", data: JSON.stringify({ status: "failed" }) },
+      "assistant-1",
+      "evt-runless-terminal",
+      "2026-04-19T01:02:08.000Z",
+      ctx,
+    ),
+    false,
+  );
+});
+
+test("retains the run-event sequence replay guard after the event-id cap", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "",
+        timestamp: new Date(),
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-active";
+  ctx.acceptedRunEventSequenceRef!.current = {
+    sessionId: "session-1",
+    runId: "run-active",
+    sequence: 8,
+  };
+  ctx.processedEventIdsRef.current = new Set(
+    Array.from({ length: 10_000 }, (_, index) => `history-${index}`),
+  );
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-active",
+    streamVersion: 0,
+  };
+
+  assert.equal(
+    handleStreamEvent(
+      {
+        event: "run_event",
+        data: JSON.stringify({
+          run_id: "run-active",
+          sequence: 9,
+          event_type: "worker_progress",
+        }),
+      } as StreamEvent,
+      "assistant-1",
+      "evt-new-after-cap",
+      undefined,
+      ctx,
+      binding,
+    ),
+    true,
+  );
+  assert.equal(ctx.processedEventIdsRef.current.size, 1);
+  assert.equal(
+    handleStreamEvent(
+      {
+        event: "run_event",
+        data: JSON.stringify({
+          run_id: "run-active",
+          sequence: 8,
+          event_type: "worker_started",
+        }),
+      } as StreamEvent,
+      "assistant-1",
+      "evt-old-replay-after-cap",
+      undefined,
+      ctx,
+      binding,
+    ),
+    false,
+  );
+  assert.equal(ctx.setMessagesCalls(), 1);
 });
 
 test("creates a new streaming assistant for a running run after the latest user message", () => {
@@ -158,6 +384,7 @@ test("user cancel marks message cancelled without closing the SSE connection", (
     ],
     null,
   );
+  ctx.currentRunIdRef.current = "run-1";
 
   handleStreamEvent(
     {
@@ -234,4 +461,123 @@ test("streams ai-platform run event and artifact card into message parts", () =>
     ["run_status", "artifact"],
   );
   assert.equal(ctx.setMessagesCalls(), 2);
+});
+
+test("keeps a controlled failed final detail before exactly-once terminal convergence", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-final",
+        role: "assistant",
+        content: "",
+        timestamp: new Date("2026-07-15T01:00:00.000Z"),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-final";
+  let terminalCalls = 0;
+  ctx.onRunTerminal = () => {
+    terminalCalls += 1;
+    ctx.currentRunIdRef.current = null;
+    return true;
+  };
+
+  const acceptedDetail = handleStreamEvent(
+    {
+      event: "final_detail",
+      data: JSON.stringify({
+        run_id: "run-final",
+        detail_kind: "failed",
+        detail_code: "run_failed",
+      }),
+    } as StreamEvent,
+    "assistant-final",
+    "run-final:final",
+    "2026-07-15T01:00:01.000Z",
+    ctx,
+  );
+  const acceptedTerminal = handleStreamEvent(
+    {
+      event: "run_event",
+      data: JSON.stringify({
+        run_id: "run-final",
+        event_type: "run_failed",
+      }),
+    } as StreamEvent,
+    "assistant-final",
+    "evt-final-failed",
+    "2026-07-15T01:00:02.000Z",
+    ctx,
+  );
+
+  assert.equal(acceptedDetail, true);
+  assert.equal(acceptedTerminal, true);
+  assert.equal(terminalCalls, 1);
+  assert.match(ctx.messages()[0]?.content || "", /任务未能完成/);
+  assert.equal(ctx.messages()[0]?.isStreaming, true);
+  assert.doesNotMatch(ctx.messages()[0]?.content || "", /Executor failed/);
+});
+
+test("stream error handler never renders unknown backend diagnostics", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-error",
+        role: "assistant",
+        content: "",
+        timestamp: new Date("2026-07-15T01:00:00.000Z"),
+        parts: [],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+
+  handleStreamEvent(
+    {
+      event: "error",
+      data: JSON.stringify({
+        error: "C:\\private\\executor.log?token=secret <html>proxy</html>",
+      }),
+    },
+    "assistant-error",
+    "evt-safe-error",
+    "2026-07-15T01:00:01.000Z",
+    ctx,
+  );
+
+  const content = ctx.messages()[0]?.content || "";
+  assert.ok(content.length > 0);
+  assert.doesNotMatch(content, /private|token|proxy|html|executor\.log/i);
+});
+
+test("sandbox error side effects never expose unknown backend diagnostics", () => {
+  const ctx = createContext([], null);
+  const sandboxErrors: Array<string | null> = [];
+  ctx.currentRunIdRef.current = "run-sandbox-error";
+  ctx.setSandboxError = (value) => sandboxErrors.push(value);
+
+  handleStreamEvent(
+    {
+      event: "sandbox:error",
+      data: JSON.stringify({
+        run_id: "run-sandbox-error",
+        error: "C:\\private\\sandbox.log?token=secret <html>proxy</html>",
+      }),
+    },
+    "assistant-sandbox-error",
+    "evt-sandbox-error",
+    "2026-07-15T01:00:00.000Z",
+    ctx,
+  );
+
+  assert.equal(sandboxErrors.length, 1);
+  assert.ok(sandboxErrors[0]);
+  assert.doesNotMatch(
+    String(sandboxErrors[0]),
+    /private|token|secret|proxy|html|sandbox\.log/i,
+  );
 });
