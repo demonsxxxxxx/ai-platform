@@ -1474,6 +1474,7 @@ test("AuthPage renders actionable localized copy when secure browser auth coordi
 
     assert.equal(mounted.errorToasts.length, 1);
     assert.match(String(mounted.errorToasts[0]), /浏览器|站点数据|联系管理员/);
+    assert.match(String(mounted.errorToasts[0]), /站点地址.*HTTPS/);
     assert.deepEqual(mounted.successToasts, []);
     assert.deepEqual(mounted.successfulRedirects, []);
   } finally {
