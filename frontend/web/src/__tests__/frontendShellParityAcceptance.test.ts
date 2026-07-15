@@ -208,9 +208,13 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
   assert.doesNotMatch(sidebar, /font-serif|icons\/icon\.svg/);
 });
 
-test("post-login navigation keeps governed MCP entry discoverable without stale local permissions", () => {
+test("post-login navigation keeps MCP in the authoritative sidebar instead of the account menu", () => {
   const userMenu = readFileSync(
     join(root, "src/components/layout/UserMenu.tsx"),
+    "utf8",
+  );
+  const sidebar = readFileSync(
+    join(root, "src/components/panels/SessionSidebar.tsx"),
     "utf8",
   );
   const chatAppContent = readFileSync(
@@ -222,38 +226,13 @@ test("post-login navigation keeps governed MCP entry discoverable without stale 
     "utf8",
   );
 
-  for (const route of ["/mcp", "/notifications"]) {
-    assert.match(
-      userMenu,
-      new RegExp(
-        `path:\\s*"${route}"[\\s\\S]{0,160}show:\\s*true\\s*,?\\s*}\\s*,`,
-      ),
-      route,
-    );
-  }
-  for (const route of [
-    "/models",
-    "/users",
-    "/settings",
-    "/feedback",
-  ]) {
-    assert.match(
-      userMenu,
-      new RegExp(
-        `path:\\s*"${route}"[\\s\\S]{0,180}show:\\s*canAccessWorkbenchItem\\(user,\\s*"${route.slice(1)}"\\)\\s*,\\s*}`,
-      ),
-      route,
-    );
-  }
-  assert.match(userMenu, /const visibleNav = navItems\.filter\(\(i\) => i\.show\)/);
-  assert.match(
+  assert.match(sidebar, /onOpenMcp=\{\(\) => navigate\("\/mcp"\)\}/);
+  assert.match(userMenu, /data-user-menu-identity/);
+  assert.match(userMenu, /auth\.logout/);
+  assert.doesNotMatch(
     userMenu,
-    /\{visibleNav\.length > 0 && <div>\{visibleNav\.map\(renderNavItem\)\}<\/div>\}/,
+    /useNavigate|navItems|data-workbench-user-menu-item|["'`]\/(?:chat|skills|mcp)["'`]/,
   );
-  assert.doesNotMatch(userMenu, /path:\s*"\/roles"/);
-  assert.doesNotMatch(userMenu, /Permission\.MCP_READ|Permission\.CHANNEL_READ|Permission\.SETTINGS_MANAGE/);
-  assert.doesNotMatch(userMenu, /canReadChannels|canManageSettings/);
-  assert.match(userMenu, /max-h-\[min\(calc\(100vh-5rem\),34rem\)\]/);
   assert.match(userMenu, /overflow-y-auto/);
   assert.match(userMenu, /w-60/);
   assert.match(chatAppContent, /useTools\(\{ enabled: true \}\)/);
@@ -549,7 +528,7 @@ test("authenticated marketplace pages share the workbench surface tokens", () =>
   assert.doesNotMatch(marketplace, /border-slate-200 bg-white/);
 });
 
-test("profile modal shares the authenticated workbench visual language", () => {
+test("legacy profile modal and all product tabs are absent from the frontend bundle", () => {
   const profileFiles = [
     "src/components/profile/ProfileModal.tsx",
     "src/components/profile/tabs/ProfileInfoTab.tsx",
@@ -558,33 +537,17 @@ test("profile modal shares the authenticated workbench visual language", () => {
     "src/components/profile/tabs/ProfileToolsTab.tsx",
     "src/components/profile/tabs/ProfileModelsTab.tsx",
     "src/components/profile/tabs/ProfileTermsTab.tsx",
+    "src/components/profile/tabs/ProfilePasswordTab.tsx",
+    "src/components/profile/tabs/ProfileEnvVarsTab.tsx",
   ];
 
-  const sources = profileFiles.map((file) => [
-    file,
-    readFileSync(join(root, file), "utf8"),
-  ] as const);
-  const profileModal =
-    sources.find(([file]) => file.endsWith("ProfileModal.tsx"))?.[1] ?? "";
-
-  assert.match(profileModal, /data-profile-workbench-modal/);
-  assert.match(profileModal, /bg-\[var\(--theme-bg-card\)\]/);
-  assert.match(profileModal, /bg-\[var\(--theme-bg-sidebar\)\]/);
-
-  for (const [file, source] of sources) {
-    assert.doesNotMatch(source, /font-serif/, file);
-    assert.doesNotMatch(source, /from-amber|to-amber|from-orange|to-orange/, file);
-    assert.doesNotMatch(source, /\b(?:bg|text|border|ring|decoration)-amber-/, file);
-    assert.doesNotMatch(source, /\b(?:bg|text|border|ring|decoration)-orange-/, file);
-    assert.doesNotMatch(source, /rounded-2xl|rounded-3xl/, file);
-    assert.doesNotMatch(source, /shadow-xl|shadow-2xl/, file);
+  for (const file of profileFiles) {
+    assert.equal(existsSync(join(root, file)), false, file);
   }
 });
 
-test("profile secondary tabs and MCP selectors use workbench control tokens", () => {
+test("MCP selectors use workbench control tokens", () => {
   const controlFiles = [
-    "src/components/profile/tabs/ProfilePasswordTab.tsx",
-    "src/components/profile/tabs/ProfileEnvVarsTab.tsx",
     "src/components/mcp/RoleSelector.tsx",
     "src/components/mcp/EnvKeysSelector.tsx",
   ];
@@ -888,6 +851,10 @@ test("mcp workbench route exposes the same frontend governance state machine as 
     join(root, "src/components/panels/mcpGovernanceState.ts"),
     "utf8",
   );
+  const ordinaryMcp = readFileSync(
+    join(root, "src/components/panels/OrdinaryMcpCatalog.tsx"),
+    "utf8",
+  );
 
   assert.match(mcpPanel, /resolveMcpGovernanceState/);
   assert.match(mcpPanel, /data-mcp-directory-shell/);
@@ -907,8 +874,15 @@ test("mcp workbench route exposes the same frontend governance state machine as 
   assert.doesNotMatch(mcpPanel, /hasPermission:\s*canReadMcp/);
   assert.match(mcpPanel, /canManageMcp && !mcpGovernance\.governedUnavailable/);
   assert.match(mcpPanel, /data-mcp-admin-controls/);
+  assert.match(mcpPanel, /if \(!isAiAdmin\)/);
   assert.match(mcpPanel, /createServer|updateServer|deleteServer|toggleServer/);
   assert.doesNotMatch(mcpPanel, /promoteServer|demoteServer/);
+  assert.match(ordinaryMcp, /data-ordinary-mcp-catalog/);
+  assert.match(ordinaryMcp, /mcp\.available\.empty/);
+  assert.doesNotMatch(
+    ordinaryMcp,
+    /allowed_roles|role_quotas|credential|transport|server\.enabled|can_edit/,
+  );
 });
 
 test("skills and marketplace clients use only PR177 public contracts", () => {
@@ -933,7 +907,7 @@ test("skills and marketplace clients use only PR177 public contracts", () => {
   assert.doesNotMatch(marketplaceApi, /\/api\/ai\/admin/);
 });
 
-test("skills hub treats skills as admin-only skill management before fail-closed", () => {
+test("skills hub keeps management admin-only and serves a bounded ordinary catalog", () => {
   const skillsHub = readFileSync(
     join(root, "src/components/panels/SkillsHubPanel.tsx"),
     "utf8",
@@ -943,8 +917,14 @@ test("skills hub treats skills as admin-only skill management before fail-closed
     "utf8",
   );
   const useAuth = readFileSync(join(root, "src/hooks/useAuth.tsx"), "utf8");
+  const ordinarySkills = readFileSync(
+    join(root, "src/components/panels/AvailableSkillsPanel.tsx"),
+    "utf8",
+  );
 
   assert.match(skillsHub, /resolveSkillsHubGovernance/);
+  assert.match(skillsHub, /isAiAdminUser\(user\)/);
+  assert.match(skillsHub, /return <AvailableSkillsPanel \/>;/);
   assert.doesNotMatch(skillsHub, /useSettingsContext/);
   assert.doesNotMatch(skillsHub, /settingsError/);
   assert.doesNotMatch(skillsHub, /settingsStateDegraded/);
@@ -985,6 +965,13 @@ test("skills hub treats skills as admin-only skill management before fail-closed
   assert.match(useAuth, /hasEffectivePermission\(permissions, permission\)/);
   assert.match(useAuth, /hasAnyEffectivePermission\(permissions, perms\)/);
   assert.match(useAuth, /hasAllEffectivePermissions\(permissions, perms\)/);
+  assert.match(ordinarySkills, /data-ordinary-skills-catalog/);
+  assert.match(ordinarySkills, /skills\.available\.title/);
+  assert.match(ordinarySkills, /skills\.available\.fileTypes/);
+  assert.doesNotMatch(
+    ordinarySkills,
+    /expected_version|file_count|skill\.content|skill\.files|is_published|marketplace_is_active/,
+  );
 });
 
 test("company baseline permissions include backed role plaza and marketplace read contracts", () => {

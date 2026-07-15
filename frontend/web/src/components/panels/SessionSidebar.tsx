@@ -49,7 +49,6 @@ interface SessionSidebarProps {
   onMobileClose?: () => void;
   isCollapsed?: boolean;
   onToggleCollapsed?: (collapsed: boolean) => void;
-  onShowProfile?: () => void;
 }
 
 export interface SessionSidebarHandle {
@@ -75,14 +74,12 @@ export const SessionSidebar = forwardRef<
     onMobileClose,
     isCollapsed: externalCollapsed,
     onToggleCollapsed,
-    onShowProfile,
   },
   ref,
 ) {
   const { t } = useTranslation();
   const { user } = useAuth();
   const [isSearchOpen, setIsSearchOpen] = useState(false);
-  const [imgError, setImgError] = useState(false);
   const [internalCollapsed, setInternalCollapsed] = useState(false);
   const [isChatsCollapsed, setIsChatsCollapsed] = useState(false);
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
@@ -322,15 +319,12 @@ export const SessionSidebar = forwardRef<
         {isMobile ? (
           <SessionListContent
             user={user}
-            imgError={imgError}
-            onImgError={() => setImgError(true)}
             onCollapse={() => {
               setIsCollapsed(true);
               onMobileClose?.();
             }}
             onNewSession={onNewSession}
             onOpenSearch={() => setIsSearchOpen(true)}
-            onShowProfile={onShowProfile!}
             onSetScrollEl={setScrollEl}
             uncategorizedSessions={uncategorizedList.sessions}
             isUncategorizedLoading={uncategorizedList.isLoading}
@@ -367,12 +361,9 @@ export const SessionSidebar = forwardRef<
           >
             <SessionListContent
               user={user}
-              imgError={imgError}
-              onImgError={() => setImgError(true)}
               onCollapse={() => setIsCollapsed(true)}
               onNewSession={onNewSession}
               onOpenSearch={() => setIsSearchOpen(true)}
-              onShowProfile={onShowProfile!}
               onSetScrollEl={setScrollEl}
               uncategorizedSessions={uncategorizedList.sessions}
               isUncategorizedLoading={uncategorizedList.isLoading}
@@ -391,8 +382,6 @@ export const SessionSidebar = forwardRef<
           <div className="absolute inset-0">
             <SidebarRail
               user={user}
-              imgError={imgError}
-              onImgError={() => setImgError(true)}
               isExpanded={false}
               onExpand={() => setIsCollapsed(false)}
               onCollapse={() => setIsCollapsed(true)}
@@ -414,7 +403,6 @@ export const SessionSidebar = forwardRef<
               onOpenModels={() => navigateWorkbenchItem("models")}
               onOpenFiles={() => navigateWorkbenchItem("files")}
               recentChatsBtnRef={desktopRecentChatsBtnRef}
-              onShowProfile={onShowProfile!}
             />
           </div>
         )}
@@ -430,8 +418,6 @@ export const SessionSidebar = forwardRef<
       >
         <SidebarRail
           user={user}
-          imgError={imgError}
-          onImgError={() => setImgError(true)}
           isExpanded={false}
           onExpand={() => onMobileOpen?.()}
           onCollapse={() => onMobileClose?.()}
@@ -453,7 +439,6 @@ export const SessionSidebar = forwardRef<
           onOpenModels={() => navigateWorkbenchItem("models")}
           onOpenFiles={() => navigateWorkbenchItem("files")}
           recentChatsBtnRef={mobileRecentChatsBtnRef}
-          onShowProfile={onShowProfile!}
         />
       </div>
 

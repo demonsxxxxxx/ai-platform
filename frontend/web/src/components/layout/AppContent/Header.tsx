@@ -35,7 +35,6 @@ interface HeaderProps {
   currentProjectId: string | null;
   projectManager: { projects: Project[] };
   onNewSession: () => void;
-  onShowProfile: () => void;
   availableModels?:
     | {
         id: string;
@@ -60,7 +59,6 @@ export function Header({
   currentProjectId,
   projectManager,
   onNewSession,
-  onShowProfile,
   availableModels,
   currentModelId,
   onSelectModel,
@@ -424,7 +422,7 @@ export function Header({
               document.body,
             )}
 
-          <UserMenu onShowProfile={onShowProfile} />
+          <UserMenu />
         </div>
       </header>
 

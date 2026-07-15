@@ -46,25 +46,17 @@ import { RunPlaybackPanel } from "./RunPlaybackPanel";
 import { openPersistentToolPanel } from "../../chat/ChatMessage/items/persistentToolPanelState";
 
 export interface ChatAppContentProps {
-  showProfileModal: boolean;
-  onCloseProfileModal: () => void;
-  versionInfo: import("../../../types").VersionInfo | null;
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (collapsed: boolean) => void;
   mobileSidebarOpen: boolean;
   setMobileSidebarOpen: (open: boolean) => void;
-  onShowProfile: () => void;
 }
 
 export function ChatAppContent({
-  showProfileModal,
-  onCloseProfileModal,
-  versionInfo,
   sidebarCollapsed,
   setSidebarCollapsed,
   mobileSidebarOpen,
   setMobileSidebarOpen,
-  onShowProfile,
 }: ChatAppContentProps) {
   const { t } = useTranslation();
   const location = useLocation();
@@ -526,14 +518,10 @@ export function ChatAppContent({
   return (
     <AppShell
       activeTab="chat"
-      showProfileModal={showProfileModal}
-      onCloseProfileModal={onCloseProfileModal}
-      versionInfo={versionInfo}
       setMobileSidebarOpen={setMobileSidebarOpen}
       currentProjectId={currentProjectId}
       projectManager={projectManager}
       onNewSession={handleNewSessionWithReset}
-      onShowProfile={onShowProfile}
       availableModels={filteredModels}
       currentModelId={currentModelId}
       onSelectModel={handleSelectModel}
@@ -554,7 +542,6 @@ export function ChatAppContent({
           onMobileClose={handleMobileClose}
           isCollapsed={sidebarCollapsed}
           onToggleCollapsed={setSidebarCollapsed}
-          onShowProfile={onShowProfile}
         />
       }
     >

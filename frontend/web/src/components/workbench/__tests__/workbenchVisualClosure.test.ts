@@ -107,9 +107,8 @@ test("expanded desktop sidebar uses one primary navigation surface", () => {
   assert.doesNotMatch(sessionSidebar, /data-librechat-expanded-rail/);
   assert.doesNotMatch(sessionSidebar, /<SidebarRail[\s\S]*\bisExpanded(?:\s|>)/);
   assert.doesNotMatch(sessionSidebar, /<SidebarRail[\s\S]*isExpanded=\{true\}/);
-  assert.doesNotMatch(sessionSidebar, /showFooter=\{false\}/);
-  assert.match(sessionList, /showFooter = true/);
-  assert.match(sessionList, /\{showFooter && \(/);
+  assert.doesNotMatch(sessionList, /showFooter|onShowProfile|ChevronsUpDown/);
+  assert.doesNotMatch(rail, /onShowProfile|Profile avatar/);
   assert.match(rail, /isExpanded = false/);
   assert.match(rail, /sidebar\.collapseSidebar/);
 });
@@ -477,13 +476,16 @@ test("role plaza state is resolver-driven instead of hard-coded ready", () => {
   assert.match(resolver, /adminOnly: !canManageRoles/);
 });
 
-test("skills hub route uses the admin skill management resolver", () => {
+test("skills route selects the ordinary catalog while retaining the admin management resolver", () => {
   const hub = read("src/components/panels/SkillsHubPanel.tsx");
+  const ordinarySkills = read("src/components/panels/AvailableSkillsPanel.tsx");
   const resolver = read("src/components/panels/SkillsHubPanel/state.ts");
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));
   const en = JSON.parse(read("src/i18n/locales/en.json"));
 
   assert.match(hub, /resolveSkillsHubGovernance/);
+  assert.match(hub, /isAiAdminUser\(user\)/);
+  assert.match(hub, /return <AvailableSkillsPanel \/>;/);
   assert.match(hub, /data-required-permission=\{hubGovernance\.requiredPermission\}/);
   assert.match(hub, /data-effective-projection-has-permission=\{hubGovernance\.effectiveProjectionHasPermission\}/);
   assert.match(hub, /data-effective-permissions-source=\{hubGovernance\.effectivePermissionsSource\}/);
@@ -505,6 +507,12 @@ test("skills hub route uses the admin skill management resolver", () => {
   assert.doesNotMatch(hub, /PanelHeader/);
   assert.match(hub, /data-skills-catalog-status/);
   assert.doesNotMatch(hub, /data-skills-catalog-nav/);
+  assert.match(ordinarySkills, /data-ordinary-skills-catalog/);
+  assert.match(ordinarySkills, /skills\.available\.title/);
+  assert.match(ordinarySkills, /skills\.available\.fileTypes/);
+  assert.doesNotMatch(ordinarySkills, /expected_version|file_count|skill\.content|skill\.files|is_published/);
+  assert.equal(zh.skills.available.title, "可用技能");
+  assert.equal(en.skills.available.title, "Available skills");
   assert.equal(zh.skillsHub.skillManagement.ready.title, "技能管理可用");
   assert.equal(
     zh.skillsHub.skillManagement.loading.title,

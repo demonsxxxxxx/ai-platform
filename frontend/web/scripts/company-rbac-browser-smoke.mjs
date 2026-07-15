@@ -22,12 +22,6 @@ const evidenceDir = resolve(
 const timeoutMs = 30_000;
 let currentStage = "initializing";
 const adminItems = ["models"];
-const adminMenuPaths = [
-  "/models",
-  "/users",
-  "/settings",
-  "/feedback",
-];
 
 function markStage(stage) {
   currentStage = stage;
@@ -181,17 +175,15 @@ async function runCase(role, viewportName, viewport) {
         return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
       };
       const adminItems = ${JSON.stringify(adminItems)};
-      const adminMenuPaths = ${JSON.stringify(adminMenuPaths)};
       const railCount = adminItems.filter((item) =>
         Array.from(document.querySelectorAll('[data-workbench-rail-item="' + item + '"]')).some(visible)
       ).length;
       const panelCount = adminItems.filter((item) =>
         Array.from(document.querySelectorAll('[data-workbench-nav-item="' + item + '"]')).some(visible)
       ).length;
-      const menuCount = adminMenuPaths.filter((path) =>
-        Array.from(document.querySelectorAll('[data-workbench-user-menu-item="' + path + '"]')).some(visible)
-      ).length;
-      return { railCount, panelCount, menuCount };
+      const menuCount = Array.from(document.querySelectorAll('[data-workbench-user-menu-item]')).filter(visible).length;
+      const identityVisible = Array.from(document.querySelectorAll('[data-user-menu-identity]')).some(visible);
+      return { railCount, panelCount, menuCount, identityVisible };
     })()`);
     const language = await client.evaluate(`({
       hasChinese: /[\\u3400-\\u9fff]/.test(document.body.innerText),
@@ -240,6 +232,32 @@ async function runCase(role, viewportName, viewport) {
         errors: window.__companyRbacSmoke.errors,
       };
     })()`);
+    const catalogRoutes = {};
+    await navigate(client, "/skills");
+    markStage(`${role}:${viewportName}:navigate-skills`);
+    await client.waitFor(
+      isAdmin
+        ? "Boolean(document.querySelector('[data-skill-workbench-shell]'))"
+        : "Boolean(document.querySelector('[data-ordinary-skills-catalog]'))",
+      `${role}:${viewportName}:skills-catalog`,
+    );
+    catalogRoutes.skills = await client.evaluate(`({
+      ordinary: Boolean(document.querySelector('[data-ordinary-skills-catalog]')),
+      admin: Boolean(document.querySelector('[data-skill-workbench-shell]')),
+    })`);
+    await navigate(client, "/mcp");
+    markStage(`${role}:${viewportName}:navigate-mcp`);
+    await client.waitFor(
+      isAdmin
+        ? "Boolean(document.querySelector('[data-mcp-directory-shell]'))"
+        : "Boolean(document.querySelector('[data-ordinary-mcp-catalog]'))",
+      `${role}:${viewportName}:mcp-catalog`,
+    );
+    catalogRoutes.mcp = await client.evaluate(`({
+      ordinary: Boolean(document.querySelector('[data-ordinary-mcp-catalog]')),
+      admin: Boolean(document.querySelector('[data-mcp-directory-shell]')),
+      adminControls: Boolean(document.querySelector('[data-mcp-admin-controls]')),
+    })`);
     const screenshotName = await captureScreenshot(
       client,
       evidenceDir,
@@ -248,9 +266,21 @@ async function runCase(role, viewportName, viewport) {
     const managementNavigationOk = isAdmin
       ? Math.max(navigation.railCount, navigation.panelCount) === 1
       : navigation.railCount === 0 && navigation.panelCount === 0;
+    const catalogRoutesOk = isAdmin
+      ? catalogRoutes.skills.admin === true &&
+        catalogRoutes.skills.ordinary === false &&
+        catalogRoutes.mcp.admin === true &&
+        catalogRoutes.mcp.ordinary === false
+      : catalogRoutes.skills.admin === false &&
+        catalogRoutes.skills.ordinary === true &&
+        catalogRoutes.mcp.admin === false &&
+        catalogRoutes.mcp.ordinary === true &&
+        catalogRoutes.mcp.adminControls === false;
     const ok =
       managementNavigationOk &&
-      navigation.menuCount === (isAdmin ? adminMenuPaths.length : 0) &&
+      navigation.menuCount === 0 &&
+      navigation.identityVisible === true &&
+      catalogRoutesOk &&
       language.hasChinese === true &&
       language.savedLanguage === null &&
       layout.bodyScrollWidth <= layout.width &&
@@ -264,6 +294,7 @@ async function runCase(role, viewportName, viewport) {
       viewportName,
       viewport,
       navigation,
+      catalogRoutes,
       language,
       layout,
       screenshot: screenshotName,

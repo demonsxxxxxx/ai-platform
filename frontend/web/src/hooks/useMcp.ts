@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { authFetch } from "../services/api/fetch";
 import type {
   MCPServerResponse,
@@ -20,6 +20,27 @@ interface MCPListParams {
   q?: string;
 }
 
+const AUTHORIZED_MCP_PAGE_LIMIT = 200;
+const AUTHORIZED_MCP_MAX_PAGES = 1_000;
+
+type McpPageLoader = (params: {
+  skip: number;
+  limit: number;
+}) => Promise<MCPServersResponse>;
+
+export interface McpCatalogRequestToken {
+  scope: string;
+  epoch: number;
+}
+
+export interface McpCatalogState {
+  request: McpCatalogRequestToken;
+  servers: MCPServerResponse[];
+  total: number;
+  isLoading: boolean;
+  error: string | null;
+}
+
 function buildMCPListUrl(params: MCPListParams = {}): string {
   const searchParams = new URLSearchParams();
   if (params.skip !== undefined) searchParams.set("skip", String(params.skip));
@@ -30,38 +51,308 @@ function buildMCPListUrl(params: MCPListParams = {}): string {
   return `${API_BASE}/${query ? `?${query}` : ""}`;
 }
 
+/** Encodes every list behavior input that can change the visible MCP catalog. */
+export function buildMcpRequestScope({
+  enabled,
+  allAuthorizedCatalog,
+  listParams,
+}: {
+  enabled: boolean;
+  allAuthorizedCatalog: boolean;
+  listParams?: MCPListParams;
+}): string {
+  if (!enabled) return "disabled";
+  if (allAuthorizedCatalog) return "ordinary-authorized-catalog";
+  return `admin-page:${JSON.stringify({
+    skip: listParams?.skip ?? null,
+    limit: listParams?.limit ?? null,
+    q: listParams?.q ?? null,
+  })}`;
+}
+
+/** Allocates the next request only when the callback still owns the active scope. */
+export function allocateMcpCatalogRequest(
+  activeScope: string,
+  callbackScope: string,
+  currentEpoch: number,
+): McpCatalogRequestToken | null {
+  if (activeScope !== callbackScope) return null;
+  return { scope: callbackScope, epoch: currentEpoch + 1 };
+}
+
+function isMcpCatalogRequestCurrent(
+  state: McpCatalogState,
+  request: McpCatalogRequestToken,
+): boolean {
+  return (
+    state.request.scope === request.scope && state.request.epoch === request.epoch
+  );
+}
+
+/** Begins a list read while retaining only data from the same visible scope. */
+export function beginMcpCatalogRequest(
+  state: McpCatalogState,
+  request: McpCatalogRequestToken,
+): McpCatalogState {
+  const isSameScope = state.request.scope === request.scope;
+  return {
+    request,
+    servers: isSameScope ? state.servers : [],
+    total: isSameScope ? state.total : 0,
+    isLoading: true,
+    error: null,
+  };
+}
+
+/** Publishes a list result only when it still belongs to the active request. */
+export function publishMcpCatalogSuccess(
+  state: McpCatalogState,
+  request: McpCatalogRequestToken,
+  data: MCPServersResponse,
+): McpCatalogState {
+  if (!isMcpCatalogRequestCurrent(state, request)) return state;
+  return {
+    request,
+    servers: data.servers ?? [],
+    total: data.total,
+    isLoading: false,
+    error: null,
+  };
+}
+
+/** Publishes a list failure only when it still belongs to the active request. */
+export function publishMcpCatalogFailure(
+  state: McpCatalogState,
+  request: McpCatalogRequestToken,
+  allAuthorizedCatalog: boolean,
+  error: string,
+): McpCatalogState {
+  if (!isMcpCatalogRequestCurrent(state, request)) return state;
+  return {
+    request,
+    servers: resolveMcpServersAfterListFailure(
+      state.servers,
+      allAuthorizedCatalog,
+    ),
+    total: allAuthorizedCatalog ? 0 : state.total,
+    isLoading: false,
+    error,
+  };
+}
+
+/** Hides prior-scope catalog data synchronously until the matching request begins. */
+export function resolveVisibleMcpCatalogState(
+  state: McpCatalogState,
+  requestScope: string,
+  enabled: boolean,
+): McpCatalogState {
+  if (state.request.scope === requestScope) return state;
+  return {
+    request: { scope: requestScope, epoch: state.request.epoch },
+    servers: [],
+    total: 0,
+    isLoading: enabled,
+    error: null,
+  };
+}
+
+/** Clear stale entries when a complete authorized catalog read cannot finish. */
+export function resolveMcpServersAfterListFailure(
+  current: MCPServerResponse[],
+  allAuthorizedCatalog: boolean,
+): MCPServerResponse[] {
+  return allAuthorizedCatalog ? [] : current;
+}
+
+/** Load every authorized MCP server without exposing a partial page. */
+export async function collectAllAuthorizedMcpServers(
+  listPage: McpPageLoader,
+): Promise<MCPServersResponse> {
+  const serversByName = new Map<string, MCPServerResponse>();
+  let expectedTotal: number | null = null;
+  let skip = 0;
+
+  for (
+    let pageCount = 0;
+    pageCount < AUTHORIZED_MCP_MAX_PAGES;
+    pageCount += 1
+  ) {
+    const page = await listPage({
+      skip,
+      limit: AUTHORIZED_MCP_PAGE_LIMIT,
+    });
+    if (page.skip !== skip) {
+      throw new Error("authorized_mcp_catalog_offset_mismatch");
+    }
+    if (
+      !Number.isInteger(page.total) ||
+      page.total < 0 ||
+      page.limit !== AUTHORIZED_MCP_PAGE_LIMIT ||
+      page.servers.length > AUTHORIZED_MCP_PAGE_LIMIT
+    ) {
+      throw new Error("authorized_mcp_catalog_invalid_page");
+    }
+    if (expectedTotal === null) {
+      expectedTotal = page.total;
+    } else if (page.total !== expectedTotal) {
+      throw new Error("authorized_mcp_catalog_total_mismatch");
+    }
+
+    const nextSkip = page.skip + page.servers.length;
+    if (nextSkip > expectedTotal) {
+      throw new Error("authorized_mcp_catalog_invalid_progress");
+    }
+    if (page.servers.length === 0) {
+      if (expectedTotal === 0) {
+        return {
+          servers: [],
+          total: 0,
+          skip: 0,
+          limit: AUTHORIZED_MCP_PAGE_LIMIT,
+        };
+      }
+      throw new Error("authorized_mcp_catalog_incomplete");
+    }
+
+    const priorUniqueCount = serversByName.size;
+    for (const server of page.servers) {
+      if (!server.name.trim()) {
+        throw new Error("authorized_mcp_catalog_invalid_server");
+      }
+      serversByName.set(server.name, server);
+    }
+    if (serversByName.size === priorUniqueCount) {
+      throw new Error("authorized_mcp_catalog_no_progress");
+    }
+    if (serversByName.size === expectedTotal) {
+      if (nextSkip !== expectedTotal) {
+        throw new Error("authorized_mcp_catalog_incomplete");
+      }
+      const servers = Array.from(serversByName.values());
+      return {
+        servers,
+        total: servers.length,
+        skip: 0,
+        limit: AUTHORIZED_MCP_PAGE_LIMIT,
+      };
+    }
+    if (nextSkip >= expectedTotal) {
+      throw new Error("authorized_mcp_catalog_incomplete");
+    }
+    skip = nextSkip;
+  }
+
+  throw new Error("authorized_mcp_catalog_page_limit");
+}
+
 export function useMCP(options?: {
   listParams?: MCPListParams;
   enabled?: boolean;
+  allAuthorizedCatalog?: boolean;
 }) {
   const enabled = options?.enabled !== false;
   const listParams = options?.listParams;
-  const [servers, setServers] = useState<MCPServerResponse[]>([]);
-  const [total, setTotal] = useState(0);
-  const [isLoading, setIsLoading] = useState(false);
+  const allAuthorizedCatalog = options?.allAuthorizedCatalog === true;
+  const requestScope = buildMcpRequestScope({
+    enabled,
+    allAuthorizedCatalog,
+    listParams,
+  });
+  const activeRequestScopeRef = useRef(requestScope);
+  const requestEpochRef = useRef(0);
+  if (activeRequestScopeRef.current !== requestScope) {
+    activeRequestScopeRef.current = requestScope;
+    requestEpochRef.current += 1;
+  }
+  const [catalogState, setCatalogState] = useState<McpCatalogState>(() => ({
+    request: { scope: requestScope, epoch: 0 },
+    servers: [],
+    total: 0,
+    isLoading: false,
+    error: null,
+  }));
+  const [operationIsLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const beginCatalogRequest = useCallback(
+    (callbackScope: string): McpCatalogRequestToken | null => {
+      const request = allocateMcpCatalogRequest(
+        activeRequestScopeRef.current,
+        callbackScope,
+        requestEpochRef.current,
+      );
+      if (!request) return null;
+      requestEpochRef.current = request.epoch;
+      setCatalogState((current) => beginMcpCatalogRequest(current, request));
+      return request;
+    },
+    [],
+  );
+  const isActiveCatalogRequest = useCallback((request: McpCatalogRequestToken) => {
+    return (
+      activeRequestScopeRef.current === request.scope &&
+      requestEpochRef.current === request.epoch
+    );
+  }, []);
+  const visibleCatalogState = resolveVisibleMcpCatalogState(
+    catalogState,
+    requestScope,
+    enabled,
+  );
+  const catalogScopeIsCurrent = catalogState.request.scope === requestScope;
+  const servers = visibleCatalogState.servers;
+  const total = visibleCatalogState.total;
+  const isLoading =
+    visibleCatalogState.isLoading ||
+    (catalogScopeIsCurrent && operationIsLoading);
+  const visibleError =
+    visibleCatalogState.error ?? (catalogScopeIsCurrent ? error : null);
 
   // Fetch all MCP servers
   const fetchServers = useCallback(
     async (params?: MCPListParams) => {
       if (!enabled) return;
-      setIsLoading(true);
+      const requestParams = params ?? listParams;
+      const callbackScope = buildMcpRequestScope({
+        enabled,
+        allAuthorizedCatalog,
+        listParams: requestParams,
+      });
+      const request = beginCatalogRequest(callbackScope);
+      if (!request) return;
       setError(null);
       try {
-        const data: MCPServersResponse = await authFetch(
-          buildMCPListUrl(params ?? listParams ?? {}),
+        const data = allAuthorizedCatalog
+          ? await collectAllAuthorizedMcpServers((pageParams) =>
+              authFetch<MCPServersResponse>(buildMCPListUrl(pageParams)),
+            )
+          : await authFetch<MCPServersResponse>(
+              buildMCPListUrl(requestParams ?? {}),
+            );
+        if (!isActiveCatalogRequest(request)) return;
+        setCatalogState((current) =>
+          publishMcpCatalogSuccess(current, request, data),
         );
-        setServers(data.servers ?? []);
-        setTotal(data.total);
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "Failed to fetch MCP servers",
+        if (!isActiveCatalogRequest(request)) return;
+        const message =
+          err instanceof Error ? err.message : "Failed to fetch MCP servers";
+        setCatalogState((current) =>
+          publishMcpCatalogFailure(
+            current,
+            request,
+            allAuthorizedCatalog,
+            message,
+          ),
         );
-      } finally {
-        setIsLoading(false);
       }
     },
-    [enabled, listParams],
+    [
+      allAuthorizedCatalog,
+      beginCatalogRequest,
+      enabled,
+      isActiveCatalogRequest,
+      listParams,
+    ],
   );
 
   // Get single server
@@ -304,14 +595,14 @@ export function useMCP(options?: {
   // Initial load
   useEffect(() => {
     if (!enabled) return;
-    fetchServers(listParams);
-  }, [enabled, fetchServers, listParams]);
+    fetchServers();
+  }, [enabled, fetchServers]);
 
   return {
     servers,
     total,
     isLoading,
-    error,
+    error: visibleError,
     fetchServers,
     getServer,
     createServer,
@@ -322,6 +613,13 @@ export function useMCP(options?: {
     exportServers,
     promoteServer,
     demoteServer,
-    clearError: () => setError(null),
+    clearError: () => {
+      setError(null);
+      setCatalogState((current) =>
+        current.request.scope === activeRequestScopeRef.current
+          ? { ...current, error: null }
+          : current,
+      );
+    },
   };
 }

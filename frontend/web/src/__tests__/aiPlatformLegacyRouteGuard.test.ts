@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 function readSource(relativePath: string): string {
   return readFileSync(new URL(relativePath, import.meta.url), "utf8");
@@ -38,10 +38,6 @@ const legacyRouteChecks: Array<{
     relativePath: "../hooks/useTools.ts",
     bannedPatterns: [/\$\{API_BASE\}\/tools/],
   },
-  {
-    relativePath: "../components/profile/tabs/ProfileToolsTab.tsx",
-    bannedPatterns: [/\$\{API_BASE\}\/tools/],
-  },
 ];
 
 test("active ai-platform source does not contain legacy LambChat runtime routes", () => {
@@ -59,20 +55,22 @@ test("active ai-platform source does not contain legacy LambChat runtime routes"
   assert.deepEqual(violations, []);
 });
 
-test("profile modal does not expose the legacy env-var surface", () => {
-  const profileModalSource = readSource("../components/profile/ProfileModal.tsx");
-
-  assert.doesNotMatch(profileModalSource, /ProfileEnvVarsTab/);
-  assert.doesNotMatch(profileModalSource, /envvars/);
-  assert.doesNotMatch(profileModalSource, /envVars\.title/);
+test("legacy profile modal and its product tabs are removed", () => {
+  for (const relativePath of [
+    "../components/profile/ProfileModal.tsx",
+    "../components/profile/tabs/ProfileInfoTab.tsx",
+    "../components/profile/tabs/ProfileNotificationTab.tsx",
+    "../components/profile/tabs/ProfilePreferencesTab.tsx",
+    "../components/profile/tabs/ProfileToolsTab.tsx",
+    "../components/profile/tabs/ProfileModelsTab.tsx",
+    "../components/profile/tabs/ProfileTermsTab.tsx",
+  ]) {
+    assert.equal(existsSync(new URL(relativePath, import.meta.url)), false, relativePath);
+  }
 });
 
 test("MCP tool endpoints remain allowed through ai-platform /api/mcp routes", () => {
   const useToolsSource = readSource("../hooks/useTools.ts");
-  const profileToolsSource = readSource(
-    "../components/profile/tabs/ProfileToolsTab.tsx",
-  );
 
   assert.match(useToolsSource, /\$\{API_BASE\}\/mcp\/\$\{/);
-  assert.match(profileToolsSource, /\$\{API_BASE\}\/mcp\/\$\{/);
 });

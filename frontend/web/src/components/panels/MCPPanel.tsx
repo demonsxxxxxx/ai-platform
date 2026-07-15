@@ -34,6 +34,7 @@ import type { MCPServerCreate, MCPServerResponse } from "../../types";
 import { MCPServerForm } from "../mcp/MCPServerForm";
 import { canManageMcpLifecycle, isAiAdminUser } from "./capabilityAdmin";
 import { resolveMcpGovernanceState } from "./mcpGovernanceState";
+import { OrdinaryMcpCatalog } from "./OrdinaryMcpCatalog";
 
 function roleQuotaCount(server: MCPServerResponse): number {
   return Object.values(server.role_quotas ?? {}).filter(Boolean).length;
@@ -54,6 +55,7 @@ export function MCPPanel() {
     isAuthenticated,
     isLoading: authLoading,
   } = useAuth();
+  const isAiAdmin = isAiAdminUser(user);
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
   const [permissionDenied, setPermissionDenied] = useState(false);
@@ -89,6 +91,7 @@ export function MCPPanel() {
   } = useMCP({
     enabled: !permissionDenied,
     listParams,
+    allAuthorizedCatalog: !isAiAdmin,
   });
   editorLoadingRef.current = isLoading;
 
@@ -97,7 +100,6 @@ export function MCPPanel() {
       setPermissionDenied(true);
     }
   }, [error]);
-  const isAiAdmin = isAiAdminUser(user);
   const canManageMcp = canManageMcpLifecycle({
     hasExplicitMcpPermission: hasAnyPermission([
       Permission.MCP_ADMIN,
@@ -227,6 +229,16 @@ export function MCPPanel() {
       toast.success(t("mcp.admin.deleteSuccess"));
     }
   };
+
+  if (!isAiAdmin) {
+    return (
+      <OrdinaryMcpCatalog
+        servers={servers}
+        isLoading={directoryIsLoading}
+        listError={error}
+      />
+    );
+  }
 
   if (mcpGovernance.pageState === "loading") {
     return (

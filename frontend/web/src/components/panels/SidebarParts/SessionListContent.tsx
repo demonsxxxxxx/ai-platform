@@ -1,6 +1,5 @@
 import {
   ChevronDown,
-  ChevronsUpDown,
   Search,
   MessageSquarePlus,
   LayoutGrid,
@@ -29,8 +28,8 @@ import {
 import { LibreChatPanelSection } from "../../../librechat-ui/Panel";
 import {
   canAccessWorkbenchItem,
-  getCanonicalCompanyRoleCode,
 } from "../../governance/workbenchAccessPolicy";
+import { isAiAdminUser } from "../capabilityAdmin";
 
 export interface SessionActions {
   onDeleteSession: (id: string) => void;
@@ -45,12 +44,9 @@ interface SessionListContentProps {
     roles?: string[];
     is_admin?: boolean;
   } | null;
-  imgError: boolean;
-  onImgError: () => void;
   onCollapse: () => void;
   onNewSession: () => void;
   onOpenSearch: () => void;
-  onShowProfile: () => void;
   onSetScrollEl: (el: HTMLDivElement | null) => void;
   uncategorizedSessions: BackendSession[];
   isUncategorizedLoading: boolean;
@@ -63,17 +59,13 @@ interface SessionListContentProps {
   sessionActions: SessionActions;
   isChatsCollapsed: boolean;
   onToggleChatsCollapsed: () => void;
-  showFooter?: boolean;
 }
 
 export function SessionListContent({
   user,
-  imgError,
-  onImgError,
   onCollapse,
   onNewSession,
   onOpenSearch,
-  onShowProfile,
   onSetScrollEl,
   uncategorizedSessions,
   isUncategorizedLoading,
@@ -86,12 +78,17 @@ export function SessionListContent({
   sessionActions,
   isChatsCollapsed,
   onToggleChatsCollapsed,
-  showFooter = true,
 }: SessionListContentProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const activeNavItem = getWorkbenchNavItemFromPathname(location.pathname);
+  const isAiAdmin = isAiAdminUser(
+    user ? { roles: user.roles ?? [], is_admin: user.is_admin } : null,
+  );
+  const skillsNavigationLabel = isAiAdmin
+    ? t("nav.skillManagement")
+    : t("skills.available.title");
 
   const chatsUnreadCount = getUnreadCountForUncategorized({
     loadedSessions: uncategorizedSessions,
@@ -113,7 +110,7 @@ export function SessionListContent({
     {
       key: "skills",
       icon: Package,
-      label: t("nav.skillManagement"),
+      label: skillsNavigationLabel,
       onClick: () => navigate("/skills"),
     },
     {
@@ -371,42 +368,6 @@ export function SessionListContent({
         </div>
       </div>
 
-      {/* Footer */}
-      {showFooter && (
-        <div className="shrink-0 border-t border-[var(--theme-border)] px-2 py-1">
-          <div
-            onClick={onShowProfile}
-            className="group flex items-center rounded-lg py-3 px-2 w-full hover:bg-[var(--theme-sidebar-panel-muted)] transition cursor-pointer"
-          >
-            <div className="mr-3 h-8 w-8 shrink-0 overflow-hidden rounded-full ring-1 ring-[var(--theme-border-strong)] transition group-hover:ring-[var(--theme-primary)]">
-              {user?.avatar_url && !imgError ? (
-                <img
-                  src={user.avatar_url}
-                  alt={user?.username || "User"}
-                  className="w-full h-full object-cover rounded-full"
-                  onError={onImgError}
-                  draggable={false}
-                />
-              ) : (
-                <div className="flex h-full w-full items-center justify-center rounded-full bg-[var(--theme-primary)]">
-                  <span className="text-xs font-semibold text-[var(--theme-primary-foreground)]">
-                    {user?.username?.charAt(0).toUpperCase() || "U"}
-                  </span>
-                </div>
-              )}
-            </div>
-            <div className="flex-1 text-left min-w-0">
-              <div className="truncate text-sm font-medium text-[var(--theme-text)]">
-                {user?.username || "User"}
-              </div>
-              <div className="whitespace-nowrap text-xs text-[var(--theme-text-secondary)]">
-                {getCanonicalCompanyRoleCode(user)}
-              </div>
-            </div>
-            <ChevronsUpDown className="size-4 shrink-0 text-[var(--theme-text-secondary)]" />
-          </div>
-        </div>
-      )}
     </div>
   );
 }
