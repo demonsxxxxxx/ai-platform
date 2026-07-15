@@ -1016,6 +1016,63 @@ async def test_principal_agent_projection_filters_exact_scope_and_audits_admin_b
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("is_admin", [False, True])
+async def test_principal_agent_projection_hides_archived_default_skill_for_every_principal(monkeypatch, is_admin):
+    async def fake_list_agents(conn, *, tenant_id):
+        return [
+            {"id": "general-agent", "default_skill_id": "general-chat", "status": "active"},
+            {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer", "status": "active"},
+        ]
+
+    async def fake_list_distributions(conn, **kwargs):
+        return [
+            {
+                "capability_kind": "skill",
+                "capability_id": "general-chat",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+                "metadata_json": {},
+            },
+            {
+                "capability_kind": "skill",
+                "capability_id": "qa-file-reviewer",
+                "status": "disabled",
+                "visible_to_user": False,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+                "metadata": {"archived_at": "2026-07-15T00:00:00.000Z"},
+            },
+        ]
+
+    audits = []
+
+    async def fake_append_audit(conn, **kwargs):
+        audits.append(kwargs)
+        return "audit"
+
+    monkeypatch.setattr(repositories, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(repositories, "list_capability_distribution_rows", fake_list_distributions)
+    monkeypatch.setattr(repositories, "append_audit_log", fake_append_audit)
+
+    rows = await repositories.list_principal_lambchat_agents(
+        object(),
+        tenant_id="tenant-a",
+        actor_user_id="admin-a" if is_admin else "user-a",
+        department_id="platform" if is_admin else "qa",
+        roles=["admin"] if is_admin else ["qa_operator"],
+        is_admin=is_admin,
+        permissions=["chat:read"],
+    )
+
+    assert [row["id"] for row in rows] == ["general-agent"]
+    assert [audit["target_id"] for audit in audits] == (["general-chat"] if is_admin else [])
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("previous_status", ["draft", "reviewed", "disabled", "deprecated"])
 async def test_principal_agent_projection_hides_non_runnable_rollout_selected_previous_version(
     monkeypatch,

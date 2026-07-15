@@ -2415,6 +2415,73 @@ async def test_chat_stream_filters_confirmation_suggestions_through_principal_pr
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_never_suggests_archived_default_skill_from_principal_projection(monkeypatch):
+    async def fake_list_agents(conn, *, tenant_id):
+        assert tenant_id == "tenant-a"
+        return [
+            {"id": "baoyu-translate", "default_skill_id": "baoyu-translate", "status": "active"},
+            {"id": "general-agent", "default_skill_id": "general-chat", "status": "active"},
+            {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer", "status": "active"},
+        ]
+
+    async def fake_list_distributions(conn, **kwargs):
+        return [
+            {
+                "capability_kind": "skill",
+                "capability_id": "baoyu-translate",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+                "metadata_json": {},
+            },
+            {
+                "capability_kind": "skill",
+                "capability_id": "general-chat",
+                "status": "active",
+                "visible_to_user": True,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+                "metadata_json": {},
+            },
+            {
+                "capability_kind": "skill",
+                "capability_id": "qa-file-reviewer",
+                "status": "disabled",
+                "visible_to_user": False,
+                "scope_mode": "allowlist",
+                "department_ids": [],
+                "allowed_roles": [],
+                "metadata_json": {"archived_at": "2026-07-15T00:00:00.000Z"},
+            },
+        ]
+
+    async def fake_append_audit(conn, **kwargs):
+        return "audit"
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "list_lambchat_agents", fake_list_agents)
+    monkeypatch.setattr(repository_module, "list_capability_distribution_rows", fake_list_distributions)
+    monkeypatch.setattr(repository_module, "append_audit_log", fake_append_audit)
+
+    response = await chat_stream(
+        ChatStreamRequest(
+            message="处理一下这个文件",
+            attachments=[{"key": "file_docx", "name": "demo.docx"}],
+        ),
+        principal=principal(department_id="platform", roles=["admin"]),
+    )
+
+    assert response.status == "needs_confirmation"
+    assert [item.capability_id for item in response.suggestions] == [
+        "document_translation",
+        "general_chat",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_chat_stream_records_intent_decision_and_confirmed_event(monkeypatch):
     events = []
     run_inputs = []

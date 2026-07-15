@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import json
 from typing import Any, Iterable, Literal
 
 from app.auth import normalize_roles
@@ -49,6 +50,17 @@ class CapabilityDistributionSubject:
     def allowed_roles(self) -> list[str]:
         value = (self.distribution or {}).get("allowed_roles")
         return [str(item) for item in value if str(item)] if isinstance(value, list) else []
+
+    @property
+    def is_archived(self) -> bool:
+        """Return whether authoritative distribution metadata carries an archive marker."""
+
+        distribution = self.distribution or {}
+        for key in ("metadata_json", "metadata"):
+            metadata = _distribution_metadata_dict(distribution.get(key))
+            if "archived_at" in metadata:
+                return True
+        return False
 
 
 @dataclass(slots=True)
@@ -125,6 +137,17 @@ def normalize_capability_roles(roles: Iterable[str]) -> list[str]:
     return normalize_roles(roles)
 
 
+def _distribution_metadata_dict(value: Any) -> dict[str, Any]:
+    """Parse distribution metadata defensively without trusting malformed input."""
+
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
 def _decision(subject: CapabilityDistributionSubject, *, allowed: bool, reason: str, admin_bypass: bool = False) -> CapabilityAccessDecision:
     return CapabilityAccessDecision(
         visible=allowed,
@@ -147,6 +170,8 @@ def resolve_capability_access(
 
     if subject.distribution is None:
         return _decision(subject, allowed=False, reason="distribution_missing")
+    if subject.is_archived:
+        return _decision(subject, allowed=False, reason="distribution_archived")
     if subject.capability_kind == "mcp_tool":
         source_kind, separator, parent_id = str(subject.inherited_distribution_source or "").strip().partition(":")
         if source_kind != "mcp_server" or not separator or not parent_id.strip():
