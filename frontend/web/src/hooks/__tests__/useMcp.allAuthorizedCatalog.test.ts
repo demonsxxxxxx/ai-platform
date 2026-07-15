@@ -3,8 +3,12 @@ import test from "node:test";
 
 import type { MCPServerResponse, MCPServersResponse } from "../../types";
 import {
+  beginMcpCatalogRequest,
+  buildMcpRequestScope,
   collectAllAuthorizedMcpServers,
+  publishMcpCatalogSuccess,
   resolveMcpServersAfterListFailure,
+  resolveVisibleMcpCatalogState,
 } from "../useMcp.ts";
 
 function server(name: string): MCPServerResponse {
@@ -87,4 +91,102 @@ test("complete authorized MCP catalog clears stale entries after a failed read",
 
   assert.deepEqual(resolveMcpServersAfterListFailure(current, true), []);
   assert.equal(resolveMcpServersAfterListFailure(current, false), current);
+});
+
+test("a delayed ordinary catalog result cannot overwrite a newer admin page", () => {
+  const ordinaryScope = buildMcpRequestScope({
+    enabled: true,
+    allAuthorizedCatalog: true,
+  });
+  const adminScope = buildMcpRequestScope({
+    enabled: true,
+    allAuthorizedCatalog: false,
+    listParams: { skip: 20, limit: 20, q: "newer" },
+  });
+  const ordinaryRequest = { scope: ordinaryScope, epoch: 1 };
+  const adminRequest = { scope: adminScope, epoch: 2 };
+  let state = beginMcpCatalogRequest(
+    {
+      request: { scope: ordinaryScope, epoch: 0 },
+      servers: [],
+      total: 0,
+      isLoading: false,
+      error: null,
+    },
+    ordinaryRequest,
+  );
+  state = beginMcpCatalogRequest(state, adminRequest);
+
+  state = publishMcpCatalogSuccess(
+    state,
+    ordinaryRequest,
+    page([server("ordinary")], 1, 0, 200),
+  );
+
+  assert.equal(state.request.scope, adminScope);
+  assert.deepEqual(state.servers, []);
+  assert.equal(state.isLoading, true);
+});
+
+test("a delayed admin page cannot overwrite a newer ordinary catalog result", () => {
+  const adminScope = buildMcpRequestScope({
+    enabled: true,
+    allAuthorizedCatalog: false,
+    listParams: { skip: 0, limit: 20, q: "older" },
+  });
+  const ordinaryScope = buildMcpRequestScope({
+    enabled: true,
+    allAuthorizedCatalog: true,
+  });
+  const adminRequest = { scope: adminScope, epoch: 1 };
+  const ordinaryRequest = { scope: ordinaryScope, epoch: 2 };
+  let state = beginMcpCatalogRequest(
+    {
+      request: { scope: adminScope, epoch: 0 },
+      servers: [],
+      total: 0,
+      isLoading: false,
+      error: null,
+    },
+    adminRequest,
+  );
+  state = beginMcpCatalogRequest(state, ordinaryRequest);
+
+  state = publishMcpCatalogSuccess(
+    state,
+    adminRequest,
+    page([server("admin")], 1, 0, 20),
+  );
+
+  assert.equal(state.request.scope, ordinaryScope);
+  assert.deepEqual(state.servers, []);
+  assert.equal(state.isLoading, true);
+});
+
+test("a changed MCP request scope exposes no prior servers before its request starts", () => {
+  const adminScope = buildMcpRequestScope({
+    enabled: true,
+    allAuthorizedCatalog: false,
+    listParams: { skip: 0, limit: 20, q: "admin" },
+  });
+  const ordinaryScope = buildMcpRequestScope({
+    enabled: true,
+    allAuthorizedCatalog: true,
+  });
+  const visible = resolveVisibleMcpCatalogState(
+    {
+      request: { scope: adminScope, epoch: 3 },
+      servers: [server("admin-only")],
+      total: 1,
+      isLoading: false,
+      error: null,
+    },
+    ordinaryScope,
+    true,
+  );
+
+  assert.deepEqual(visible.servers, []);
+  assert.equal(visible.total, 0);
+  assert.equal(visible.isLoading, true);
+  assert.equal(visible.error, null);
 });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Server, Wrench } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { mcpApi } from "../../services/api/mcp";
@@ -13,6 +13,82 @@ interface OrdinaryMcpCatalogProps {
   listError: string | null;
 }
 
+export const ORDINARY_MCP_TOOL_DISCOVERY_CONCURRENCY = 6;
+
+export interface OrdinaryMcpToolDiscoveryResult {
+  toolsByServer: Record<string, MCPToolInfo[]>;
+  unavailable: boolean;
+}
+
+export interface OrdinaryMcpToolDiscoveryState {
+  generation: number;
+  toolsByServer: Record<string, MCPToolInfo[]>;
+  toolsLoading: boolean;
+  toolsUnavailable: boolean;
+}
+
+/** Collects all public tool descriptions with a bounded number of active requests. */
+// eslint-disable-next-line react-refresh/only-export-components -- shared with pure discovery coverage.
+export async function collectOrdinaryMcpTools(
+  serverNames: string[],
+  discoverTools: (serverName: string) => Promise<MCPToolInfo[]>,
+): Promise<OrdinaryMcpToolDiscoveryResult> {
+  const uniqueServerNames = Array.from(new Set(serverNames)).filter(Boolean);
+  const toolsByServer: Record<string, MCPToolInfo[]> = {};
+  let unavailable = false;
+  let nextIndex = 0;
+  const workerCount = Math.min(
+    ORDINARY_MCP_TOOL_DISCOVERY_CONCURRENCY,
+    uniqueServerNames.length,
+  );
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < uniqueServerNames.length) {
+        const serverName = uniqueServerNames[nextIndex];
+        nextIndex += 1;
+        try {
+          toolsByServer[serverName] = await discoverTools(serverName);
+        } catch {
+          unavailable = true;
+        }
+      }
+    }),
+  );
+
+  return { toolsByServer, unavailable };
+}
+
+/** Starts a new atomic ordinary MCP tool-discovery generation. */
+// eslint-disable-next-line react-refresh/only-export-components -- shared with pure discovery coverage.
+export function beginOrdinaryMcpToolDiscovery(
+  generation: number,
+  serverNames: string[],
+): OrdinaryMcpToolDiscoveryState {
+  return {
+    generation,
+    toolsByServer: {},
+    toolsLoading: serverNames.length > 0,
+    toolsUnavailable: false,
+  };
+}
+
+/** Publishes a completed tool-discovery result only for its active generation. */
+// eslint-disable-next-line react-refresh/only-export-components -- shared with pure discovery coverage.
+export function publishOrdinaryMcpToolDiscovery(
+  state: OrdinaryMcpToolDiscoveryState,
+  generation: number,
+  result: OrdinaryMcpToolDiscoveryResult,
+): OrdinaryMcpToolDiscoveryState {
+  if (state.generation !== generation) return state;
+  return {
+    generation,
+    toolsByServer: result.toolsByServer,
+    toolsLoading: false,
+    toolsUnavailable: result.unavailable,
+  };
+}
+
 /** Read-only MCP directory for ordinary company accounts. */
 export function OrdinaryMcpCatalog({
   servers,
@@ -20,55 +96,46 @@ export function OrdinaryMcpCatalog({
   listError,
 }: OrdinaryMcpCatalogProps) {
   const { t } = useTranslation();
-  const [toolsByServer, setToolsByServer] = useState<Record<string, MCPToolInfo[]>>(
-    {},
-  );
-  const [toolsLoading, setToolsLoading] = useState(false);
-  const [toolsUnavailable, setToolsUnavailable] = useState(false);
+  const discoveryGenerationRef = useRef(0);
+  const [toolDiscovery, setToolDiscovery] =
+    useState<OrdinaryMcpToolDiscoveryState>(() =>
+      beginOrdinaryMcpToolDiscovery(0, []),
+    );
   const serverNames = useMemo(
     () => servers.map((server) => server.name).sort(),
     [servers],
   );
 
   useEffect(() => {
+    const generation = discoveryGenerationRef.current + 1;
+    discoveryGenerationRef.current = generation;
+    setToolDiscovery(beginOrdinaryMcpToolDiscovery(generation, serverNames));
     if (serverNames.length === 0) {
-      setToolsByServer({});
-      setToolsUnavailable(false);
       return;
     }
 
-    let cancelled = false;
-    setToolsLoading(true);
-    setToolsUnavailable(false);
-    void Promise.all(
-      serverNames.map(async (serverName) => {
-        try {
-          const response = await mcpApi.discoverTools(serverName);
-          return [serverName, response.tools] as const;
-        } catch {
-          return [serverName, null] as const;
-        }
-      }),
-    ).then((results) => {
-      if (cancelled) return;
-      const nextTools: Record<string, MCPToolInfo[]> = {};
-      let unavailable = false;
-      for (const [serverName, tools] of results) {
-        if (tools === null) {
-          unavailable = true;
-          continue;
-        }
-        nextTools[serverName] = tools;
-      }
-      setToolsByServer(nextTools);
-      setToolsUnavailable(unavailable);
-      setToolsLoading(false);
-    });
-
-    return () => {
-      cancelled = true;
-    };
+    void collectOrdinaryMcpTools(serverNames, async (serverName) => {
+      const response = await mcpApi.discoverTools(serverName);
+      return response.tools;
+    })
+      .then((result) => {
+        if (discoveryGenerationRef.current !== generation) return;
+        setToolDiscovery((current) =>
+          publishOrdinaryMcpToolDiscovery(current, generation, result),
+        );
+      })
+      .catch(() => {
+        if (discoveryGenerationRef.current !== generation) return;
+        setToolDiscovery((current) =>
+          publishOrdinaryMcpToolDiscovery(current, generation, {
+            toolsByServer: {},
+            unavailable: true,
+          }),
+        );
+      });
   }, [serverNames]);
+
+  const { toolsByServer, toolsLoading, toolsUnavailable } = toolDiscovery;
 
   const catalog = servers
     .map((server) =>
