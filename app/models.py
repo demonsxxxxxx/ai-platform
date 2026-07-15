@@ -590,6 +590,39 @@ class AuthContextBootstrapRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     nonce: str = Field(min_length=43, max_length=512, pattern=r"^[A-Za-z0-9_-]+$")
+    protocol_version: Literal[1, 2] = 1
+    browser_incarnation: str | None = Field(
+        default=None,
+        min_length=43,
+        max_length=43,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    generation: int | None = Field(default=None, ge=1, le=(2**53) - 1)
+    rotation_ticket: str | None = Field(
+        default=None,
+        min_length=43,
+        max_length=43,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+
+    @model_validator(mode="after")
+    def validate_protocol_fields(self):
+        """Keep V1 wire compatibility while requiring the complete V2 identity."""
+
+        if self.protocol_version == 1:
+            if any(
+                value is not None
+                for value in (
+                    self.browser_incarnation,
+                    self.generation,
+                    self.rotation_ticket,
+                )
+            ):
+                raise ValueError("V1 bootstrap cannot carry V2 identity fields")
+            return self
+        if self.browser_incarnation is None or self.generation is None:
+            raise ValueError("V2 bootstrap requires incarnation and generation")
+        return self
 
 
 class OAuthCallbackRequest(BaseModel):

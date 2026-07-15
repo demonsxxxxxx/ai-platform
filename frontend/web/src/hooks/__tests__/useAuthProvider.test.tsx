@@ -1481,3 +1481,68 @@ test("AuthPage renders actionable localized copy when secure browser auth coordi
     await mounted.cleanup();
   }
 });
+
+test("reversed stale cookie arrival repairs and retries exactly one idempotent principal GET", async () => {
+  let cookieJar = "current-generation";
+  let bootstrapCalls = 0;
+  let principalCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.bootstrapAuthContext = async () => {
+      bootstrapCalls += 1;
+      // The first post-reversal bootstrap is the ordinary ensure. The second
+      // is the typed stale repair; model delayed Set-Cookie only there.
+      if (bootstrapCalls === 3) cookieJar = "current-generation";
+    };
+    api.getCurrentUser = async () => {
+      principalCalls += 1;
+      if (principalCalls === 1) return authUser("initial-user", "tenant-a");
+      if (cookieJar === "old-generation") {
+        throw new ApiRequestError("stale auth context", 409, "auth_context_stale");
+      }
+      return authUser("repaired-user", "tenant-b");
+    };
+  });
+  try {
+    await mounted.flush();
+    // A late old Set-Cookie physically wins in the jar after the initial
+    // principal was projected; it has no server authority in the V2 protocol.
+    cookieJar = "old-generation";
+    let outcome: Awaited<ReturnType<typeof mounted.auth.refreshUser>>;
+    await mounted.React.act(async () => {
+      outcome = await mounted.auth.refreshUser();
+      await Promise.resolve();
+    });
+
+    assert.equal(outcome!.status, "completed");
+    assert.equal(mounted.auth.user?.id, "repaired-user");
+    assert.equal(principalCalls, 3);
+    assert.equal(bootstrapCalls, 3);
+    assert.equal(cookieJar, "current-generation");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("typed stale mutation failure never replays login POST", async () => {
+  let loginCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => authUser("initial-user", "tenant-a");
+    api.login = async () => {
+      loginCalls += 1;
+      throw new ApiRequestError("stale auth context", 409, "auth_context_stale");
+    };
+  });
+  try {
+    await mounted.flush();
+    await mounted.React.act(async () => {
+      await assert.rejects(
+        () => mounted.auth.login({ username: "test-user", password: "test-password" }),
+        (error: unknown) => error instanceof ApiRequestError && error.code === "auth_context_stale",
+      );
+      await Promise.resolve();
+    });
+    assert.equal(loginCalls, 1);
+  } finally {
+    await mounted.cleanup();
+  }
+});

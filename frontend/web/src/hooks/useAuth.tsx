@@ -123,6 +123,10 @@ function isUnauthenticatedError(error: unknown): boolean {
   );
 }
 
+function isAuthContextStale(error: unknown): boolean {
+  return error instanceof ApiRequestError && error.code === "auth_context_stale";
+}
+
 // 认证上下文类型
 interface AuthContextType extends AuthState {
   login: (
@@ -272,14 +276,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return isCurrentAuthOperation(owner);
   }, [applyLoggedOut, isCurrentAuthOperation]);
 
+  const getCurrentUserWithOneStaleRepair = useCallback(async (
+    owner: AuthOperationOwner,
+  ): Promise<User> => {
+    try {
+      return await authApi.getCurrentUser({ signal: owner.abortController.signal });
+    } catch (error) {
+      if (!isAuthContextStale(error) || !isCurrentAuthOperation(owner)) {
+        throw error;
+      }
+      // A stale HttpOnly cookie can only be repaired through the persisted
+      // current coordinator state. This retries one idempotent principal GET;
+      // callers never replay login/logout/OAuth or another mutation POST.
+      await ensureBrowserAuthContext(owner.abortController.signal, {
+        forceBootstrap: true,
+      });
+      if (!isCurrentAuthOperation(owner)) {
+        throw owner.abortController.signal.reason
+          ?? new DOMException("Auth operation superseded", "AbortError");
+      }
+      return authApi.getCurrentUser({ signal: owner.abortController.signal });
+    }
+  }, [isCurrentAuthOperation]);
+
   const hydrateOwnedUser = useCallback(async (
     owner: AuthOperationOwner,
     failClosedOnAnyError: boolean,
   ): Promise<AuthOperationOutcome> => {
     try {
-      const currentUser = await authApi.getCurrentUser({
-        signal: owner.abortController.signal,
-      });
+      const currentUser = await getCurrentUserWithOneStaleRepair(owner);
       if (!applyAuthenticatedUser(currentUser, owner)) {
         return cancelledAuthOperation();
       }
@@ -295,7 +320,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } finally {
       if (isCurrentAuthOperation(owner)) setIsLoading(false);
     }
-  }, [applyAuthenticatedUser, applyLoggedOut, isCurrentAuthOperation]);
+  }, [
+    applyAuthenticatedUser,
+    applyLoggedOut,
+    getCurrentUserWithOneStaleRepair,
+    isCurrentAuthOperation,
+  ]);
 
   const refreshUser = useCallback(async (): Promise<AuthOperationOutcome> => {
     const owner = beginAuthOperation();
@@ -329,9 +359,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         await ensureBrowserAuthContext(owner.abortController.signal);
         if (!isCurrentAuthOperation(owner)) return;
-        const currentUser = await authApi.getCurrentUser({
-          signal: owner.abortController.signal,
-        });
+        const currentUser = await getCurrentUserWithOneStaleRepair(owner);
         if (!isCurrentAuthOperation(owner)) return;
         if (!hadSessionMarker && !establishLocalSession(owner)) return;
         applyAuthenticatedUser(currentUser, owner);
@@ -353,6 +381,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     applyLoggedOut,
     beginAuthOperation,
     establishLocalSession,
+    getCurrentUserWithOneStaleRepair,
     invalidateAuthOperation,
     isCurrentAuthOperation,
   ]);
@@ -418,9 +447,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         sessionEstablished = true;
         if (!establishLocalSession(owner)) return cancelledAuthOperation();
-        const currentUser = await authApi.getCurrentUser({
-          signal: owner.abortController.signal,
-        });
+        const currentUser = await getCurrentUserWithOneStaleRepair(owner);
         if (!applyAuthenticatedUser(currentUser, owner)) {
           return cancelledAuthOperation();
         }
@@ -446,6 +473,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       applyAuthenticatedUser,
       beginAuthOperation,
       establishLocalSession,
+      getCurrentUserWithOneStaleRepair,
       isCurrentAuthOperation,
       rollbackOwnedSession,
     ],
@@ -511,9 +539,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         sessionEstablished = true;
         if (!establishLocalSession(owner)) return cancelledAuthOperation();
-        const currentUser = await authApi.getCurrentUser({
-          signal: owner.abortController.signal,
-        });
+        const currentUser = await getCurrentUserWithOneStaleRepair(owner);
         if (!applyAuthenticatedUser(currentUser, owner)) {
           return cancelledAuthOperation();
         }
@@ -533,6 +559,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       applyAuthenticatedUser,
       beginAuthOperation,
       establishLocalSession,
+      getCurrentUserWithOneStaleRepair,
       isCurrentAuthOperation,
       rollbackOwnedSession,
     ],

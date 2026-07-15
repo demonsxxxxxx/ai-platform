@@ -8,11 +8,15 @@ from app.auth import AuthPrincipal, principal_to_response, require_principal
 from app.auth_sessions import (
     AuthContextError,
     AuthOperation,
+    auth_context_v2_cookie_for_identity,
     auth_context_handle_for_nonce,
     begin_auth_operation,
+    begin_auth_operation_for_cookie,
     bootstrap_auth_context,
+    bootstrap_auth_context_v2,
     commit_auth_operation,
     consume_oauth_state,
+    consume_oauth_state_for_cookie,
     issue_oauth_state,
     principal_snapshot,
 )
@@ -185,15 +189,15 @@ def _ai_permissions_for_login(user_info: dict[str, Any], roles: list[str]) -> li
     )
 
 
-def _context_handle_from_request(request: Request) -> str:
+def _context_cookie_from_request(request: Request) -> str:
     settings = get_settings()
-    context_handle = request.cookies.get(
+    cookie_value = request.cookies.get(
         getattr(settings, "auth_context_cookie_name", "ai_platform_auth_context"),
         "",
     )
-    if not context_handle:
+    if not cookie_value:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth_context_missing")
-    return context_handle
+    return cookie_value
 
 
 def _raise_commit_failure(status_value: str) -> None:
@@ -208,7 +212,12 @@ def _raise_commit_failure(status_value: str) -> None:
 
 async def _begin_browser_operation(request: Request, kind: str) -> AuthOperation:
     try:
-        return await begin_auth_operation(_context_handle_from_request(request), kind, get_settings())
+        cookie_value = _context_cookie_from_request(request)
+        # Preserve the V1 route call seam used by existing Web Locks clients
+        # and tests. V2 delegates all validation and mutation to one Lua CAS.
+        if cookie_value.startswith("v2."):
+            return await begin_auth_operation_for_cookie(cookie_value, kind, get_settings())
+        return await begin_auth_operation(cookie_value, kind, get_settings())
     except AuthContextError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
 
@@ -225,7 +234,7 @@ async def bootstrap(
     request: AuthContextBootstrapRequest,
     response: Response,
     http_request: Request,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Create or recover the stable non-principal browser auth context."""
 
     settings = get_settings()
@@ -235,6 +244,45 @@ async def bootstrap(
             getattr(settings, "auth_context_cookie_name", "ai_platform_auth_context"),
             "",
         )
+        if request.protocol_version == 2:
+            result = await bootstrap_auth_context_v2(
+                request.nonce,
+                request.browser_incarnation or "",
+                request.generation or 0,
+                supplied_context,
+                settings,
+                rotation_ticket=request.rotation_ticket,
+            )
+            if result.status == "rebootstrap_required":
+                return {
+                    "status": result.status,
+                    "protocol_version": 2,
+                    "generation": result.identity.generation if result.identity else request.generation,
+                    "rotation_ticket": result.rotation_ticket,
+                }
+            if result.identity is None:
+                raise AuthContextError("auth_context_unavailable", 503)
+            if result.set_cookie:
+                response.set_cookie(
+                    getattr(settings, "auth_context_cookie_name", "ai_platform_auth_context"),
+                    auth_context_v2_cookie_for_identity(result.identity, settings),
+                    max_age=result.cookie_max_age_seconds,
+                    httponly=True,
+                    samesite="lax",
+                    secure=bool(
+                        getattr(
+                            settings,
+                            "auth_context_cookie_secure",
+                            settings.ai_session_cookie_secure,
+                        )
+                    ),
+                    path="/",
+                )
+            return {
+                "status": "ready",
+                "protocol_version": 2,
+                "generation": result.identity.generation,
+            }
         await bootstrap_auth_context(
             context_handle,
             request.nonce,
@@ -299,9 +347,12 @@ async def oauth_callback(
     """Consume callback state but fail closed until a provider bridge is configured."""
 
     provider = _oauth_provider(provider)
-    context_handle = _context_handle_from_request(http_request)
+    cookie_value = _context_cookie_from_request(http_request)
     try:
-        await consume_oauth_state(context_handle, provider, request.state, get_settings())
+        if cookie_value.startswith("v2."):
+            await consume_oauth_state_for_cookie(cookie_value, provider, request.state, get_settings())
+        else:
+            await consume_oauth_state(cookie_value, provider, request.state, get_settings())
     except AuthContextError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
     raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="oauth_provider_unavailable")
