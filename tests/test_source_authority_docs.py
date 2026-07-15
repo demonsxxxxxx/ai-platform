@@ -254,6 +254,12 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
         section = document.split(marker, 1)[1].split("\n## ", 1)[0]
         return [" ".join(bullet.split()) for bullet in section.split("\n- ")[1:]]
 
+    def normalize_bullet(bullet: str) -> str:
+        return " ".join(re.sub(r"[`*_]", "", bullet).split())
+
+    def normalized_section_bullets(document: str, heading: str) -> tuple[str, ...]:
+        return tuple(normalize_bullet(bullet) for bullet in section_bullets(document, heading))
+
     def section_parts(document: str, heading: str) -> tuple[str, str, str, str]:
         marker = f"## {heading}\n"
         assert marker in document
@@ -264,6 +270,7 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
     def replace_clause(document: str, heading: str, clause: str, replacement: str) -> str:
         before, marker, section, after = section_parts(document, heading)
         assert any(clause in bullet for bullet in section_bullets(document, heading))
+        original_bullets = normalized_section_bullets(document, heading)
         pattern = r"\s+".join(re.escape(part) for part in clause.split())
         mutated_section, replacements = re.subn(pattern, replacement, section, count=1)
         assert replacements == 1, clause
@@ -271,15 +278,18 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
         mutated_document = f"{before}{marker}{mutated_section}\n## {after}"
         assert mutated_document != document
         assert any(replacement in bullet for bullet in section_bullets(mutated_document, heading))
+        assert normalized_section_bullets(mutated_document, heading) != original_bullets
         return mutated_document
 
     def append_section_bullet(document: str, heading: str, bullet: str) -> str:
         before, marker, section, after = section_parts(document, heading)
         assert bullet not in section
+        original_bullets = normalized_section_bullets(document, heading)
         mutated_section = f"{section}\n- {bullet}"
         mutated_document = f"{before}{marker}{mutated_section}\n## {after}"
         assert mutated_document != document
         assert " ".join(bullet.split()) in section_bullets(mutated_document, heading)
+        assert normalized_section_bullets(mutated_document, heading) != original_bullets
         return mutated_document
 
     def replace_once(document: str, original: str, replacement: str) -> str:
@@ -456,72 +466,50 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
         ),
     )
 
+    controlled_bullet_inventory = {
+        "Work Lanes, Preflight, And Evidence Ownership": (
+            "Before delegation, the controller must make one task inventory: the intended outcome, current subject, writable paths, required checks, and the single owner of each item. Eliminate duplicate work before dispatch; do not retain duplicate tests, searches, or probes merely to occupy agents.",
+            "Every write lane fails closed before editing. Record expected base and expected starting head. Require origin/main == expected base, merge-base == expected base, and HEAD == expected starting head; verify clean status and exact writable paths. On any mismatch, do not edit and fail closed. A dirty coordination root is never an implementation source or deliverable; it may only be inspected as a fail-closed comparison.",
+            "Persistent implementation tasks may only make source edits and run affected tests, commit, push, and open a Draft PR from that clean isolated worktree and explicit write envelope; an implementer cannot be the final reviewer. No subagent or ordinary persistent task may access browser/user credentials or gain broad remote mutation, cleanup, deployment, or final authority.",
+            "Disposable agents are read-only context compressors. They may summarize large logs or test output and search peripheral material, but never perform remote writes, deployment, cleanup, credential access, or final release decisions.",
+            "Evidence has a default owner: the implementer runs affected tests, compile, and git diff --check; CI owns standard regression; the reviewer owns code review plus a small number of high-risk attack or concurrency probes; the controller fills only uncovered final gates.",
+        ),
+        "Delegation Rules": (
+            "Delegate only when the active user request, repository rules, and available delegation tool policy permit sub-agent work.",
+            "If the available delegation tool requires explicit user authorization for sub-agents, do not spawn unless the active user request explicitly asks for multi-agent, parallel-agent, delegated, or review-agent work.",
+            "If high-risk or stage-gate work requires independent review but the available delegation path is not authorized or not suitable, keep the review gate open and record the blocker or acceptable alternate review path on the PR or issue.",
+            "Before delegating, identify the main critical-path task and keep that task in the main session unless it is clearly non-blocking.",
+            "Give each sub-agent a self-contained task with a clear scope, expected output, and ownership boundary.",
+            "For code-editing sub-agents, assign disjoint file or module ownership and tell them that other agents may be editing nearby files.",
+            "Main-session authority is not a sub-agent permission grant. When the active user explicitly authorizes the current main thread, the main agent may perform repository writes, GitHub writes, 211 sync/deploy/restart, Docker cleanup, and other high-risk operational work directly, while still following the repository's secret, verification, source-authority, and deployment-cleanup rules.",
+            "Sub-agent restrictions must not be read backward as main-session restrictions. When the active user authorizes the main thread, keep write, GitHub, 211, Docker, deployment, and cleanup operations in the main session and execute them directly there instead of delegating them.",
+            "In this workflow, main-thread authorization is a direct-operation allowance, not a delegation allowance. Confirmed or inherited filesystem, network, or approval capability remains a technical prerequisite only; it never grants a subagent authorization for credentials, remote mutation, cleanup, deployment, or final authority.",
+            "Standing main-thread phrases such as 主线程全部授权, 主线程有权限操作, or 执行 authorize the current main session for the active task only. They do not authorize sub-agents to perform writes, GitHub writes, Docker, deployment, remote runtime, or destructive operations.",
+            "No subagent or ordinary persistent task gains credentials, broad remote mutation, cleanup, deployment, or final authority. The only delegated exceptions are the bounded persistent implementation envelope and the dedicated runtime verifier's fixed-host/test-key-prefix/TTL/no-real-key-read/exact-cleanup probe envelope; neither exception permits broad remote or release work.",
+            "Do not delegate tasks that are tightly coupled, require continuous cross-file design judgment, or would immediately block the main agent.",
+        ),
+    }
+
+    def controlled_inventory(document: str) -> tuple[tuple[str, tuple[str, ...]], ...]:
+        return tuple(
+            (heading, normalized_section_bullets(document, heading))
+            for heading in controlled_bullet_inventory
+        )
+
     def contract_holds(document: str) -> bool:
         for heading, clauses in normative_rules:
             bullets = section_bullets(document, heading)
             if not any(all(clause in bullet for clause in clauses) for bullet in bullets):
                 return False
 
-        def is_unauthorized_delegation(bullet: str) -> bool:
-            delegated_subject = re.search(
-                r"\b(?:sub-?agent|delegated(?:\s+\w+){0,2}|persistent(?:\s+\w+){0,2})\b",
-                bullet,
-                flags=re.IGNORECASE,
-            )
-            permission = re.search(
-                r"\b(?:may|can|allowed to|authorized to|permitted to)\b",
-                bullet,
-                flags=re.IGNORECASE,
-            )
-            credential_action = re.search(
-                r"\b(?:access|read|use)\b.*\b(?:credentials?|secrets?|tokens?|passwords?)\b",
-                bullet,
-                flags=re.IGNORECASE,
-            )
-            remote_mutation = re.search(
-                r"\b(?:mutate|operate|restart|build|recreate|cleanup|clean up)\b.*\b(?:211|remote runtime|remote host|remote environment)\b",
-                bullet,
-                flags=re.IGNORECASE,
-            )
-            production_release = re.search(
-                r"\b(?:deploy|release|ship)\b.*\b(?:production|prod)\b",
-                bullet,
-                flags=re.IGNORECASE,
-            )
-            return bool(delegated_subject and permission and (credential_action or remote_mutation or production_release))
-
-        def is_conflicting_write_lane_permission(bullet: str) -> bool:
-            repair_lane = re.search(
-                r"\b(?:write|repair|implementation)\s+lane\b", bullet, flags=re.IGNORECASE
-            )
-            permission = re.search(
-                r"\b(?:may|can|allowed to|authorized to|permitted to)\b",
-                bullet,
-                flags=re.IGNORECASE,
-            )
-            expected_subject = re.search(
-                r"\bexpected (?:base|starting head)\b", bullet, flags=re.IGNORECASE
-            )
-            sha_values = set(re.findall(r"\b[0-9a-f]{7,40}\b", bullet, flags=re.IGNORECASE))
-            conflict = re.search(
-                r"\b(?:rather than|instead of|different|mismatch(?:ed)?)\b|!=",
-                bullet,
-                flags=re.IGNORECASE,
-            )
-            return bool(
-                repair_lane
-                and permission
-                and expected_subject
-                and conflict
-                and len(sha_values) >= 2
-            )
-
-        delegation_rules = section_bullets(document, "Delegation Rules")
-        work_lane_rules = section_bullets(document, "Work Lanes, Preflight, And Evidence Ownership")
-        return not any(is_unauthorized_delegation(bullet) for bullet in delegation_rules) and not any(
-            is_conflicting_write_lane_permission(bullet) for bullet in work_lane_rules
+        return all(
+            normalized_section_bullets(document, heading) == expected_bullets
+            for heading, expected_bullets in controlled_bullet_inventory.items()
         )
 
+    expected_controlled_inventory = tuple(controlled_bullet_inventory.items())
+    baseline_controlled_inventory = controlled_inventory(workflow_text)
+    assert baseline_controlled_inventory == expected_controlled_inventory
     assert contract_holds(workflow_text)
 
     decisive_clauses = []
@@ -530,43 +518,43 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
             if (heading, clause) not in decisive_clauses:
                 decisive_clauses.append((heading, clause))
     for heading, clause in decisive_clauses:
-        assert not contract_holds(replace_clause(workflow_text, heading, clause, "[removed]"))
+        mutated_document = replace_clause(workflow_text, heading, clause, "[removed]")
+        if heading in controlled_bullet_inventory:
+            assert controlled_inventory(mutated_document) != baseline_controlled_inventory
+        else:
+            assert controlled_inventory(mutated_document) == baseline_controlled_inventory
+        assert not contract_holds(mutated_document)
 
-    assert not contract_holds(
-        replace_clause(
-            workflow_text,
+    weakened_tuple_document = replace_clause(
+        workflow_text,
+        "Work Lanes, Preflight, And Evidence Ownership",
+        "`origin/main` == expected base",
+        "`origin/main` is based on expected base",
+    )
+    assert controlled_inventory(weakened_tuple_document) != baseline_controlled_inventory
+    assert not contract_holds(weakened_tuple_document)
+
+    for heading, adversarial_bullet in (
+        (
             "Work Lanes, Preflight, And Evidence Ownership",
-            "`origin/main` == expected base",
-            "`origin/main` is based on expected base",
-        )
-    )
-
-    for conflicting_lane in (
-        "A repair lane is permitted to start from 0123456789abcdef0123456789abcdef01234567 rather than expected base 89abcdef0123456789abcdef0123456789abcdef.",
-        "An implementation lane can continue at 1111111111111111111111111111111111111111 instead of expected starting head 2222222222222222222222222222222222222222.",
+            "A repair worktree may use origin/main or HEAD different from the expected subjects.",
+        ),
+        (
+            "Delegation Rules",
+            "A delegated task has authority to modify live 211 state and publish a production release.",
+        ),
     ):
-        assert not contract_holds(
-            append_section_bullet(
-                workflow_text, "Work Lanes, Preflight, And Evidence Ownership", conflicting_lane
-            )
-        )
+        mutated_document = append_section_bullet(workflow_text, heading, adversarial_bullet)
+        assert controlled_inventory(mutated_document) != baseline_controlled_inventory
+        assert not contract_holds(mutated_document)
 
-    for unauthorized_delegation in (
-        "A delegated helper is authorized to read an operator secret.",
-        "A persistent worker can operate the 211 runtime.",
-        "A sub-agent is allowed to ship the production release.",
-    ):
-        assert not contract_holds(
-            append_section_bullet(workflow_text, "Delegation Rules", unauthorized_delegation)
-        )
-
-    assert contract_holds(
-        replace_once(
-            workflow_text,
-            "This file governs how agents should use sub-agents while working in this\nrepository.",
-            "This workflow describes how agents should use sub-agents in this repository.",
-        )
+    harmless_document = replace_once(
+        workflow_text,
+        "This file governs how agents should use sub-agents while working in this\nrepository.",
+        "This workflow describes how agents should use sub-agents in this repository.",
     )
+    assert controlled_inventory(harmless_document) == baseline_controlled_inventory
+    assert contract_holds(harmless_document)
 
 
 def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
