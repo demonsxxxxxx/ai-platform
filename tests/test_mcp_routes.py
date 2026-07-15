@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.main import create_app
+from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import Settings
 
 
@@ -988,3 +989,66 @@ def test_mcp_lifecycle_route_matrix_fails_closed_after_admin_gate(monkeypatch):
             )
         assert response.status_code == 409
         assert response.json()["detail"] == "mcp_lifecycle_contract_not_backed"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("patch", "/api/mcp/ragflow/toggle", {"enabled": False}),
+        ("delete", "/api/mcp/ragflow", None),
+        ("delete", "/api/admin/mcp/ragflow", None),
+    ],
+    ids=["toggle", "delete", "admin-delete"],
+)
+@pytest.mark.parametrize(
+    ("error", "expected_status", "expected_detail"),
+    [
+        (RepositoryNotFoundError("capability_distribution_not_found"), 404, "capability_distribution_not_found"),
+        (RepositoryConflictError("capability_distribution_archived"), 409, "capability_distribution_archived"),
+        (RepositoryConflictError("unexpected_conflict"), 409, "mcp_server_conflict"),
+    ],
+    ids=["missing", "archived", "other-conflict"],
+)
+def test_mcp_status_mutations_map_distribution_errors_without_audit_or_partial_commit(
+    monkeypatch,
+    method,
+    path,
+    payload,
+    error,
+    expected_status,
+    expected_detail,
+):
+    from app.routes import mcp
+
+    calls = install_mcp_route_fakes(monkeypatch)
+    transaction_events = []
+
+    @asynccontextmanager
+    async def recording_transaction():
+        transaction_events.append("enter")
+        try:
+            yield object()
+        except Exception:
+            transaction_events.append("rollback")
+            raise
+        else:
+            transaction_events.append("commit")
+
+    async def fail_status_mutation(conn, **kwargs):
+        calls.append(("set_distribution_status_failed", dict(kwargs)))
+        raise error
+
+    monkeypatch.setattr(mcp, "transaction", recording_transaction)
+    monkeypatch.setattr(mcp.repositories, "set_capability_distribution_status", fail_status_mutation)
+    client = TestClient(create_app())
+
+    response = (
+        client.delete(path, headers=headers(roles="admin"))
+        if method == "delete"
+        else client.patch(path, json=payload, headers=headers(roles="admin"))
+    )
+
+    assert (response.status_code, response.json()["detail"]) == (expected_status, expected_detail)
+    assert transaction_events == ["enter", "rollback"]
+    assert not any(name == "audit" for name, _ in calls)
+    assert [name for name, _ in calls][-1] == "set_distribution_status_failed"

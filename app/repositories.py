@@ -13,6 +13,8 @@ from app.capability_distribution import (
     CapabilityAuthorizationDenial,
     CapabilityDistributionSubject,
     capability_distribution_audit_payload,
+    has_valid_capability_distribution_archive_evidence,
+    is_capability_distribution_archived as shared_capability_distribution_archived,
     resolve_capability_access,
 )
 from app.control_plane_contracts import (
@@ -1203,8 +1205,53 @@ def _capability_distribution_projection(row: dict[str, Any]) -> dict[str, Any]:
 def is_capability_distribution_archived(row: dict[str, Any] | None) -> bool:
     """Return whether a tenant capability binding has been archived."""
 
-    metadata_json = _capability_distribution_json((row or {}).get("metadata_json"))
-    return "archived_at" in metadata_json
+    return shared_capability_distribution_archived(row)
+
+
+async def _lock_capability_distribution_metadata(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str,
+    capability_id: str,
+) -> dict[str, Any] | None:
+    """Lock one binding and return its parsed metadata for archive/write lifecycle decisions."""
+
+    cursor = await conn.execute(
+        """
+        select metadata_json
+        from tenant_capability_distributions
+        where tenant_id = %s and capability_kind = %s and capability_id = %s
+        for update
+        """,
+        (tenant_id, capability_kind, capability_id),
+    )
+    row = await cursor.fetchone()
+    return _capability_distribution_json(row.get("metadata_json")) if row is not None else None
+
+
+async def _require_unarchived_capability_distribution(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str,
+    capability_id: str,
+    allow_missing: bool,
+) -> None:
+    """Reject valid archive markers before a distribution mutation while holding the row lock."""
+
+    metadata_json = await _lock_capability_distribution_metadata(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+    )
+    if metadata_json is None:
+        if not allow_missing:
+            raise RepositoryNotFoundError("capability_distribution_not_found")
+        return
+    if shared_capability_distribution_archived({"metadata_json": metadata_json}):
+        raise RepositoryConflictError("capability_distribution_archived")
 
 
 async def _raise_distribution_update_failure(
@@ -1474,6 +1521,13 @@ async def upsert_capability_distribution_row(
     """Create or update one authoritative capability distribution row."""
 
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    await _require_unarchived_capability_distribution(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+        allow_missing=True,
+    )
     cursor = await conn.execute(
         """
         insert into tenant_capability_distributions(
@@ -1490,7 +1544,6 @@ async def upsert_capability_distribution_row(
             metadata_json = excluded.metadata_json,
             updated_by = excluded.updated_by,
             updated_at = now()
-        where not coalesce(tenant_capability_distributions.metadata_json ? 'archived_at', false)
         returning id, tenant_id, capability_kind, capability_id, status, visible_to_user,
                   scope_mode, department_ids, allowed_roles, metadata_json, updated_by,
                   created_at, updated_at
@@ -1531,20 +1584,34 @@ async def archive_capability_distribution_row(
     """Archive one tenant capability binding without mutating global Skill evidence."""
 
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    metadata_json = await _lock_capability_distribution_metadata(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+    )
+    if metadata_json is None:
+        raise RepositoryNotFoundError("capability_distribution_not_found")
+    preserve_existing_evidence = has_valid_capability_distribution_archive_evidence(
+        {"metadata_json": metadata_json}
+    )
     cursor = await conn.execute(
         """
         update tenant_capability_distributions
         set status = 'disabled',
             visible_to_user = false,
-            metadata_json = coalesce(metadata_json, '{}'::jsonb) || jsonb_build_object(
-              'archived_at', coalesce(
-                metadata_json -> 'archived_at',
-                to_jsonb(to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
-              ),
-              'archived_by', coalesce(
-                metadata_json -> 'archived_by',
-                to_jsonb(left(coalesce(%s, ''), 255))
-              )
+            metadata_json = case
+              when jsonb_typeof(metadata_json) = 'object' then metadata_json
+              else '{}'::jsonb
+            end || jsonb_build_object(
+              'archived_at', case
+                when %s::boolean then metadata_json -> 'archived_at'
+                else to_jsonb(to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+              end,
+              'archived_by', case
+                when %s::boolean then metadata_json -> 'archived_by'
+                else to_jsonb(left(coalesce(%s, ''), 255))
+              end
             ),
             updated_by = %s,
             updated_at = now()
@@ -1553,7 +1620,15 @@ async def archive_capability_distribution_row(
                   scope_mode, department_ids, allowed_roles, metadata_json, updated_by,
                   created_at, updated_at
         """,
-        (archived_by, archived_by, tenant_id, capability_kind, capability_id),
+        (
+            preserve_existing_evidence,
+            preserve_existing_evidence,
+            archived_by,
+            archived_by,
+            tenant_id,
+            capability_kind,
+            capability_id,
+        ),
     )
     row = await cursor.fetchone()
     if row is None:
@@ -1573,6 +1648,13 @@ async def toggle_capability_distribution_row(
     """Toggle or set the status of one authoritative distribution row."""
 
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    await _require_unarchived_capability_distribution(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+        allow_missing=False,
+    )
     cursor = await conn.execute(
         """
         update tenant_capability_distributions
@@ -1584,7 +1666,6 @@ async def toggle_capability_distribution_row(
             updated_by = %s,
             updated_at = now()
         where tenant_id = %s and capability_kind = %s and capability_id = %s
-          and not coalesce(metadata_json ? 'archived_at', false)
         returning id, tenant_id, capability_kind, capability_id, status, visible_to_user,
                   scope_mode, department_ids, allowed_roles, metadata_json, updated_by,
                   created_at, updated_at
@@ -1616,6 +1697,13 @@ async def set_capability_distribution_status(
     if status not in {"active", "disabled"}:
         raise RepositoryConflictError("invalid_capability_distribution_status")
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    await _require_unarchived_capability_distribution(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+        allow_missing=True,
+    )
     cursor = await conn.execute(
         """
         insert into tenant_capability_distributions(
@@ -1627,7 +1715,6 @@ async def set_capability_distribution_status(
         set status = excluded.status,
             updated_by = excluded.updated_by,
             updated_at = now()
-        where not coalesce(tenant_capability_distributions.metadata_json ? 'archived_at', false)
         returning id, tenant_id, capability_kind, capability_id, status, visible_to_user,
                   scope_mode, department_ids, allowed_roles, metadata_json, updated_by,
                   created_at, updated_at

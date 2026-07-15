@@ -162,6 +162,38 @@ def test_resolver_reads_legacy_metadata_safely_without_treating_malformed_json_a
     assert malformed.is_archived is False
 
 
+@pytest.mark.parametrize(
+    "archive_marker",
+    [
+        None,
+        "",
+        "not-a-timestamp",
+        "2026-07-15T00:00:00Z",
+        "2026-07-15T00:00:00.000+00:00",
+        "2026-02-30T00:00:00.000Z",
+        "2026-07-15T24:00:00.000Z",
+        [],
+        {},
+        True,
+    ],
+)
+def test_resolver_accepts_only_semantically_valid_archive_writer_timestamps(archive_marker):
+    module = _module()
+    subject = _subject(module, distribution={"metadata_json": {"archived_at": archive_marker}})
+
+    assert subject.is_archived is False
+
+
+def test_resolver_accepts_archive_writer_utc_millisecond_timestamp_exactly():
+    module = _module()
+    subject = _subject(
+        module,
+        distribution={"metadata": {"archived_at": "2026-07-15T12:34:56.789Z"}},
+    )
+
+    assert subject.is_archived is True
+
+
 def test_mcp_tool_uses_its_inherited_mcp_server_distribution():
     module = _module()
     subject = _subject(

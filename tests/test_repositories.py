@@ -1254,14 +1254,19 @@ async def test_archive_capability_distribution_is_tenant_scoped_and_idempotent(m
         async def execute(self, sql, params=()):
             compact = " ".join(sql.split())
             self.calls.append((compact, params))
+            if compact.startswith("select metadata_json"):
+                tenant_id, capability_kind, capability_id = params
+                row = self.rows.get((tenant_id, capability_kind, capability_id))
+                return Cursor({"metadata_json": row["metadata_json"]} if row is not None else None)
             assert compact.startswith("update tenant_capability_distributions")
-            archived_by, updated_by, tenant_id, capability_kind, capability_id = params
+            preserve_existing_evidence, _, archived_by, updated_by, tenant_id, capability_kind, capability_id = params
             row = self.rows.get((tenant_id, capability_kind, capability_id))
             if row is None:
                 return Cursor(None)
             metadata_json = row["metadata_json"]
-            metadata_json.setdefault("archived_at", "2026-07-15T00:00:00.000Z")
-            metadata_json.setdefault("archived_by", archived_by[:255])
+            if not preserve_existing_evidence:
+                metadata_json["archived_at"] = "2026-07-15T00:00:00.000Z"
+                metadata_json["archived_by"] = archived_by[:255]
             row["status"] = "disabled"
             row["visible_to_user"] = False
             row["updated_by"] = updated_by
@@ -1298,6 +1303,137 @@ async def test_archive_capability_distribution_is_tenant_scoped_and_idempotent(m
         forbidden not in " ".join(sql for sql, _ in conn.calls)
         for forbidden in ("skill_versions", "package_objects", "run_skill_snapshots")
     )
+
+
+@pytest.mark.parametrize(
+    "archive_marker",
+    [None, "", "invalid", "2026-02-30T00:00:00.000Z", [], {}, False],
+)
+def test_repository_archive_predicate_matches_strict_shared_timestamp_semantics(archive_marker):
+    assert repositories.is_capability_distribution_archived(
+        {"metadata_json": {"archived_at": archive_marker}}
+    ) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("existing_metadata", "preserve_evidence"),
+    [
+        (
+            {"archived_at": "2026-07-15T00:00:00.000Z", "archived_by": "admin-a"},
+            True,
+        ),
+        (
+            {"archived_at": "invalid", "archived_by": ["admin-a"]},
+            False,
+        ),
+        (
+            {"archived_at": "2026-07-15T00:00:00.000Z", "archived_by": ["admin-a"]},
+            False,
+        ),
+    ],
+)
+async def test_archive_distribution_preserves_only_valid_first_evidence(
+    monkeypatch,
+    existing_metadata,
+    preserve_evidence,
+):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        async def execute(self, sql, params=()):
+            compact = " ".join(sql.split())
+            if compact.startswith("select metadata_json"):
+                return Cursor({"metadata_json": existing_metadata})
+            assert compact.startswith("update tenant_capability_distributions")
+            assert "case when %s::boolean" in compact
+            assert params[0:2] == (preserve_evidence, preserve_evidence)
+            metadata_json = (
+                existing_metadata
+                if preserve_evidence
+                else {"archived_at": "2026-07-15T01:02:03.004Z", "archived_by": "admin-b"}
+            )
+            return Cursor(
+                {
+                    "id": "capdist-a",
+                    "tenant_id": "tenant-a",
+                    "capability_kind": "skill",
+                    "capability_id": "qa-file-reviewer",
+                    "status": "disabled",
+                    "visible_to_user": False,
+                    "scope_mode": "allowlist",
+                    "department_ids": [],
+                    "allowed_roles": [],
+                    "metadata_json": metadata_json,
+                    "updated_by": "admin-b",
+                }
+            )
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    archived = await repositories.archive_capability_distribution_row(
+        Connection(),
+        tenant_id="tenant-a",
+        capability_kind="skill",
+        capability_id="qa-file-reviewer",
+        archived_by="admin-b",
+    )
+
+    assert archived["metadata_json"]["archived_at"] != "invalid"
+    assert archived["metadata_json"]["archived_by"] == ("admin-a" if preserve_evidence else "admin-b")
+
+
+@pytest.mark.asyncio
+async def test_invalid_archive_marker_does_not_block_distribution_status_update(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        async def execute(self, sql, params=()):
+            compact = " ".join(sql.split())
+            if compact.startswith("select metadata_json"):
+                return Cursor({"metadata_json": {"archived_at": "invalid"}})
+            assert "metadata_json ? 'archived_at'" not in compact
+            return Cursor(
+                {
+                    "id": "capdist-a",
+                    "tenant_id": "tenant-a",
+                    "capability_kind": "skill",
+                    "capability_id": "qa-file-reviewer",
+                    "status": "active",
+                    "visible_to_user": True,
+                    "scope_mode": "allowlist",
+                    "department_ids": [],
+                    "allowed_roles": [],
+                    "metadata_json": {"archived_at": "invalid"},
+                }
+            )
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    row = await repositories.toggle_capability_distribution_row(
+        Connection(),
+        tenant_id="tenant-a",
+        capability_kind="skill",
+        capability_id="qa-file-reviewer",
+        enabled=True,
+        updated_by="admin-a",
+    )
+
+    assert row["status"] == "active"
 
 
 @pytest.mark.asyncio
@@ -1350,7 +1486,8 @@ async def test_archived_capability_distribution_rejects_reactivation(monkeypatch
                 updated_by="admin-a",
             )
 
-    assert any("metadata_json ? 'archived_at'" in sql for sql, _ in conn.calls)
+    assert any(sql.startswith("select metadata_json") and sql.endswith("for update") for sql, _ in conn.calls)
+    assert not any("metadata_json ? 'archived_at'" in sql for sql, _ in conn.calls)
 
 
 @pytest.mark.asyncio
@@ -7844,10 +7981,11 @@ async def test_set_uploaded_workbench_skill_status_creates_authoritative_distrib
     )
 
     assert row["skill_id"] == "new-research-skill"
-    assert "insert into tenant_capability_distributions" in conn.calls[0][0]
+    assert "select metadata_json" in conn.calls[0][0]
+    assert "insert into tenant_capability_distributions" in conn.calls[1][0]
     assert "tenant_workbench_skills" not in " ".join(sql for sql, _ in conn.calls)
-    assert conn.calls[0][1][1:5] == ("default", "skill", "new-research-skill", "active")
-    assert conn.calls[1][1] == ("default", "new-research-skill")
+    assert conn.calls[1][1][1:5] == ("default", "skill", "new-research-skill", "active")
+    assert conn.calls[2][1] == ("default", "new-research-skill")
 
 
 @pytest.mark.asyncio
@@ -7919,7 +8057,8 @@ async def test_set_public_skill_enabled_updates_existing_authoritative_distribut
     )
 
     assert row["skill_id"] == "new-research-skill"
-    assert "insert into tenant_capability_distributions" in conn.calls[0][0]
+    assert "select metadata_json" in conn.calls[0][0]
+    assert "insert into tenant_capability_distributions" in conn.calls[1][0]
     assert "tenant_workbench_skills" not in " ".join(sql for sql, _ in conn.calls)
 
 

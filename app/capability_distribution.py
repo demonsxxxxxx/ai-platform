@@ -1,11 +1,16 @@
 from dataclasses import dataclass, field
+from datetime import datetime
 import json
+import re
 from typing import Any, Iterable, Literal
 
 from app.auth import normalize_roles
 
 
 CapabilityAccessIntent = Literal["discover", "use", "manage"]
+_ARCHIVED_AT_TIMESTAMP_PATTERN = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$")
+_ARCHIVED_AT_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+_ARCHIVED_BY_MAX_LENGTH = 255
 
 
 @dataclass(slots=True)
@@ -55,12 +60,7 @@ class CapabilityDistributionSubject:
     def is_archived(self) -> bool:
         """Return whether authoritative distribution metadata carries an archive marker."""
 
-        distribution = self.distribution or {}
-        for key in ("metadata_json", "metadata"):
-            metadata = _distribution_metadata_dict(distribution.get(key))
-            if "archived_at" in metadata:
-                return True
-        return False
+        return is_capability_distribution_archived(self.distribution)
 
 
 @dataclass(slots=True)
@@ -146,6 +146,43 @@ def _distribution_metadata_dict(value: Any) -> dict[str, Any]:
         except json.JSONDecodeError:
             return {}
     return value if isinstance(value, dict) else {}
+
+
+def _distribution_metadata_values(distribution: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return parsed metadata candidates without trusting either transport shape."""
+
+    if not isinstance(distribution, dict):
+        return []
+    return [_distribution_metadata_dict(distribution.get(key)) for key in ("metadata_json", "metadata")]
+
+
+def is_valid_archive_timestamp(value: Any) -> bool:
+    """Accept only the exact UTC millisecond timestamp emitted by the archive writer."""
+
+    if not isinstance(value, str) or _ARCHIVED_AT_TIMESTAMP_PATTERN.fullmatch(value) is None:
+        return False
+    try:
+        datetime.strptime(value, _ARCHIVED_AT_TIMESTAMP_FORMAT)
+    except ValueError:
+        return False
+    return True
+
+
+def is_capability_distribution_archived(distribution: dict[str, Any] | None) -> bool:
+    """Return whether either distribution metadata shape has a valid archive timestamp."""
+
+    return any(is_valid_archive_timestamp(metadata.get("archived_at")) for metadata in _distribution_metadata_values(distribution))
+
+
+def has_valid_capability_distribution_archive_evidence(distribution: dict[str, Any] | None) -> bool:
+    """Return whether archive timestamp and actor match the bounded archive-writer evidence contract."""
+
+    return any(
+        is_valid_archive_timestamp(metadata.get("archived_at"))
+        and isinstance(metadata.get("archived_by"), str)
+        and len(metadata["archived_by"]) <= _ARCHIVED_BY_MAX_LENGTH
+        for metadata in _distribution_metadata_values(distribution)
+    )
 
 
 def _decision(subject: CapabilityDistributionSubject, *, allowed: bool, reason: str, admin_bypass: bool = False) -> CapabilityAccessDecision:
