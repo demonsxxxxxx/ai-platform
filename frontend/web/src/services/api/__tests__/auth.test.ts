@@ -94,8 +94,12 @@ function installAuthApiBrowserStubs(
   };
 }
 
-test("buildOAuthLoginUrl keeps same-origin deployments relative", () => {
+test("buildOAuthLoginUrl keeps same-origin deployments relative and preserves opaque state", () => {
   assert.equal(buildOAuthLoginUrl("google"), "/api/auth/oauth/google");
+  assert.equal(
+    buildOAuthLoginUrl("github", "opaque-state"),
+    "/api/auth/oauth/github?state=opaque-state",
+  );
 });
 
 test("current-user projection preserves the authenticated tenant subject", async () => {
@@ -138,12 +142,14 @@ test("subject-changing auth transports forward their operation abort signal", as
   const stubs = installAuthApiBrowserStubs();
   const controller = new AbortController();
   try {
+    await authApi.bootstrapAuthContext("A".repeat(43), controller.signal);
     await authApi.getCurrentUser({ signal: controller.signal });
     await authApi.login(
       { username: "user@example.com", password: "safe-test" },
       undefined,
       controller.signal,
     );
+    await authApi.beginOAuth("github", controller.signal);
     await authApi.handleOAuthCallback(
       "github",
       "code",
@@ -152,7 +158,7 @@ test("subject-changing auth transports forward their operation abort signal", as
     );
     await authApi.logout(controller.signal);
 
-    assert.equal(stubs.fetchInit.length, 4);
+    assert.equal(stubs.fetchInit.length, 6);
     assert.equal(
       stubs.fetchInit.every((init) => init.signal === controller.signal),
       true,
@@ -361,15 +367,23 @@ test("logout transport failure is typed and never exposes raw backend detail", a
   }
 });
 
-test("OAuth fragment completion is owned before clearing caches and setting the session marker", () => {
+test("OAuth callback delegates server session authority and never reads fragment tokens", () => {
   const useAuthSource = readFileSync(
     new URL("../../../hooks/useAuth.tsx", import.meta.url),
     "utf8",
   );
+  const callbackSource = readFileSync(
+    new URL("../../../components/auth/OAuthCallback.tsx", import.meta.url),
+    "utf8",
+  );
 
-  assert.match(useAuthSource, /const completeOAuthSession = useCallback/);
+  assert.match(useAuthSource, /await ensureBrowserAuthContext\(owner\.abortController\.signal\)/);
   assert.match(
     useAuthSource,
-    /const owner = beginAuthOperation\(\);[\s\S]*establishLocalSession\(owner, accessToken, refreshToken\)[\s\S]*signal: owner\.abortController\.signal/,
+    /await authApi\.handleOAuthCallback\([\s\S]*signal: owner\.abortController\.signal/,
   );
+  assert.doesNotMatch(useAuthSource, /completeOAuthSession/);
+  assert.match(callbackSource, /searchParams\.get\("code"\)/);
+  assert.match(callbackSource, /searchParams\.get\("state"\)/);
+  assert.doesNotMatch(callbackSource, /access_token|refresh_token/);
 });

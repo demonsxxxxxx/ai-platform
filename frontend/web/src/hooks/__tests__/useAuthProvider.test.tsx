@@ -254,7 +254,18 @@ Object.assign(globalThis, {
 });
 Object.defineProperty(globalThis, "navigator", {
   configurable: true,
-  value: { userAgent: "node" },
+  value: {
+    userAgent: "node",
+    locks: {
+      async request<T>(
+        _name: string,
+        _options: { mode: "exclusive" },
+        callback: () => Promise<T>,
+      ): Promise<T> {
+        return callback();
+      },
+    },
+  },
 });
 
 function deferred<T>() {
@@ -290,11 +301,15 @@ async function mountAuthHarness(
   const { AuthProvider, useAuth } = await import("../useAuth.tsx");
   const { authApi } = await import("../../services/api/auth.ts");
   const originals = {
+    bootstrapAuthContext: authApi.bootstrapAuthContext,
     getCurrentUser: authApi.getCurrentUser,
     login: authApi.login,
     logout: authApi.logout,
+    beginOAuth: authApi.beginOAuth,
     handleOAuthCallback: authApi.handleOAuthCallback,
   };
+  authApi.bootstrapAuthContext = async () => undefined;
+  authApi.beginOAuth = async () => ({ state: "test-oauth-state" });
   configure(authApi);
   storage.clear();
   storage.set("ai_platform_session_present", "test-session-marker");
@@ -365,14 +380,18 @@ async function mountAuthPageHarness(
   const { authApi } = await import("../../services/api/auth.ts");
   const toast = (await import("react-hot-toast")).default;
   const originals = {
+    bootstrapAuthContext: authApi.bootstrapAuthContext,
     getCurrentUser: authApi.getCurrentUser,
     login: authApi.login,
     logout: authApi.logout,
+    beginOAuth: authApi.beginOAuth,
     getOAuthProviders: authApi.getOAuthProviders,
     updateMetadata: authApi.updateMetadata,
     toastSuccess: toast.success,
     toastError: toast.error,
   };
+  authApi.bootstrapAuthContext = async () => undefined;
+  authApi.beginOAuth = async () => ({ state: "test-oauth-state" });
   configure(authApi);
   authApi.getOAuthProviders = async () => ({
     providers: [],
@@ -444,9 +463,11 @@ async function mountAuthPageHarness(
     async cleanup() {
       await React.act(async () => root.unmount());
       Object.assign(authApi, {
+        bootstrapAuthContext: originals.bootstrapAuthContext,
         getCurrentUser: originals.getCurrentUser,
         login: originals.login,
         logout: originals.logout,
+        beginOAuth: originals.beginOAuth,
         getOAuthProviders: originals.getOAuthProviders,
         updateMetadata: originals.updateMetadata,
       });
@@ -466,13 +487,19 @@ async function mountOAuthCallbackHarness(
   const { AuthProvider } = await import("../useAuth.tsx");
   const { OAuthCallback } = await import("../../components/auth/OAuthCallback.tsx");
   const { authApi } = await import("../../services/api/auth.ts");
-  const originalGetCurrentUser = authApi.getCurrentUser;
-  const originalLogout = authApi.logout;
+  const originals = {
+    bootstrapAuthContext: authApi.bootstrapAuthContext,
+    getCurrentUser: authApi.getCurrentUser,
+    logout: authApi.logout,
+    handleOAuthCallback: authApi.handleOAuthCallback,
+  };
+  authApi.bootstrapAuthContext = async () => undefined;
+  authApi.handleOAuthCallback = async () => undefined;
   configure(authApi);
   storage.clear();
   sessionStorageValues.clear();
   storage.set("ai_platform_session_present", "test-session-marker");
-  windowTarget.location.hash = "#access_token=test-access&refresh_token=test-refresh";
+  windowTarget.location.hash = "";
 
   let setVisible: ((visible: boolean) => void) | null = null;
   let currentPath = "";
@@ -498,7 +525,11 @@ async function mountOAuthCallbackHarness(
         null,
         React.createElement(
           MemoryRouter,
-          { initialEntries: ["/auth/oauth/callback"] },
+          {
+            initialEntries: [
+              "/auth/oauth/callback?provider=github&code=test-code&state=test-oauth-state",
+            ],
+          },
           React.createElement(
             React.Fragment,
             null,
@@ -549,8 +580,7 @@ async function mountOAuthCallbackHarness(
     },
     async cleanup() {
       await React.act(async () => root.unmount());
-      authApi.getCurrentUser = originalGetCurrentUser;
-      authApi.logout = originalLogout;
+      Object.assign(authApi, originals);
       storage.clear();
       sessionStorageValues.clear();
       windowTarget.location.hash = "";
@@ -839,10 +869,7 @@ test("OAuth code-state hydration rollback preserves the original error when logo
       if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
       throw hydrationError;
     };
-    api.handleOAuthCallback = async () => ({
-      access_token: "cookie-session",
-      token_type: "bearer",
-    });
+    api.handleOAuthCallback = async () => undefined;
     api.logout = async () => {
       logoutCalls += 1;
       throw new Error("OAuth rollback logout failure");
@@ -982,10 +1009,7 @@ test("an OAuth hydration superseded by logout returns an explicit cancelled outc
       if (currentUserCalls === 1) return authUser("admin-a", "tenant-a");
       return oauthHydration.promise;
     };
-    api.handleOAuthCallback = async () => ({
-      access_token: "cookie-session",
-      token_type: "bearer",
-    });
+    api.handleOAuthCallback = async () => undefined;
     api.logout = async () => undefined;
   });
   try {
@@ -1108,7 +1132,7 @@ test("OAuth callback unmount fence prevents deferred completion navigation", asy
   }
 });
 
-test("current OAuth fragment hydration failure clears the previous principal and marker", async () => {
+test("current OAuth callback hydration failure clears the previous principal and marker", async () => {
   const hydrationError = new Error(
     "C:\\private\\oauth.log?token=secret <html>proxy</html>",
   );
@@ -1124,19 +1148,22 @@ test("current OAuth fragment hydration failure clears the previous principal and
       logoutCalls += 1;
       throw new Error("rollback logout failure");
     };
+    api.handleOAuthCallback = async () => undefined;
   });
   try {
-    let outcome!: Awaited<ReturnType<typeof mounted.auth.completeOAuthSession>>;
     await mounted.React.act(async () => {
-      outcome = await mounted.auth.completeOAuthSession(
-        "oauth-access",
-        "oauth-refresh",
+      await assert.rejects(
+        () =>
+          mounted.auth.handleOAuthCallback(
+            "github",
+            "test-code",
+            "test-state",
+          ),
+        (error: unknown) => error === hydrationError,
       );
     });
     await mounted.flush();
 
-    assert.equal(outcome.status, "failed");
-    assert.equal(outcome.status === "failed" && outcome.error, hydrationError);
     assert.equal(mounted.auth.user, null);
     assert.equal(mounted.auth.token, null);
     assert.deepEqual(mounted.auth.permissions, []);
@@ -1147,7 +1174,7 @@ test("current OAuth fragment hydration failure clears the previous principal and
   }
 });
 
-test("OAuth fragment UI keeps hydration diagnostics out of navigation state", async () => {
+test("OAuth callback UI keeps hydration diagnostics out of navigation state", async () => {
   const diagnostic = "C:\\private\\oauth.log?token=secret <html>proxy</html>";
   let currentUserCalls = 0;
   const mounted = await mountOAuthCallbackHarness((api) => {
@@ -1174,7 +1201,7 @@ test("OAuth fragment UI keeps hydration diagnostics out of navigation state", as
   }
 });
 
-test("stale OAuth fragment failure cannot clear a newer login principal", async () => {
+test("stale OAuth callback failure cannot clear a newer login principal", async () => {
   const staleOAuthHydration = deferred<User>();
   let currentUserCalls = 0;
   let logoutCalls = 0;
@@ -1189,13 +1216,15 @@ test("stale OAuth fragment failure cannot clear a newer login principal", async 
     api.logout = async () => {
       logoutCalls += 1;
     };
+    api.handleOAuthCallback = async () => undefined;
   });
   try {
-    let oauthPromise!: ReturnType<typeof mounted.auth.completeOAuthSession>;
+    let oauthPromise!: ReturnType<typeof mounted.auth.handleOAuthCallback>;
     await mounted.React.act(async () => {
-      oauthPromise = mounted.auth.completeOAuthSession(
-        "oauth-stale-access",
-        "oauth-stale-refresh",
+      oauthPromise = mounted.auth.handleOAuthCallback(
+        "github",
+        "test-code",
+        "test-state",
       );
       await Promise.resolve();
     });
@@ -1286,7 +1315,6 @@ test("OAuth completion hydration owns auth state over deferred initial principal
     };
     api.handleOAuthCallback = async (_provider, _code, _state, signal?: AbortSignal) => {
       oauthSignal = signal;
-      return { access_token: "cookie-session", token_type: "bearer" };
     };
   });
   try {

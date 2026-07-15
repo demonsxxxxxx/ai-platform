@@ -3,9 +3,20 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from app.auth import AuthPrincipal, principal_to_response, require_principal, sign_principal_session, verify_principal_session
+from app.auth import AuthPrincipal, principal_to_response, require_principal
+from app.auth_sessions import (
+    AuthContextError,
+    AuthOperation,
+    auth_context_handle_for_nonce,
+    begin_auth_operation,
+    bootstrap_auth_context,
+    commit_auth_operation,
+    consume_oauth_state,
+    issue_oauth_state,
+    principal_snapshot,
+)
 from app.db import transaction
-from app.models import LoginRequest, PrincipalResponse
+from app.models import AuthContextBootstrapRequest, LoginRequest, OAuthCallbackRequest, PrincipalResponse
 from app.repositories import append_audit_log, ensure_user
 from app.settings import get_settings
 from app.validation import assert_safe_id
@@ -173,13 +184,129 @@ def _ai_permissions_for_login(user_info: dict[str, Any], roles: list[str]) -> li
     )
 
 
+def _context_handle_from_request(request: Request) -> str:
+    settings = get_settings()
+    context_handle = request.cookies.get(
+        getattr(settings, "auth_context_cookie_name", "ai_platform_auth_context"),
+        "",
+    )
+    if not context_handle:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth_context_missing")
+    return context_handle
+
+
+def _raise_commit_failure(status_value: str) -> None:
+    if status_value == "superseded":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="auth_operation_superseded")
+    if status_value == "expired":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="auth_operation_expired")
+    if status_value == "missing":
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="auth_context_missing")
+    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="auth_context_unavailable")
+
+
+async def _begin_browser_operation(request: Request, kind: str) -> AuthOperation:
+    try:
+        return await begin_auth_operation(_context_handle_from_request(request), kind, get_settings())
+    except AuthContextError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+
+
+def _oauth_provider(provider: str) -> str:
+    try:
+        return assert_safe_id(provider, "oauth_provider")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="oauth_provider_unavailable") from exc
+
+
+@router.post("/auth/bootstrap")
+async def bootstrap(
+    request: AuthContextBootstrapRequest,
+    response: Response,
+) -> dict[str, str]:
+    """Create or recover the stable non-principal browser auth context."""
+
+    settings = get_settings()
+    try:
+        context_handle = auth_context_handle_for_nonce(request.nonce, settings)
+        await bootstrap_auth_context(context_handle, request.nonce, settings)
+    except AuthContextError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+    response.set_cookie(
+        getattr(settings, "auth_context_cookie_name", "ai_platform_auth_context"),
+        context_handle,
+        max_age=max(
+            1,
+            int(
+                getattr(
+                    settings,
+                    "auth_context_max_age_seconds",
+                    settings.ai_session_max_age_seconds,
+                )
+            ),
+        ),
+        httponly=True,
+        samesite="lax",
+        secure=bool(
+            getattr(
+                settings,
+                "auth_context_cookie_secure",
+                settings.ai_session_cookie_secure,
+            )
+        ),
+        path="/",
+    )
+    return {"status": "ready"}
+
+
+@router.post("/auth/oauth/{provider}/begin")
+async def begin_oauth(provider: str, request: Request) -> dict[str, str]:
+    """Create opaque OAuth state without granting a browser session."""
+
+    provider = _oauth_provider(provider)
+    operation = await _begin_browser_operation(request, f"oauth:{provider}")
+    try:
+        state = await issue_oauth_state(
+            operation.context_handle,
+            provider,
+            operation,
+            get_settings(),
+        )
+    except AuthContextError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+    return {"state": state}
+
+
+@router.post("/auth/oauth/{provider}/callback")
+async def oauth_callback(
+    provider: str,
+    request: OAuthCallbackRequest,
+    http_request: Request,
+) -> dict[str, str]:
+    """Consume callback state but fail closed until a provider bridge is configured."""
+
+    provider = _oauth_provider(provider)
+    context_handle = _context_handle_from_request(http_request)
+    try:
+        await consume_oauth_state(context_handle, provider, request.state, get_settings())
+    except AuthContextError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+    raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="oauth_provider_unavailable")
+
+
 @router.post("/auth/login", response_model=PrincipalResponse)
-async def login(request: LoginRequest, response: Response) -> PrincipalResponse:
-    principal = await _login_principal(request, response)
+async def login(request: LoginRequest, http_request: Request) -> PrincipalResponse:
+    """Commit company-authenticated identity only through the current context lease."""
+
+    operation = await _begin_browser_operation(http_request, "login")
+    principal = await _login_principal(request)
+    commit_status = await commit_auth_operation(operation, principal_snapshot(principal))
+    if commit_status != "committed":
+        _raise_commit_failure(commit_status)
     return PrincipalResponse.model_validate(principal_to_response(principal))
 
 
-async def _login_principal(request: LoginRequest, response: Response) -> AuthPrincipal:
+async def _login_principal(request: LoginRequest) -> AuthPrincipal:
     try:
         login_payload = await call_existing_login(request.user_name, request.password)
     except httpx.HTTPError as exc:
@@ -220,16 +347,6 @@ async def _login_principal(request: LoginRequest, response: Response) -> AuthPri
                 "is_admin": _has_admin_role(principal.roles),
             },
         )
-    settings = get_settings()
-    response.set_cookie(
-        settings.ai_session_cookie_name,
-        sign_principal_session(principal),
-        max_age=settings.ai_session_max_age_seconds,
-        httponly=True,
-        samesite="lax",
-        secure=settings.ai_session_cookie_secure,
-        path="/",
-    )
     return principal
 
 
@@ -239,7 +356,11 @@ async def me(principal: AuthPrincipal = Depends(require_principal)) -> Principal
 
 
 @router.post("/auth/logout")
-async def logout(response: Response) -> dict[str, str]:
-    settings = get_settings()
-    response.delete_cookie(settings.ai_session_cookie_name, path="/")
+async def logout(request: Request) -> dict[str, str]:
+    """Clear only the current context principal through a fenced operation."""
+
+    operation = await _begin_browser_operation(request, "logout")
+    commit_status = await commit_auth_operation(operation, None)
+    if commit_status != "committed":
+        _raise_commit_failure(commit_status)
     return {"status": "logged_out"}

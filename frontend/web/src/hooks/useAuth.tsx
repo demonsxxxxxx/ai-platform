@@ -18,7 +18,6 @@ import {
   getAccessToken,
   getRedirectPath,
   clearRedirectPath,
-  isAuthenticated,
 } from "../services/api";
 import {
   clearTokens,
@@ -28,6 +27,7 @@ import {
 import { ApiRequestError } from "../services/api/fetch";
 import { clearAuthScopedCaches } from "../services/api/authCacheInvalidation";
 import { classifyBrowserAuthStorageEvent } from "./browserAuthStorage";
+import { ensureBrowserAuthContext } from "./browserAuthCoordinator";
 import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../components/layout/AppContent/useAgentOptions";
 import {
   hasAllEffectivePermissions,
@@ -138,10 +138,6 @@ interface AuthContextType extends AuthState {
     provider: string,
     code: string,
     state: string,
-  ) => Promise<AuthOperationOutcome>;
-  completeOAuthSession: (
-    accessToken: string,
-    refreshToken: string,
   ) => Promise<AuthOperationOutcome>;
   logout: () => Promise<boolean>;
   refreshUser: () => Promise<AuthOperationOutcome>;
@@ -302,11 +298,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [applyAuthenticatedUser, applyLoggedOut, isCurrentAuthOperation]);
 
   const refreshUser = useCallback(async (): Promise<AuthOperationOutcome> => {
-    if (!isAuthenticated()) return completedAuthOperation(undefined);
     const owner = beginAuthOperation();
     if (isCurrentAuthOperation(owner)) setIsLoading(true);
-    return hydrateOwnedUser(owner, false);
-  }, [beginAuthOperation, hydrateOwnedUser, isCurrentAuthOperation]);
+    try {
+      await ensureBrowserAuthContext(owner.abortController.signal);
+      if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
+      return await hydrateOwnedUser(owner, false);
+    } catch (error) {
+      if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
+      applyLoggedOut(owner);
+      return failedAuthOperation(error);
+    }
+  }, [
+    applyLoggedOut,
+    beginAuthOperation,
+    hydrateOwnedUser,
+    isCurrentAuthOperation,
+  ]);
 
   // 初始化：检查现有 token 并获取用户信息
   useEffect(() => {
@@ -319,19 +327,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const hadSessionMarker = !!owner.expectedMarker;
 
       try {
+        await ensureBrowserAuthContext(owner.abortController.signal);
+        if (!isCurrentAuthOperation(owner)) return;
         const currentUser = await authApi.getCurrentUser({
           signal: owner.abortController.signal,
         });
         if (!isCurrentAuthOperation(owner)) return;
         if (!hadSessionMarker && !establishLocalSession(owner)) return;
         applyAuthenticatedUser(currentUser, owner);
-      } catch (err) {
+      } catch {
         if (!isCurrentAuthOperation(owner)) return;
-        if (isUnauthenticatedError(err)) {
-          applyLoggedOut(owner);
-          return;
-        }
-        console.warn("[useAuth] Failed to hydrate the current principal");
+        applyLoggedOut(owner);
       } finally {
         if (isCurrentAuthOperation(owner)) setIsLoading(false);
       }
@@ -402,6 +408,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (isCurrentAuthOperation(owner)) setIsLoading(true);
       let sessionEstablished = false;
       try {
+        await ensureBrowserAuthContext(owner.abortController.signal);
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         await authApi.login(
           credentials,
           turnstileToken,
@@ -463,11 +471,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  // OAuth 登录 - 直接导航到后端 OAuth 端点，由服务端重定向到提供商
+  // OAuth 登录由服务端 state 绑定同一个 browser auth context。
   const loginWithOAuth = useCallback(async (provider: string) => {
-    beginAuthOperation();
-    window.location.href = buildOAuthLoginUrl(provider);
-  }, [beginAuthOperation]);
+    const owner = beginAuthOperation();
+    if (isCurrentAuthOperation(owner)) setIsLoading(true);
+    try {
+      await ensureBrowserAuthContext(owner.abortController.signal);
+      if (!isCurrentAuthOperation(owner)) return;
+      const { state } = await authApi.beginOAuth(
+        provider,
+        owner.abortController.signal,
+      );
+      if (!isCurrentAuthOperation(owner)) return;
+      window.location.href = buildOAuthLoginUrl(provider, state);
+    } finally {
+      if (isCurrentAuthOperation(owner)) setIsLoading(false);
+    }
+  }, [beginAuthOperation, isCurrentAuthOperation]);
 
   // 处理 OAuth 回调
   const handleOAuthCallback = useCallback(
@@ -480,6 +500,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (isCurrentAuthOperation(owner)) setIsLoading(true);
       let sessionEstablished = false;
       try {
+        await ensureBrowserAuthContext(owner.abortController.signal);
+        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         await authApi.handleOAuthCallback(
           provider,
           code,
@@ -503,43 +525,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (!converged) return cancelledAuthOperation();
         }
         throw error;
-      } finally {
-        if (isCurrentAuthOperation(owner)) setIsLoading(false);
-      }
-    },
-    [
-      applyAuthenticatedUser,
-      beginAuthOperation,
-      establishLocalSession,
-      isCurrentAuthOperation,
-      rollbackOwnedSession,
-    ],
-  );
-
-  const completeOAuthSession = useCallback(
-    async (
-      accessToken: string,
-      refreshToken: string,
-    ): Promise<AuthOperationOutcome> => {
-      const owner = beginAuthOperation();
-      if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
-      setIsLoading(true);
-      if (!establishLocalSession(owner, accessToken, refreshToken)) {
-        return cancelledAuthOperation();
-      }
-      try {
-        const currentUser = await authApi.getCurrentUser({
-          signal: owner.abortController.signal,
-        });
-        if (!applyAuthenticatedUser(currentUser, owner)) {
-          return cancelledAuthOperation();
-        }
-        return completedAuthOperation(undefined);
-      } catch (error) {
-        if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
-        const converged = await rollbackOwnedSession(owner);
-        if (!converged) return cancelledAuthOperation();
-        return failedAuthOperation(error);
       } finally {
         if (isCurrentAuthOperation(owner)) setIsLoading(false);
       }
@@ -605,7 +590,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     register,
     loginWithOAuth,
     handleOAuthCallback,
-    completeOAuthSession,
     logout,
     refreshUser,
     hasPermission,

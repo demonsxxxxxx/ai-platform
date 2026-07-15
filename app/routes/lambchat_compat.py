@@ -339,19 +339,10 @@ def _event_payload(
 
 
 @router.post("/auth/login")
-async def login(request: LoginRequest, response: Response) -> dict[str, object]:
-    principal = await _login_principal(request, response)
+async def login(request: LoginRequest) -> dict[str, object]:
+    principal = await _login_principal(request)
     token = sign_principal_session(principal)
     settings = get_settings()
-    response.set_cookie(
-        settings.ai_session_cookie_name,
-        token,
-        max_age=settings.ai_session_max_age_seconds,
-        httponly=True,
-        samesite="lax",
-        secure=settings.ai_session_cookie_secure,
-        path="/",
-    )
     return {
         "access_token": token,
         "refresh_token": token,
