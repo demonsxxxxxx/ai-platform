@@ -35,13 +35,15 @@ open, or close ordinary-user platform-level multi-run product exposure.
   owner of each item. Eliminate duplicate work before dispatch; do not retain
   duplicate tests, searches, or probes merely to occupy agents.
 - Every write lane fails closed before editing. Record that its isolated
-  worktree is clean, `origin/main`, merge-base, and `HEAD` are the required
-  subject, and its writable paths are explicit. A dirty coordination root is
-  never an implementation source or deliverable; it may only be inspected as
-  a fail-closed comparison.
-- Persistent implementation tasks may implement, run affected tests, commit,
-  push, and open a Draft PR only from that clean isolated worktree and explicit
-  write envelope. An implementer cannot be the final reviewer.
+  worktree is clean; the recorded base, `origin/main`, merge-base, and `HEAD`
+  equal the required current subject; and its writable paths are explicit. A
+  dirty coordination root is never an implementation source or deliverable; it
+  may only be inspected as a fail-closed comparison.
+- Persistent implementation tasks may only make source edits and run affected
+  tests, commit, push, and open a Draft PR from that clean isolated worktree
+  and explicit write envelope; an implementer cannot be the final reviewer.
+  No subagent or ordinary persistent task may access browser/user credentials
+  or gain broad remote mutation, cleanup, deployment, or final authority.
 - Disposable agents are read-only context compressors. They may summarize
   large logs or test output and search peripheral material, but never perform
   remote writes, deployment, cleanup, credential access, or final release
@@ -49,19 +51,23 @@ open, or close ordinary-user platform-level multi-run product exposure.
 - Evidence has a default owner: the implementer runs affected tests, compile,
   and `git diff --check`; CI owns standard regression; the reviewer owns code
   review plus a small number of high-risk attack or concurrency probes; the
-  controller fills only final gates that those owners did not cover.
+  controller fills only uncovered final gates.
 
 ## Runtime, Deployment, And Review Boundaries
 
-- State-mutating Redis, Lua, or runtime probes require a dedicated persistent
-  runtime verifier or the controller. The probe envelope must name the fixed
-  host, test-key prefix, TTL, prohibition on real-key reads, exact cleanup, and
-  failure evidence before execution. Do not improvise a state-mutating probe
-  from a disposable agent or an unbounded shell session.
-- One controller or deployment owner exclusively owns 211 build/recreate/
-  cleanup, credentialed browser acceptance, and Ready, merge, deploy, or
-  release claims. Other agents may supply read-only evidence but may not share
-  this authority.
+- Confirmed or inherited filesystem, network, or approval capability is a
+  technical prerequisite only and never grants authorization. It establishes
+  whether a permitted operation is technically possible, not who may perform
+  it or make a final claim.
+- Only a dedicated persistent runtime verifier or the controller may run a
+  state-mutating Redis, Lua, or runtime probe. The probe envelope must name the
+  fixed host, test-key prefix, TTL, prohibition on real-key reads, exact
+  cleanup, and failure evidence before execution. Do not improvise a
+  state-mutating probe from a disposable agent or an unbounded shell session.
+- Only the named controller or deployment owner may access browser/user
+  credentials, mark Ready, merge, deploy, perform 211 build/recreate/cleanup
+  or other mutation, or make release or final claims. Other agents may supply
+  read-only evidence but may not share this authority.
 - The default review cadence is: invariant preflight; one implementation; one
   complete independent review; one consolidated Critical/Important repair
   batch; and one final re-review. Do not turn review into parallel, repetitive
@@ -114,18 +120,20 @@ open, or close ordinary-user platform-level multi-run product exposure.
   Docker, deployment, and cleanup operations in the main session and execute
   them directly there instead of delegating them.
 - In this workflow, main-thread authorization is a direct-operation allowance,
-  not a delegation allowance. Sub-agents stay read-only for GitHub, Docker, 211,
-  deployment, and destructive operations unless inheritance of the main
-  session's filesystem, network, approval, and permission posture is explicitly
-  confirmed.
+  not a delegation allowance. Confirmed or inherited filesystem, network, or
+  approval capability remains a technical prerequisite only; it never grants
+  a subagent authorization for credentials, remote mutation, cleanup,
+  deployment, or final authority.
 - Standing main-thread phrases such as `主线程全部授权`, `主线程有权限操作`, or
   `执行` authorize the current main session for the active task only. They do
   not authorize sub-agents to perform writes, GitHub writes, Docker, deployment,
   remote runtime, or destructive operations.
-- Do not delegate write, deployment, remote runtime, long-running operational,
-  Docker, GitHub write, or destructive tasks to sub-agents unless the
-  delegation path is confirmed to inherit the same filesystem, network,
-  approval, and permission posture as the main session.
+- No subagent or ordinary persistent task gains credentials, broad remote
+  mutation, cleanup, deployment, or final authority. The only delegated
+  exceptions are the bounded persistent implementation envelope and the
+  dedicated runtime verifier's fixed-host/test-key-prefix/TTL/no-real-key-read/
+  exact-cleanup probe envelope; neither exception permits broad remote or
+  release work.
 - Do not delegate tasks that are tightly coupled, require continuous cross-file
   design judgment, or would immediately block the main agent.
 

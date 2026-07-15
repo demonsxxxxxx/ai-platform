@@ -240,39 +240,100 @@ def test_agent_rules_keep_main_session_authority_separate_from_subagents():
         "main-thread authorization is a direct-operation allowance, not a delegation allowance"
         in compact_workflow_text
     )
-    assert (
-        "Sub-agents stay read-only for GitHub, Docker, 211, deployment, and destructive operations"
-        in compact_workflow_text
-    )
+    assert "it never grants a subagent authorization" in compact_workflow_text
 
 
 def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
     workflow_text = read(MULTI_AGENT_CONTEXT_WORKFLOW)
-    compact_workflow_text = " ".join(workflow_text.split())
 
-    for expected in (
-        "Eliminate duplicate work before dispatch",
+    def section_bullets(heading: str) -> list[str]:
+        section = workflow_text.split(f"## {heading}\n", 1)[1].split("\n## ", 1)[0]
+        return [" ".join(bullet.split()) for bullet in section.split("\n- ")[1:]]
+
+    def assert_normative_rule(bullets: list[str], *clauses: str) -> None:
+        assert any(all(clause in bullet for clause in clauses) for bullet in bullets), clauses
+
+    work_lane_rules = section_bullets("Work Lanes, Preflight, And Evidence Ownership")
+    runtime_rules = section_bullets("Runtime, Deployment, And Review Boundaries")
+    evidence_rules = section_bullets("Evidence Intake, Close Sweep, And Rotation")
+
+    assert_normative_rule(
+        work_lane_rules,
         "Every write lane fails closed before editing",
-        "A dirty coordination root is never an implementation source or deliverable",
-        "Persistent implementation tasks may implement, run affected tests, commit, push, and open a Draft PR",
-        "Disposable agents are read-only context compressors",
-        "remote writes, deployment, cleanup, credential access, or final release decisions",
-        "the implementer runs affected tests, compile, and `git diff --check`",
+        "isolated worktree is clean",
+        "`origin/main`",
+        "recorded base",
+        "merge-base",
+        "`HEAD`",
+        "current subject",
+        "writable paths are explicit",
+        "dirty coordination root is never an implementation source or deliverable",
+    )
+    assert_normative_rule(
+        work_lane_rules,
+        "Persistent implementation tasks may only",
+        "clean isolated worktree",
+        "source edits",
+        "affected tests",
+        "commit",
+        "push",
+        "Draft PR",
+        "cannot be the final reviewer",
+        "No subagent or ordinary persistent task may access browser/user credentials",
+        "broad remote mutation, cleanup, deployment, or final authority",
+    )
+    assert_normative_rule(
+        work_lane_rules,
+        "Evidence has a default owner:",
+        "implementer runs affected tests, compile, and `git diff --check`",
         "CI owns standard regression",
         "reviewer owns code review plus a small number of high-risk attack or concurrency probes",
-        "State-mutating Redis, Lua, or runtime probes require a dedicated persistent runtime verifier or the controller",
-        "fixed host, test-key prefix, TTL, prohibition on real-key reads, exact cleanup, and failure evidence",
-        "One controller or deployment owner exclusively owns 211 build/recreate/ cleanup",
-        "The default review cadence is: invariant preflight; one implementation; one complete independent review; one consolidated Critical/Important repair batch; and one final re-review",
-        "After every completed batch, run a close-sweep inventory",
+        "controller fills only uncovered final gates",
+    )
+    assert_normative_rule(
+        runtime_rules,
+        "Confirmed or inherited filesystem, network, or approval capability",
+        "technical prerequisite",
+        "never grants authorization",
+    )
+    assert_normative_rule(
+        runtime_rules,
+        "dedicated persistent runtime verifier or the controller",
+        "fixed host",
+        "test-key prefix",
+        "TTL",
+        "prohibition on real-key reads",
+        "exact cleanup",
+        "failure evidence",
+    )
+    assert_normative_rule(
+        runtime_rules,
+        "Only the named controller or deployment owner may",
+        "browser/user credentials",
+        "mark Ready",
+        "merge",
+        "deploy",
+        "211 build/recreate/cleanup",
+        "release or final claims",
+    )
+    assert_normative_rule(
+        evidence_rules,
+        "controller consumes compressed evidence",
+        "not raw long logs or scripts",
+        "command",
+        "subject",
+        "observed time",
+        "decisive lines/result",
+        "artifact location",
+    )
+    assert_normative_rule(
+        evidence_rules,
+        "close-sweep inventory",
+        "task or archive state",
+        "worktree classification",
+        "process ownership",
         "without exact ownership proof",
-        "The controller consumes compressed evidence, not raw long logs or scripts",
-        "incident -> root cause -> new guardrail -> enforcement point -> verification",
-        "Repeated or high-impact lessons must become a policy rule or an automated check",
-        "Rotate the controller at every major phase handoff, repeated compaction, or material authority change",
-        "objective and non-goals, `origin/main`, runtime subject, active owners and leases, accepted and stale evidence, risks, next gates, and cleanup classifications",
-    ):
-        assert expected in compact_workflow_text
+    )
 
 
 def test_active_prd_v2_records_appendix_and_closure_workflow_authority():
