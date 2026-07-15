@@ -1151,6 +1151,246 @@ async def test_capability_distribution_upsert_and_toggle_raise_controlled_not_fo
 
 
 @pytest.mark.asyncio
+async def test_archive_capability_distribution_is_tenant_scoped_and_idempotent(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+            self.rows = {
+                ("tenant-a", "skill", "qa-file-reviewer"): {
+                    "id": "capdist-a",
+                    "tenant_id": "tenant-a",
+                    "capability_kind": "skill",
+                    "capability_id": "qa-file-reviewer",
+                    "status": "active",
+                    "visible_to_user": True,
+                    "scope_mode": "allowlist",
+                    "department_ids": [],
+                    "allowed_roles": [],
+                    "metadata_json": {},
+                    "updated_by": None,
+                },
+                ("tenant-b", "skill", "qa-file-reviewer"): {
+                    "id": "capdist-b",
+                    "tenant_id": "tenant-b",
+                    "capability_kind": "skill",
+                    "capability_id": "qa-file-reviewer",
+                    "status": "active",
+                    "visible_to_user": True,
+                    "scope_mode": "allowlist",
+                    "department_ids": [],
+                    "allowed_roles": [],
+                    "metadata_json": {},
+                    "updated_by": None,
+                },
+            }
+
+        async def execute(self, sql, params=()):
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            assert compact.startswith("update tenant_capability_distributions")
+            archived_by, updated_by, tenant_id, capability_kind, capability_id = params
+            row = self.rows.get((tenant_id, capability_kind, capability_id))
+            if row is None:
+                return Cursor(None)
+            metadata_json = row["metadata_json"]
+            metadata_json.setdefault("archived_at", "2026-07-15T00:00:00.000Z")
+            metadata_json.setdefault("archived_by", archived_by[:255])
+            row["status"] = "disabled"
+            row["visible_to_user"] = False
+            row["updated_by"] = updated_by
+            return Cursor(dict(row))
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    conn = Connection()
+
+    first = await repositories.archive_capability_distribution_row(
+        conn,
+        tenant_id="tenant-a",
+        capability_kind="skill",
+        capability_id="qa-file-reviewer",
+        archived_by="admin-a",
+    )
+    second = await repositories.archive_capability_distribution_row(
+        conn,
+        tenant_id="tenant-a",
+        capability_kind="skill",
+        capability_id="qa-file-reviewer",
+        archived_by="admin-b",
+    )
+
+    assert first["status"] == second["status"] == "disabled"
+    assert first["visible_to_user"] is second["visible_to_user"] is False
+    assert second["metadata_json"] == {
+        "archived_at": "2026-07-15T00:00:00.000Z",
+        "archived_by": "admin-a",
+    }
+    assert conn.rows[("tenant-b", "skill", "qa-file-reviewer")]["status"] == "active"
+    assert conn.rows[("tenant-b", "skill", "qa-file-reviewer")]["metadata_json"] == {}
+    assert all("delete from" not in sql for sql, _ in conn.calls)
+    assert all(
+        forbidden not in " ".join(sql for sql, _ in conn.calls)
+        for forbidden in ("skill_versions", "package_objects", "run_skill_snapshots")
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["toggle", "set_status", "upsert"])
+async def test_archived_capability_distribution_rejects_reactivation(monkeypatch, operation):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    class Cursor:
+        def __init__(self, row):
+            self.row = row
+
+        async def fetchone(self):
+            return self.row
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params=()):
+            compact = " ".join(sql.split())
+            self.calls.append((compact, params))
+            if compact.startswith("select metadata_json"):
+                return Cursor({"metadata_json": {"archived_at": "2026-07-15T00:00:00.000Z"}})
+            return Cursor(None)
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    conn = Connection()
+    kwargs = {
+        "tenant_id": "tenant-a",
+        "capability_kind": "skill",
+        "capability_id": "qa-file-reviewer",
+    }
+
+    with pytest.raises(RepositoryConflictError, match="capability_distribution_archived"):
+        if operation == "toggle":
+            await repositories.toggle_capability_distribution_row(conn, **kwargs, enabled=True, updated_by="admin-a")
+        elif operation == "set_status":
+            await repositories.set_capability_distribution_status(conn, **kwargs, status="active", updated_by="admin-a")
+        else:
+            await repositories.upsert_capability_distribution_row(
+                conn,
+                **kwargs,
+                status="active",
+                visible_to_user=True,
+                scope_mode="allowlist",
+                department_ids=[],
+                allowed_roles=[],
+                metadata_json={},
+                updated_by="admin-a",
+            )
+
+    assert any("metadata_json ? 'archived_at'" in sql for sql, _ in conn.calls)
+
+
+@pytest.mark.asyncio
+async def test_list_public_skill_catalog_hides_archived_but_keeps_disabled_distribution(monkeypatch):
+    async def no_backfill(conn, *, tenant_id):
+        return None
+
+    def row(skill_id, *, status, metadata_json):
+        return {
+            "skill_id": skill_id,
+            "name": skill_id,
+            "version": f"{skill_id}-hash",
+            "expected_version": f"{skill_id}-hash",
+            "description": skill_id,
+            "input_modes": [],
+            "lifecycle_status": "active",
+            "status": status,
+            "visible_to_user": status == "active",
+            "department_ids": [],
+            "allowed_roles": [],
+            "distribution_metadata_json": metadata_json,
+            "version_status": "active",
+            "source_json": {"kind": "builtin", "files": []},
+            "dependency_ids": [],
+            "created_by": "admin-a",
+            "created_at": None,
+            "updated_at": None,
+        }
+
+    class Cursor:
+        async def fetchall(self):
+            return [
+                row("archived-skill", status="disabled", metadata_json={"archived_at": "2026-07-15T00:00:00.000Z"}),
+                row("disabled-skill", status="disabled", metadata_json={}),
+            ]
+
+    class Connection:
+        async def execute(self, sql, params):
+            return Cursor()
+
+    monkeypatch.setattr(repositories, "ensure_tenant_capability_distribution_backfill", no_backfill)
+    rows = await repositories.list_public_skill_catalog(
+        Connection(),
+        tenant_id="tenant-a",
+        include_disabled=True,
+    )
+
+    assert [row["skill_id"] for row in rows] == ["disabled-skill"]
+
+
+@pytest.mark.asyncio
+async def test_authorize_selected_run_capabilities_fails_closed_for_archived_distribution(monkeypatch):
+    async def resolve_selected(conn, *, tenant_id, agent_id, skill_id):
+        return {
+            "agent_id": agent_id,
+            "skill_id": skill_id,
+            "skill_status": "active",
+            "skill_version": "hash-v1",
+            "skill_content_hash": "hash-v1",
+            "skill_version_status": "active",
+            "release_policy_version": None,
+            "release_policy_previous_version": None,
+            "release_policy_rollout_percent": 100,
+            "executor_type": "claude-agent-worker",
+            "input_modes": [],
+        }
+
+    async def archived_distribution(conn, **kwargs):
+        return {
+            "status": "disabled",
+            "visible_to_user": False,
+            "scope_mode": "allowlist",
+            "department_ids": [],
+            "allowed_roles": [],
+            "metadata_json": {"archived_at": "2026-07-15T00:00:00.000Z"},
+        }
+
+    monkeypatch.setattr(repositories, "resolve_selected_skill", resolve_selected)
+    monkeypatch.setattr(repositories, "get_capability_distribution_row", archived_distribution)
+
+    with pytest.raises(repositories.RepositoryAuthorizationError, match="capability_not_authorized"):
+        await repositories.authorize_selected_run_capabilities(
+            object(),
+            tenant_id="tenant-a",
+            agent_id="general-agent",
+            skill_id="qa-file-reviewer",
+            expected_version="hash-v1",
+            rollout_key="admin-a",
+            normalized_input={},
+            principal_department_id="platform",
+            principal_roles=["admin"],
+            is_admin=True,
+            permissions=["skill:write"],
+        )
+
+
+@pytest.mark.asyncio
 async def test_capability_distribution_authorization_allows_same_department_skill_and_mcp_tool(monkeypatch):
     calls = []
 

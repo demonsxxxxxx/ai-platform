@@ -988,6 +988,46 @@ async def test_publish_uploaded_skill_to_tenant_rejects_delegated_skill_admin_be
     assert calls == []
 
 
+@pytest.mark.asyncio
+async def test_publish_uploaded_skill_to_tenant_rejects_archived_distribution_without_revival(monkeypatch):
+    from app.routes import admin_skills as route_module
+
+    calls = []
+
+    async def record_policy(*args, **kwargs):
+        calls.append(("policy", kwargs))
+
+    async def archived_visibility(*args, **kwargs):
+        calls.append(("visibility", kwargs))
+        raise RepositoryConflictError("capability_distribution_archived")
+
+    async def record_audit(*args, **kwargs):
+        calls.append(("audit", kwargs))
+
+    monkeypatch.setattr(route_module.repositories, "set_skill_release_policy", record_policy)
+    monkeypatch.setattr(route_module.repositories, "set_uploaded_workbench_skill_status", archived_visibility)
+    monkeypatch.setattr(route_module.repositories, "append_audit_log", record_audit)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route_module._publish_uploaded_skill_to_tenant(
+            object(),
+            principal=AuthPrincipal(
+                user_id="admin-a",
+                display_name="Admin A",
+                tenant_id="tenant-a",
+                roles=["admin"],
+                permissions=["skill:admin"],
+            ),
+            skill_id="qa-file-reviewer",
+            version="hash-v2",
+            previous_version="hash-v1",
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "capability_distribution_archived"
+    assert [name for name, _ in calls] == ["policy", "visibility"]
+
+
 def test_admin_upload_new_skill_catalog_conflict_fails_without_global_overwrite(monkeypatch):
     class FakeConnection:
         pass

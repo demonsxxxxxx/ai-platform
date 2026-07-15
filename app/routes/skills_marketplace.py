@@ -954,7 +954,7 @@ async def batch_delete_skills(
     principal: AuthPrincipal = Depends(require_principal),
     payload: Any = Body(default=None),
 ) -> dict[str, object]:
-    """Disable multiple tenant-visible skills through the existing availability contract."""
+    """Archive multiple tenant-visible Skill bindings in the current tenant."""
 
     _require_permission(principal, "skill:delete")
     _require_ai_admin(principal)
@@ -964,13 +964,12 @@ async def batch_delete_skills(
     async with transaction() as conn:
         for skill_name in names:
             try:
-                await repositories.toggle_capability_distribution_row(
+                await repositories.archive_capability_distribution_row(
                     conn,
                     tenant_id=principal.tenant_id,
                     capability_kind="skill",
                     capability_id=skill_name,
-                    enabled=False,
-                    updated_by=principal.user_id,
+                    archived_by=principal.user_id,
                 )
                 await repositories.append_audit_log(
                     conn,
@@ -1221,20 +1220,19 @@ async def delete_skill(
     skill_name: str,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, str]:
-    """Map public skill uninstall to tenant availability disablement."""
+    """Archive the current tenant Skill binding without deleting global evidence."""
 
     _require_permission(principal, "skill:delete")
     _require_ai_admin(principal)
     safe_skill_name = _safe_skill_name(skill_name)
     try:
         async with transaction() as conn:
-            await repositories.toggle_capability_distribution_row(
+            await repositories.archive_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="skill",
                 capability_id=safe_skill_name,
-                enabled=False,
-                updated_by=principal.user_id,
+                archived_by=principal.user_id,
             )
             await repositories.append_audit_log(
                 conn,
@@ -1515,20 +1513,19 @@ async def delete_marketplace_skill_direct(
     skill_name: str,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> dict[str, object]:
-    """Disable tenant Marketplace availability without deleting global Skill records."""
+    """Archive the tenant Marketplace binding without deleting global Skill records."""
 
     _require_permission(principal, "marketplace:admin")
     _require_ai_admin(principal)
     safe_skill_name = _safe_skill_name(skill_name)
     try:
         async with transaction() as conn:
-            await repositories.toggle_capability_distribution_row(
+            await repositories.archive_capability_distribution_row(
                 conn,
                 tenant_id=principal.tenant_id,
                 capability_kind="skill",
                 capability_id=safe_skill_name,
-                enabled=False,
-                updated_by=principal.user_id,
+                archived_by=principal.user_id,
             )
             await repositories.append_audit_log(
                 conn,

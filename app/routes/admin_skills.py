@@ -247,12 +247,15 @@ async def _publish_uploaded_skill_to_tenant(
         previous_version=previous_version,
         promoted_by=principal.user_id,
     )
-    await repositories.set_uploaded_workbench_skill_status(
-        conn,
-        tenant_id=principal.tenant_id,
-        skill_id=skill_id,
-        status="active",
-    )
+    try:
+        await repositories.set_uploaded_workbench_skill_status(
+            conn,
+            tenant_id=principal.tenant_id,
+            skill_id=skill_id,
+            status="active",
+        )
+    except repositories.RepositoryConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     await repositories.append_audit_log(
         conn,
         tenant_id=principal.tenant_id,
