@@ -254,14 +254,40 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
         section = document.split(marker, 1)[1].split("\n## ", 1)[0]
         return [" ".join(bullet.split()) for bullet in section.split("\n- ")[1:]]
 
-    def replace_clause(document: str, heading: str, clause: str, replacement: str) -> str:
+    def section_parts(document: str, heading: str) -> tuple[str, str, str, str]:
         marker = f"## {heading}\n"
+        assert marker in document
         before, section_and_after = document.split(marker, 1)
         section, after = section_and_after.split("\n## ", 1)
+        return before, marker, section, after
+
+    def replace_clause(document: str, heading: str, clause: str, replacement: str) -> str:
+        before, marker, section, after = section_parts(document, heading)
+        assert any(clause in bullet for bullet in section_bullets(document, heading))
         pattern = r"\s+".join(re.escape(part) for part in clause.split())
         mutated_section, replacements = re.subn(pattern, replacement, section, count=1)
         assert replacements == 1, clause
-        return f"{before}{marker}{mutated_section}\n## {after}"
+        assert mutated_section != section
+        mutated_document = f"{before}{marker}{mutated_section}\n## {after}"
+        assert mutated_document != document
+        assert any(replacement in bullet for bullet in section_bullets(mutated_document, heading))
+        return mutated_document
+
+    def append_section_bullet(document: str, heading: str, bullet: str) -> str:
+        before, marker, section, after = section_parts(document, heading)
+        assert bullet not in section
+        mutated_section = f"{section}\n- {bullet}"
+        mutated_document = f"{before}{marker}{mutated_section}\n## {after}"
+        assert mutated_document != document
+        assert " ".join(bullet.split()) in section_bullets(mutated_document, heading)
+        return mutated_document
+
+    def replace_once(document: str, original: str, replacement: str) -> str:
+        assert original in document
+        mutated_document = document.replace(original, replacement, 1)
+        assert mutated_document != document
+        assert replacement in mutated_document
+        return mutated_document
 
     normative_rules = (
         (
@@ -436,14 +462,64 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
             if not any(all(clause in bullet for clause in clauses) for bullet in bullets):
                 return False
 
+        def is_unauthorized_delegation(bullet: str) -> bool:
+            delegated_subject = re.search(
+                r"\b(?:sub-?agent|delegated(?:\s+\w+){0,2}|persistent(?:\s+\w+){0,2})\b",
+                bullet,
+                flags=re.IGNORECASE,
+            )
+            permission = re.search(
+                r"\b(?:may|can|allowed to|authorized to|permitted to)\b",
+                bullet,
+                flags=re.IGNORECASE,
+            )
+            credential_action = re.search(
+                r"\b(?:access|read|use)\b.*\b(?:credentials?|secrets?|tokens?|passwords?)\b",
+                bullet,
+                flags=re.IGNORECASE,
+            )
+            remote_mutation = re.search(
+                r"\b(?:mutate|operate|restart|build|recreate|cleanup|clean up)\b.*\b(?:211|remote runtime|remote host|remote environment)\b",
+                bullet,
+                flags=re.IGNORECASE,
+            )
+            production_release = re.search(
+                r"\b(?:deploy|release|ship)\b.*\b(?:production|prod)\b",
+                bullet,
+                flags=re.IGNORECASE,
+            )
+            return bool(delegated_subject and permission and (credential_action or remote_mutation or production_release))
+
+        def is_conflicting_write_lane_permission(bullet: str) -> bool:
+            repair_lane = re.search(
+                r"\b(?:write|repair|implementation)\s+lane\b", bullet, flags=re.IGNORECASE
+            )
+            permission = re.search(
+                r"\b(?:may|can|allowed to|authorized to|permitted to)\b",
+                bullet,
+                flags=re.IGNORECASE,
+            )
+            expected_subject = re.search(
+                r"\bexpected (?:base|starting head)\b", bullet, flags=re.IGNORECASE
+            )
+            sha_values = set(re.findall(r"\b[0-9a-f]{7,40}\b", bullet, flags=re.IGNORECASE))
+            conflict = re.search(
+                r"\b(?:rather than|instead of|different|mismatch(?:ed)?)\b|!=",
+                bullet,
+                flags=re.IGNORECASE,
+            )
+            return bool(
+                repair_lane
+                and permission
+                and expected_subject
+                and conflict
+                and len(sha_values) >= 2
+            )
+
         delegation_rules = section_bullets(document, "Delegation Rules")
-        unauthorized_grants = (
-            "A subagent may access browser/user credentials",
-            "A subagent may perform broad remote mutation",
-            "A subagent may deploy",
-        )
-        return not any(
-            grant in bullet for grant in unauthorized_grants for bullet in delegation_rules
+        work_lane_rules = section_bullets(document, "Work Lanes, Preflight, And Evidence Ownership")
+        return not any(is_unauthorized_delegation(bullet) for bullet in delegation_rules) and not any(
+            is_conflicting_write_lane_permission(bullet) for bullet in work_lane_rules
         )
 
     assert contract_holds(workflow_text)
@@ -464,15 +540,29 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
             "`origin/main` is based on expected base",
         )
     )
-    assert not contract_holds(
-        workflow_text.replace(
-            "- Do not delegate tasks that are tightly coupled, require continuous cross-file\n",
-            "- A subagent may access browser/user credentials, may perform broad remote mutation, and may deploy.\n"
-            "- Do not delegate tasks that are tightly coupled, require continuous cross-file\n",
+
+    for conflicting_lane in (
+        "A repair lane is permitted to start from 0123456789abcdef0123456789abcdef01234567 rather than expected base 89abcdef0123456789abcdef0123456789abcdef.",
+        "An implementation lane can continue at 1111111111111111111111111111111111111111 instead of expected starting head 2222222222222222222222222222222222222222.",
+    ):
+        assert not contract_holds(
+            append_section_bullet(
+                workflow_text, "Work Lanes, Preflight, And Evidence Ownership", conflicting_lane
+            )
         )
-    )
+
+    for unauthorized_delegation in (
+        "A delegated helper is authorized to read an operator secret.",
+        "A persistent worker can operate the 211 runtime.",
+        "A sub-agent is allowed to ship the production release.",
+    ):
+        assert not contract_holds(
+            append_section_bullet(workflow_text, "Delegation Rules", unauthorized_delegation)
+        )
+
     assert contract_holds(
-        workflow_text.replace(
+        replace_once(
+            workflow_text,
             "This file governs how agents should use sub-agents while working in this\nrepository.",
             "This workflow describes how agents should use sub-agents in this repository.",
         )
