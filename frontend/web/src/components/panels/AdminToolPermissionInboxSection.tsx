@@ -37,6 +37,7 @@ interface InboxOwnedState {
   isLoading: boolean;
   decidingId: string | null;
   errorKey: string | null;
+  authorizationDenied: boolean;
 }
 
 function emptyInboxState(subjectKey: string | null): InboxOwnedState {
@@ -46,6 +47,7 @@ function emptyInboxState(subjectKey: string | null): InboxOwnedState {
     isLoading: false,
     decidingId: null,
     errorKey: null,
+    authorizationDenied: false,
   };
 }
 
@@ -56,11 +58,18 @@ function isAlreadyDecidedConflict(error: unknown): boolean {
   );
 }
 
+function isAuthorizationDeniedError(error: unknown): error is ApiRequestError {
+  return (
+    error instanceof ApiRequestError &&
+    (error.status === 401 || error.status === 403)
+  );
+}
+
 function inboxErrorKey(error: unknown): string {
   if (!(error instanceof ApiRequestError)) {
     return "settings.toolPermissionInbox.requestFailed";
   }
-  if (error.code === "not_ai_admin") {
+  if (error.status === 401 || error.status === 403) {
     return "settings.toolPermissionInbox.forbidden";
   }
   if (error.code === "tool_permission_request_not_pending") {
@@ -133,6 +142,24 @@ export function AdminToolPermissionInboxSection({
     [],
   );
 
+  const revokeOwnedSubject = useCallback((
+    targetSubjectKey: string,
+    targetSubjectGeneration: number,
+  ): boolean => {
+    if (!isCurrentSubject(targetSubjectKey, targetSubjectGeneration)) {
+      return false;
+    }
+    subjectGenerationRef.current += 1;
+    abortOwnedWork();
+    decidedRequestIdsRef.current.clear();
+    setOwnedState({
+      ...emptyInboxState(targetSubjectKey),
+      errorKey: "settings.toolPermissionInbox.forbidden",
+      authorizationDenied: true,
+    });
+    return true;
+  }, [abortOwnedWork, isCurrentSubject]);
+
   const refreshOwnedSubject = useCallback(async (
     targetSubjectKey: string,
     targetSubjectGeneration: number,
@@ -169,6 +196,10 @@ export function AdminToolPermissionInboxSection({
       );
     } catch (error) {
       if (!isCurrentRefresh()) return;
+      if (isAuthorizationDeniedError(error)) {
+        revokeOwnedSubject(targetSubjectKey, targetSubjectGeneration);
+        return;
+      }
       setOwnedState((previous) =>
         previous.subjectKey === targetSubjectKey
           ? { ...previous, errorKey: inboxErrorKey(error) }
@@ -184,7 +215,7 @@ export function AdminToolPermissionInboxSection({
         );
       }
     }
-  }, [client, isCurrentSubject]);
+  }, [client, isCurrentSubject, revokeOwnedSubject]);
 
   useEffect(() => {
     abortOwnedWork();
@@ -210,12 +241,16 @@ export function AdminToolPermissionInboxSection({
     : subjectKey !== null;
   const decidingId = stateBelongsToSubject ? ownedState.decidingId : null;
   const errorKey = stateBelongsToSubject ? ownedState.errorKey : null;
+  const authorizationDenied = stateBelongsToSubject
+    ? ownedState.authorizationDenied
+    : false;
 
   const decide = useCallback(
     async (requestId: string, decision: ToolPermissionDecision) => {
       const targetSubjectKey = currentSubjectKeyRef.current;
       const targetSubjectGeneration = subjectGenerationRef.current;
       if (!targetSubjectKey) return;
+      if (authorizationDenied) return;
       if (isInboxDecisionDisabled(isLoading, decidingId)) return;
       const decisionGeneration = decisionGenerationRef.current + 1;
       decisionGenerationRef.current = decisionGeneration;
@@ -251,6 +286,10 @@ export function AdminToolPermissionInboxSection({
         await refreshOwnedSubject(targetSubjectKey, targetSubjectGeneration);
       } catch (error) {
         if (!isCurrentDecision()) return;
+        if (isAuthorizationDeniedError(error)) {
+          revokeOwnedSubject(targetSubjectKey, targetSubjectGeneration);
+          return;
+        }
         if (isAlreadyDecidedConflict(error)) {
           decidedRequestIdsRef.current.add(requestId);
           setOwnedState((previous) =>
@@ -283,7 +322,15 @@ export function AdminToolPermissionInboxSection({
         }
       }
     },
-    [client, decidingId, isCurrentSubject, isLoading, refreshOwnedSubject],
+    [
+      authorizationDenied,
+      client,
+      decidingId,
+      isCurrentSubject,
+      isLoading,
+      refreshOwnedSubject,
+      revokeOwnedSubject,
+    ],
   );
 
   // This strict projection is the only frontend authorization gate.  It
@@ -309,9 +356,10 @@ export function AdminToolPermissionInboxSection({
         <button
           type="button"
           onClick={() =>
+            !authorizationDenied &&
             void refreshOwnedSubject(subjectKey, subjectGenerationRef.current)
           }
-          disabled={isLoading || decidingId !== null}
+          disabled={authorizationDenied || isLoading || decidingId !== null}
           className="enterprise-icon-button disabled:opacity-50"
           aria-label={t("settings.toolPermissionInbox.refresh")}
         >

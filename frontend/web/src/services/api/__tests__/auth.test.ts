@@ -104,6 +104,34 @@ test("current-user projection preserves the authenticated tenant subject", async
   }
 });
 
+test("subject-changing auth transports forward their operation abort signal", async () => {
+  const stubs = installAuthApiBrowserStubs();
+  const controller = new AbortController();
+  try {
+    await authApi.getCurrentUser({ signal: controller.signal });
+    await authApi.login(
+      { username: "user@example.com", password: "safe-test" },
+      undefined,
+      controller.signal,
+    );
+    await authApi.handleOAuthCallback(
+      "github",
+      "code",
+      "state",
+      controller.signal,
+    );
+    await authApi.logout(controller.signal);
+
+    assert.equal(stubs.fetchInit.length, 4);
+    assert.equal(
+      stubs.fetchInit.every((init) => init.signal === controller.signal),
+      true,
+    );
+  } finally {
+    stubs.restore();
+  }
+});
+
 test("login clears auth-scoped preview caches and marks cookie session without storing bearer tokens", async () => {
   const stubs = installAuthApiBrowserStubs();
   let clearCount = 0;

@@ -8911,13 +8911,20 @@ async def list_authorized_session_runs(
                queue_admission.queue_admission_ordinal
         from runs
         left join lateral (
-          select (run_events.payload_json->>'queue_admission_ordinal')::bigint
-                 as queue_admission_ordinal
+          select case
+            when run_events.payload_json->>'queue_admission_ordinal' ~ '^[0-9]+$'
+             and length(run_events.payload_json->>'queue_admission_ordinal') <= 19
+             and (
+               length(run_events.payload_json->>'queue_admission_ordinal') < 19
+               or run_events.payload_json->>'queue_admission_ordinal' <= '9223372036854775807'
+             )
+            then (run_events.payload_json->>'queue_admission_ordinal')::bigint
+            else null
+          end as queue_admission_ordinal
           from run_events
           where run_events.tenant_id = runs.tenant_id
             and run_events.run_id = runs.id
             and run_events.event_type = 'queued'
-            and run_events.payload_json->>'queue_admission_ordinal' ~ '^[0-9]+$'
           order by run_events.sequence desc
           limit 1
         ) queue_admission on true
@@ -8971,7 +8978,7 @@ async def list_authorized_messages(
         where messages.tenant_id = %s
           and messages.session_id = %s
           and sessions.user_id = %s
-        order by messages.created_at asc
+        order by messages.created_at asc, messages.id asc
         """,
         (tenant_id, session_id, user_id),
     )

@@ -441,7 +441,7 @@ test("administrator inbox ignores an aborted stale refresh generation", async ()
   }
 });
 
-test("governance subject switch clears tenant A immediately and ignores its deferred refresh", async () => {
+test("governance subject switch ignores a deferred tenant A 403 refresh", async () => {
   const staleTenantA = createDeferred<Awaited<ReturnType<AdminToolPermissionInboxClient["list"]>>>();
   const currentTenantB = createDeferred<Awaited<ReturnType<AdminToolPermissionInboxClient["list"]>>>();
   const signals: Array<AbortSignal | undefined> = [];
@@ -498,21 +498,9 @@ test("governance subject switch clears tenant A immediately and ignores its defe
     assert.equal(signals[1]?.aborted, true);
     assert.doesNotMatch(textOf(mounted.container), /tenant-a-write/);
 
-    staleTenantA.resolve({
-      permission_requests: [{
-        request_id: "tpr-stale-a",
-        run_id: "run-a",
-        tool_id: "stale-tenant-a-write",
-        tool_display: "stale-tenant-a-write",
-        risk_level: "high",
-        write_capable: true,
-        status: "pending",
-        allowed_decisions: ["allow_once", "deny"],
-      }],
-      total: 1,
-      status: "pending",
-      limit: 50,
-    });
+    staleTenantA.reject(
+      new ApiRequestError("private-tenant-a-denial", 403, "not_ai_admin"),
+    );
     currentTenantB.resolve({
       permission_requests: [{
         request_id: "tpr-b",
@@ -534,7 +522,113 @@ test("governance subject switch clears tenant A immediately and ignores its defe
     });
 
     assert.match(textOf(mounted.container), /tenant-b-read/);
-    assert.doesNotMatch(textOf(mounted.container), /stale-tenant-a-write/);
+    assert.doesNotMatch(textOf(mounted.container), /private-tenant-a-denial|当前账号无权/);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("current refresh 401 revokes and clears loaded inbox actions", async () => {
+  let listCalls = 0;
+  let denialSignal: AbortSignal | undefined;
+  const client: AdminToolPermissionInboxClient = {
+    list: async (signal) => {
+      listCalls += 1;
+      if (listCalls > 1) {
+        denialSignal = signal;
+        throw new ApiRequestError("private-auth-detail", 401, "session_expired");
+      }
+      return {
+        permission_requests: [{
+          request_id: "tpr-auth-refresh",
+          run_id: "run-owner",
+          tool_id: "loaded-before-refresh-denial",
+          tool_display: "loaded-before-refresh-denial",
+          risk_level: "high",
+          write_capable: true,
+          status: "pending",
+          allowed_decisions: ["allow_once", "deny"],
+        }],
+        total: 1,
+        status: "pending",
+        limit: 50,
+      };
+    },
+    decide: async () => undefined,
+  };
+  const mounted = await mountInbox(adminUser, client);
+  try {
+    assert.match(textOf(mounted.container), /loaded-before-refresh-denial/);
+    const refreshButton = findRefreshButton(mounted.container);
+    assert.ok(refreshButton);
+    await mounted.React.act(async () => {
+      mounted.container.dispatchEvent({
+        type: "click",
+        target: refreshButton,
+        button: 0,
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.equal(denialSignal?.aborted, true);
+    assert.doesNotMatch(textOf(mounted.container), /loaded-before-refresh-denial|允许一次|拒绝/);
+    assert.match(textOf(mounted.container), /当前账号无权处理工具权限请求/);
+    assert.equal(findRefreshButton(mounted.container)?.hasAttribute("disabled"), true);
+    assert.doesNotMatch(textOf(mounted.container), /private-auth-detail/);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("current decision 403 revokes and clears loaded inbox actions", async () => {
+  let decisionSignal: AbortSignal | undefined;
+  const client: AdminToolPermissionInboxClient = {
+    list: async () => ({
+      permission_requests: [{
+        request_id: "tpr-auth-decision",
+        run_id: "run-owner",
+        tool_id: "loaded-before-decision-denial",
+        tool_display: "loaded-before-decision-denial",
+        risk_level: "high",
+        write_capable: true,
+        status: "pending",
+        allowed_decisions: ["allow_once", "deny"],
+      }],
+      total: 1,
+      status: "pending",
+      limit: 50,
+    }),
+    decide: async (_requestId, _decision, signal) => {
+      decisionSignal = signal;
+      throw new ApiRequestError(
+        "private-permission-detail",
+        403,
+        "missing_permission:settings:manage",
+      );
+    },
+  };
+  const mounted = await mountInbox(adminUser, client);
+  try {
+    const deny = findButton(mounted.container, "拒绝");
+    assert.ok(deny);
+    await mounted.React.act(async () => {
+      mounted.container.dispatchEvent({
+        type: "click",
+        target: deny,
+        button: 0,
+        preventDefault() {},
+      } as never);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.equal(decisionSignal?.aborted, true);
+    assert.doesNotMatch(textOf(mounted.container), /loaded-before-decision-denial|允许一次|拒绝/);
+    assert.match(textOf(mounted.container), /当前账号无权处理工具权限请求/);
+    assert.equal(findRefreshButton(mounted.container)?.hasAttribute("disabled"), true);
+    assert.doesNotMatch(textOf(mounted.container), /private-permission-detail/);
   } finally {
     await mounted.cleanup();
   }

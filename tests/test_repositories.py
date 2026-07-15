@@ -164,8 +164,51 @@ async def test_authorized_session_runs_use_persisted_queue_admission_order_for_c
     assert "event_type = 'queued'" in sql
     assert "payload_json->>'queue_admission_ordinal'" in sql
     assert "~ '^[0-9]+$'" in sql
+    assert "length(run_events.payload_json->>'queue_admission_ordinal') <= 19" in sql
+    assert "<= '9223372036854775807'" in sql
+    assert "case when" in sql
     assert "order by runs.created_at desc, queue_admission.queue_admission_ordinal desc nulls last" in sql
     assert params == ("tenant-a", "user-a", "session-a", 50)
+
+
+@pytest.mark.parametrize(
+    "raw,expected_valid",
+    [
+        ("0", True),
+        ("9223372036854775807", True),
+        ("9223372036854775808", False),
+        ("999999999999999999999999", False),
+        ("-1", False),
+        ("not-a-number", False),
+    ],
+)
+def test_queue_admission_ordinal_bigint_guard_boundaries(raw, expected_valid):
+    valid = (
+        raw.isdigit()
+        and len(raw) <= 19
+        and (len(raw) < 19 or raw <= "9223372036854775807")
+    )
+    assert valid is expected_valid
+
+
+@pytest.mark.asyncio
+async def test_authorized_messages_bind_tenant_session_owner_and_stable_order():
+    conn = RecordingConnection()
+
+    await repositories.list_authorized_messages(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-a",
+    )
+
+    sql, params = conn.calls[-1]
+    assert "join sessions" in sql
+    assert "messages.tenant_id = %s" in sql
+    assert "messages.session_id = %s" in sql
+    assert "sessions.user_id = %s" in sql
+    assert "order by messages.created_at asc, messages.id asc" in sql
+    assert params == ("tenant-a", "session-a", "user-a")
 
 
 @pytest.mark.asyncio

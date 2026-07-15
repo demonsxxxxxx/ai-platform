@@ -9,10 +9,13 @@ const useAuthSource = readFileSync(
 
 test("useAuth bootstraps browser auth from the backend cookie session probe", () => {
   assert.match(useAuthSource, /const hadSessionMarker = !!getAccessToken\(\);/);
-  assert.match(useAuthSource, /const currentUser = await authApi\.getCurrentUser\(\);/);
   assert.match(
     useAuthSource,
-    /if \(!hadSessionMarker\) \{[\s\S]*setTokens\("cookie-session"\);[\s\S]*}\s*applyAuthenticatedUser\(currentUser\);[\s\S]*if \(!hadSessionMarker\) \{[\s\S]*new CustomEvent\("auth:login"\)/,
+    /const currentUser = await authApi\.getCurrentUser\(\{[\s\S]*signal: owner\.abortController\.signal/,
+  );
+  assert.match(
+    useAuthSource,
+    /if \(!hadSessionMarker\) \{[\s\S]*setTokens\("cookie-session"\);[\s\S]*applyAuthenticatedUser\(currentUser, owner\)/,
   );
   assert.doesNotMatch(
     useAuthSource,
@@ -26,19 +29,20 @@ test("useAuth listens for cross-tab cookie-session marker changes", () => {
     useAuthSource,
     /const handleStorage = \(event: StorageEvent\) => \{[\s\S]*handleBrowserAuthStorageEvent\(event, refreshUser\);[\s\S]*};/,
   );
-  const applyAuthenticatedUserBlock = useAuthSource.match(
-    /const applyAuthenticatedUser = useCallback\(\(currentUser: User\) => \{[\s\S]*?\}, \[\]\);/,
+  assert.match(
+    useAuthSource,
+    /const applyAuthenticatedUser = useCallback\([\s\S]*if \(!isCurrentAuthOperation\(owner\)\) return false;/,
   );
-  assert.ok(applyAuthenticatedUserBlock);
-  assert.doesNotMatch(applyAuthenticatedUserBlock[0], /setTokens\("cookie-session"\)/);
+  assert.match(
+    useAuthSource,
+    /const beginAuthOperation = useCallback\([\s\S]*invalidateAuthOperation\(\);[\s\S]*new AbortController\(\)/,
+  );
 });
 
 test("useAuth rolls back the backend session when login or OAuth hydration fails", () => {
-  assert.match(useAuthSource, /const rollbackServerSession = useCallback\(async \(\) => \{/);
-  assert.match(useAuthSource, /await authApi\.logout\(\);/);
   assert.match(
     useAuthSource,
-    /const currentUser = await authApi\.getCurrentUser\(\);[\s\S]*} catch \(error\) \{[\s\S]*await rollbackServerSession\(\);[\s\S]*throw error;[\s\S]*}/,
+    /let sessionEstablished = false;[\s\S]*sessionEstablished = true;[\s\S]*if \(sessionEstablished\) \{[\s\S]*await authApi\.logout\(owner\.abortController\.signal\);[\s\S]*throw error;/,
   );
 });
 

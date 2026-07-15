@@ -9,6 +9,7 @@ import {
   useState,
   useEffect,
   useCallback,
+  useRef,
   type ReactNode,
 } from "react";
 import {
@@ -117,6 +118,11 @@ interface AuthContextType extends AuthState {
 // 创建认证上下文
 const AuthContext = createContext<AuthContextType | null>(null);
 
+interface AuthOperationOwner {
+  generation: number;
+  abortController: AbortController;
+}
+
 // Auth Provider 组件
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -126,11 +132,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [dynamicPermissions, setDynamicPermissions] = useState<Permission[]>(
     [],
   );
+  const mountedRef = useRef(false);
+  const authOperationGenerationRef = useRef(0);
+  const authOperationAbortControllerRef = useRef<AbortController | null>(null);
 
   // 权限列表：从 API 动态获取
   const permissions = dynamicPermissions;
 
-  const applyAuthenticatedUser = useCallback((currentUser: User) => {
+  const invalidateAuthOperation = useCallback(() => {
+    authOperationGenerationRef.current += 1;
+    authOperationAbortControllerRef.current?.abort();
+    authOperationAbortControllerRef.current = null;
+  }, []);
+
+  const beginAuthOperation = useCallback((): AuthOperationOwner => {
+    invalidateAuthOperation();
+    const abortController = new AbortController();
+    authOperationAbortControllerRef.current = abortController;
+    return {
+      generation: authOperationGenerationRef.current,
+      abortController,
+    };
+  }, [invalidateAuthOperation]);
+
+  const isCurrentAuthOperation = useCallback((owner: AuthOperationOwner) => (
+    mountedRef.current &&
+    authOperationGenerationRef.current === owner.generation &&
+    authOperationAbortControllerRef.current === owner.abortController &&
+    !owner.abortController.signal.aborted
+  ), []);
+
+  const applyAuthenticatedUser = useCallback((
+    currentUser: User,
+    owner: AuthOperationOwner,
+  ): boolean => {
+    if (!isCurrentAuthOperation(owner)) return false;
     setToken(getAccessToken());
     setUser(currentUser);
     applyUserMetadata(currentUser.metadata);
@@ -143,66 +179,87 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } else {
       setDynamicPermissions([]);
     }
-  }, []);
+    return true;
+  }, [isCurrentAuthOperation]);
 
-  const clearLocalAuthView = useCallback(() => {
+  const applyLoggedOut = useCallback((owner: AuthOperationOwner): boolean => {
+    if (!isCurrentAuthOperation(owner)) return false;
     setToken(null);
     setUser(null);
     setDynamicPermissions([]);
-  }, []);
-
-  const rollbackServerSession = useCallback(async () => {
-    await authApi.logout();
-  }, []);
+    return true;
+  }, [isCurrentAuthOperation]);
 
   const refreshUser = useCallback(async () => {
     if (!isAuthenticated()) return;
-
+    const owner = beginAuthOperation();
+    if (isCurrentAuthOperation(owner)) setIsLoading(true);
     try {
-      const currentUser = await authApi.getCurrentUser();
-      applyAuthenticatedUser(currentUser);
+      const currentUser = await authApi.getCurrentUser({
+        signal: owner.abortController.signal,
+      });
+      applyAuthenticatedUser(currentUser, owner);
     } catch (error) {
+      if (!isCurrentAuthOperation(owner)) return;
       if (error instanceof Error && /Unauthorized/i.test(error.message)) {
-        clearLocalAuthView();
+        applyLoggedOut(owner);
         return;
       }
       console.error("Failed to refresh user info:", error);
+    } finally {
+      if (isCurrentAuthOperation(owner)) setIsLoading(false);
     }
-  }, [applyAuthenticatedUser, clearLocalAuthView]);
+  }, [applyAuthenticatedUser, applyLoggedOut, beginAuthOperation, isCurrentAuthOperation]);
 
   // 初始化：检查现有 token 并获取用户信息
   useEffect(() => {
+    mountedRef.current = true;
+    const owner = beginAuthOperation();
     const initAuth = async () => {
       const hadSessionMarker = !!getAccessToken();
 
       try {
-        const currentUser = await authApi.getCurrentUser();
+        const currentUser = await authApi.getCurrentUser({
+          signal: owner.abortController.signal,
+        });
+        if (!isCurrentAuthOperation(owner)) return;
         if (!hadSessionMarker) {
           setTokens("cookie-session");
         }
-        applyAuthenticatedUser(currentUser);
-        if (!hadSessionMarker) {
+        if (applyAuthenticatedUser(currentUser, owner) && !hadSessionMarker) {
           window.dispatchEvent(new CustomEvent("auth:login"));
         }
       } catch (err) {
+        if (!isCurrentAuthOperation(owner)) return;
         if (err instanceof Error && /Unauthorized/i.test(err.message)) {
-          clearLocalAuthView();
-          setIsLoading(false);
+          applyLoggedOut(owner);
           return;
         }
         console.warn("[useAuth] Failed to fetch current user:", err);
+      } finally {
+        if (isCurrentAuthOperation(owner)) setIsLoading(false);
       }
-
-      setIsLoading(false);
     };
 
-    initAuth();
-  }, [applyAuthenticatedUser, clearLocalAuthView]);
+    void initAuth();
+    return () => {
+      mountedRef.current = false;
+      invalidateAuthOperation();
+    };
+  }, [
+    applyAuthenticatedUser,
+    applyLoggedOut,
+    beginAuthOperation,
+    invalidateAuthOperation,
+    isCurrentAuthOperation,
+  ]);
 
   // 监听登出事件
   useEffect(() => {
     const handleLogout = () => {
-      clearLocalAuthView();
+      const owner = beginAuthOperation();
+      applyLoggedOut(owner);
+      if (isCurrentAuthOperation(owner)) setIsLoading(false);
     };
 
     const handleStorage = (event: StorageEvent) => {
@@ -215,22 +272,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("auth:logout", handleLogout);
       window.removeEventListener("storage", handleStorage);
     };
-  }, [clearLocalAuthView, refreshUser]);
+  }, [applyLoggedOut, beginAuthOperation, isCurrentAuthOperation, refreshUser]);
 
   // 登录
   const login = useCallback(
     async (credentials: LoginRequest, turnstileToken?: string) => {
-      setIsLoading(true);
+      const owner = beginAuthOperation();
+      if (isCurrentAuthOperation(owner)) setIsLoading(true);
+      let sessionEstablished = false;
       try {
-        await authApi.login(credentials, turnstileToken);
-
-        try {
-          const currentUser = await authApi.getCurrentUser();
-          applyAuthenticatedUser(currentUser);
-        } catch (error) {
-          await rollbackServerSession();
-          throw error;
-        }
+        await authApi.login(
+          credentials,
+          turnstileToken,
+          owner.abortController.signal,
+        );
+        if (!isCurrentAuthOperation(owner)) return null;
+        sessionEstablished = true;
+        const currentUser = await authApi.getCurrentUser({
+          signal: owner.abortController.signal,
+        });
+        if (!applyAuthenticatedUser(currentUser, owner)) return null;
 
         // 登录成功后，跳转到之前的页面
         const redirectPath = getRedirectPath();
@@ -238,11 +299,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           clearRedirectPath();
         }
         return redirectPath ?? null;
+      } catch (error) {
+        if (!isCurrentAuthOperation(owner)) return null;
+        if (sessionEstablished) {
+          await authApi.logout(owner.abortController.signal);
+        }
+        throw error;
       } finally {
-        setIsLoading(false);
+        if (isCurrentAuthOperation(owner)) setIsLoading(false);
       }
     },
-    [applyAuthenticatedUser, rollbackServerSession],
+    [applyAuthenticatedUser, beginAuthOperation, isCurrentAuthOperation],
   );
 
   // 注册
@@ -267,40 +334,60 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // OAuth 登录 - 直接导航到后端 OAuth 端点，由服务端重定向到提供商
   const loginWithOAuth = useCallback(async (provider: string) => {
+    beginAuthOperation();
     window.location.href = buildOAuthLoginUrl(provider);
-  }, []);
+  }, [beginAuthOperation]);
 
   // 处理 OAuth 回调
   const handleOAuthCallback = useCallback(
     async (provider: string, code: string, state: string) => {
-      setIsLoading(true);
+      const owner = beginAuthOperation();
+      if (isCurrentAuthOperation(owner)) setIsLoading(true);
+      let sessionEstablished = false;
       try {
-        await authApi.handleOAuthCallback(provider, code, state);
-
-        try {
-          const currentUser = await authApi.getCurrentUser();
-          applyAuthenticatedUser(currentUser);
-        } catch (error) {
-          await rollbackServerSession();
-          throw error;
+        await authApi.handleOAuthCallback(
+          provider,
+          code,
+          state,
+          owner.abortController.signal,
+        );
+        if (!isCurrentAuthOperation(owner)) return;
+        sessionEstablished = true;
+        const currentUser = await authApi.getCurrentUser({
+          signal: owner.abortController.signal,
+        });
+        applyAuthenticatedUser(currentUser, owner);
+      } catch (error) {
+        if (!isCurrentAuthOperation(owner)) return;
+        if (sessionEstablished) {
+          await authApi.logout(owner.abortController.signal);
         }
+        throw error;
       } finally {
-        setIsLoading(false);
+        if (isCurrentAuthOperation(owner)) setIsLoading(false);
       }
     },
-    [applyAuthenticatedUser, rollbackServerSession],
+    [applyAuthenticatedUser, beginAuthOperation, isCurrentAuthOperation],
   );
 
   // 登出
   const logout = useCallback(async () => {
+    const owner = beginAuthOperation();
+    if (isCurrentAuthOperation(owner)) setIsLoading(true);
     try {
-      await authApi.logout();
+      await authApi.logout(owner.abortController.signal);
+      if (isCurrentAuthOperation(owner)) {
+        applyLoggedOut(owner);
+        setIsLoading(false);
+      }
       return true;
     } catch (error) {
+      if (!isCurrentAuthOperation(owner)) return true;
       console.error("[useAuth] Failed to logout:", error);
+      setIsLoading(false);
       return false;
     }
-  }, []);
+  }, [applyLoggedOut, beginAuthOperation, isCurrentAuthOperation]);
 
   // 检查是否拥有某个权限
   const hasPermission = useCallback(

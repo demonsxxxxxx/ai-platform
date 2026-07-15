@@ -216,6 +216,8 @@ export interface HistoryEventData {
 // History event from backend
 export interface HistoryEvent {
   id?: string | number;
+  /** Production compatibility history mirrors the public outer event type. */
+  type?: string;
   /** Monotonic persisted run-event cursor; synthetic history entries omit it. */
   sequence?: number;
   event_type: string;

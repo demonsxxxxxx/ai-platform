@@ -59,6 +59,7 @@ export const authApi = {
   async login(
     credentials: LoginRequest,
     turnstileToken?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
@@ -75,6 +76,7 @@ export const authApi = {
         credentials: "include",
         body: JSON.stringify(credentials),
         headers,
+        signal,
       },
     );
 
@@ -120,9 +122,10 @@ export const authApi = {
   /**
    * 获取当前用户信息
    */
-  async getCurrentUser(): Promise<User> {
+  async getCurrentUser(options: { signal?: AbortSignal } = {}): Promise<User> {
     const principal = await authFetch<PrincipalResponseWire>(
       `${API_BASE}/api/ai/auth/me`,
+      { signal: options.signal },
     );
     return mapPrincipalToUser(principal);
   },
@@ -130,13 +133,14 @@ export const authApi = {
   /**
    * 登出
    */
-  async logout(): Promise<void> {
+  async logout(signal?: AbortSignal): Promise<void> {
     const response = await fetch(`${API_BASE}/api/ai/auth/logout`, {
       method: "POST",
       credentials: "include",
       headers: {
         "Accept-Language": i18n.language || "en",
       },
+      signal,
     });
     if (response.ok || response.status === 401 || response.status === 403) {
       clearAuthState();
@@ -231,6 +235,7 @@ export const authApi = {
     provider: string,
     code: string,
     state: string,
+    signal?: AbortSignal,
   ): Promise<TokenResponse> {
     await authFetch<Record<string, unknown>>(
       `${API_BASE}/api/auth/oauth/${provider}/callback`,
@@ -239,6 +244,7 @@ export const authApi = {
         skipAuth: true,
         credentials: "include",
         body: JSON.stringify({ code, state }),
+        signal,
       },
     );
 

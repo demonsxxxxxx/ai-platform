@@ -31,6 +31,65 @@ test("reconstructMessagesFromEvents preserves backend user message ids", () => {
   assert.equal(messages[0]?.runId, "run-1");
 });
 
+test("production compatibility history reconstructs each persisted user turn before its run answer", () => {
+  const messages = reconstructMessagesFromEvents(
+    [
+      {
+        id: "msg-old-user",
+        type: "user:message",
+        event_type: "user:message",
+        run_id: "run-old",
+        timestamp: "2026-07-15T01:00:00.000Z",
+        data: {
+          message_id: "msg-old-user",
+          run_id: "run-old",
+          content: "第一轮问题",
+        },
+      },
+      {
+        id: "run-old:final",
+        type: "message:chunk",
+        event_type: "message:chunk",
+        run_id: "run-old",
+        timestamp: "2026-07-15T01:01:00.000Z",
+        data: { run_id: "run-old", content: "第一轮回答" },
+      },
+      {
+        id: "msg-new-user",
+        type: "user:message",
+        event_type: "user:message",
+        run_id: "run-new",
+        timestamp: "2026-07-15T02:00:00.000Z",
+        data: {
+          message_id: "msg-new-user",
+          run_id: "run-new",
+          content: "第二轮问题",
+        },
+      },
+      {
+        id: "run-new:final",
+        type: "message:chunk",
+        event_type: "message:chunk",
+        run_id: "run-new",
+        timestamp: "2026-07-15T02:01:00.000Z",
+        data: { run_id: "run-new", content: "第二轮回答" },
+      },
+    ] satisfies HistoryEvent[],
+    new Set<string>(),
+    { activeSubagentStack: [] },
+  );
+
+  assert.deepEqual(
+    messages.map((message) => [message.role, message.runId, message.content]),
+    [
+      ["user", "run-old", "第一轮问题"],
+      ["assistant", "run-old", "第一轮回答"],
+      ["user", "run-new", "第二轮问题"],
+      ["assistant", "run-new", "第二轮回答"],
+    ],
+  );
+});
+
 test("reconstructMessagesFromEvents keeps overlapping runs in independent backend-ordered assistant segments", () => {
   const messages = reconstructMessagesFromEvents(
     [
