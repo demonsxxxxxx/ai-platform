@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.repositories import RepositoryNotFoundError
+from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import Settings
 
 
@@ -157,6 +157,17 @@ def install_route_fakes(
         )
         rows = []
         for row in catalog_rows:
+            distribution = next(
+                (
+                    item
+                    for item in distributions
+                    if item.get("capability_kind") == "skill"
+                    and item.get("capability_id") == row["skill_id"]
+                ),
+                None,
+            )
+            if skills_marketplace.repositories.is_capability_distribution_archived(distribution):
+                continue
             projected = dict(row)
             if release_policy and release_policy["skill_id"] == row["skill_id"]:
                 version = str(release_policy["current_version"])
@@ -219,10 +230,46 @@ def install_route_fakes(
         )
         for row in distributions:
             if row.get("capability_kind") == capability_kind and row.get("capability_id") == capability_id:
+                if skills_marketplace.repositories.is_capability_distribution_archived(row):
+                    raise RepositoryConflictError("capability_distribution_archived")
                 current = str(row.get("status") or "disabled")
                 row["status"] = "active" if (enabled if enabled is not None else current != "active") else "disabled"
                 return dict(row)
         raise RepositoryNotFoundError("capability_distribution_not_found")
+
+    async def fake_archive_distribution(conn, *, tenant_id, capability_kind, capability_id, archived_by):
+        calls.append(
+            (
+                "archive_distribution",
+                {
+                    "tenant_id": tenant_id,
+                    "capability_kind": capability_kind,
+                    "capability_id": capability_id,
+                    "archived_by": archived_by,
+                },
+            )
+        )
+        for row in distributions:
+            if row.get("capability_kind") == capability_kind and row.get("capability_id") == capability_id:
+                metadata_json = row.setdefault("metadata_json", {})
+                metadata_json.setdefault("archived_at", "2026-07-15T00:00:00.000Z")
+                metadata_json.setdefault("archived_by", archived_by)
+                row["status"] = "disabled"
+                row["visible_to_user"] = False
+                return dict(row)
+        raise RepositoryNotFoundError("capability_distribution_not_found")
+
+    async def fake_acquire_distribution_locks(conn, *, tenant_id, capability_kind, capability_ids):
+        calls.append(
+            (
+                "acquire_distribution_locks",
+                {
+                    "tenant_id": tenant_id,
+                    "capability_kind": capability_kind,
+                    "capability_ids": list(capability_ids),
+                },
+            )
+        )
 
     async def fake_list_overlays(conn, *, tenant_id, user_id, skill_ids, include_content=False):
         calls.append(
@@ -411,6 +458,8 @@ def install_route_fakes(
     monkeypatch.setattr(skills_marketplace.repositories, "list_capability_distribution_rows", fake_list_distributions)
     monkeypatch.setattr(skills_marketplace.repositories, "get_capability_distribution_row", fake_get_distribution)
     monkeypatch.setattr(skills_marketplace.repositories, "toggle_capability_distribution_row", fake_toggle_distribution)
+    monkeypatch.setattr(skills_marketplace.repositories, "archive_capability_distribution_row", fake_archive_distribution)
+    monkeypatch.setattr(skills_marketplace.repositories, "acquire_capability_distribution_lifecycle_locks", fake_acquire_distribution_locks)
     monkeypatch.setattr(skills_marketplace.repositories, "list_user_skill_file_overlays", fake_list_overlays)
     monkeypatch.setattr(skills_marketplace.repositories, "upsert_user_skill_file", fake_upsert_file)
     monkeypatch.setattr(skills_marketplace.repositories, "delete_user_skill_file", fake_delete_file)
@@ -1150,6 +1199,7 @@ def test_shared_skill_lifecycle_requires_admin_and_marketplace_install_stays_use
     assert install_response.status_code == 200
     assert update_response.status_code == 200
     assert not any(name == "toggle_distribution" for name, _ in calls)
+    assert not any(name == "archive_distribution" for name, _ in calls)
 
     distributions[0]["visible_to_user"] = False
     assert client.post("/api/marketplace/qa-file-reviewer/install", headers=ordinary).status_code == 404
@@ -1305,6 +1355,132 @@ def test_skill_toggle_and_marketplace_install_update_tenant_availability(monkeyp
             "updated_by": "ordinary",
         },
     ]
+
+
+def test_skill_delete_must_hide_archived_distribution_from_admin_refresh(monkeypatch):
+    """A delete must remove the tenant binding from the next admin projection."""
+
+    install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+    admin_headers = headers("skill:read,skill:delete", roles="admin")
+
+    deleted = client.delete("/api/skills/qa-file-reviewer", headers=admin_headers)
+    refreshed = client.get("/api/skills/qa-file-reviewer", headers=admin_headers)
+
+    assert deleted.status_code == 200
+    assert refreshed.status_code == 404
+
+
+def test_skill_batch_delete_must_hide_each_archived_distribution_from_admin_refresh(monkeypatch):
+    """Batch delete has the same tenant archive semantics as single delete."""
+
+    install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+    admin_headers = headers("skill:read,skill:delete", roles="admin")
+
+    deleted = client.post(
+        "/api/skills/batch/delete",
+        json={"names": ["qa-file-reviewer"]},
+        headers=admin_headers,
+    )
+    refreshed = client.get("/api/skills/qa-file-reviewer", headers=admin_headers)
+
+    assert deleted.status_code == 200
+    assert refreshed.status_code == 404
+
+
+def test_archived_skill_toggle_is_rejected_without_reactivation(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    client = TestClient(create_app())
+    admin_headers = headers("skill:read,skill:write,skill:delete", roles="admin")
+
+    assert client.delete("/api/skills/qa-file-reviewer", headers=admin_headers).status_code == 200
+    response = client.patch(
+        "/api/skills/qa-file-reviewer/toggle",
+        json={"enabled": True},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "capability_distribution_archived"
+    assert [name for name, _ in calls].count("archive_distribution") == 1
+    assert [name for name, _ in calls].count("toggle_distribution") == 1
+
+
+def test_skill_batch_delete_returns_partial_results_inside_one_transaction(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+    transaction_id = 0
+
+    @asynccontextmanager
+    async def recording_transaction():
+        nonlocal transaction_id
+        transaction_id += 1
+        calls.append(("tx_enter", {"id": transaction_id}))
+        try:
+            yield object()
+        except Exception:
+            calls.append(("tx_rollback", {"id": transaction_id}))
+            raise
+        else:
+            calls.append(("tx_commit", {"id": transaction_id}))
+
+    async def archive_partial(conn, *, tenant_id, capability_kind, capability_id, archived_by):
+        if capability_id == "missing-skill":
+            raise RepositoryNotFoundError("capability_distribution_not_found")
+        calls.append(("archive_distribution", {"capability_id": capability_id, "tenant_id": tenant_id}))
+        return {"capability_id": capability_id, "status": "disabled", "visible_to_user": False}
+
+    monkeypatch.setattr("app.routes.skills_marketplace.transaction", recording_transaction)
+    monkeypatch.setattr("app.routes.skills_marketplace.repositories.archive_capability_distribution_row", archive_partial)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/skills/batch/delete",
+        json={"names": ["qa-file-reviewer", "missing-skill"]},
+        headers=headers("skill:delete", roles="admin"),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "deleted": ["qa-file-reviewer"],
+        "errors": [{"name": "missing-skill", "reason": "capability_distribution_not_found"}],
+    }
+    assert [name for name, _ in calls].count("tx_enter") == 1
+    assert [name for name, _ in calls].count("tx_commit") == 1
+    assert "tx_rollback" not in [name for name, _ in calls]
+    assert [payload["target_id"] for name, payload in calls if name == "audit"] == ["qa-file-reviewer"]
+
+
+def test_skill_batch_delete_rolls_back_when_audit_write_fails(monkeypatch):
+    calls = install_route_fakes(monkeypatch)
+
+    @asynccontextmanager
+    async def recording_transaction():
+        calls.append(("tx_enter", {}))
+        try:
+            yield object()
+        except Exception:
+            calls.append(("tx_rollback", {}))
+            raise
+        else:
+            calls.append(("tx_commit", {}))
+
+    async def fail_audit(conn, **kwargs):
+        calls.append(("audit_failed", kwargs))
+        raise RuntimeError("audit_write_failed")
+
+    monkeypatch.setattr("app.routes.skills_marketplace.transaction", recording_transaction)
+    monkeypatch.setattr("app.routes.skills_marketplace.repositories.append_audit_log", fail_audit)
+    client = TestClient(create_app(), raise_server_exceptions=False)
+
+    response = client.post(
+        "/api/skills/batch/delete",
+        json={"names": ["qa-file-reviewer"]},
+        headers=headers("skill:delete", roles="admin"),
+    )
+
+    assert response.status_code == 500
+    assert [name for name, _ in calls if name.startswith("tx_")] == ["tx_enter", "tx_rollback"]
 
 
 def test_public_skill_write_routes_map_missing_skill_to_stable_json_404(monkeypatch):
@@ -1553,7 +1729,10 @@ def test_public_skill_batch_routes_map_to_tenant_availability(monkeypatch):
     assert delete_response.status_code == 200
     assert delete_response.json() == {"deleted": ["qa-file-reviewer"], "errors": []}
 
-    assert [payload["enabled"] for name, payload in calls if name == "toggle_distribution"] == [False, False]
+    assert [payload["enabled"] for name, payload in calls if name == "toggle_distribution"] == [False]
+    assert [payload["capability_id"] for name, payload in calls if name == "archive_distribution"] == [
+        "qa-file-reviewer"
+    ]
 
 
 def test_public_skill_zip_preview_projects_package_without_persistence(monkeypatch):
@@ -2203,7 +2382,10 @@ def test_public_skill_direct_marketplace_lifecycle_updates_catalog_release_polic
         and payload["previous_version"] == "hash-marketplace"
         for name, payload in calls
     )
-    assert [payload["enabled"] for name, payload in calls if name == "toggle_distribution"] == [False, True, False]
+    assert [payload["enabled"] for name, payload in calls if name == "toggle_distribution"] == [False, True]
+    assert [payload["capability_id"] for name, payload in calls if name == "archive_distribution"] == [
+        "qa-file-reviewer"
+    ]
     audit_actions = [payload["action"] for name, payload in calls if name == "audit"]
     assert "marketplace.skill.created" in audit_actions
     assert "marketplace.skill.updated" in audit_actions

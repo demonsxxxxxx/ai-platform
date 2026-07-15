@@ -13,6 +13,9 @@ from app.capability_distribution import (
     CapabilityAuthorizationDenial,
     CapabilityDistributionSubject,
     capability_distribution_audit_payload,
+    has_valid_capability_distribution_archive_evidence,
+    is_capability_distribution_archived as shared_capability_distribution_archived,
+    is_valid_archive_actor,
     resolve_capability_access,
 )
 from app.control_plane_contracts import (
@@ -833,6 +836,7 @@ async def list_public_skill_catalog(
           coalesce(tenant_capability_distributions.visible_to_user, false) as visible_to_user,
           coalesce(tenant_capability_distributions.department_ids, array[]::text[]) as department_ids,
           coalesce(tenant_capability_distributions.allowed_roles, '[]'::jsonb) as allowed_roles,
+          coalesce(tenant_capability_distributions.metadata_json, '{}'::jsonb) as distribution_metadata_json,
           coalesce(skill_versions.status, 'active') as version_status,
           skill_release_policies.current_version as release_policy_version,
           skill_release_policies.previous_version as release_policy_previous_version,
@@ -874,6 +878,9 @@ async def list_public_skill_catalog(
     rows = []
     for row in list(await cursor.fetchall()):
         projected = dict(row)
+        if is_capability_distribution_archived({"metadata_json": projected.get("distribution_metadata_json")}):
+            continue
+        projected.pop("distribution_metadata_json", None)
         if rollout_key is not None:
             release_decision = _principal_skill_release_decision(
                 projected,
@@ -1196,12 +1203,131 @@ def _capability_distribution_projection(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def is_capability_distribution_archived(row: dict[str, Any] | None) -> bool:
+    """Return whether a tenant capability binding has been archived."""
+
+    return shared_capability_distribution_archived(row)
+
+
+async def _acquire_capability_distribution_lifecycle_lock(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str,
+    capability_id: str,
+) -> None:
+    """Serialize one distribution lifecycle key, including writes for currently missing rows."""
+
+    lock_scope = json.dumps(
+        {
+            "capability_id": capability_id,
+            "capability_kind": capability_kind,
+            "tenant_id": tenant_id,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    await conn.execute(
+        "select pg_advisory_xact_lock(hashtextextended(%s::text, 0::bigint))",
+        (lock_scope,),
+    )
+
+
+async def acquire_capability_distribution_lifecycle_locks(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str,
+    capability_ids: list[str],
+) -> None:
+    """Finish tenant backfill before pre-acquiring ordered lifecycle keys for one batch."""
+
+    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    for capability_id in sorted(set(capability_ids)):
+        await _acquire_capability_distribution_lifecycle_lock(
+            conn,
+            tenant_id=tenant_id,
+            capability_kind=capability_kind,
+            capability_id=capability_id,
+        )
+
+
+async def _lock_capability_distribution_metadata(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str,
+    capability_id: str,
+) -> dict[str, Any] | None:
+    """Lock one binding and return its parsed metadata for archive/write lifecycle decisions."""
+
+    cursor = await conn.execute(
+        """
+        select metadata_json
+        from tenant_capability_distributions
+        where tenant_id = %s and capability_kind = %s and capability_id = %s
+        for update
+        """,
+        (tenant_id, capability_kind, capability_id),
+    )
+    row = await cursor.fetchone()
+    return _capability_distribution_json(row.get("metadata_json")) if row is not None else None
+
+
+async def _require_unarchived_capability_distribution(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str,
+    capability_id: str,
+    allow_missing: bool,
+) -> None:
+    """Reject valid archive markers before a distribution mutation while holding the row lock."""
+
+    metadata_json = await _lock_capability_distribution_metadata(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+    )
+    if metadata_json is None:
+        if not allow_missing:
+            raise RepositoryNotFoundError("capability_distribution_not_found")
+        return
+    if shared_capability_distribution_archived({"metadata_json": metadata_json}):
+        raise RepositoryConflictError("capability_distribution_archived")
+
+
+async def _raise_distribution_update_failure(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str,
+    capability_id: str,
+) -> None:
+    """Distinguish an archived binding from a missing row after a guarded write."""
+
+    cursor = await conn.execute(
+        """
+        select metadata_json
+        from tenant_capability_distributions
+        where tenant_id = %s and capability_kind = %s and capability_id = %s
+        """,
+        (tenant_id, capability_kind, capability_id),
+    )
+    row = await cursor.fetchone()
+    if row is not None and is_capability_distribution_archived(dict(row)):
+        raise RepositoryConflictError("capability_distribution_archived")
+    raise RepositoryNotFoundError("capability_distribution_not_found")
+
+
 async def ensure_tenant_capability_distribution_backfill(
     conn: AsyncConnection,
     *,
     tenant_id: str,
 ) -> None:
-    """Backfill one tenant exactly once and record the completion boundary."""
+    """Backfill one tenant exactly once; insert-only conflicts cannot overwrite lifecycle state."""
 
     completion_cursor = await conn.execute(
         """
@@ -1440,6 +1566,19 @@ async def upsert_capability_distribution_row(
     """Create or update one authoritative capability distribution row."""
 
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    await _acquire_capability_distribution_lifecycle_lock(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+    )
+    await _require_unarchived_capability_distribution(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+        allow_missing=True,
+    )
     cursor = await conn.execute(
         """
         insert into tenant_capability_distributions(
@@ -1476,6 +1615,82 @@ async def upsert_capability_distribution_row(
     )
     row = await cursor.fetchone()
     if row is None:
+        await _raise_distribution_update_failure(
+            conn,
+            tenant_id=tenant_id,
+            capability_kind=capability_kind,
+            capability_id=capability_id,
+        )
+    return _capability_distribution_projection(dict(row))
+
+
+async def archive_capability_distribution_row(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    capability_kind: str,
+    capability_id: str,
+    archived_by: str | None,
+) -> dict[str, Any]:
+    """Archive one tenant capability binding without mutating global Skill evidence."""
+
+    if not is_valid_archive_actor(archived_by):
+        raise RepositoryConflictError("capability_distribution_archive_actor_invalid")
+    await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    await _acquire_capability_distribution_lifecycle_lock(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+    )
+    metadata_json = await _lock_capability_distribution_metadata(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+    )
+    if metadata_json is None:
+        raise RepositoryNotFoundError("capability_distribution_not_found")
+    preserve_existing_evidence = has_valid_capability_distribution_archive_evidence(
+        {"metadata_json": metadata_json}
+    )
+    cursor = await conn.execute(
+        """
+        update tenant_capability_distributions
+        set status = 'disabled',
+            visible_to_user = false,
+            metadata_json = case
+              when jsonb_typeof(metadata_json) = 'object' then metadata_json
+              else '{}'::jsonb
+            end || jsonb_build_object(
+              'archived_at', case
+                when %s::boolean then metadata_json -> 'archived_at'
+                else to_jsonb(to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
+              end,
+              'archived_by', case
+                when %s::boolean then metadata_json -> 'archived_by'
+                else to_jsonb(left(coalesce(%s, ''), 255))
+              end
+            ),
+            updated_by = %s,
+            updated_at = now()
+        where tenant_id = %s and capability_kind = %s and capability_id = %s
+        returning id, tenant_id, capability_kind, capability_id, status, visible_to_user,
+                  scope_mode, department_ids, allowed_roles, metadata_json, updated_by,
+                  created_at, updated_at
+        """,
+        (
+            preserve_existing_evidence,
+            preserve_existing_evidence,
+            archived_by,
+            archived_by,
+            tenant_id,
+            capability_kind,
+            capability_id,
+        ),
+    )
+    row = await cursor.fetchone()
+    if row is None:
         raise RepositoryNotFoundError("capability_distribution_not_found")
     return _capability_distribution_projection(dict(row))
 
@@ -1492,6 +1707,19 @@ async def toggle_capability_distribution_row(
     """Toggle or set the status of one authoritative distribution row."""
 
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    await _acquire_capability_distribution_lifecycle_lock(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+    )
+    await _require_unarchived_capability_distribution(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+        allow_missing=False,
+    )
     cursor = await conn.execute(
         """
         update tenant_capability_distributions
@@ -1511,7 +1739,12 @@ async def toggle_capability_distribution_row(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise RepositoryNotFoundError("capability_distribution_not_found")
+        await _raise_distribution_update_failure(
+            conn,
+            tenant_id=tenant_id,
+            capability_kind=capability_kind,
+            capability_id=capability_id,
+        )
     return _capability_distribution_projection(dict(row))
 
 
@@ -1529,6 +1762,19 @@ async def set_capability_distribution_status(
     if status not in {"active", "disabled"}:
         raise RepositoryConflictError("invalid_capability_distribution_status")
     await ensure_tenant_capability_distribution_backfill(conn, tenant_id=tenant_id)
+    await _acquire_capability_distribution_lifecycle_lock(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+    )
+    await _require_unarchived_capability_distribution(
+        conn,
+        tenant_id=tenant_id,
+        capability_kind=capability_kind,
+        capability_id=capability_id,
+        allow_missing=True,
+    )
     cursor = await conn.execute(
         """
         insert into tenant_capability_distributions(
@@ -1548,7 +1794,12 @@ async def set_capability_distribution_status(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise RepositoryNotFoundError("capability_distribution_not_found")
+        await _raise_distribution_update_failure(
+            conn,
+            tenant_id=tenant_id,
+            capability_kind=capability_kind,
+            capability_id=capability_id,
+        )
     return _capability_distribution_projection(dict(row))
 
 
@@ -1741,6 +1992,12 @@ async def _authorize_run_capabilities(
             capability_kind="skill",
             capability_id=skill_id,
         ) from exc
+    if is_capability_distribution_archived(skill_distribution):
+        raise _capability_not_authorized(
+            context=context,
+            capability_kind="skill",
+            capability_id=skill_id,
+        )
     skill_decision = resolve_capability_access(
         context,
         CapabilityDistributionSubject(
