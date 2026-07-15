@@ -57,32 +57,32 @@ function isRebootstrapRequired(error: unknown): boolean {
   );
 }
 
-async function rotateNonceOnceUnderLock(
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason ?? new DOMException("Browser auth coordination aborted", "AbortError");
+  }
+}
+
+async function bootstrapAndPublishNonce(
   storage: Storage,
-  rejectedNonce: string,
+  nonce: string,
   signal?: AbortSignal,
 ): Promise<void> {
-  const locks = browserLocks();
-  if (!locks) {
-    throw new BrowserAuthCoordinatorError(
-      "auth_context_coordination_unavailable",
-    );
+  try {
+    // Once started, this short request must complete before any nonce is
+    // published. Caller cancellation is handled before a request starts.
+    await authApi.bootstrapAuthContext(nonce);
+  } catch (error) {
+    if (!isRebootstrapRequired(error)) throw error;
+
+    throwIfAborted(signal);
+    const rotatedNonce = createNonce();
+    await authApi.bootstrapAuthContext(rotatedNonce);
+    storage.setItem(BROWSER_AUTH_CONTEXT_NONCE_KEY, rotatedNonce);
+    return;
   }
 
-  await locks.request(
-    BROWSER_AUTH_CONTEXT_LOCK_NAME,
-    { mode: "exclusive" },
-    async () => {
-      const lockedNonce = existingNonce(storage);
-      if (lockedNonce && lockedNonce !== rejectedNonce) {
-        await authApi.bootstrapAuthContext(lockedNonce, signal);
-        return;
-      }
-      const rotatedNonce = createNonce();
-      storage.setItem(BROWSER_AUTH_CONTEXT_NONCE_KEY, rotatedNonce);
-      await authApi.bootstrapAuthContext(rotatedNonce, signal);
-    },
-  );
+  storage.setItem(BROWSER_AUTH_CONTEXT_NONCE_KEY, nonce);
 }
 
 /**
@@ -90,22 +90,18 @@ async function rotateNonceOnceUnderLock(
  *
  * The nonce is non-credential browser coordination data. The server derives
  * the opaque HttpOnly cookie handle and remains the auth-operation authority.
+ *
+ * Cancellation is honored before acquiring or entering the lock and again
+ * immediately before rotating after a rebootstrap response. Once a bootstrap
+ * request starts, its result is completed and the successful nonce is
+ * published before this function returns; callers fence stale ownership after
+ * awaiting this coordinator instead of aborting the request mid-commit.
  */
 export async function ensureBrowserAuthContext(
   signal?: AbortSignal,
 ): Promise<void> {
+  throwIfAborted(signal);
   const storage = browserStorage();
-  const nonce = existingNonce(storage);
-  if (nonce) {
-    try {
-      await authApi.bootstrapAuthContext(nonce, signal);
-    } catch (error) {
-      if (!isRebootstrapRequired(error) || !storage) throw error;
-      await rotateNonceOnceUnderLock(storage, nonce, signal);
-    }
-    return;
-  }
-
   const locks = browserLocks();
   if (!storage || !locks) {
     throw new BrowserAuthCoordinatorError(
@@ -117,19 +113,9 @@ export async function ensureBrowserAuthContext(
     BROWSER_AUTH_CONTEXT_LOCK_NAME,
     { mode: "exclusive" },
     async () => {
-      const lockedNonce = existingNonce(storage);
-      const stableNonce = lockedNonce ?? createNonce();
-      if (!lockedNonce) {
-        storage.setItem(BROWSER_AUTH_CONTEXT_NONCE_KEY, stableNonce);
-      }
-      try {
-        await authApi.bootstrapAuthContext(stableNonce, signal);
-      } catch (error) {
-        if (!isRebootstrapRequired(error)) throw error;
-        const rotatedNonce = createNonce();
-        storage.setItem(BROWSER_AUTH_CONTEXT_NONCE_KEY, rotatedNonce);
-        await authApi.bootstrapAuthContext(rotatedNonce, signal);
-      }
+      throwIfAborted(signal);
+      const stableNonce = existingNonce(storage) ?? createNonce();
+      await bootstrapAndPublishNonce(storage, stableNonce, signal);
     },
   );
 }
