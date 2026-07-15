@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import secrets
 from typing import Any, Mapping
 
@@ -14,6 +15,7 @@ from app.settings import get_settings
 
 
 AUTH_CONTEXT_SCHEMA_VERSION = 1
+AUTH_CONTEXT_MAX_EPOCH = (2**53) - 1
 AUTH_CONTEXT_KEY_PREFIX = "ai-platform:auth-context"
 AUTH_OAUTH_STATE_KEY_PREFIX = "ai-platform:auth-oauth-state"
 
@@ -23,6 +25,49 @@ BOOTSTRAP_AUTH_CONTEXT_SCRIPT = """
 local key = KEYS[1]
 local nonce_binding = ARGV[1]
 local ttl_seconds = tonumber(ARGV[2])
+local request_has_matching_context = ARGV[3] == "1"
+local MAX_EPOCH = 9007199254740991
+
+local function is_finite_number(value)
+  return type(value) == "number"
+    and value == value
+    and value ~= math.huge
+    and value ~= -math.huge
+end
+
+local function is_valid_epoch(value)
+  return is_finite_number(value)
+    and value >= 0
+    and value <= MAX_EPOCH
+    and value == math.floor(value)
+end
+
+local function is_valid_context_record(record)
+  return type(record) == "table"
+    and is_valid_epoch(record["schema_version"])
+    and record["schema_version"] == 1
+    and type(record["nonce_binding"]) == "string"
+    and is_valid_epoch(record["operation_epoch"])
+    and is_valid_epoch(record["tenant_user_subject_epoch"])
+    and type(record["operation_token"]) == "string"
+    and type(record["operation_kind"]) == "string"
+    and is_finite_number(record["lease_until"])
+    and record["lease_until"] >= 0
+    and (record["principal"] == cjson.null or type(record["principal"]) == "table")
+end
+
+local function is_pristine_anonymous(record)
+  return record["principal"] == cjson.null
+    and record["tenant_user_subject_epoch"] == 0
+    and record["operation_epoch"] == 0
+    and record["operation_token"] == ""
+    and record["operation_kind"] == ""
+    and record["lease_until"] == 0
+end
+
+if not is_valid_epoch(ttl_seconds) or ttl_seconds < 1 then
+  return cjson.encode({status = "corrupt"})
+end
 
 local raw = redis.call("GET", key)
 if not raw then
@@ -40,24 +85,16 @@ if not raw then
 end
 
 local ok, record = pcall(cjson.decode, raw)
-if not ok or type(record) ~= "table" or record["schema_version"] ~= 1 then
+if not ok or not is_valid_context_record(record) then
   return cjson.encode({status = "corrupt"})
 end
 if record["nonce_binding"] ~= nonce_binding then
   return cjson.encode({status = "corrupt"})
 end
-if type(record["operation_epoch"]) ~= "number"
-  or type(record["tenant_user_subject_epoch"]) ~= "number"
-  or type(record["operation_token"]) ~= "string"
-  or type(record["operation_kind"]) ~= "string"
-  or type(record["lease_until"]) ~= "number"
-then
-  return cjson.encode({status = "corrupt"})
+if request_has_matching_context or is_pristine_anonymous(record) then
+  return cjson.encode({status = "existing"})
 end
-if record["principal"] ~= cjson.null and type(record["principal"]) ~= "table" then
-  return cjson.encode({status = "corrupt"})
-end
-return cjson.encode({status = "existing"})
+return cjson.encode({status = "rebootstrap_required"})
 """
 
 
@@ -69,24 +106,52 @@ local operation_token = ARGV[2]
 local operation_kind = ARGV[3]
 local redis_time = redis.call("TIME")
 local now = tonumber(redis_time[1]) + (tonumber(redis_time[2]) / 1000000)
+local MAX_EPOCH = 9007199254740991
+
+local function is_finite_number(value)
+  return type(value) == "number"
+    and value == value
+    and value ~= math.huge
+    and value ~= -math.huge
+end
+
+local function is_valid_epoch(value)
+  return is_finite_number(value)
+    and value >= 0
+    and value <= MAX_EPOCH
+    and value == math.floor(value)
+end
+
+local function is_valid_context_record(record)
+  return type(record) == "table"
+    and is_valid_epoch(record["schema_version"])
+    and record["schema_version"] == 1
+    and type(record["nonce_binding"]) == "string"
+    and is_valid_epoch(record["operation_epoch"])
+    and is_valid_epoch(record["tenant_user_subject_epoch"])
+    and type(record["operation_token"]) == "string"
+    and type(record["operation_kind"]) == "string"
+    and is_finite_number(record["lease_until"])
+    and record["lease_until"] >= 0
+    and (record["principal"] == cjson.null or type(record["principal"]) == "table")
+end
+
+if not is_valid_epoch(lease_seconds) or lease_seconds < 1
+  or type(operation_token) ~= "string" or operation_token == ""
+  or type(operation_kind) ~= "string" or operation_kind == ""
+then
+  return cjson.encode({status = "corrupt"})
+end
 
 local raw = redis.call("GET", key)
 if not raw then
   return cjson.encode({status = "missing"})
 end
 local ok, record = pcall(cjson.decode, raw)
-if not ok or type(record) ~= "table" or record["schema_version"] ~= 1 then
+if not ok or not is_valid_context_record(record) then
   return cjson.encode({status = "corrupt"})
 end
-if type(record["operation_epoch"]) ~= "number"
-  or type(record["tenant_user_subject_epoch"]) ~= "number"
-  or type(record["operation_token"]) ~= "string"
-  or type(record["operation_kind"]) ~= "string"
-  or type(record["lease_until"]) ~= "number"
-then
-  return cjson.encode({status = "corrupt"})
-end
-if record["principal"] ~= cjson.null and type(record["principal"]) ~= "table" then
+if record["operation_epoch"] >= MAX_EPOCH then
   return cjson.encode({status = "corrupt"})
 end
 
@@ -111,24 +176,51 @@ local operation_token = ARGV[2]
 local principal_json = ARGV[3]
 local redis_time = redis.call("TIME")
 local now = tonumber(redis_time[1]) + (tonumber(redis_time[2]) / 1000000)
+local MAX_EPOCH = 9007199254740991
+
+local function is_finite_number(value)
+  return type(value) == "number"
+    and value == value
+    and value ~= math.huge
+    and value ~= -math.huge
+end
+
+local function is_valid_epoch(value)
+  return is_finite_number(value)
+    and value >= 0
+    and value <= MAX_EPOCH
+    and value == math.floor(value)
+end
+
+local function is_valid_context_record(record)
+  return type(record) == "table"
+    and is_valid_epoch(record["schema_version"])
+    and record["schema_version"] == 1
+    and type(record["nonce_binding"]) == "string"
+    and is_valid_epoch(record["operation_epoch"])
+    and is_valid_epoch(record["tenant_user_subject_epoch"])
+    and type(record["operation_token"]) == "string"
+    and type(record["operation_kind"]) == "string"
+    and is_finite_number(record["lease_until"])
+    and record["lease_until"] >= 0
+    and (record["principal"] == cjson.null or type(record["principal"]) == "table")
+end
+
+if not is_valid_epoch(operation_epoch) or operation_epoch < 1
+  or type(operation_token) ~= "string" or operation_token == ""
+then
+  return cjson.encode({status = "corrupt"})
+end
 
 local raw = redis.call("GET", key)
 if not raw then
   return cjson.encode({status = "missing"})
 end
 local ok, record = pcall(cjson.decode, raw)
-if not ok or type(record) ~= "table" or record["schema_version"] ~= 1 then
+if not ok or not is_valid_context_record(record) then
   return cjson.encode({status = "corrupt"})
 end
-if type(record["operation_epoch"]) ~= "number"
-  or type(record["tenant_user_subject_epoch"]) ~= "number"
-  or type(record["operation_token"]) ~= "string"
-  or type(record["operation_kind"]) ~= "string"
-  or type(record["lease_until"]) ~= "number"
-then
-  return cjson.encode({status = "corrupt"})
-end
-if record["principal"] ~= cjson.null and type(record["principal"]) ~= "table" then
+if record["tenant_user_subject_epoch"] >= MAX_EPOCH then
   return cjson.encode({status = "corrupt"})
 end
 if record["operation_epoch"] ~= operation_epoch or record["operation_token"] ~= operation_token then
@@ -164,6 +256,21 @@ CONSUME_OAUTH_STATE_SCRIPT = """
 local state_key = KEYS[1]
 local context_handle = ARGV[1]
 local provider = ARGV[2]
+local MAX_EPOCH = 9007199254740991
+
+local function is_finite_number(value)
+  return type(value) == "number"
+    and value == value
+    and value ~= math.huge
+    and value ~= -math.huge
+end
+
+local function is_valid_epoch(value)
+  return is_finite_number(value)
+    and value >= 0
+    and value <= MAX_EPOCH
+    and value == math.floor(value)
+end
 
 local raw = redis.call("GET", state_key)
 if not raw then
@@ -177,7 +284,9 @@ end
 if record["context_handle"] ~= context_handle or record["provider"] ~= provider then
   return cjson.encode({status = "invalid"})
 end
-if type(record["operation_epoch"]) ~= "number" or type(record["operation_token"]) ~= "string" then
+if not is_valid_epoch(record["operation_epoch"]) or record["operation_epoch"] < 1
+  or type(record["operation_token"]) ~= "string" or record["operation_token"] == ""
+then
   return cjson.encode({status = "corrupt"})
 end
 return cjson.encode({
@@ -272,6 +381,38 @@ def _operation_lease_seconds(settings: Any) -> int:
     return max(1, int(_settings_value(settings, "auth_context_lease_seconds", 90)))
 
 
+def _is_valid_epoch(value: object) -> bool:
+    if type(value) is int:
+        return 0 <= value <= AUTH_CONTEXT_MAX_EPOCH
+    if type(value) is float:
+        return math.isfinite(value) and 0 <= value <= AUTH_CONTEXT_MAX_EPOCH and value.is_integer()
+    return False
+
+
+def _is_valid_lease(value: object) -> bool:
+    if type(value) is int:
+        return value >= 0
+    if type(value) is float:
+        return math.isfinite(value) and value >= 0
+    return False
+
+
+def _is_valid_context_record(record: object) -> bool:
+    if not isinstance(record, dict):
+        return False
+    return (
+        _is_valid_epoch(record.get("schema_version"))
+        and record.get("schema_version") == AUTH_CONTEXT_SCHEMA_VERSION
+        and isinstance(record.get("nonce_binding"), str)
+        and _is_valid_epoch(record.get("operation_epoch"))
+        and _is_valid_epoch(record.get("tenant_user_subject_epoch"))
+        and isinstance(record.get("operation_token"), str)
+        and isinstance(record.get("operation_kind"), str)
+        and _is_valid_lease(record.get("lease_until"))
+        and (record.get("principal") is None or isinstance(record.get("principal"), dict))
+    )
+
+
 def _decode_script_result(raw_result: object) -> dict[str, Any]:
     if isinstance(raw_result, bytes):
         raw_result = raw_result.decode("utf-8", errors="replace")
@@ -287,6 +428,8 @@ def _decode_script_result(raw_result: object) -> dict[str, Any]:
 
 
 def _raise_for_store_status(operation: str, status: str) -> None:
+    if status == "rebootstrap_required":
+        raise AuthContextError("auth_context_rebootstrap_required", 409)
     if status == "missing":
         raise AuthContextError("auth_context_missing", 401)
     if status == "superseded":
@@ -313,7 +456,13 @@ async def _eval(script: str, keys: list[str], args: list[object]) -> dict[str, A
             pass
 
 
-async def bootstrap_auth_context(context_handle: str, nonce: str, settings: Any | None = None) -> str:
+async def bootstrap_auth_context(
+    context_handle: str,
+    nonce: str,
+    settings: Any | None = None,
+    *,
+    request_has_matching_context: bool = False,
+) -> str:
     """Create or verify a stable browser context before writing its cookie."""
 
     current_settings = settings or get_settings()
@@ -323,6 +472,7 @@ async def bootstrap_auth_context(context_handle: str, nonce: str, settings: Any 
         [
             _nonce_binding(nonce, current_settings),
             _context_ttl_seconds(current_settings),
+            "1" if request_has_matching_context else "0",
         ],
     )
     status = str(result.get("status") or "")
@@ -353,13 +503,10 @@ async def begin_auth_operation(
     status = str(result.get("status") or "")
     if status != "begun":
         _raise_for_store_status("begin", status)
-    try:
-        epoch = int(result["operation_epoch"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise AuthContextError("auth_context_unavailable", 503) from exc
-    if epoch < 1:
+    epoch = result.get("operation_epoch")
+    if not _is_valid_epoch(epoch) or epoch < 1:
         raise AuthContextError("auth_context_unavailable", 503)
-    return AuthOperation(context_handle=context_handle, epoch=epoch, token=token, kind=kind)
+    return AuthOperation(context_handle=context_handle, epoch=int(epoch), token=token, kind=kind)
 
 
 def principal_snapshot(principal: Any) -> dict[str, object]:
@@ -446,16 +593,7 @@ async def principal_for_context(
         record = json.loads(raw)
     except (TypeError, json.JSONDecodeError) as exc:
         raise AuthContextError("auth_context_unavailable", 503) from exc
-    if (
-        not isinstance(record, dict)
-        or record.get("schema_version") != AUTH_CONTEXT_SCHEMA_VERSION
-        or not isinstance(record.get("nonce_binding"), str)
-        or not isinstance(record.get("operation_epoch"), int)
-        or not isinstance(record.get("tenant_user_subject_epoch"), int)
-        or not isinstance(record.get("operation_token"), str)
-        or not isinstance(record.get("operation_kind"), str)
-        or not isinstance(record.get("lease_until"), (int, float))
-    ):
+    if not _is_valid_context_record(record):
         raise AuthContextError("auth_context_unavailable", 503)
     principal = record.get("principal")
     if principal is None:
@@ -518,16 +656,13 @@ async def consume_oauth_state(
     status = str(result.get("status") or "")
     if status != "consumed":
         _raise_for_store_status("oauth", status)
-    try:
-        epoch = int(result["operation_epoch"])
-        token = str(result["operation_token"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise AuthContextError("auth_context_unavailable", 503) from exc
-    if epoch < 1 or not token:
+    epoch = result.get("operation_epoch")
+    token = result.get("operation_token")
+    if not _is_valid_epoch(epoch) or epoch < 1 or not isinstance(token, str) or not token:
         raise AuthContextError("auth_context_unavailable", 503)
     return AuthOperation(
         context_handle=context_handle,
-        epoch=epoch,
+        epoch=int(epoch),
         token=token,
         kind=f"oauth:{provider}",
     )

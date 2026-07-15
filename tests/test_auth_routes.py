@@ -81,7 +81,14 @@ def fake_browser_auth_context(monkeypatch):
     operations: dict[str, AuthOperation] = {}
     principals: dict[str, dict[str, object] | None] = {}
 
-    async def fake_bootstrap(context_handle, _nonce, _settings):
+    async def fake_bootstrap(
+        context_handle,
+        _nonce,
+        _settings,
+        *,
+        request_has_matching_context=False,
+    ):
+        del request_has_matching_context
         principals.setdefault(context_handle, None)
         return "created"
 

@@ -1,4 +1,5 @@
 import { authApi } from "../services/api/auth";
+import { ApiRequestError } from "../services/api/fetch";
 
 export const BROWSER_AUTH_CONTEXT_NONCE_KEY =
   "ai_platform_auth_context_nonce_v1";
@@ -49,6 +50,41 @@ function browserLocks(): BrowserLockManager | null {
   );
 }
 
+function isRebootstrapRequired(error: unknown): boolean {
+  return (
+    error instanceof ApiRequestError &&
+    error.code === "auth_context_rebootstrap_required"
+  );
+}
+
+async function rotateNonceOnceUnderLock(
+  storage: Storage,
+  rejectedNonce: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const locks = browserLocks();
+  if (!locks) {
+    throw new BrowserAuthCoordinatorError(
+      "auth_context_coordination_unavailable",
+    );
+  }
+
+  await locks.request(
+    BROWSER_AUTH_CONTEXT_LOCK_NAME,
+    { mode: "exclusive" },
+    async () => {
+      const lockedNonce = existingNonce(storage);
+      if (lockedNonce && lockedNonce !== rejectedNonce) {
+        await authApi.bootstrapAuthContext(lockedNonce, signal);
+        return;
+      }
+      const rotatedNonce = createNonce();
+      storage.setItem(BROWSER_AUTH_CONTEXT_NONCE_KEY, rotatedNonce);
+      await authApi.bootstrapAuthContext(rotatedNonce, signal);
+    },
+  );
+}
+
 /**
  * Bootstrap the sole browser context under an origin-wide exclusive lock.
  *
@@ -61,7 +97,12 @@ export async function ensureBrowserAuthContext(
   const storage = browserStorage();
   const nonce = existingNonce(storage);
   if (nonce) {
-    await authApi.bootstrapAuthContext(nonce, signal);
+    try {
+      await authApi.bootstrapAuthContext(nonce, signal);
+    } catch (error) {
+      if (!isRebootstrapRequired(error) || !storage) throw error;
+      await rotateNonceOnceUnderLock(storage, nonce, signal);
+    }
     return;
   }
 
@@ -81,7 +122,14 @@ export async function ensureBrowserAuthContext(
       if (!lockedNonce) {
         storage.setItem(BROWSER_AUTH_CONTEXT_NONCE_KEY, stableNonce);
       }
-      await authApi.bootstrapAuthContext(stableNonce, signal);
+      try {
+        await authApi.bootstrapAuthContext(stableNonce, signal);
+      } catch (error) {
+        if (!isRebootstrapRequired(error)) throw error;
+        const rotatedNonce = createNonce();
+        storage.setItem(BROWSER_AUTH_CONTEXT_NONCE_KEY, rotatedNonce);
+        await authApi.bootstrapAuthContext(rotatedNonce, signal);
+      }
     },
   );
 }

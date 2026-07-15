@@ -1,3 +1,4 @@
+from hmac import compare_digest
 from typing import Any
 
 import httpx
@@ -223,13 +224,25 @@ def _oauth_provider(provider: str) -> str:
 async def bootstrap(
     request: AuthContextBootstrapRequest,
     response: Response,
+    http_request: Request,
 ) -> dict[str, str]:
     """Create or recover the stable non-principal browser auth context."""
 
     settings = get_settings()
     try:
         context_handle = auth_context_handle_for_nonce(request.nonce, settings)
-        await bootstrap_auth_context(context_handle, request.nonce, settings)
+        supplied_context = http_request.cookies.get(
+            getattr(settings, "auth_context_cookie_name", "ai_platform_auth_context"),
+            "",
+        )
+        await bootstrap_auth_context(
+            context_handle,
+            request.nonce,
+            settings,
+            request_has_matching_context=bool(
+                supplied_context and compare_digest(supplied_context, context_handle)
+            ),
+        )
     except AuthContextError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
     response.set_cookie(
@@ -299,14 +312,20 @@ async def login(request: LoginRequest, http_request: Request) -> PrincipalRespon
     """Commit company-authenticated identity only through the current context lease."""
 
     operation = await _begin_browser_operation(http_request, "login")
-    principal = await _login_principal(request)
-    commit_status = await commit_auth_operation(operation, principal_snapshot(principal))
-    if commit_status != "committed":
-        _raise_commit_failure(commit_status)
+    principal = await _resolve_login_principal(request)
+    async with transaction() as conn:
+        await _persist_login_principal(conn, principal)
+        # Keep durable login side effects inside this transaction so a stale
+        # Redis operation rolls them back. A database commit failure after this
+        # Redis commit remains intentionally uncompensated: an unfenced logout
+        # could clear a newer browser identity.
+        commit_status = await commit_auth_operation(operation, principal_snapshot(principal))
+        if commit_status != "committed":
+            _raise_commit_failure(commit_status)
     return PrincipalResponse.model_validate(principal_to_response(principal))
 
 
-async def _login_principal(request: LoginRequest) -> AuthPrincipal:
+async def _resolve_login_principal(request: LoginRequest) -> AuthPrincipal:
     try:
         login_payload = await call_existing_login(request.user_name, request.password)
     except httpx.HTTPError as exc:
@@ -330,23 +349,41 @@ async def _login_principal(request: LoginRequest) -> AuthPrincipal:
         permissions=_ai_permissions_for_login(user_info, roles),
         source="company-login",
     )
+    return principal
+
+
+async def _persist_login_principal(conn: Any, principal: AuthPrincipal) -> None:
+    """Write company-login user and audit state inside the caller's transaction."""
+
+    await ensure_user(
+        conn,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        display_name=principal.display_name,
+    )
+    await append_audit_log(
+        conn,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+        action="auth.login",
+        target_type="user",
+        target_id=principal.user_id,
+        payload_json={
+            "source": principal.source,
+            "work_id": principal.user_id,
+            "roles": principal.roles,
+            "permissions": principal.permissions,
+            "is_admin": _has_admin_role(principal.roles),
+        },
+    )
+
+
+async def _login_principal(request: LoginRequest) -> AuthPrincipal:
+    """Resolve and persist the explicit Bearer compatibility login principal."""
+
+    principal = await _resolve_login_principal(request)
     async with transaction() as conn:
-        await ensure_user(conn, tenant_id=principal.tenant_id, user_id=principal.user_id, display_name=principal.display_name)
-        await append_audit_log(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            action="auth.login",
-            target_type="user",
-            target_id=principal.user_id,
-            payload_json={
-                "source": principal.source,
-                "work_id": principal.user_id,
-                "roles": principal.roles,
-                "permissions": principal.permissions,
-                "is_admin": _has_admin_role(principal.roles),
-            },
-        )
+        await _persist_login_principal(conn, principal)
     return principal
 
 

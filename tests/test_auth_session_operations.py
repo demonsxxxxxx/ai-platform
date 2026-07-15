@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 import json
+import math
 import threading
 import time
 from types import SimpleNamespace
@@ -10,6 +11,9 @@ import pytest
 
 from app.auth import AuthPrincipal
 from app.main import create_app
+
+
+AUTH_CONTEXT_MAX_EPOCH = (2**53) - 1
 
 
 class FakeAuthRedis:
@@ -38,12 +42,61 @@ class FakeAuthRedis:
     def _set(self, key: str, raw: str, expires_at: float) -> None:
         self.values[key] = (raw, expires_at)
 
+    @staticmethod
+    def _is_valid_epoch(value: object) -> bool:
+        if type(value) is int:
+            return 0 <= value <= AUTH_CONTEXT_MAX_EPOCH
+        if type(value) is float:
+            return (
+                math.isfinite(value)
+                and 0 <= value <= AUTH_CONTEXT_MAX_EPOCH
+                and value.is_integer()
+            )
+        return False
+
+    @staticmethod
+    def _is_valid_lease(value: object) -> bool:
+        if type(value) is int:
+            return value >= 0
+        if type(value) is float:
+            return math.isfinite(value) and value >= 0
+        return False
+
+    @classmethod
+    def _is_valid_context_record(cls, record: object) -> bool:
+        if not isinstance(record, dict):
+            return False
+        return (
+            cls._is_valid_epoch(record.get("schema_version"))
+            and record.get("schema_version") == 1
+            and isinstance(record.get("nonce_binding"), str)
+            and cls._is_valid_epoch(record.get("operation_epoch"))
+            and cls._is_valid_epoch(record.get("tenant_user_subject_epoch"))
+            and isinstance(record.get("operation_token"), str)
+            and isinstance(record.get("operation_kind"), str)
+            and cls._is_valid_lease(record.get("lease_until"))
+            and (record.get("principal") is None or isinstance(record.get("principal"), dict))
+        )
+
+    @staticmethod
+    def _is_pristine_anonymous(record: dict[str, object]) -> bool:
+        return (
+            record["principal"] is None
+            and record["tenant_user_subject_epoch"] == 0
+            and record["operation_epoch"] == 0
+            and record["operation_token"] == ""
+            and record["operation_kind"] == ""
+            and record["lease_until"] == 0
+        )
+
     async def eval(self, script: str, _numkeys: int, *args: object) -> str:
         self._require_available()
         with self.lock:
             if "ai-platform:auth-context-bootstrap:v1" in script:
-                key, expected_binding, ttl_seconds = args
+                key, expected_binding, ttl_seconds, request_has_matching_context = args
                 now_value = self.now
+                if not self._is_valid_epoch(ttl_seconds) or ttl_seconds < 1:
+                    return json.dumps({"status": "corrupt"})
                 existing = self._get(str(key), now_value)
                 if existing is None:
                     self._set(
@@ -67,13 +120,30 @@ class FakeAuthRedis:
                     record = json.loads(existing)
                 except json.JSONDecodeError:
                     return json.dumps({"status": "corrupt"})
-                if not isinstance(record, dict) or record.get("nonce_binding") != expected_binding:
+                if (
+                    not self._is_valid_context_record(record)
+                    or record.get("nonce_binding") != expected_binding
+                ):
                     return json.dumps({"status": "corrupt"})
-                return json.dumps({"status": "existing"})
+                if (
+                    str(request_has_matching_context) == "1"
+                    or self._is_pristine_anonymous(record)
+                ):
+                    return json.dumps({"status": "existing"})
+                return json.dumps({"status": "rebootstrap_required"})
 
             if "ai-platform:auth-context-begin:v1" in script:
                 key, lease_seconds, operation_token, operation_kind = args
                 now_value = self.now
+                if (
+                    not self._is_valid_epoch(lease_seconds)
+                    or lease_seconds < 1
+                    or not isinstance(operation_token, str)
+                    or not operation_token
+                    or not isinstance(operation_kind, str)
+                    or not operation_kind
+                ):
+                    return json.dumps({"status": "corrupt"})
                 existing = self._get(str(key), now_value)
                 if existing is None:
                     return json.dumps({"status": "missing"})
@@ -81,17 +151,15 @@ class FakeAuthRedis:
                     record = json.loads(existing)
                 except json.JSONDecodeError:
                     return json.dumps({"status": "corrupt"})
-                if not isinstance(record, dict) or record.get("schema_version") != 1:
+                if not self._is_valid_context_record(record):
                     return json.dumps({"status": "corrupt"})
-                try:
-                    operation_epoch = int(record["operation_epoch"]) + 1
-                    int(record["tenant_user_subject_epoch"])
-                except (KeyError, TypeError, ValueError):
+                if record["operation_epoch"] >= AUTH_CONTEXT_MAX_EPOCH:
                     return json.dumps({"status": "corrupt"})
+                operation_epoch = record["operation_epoch"] + 1
                 record["operation_epoch"] = operation_epoch
-                record["operation_token"] = str(operation_token)
-                record["operation_kind"] = str(operation_kind)
-                record["lease_until"] = now_value + int(lease_seconds)
+                record["operation_token"] = operation_token
+                record["operation_kind"] = operation_kind
+                record["lease_until"] = now_value + lease_seconds
                 _, expires_at = self.values[str(key)]
                 self._set(str(key), json.dumps(record), expires_at)
                 return json.dumps(
@@ -112,19 +180,26 @@ class FakeAuthRedis:
                     principal = json.loads(str(principal_json))
                 except (TypeError, ValueError, json.JSONDecodeError):
                     return json.dumps({"status": "corrupt"})
-                if not isinstance(record, dict) or record.get("schema_version") != 1:
+                if (
+                    not self._is_valid_context_record(record)
+                    or not self._is_valid_epoch(operation_epoch)
+                    or operation_epoch < 1
+                    or not isinstance(operation_token, str)
+                    or not operation_token
+                    or (principal is not None and not isinstance(principal, dict))
+                ):
                     return json.dumps({"status": "corrupt"})
                 if (
-                    int(record.get("operation_epoch") or -1) != int(operation_epoch)
+                    record.get("operation_epoch") != operation_epoch
                     or record.get("operation_token") != operation_token
                 ):
                     return json.dumps({"status": "superseded"})
-                if float(record.get("lease_until") or 0) <= now_value:
+                if record["tenant_user_subject_epoch"] >= AUTH_CONTEXT_MAX_EPOCH:
+                    return json.dumps({"status": "corrupt"})
+                if record.get("lease_until") <= now_value:
                     return json.dumps({"status": "expired"})
                 record["principal"] = principal
-                record["tenant_user_subject_epoch"] = (
-                    int(record.get("tenant_user_subject_epoch") or 0) + 1
-                )
+                record["tenant_user_subject_epoch"] += 1
                 record["operation_token"] = ""
                 record["operation_kind"] = ""
                 record["lease_until"] = 0
@@ -149,6 +224,13 @@ class FakeAuthRedis:
                     or record.get("provider") != expected_provider
                 ):
                     return json.dumps({"status": "invalid"})
+                if (
+                    not self._is_valid_epoch(record.get("operation_epoch"))
+                    or record["operation_epoch"] < 1
+                    or not isinstance(record.get("operation_token"), str)
+                    or not record["operation_token"]
+                ):
+                    return json.dumps({"status": "corrupt"})
                 return json.dumps(
                     {
                         "status": "consumed",
@@ -265,6 +347,53 @@ def test_bootstrap_concurrent_and_late_requests_set_one_stable_context_cookie(mo
     assert len(redis.values) == 1
 
 
+def test_nonce_only_bootstrap_cannot_reissue_an_authenticated_context(monkeypatch):
+    redis = FakeAuthRedis()
+    install_auth_context_dependencies(monkeypatch, redis)
+    install_company_login(monkeypatch)
+    nonce = "N" * 43
+    client_a = TestClient(create_app())
+    context_cookie = bootstrap(client_a, nonce)
+
+    login = client_a.post(
+        "/api/ai/auth/login",
+        json={"username": "user-a", "password": "safe-password"},
+    )
+    assert login.status_code == 200
+
+    client_b = TestClient(create_app())
+    replay = client_b.post("/api/ai/auth/bootstrap", json={"nonce": nonce})
+    assert replay.status_code == 409
+    assert replay.json()["detail"] == "auth_context_rebootstrap_required"
+    assert "set-cookie" not in replay.headers
+    assert client_b.get("/api/ai/auth/me").status_code == 401
+
+    reload = client_a.post("/api/ai/auth/bootstrap", json={"nonce": nonce})
+    assert reload.status_code == 200
+    assert reload.cookies["ai_platform_auth_context"] == context_cookie
+    assert client_a.get("/api/ai/auth/me").json()["user_id"] == "user-a"
+
+    fresh = client_b.post("/api/ai/auth/bootstrap", json={"nonce": "F" * 43})
+    assert fresh.status_code == 200
+    assert fresh.cookies["ai_platform_auth_context"] != context_cookie
+    assert client_b.get("/api/ai/auth/me").status_code == 401
+
+
+def test_nonce_only_bootstrap_cannot_reissue_a_previously_operated_anonymous_context(monkeypatch):
+    redis = FakeAuthRedis()
+    install_auth_context_dependencies(monkeypatch, redis)
+    nonce = "O" * 43
+    client_a = TestClient(create_app())
+    bootstrap(client_a, nonce)
+    assert client_a.post("/api/ai/auth/logout").status_code == 200
+
+    client_b = TestClient(create_app())
+    replay = client_b.post("/api/ai/auth/bootstrap", json={"nonce": nonce})
+    assert replay.status_code == 409
+    assert replay.json()["detail"] == "auth_context_rebootstrap_required"
+    assert "set-cookie" not in replay.headers
+
+
 def test_browser_auth_mutations_without_a_context_fail_closed_without_cookie_mutation(monkeypatch):
     redis = FakeAuthRedis()
     install_auth_context_dependencies(monkeypatch, redis)
@@ -339,6 +468,65 @@ def test_late_login_a_cannot_overwrite_newer_login_b_or_set_cookie(monkeypatch):
     assert "set-cookie" not in response_a.headers
     assert "set-cookie" not in response_b.headers
     assert client_b.get("/api/ai/auth/me").json()["user_id"] == "user-b"
+
+
+def test_superseded_login_rolls_back_user_and_audit_side_effects(monkeypatch):
+    redis = FakeAuthRedis()
+    install_auth_context_dependencies(monkeypatch, redis)
+    started_a = threading.Event()
+    release_a = threading.Event()
+    install_company_login(monkeypatch, gate_a=started_a, release_a=release_a)
+    committed_effects: list[tuple[str, str]] = []
+    rolled_back_effects: list[list[tuple[str, str]]] = []
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        staged_effects: list[tuple[str, str]] = []
+        try:
+            yield staged_effects
+        except Exception:
+            rolled_back_effects.append(staged_effects)
+            raise
+        else:
+            committed_effects.extend(staged_effects)
+
+    async def tracked_ensure_user(conn, *, user_id, **_kwargs):
+        conn.append(("user", user_id))
+
+    async def tracked_append_audit_log(conn, *, user_id, **_kwargs):
+        conn.append(("audit", user_id))
+        return "audit-id"
+
+    monkeypatch.setattr("app.routes.auth.transaction", tracked_transaction)
+    monkeypatch.setattr("app.routes.auth.ensure_user", tracked_ensure_user)
+    monkeypatch.setattr("app.routes.auth.append_audit_log", tracked_append_audit_log)
+    client_a = TestClient(create_app())
+    context_cookie = bootstrap(client_a)
+    client_b = TestClient(create_app())
+    client_b.cookies.set("ai_platform_auth_context", context_cookie)
+    responses: dict[str, object] = {}
+
+    def login_a():
+        responses["a"] = client_a.post(
+            "/api/ai/auth/login",
+            json={"username": "user-a", "password": "safe-password"},
+        )
+
+    thread = threading.Thread(target=login_a)
+    thread.start()
+    assert started_a.wait(timeout=5)
+    response_b = client_b.post(
+        "/api/ai/auth/login",
+        json={"username": "user-b", "password": "safe-password"},
+    )
+    release_a.set()
+    thread.join(timeout=5)
+    response_a = responses["a"]
+
+    assert response_b.status_code == 200
+    assert response_a.status_code == 409
+    assert committed_effects == [("user", "user-b"), ("audit", "user-b")]
+    assert rolled_back_effects == [[("user", "user-a"), ("audit", "user-a")]]
 
 
 def test_late_logout_cannot_clear_newer_login_or_context_cookie(monkeypatch):
@@ -521,6 +709,91 @@ def test_redis_unavailable_lost_or_corrupt_context_fails_closed_without_cookie_m
     corrupt_bootstrap = client.post("/api/ai/auth/bootstrap", json={"nonce": "G" * 43})
     assert corrupt_bootstrap.status_code == 503
     assert "set-cookie" not in corrupt_bootstrap.headers
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", True),
+        ("schema_version", 1.5),
+        ("operation_epoch", True),
+        ("operation_epoch", -1),
+        ("operation_epoch", 1.5),
+        ("tenant_user_subject_epoch", True),
+        ("tenant_user_subject_epoch", -1),
+        ("tenant_user_subject_epoch", 1.5),
+        ("lease_until", True),
+        ("lease_until", -1),
+        ("lease_until", float("nan")),
+        ("lease_until", float("inf")),
+    ],
+)
+def test_me_rejects_corrupt_numeric_auth_context_state(monkeypatch, field, value):
+    redis = FakeAuthRedis()
+    settings = install_auth_context_dependencies(monkeypatch, redis)
+    client = TestClient(create_app())
+    context_cookie = bootstrap(client, "Q" * 43)
+    context_key = next(iter(redis.values))
+    raw, expiry = redis.values[context_key]
+    record = json.loads(raw)
+    record["principal"] = {
+        "user_id": "numeric-user",
+        "display_name": "Numeric User",
+        "tenant_id": settings.default_tenant_id,
+        "department_id": "",
+        "roles": ["user"],
+        "permissions": [],
+        "source": "company-login",
+    }
+    record[field] = value
+    redis.values[context_key] = (json.dumps(record), expiry)
+    client.cookies.set("ai_platform_auth_context", context_cookie)
+
+    response = client.get("/api/ai/auth/me")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "auth_context_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_fake_auth_redis_rejects_corrupt_records_without_numeric_coercion(monkeypatch):
+    from app import auth_sessions
+
+    redis = FakeAuthRedis()
+    settings = install_auth_context_dependencies(monkeypatch, redis)
+    handle = auth_sessions.auth_context_handle_for_nonce("R" * 43, settings)
+
+    await auth_sessions.bootstrap_auth_context(handle, "R" * 43, settings)
+    context_key = next(iter(redis.values))
+    raw, expiry = redis.values[context_key]
+    record = json.loads(raw)
+    record["operation_epoch"] = True
+    redis.values[context_key] = (json.dumps(record), expiry)
+
+    with pytest.raises(auth_sessions.AuthContextError) as bootstrap_error:
+        await auth_sessions.bootstrap_auth_context(handle, "R" * 43, settings)
+    assert bootstrap_error.value.code == "auth_context_unavailable"
+
+    with pytest.raises(auth_sessions.AuthContextError) as begin_error:
+        await auth_sessions.begin_auth_operation(handle, "login", settings)
+    assert begin_error.value.code == "auth_context_unavailable"
+
+    commit_handle = auth_sessions.auth_context_handle_for_nonce("S" * 43, settings)
+    await auth_sessions.bootstrap_auth_context(commit_handle, "S" * 43, settings)
+    operation = await auth_sessions.begin_auth_operation(commit_handle, "login", settings)
+    commit_key = next(key for key in redis.values if commit_handle in key)
+    raw, expiry = redis.values[commit_key]
+    record = json.loads(raw)
+    record["lease_until"] = float("inf")
+    redis.values[commit_key] = (json.dumps(record), expiry)
+
+    with pytest.raises(auth_sessions.AuthContextError) as commit_error:
+        await auth_sessions.commit_auth_operation(
+            operation,
+            auth_sessions.principal_snapshot(
+                AuthPrincipal("user-a", "User A", settings.default_tenant_id)
+            ),
+        )
+    assert commit_error.value.code == "auth_context_unavailable"
 
 
 def test_weak_context_secret_fails_closed_without_cookie_mutation(monkeypatch):

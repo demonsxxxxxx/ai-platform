@@ -7,6 +7,7 @@ import {
   ensureBrowserAuthContext,
 } from "../browserAuthCoordinator.ts";
 import { authApi } from "../../services/api/auth.ts";
+import { ApiRequestError } from "../../services/api/fetch.ts";
 
 function storageStub(values = new Map<string, string>()): Storage {
   return {
@@ -128,6 +129,84 @@ test("missing Web Locks fails closed before generating a context nonce", async (
     );
     assert.equal(bootstrapCalls, 0);
     assert.equal(stubs.values.has(BROWSER_AUTH_CONTEXT_NONCE_KEY), false);
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    stubs.restore();
+  }
+});
+
+test("rebootstrap-required rotates the nonce once under the origin lock", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const oldNonce = "A".repeat(43);
+  stubs.values.set(BROWSER_AUTH_CONTEXT_NONCE_KEY, oldNonce);
+  let lockCalls = 0;
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      locks: {
+        async request<T>(
+          _name: string,
+          _options: { mode: "exclusive" },
+          callback: () => Promise<T>,
+        ): Promise<T> {
+          lockCalls += 1;
+          return callback();
+        },
+      },
+    },
+  });
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  const submitted: string[] = [];
+  authApi.bootstrapAuthContext = async (nonce) => {
+    submitted.push(nonce);
+    if (submitted.length === 1) {
+      throw new ApiRequestError(
+        "safe rebootstrap requirement",
+        409,
+        "auth_context_rebootstrap_required",
+      );
+    }
+  };
+
+  try {
+    await ensureBrowserAuthContext();
+
+    assert.equal(lockCalls, 1);
+    assert.deepEqual(submitted.slice(0, 1), [oldNonce]);
+    assert.equal(submitted.length, 2);
+    assert.notEqual(submitted[1], oldNonce);
+    assert.equal(
+      stubs.values.get(BROWSER_AUTH_CONTEXT_NONCE_KEY),
+      submitted[1],
+    );
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    stubs.restore();
+  }
+});
+
+test("transport and store errors do not rotate or retry the nonce", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const oldNonce = "B".repeat(43);
+  stubs.values.set(BROWSER_AUTH_CONTEXT_NONCE_KEY, oldNonce);
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  const failure = new ApiRequestError("safe store failure", 503);
+  let bootstrapCalls = 0;
+  authApi.bootstrapAuthContext = async () => {
+    bootstrapCalls += 1;
+    throw failure;
+  };
+
+  try {
+    await assert.rejects(
+      () => ensureBrowserAuthContext(),
+      (error: unknown) => error === failure,
+    );
+    assert.equal(bootstrapCalls, 1);
+    assert.equal(
+      stubs.values.get(BROWSER_AUTH_CONTEXT_NONCE_KEY),
+      oldNonce,
+    );
   } finally {
     authApi.bootstrapAuthContext = originalBootstrap;
     stubs.restore();
