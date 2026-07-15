@@ -9,6 +9,7 @@ from typing import Iterable, Mapping
 
 from fastapi import HTTPException, Request, status
 
+from app.auth_sessions import AuthContextError, principal_for_context
 from app.settings import get_settings
 
 
@@ -184,9 +185,26 @@ async def require_principal(request: Request) -> AuthPrincipal:
         authorization = request.headers.get("authorization", "")
         if authorization.lower().startswith("bearer "):
             return verify_principal_session(authorization[7:].strip())
-        session_token = request.cookies.get(get_settings().ai_session_cookie_name, "")
-        if session_token:
-            return verify_principal_session(session_token)
+        settings = get_settings()
+        context_handle = request.cookies.get(
+            getattr(settings, "auth_context_cookie_name", "ai_platform_auth_context"),
+            "",
+        )
+        if context_handle:
+            try:
+                snapshot = await principal_for_context(context_handle, settings)
+            except AuthContextError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
+            if snapshot is not None:
+                return AuthPrincipal(
+                    user_id=str(snapshot["user_id"]),
+                    display_name=str(snapshot["display_name"]),
+                    tenant_id=str(snapshot["tenant_id"]),
+                    department_id=str(snapshot["department_id"]),
+                    roles=[str(item) for item in snapshot["roles"]],
+                    permissions=[str(item) for item in snapshot["permissions"]],
+                    source=str(snapshot["source"]),
+                )
     if principal is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

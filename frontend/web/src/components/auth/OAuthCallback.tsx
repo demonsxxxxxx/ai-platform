@@ -1,7 +1,7 @@
 /**
  * OAuth 回调处理页面
  *
- * 处理 OAuth 提供商重定向回来的请求，从 URL fragment 中提取 token 并完成登录。
+ * 处理 OAuth provider code/state 回调，服务器才可建立浏览器会话。
  */
 
 import { useEffect, useRef } from "react";
@@ -18,7 +18,7 @@ export function OAuthCallback() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { completeOAuthSession } = useAuth();
+  const { handleOAuthCallback } = useAuth();
   const callbackGenerationRef = useRef(0);
 
   useEffect(() => {
@@ -33,35 +33,29 @@ export function OAuthCallback() {
       // auth state; only the remounted generation continues.
       await Promise.resolve();
       if (!ownsCallback()) return;
-      // 从 URL fragment 中提取 token (#access_token=xxx&refresh_token=xxx)
-      const hash = window.location.hash.substring(1); // 移除开头的 #
-      const params = new URLSearchParams(hash);
-
-      const accessToken = params.get("access_token");
-      const refreshToken = params.get("refresh_token");
-
-      // 检查是否有错误参数（从 query 参数中获取）
       const error = searchParams.get("error");
+      const code = searchParams.get("code");
+      const state = searchParams.get("state");
 
       if (error) {
         navigate("/auth/login?error=oauth_processing_failed", { replace: true });
         return;
       }
 
-      if (!accessToken || !refreshToken) {
-        console.error("No tokens found in callback URL");
+      if (!code || !state || window.location.hash) {
         navigate("/auth/login?error=oauth_no_token", { replace: true });
         return;
       }
 
       try {
-        const refreshOutcome = await completeOAuthSession(
-          accessToken,
-          refreshToken,
+        const callbackOutcome = await handleOAuthCallback(
+          searchParams.get("provider") || "unknown",
+          code,
+          state,
         );
         if (!ownsCallback()) return;
-        if (refreshOutcome.status === "cancelled") return;
-        if (refreshOutcome.status !== "completed") {
+        if (callbackOutcome.status === "cancelled") return;
+        if (callbackOutcome.status !== "completed") {
           navigate("/auth/login?error=oauth_processing_failed", {
             replace: true,
           });
@@ -76,7 +70,6 @@ export function OAuthCallback() {
         navigate(redirectPath, { replace: true });
       } catch {
         if (!ownsCallback()) return;
-        console.error("[OAuthCallback] OAuth processing failed");
         navigate("/auth/login?error=oauth_processing_failed", {
           replace: true,
         });
@@ -87,7 +80,7 @@ export function OAuthCallback() {
     return () => {
       isCurrent = false;
     };
-  }, [completeOAuthSession, navigate, searchParams]);
+  }, [handleOAuthCallback, navigate, searchParams]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-stone-50 dark:bg-stone-900">

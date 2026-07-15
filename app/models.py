@@ -584,6 +584,23 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1)
 
 
+class AuthContextBootstrapRequest(BaseModel):
+    """Browser-generated non-credential nonce used to derive a stable context."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    nonce: str = Field(min_length=43, max_length=512, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class OAuthCallbackRequest(BaseModel):
+    """Provider callback values bound to a server-owned auth operation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=4096)
+    state: str = Field(min_length=43, max_length=512, pattern=r"^[A-Za-z0-9_-]+$")
+
+
 class PrincipalResponse(BaseModel):
     user_id: str
     user_name: str = ""

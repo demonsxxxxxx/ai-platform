@@ -47,11 +47,27 @@ function mapPrincipalToUser(principal: PrincipalResponseWire): User {
   };
 }
 
-export function buildOAuthLoginUrl(provider: string): string {
-  return `${API_BASE}/api/auth/oauth/${provider}`;
+export function buildOAuthLoginUrl(provider: string, state?: string): string {
+  const safeProvider = encodeURIComponent(provider);
+  const suffix = state ? `?state=${encodeURIComponent(state)}` : "";
+  return `${API_BASE}/api/auth/oauth/${safeProvider}${suffix}`;
 }
 
 export const authApi = {
+  /**
+   * Establish the stable HttpOnly browser auth context before any mutation.
+   */
+  async bootstrapAuthContext(nonce: string, signal?: AbortSignal): Promise<void> {
+    await authFetch<{ status: string }>(`${API_BASE}/api/ai/auth/bootstrap`, {
+      method: "POST",
+      skipAuth: true,
+      credentials: "include",
+      body: JSON.stringify({ nonce }),
+      headers: { "Content-Type": "application/json" },
+      signal,
+    });
+  },
+
   /**
    * 用户登录
    */
@@ -238,6 +254,24 @@ export const authApi = {
   },
 
   /**
+   * Begin a server-fenced OAuth operation and receive opaque provider state.
+   */
+  async beginOAuth(
+    provider: string,
+    signal?: AbortSignal,
+  ): Promise<{ state: string }> {
+    return authFetch<{ state: string }>(
+      `${API_BASE}/api/ai/auth/oauth/${encodeURIComponent(provider)}/begin`,
+      {
+        method: "POST",
+        skipAuth: true,
+        credentials: "include",
+        signal,
+      },
+    );
+  },
+
+  /**
    * 处理 OAuth 回调
    */
   async handleOAuthCallback(
@@ -245,9 +279,9 @@ export const authApi = {
     code: string,
     state: string,
     signal?: AbortSignal,
-  ): Promise<TokenResponse> {
+  ): Promise<void> {
     await authFetch<Record<string, unknown>>(
-      `${API_BASE}/api/auth/oauth/${provider}/callback`,
+      `${API_BASE}/api/ai/auth/oauth/${encodeURIComponent(provider)}/callback`,
       {
         method: "POST",
         skipAuth: true,
@@ -256,11 +290,6 @@ export const authApi = {
         signal,
       },
     );
-
-    return {
-      access_token: "cookie-session",
-      token_type: "bearer",
-    };
   },
 
   /**
