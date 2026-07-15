@@ -18,6 +18,7 @@ from app.auth_sessions import (
     consume_oauth_state,
     consume_oauth_state_for_cookie,
     issue_oauth_state,
+    parse_auth_context_cookie,
     principal_snapshot,
 )
 from app.db import transaction
@@ -283,6 +284,12 @@ async def bootstrap(
                 "protocol_version": 2,
                 "generation": result.identity.generation,
             }
+        # A V1 request carries no incarnation/generation proof, so it cannot
+        # safely repair or replace a V2 browser authority. Reject both signed
+        # and malformed V2-looking cookies before V1 Lua or Set-Cookie runs.
+        if supplied_context.startswith("v2."):
+            parse_auth_context_cookie(supplied_context, settings)
+            raise AuthContextError("auth_context_stale", 409)
         await bootstrap_auth_context(
             context_handle,
             request.nonce,

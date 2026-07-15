@@ -102,23 +102,26 @@ class FakeAuthRedis:
     def _is_valid_v2_authority(cls, record: object) -> bool:
         if not isinstance(record, dict):
             return False
+        generation = record.get("generation")
         return (
             record.get("schema_version") == 2
             and isinstance(record.get("incarnation_digest"), str)
-            and cls._is_valid_epoch(record.get("generation"))
-            and record["generation"] >= 1
+            and cls._is_valid_epoch(generation)
+            and generation >= 1
             and isinstance(record.get("context_handle"), str)
             and (
-                record.get("rotation_ticket_digest") is None
-                or isinstance(record.get("rotation_ticket_digest"), str)
-            )
-            and (
-                record.get("rotation_ticket_generation") is None
-                or cls._is_valid_epoch(record.get("rotation_ticket_generation"))
-            )
-            and (
-                record.get("rotation_ticket_deadline") is None
-                or cls._is_valid_lease(record.get("rotation_ticket_deadline"))
+                (
+                    record.get("rotation_ticket_digest") is None
+                    and record.get("rotation_ticket_generation") is None
+                    and record.get("rotation_ticket_deadline") is None
+                )
+                or (
+                    isinstance(record.get("rotation_ticket_digest"), str)
+                    and cls._is_valid_epoch(record.get("rotation_ticket_generation"))
+                    and record["rotation_ticket_generation"] >= 1
+                    and record["rotation_ticket_generation"] == generation
+                    and cls._is_valid_lease(record.get("rotation_ticket_deadline"))
+                )
             )
         )
 
@@ -233,7 +236,7 @@ class FakeAuthRedis:
                                 "generation": int(generation),
                             }
                         )
-                        status = "migrated"
+                        status = "created" if context["principal"] is None else "migrated"
                     authority = {
                         "schema_version": 2,
                         "incarnation_digest": str(incarnation_digest),
@@ -261,12 +264,35 @@ class FakeAuthRedis:
                     return json.dumps({"status": "generation_conflict"})
                 if not self._is_valid_v2_context_record(context):
                     return json.dumps({"status": "corrupt"})
+                if not self._v2_ttl_consistent(str(authority_key), str(context_key), now_value):
+                    return json.dumps({"status": "stale"})
                 if authority["incarnation_digest"] != incarnation_digest:
                     return json.dumps({"status": "stale"})
                 if generation < authority["generation"]:
                     return json.dumps({"status": "stale"})
                 if generation > authority["generation"]:
                     return json.dumps({"status": "generation_gap"})
+                if authority["context_handle"] != context_handle:
+                    current_cookie = (
+                        cookie_kind == "v2"
+                        and cookie_incarnation_digest == incarnation_digest
+                        and cookie_generation == generation
+                        and cookie_context_handle == authority["context_handle"]
+                    )
+                    if (
+                        not current_cookie
+                        or not isinstance(_ticket_digest, str)
+                        or not _ticket_digest
+                        or not self._is_valid_epoch(_ticket_seconds)
+                        or _ticket_seconds < 1
+                    ):
+                        return json.dumps({"status": "generation_conflict"})
+                    authority["rotation_ticket_digest"] = _ticket_digest
+                    authority["rotation_ticket_generation"] = generation
+                    authority["rotation_ticket_deadline"] = now_value + int(_ticket_seconds)
+                    _raw, expires_at = self.values[str(authority_key)]
+                    self._set(str(authority_key), json.dumps(authority), expires_at)
+                    return json.dumps({"status": "rebootstrap_required"})
                 if not self._v2_records_match(
                     authority,
                     context,
@@ -312,6 +338,25 @@ class FakeAuthRedis:
                 self._set(str(authority_key), json.dumps(authority), expires_at)
                 return json.dumps({"status": "issued"})
 
+            if "ai-platform:auth-context-rotate-reconcile:v2" in script:
+                authority_key, context_key, digest, generation, handle = args
+                now_value = self.now
+                authority_raw = self._get(str(authority_key), now_value)
+                context_raw = self._get(str(context_key), now_value)
+                if authority_raw is None or context_raw is None:
+                    return json.dumps({"status": "stale"})
+                try:
+                    authority = json.loads(authority_raw)
+                    context = json.loads(context_raw)
+                except json.JSONDecodeError:
+                    return json.dumps({"status": "stale"})
+                if (
+                    not self._v2_records_match(authority, context, digest, generation, handle)
+                    or not self._v2_ttl_consistent(str(authority_key), str(context_key), now_value)
+                ):
+                    return json.dumps({"status": "stale"})
+                return json.dumps({"status": "reconciled"})
+
             if "ai-platform:auth-context-rotate:v2" in script:
                 (
                     authority_key,
@@ -337,7 +382,10 @@ class FakeAuthRedis:
                     old_context = json.loads(old_raw)
                 except json.JSONDecodeError:
                     return json.dumps({"status": "corrupt"})
-                if not self._v2_records_match(authority, old_context, digest, old_generation, old_handle):
+                if (
+                    not self._v2_records_match(authority, old_context, digest, old_generation, old_handle)
+                    or not self._v2_ttl_consistent(str(authority_key), str(old_context_key), now_value)
+                ):
                     return json.dumps({"status": "stale"})
                 if (
                     authority.get("rotation_ticket_digest") != ticket_digest
@@ -346,6 +394,8 @@ class FakeAuthRedis:
                 ):
                     return json.dumps({"status": "invalid_ticket"})
                 new_generation = int(old_generation) + 1
+                if new_generation > AUTH_CONTEXT_MAX_EPOCH:
+                    return json.dumps({"status": "corrupt"})
                 new_context = {
                     "schema_version": 2,
                     "protocol_version": 2,
@@ -411,7 +461,10 @@ class FakeAuthRedis:
                     context = json.loads(context_raw)
                 except json.JSONDecodeError:
                     return json.dumps({"status": "corrupt"})
-                if not self._v2_records_match(authority, context, digest, generation, handle):
+                if (
+                    not self._v2_records_match(authority, context, digest, generation, handle)
+                    or not self._v2_ttl_consistent(str(authority_key), str(context_key), now_value)
+                ):
                     return json.dumps({"status": "stale"})
                 if context["operation_epoch"] >= AUTH_CONTEXT_MAX_EPOCH:
                     return json.dumps({"status": "corrupt"})
@@ -438,13 +491,18 @@ class FakeAuthRedis:
                     principal = json.loads(str(principal_json))
                 except (TypeError, ValueError, json.JSONDecodeError):
                     return json.dumps({"status": "corrupt"})
-                if not self._v2_records_match(authority, context, digest, generation, handle):
+                if (
+                    not self._v2_records_match(authority, context, digest, generation, handle)
+                    or not self._v2_ttl_consistent(str(authority_key), str(context_key), now_value)
+                ):
                     return json.dumps({"status": "stale"})
                 if context["operation_epoch"] != epoch or context["operation_token"] != token:
                     return json.dumps({"status": "superseded"})
                 if context["lease_until"] <= now_value:
                     return json.dumps({"status": "expired"})
                 if principal is not None and not isinstance(principal, dict):
+                    return json.dumps({"status": "corrupt"})
+                if context["tenant_user_subject_epoch"] >= AUTH_CONTEXT_MAX_EPOCH:
                     return json.dumps({"status": "corrupt"})
                 context["principal"] = principal
                 context["tenant_user_subject_epoch"] += 1
@@ -453,7 +511,12 @@ class FakeAuthRedis:
                 context["lease_until"] = 0
                 _raw, expires_at = self.values[str(context_key)]
                 self._set(str(context_key), json.dumps(context), expires_at)
-                return json.dumps({"status": "committed"})
+                return json.dumps(
+                    {
+                        "status": "committed",
+                        "tenant_user_subject_epoch": context["tenant_user_subject_epoch"],
+                    }
+                )
 
             if "ai-platform:auth-oauth-state-issue:v2" in script:
                 (
@@ -479,7 +542,10 @@ class FakeAuthRedis:
                     context = json.loads(context_raw)
                 except json.JSONDecodeError:
                     return json.dumps({"status": "corrupt"})
-                if not self._v2_records_match(authority, context, digest, generation, handle):
+                if (
+                    not self._v2_records_match(authority, context, digest, generation, handle)
+                    or not self._v2_ttl_consistent(str(authority_key), str(context_key), now_value)
+                ):
                     return json.dumps({"status": "stale"})
                 if context["operation_epoch"] != epoch or context["operation_token"] != token:
                     return json.dumps({"status": "superseded"})
@@ -499,15 +565,18 @@ class FakeAuthRedis:
                     context = json.loads(context_raw)
                 except json.JSONDecodeError:
                     return json.dumps({"status": "corrupt"})
-                if not self._v2_records_match(authority, context, digest, generation, handle):
+                if (
+                    not self._v2_records_match(authority, context, digest, generation, handle)
+                    or not self._v2_ttl_consistent(str(authority_key), str(context_key), now_value)
+                ):
                     return json.dumps({"status": "stale"})
                 if state_raw is None:
                     return json.dumps({"status": "missing"})
-                self.values.pop(str(state_key), None)
                 try:
                     state = json.loads(state_raw)
                 except json.JSONDecodeError:
-                    return json.dumps({"status": "corrupt"})
+                    return json.dumps({"status": "stale"})
+                self.values.pop(str(state_key), None)
                 if (
                     not isinstance(state, dict)
                     or state.get("context_handle") != handle
@@ -898,6 +967,20 @@ def test_v2_route_emits_only_authorized_generation_cookies_and_repairs_a_late_ol
     current_cookie = rotated.cookies["ai_platform_auth_context"]
     assert current_cookie != old_cookie
 
+    reconciled = client.post(
+        "/api/ai/auth/bootstrap",
+        json={
+            "nonce": "C" * 43,
+            "protocol_version": 2,
+            "browser_incarnation": incarnation,
+            "generation": 2,
+            "rotation_ticket": ticket.json()["rotation_ticket"],
+        },
+    )
+    assert reconciled.status_code == 200, reconciled.text
+    assert reconciled.json() == {"status": "ready", "protocol_version": 2, "generation": 2}
+    assert "set-cookie" not in reconciled.headers
+
     stale_me = client.get(
         "/api/ai/auth/me",
         headers={"Cookie": f"ai_platform_auth_context={old_cookie}"},
@@ -917,6 +1000,185 @@ def test_v2_route_emits_only_authorized_generation_cookies_and_repairs_a_late_ol
     )
     assert repaired.status_code == 200, repaired.text
     assert repaired.cookies["ai_platform_auth_context"] == current_cookie
+
+
+@pytest.mark.asyncio
+async def test_v2_rotation_reconciles_only_the_exact_server_accepted_target(monkeypatch):
+    """A lost local promotion can recover only from the exact target identity."""
+
+    redis = FakeAuthRedis()
+    settings = install_auth_context_dependencies(monkeypatch, redis)
+    incarnation = "I" * 43
+    old = await auth_sessions.bootstrap_auth_context_v2("A" * 43, incarnation, 1, "", settings)
+    assert old.identity is not None
+    old_cookie = auth_sessions.auth_context_v2_cookie_for_identity(old.identity, settings)
+
+    ticket = await auth_sessions.bootstrap_auth_context_v2(
+        "B" * 43,
+        incarnation,
+        1,
+        old_cookie,
+        settings,
+    )
+    assert ticket.rotation_ticket
+    rotated = await auth_sessions.bootstrap_auth_context_v2(
+        "C" * 43,
+        incarnation,
+        2,
+        old_cookie,
+        settings,
+        rotation_ticket=ticket.rotation_ticket,
+    )
+    assert rotated.identity is not None
+    target_cookie = auth_sessions.auth_context_v2_cookie_for_identity(rotated.identity, settings)
+
+    reconciled = await auth_sessions.bootstrap_auth_context_v2(
+        "C" * 43,
+        incarnation,
+        2,
+        target_cookie,
+        settings,
+        rotation_ticket=ticket.rotation_ticket,
+    )
+    assert reconciled.status == "ready"
+    assert reconciled.identity == rotated.identity
+    assert reconciled.set_cookie is False
+
+    with pytest.raises(auth_sessions.AuthContextError, match="auth_context_stale"):
+        await auth_sessions.bootstrap_auth_context_v2(
+            "D" * 43,
+            incarnation,
+            2,
+            target_cookie,
+            settings,
+            rotation_ticket=ticket.rotation_ticket,
+        )
+
+
+@pytest.mark.asyncio
+async def test_v2_partial_rotation_ticket_authority_fails_closed_for_all_fenced_operations(monkeypatch):
+    """Ticket digest/generation/deadline form one all-or-nothing authority tuple."""
+
+    redis = FakeAuthRedis()
+    settings = install_auth_context_dependencies(monkeypatch, redis)
+    incarnation = "I" * 43
+    created = await auth_sessions.bootstrap_auth_context_v2("A" * 43, incarnation, 1, "", settings)
+    assert created.identity is not None
+    cookie = auth_sessions.auth_context_v2_cookie_for_identity(created.identity, settings)
+    operation = await auth_sessions.begin_auth_operation_for_cookie(cookie, "oauth:github", settings)
+    state = await auth_sessions.issue_oauth_state(
+        operation.context_handle,
+        "github",
+        operation,
+        settings,
+    )
+    ticket = await auth_sessions.bootstrap_auth_context_v2(
+        "B" * 43,
+        incarnation,
+        1,
+        cookie,
+        settings,
+    )
+    assert ticket.rotation_ticket
+
+    authority_key = next(key for key in redis.values if key.startswith("ai-platform:auth-browser-authority:"))
+    raw_authority, expires_at = redis.values[authority_key]
+    authority = json.loads(raw_authority)
+    authority["rotation_ticket_digest"] = "T" * 43
+    authority.pop("rotation_ticket_generation", None)
+    authority.pop("rotation_ticket_deadline", None)
+    redis.values[authority_key] = (json.dumps(authority), expires_at)
+
+    for action in (
+        lambda: auth_sessions.principal_for_cookie(cookie, settings),
+        lambda: auth_sessions.begin_auth_operation_for_cookie(cookie, "login", settings),
+        lambda: auth_sessions.commit_auth_operation(operation, None),
+        lambda: auth_sessions.issue_oauth_state(operation.context_handle, "github", operation, settings),
+        lambda: auth_sessions.consume_oauth_state_for_cookie(cookie, "github", state, settings),
+        lambda: auth_sessions.bootstrap_auth_context_v2("C" * 43, incarnation, 2, cookie, settings, rotation_ticket=ticket.rotation_ticket),
+    ):
+        with pytest.raises(auth_sessions.AuthContextError, match="auth_context_stale"):
+            await action()
+    with pytest.raises(auth_sessions.AuthContextError, match="auth_context_unavailable"):
+        await auth_sessions.bootstrap_auth_context_v2("A" * 43, incarnation, 1, cookie, settings)
+
+
+@pytest.mark.asyncio
+async def test_v2_fake_lua_model_enforces_ttl_consistency_for_bootstrap_rotation_and_operations(monkeypatch):
+    """The deterministic eval model mirrors Lua fail-closed TTL fences, not Redis itself."""
+
+    redis = FakeAuthRedis()
+    settings = install_auth_context_dependencies(monkeypatch, redis)
+    incarnation = "I" * 43
+    created = await auth_sessions.bootstrap_auth_context_v2("A" * 43, incarnation, 1, "", settings)
+    assert created.identity is not None
+    cookie = auth_sessions.auth_context_v2_cookie_for_identity(created.identity, settings)
+    operation = await auth_sessions.begin_auth_operation_for_cookie(cookie, "oauth:github", settings)
+    state = await auth_sessions.issue_oauth_state(
+        operation.context_handle,
+        "github",
+        operation,
+        settings,
+    )
+    ticket = await auth_sessions.bootstrap_auth_context_v2(
+        "B" * 43,
+        incarnation,
+        1,
+        cookie,
+        settings,
+    )
+    assert ticket.rotation_ticket
+
+    authority_key = next(key for key in redis.values if key.startswith("ai-platform:auth-browser-authority:"))
+    raw_authority, authority_expiry = redis.values[authority_key]
+    redis.values[authority_key] = (raw_authority, authority_expiry - 2)
+
+    for action in (
+        lambda: auth_sessions.bootstrap_auth_context_v2("A" * 43, incarnation, 1, cookie, settings),
+        lambda: auth_sessions.begin_auth_operation_for_cookie(cookie, "login", settings),
+        lambda: auth_sessions.commit_auth_operation(operation, None),
+        lambda: auth_sessions.issue_oauth_state(operation.context_handle, "github", operation, settings),
+        lambda: auth_sessions.consume_oauth_state_for_cookie(cookie, "github", state, settings),
+        lambda: auth_sessions.bootstrap_auth_context_v2("C" * 43, incarnation, 2, cookie, settings, rotation_ticket=ticket.rotation_ticket),
+    ):
+        with pytest.raises(auth_sessions.AuthContextError, match="auth_context_stale"):
+            await action()
+
+
+def test_v1_bootstrap_cannot_downgrade_a_signed_v2_cookie(monkeypatch):
+    """A Web Locks V1 request must never overwrite a migrated V2 cookie."""
+
+    redis = FakeAuthRedis()
+    install_auth_context_dependencies(monkeypatch, redis)
+    v2_client = TestClient(create_app())
+    v2 = v2_client.post(
+        "/api/ai/auth/bootstrap",
+        json={
+            "nonce": "A" * 43,
+            "protocol_version": 2,
+            "browser_incarnation": "I" * 43,
+            "generation": 1,
+        },
+    )
+    assert v2.status_code == 200, v2.text
+    v2_cookie = v2.cookies["ai_platform_auth_context"]
+    assert v2_cookie.startswith("v2.")
+
+    downgraded = TestClient(create_app()).post(
+        "/api/ai/auth/bootstrap",
+        headers={"Cookie": f"ai_platform_auth_context={v2_cookie}"},
+        json={"nonce": "Z" * 43},
+    )
+    assert downgraded.status_code == 409
+    assert downgraded.json()["detail"] == "auth_context_stale"
+    assert "set-cookie" not in downgraded.headers
+
+    ordinary_v1 = TestClient(create_app()).post(
+        "/api/ai/auth/bootstrap",
+        json={"nonce": "Y" * 43},
+    )
+    assert ordinary_v1.status_code == 200
+    assert ordinary_v1.cookies["ai_platform_auth_context"].startswith("v1.")
 
 
 def test_v1_matching_context_migrates_without_extending_and_nonmatching_authenticated_v1_fails_closed(monkeypatch):
@@ -1137,6 +1399,45 @@ async def test_v2_rotation_ticket_reissue_expiry_and_consumption_never_extend_au
             settings,
             rotation_ticket=current_ticket.rotation_ticket,
         )
+
+
+@pytest.mark.asyncio
+async def test_v2_late_reissued_ticket_cannot_roll_back_the_newer_authority(monkeypatch):
+    """Reverse ticket-response order leaves only the latest authority transition usable."""
+
+    redis = FakeAuthRedis()
+    settings = install_auth_context_dependencies(monkeypatch, redis)
+    incarnation = "I" * 43
+    created = await auth_sessions.bootstrap_auth_context_v2("A" * 43, incarnation, 1, "", settings)
+    assert created.identity is not None
+    cookie = auth_sessions.auth_context_v2_cookie_for_identity(created.identity, settings)
+    first = await auth_sessions.bootstrap_auth_context_v2("B" * 43, incarnation, 1, cookie, settings)
+    second = await auth_sessions.bootstrap_auth_context_v2("B" * 43, incarnation, 1, cookie, settings)
+    assert first.rotation_ticket and second.rotation_ticket
+    assert first.rotation_ticket != second.rotation_ticket
+
+    with pytest.raises(auth_sessions.AuthContextError, match="auth_context_stale"):
+        await auth_sessions.bootstrap_auth_context_v2(
+            "C" * 43,
+            incarnation,
+            2,
+            cookie,
+            settings,
+            rotation_ticket=first.rotation_ticket,
+        )
+    rotated = await auth_sessions.bootstrap_auth_context_v2(
+        "C" * 43,
+        incarnation,
+        2,
+        cookie,
+        settings,
+        rotation_ticket=second.rotation_ticket,
+    )
+    assert rotated.identity is not None
+    target_cookie = auth_sessions.auth_context_v2_cookie_for_identity(rotated.identity, settings)
+
+    with pytest.raises(auth_sessions.AuthContextError, match="auth_context_stale"):
+        await auth_sessions.bootstrap_auth_context_v2("B" * 43, incarnation, 1, target_cookie, settings)
 
 
 @pytest.mark.asyncio

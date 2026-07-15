@@ -46,7 +46,9 @@ generation metadata.  Cookie emission is driven solely by a structured result
 from the atomic store operation: new V2 context, V1 matching-context migration,
 exact current-owner repair, or successful rotation.  A stale, mismatch,
 invalid-ticket, missing, corrupt, or Redis-failure result never sets or clears
-a cookie.
+a cookie.  An already-at-target rotation reconciliation returns `ready` but
+does not refresh `Set-Cookie`, because the signed target cookie is the proof
+that the original response reached the browser.
 
 ## Redis authority and Lua/CAS seams
 
@@ -64,9 +66,11 @@ ai-platform:auth-browser-authority:<HMAC(auth_context_secret, incarnation)>
 
 The authority record contains schema version, incarnation digest, generation,
 context handle, and optionally a digest-only rotation ticket, its base
-generation, and deadline.  A V2 context record contains `protocol_version`,
-the same incarnation digest, and generation.  No ticket, nonce, incarnation,
-cookie value, or secret is logged.
+generation, and deadline.  These three ticket fields are all absent or all
+present; when present, the base generation equals the authority generation.
+A V2 context record contains `protocol_version`, the same incarnation digest,
+and generation.  No ticket, nonce, incarnation, cookie value, or secret is
+logged.
 
 The following operations are single Lua transactions:
 
@@ -78,9 +82,13 @@ The following operations are single Lua transactions:
    and carries the old authority/context's remaining `PTTL` to both successor
    records. Reissuing a ticket may replace it only while the authority is
    unchanged.
-3. V2 principal snapshots over authority and context.  There is no Python
+3. Exact-target reconciliation over authority and the target context. It can
+   acknowledge only a signed target cookie whose `(i, g + 1, h-next)` is
+   already equal to both records; it never consumes/reissues a ticket or
+   changes a TTL.
+4. V2 principal snapshots over authority and context.  There is no Python
    get-then-get validation.
-4. Begin and commit auth operations, OAuth state issue/consume, OAuth callback,
+5. Begin and commit auth operations, OAuth state issue/consume, OAuth callback,
    and logout.  The operation and OAuth state carry the V2 identity, so a
    generation transition supersedes old work in the same atomic operation.
 
@@ -106,12 +114,25 @@ Chat, and all other mutation POSTs are never replayed automatically.  IDB
 unavailable, corrupt, blocked, timed out, or cancelled before acquisition
 fails before bootstrap with the localized safe-coordination UI.
 
+If a rotation response succeeds server-side but local IDB promotion is aborted,
+expired, or versionchanged, the next owner retries the persisted pending target.
+The server accepts it only when its signed cookie, authority, and target context
+are exactly the expected `(i, base + 1, next-handle)`; then the owner may promote
+IDB without clearing browser storage.  If authority remains at `base` but the
+pending ticket has expired or was late-replaced, that same authorized owner may
+obtain one fresh ticket for the same pending nonce and atomically replace only
+the matching pending record.  A different successor handle or generation never
+promotes local state and fails closed instead of guessing.
+
 Lease expiry does not let an old owner publish, rotate, or release a newer
 record.  Each IndexedDB transaction accepts a signal/deadline, is aborted for
 cancellation, rereads ownership after every await, and validates ownership and
 generation before network mutation or publication.  A late database-open
-success closes immediately after timeout/abort; versionchange aborts active
-work and all handlers are cleaned up.
+success closes immediately after timeout/abort. A settled blocked/timeout/error
+open retains a late `upgradeneeded` handler solely to abort the upgrade
+transaction before it can mutate schema. Each coordinator database session
+tracks its own live readwrite transactions and explicitly aborts them on
+`versionchange` before closing; all handlers are then cleaned up.
 
 ## Migration and rollback
 
@@ -120,8 +141,11 @@ migrated only when the imported legacy localStorage nonce derives exactly the
 authenticated V1 context handle.  An authenticated nonmatching V1 context is
 never overwritten; ambiguous migration fails closed.  After migration, a raw
 V1 cookie for that context is rejected on protected routes, preventing V2 to
-V1 downgrade.  The V2 bootstrap repair path can replace that physically stale
-raw V1 cookie only after proving current V2 authority from persisted state.
+V1 downgrade. A V1 bootstrap request carrying any `v2.` cookie is rejected
+before V1 Lua or `Set-Cookie`, because V1 supplies insufficient incarnation and
+generation proof. The V2 bootstrap repair path can replace that physically
+stale raw V1 cookie only after proving current V2 authority from persisted
+state.
 
 Deploy server V1/V2 parsing and validation before enabling the no-Web-Locks
 V2 client.  A rollback may stop issuing new V2 contexts, but must retain V2
@@ -131,8 +155,9 @@ sessions).  It must not rewrite V2 cookies as V1.
 ## Failure modes
 
 - Invalid MAC/format, stale or gap generation, conflicting context, invalid or
-  expired ticket, malformed Redis state, authority/context mismatch, Redis
-  loss, and V2 context TTL loss: fail closed without `Set-Cookie`.
+  expired ticket, malformed/partial ticket tuple, malformed Redis state,
+  authority/context mismatch, Redis loss, and V2 context TTL loss: fail closed
+  without `Set-Cookie`.
 - Same nonce/context is deduplicated atomically.
 - Two same-profile no-cookie tabs share the one IndexedDB state and bootstrap
   identity; independent browser profiles have distinct, unauthenticated
@@ -143,13 +168,15 @@ sessions).  It must not rewrite V2 cookies as V1.
 ## TDD and verification matrix
 
 Backend tests cover strict parser/MAC checks, V1 compatibility and migration,
-same-nonce dedupe, context/generation conflicts, ticket single-use/reissue/
-expiry, TTL preservation, Redis loss/corruption, stale-cookie reversed arrival,
+same-nonce dedupe, context/generation conflicts, target-only reconciliation,
+ticket single-use/reissue/late-response ordering/expiry, TTL preservation,
+partial ticket tuples, Redis loss/corruption, stale-cookie reversed arrival,
 principal/login/logout/OAuth/commit fencing, and different-user operation
-races.  Frontend tests use an asynchronous IDB/transaction/cookie-jar double
-for shared tabs, rollback/abort, blocked-to-late-open close, versionchange,
-lease expiry, rotation, and stale-repair semantics.  The double is not proof
-of the real HTTP-IP browser race.
+races. Frontend tests use an asynchronous IDB/transaction/cookie-jar double
+for shared tabs, rollback/abort, blocked-to-late-upgrade/success, explicit
+versionchange transaction abort, lease expiry, reconciliation, ticket reissue,
+rotation, and stale-repair semantics. The double is not proof of the real
+HTTP-IP browser race or actual Redis execution.
 
 Focused gates are auth session/routes/principal pytest; coordinator/provider/
 auth API tests; company RBAC browser source smoke; scoped lint; TypeScript;

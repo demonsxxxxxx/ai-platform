@@ -342,18 +342,23 @@ local function valid_v2(record)
 end
 
 local function valid_authority(record)
-  return type(record) == "table" and record["schema_version"] == 2
+  if type(record) ~= "table" then return false end
+  local has_ticket_digest = record["rotation_ticket_digest"] ~= nil
+  local has_ticket_generation = record["rotation_ticket_generation"] ~= nil
+  local has_ticket_deadline = record["rotation_ticket_deadline"] ~= nil
+  local ticket_absent = not has_ticket_digest and not has_ticket_generation and not has_ticket_deadline
+  local ticket_valid = has_ticket_digest and has_ticket_generation and has_ticket_deadline
+    and type(record["rotation_ticket_digest"]) == "string"
+    and epoch(record["rotation_ticket_generation"])
+    and record["rotation_ticket_generation"] >= 1
+    and record["rotation_ticket_generation"] == record["generation"]
+    and finite(record["rotation_ticket_deadline"])
+    and record["rotation_ticket_deadline"] >= 0
+  return record["schema_version"] == 2
     and type(record["incarnation_digest"]) == "string"
     and epoch(record["generation"]) and record["generation"] >= 1
     and type(record["context_handle"]) == "string"
-    and (record["rotation_ticket_digest"] == nil
-      or type(record["rotation_ticket_digest"]) == "string")
-    and (record["rotation_ticket_generation"] == nil
-      or (epoch(record["rotation_ticket_generation"])
-        and record["rotation_ticket_generation"] >= 1))
-    and (record["rotation_ticket_deadline"] == nil
-      or (finite(record["rotation_ticket_deadline"])
-        and record["rotation_ticket_deadline"] >= 0))
+    and (ticket_absent or ticket_valid)
 end
 
 local function decode(raw)
@@ -616,6 +621,33 @@ return cjson.encode({
   generation = new_generation,
   ttl_milliseconds = ttl
 })
+"""
+
+
+V2_RECONCILE_ROTATION_SCRIPT = """
+-- ai-platform:auth-context-rotate-reconcile:v2
+""" + V2_LUA_HELPERS + """
+local authority_key = KEYS[1]
+local target_context_key = KEYS[2]
+local incarnation_digest = ARGV[1]
+local generation = tonumber(ARGV[2])
+local context_handle = ARGV[3]
+if type(incarnation_digest) ~= "string" or incarnation_digest == ""
+  or not epoch(generation) or generation < 1
+  or type(context_handle) ~= "string" or context_handle == ""
+then return cjson.encode({status = "corrupt"}) end
+
+local authority = decode(redis.call("GET", authority_key))
+local context = decode(redis.call("GET", target_context_key))
+if authority == false or context == false
+  or not valid_authority(authority) or not valid_v2(context)
+  or not ttl_consistent(authority_key, target_context_key)
+  or not same_authority(authority, context, incarnation_digest, generation, context_handle)
+then return cjson.encode({status = "stale"}) end
+
+-- The signed cookie and both Redis records already prove this exact target.
+-- Do not consume or reissue a ticket, refresh a TTL, or emit a Set-Cookie.
+return cjson.encode({status = "reconciled"})
 """
 
 
@@ -1095,6 +1127,19 @@ def _is_valid_v2_authority(record: object) -> bool:
     ticket_digest = record.get("rotation_ticket_digest")
     ticket_generation = record.get("rotation_ticket_generation")
     ticket_deadline = record.get("rotation_ticket_deadline")
+    ticket_absent = (
+        ticket_digest is None
+        and ticket_generation is None
+        and ticket_deadline is None
+    )
+    ticket_valid = (
+        _is_b64url(ticket_digest, length=43)
+        and _is_valid_epoch(ticket_generation)
+        and int(ticket_generation) >= 1
+        and _is_valid_epoch(record.get("generation"))
+        and int(ticket_generation) == int(record["generation"])
+        and _is_valid_lease(ticket_deadline)
+    )
     return (
         record.get("schema_version") == AUTH_CONTEXT_V2_SCHEMA_VERSION
         and _is_b64url(record.get("incarnation_digest"), length=43)
@@ -1102,12 +1147,7 @@ def _is_valid_v2_authority(record: object) -> bool:
         and int(record["generation"]) >= 1
         and isinstance(record.get("context_handle"), str)
         and bool(_V1_CONTEXT_HANDLE_RE.fullmatch(record["context_handle"]))
-        and (ticket_digest is None or _is_b64url(ticket_digest, length=43))
-        and (
-            ticket_generation is None
-            or (_is_valid_epoch(ticket_generation) and int(ticket_generation) >= 1)
-        )
-        and (ticket_deadline is None or _is_valid_lease(ticket_deadline))
+        and (ticket_absent or ticket_valid)
     )
 
 
@@ -1245,6 +1285,37 @@ async def bootstrap_auth_context_v2(
     )
 
     if rotation_ticket is not None:
+        # A response may have completed the rotation server-side while this
+        # browser lost its IDB promotion. Only the signed target cookie plus
+        # exact authority/context equality can reconcile that local pending
+        # record; an old ticket is neither trusted nor consumed here.
+        if (
+            supplied_identity is not None
+            and supplied_identity.incarnation == incarnation
+            and generation == supplied_identity.generation
+            and context_handle == supplied_identity.context_handle
+        ):
+            result = await _eval(
+                V2_RECONCILE_ROTATION_SCRIPT,
+                [
+                    _authority_key(supplied_identity.incarnation_digest),
+                    _context_key(context_handle),
+                ],
+                [
+                    incarnation_digest,
+                    generation,
+                    context_handle,
+                ],
+            )
+            status = str(result.get("status") or "")
+            if status == "reconciled":
+                return AuthBootstrapResult(
+                    "ready",
+                    requested_identity,
+                    set_cookie=False,
+                )
+            _raise_for_store_status("bootstrap", status)
+            raise AssertionError("unreachable")
         if (
             supplied_identity is None
             or supplied_identity.incarnation != incarnation
@@ -1457,6 +1528,9 @@ async def commit_auth_operation(
         )
         status = str(result.get("status") or "")
         if status == "committed":
+            committed_epoch = result.get("tenant_user_subject_epoch")
+            if not _is_valid_epoch(committed_epoch) or int(committed_epoch) < 1:
+                raise AuthContextError("auth_context_unavailable", 503)
             return status
         if status in {"superseded", "expired", "missing"}:
             return status

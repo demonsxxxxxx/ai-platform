@@ -55,6 +55,10 @@ interface StateMutation<T> {
   next?: BrowserAuthV2State;
 }
 
+interface CoordinatorDbSession {
+  readonly liveTransactions: Set<IDBTransaction>;
+}
+
 export class BrowserAuthCoordinatorError extends Error {
   constructor(readonly code: "auth_context_coordination_unavailable") {
     super(code);
@@ -134,6 +138,10 @@ function isRebootstrapRequired(error: unknown): boolean {
     error instanceof ApiRequestError &&
     error.code === "auth_context_rebootstrap_required"
   );
+}
+
+function isAuthContextStale(error: unknown): boolean {
+  return error instanceof ApiRequestError && error.code === "auth_context_stale";
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -227,13 +235,25 @@ function openCoordinatorDb(signal: AbortSignal | undefined, deadline: number): P
       clearTimeout(timer);
       signal?.removeEventListener("abort", abortOpen);
       if (error !== undefined) {
-        request.onupgradeneeded = null;
+        // A blocked/timed-out open can later acquire the version-change lock.
+        // Keep an upgrade handler solely to abort that late transaction before
+        // it can create the coordinator store or otherwise mutate schema.
+        request.onupgradeneeded = () => {
+          try {
+            request.transaction?.abort();
+          } catch {
+            // The transaction may already be settled; no schema work follows.
+          }
+        };
         request.onblocked = null;
         request.onerror = null;
         // An open request cannot be cancelled after a blocked upgrade. Keep
-        // exactly one late-success closer, then remove it after execution.
+        // exactly one late-success closer, then remove all handlers after it.
         request.onsuccess = () => {
           request.result.close();
+          request.onupgradeneeded = null;
+          request.onblocked = null;
+          request.onerror = null;
           request.onsuccess = null;
         };
         try {
@@ -247,7 +267,6 @@ function openCoordinatorDb(signal: AbortSignal | undefined, deadline: number): P
         request.onblocked = null;
         request.onerror = null;
         request.onsuccess = null;
-        db.onversionchange = () => db.close();
         resolve(db);
       } else {
         reject(unavailable());
@@ -291,6 +310,7 @@ function mutateCoordinatorState<T>(
   database: IDBDatabase,
   signal: AbortSignal | undefined,
   deadline: number,
+  session: CoordinatorDbSession,
   mutation: (state: BrowserAuthV2State | null) => StateMutation<T>,
 ): Promise<T> {
   if (deadlineRemaining(deadline) <= 0) return Promise.reject(unavailable());
@@ -307,12 +327,14 @@ function mutateCoordinatorState<T>(
       reject(unavailable());
       return;
     }
+    session.liveTransactions.add(transaction);
     let settled = false;
     let forcedError: unknown;
     let result: T;
     const finish = (error?: unknown) => {
       if (settled) return;
       settled = true;
+      session.liveTransactions.delete(transaction);
       clearTimeout(timer);
       signal?.removeEventListener("abort", abortTransaction);
       if (error !== undefined) reject(error);
@@ -399,9 +421,24 @@ async function withCoordinatorDb<T>(
   mutation: (state: BrowserAuthV2State | null) => StateMutation<T>,
 ): Promise<T> {
   const database = await openCoordinatorDb(signal, deadline);
+  const session: CoordinatorDbSession = { liveTransactions: new Set() };
+  const abortLiveTransactions = () => {
+    for (const transaction of [...session.liveTransactions]) {
+      try {
+        transaction.abort();
+      } catch {
+        // A completed transaction is removed by its terminal event handler.
+      }
+    }
+  };
+  database.onversionchange = () => {
+    abortLiveTransactions();
+    database.close();
+  };
   try {
-    return await mutateCoordinatorState(database, signal, deadline, mutation);
+    return await mutateCoordinatorState(database, signal, deadline, session, mutation);
   } finally {
+    abortLiveTransactions();
     database.onversionchange = null;
     database.close();
   }
@@ -511,6 +548,31 @@ async function persistPendingRotation(
   return { state: next, ownerToken: owned.ownerToken };
 }
 
+async function replacePendingRotationTicket(
+  owned: OwnedV2State,
+  pending: PendingRotation,
+  ticket: string,
+  signal?: AbortSignal,
+): Promise<OwnedV2State> {
+  if (!BASE64URL_RE.test(ticket)) throw unavailable();
+  const deadline = Date.now() + ACQUISITION_TIMEOUT_MS;
+  const next = await withCoordinatorDb(signal, deadline, (state) => {
+    if (
+      !state
+      || !ownerMatches(state, owned)
+      || !state.pendingRotation
+      || state.pendingRotation.baseGeneration !== pending.baseGeneration
+      || state.pendingRotation.nextNonce !== pending.nextNonce
+      || state.pendingRotation.ticket !== pending.ticket
+    ) {
+      throw unavailable();
+    }
+    state.pendingRotation = { ...state.pendingRotation, ticket };
+    return { result: cloneState(state), next: state };
+  });
+  return { state: next, ownerToken: owned.ownerToken };
+}
+
 async function completeV2Rotation(
   owned: OwnedV2State,
   pending: PendingRotation,
@@ -566,22 +628,60 @@ function assertV2Ready(
   }
 }
 
-async function rotateV2Owner(owned: OwnedV2State, signal?: AbortSignal): Promise<void> {
+async function rotateV2Owner(
+  owned: OwnedV2State,
+  signal?: AbortSignal,
+  allowTicketReissue = true,
+): Promise<void> {
   const current = await assertV2Owner(owned, signal);
   const pending = current.pendingRotation;
   if (!pending || pending.baseGeneration !== current.currentGeneration) {
     throw unavailable();
   }
-  const response = await authApi.bootstrapAuthContext(
-    {
-      nonce: pending.nextNonce,
-      protocol_version: 2,
-      browser_incarnation: current.incarnation,
-      generation: pending.baseGeneration + 1,
-      rotation_ticket: pending.ticket,
-    },
-    signal,
-  );
+  let response: AuthContextBootstrapResponse | void;
+  try {
+    response = await authApi.bootstrapAuthContext(
+      {
+        nonce: pending.nextNonce,
+        protocol_version: 2,
+        browser_incarnation: current.incarnation,
+        generation: pending.baseGeneration + 1,
+        rotation_ticket: pending.ticket,
+      },
+      signal,
+    );
+  } catch (error) {
+    if (!allowTicketReissue || !isAuthContextStale(error)) throw error;
+    // A consumed, expired, or late-replaced ticket can be renewed only while
+    // the same current V2 cookie still proves the base generation. Re-read
+    // the lease-owned IDB record before replacing the pending ticket.
+    const renewal = await authApi.bootstrapAuthContext(
+      {
+        nonce: pending.nextNonce,
+        protocol_version: 2,
+        browser_incarnation: current.incarnation,
+        generation: pending.baseGeneration,
+      },
+      signal,
+    );
+    if (
+      !renewal
+      || renewal.status !== "rebootstrap_required"
+      || renewal.protocol_version !== 2
+      || renewal.generation !== pending.baseGeneration
+      || !BASE64URL_RE.test(renewal.rotation_ticket)
+    ) {
+      throw unavailable();
+    }
+    const renewed = await replacePendingRotationTicket(
+      { state: current, ownerToken: owned.ownerToken },
+      pending,
+      renewal.rotation_ticket,
+      signal,
+    );
+    await rotateV2Owner(renewed, signal, false);
+    return;
+  }
   assertV2Ready(response, pending.baseGeneration + 1);
   await completeV2Rotation(
     { state: current, ownerToken: owned.ownerToken },

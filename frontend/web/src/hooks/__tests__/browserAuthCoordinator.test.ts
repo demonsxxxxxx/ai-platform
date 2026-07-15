@@ -62,9 +62,15 @@ function legacyNonce(request: unknown): string {
 /**
  * Deterministic IDB event model, not a Map shim. It drives open upgrade/
  * blocked/versionchange events and queued readwrite transaction completion,
- * abort, rollback, and late completion explicitly.
+ * abort, rollback, and late completion explicitly. In particular, it never
+ * aborts a live readwrite transaction on close/versionchange by itself: the
+ * coordinator must do that production work.
  */
-function installTransactionalIndexedDb(options: { holdGets?: boolean; blockNextOpen?: boolean } = {}) {
+function installTransactionalIndexedDb(options: {
+  holdGets?: boolean;
+  blockNextOpen?: boolean;
+  forceLateSuccess?: boolean;
+} = {}) {
   const originalIndexedDb = Object.getOwnPropertyDescriptor(globalThis, "indexedDB");
   const records = new Map<string, unknown>();
   const heldGets: Array<() => void> = [];
@@ -176,15 +182,16 @@ function installTransactionalIndexedDb(options: { holdGets?: boolean; blockNextO
 
   const factory = {
     open: () => {
+      const upgradeTransaction = {
+        aborted: false,
+        abort() {
+          this.aborted = true;
+        },
+      };
       const request = {
         result: new FakeDatabase(),
         error: null,
-        transaction: {
-          aborted: false,
-          abort() {
-            this.aborted = true;
-          },
-        },
+        transaction: null as typeof upgradeTransaction | null,
         onupgradeneeded: null as ((event: Event) => void) | null,
         onblocked: null as ((event: Event) => void) | null,
         onerror: null as ((event: Event) => void) | null,
@@ -196,11 +203,24 @@ function installTransactionalIndexedDb(options: { holdGets?: boolean; blockNextO
         if (options.blockNextOpen) {
           options.blockNextOpen = false;
           request.onblocked?.(new Event("blocked"));
-          queueMicrotask(() => request.onsuccess?.(new Event("success")));
+          queueMicrotask(() => {
+            if (!schemaCreated) {
+              request.transaction = upgradeTransaction;
+              request.onupgradeneeded?.(new Event("upgradeneeded"));
+            }
+            queueMicrotask(() => {
+              if (!request.transaction?.aborted || options.forceLateSuccess) {
+                request.onsuccess?.(new Event("success"));
+              }
+            });
+          });
           return;
         }
-        if (!schemaCreated) request.onupgradeneeded?.(new Event("upgradeneeded"));
-        if (!request.transaction.aborted) request.onsuccess?.(new Event("success"));
+        if (!schemaCreated) {
+          request.transaction = upgradeTransaction;
+          request.onupgradeneeded?.(new Event("upgradeneeded"));
+        }
+        if (!request.transaction?.aborted) request.onsuccess?.(new Event("success"));
       });
       return request as unknown as IDBOpenDBRequest;
     },
@@ -216,6 +236,9 @@ function installTransactionalIndexedDb(options: { holdGets?: boolean; blockNextO
     },
     get closedDatabases() {
       return closedDatabases;
+    },
+    get schemaCreated() {
+      return schemaCreated;
     },
     get versionchangeHandlerCount() {
       return [...databases].filter((database) => database.onversionchange !== null).length;
@@ -233,7 +256,6 @@ function installTransactionalIndexedDb(options: { holdGets?: boolean; blockNextO
     },
     triggerVersionchange() {
       for (const database of databases) database.onversionchange?.(new Event("versionchange"));
-      for (const transaction of transactions) transaction.abort();
     },
     restore() {
       if (originalIndexedDb) Object.defineProperty(globalThis, "indexedDB", originalIndexedDb);
@@ -464,7 +486,10 @@ test("a forced V2 stale-cookie repair bypasses confirmed state exactly once", as
 
 test("blocked IDB open fails closed, closes late success, and cleans open handlers", async () => {
   const stubs = installBrowserCoordinatorStubs();
-  const idb = installTransactionalIndexedDb({ blockNextOpen: true });
+  const idb = installTransactionalIndexedDb({
+    blockNextOpen: true,
+    forceLateSuccess: true,
+  });
   Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
   const originalBootstrap = authApi.bootstrapAuthContext;
   let bootstrapCalls = 0;
@@ -486,7 +511,13 @@ test("blocked IDB open fails closed, closes late success, and cleans open handle
       onblocked: unknown;
       onerror: unknown;
       onsuccess: unknown;
+      transaction: { aborted: boolean } | null;
     };
+    // The browser can become unblocked after our timeout. The late upgrade
+    // handler must still abort that new upgrade transaction before schema
+    // mutation; the explicit forced late success is then closed immediately.
+    assert.equal(request.transaction?.aborted, true);
+    assert.equal(idb.schemaCreated, false);
     assert.equal(request.onupgradeneeded, null);
     assert.equal(request.onblocked, null);
     assert.equal(request.onerror, null);
@@ -668,6 +699,122 @@ test("pending single-use rotation survives cancellation and only advances genera
 
     await ensureBrowserAuthContext();
     assert.equal(submitted.length, 3);
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    idb.restore();
+    stubs.restore();
+  }
+});
+
+test("an expired pending ticket is reissued under the same owner and target nonce", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const idb = installTransactionalIndexedDb();
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  const submitted: Array<Record<string, unknown>> = [];
+  authApi.bootstrapAuthContext = async (request) => {
+    assert.notEqual(typeof request, "string");
+    const v2 = request as Record<string, unknown>;
+    submitted.push(v2);
+    switch (submitted.length) {
+      case 1:
+        return {
+          status: "rebootstrap_required",
+          protocol_version: 2,
+          generation: 1,
+          rotation_ticket: "T".repeat(43),
+        };
+      case 2:
+        assert.equal(v2.rotation_ticket, "T".repeat(43));
+        throw new ApiRequestError("expired ticket", 409, "auth_context_stale");
+      case 3:
+        assert.equal(v2.generation, 1);
+        assert.equal(v2.rotation_ticket, undefined);
+        assert.equal(v2.nonce, submitted[1].nonce);
+        return {
+          status: "rebootstrap_required",
+          protocol_version: 2,
+          generation: 1,
+          rotation_ticket: "U".repeat(43),
+        };
+      case 4:
+        assert.equal(v2.generation, 2);
+        assert.equal(v2.rotation_ticket, "U".repeat(43));
+        return { status: "ready", protocol_version: 2, generation: 2 };
+      default:
+        throw new Error("unexpected bootstrap replay");
+    }
+  };
+
+  try {
+    await ensureBrowserAuthContext();
+    assert.equal(submitted.length, 4);
+    const state = idb.currentState() as {
+      currentGeneration: number;
+      confirmedGeneration: number;
+      pendingRotation?: unknown;
+    };
+    assert.equal(state.currentGeneration, 2);
+    assert.equal(state.confirmedGeneration, 2);
+    assert.equal(state.pendingRotation, undefined);
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    idb.restore();
+    stubs.restore();
+  }
+});
+
+test("server-proven target reconciliation promotes a pending rotation after local lease loss", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const idb = installTransactionalIndexedDb();
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  const submitted: Array<Record<string, unknown>> = [];
+  authApi.bootstrapAuthContext = async (request) => {
+    assert.notEqual(typeof request, "string");
+    const v2 = request as Record<string, unknown>;
+    submitted.push(v2);
+    if (submitted.length === 1) {
+      return {
+        status: "rebootstrap_required",
+        protocol_version: 2,
+        generation: 1,
+        rotation_ticket: "T".repeat(43),
+      };
+    }
+    assert.equal(v2.generation, 2);
+    assert.equal(v2.rotation_ticket, "T".repeat(43));
+    if (submitted.length === 2) {
+      // Model a server-successful rotation whose Set-Cookie reached the jar,
+      // followed by a local IDB promotion losing its lease.
+      idb.expireCurrentLease();
+    }
+    return { status: "ready", protocol_version: 2, generation: 2 };
+  };
+
+  try {
+    await assert.rejects(
+      () => ensureBrowserAuthContext(),
+      (error: unknown) => error instanceof BrowserAuthCoordinatorError,
+    );
+    const pending = idb.currentState() as {
+      currentGeneration: number;
+      pendingRotation?: { baseGeneration: number; ticket: string };
+    };
+    assert.equal(pending.currentGeneration, 1);
+    assert.equal(pending.pendingRotation?.baseGeneration, 1);
+    assert.equal(pending.pendingRotation?.ticket, "T".repeat(43));
+
+    await ensureBrowserAuthContext();
+    const reconciled = idb.currentState() as {
+      currentGeneration: number;
+      confirmedGeneration: number;
+      pendingRotation?: unknown;
+    };
+    assert.equal(submitted.length, 3);
+    assert.equal(reconciled.currentGeneration, 2);
+    assert.equal(reconciled.confirmedGeneration, 2);
+    assert.equal(reconciled.pendingRotation, undefined);
   } finally {
     authApi.bootstrapAuthContext = originalBootstrap;
     idb.restore();
