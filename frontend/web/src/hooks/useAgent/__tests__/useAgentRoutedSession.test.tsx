@@ -175,6 +175,34 @@ class TestDocument extends TestNode {
   }
 }
 
+class TestLockManager {
+  private readonly tails = new Map<string, Promise<void>>();
+
+  async request<T>(
+    name: string,
+    options: { mode: "exclusive" },
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    assert.equal(options.mode, "exclusive");
+    const previous = this.tails.get(name) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate);
+    this.tails.set(name, tail);
+    await previous;
+    try {
+      return await callback();
+    } finally {
+      release();
+      if (this.tails.get(name) === tail) {
+        this.tails.delete(name);
+      }
+    }
+  }
+}
+
 function installTestDom() {
   const document = new TestDocument();
   const storage = new Map<string, string>();
@@ -231,7 +259,7 @@ function installTestDom() {
   });
   Object.defineProperty(globalThis, "navigator", {
     configurable: true,
-    value: { userAgent: "node" },
+    value: { userAgent: "node", locks: new TestLockManager() },
   });
 
   return { document, window: windowTarget };
@@ -250,6 +278,7 @@ async function loadReactHarness({ strict = false }: { strict?: boolean } = {}) {
   const container = dom.document.createElement("div");
   const root = createRoot(container as never);
   const originalGetCurrentUser = authApi.getCurrentUser;
+  const originalBootstrapAuthContext = authApi.bootstrapAuthContext;
   authApi.getCurrentUser = async () => ({
     id: "user-a",
     username: "user-a",
@@ -261,6 +290,11 @@ async function loadReactHarness({ strict = false }: { strict?: boolean } = {}) {
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   });
+  authApi.bootstrapAuthContext = async () => {};
+  const restoreAuthApi = () => {
+    authApi.getCurrentUser = originalGetCurrentUser;
+    authApi.bootstrapAuthContext = originalBootstrapAuthContext;
+  };
 
   function Probe() {
     snapshot = useAgent();
@@ -268,17 +302,28 @@ async function loadReactHarness({ strict = false }: { strict?: boolean } = {}) {
   }
 
   const probe = React.createElement(Probe);
-  await React.act(async () => {
-    root.render(
-      React.createElement(
-        AuthProvider,
-        null,
-        strict ? React.createElement(React.StrictMode, null, probe) : probe,
-      ),
-    );
-  });
+  try {
+    await React.act(async () => {
+      root.render(
+        React.createElement(
+          AuthProvider,
+          null,
+          strict ? React.createElement(React.StrictMode, null, probe) : probe,
+        ),
+      );
+    });
+  } catch (error) {
+    try {
+      await React.act(async () => root.unmount());
+    } catch {
+      // Preserve the mount failure while restoring shared auth seams.
+    }
+    restoreAuthApi();
+    throw error;
+  }
 
   let unmounted = false;
+  let cleanedUp = false;
   const unmount = async () => {
     if (unmounted) return;
     unmounted = true;
@@ -293,8 +338,13 @@ async function loadReactHarness({ strict = false }: { strict?: boolean } = {}) {
     },
     unmount,
     async cleanup() {
-      await unmount();
-      authApi.getCurrentUser = originalGetCurrentUser;
+      if (cleanedUp) return;
+      cleanedUp = true;
+      try {
+        await unmount();
+      } finally {
+        restoreAuthApi();
+      }
     },
   };
 }

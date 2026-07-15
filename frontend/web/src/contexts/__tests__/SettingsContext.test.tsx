@@ -126,6 +126,33 @@ class TestDocument extends TestNode {
 
 const document = new TestDocument();
 const storage = new Map<string, string>();
+class TestLockManager {
+  private readonly tails = new Map<string, Promise<void>>();
+
+  async request<T>(
+    name: string,
+    options: { mode: "exclusive" },
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    assert.equal(options.mode, "exclusive");
+    const previous = this.tails.get(name) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate);
+    this.tails.set(name, tail);
+    await previous;
+    try {
+      return await callback();
+    } finally {
+      release();
+      if (this.tails.get(name) === tail) {
+        this.tails.delete(name);
+      }
+    }
+  }
+}
 const windowTarget = new TestEventTarget() as TestEventTarget & {
   document: TestDocument;
   localStorage: Storage;
@@ -166,7 +193,7 @@ Object.assign(globalThis, {
 });
 Object.defineProperty(globalThis, "navigator", {
   configurable: true,
-  value: { userAgent: "node" },
+  value: { userAgent: "node", locks: new TestLockManager() },
 });
 
 function deferred<T>() {
@@ -223,13 +250,33 @@ async function mountSettingsHarness(
   const { modelPublicApi } = await import("../../services/api/modelPublic.ts");
   const originals = {
     getCurrentUser: authApi.getCurrentUser,
+    bootstrapAuthContext: authApi.bootstrapAuthContext,
     login: authApi.login,
     logout: authApi.logout,
     listAvailable: modelPublicApi.listAvailable,
     getPinnedModelIds: modelPublicApi.getPinnedModelIds,
     updatePinnedModelIds: modelPublicApi.updatePinnedModelIds,
   };
-  configure(authApi, modelPublicApi);
+  const restoreApis = () => {
+    Object.assign(authApi, {
+      getCurrentUser: originals.getCurrentUser,
+      bootstrapAuthContext: originals.bootstrapAuthContext,
+      login: originals.login,
+      logout: originals.logout,
+    });
+    Object.assign(modelPublicApi, {
+      listAvailable: originals.listAvailable,
+      getPinnedModelIds: originals.getPinnedModelIds,
+      updatePinnedModelIds: originals.updatePinnedModelIds,
+    });
+  };
+  authApi.bootstrapAuthContext = async () => {};
+  try {
+    configure(authApi, modelPublicApi);
+  } catch (error) {
+    restoreApis();
+    throw error;
+  }
   storage.clear();
   storage.set("ai_platform_session_present", "test-session-marker");
 
@@ -243,23 +290,35 @@ async function mountSettingsHarness(
 
   const container = document.createElement("div");
   const root = createRoot(container as never);
-  await React.act(async () => {
-    root.render(
-      React.createElement(
-        AuthProvider,
-        null,
+  try {
+    await React.act(async () => {
+      root.render(
         React.createElement(
-          SettingsProvider,
+          AuthProvider,
           null,
-          React.createElement(Probe),
+          React.createElement(
+            SettingsProvider,
+            null,
+            React.createElement(Probe),
+          ),
         ),
-      ),
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-  });
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  } catch (error) {
+    try {
+      await React.act(async () => root.unmount());
+    } catch {
+      // Preserve the mount failure while restoring shared API seams.
+    }
+    restoreApis();
+    storage.clear();
+    throw error;
+  }
 
   let unmounted = false;
+  let cleanedUp = false;
   return {
     React,
     get auth() {
@@ -282,18 +341,14 @@ async function mountSettingsHarness(
       await React.act(async () => root.unmount());
     },
     async cleanup() {
-      if (!unmounted) await React.act(async () => root.unmount());
-      Object.assign(authApi, {
-        getCurrentUser: originals.getCurrentUser,
-        login: originals.login,
-        logout: originals.logout,
-      });
-      Object.assign(modelPublicApi, {
-        listAvailable: originals.listAvailable,
-        getPinnedModelIds: originals.getPinnedModelIds,
-        updatePinnedModelIds: originals.updatePinnedModelIds,
-      });
-      storage.clear();
+      if (cleanedUp) return;
+      cleanedUp = true;
+      try {
+        if (!unmounted) await React.act(async () => root.unmount());
+      } finally {
+        restoreApis();
+        storage.clear();
+      }
     },
   };
 }

@@ -175,6 +175,33 @@ class TestDocument extends TestNode {
 
 const document = new TestDocument();
 const storage = new Map<string, string>();
+class TestLockManager {
+  private readonly tails = new Map<string, Promise<void>>();
+
+  async request<T>(
+    name: string,
+    options: { mode: "exclusive" },
+    callback: () => Promise<T>,
+  ): Promise<T> {
+    assert.equal(options.mode, "exclusive");
+    const previous = this.tails.get(name) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = previous.then(() => gate);
+    this.tails.set(name, tail);
+    await previous;
+    try {
+      return await callback();
+    } finally {
+      release();
+      if (this.tails.get(name) === tail) {
+        this.tails.delete(name);
+      }
+    }
+  }
+}
 const windowTarget = new TestEventTarget() as TestEventTarget & {
   document: TestDocument;
   fetch: typeof fetch;
@@ -224,7 +251,7 @@ Object.assign(globalThis, {
 });
 Object.defineProperty(globalThis, "navigator", {
   configurable: true,
-  value: { userAgent: "node" },
+  value: { userAgent: "node", locks: new TestLockManager() },
 });
 
 const adminUser: User = {
@@ -289,9 +316,11 @@ async function mountInbox(user: User, client: AdminToolPermissionInboxClient) {
   const { authApi } = await import("../../../services/api/auth.ts");
   const { AdminToolPermissionInboxSection } = await import("../AdminToolPermissionInboxSection.tsx");
   const originalGetCurrentUser = authApi.getCurrentUser;
+  const originalBootstrapAuthContext = authApi.bootstrapAuthContext;
   let currentUser = user;
   let refreshAuthenticatedUser: ReturnType<typeof useAuth>["refreshUser"] | null = null;
   authApi.getCurrentUser = async () => currentUser;
+  authApi.bootstrapAuthContext = async () => {};
   const container = document.createElement("div");
   const root = createRoot(container as never);
   function AuthRefreshCapture() {
@@ -309,11 +338,26 @@ async function mountInbox(user: User, client: AdminToolPermissionInboxClient) {
         React.createElement(AdminToolPermissionInboxSection, { client: nextClient }),
       ),
     );
-  await React.act(async () => {
-    root.render(renderClient(client));
-    await Promise.resolve();
-    await Promise.resolve();
-  });
+  const restoreAuthApi = () => {
+    authApi.getCurrentUser = originalGetCurrentUser;
+    authApi.bootstrapAuthContext = originalBootstrapAuthContext;
+  };
+  try {
+    await React.act(async () => {
+      root.render(renderClient(client));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  } catch (error) {
+    try {
+      await React.act(async () => root.unmount());
+    } catch {
+      // Preserve the mount failure while still restoring shared auth seams.
+    }
+    restoreAuthApi();
+    throw error;
+  }
+  let cleanedUp = false;
   return {
     React,
     container,
@@ -334,8 +378,13 @@ async function mountInbox(user: User, client: AdminToolPermissionInboxClient) {
       });
     },
     async cleanup() {
-      await React.act(async () => root.unmount());
-      authApi.getCurrentUser = originalGetCurrentUser;
+      if (cleanedUp) return;
+      cleanedUp = true;
+      try {
+        await React.act(async () => root.unmount());
+      } finally {
+        restoreAuthApi();
+      }
     },
   };
 }
