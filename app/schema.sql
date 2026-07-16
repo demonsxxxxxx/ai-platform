@@ -375,6 +375,37 @@ create unique index if not exists idx_runs_context_scope
 create unique index if not exists idx_sessions_run_scope
   on sessions(tenant_id, workspace_id, user_id, id, agent_id);
 
+-- A durable, principal-scoped record for one client chat mutation.  It is
+-- deliberately separate from runs/messages: a rejected request has no run,
+-- and a response can be lost after the run transaction commits.
+create table if not exists chat_submissions (
+  tenant_id text not null references tenants(id),
+  user_id text not null references users(id),
+  submission_id uuid not null,
+  workspace_id text,
+  request_fingerprint_sha256 text not null,
+  state text not null,
+  submission_disposition text,
+  rejection_code text,
+  -- This optional pointer must not impose a global schema rule on uploads or
+  -- other pre-session rows; the submission resolver validates it by scope.
+  session_id text,
+  run_id text references runs(id),
+  outcome_json jsonb not null default '{}'::jsonb,
+  queue_position integer,
+  queue_admission_ordinal bigint,
+  queue_message_id text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (tenant_id, user_id, submission_id)
+);
+
+create index if not exists idx_chat_submissions_scope_updated
+  on chat_submissions(tenant_id, user_id, updated_at desc);
+create index if not exists idx_chat_submissions_run
+  on chat_submissions(tenant_id, run_id)
+  where run_id is not null;
+
 do $$
 begin
   if exists (

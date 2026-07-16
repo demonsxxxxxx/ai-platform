@@ -514,6 +514,7 @@
     "queued": "Queued (position {{position}})...",
     "rateLimited": "Too many requests, please try again later",
     "requestFailed": "Failed to load session",
+    "sendNotAcceptedRetry": "Your message was not sent. Please try again.",
     "runTerminal": {
       "failed": "The task could not be completed. Try again later or contact an administrator if the problem persists.",
       "resultUnavailable": "The task has finished, but its result is temporarily unavailable. Please refresh the session.",

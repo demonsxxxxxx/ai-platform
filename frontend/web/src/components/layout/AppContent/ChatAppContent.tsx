@@ -144,6 +144,8 @@ export function ChatAppContent({
     connectionStatus,
     newlyCreatedSession,
     sendMessage,
+    canRetryPendingSubmission,
+    retryPendingSubmission,
     stopGeneration,
     clearMessages,
     loadHistory,
@@ -606,6 +608,8 @@ export function ChatAppContent({
           onRespondApproval={respondToApproval}
           approvalLoading={approvalLoading}
           onSendMessage={sendMessage}
+          canRetryPendingSubmission={canRetryPendingSubmission}
+          onRetryPendingSubmission={retryPendingSubmission}
           onStopGeneration={stopGeneration}
           attachments={pageDragAttachments}
           onAttachmentsChange={setPageDragAttachments}

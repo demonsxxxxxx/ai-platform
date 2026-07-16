@@ -55,8 +55,17 @@ export interface ChatStreamQueuedResponse {
   run_id: string;
   trace_id: string;
   status: "queued";
+  submission_id?: string;
   queue_position?: number;
   queue_insight?: unknown;
+  intent_decision?: ChatIntentDecision;
+}
+
+export interface ChatStreamPendingAdmissionResponse {
+  session_id: string;
+  run_id: string;
+  status: "accepted_pending_enqueue";
+  submission_id: string;
   intent_decision?: ChatIntentDecision;
 }
 
@@ -64,13 +73,27 @@ export interface ChatStreamNeedsConfirmationResponse {
   session_id?: string | null;
   run_id?: null;
   status: "needs_confirmation";
+  submission_id?: string;
   suggestions: CapabilitySuggestion[];
   intent_decision?: ChatIntentDecision;
 }
 
 export type ChatStreamResponse =
   | ChatStreamQueuedResponse
+  | ChatStreamPendingAdmissionResponse
   | ChatStreamNeedsConfirmationResponse;
+
+export interface ChatSubmissionResolution {
+  submission_id: string;
+  state:
+    | "queued"
+    | "accepted_pending_enqueue"
+    | "needs_confirmation"
+    | "rejected_before_persist";
+  submission_disposition?: "rejected_before_persist";
+  rejection_code?: string;
+  outcome?: ChatStreamResponse;
+}
 
 /** Compatibility status projection with its authoritative platform value. */
 export interface ChatRunStatusResponse {
@@ -137,6 +160,7 @@ export function buildSubmitChatBody({
   disabledMcpTools,
   userTimezone,
   selectedSkill,
+  submissionId,
 }: {
   message: string;
   sessionId?: string;
@@ -148,6 +172,7 @@ export function buildSubmitChatBody({
   disabledMcpTools?: string[];
   userTimezone?: string;
   selectedSkill?: SelectedSkillRequest | null;
+  submissionId?: string;
 }): Record<string, unknown> {
   const body: Record<string, unknown> = {
     message,
@@ -158,6 +183,10 @@ export function buildSubmitChatBody({
     enabled_skills: selectedSkill ? undefined : enabledSkills,
     disabled_mcp_tools: disabledMcpTools,
   };
+
+  if (submissionId) {
+    body.submission_id = submissionId;
+  }
 
   if (selectedSkill) {
     body.selected_skill = selectedSkill;
@@ -197,6 +226,14 @@ export function buildRunCancelUrl(runId: string): string {
 /** Build the single supported Chat submission endpoint. */
 export function buildSubmitChatUrl(agentId = DEFAULT_CHAT_AGENT_ID): string {
   return `${API_BASE}/api/chat/stream?agent_id=${encodeURIComponent(agentId)}`;
+}
+
+export function buildChatSubmissionUrl(submissionId: string): string {
+  return `${API_BASE}/api/chat/submissions/${encodeURIComponent(submissionId)}`;
+}
+
+export function buildChatSubmissionRetryAdmissionUrl(submissionId: string): string {
+  return `${buildChatSubmissionUrl(submissionId)}/retry-admission`;
 }
 
 export function buildSessionListUrl(params?: {
@@ -375,6 +412,7 @@ export const sessionApi = {
     disabledSkills?: string[],
     disabledMcpTools?: string[],
     selectedSkill?: SelectedSkillRequest | null,
+    submissionId?: string,
     agentId?: string,
   ): Promise<ChatStreamResponse> {
     const body = buildSubmitChatBody({
@@ -387,10 +425,21 @@ export const sessionApi = {
       disabledMcpTools,
       userTimezone: getBrowserTimezone(),
       selectedSkill,
+      submissionId,
     });
     return authFetch(buildSubmitChatUrl(agentId), {
       method: "POST",
       body: JSON.stringify(body),
+    });
+  },
+
+  async getChatSubmission(submissionId: string): Promise<ChatSubmissionResolution> {
+    return authFetch(buildChatSubmissionUrl(submissionId));
+  },
+
+  async retryChatSubmissionAdmission(submissionId: string): Promise<ChatSubmissionResolution> {
+    return authFetch(buildChatSubmissionRetryAdmissionUrl(submissionId), {
+      method: "POST",
     });
   },
 

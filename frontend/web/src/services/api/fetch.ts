@@ -17,6 +17,7 @@ export class ApiRequestError extends Error {
     message: string,
     readonly status: number,
     readonly code?: string,
+    readonly submissionDisposition?: "rejected_before_persist",
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -41,7 +42,20 @@ export async function apiRequestErrorFromResponse(
     status,
     i18n.t.bind(i18n),
   );
-  return new ApiRequestError(projection.message, status, projection.code);
+  const submissionDisposition =
+    detail !== null &&
+    typeof detail === "object" &&
+    !Array.isArray(detail) &&
+    (detail as { submission_disposition?: unknown }).submission_disposition ===
+      "rejected_before_persist"
+      ? "rejected_before_persist"
+      : undefined;
+  return new ApiRequestError(
+    projection.message,
+    status,
+    projection.code,
+    submissionDisposition,
+  );
 }
 
 /**
