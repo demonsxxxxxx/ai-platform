@@ -111,6 +111,36 @@ function formatConfirmationMessage(suggestions: CapabilitySuggestion[]): string 
   return ["需要确认处理方式后再继续。", "", ...items].join("\n");
 }
 
+function projectConfirmationMessages(
+  messages: Message[],
+  suggestions: CapabilitySuggestion[],
+  assistantMessageId?: string,
+): Message[] {
+  const confirmationMessage = formatConfirmationMessage(suggestions);
+  const project = (message: Message): Message => ({
+    ...message,
+    content: confirmationMessage,
+    isStreaming: false,
+    parts: [{ type: "text", content: confirmationMessage }],
+  });
+  if (assistantMessageId && messages.some((message) => message.id === assistantMessageId)) {
+    return messages.map((message) =>
+      message.id === assistantMessageId ? project(message) : message,
+    );
+  }
+  return [
+    ...messages,
+    {
+      id: `confirmation-${uuid()}`,
+      role: "assistant",
+      content: confirmationMessage,
+      timestamp: new Date(),
+      isStreaming: false,
+      parts: [{ type: "text", content: confirmationMessage }],
+    },
+  ];
+}
+
 function maxAcceptedRunEventSequence(
   events: HistoryEvent[] | undefined,
   runId: string | null,
@@ -182,67 +212,126 @@ interface PersistedSubmissionReference {
   submissionId: string;
 }
 
-const CHAT_SUBMISSION_STORAGE_KEY = "ai_platform_chat_submission_references_v1";
+const LEGACY_CHAT_SUBMISSION_STORAGE_KEY =
+  "ai_platform_chat_submission_references_v1";
+const CHAT_SUBMISSION_STORAGE_PREFIX = "ai_platform_chat_submission_reference_v1:";
+
+function parsePersistedSubmissionReference(
+  value: unknown,
+): PersistedSubmissionReference | null {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    (value as { version?: unknown }).version !== 1 ||
+    !Array.isArray((value as { owner?: unknown }).owner) ||
+    (value as { owner: unknown[] }).owner.length !== 2 ||
+    typeof (value as { owner: unknown[] }).owner[0] !== "string" ||
+    typeof (value as { owner: unknown[] }).owner[1] !== "string" ||
+    typeof (value as { submissionId?: unknown }).submissionId !== "string"
+  ) {
+    return null;
+  }
+  return {
+    version: 1,
+    owner: [
+      (value as { owner: string[] }).owner[0],
+      (value as { owner: string[] }).owner[1],
+    ],
+    submissionId: (value as { submissionId: string }).submissionId,
+  };
+}
+
+function submissionReferenceStorageKey(reference: PersistedSubmissionReference): string {
+  return `${CHAT_SUBMISSION_STORAGE_PREFIX}${encodeURIComponent(reference.owner[0])}:${encodeURIComponent(reference.owner[1])}:${encodeURIComponent(reference.submissionId)}`;
+}
+
+function submissionReferenceIdentity(reference: PersistedSubmissionReference): string {
+  return `${reference.owner[0]}\u0000${reference.owner[1]}\u0000${reference.submissionId}`;
+}
+
+function parseSubmissionReferenceJson(raw: string | null): PersistedSubmissionReference | null {
+  if (!raw) return null;
+  try {
+    return parsePersistedSubmissionReference(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
 
 function readPersistedSubmissionReferences(): PersistedSubmissionReference[] {
   try {
-    const raw = localStorage.getItem(CHAT_SUBMISSION_STORAGE_KEY);
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(parsed)) return [];
-    return parsed.flatMap((item): PersistedSubmissionReference[] => {
-      if (
-        item !== null &&
-        typeof item === "object" &&
-        (item as { version?: unknown }).version === 1 &&
-        Array.isArray((item as { owner?: unknown }).owner) &&
-        (item as { owner: unknown[] }).owner.length === 2 &&
-        typeof (item as { owner: unknown[] }).owner[0] === "string" &&
-        typeof (item as { owner: unknown[] }).owner[1] === "string" &&
-        typeof (item as { submissionId?: unknown }).submissionId === "string"
-      ) {
-        return [
-          {
-            version: 1,
-            owner: [
-              (item as { owner: string[] }).owner[0],
-              (item as { owner: string[] }).owner[1],
-            ],
-            submissionId: (item as { submissionId: string }).submissionId,
-          },
-        ];
+    const references = new Map<string, PersistedSubmissionReference>();
+    const legacyRaw = localStorage.getItem(LEGACY_CHAT_SUBMISSION_STORAGE_KEY);
+    let legacy: unknown = [];
+    if (legacyRaw) {
+      try {
+        legacy = JSON.parse(legacyRaw);
+      } catch {
+        // A corrupt legacy aggregate must not hide independently durable keys.
       }
-      return [];
-    });
+    }
+    if (Array.isArray(legacy)) {
+      for (const item of legacy) {
+        const parsed = parsePersistedSubmissionReference(item);
+        if (parsed) references.set(submissionReferenceIdentity(parsed), parsed);
+      }
+    }
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (!key?.startsWith(CHAT_SUBMISSION_STORAGE_PREFIX)) continue;
+      const raw = localStorage.getItem(key);
+      const parsed = parseSubmissionReferenceJson(raw);
+      if (parsed) references.set(submissionReferenceIdentity(parsed), parsed);
+    }
+    return [...references.values()].sort((left, right) =>
+      submissionReferenceIdentity(left).localeCompare(submissionReferenceIdentity(right)),
+    );
   } catch {
     return [];
   }
 }
 
-function writePersistedSubmissionReferences(references: PersistedSubmissionReference[]): void {
+function persistSubmissionReference(reference: PersistedSubmissionReference): boolean {
   try {
-    localStorage.setItem(CHAT_SUBMISSION_STORAGE_KEY, JSON.stringify(references));
+    const key = submissionReferenceStorageKey(reference);
+    const encoded = JSON.stringify(reference);
+    localStorage.setItem(key, encoded);
+    const confirmed = localStorage.getItem(key);
+    const parsed = confirmed ? parsePersistedSubmissionReference(JSON.parse(confirmed)) : null;
+    return (
+      parsed !== null &&
+      authScopesEqual(parsed.owner, reference.owner) &&
+      parsed.submissionId === reference.submissionId
+    );
   } catch {
     // A private-mode quota failure cannot make an unknown mutation safe to retry.
+    return false;
   }
 }
 
-function persistSubmissionReference(reference: PersistedSubmissionReference): void {
-  const retained = readPersistedSubmissionReferences().filter(
-    (candidate) => !authScopesEqual(candidate.owner, reference.owner),
-  );
-  writePersistedSubmissionReferences([...retained, reference]);
-}
-
 function removePersistedSubmissionReference(owner: AuthScope, submissionId: string): void {
-  writePersistedSubmissionReferences(
-    readPersistedSubmissionReferences().filter(
-      (candidate) =>
-        !(
-          authScopesEqual(candidate.owner, owner) &&
-          candidate.submissionId === submissionId
-        ),
-    ),
-  );
+  try {
+    const reference: PersistedSubmissionReference = { version: 1, owner, submissionId };
+    localStorage.removeItem(submissionReferenceStorageKey(reference));
+    const legacyRaw = localStorage.getItem(LEGACY_CHAT_SUBMISSION_STORAGE_KEY);
+    const legacy = legacyRaw ? JSON.parse(legacyRaw) : [];
+    if (!Array.isArray(legacy)) return;
+    const retained = legacy.filter((item) => {
+      const parsed = parsePersistedSubmissionReference(item);
+      return !(
+        parsed !== null &&
+        authScopesEqual(parsed.owner, owner) &&
+        parsed.submissionId === submissionId
+      );
+    });
+    if (retained.length === 0) {
+      localStorage.removeItem(LEGACY_CHAT_SUBMISSION_STORAGE_KEY);
+    } else {
+      localStorage.setItem(LEGACY_CHAT_SUBMISSION_STORAGE_KEY, JSON.stringify(retained));
+    }
+  } catch {
+    // A failed cleanup keeps the reference fenced; it must not authorize replay.
+  }
 }
 
 function authScopesEqual(left: AuthScope | null, right: AuthScope | null): boolean {
@@ -326,7 +415,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const sessionGenerationRef = useRef(0);
   const submissionTokenRef = useRef(0);
   const authScopeRef = useRef<AuthScope | null>(null);
+  const authScopeGenerationRef = useRef(0);
   const submissionUncertaintyRef = useRef<SubmissionUncertainty | null>(null);
+  const submissionResolverOwnerRef = useRef<string | null>(null);
   const [pendingSubmissionId, setPendingSubmissionId] = useState<string | null>(null);
 
   // Stream version to invalidate stale SSE events after clearMessages
@@ -1194,11 +1285,22 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         return { status: "failed" };
       }
       const submissionId = uuid();
-      persistSubmissionReference({
+      const persistedSubmission = {
         version: 1,
         owner: submissionOwner,
         submissionId,
-      });
+      } as const;
+      if (!persistSubmissionReference(persistedSubmission)) {
+        // A durable key is the only recovery authority for an unknown POST.
+        // Do not send if the browser cannot prove that it retained the key.
+        const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
+          defaultValue: i18n.t("chat.requestFailed"),
+        });
+        setError(statusUnavailable);
+        toast.error(statusUnavailable);
+        finishCurrentSubmission();
+        return { status: "failed" };
+      }
       const {
         messages: optimisticMessages,
         userMessageId,
@@ -1257,23 +1359,18 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         const protocolEchoed = submitData.submission_id === submissionId;
 
         if (isChatStreamNeedsConfirmation(submitData)) {
-          removePersistedSubmissionReference(submissionOwner, submissionId);
           pendingProjectIdRef.current = null;
-          const confirmationMessage = formatConfirmationMessage(
+          const confirmationMessages = projectConfirmationMessages(
+            messagesRef.current,
             submitData.suggestions,
+            assistantMessageId,
           );
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMessageId
-                ? {
-                    ...m,
-                    content: confirmationMessage,
-                    isStreaming: false,
-                    parts: [{ type: "text", content: confirmationMessage }],
-                  }
-                : m,
-            ),
-          );
+          messagesRef.current = confirmationMessages;
+          setMessages(confirmationMessages);
+          submissionUncertaintyRef.current = null;
+          setPendingSubmissionId(null);
+          setError(null);
+          removePersistedSubmissionReference(submissionOwner, submissionId);
           setConnectionStatus("disconnected");
           setIsInitializingSandbox(false);
           setIsLoading(false);
@@ -1664,11 +1761,56 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     [authScopeAuthenticated, authScopeTenantId, authScopeUserId],
   );
 
+  const installPersistedSubmissionFence = useCallback(
+    (owner: AuthScope): PersistedSubmissionReference | null => {
+      const persisted = readPersistedSubmissionReferences().find((candidate) =>
+        authScopesEqual(candidate.owner, owner),
+      );
+      if (!persisted) {
+        submissionUncertaintyRef.current = null;
+        setPendingSubmissionId(null);
+        return null;
+      }
+      const current = submissionUncertaintyRef.current;
+      submissionUncertaintyRef.current = {
+        sessionId:
+          current &&
+          authScopesEqual(current.owner, owner) &&
+          current.submissionId === persisted.submissionId
+            ? current.sessionId
+            : null,
+        submissionId: persisted.submissionId,
+        owner,
+        previousMessages:
+          current &&
+          authScopesEqual(current.owner, owner) &&
+          current.submissionId === persisted.submissionId
+            ? current.previousMessages
+            : undefined,
+      };
+      setPendingSubmissionId(persisted.submissionId);
+      return persisted;
+    },
+    [],
+  );
+
+  const advancePersistedSubmissionFence = useCallback(
+    (owner: AuthScope, submissionId: string): PersistedSubmissionReference | null => {
+      removePersistedSubmissionReference(owner, submissionId);
+      return installPersistedSubmissionFence(owner);
+    },
+    [installPersistedSubmissionFence],
+  );
+
   useLayoutEffect(() => {
     const previousAuthScope = authScopeRef.current;
     if (authScopesEqual(previousAuthScope, authScope)) {
       return;
     }
+    // An A→B→A transition must be distinguishable from the original A. Every
+    // resolver and retry captures this epoch before it crosses an await.
+    authScopeGenerationRef.current += 1;
+    submissionResolverOwnerRef.current = null;
     authScopeRef.current = authScope;
 
     // The first authenticated hydration has no prior chat owner. Every later
@@ -1676,29 +1818,56 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     // explicit new-chat action before it can publish stale session state.
     if (previousAuthScope !== null || authScope === null) {
       clearMessages();
+    }
+    if (authScope === null) {
       submissionUncertaintyRef.current = null;
       setPendingSubmissionId(null);
+      return;
     }
-  }, [authScope, clearMessages]);
+    // Read and install durable uncertainty in the layout phase. The composer
+    // sees this synchronous ref fence before any passive resolver GET starts.
+    if (installPersistedSubmissionFence(authScope)) {
+      setError(
+        i18n.t("chat.runTerminal.statusUnavailable", {
+          defaultValue: i18n.t("chat.requestFailed"),
+        }),
+      );
+    }
+  }, [authScope, clearMessages, installPersistedSubmissionFence]);
 
   const resolvePersistedSubmission = useCallback(
     async (owner: AuthScope, submissionId: string) => {
-      const currentScope = authScopeRef.current;
-      if (!authScopesEqual(currentScope, owner)) return;
+      const pending = submissionUncertaintyRef.current;
+      if (
+        !pending ||
+        pending.submissionId !== submissionId ||
+        !authScopesEqual(pending.owner, owner) ||
+        !authScopesEqual(authScopeRef.current, owner)
+      ) {
+        return;
+      }
+      const authScopeGeneration = authScopeGenerationRef.current;
+      const resolverSessionGeneration = sessionGenerationRef.current;
+      const isCurrentResolution = (expectedSessionGeneration = resolverSessionGeneration) =>
+        isMountedRef.current &&
+        authScopeGenerationRef.current === authScopeGeneration &&
+        sessionGenerationRef.current === expectedSessionGeneration &&
+        authScopesEqual(authScopeRef.current, owner) &&
+        submissionUncertaintyRef.current?.submissionId === submissionId &&
+        authScopesEqual(submissionUncertaintyRef.current?.owner ?? null, owner);
       const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
         defaultValue: i18n.t("chat.requestFailed"),
       });
       try {
         const resolution = await sessionApi.getChatSubmission(submissionId);
-        if (!authScopesEqual(authScopeRef.current, owner)) return;
+        if (!isCurrentResolution()) return;
         const outcome = resolution.outcome;
         if (resolution.state === "rejected_before_persist") {
-          const previous = submissionUncertaintyRef.current?.previousMessages || [];
+          const previous = pending.previousMessages || [];
           messagesRef.current = previous;
           setMessages(previous);
-          submissionUncertaintyRef.current = null;
-          setPendingSubmissionId(null);
-          removePersistedSubmissionReference(owner, submissionId);
+          setError(null);
+          advancePersistedSubmissionFence(owner, submissionId);
           return;
         }
         if (
@@ -1710,24 +1879,34 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             sessionId: outcome.session_id,
             submissionId,
             owner,
+            previousMessages: pending.previousMessages,
           };
           setPendingSubmissionId(submissionId);
-          const restored = await loadHistory(outcome.session_id, outcome.run_id);
+          const historyPromise = loadHistory(outcome.session_id, outcome.run_id);
+          const historySessionGeneration = sessionGenerationRef.current;
+          const restored = await historyPromise;
           if (
             restored !== null &&
-            authScopesEqual(authScopeRef.current, owner) &&
-            submissionUncertaintyRef.current?.submissionId === submissionId
+            isCurrentResolution(historySessionGeneration)
           ) {
-            submissionUncertaintyRef.current = null;
-            setPendingSubmissionId(null);
-            removePersistedSubmissionReference(owner, submissionId);
+            setError(null);
+            advancePersistedSubmissionFence(owner, submissionId);
           }
           return;
         }
         if (resolution.state === "needs_confirmation") {
-          submissionUncertaintyRef.current = null;
-          setPendingSubmissionId(null);
-          removePersistedSubmissionReference(owner, submissionId);
+          if (!outcome || !isChatStreamNeedsConfirmation(outcome)) {
+            setError(statusUnavailable);
+            return;
+          }
+          const projected = projectConfirmationMessages(
+            messagesRef.current,
+            outcome.suggestions,
+          );
+          messagesRef.current = projected;
+          setMessages(projected);
+          setError(null);
+          advancePersistedSubmissionFence(owner, submissionId);
           return;
         }
         submissionUncertaintyRef.current = {
@@ -1740,7 +1919,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       } catch {
         // Missing/old-backend resolver results are unknown, never proof that
         // the original POST did not persist.
-        if (authScopesEqual(authScopeRef.current, owner)) {
+        if (isCurrentResolution()) {
           submissionUncertaintyRef.current = {
             sessionId: submissionUncertaintyRef.current?.sessionId || null,
             submissionId,
@@ -1752,12 +1931,21 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         }
       }
     },
-    [loadHistory],
+    [advancePersistedSubmissionFence, loadHistory],
   );
 
   const retryPendingSubmission = useCallback(async (): Promise<void> => {
     const pending = submissionUncertaintyRef.current;
     if (!pending || !authScopesEqual(authScopeRef.current, pending.owner)) return;
+    const authScopeGeneration = authScopeGenerationRef.current;
+    const retrySessionGeneration = sessionGenerationRef.current;
+    const isCurrentRetry = (expectedSessionGeneration = retrySessionGeneration) =>
+      isMountedRef.current &&
+      authScopeGenerationRef.current === authScopeGeneration &&
+      sessionGenerationRef.current === expectedSessionGeneration &&
+      authScopesEqual(authScopeRef.current, pending.owner) &&
+      submissionUncertaintyRef.current?.submissionId === pending.submissionId &&
+      authScopesEqual(submissionUncertaintyRef.current?.owner ?? null, pending.owner);
     const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
       defaultValue: i18n.t("chat.requestFailed"),
     });
@@ -1765,14 +1953,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const resolution = await sessionApi.retryChatSubmissionAdmission(
         pending.submissionId,
       );
-      if (!authScopesEqual(authScopeRef.current, pending.owner)) return;
+      if (!isCurrentRetry()) return;
       if (resolution.state === "rejected_before_persist") {
         const previous = pending.previousMessages || [];
         messagesRef.current = previous;
         setMessages(previous);
-        submissionUncertaintyRef.current = null;
-        setPendingSubmissionId(null);
-        removePersistedSubmissionReference(pending.owner, pending.submissionId);
+        setError(null);
+        advancePersistedSubmissionFence(pending.owner, pending.submissionId);
         return;
       }
       if (
@@ -1780,38 +1967,71 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         resolution.outcome?.session_id &&
         resolution.outcome.run_id
       ) {
-        const restored = await loadHistory(
+        const historyPromise = loadHistory(
           resolution.outcome.session_id,
           resolution.outcome.run_id,
         );
+        const historySessionGeneration = sessionGenerationRef.current;
+        const restored = await historyPromise;
         if (
           restored !== null &&
-          authScopesEqual(authScopeRef.current, pending.owner) &&
-          submissionUncertaintyRef.current?.submissionId === pending.submissionId
+          isCurrentRetry(historySessionGeneration)
         ) {
-          submissionUncertaintyRef.current = null;
-          setPendingSubmissionId(null);
-          removePersistedSubmissionReference(pending.owner, pending.submissionId);
+          setError(null);
+          advancePersistedSubmissionFence(pending.owner, pending.submissionId);
         }
+        return;
+      }
+      if (resolution.state === "needs_confirmation") {
+        const outcome = resolution.outcome;
+        if (!outcome || !isChatStreamNeedsConfirmation(outcome)) {
+          setError(statusUnavailable);
+          return;
+        }
+        const projected = projectConfirmationMessages(
+          messagesRef.current,
+          outcome.suggestions,
+        );
+        messagesRef.current = projected;
+        setMessages(projected);
+        setError(null);
+        advancePersistedSubmissionFence(pending.owner, pending.submissionId);
         return;
       }
       setError(statusUnavailable);
     } catch {
-      if (authScopesEqual(authScopeRef.current, pending.owner)) {
+      if (isCurrentRetry()) {
         setError(statusUnavailable);
       }
     }
-  }, [loadHistory]);
+  }, [advancePersistedSubmissionFence, loadHistory]);
 
   useEffect(() => {
-    if (authScope === null) return;
-    const persisted = readPersistedSubmissionReferences().find((candidate) =>
-      authScopesEqual(candidate.owner, authScope),
-    );
-    if (persisted) {
-      void resolvePersistedSubmission(persisted.owner, persisted.submissionId);
+    const pending = submissionUncertaintyRef.current;
+    if (
+      authScope === null ||
+      pending === null ||
+      pendingSubmissionId !== pending.submissionId ||
+      !authScopesEqual(pending.owner, authScope)
+    ) {
+      return;
     }
-  }, [authScope, resolvePersistedSubmission]);
+    const ownerKey = JSON.stringify([
+      authScopeGenerationRef.current,
+      pending.owner[0],
+      pending.owner[1],
+      pending.submissionId,
+    ]);
+    if (submissionResolverOwnerRef.current === ownerKey) {
+      return;
+    }
+    submissionResolverOwnerRef.current = ownerKey;
+    void resolvePersistedSubmission(pending.owner, pending.submissionId).finally(() => {
+      if (submissionResolverOwnerRef.current === ownerKey) {
+        submissionResolverOwnerRef.current = null;
+      }
+    });
+  }, [authScope, pendingSubmissionId, resolvePersistedSubmission]);
 
   // Reconnect function
   const handleReconnectSSE = reconcileCurrentRun;

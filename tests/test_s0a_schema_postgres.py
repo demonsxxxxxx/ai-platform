@@ -7,6 +7,8 @@ from psycopg import sql
 from psycopg.rows import dict_row
 import pytest
 
+from app import repositories
+
 
 POSTGRES_DSN_ENV = "AI_PLATFORM_S0A_SCHEMA_TEST_DSN"
 
@@ -108,6 +110,26 @@ async def test_s0a_schema_workspace_scope_and_runtime_handle_apply_idempotently(
                 ) values ('run-wrong', 'tenant-a', 'workspace-b', 'session-a', 'user-a', 'agent-a', 'skill-a', 'queued')
                 """
             )
+
+        # A first authenticated principal has no pre-existing users row. The
+        # ledger's immediate user FK must therefore be provisioned before its
+        # first claim, in the exact tenant scope of the principal.
+        await repositories.ensure_submission_principal(
+            conn,
+            tenant_id="tenant-a",
+            user_id="user-first-submission",
+            display_name="First Submission User",
+        )
+        submission, created = await repositories.claim_chat_submission(
+            conn,
+            tenant_id="tenant-a",
+            user_id="user-first-submission",
+            submission_id=str(uuid.uuid4()),
+            workspace_id="workspace-a",
+            request_fingerprint_sha256="a" * 64,
+        )
+        assert created is True
+        assert submission["user_id"] == "user-first-submission"
     finally:
         await conn.execute(sql.SQL("drop schema if exists {} cascade").format(sql.Identifier(schema_name)))
         await conn.close()

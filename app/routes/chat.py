@@ -113,6 +113,7 @@ async def _persist_pre_persistence_rejection(
     submission_id: str | None,
     request_fingerprint: str | None,
     workspace_id: str | None,
+    session_id: str | None,
     code: str,
 ) -> None:
     """Record a deterministic rejection after the mutation transaction rolled back."""
@@ -120,12 +121,29 @@ async def _persist_pre_persistence_rejection(
     if submission_id is None or request_fingerprint is None:
         return
     async with transaction() as conn:
+        await repositories.ensure_submission_principal(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            display_name=principal.display_name,
+        )
+        effective_workspace_id = workspace_id
+        if session_id:
+            continuation_session = await repositories.get_authorized_session(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                session_id=session_id,
+            )
+            saved_workspace_id = continuation_session.get("workspace_id") if continuation_session else None
+            if isinstance(saved_workspace_id, str) and saved_workspace_id:
+                effective_workspace_id = saved_workspace_id
         row, created = await repositories.claim_chat_submission(
             conn,
             tenant_id=principal.tenant_id,
             user_id=principal.user_id,
             submission_id=submission_id,
-            workspace_id=workspace_id,
+            workspace_id=effective_workspace_id,
             request_fingerprint_sha256=request_fingerprint,
         )
         if not created and row.get("request_fingerprint_sha256") != request_fingerprint:
@@ -137,7 +155,7 @@ async def _persist_pre_persistence_rejection(
                 user_id=principal.user_id,
                 submission_id=submission_id,
                 state="rejected_before_persist",
-                workspace_id=workspace_id,
+                workspace_id=effective_workspace_id,
                 submission_disposition="rejected_before_persist",
                 rejection_code=code,
             )
@@ -703,6 +721,7 @@ async def chat_stream(
             submission_id=submission_id,
             request_fingerprint=request_fingerprint,
             workspace_id=request.workspace_id,
+            session_id=request.session_id,
             code="raw_skill_selector_forbidden",
         )
         if submission_id is not None:
@@ -715,6 +734,7 @@ async def chat_stream(
             submission_id=submission_id,
             request_fingerprint=request_fingerprint,
             workspace_id=request.workspace_id,
+            session_id=request.session_id,
             code="skill_selector_conflict",
         )
         if submission_id is not None:
@@ -736,6 +756,7 @@ async def chat_stream(
             submission_id=submission_id,
             request_fingerprint=request_fingerprint,
             workspace_id=request.workspace_id,
+            session_id=request.session_id,
             code=code,
         )
         if submission_id is not None:
@@ -756,6 +777,7 @@ async def chat_stream(
             submission_id=submission_id,
             request_fingerprint=request_fingerprint,
             workspace_id=request.workspace_id,
+            session_id=request.session_id,
             code="capability_not_authorized",
         )
         if submission_id is not None:
@@ -773,18 +795,12 @@ async def chat_stream(
     try:
         async with transaction() as conn:
             if submission_id is not None and request_fingerprint is not None:
-                claimed_submission, created_submission = await repositories.claim_chat_submission(
+                await repositories.ensure_submission_principal(
                     conn,
                     tenant_id=principal.tenant_id,
                     user_id=principal.user_id,
-                    submission_id=submission_id,
-                    workspace_id=request.workspace_id,
-                    request_fingerprint_sha256=request_fingerprint,
+                    display_name=principal.display_name,
                 )
-                if not created_submission:
-                    if claimed_submission.get("request_fingerprint_sha256") != request_fingerprint:
-                        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
-                    return _chat_stream_response_from_submission(claimed_submission)
             continuation_session = None
             if request.session_id:
                 continuation_session = await repositories.get_authorized_session(
@@ -813,6 +829,20 @@ async def chat_stream(
                 requested_agent_id = str(continuation_session["agent_id"])
                 if request.selected_skill is None and request.skill_id is None:
                     requested_skill_id = None
+
+            if submission_id is not None and request_fingerprint is not None:
+                claimed_submission, created_submission = await repositories.claim_chat_submission(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    submission_id=submission_id,
+                    workspace_id=effective_workspace_id,
+                    request_fingerprint_sha256=request_fingerprint,
+                )
+                if not created_submission:
+                    if claimed_submission.get("request_fingerprint_sha256") != request_fingerprint:
+                        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
+                    return _chat_stream_response_from_submission(claimed_submission)
 
             explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
             if explicit_payload is None:
@@ -1127,6 +1157,7 @@ async def chat_stream(
                 submission_id=submission_id,
                 request_fingerprint=request_fingerprint,
                 workspace_id=effective_workspace_id,
+                session_id=request.session_id,
                 code=code,
             )
         if submission_id is not None and 400 <= exc.status_code < 500:
@@ -1139,6 +1170,7 @@ async def chat_stream(
             submission_id=submission_id,
             request_fingerprint=request_fingerprint,
             workspace_id=effective_workspace_id,
+            session_id=request.session_id,
             code="capability_not_authorized",
         )
         if submission_id is not None:
@@ -1151,6 +1183,7 @@ async def chat_stream(
             submission_id=submission_id,
             request_fingerprint=request_fingerprint,
             workspace_id=effective_workspace_id,
+            session_id=request.session_id,
             code=code,
         )
         if submission_id is not None:
@@ -1163,6 +1196,7 @@ async def chat_stream(
             submission_id=submission_id,
             request_fingerprint=request_fingerprint,
             workspace_id=effective_workspace_id,
+            session_id=request.session_id,
             code=code,
         )
         if submission_id is not None:
@@ -1175,6 +1209,7 @@ async def chat_stream(
             submission_id=submission_id,
             request_fingerprint=request_fingerprint,
             workspace_id=effective_workspace_id,
+            session_id=request.session_id,
             code=code,
         )
         if submission_id is not None:

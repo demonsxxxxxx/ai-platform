@@ -133,3 +133,38 @@ keyed recovery after an exact submission-id echo; a backend that silently
 ignores the optional field remains fail-closed. Ledger rows are intentionally
 not deleted in this slice, so a cleanup cannot resurrect an old key as a new
 mutation; bounded retention requires a later tombstone/expiry design.
+
+## Generation 5: durable browser and principal ordering repair
+
+1. `chat_submissions.user_id` has an immediate foreign key. Every keyed claim
+   and every persisted pre-persistence rejection therefore first provisions
+   the trusted authenticated principal and verifies the resulting row in the
+   same tenant, within the same transaction. A conflicting cross-tenant user
+   id fails closed; no ledger row is written under an unverified principal.
+2. Continuation lookup precedes a ledger claim. Once the exact owned session
+   is resolved, its saved workspace is the value recorded immutably in the
+   ledger, including deterministic rejection records. A client workspace never
+   becomes a parallel ledger scope for an owned session.
+3. Browser recovery writes one independently addressed record per
+   `(tenant_id, user_id, submission_id)`, reads it back, and only then issues
+   the chat POST. It retains all unresolved records and reads the prior
+   aggregate record format only for migration compatibility. A quota/private
+   storage failure prevents the network mutation rather than losing its
+   recovery fence.
+4. On each auth tuple replacement, the layout phase immediately installs the
+   persisted fence and increments an auth-scope epoch before any resolver GET.
+   Resolver and retry continuations capture that epoch, the session generation,
+   and the submission id; an A1 completion after A-to-B-to-A2 cannot clear or
+   publish into A2. A single resolver owner also avoids duplicate concurrent
+   GETs while the same fence is live.
+5. Resolver-confirmed `needs_confirmation` uses the same confirmation
+   projector as the live response. It updates `messagesRef.current` before
+   rendered state, clears the stale unavailable error, and only then unlocks
+   the completed record. Unknown, absent, or malformed outcomes remain
+   fenced.
+
+The PostgreSQL schema node is deterministic but requires
+`AI_PLATFORM_S0A_SCHEMA_TEST_DSN`; developer workstations without that DSN
+skip it, while CI can exercise the first-principal immediate-FK path against a
+real schema. No browser storage record contains chat text, attachments,
+credentials, or cookies.

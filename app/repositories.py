@@ -3068,6 +3068,27 @@ async def ensure_user(
     )
 
 
+async def ensure_submission_principal(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    display_name: str | None = None,
+) -> dict[str, Any]:
+    """Provision and tenant-validate a principal before a submission ledger write."""
+
+    await ensure_user(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        display_name=display_name,
+    )
+    principal_user = await get_user(conn, tenant_id=tenant_id, user_id=user_id)
+    if principal_user is None:
+        raise RepositoryAuthorizationError("principal_user_scope_mismatch")
+    return principal_user
+
+
 async def get_user(conn: AsyncConnection, *, tenant_id: str, user_id: str) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """

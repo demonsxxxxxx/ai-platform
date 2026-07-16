@@ -147,6 +147,113 @@ async def test_keyed_chat_payload_mismatch_is_rejected_before_routing(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_keyed_continuation_provisions_principal_and_claims_saved_workspace(monkeypatch):
+    request = ChatStreamRequest(
+        message="resume durable submission",
+        session_id="session-owned",
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+    fingerprint = repository_module.chat_submission_fingerprint(
+        {"request": request.model_dump(mode="json", exclude={"submission_id"}), "query_agent_id": None},
+        tenant_id="tenant-a",
+        user_id="user-a",
+    )
+    calls: list[str] = []
+
+    async def no_existing_submission(*_args, **_kwargs):
+        return None
+
+    async def provision_principal(*_args, **_kwargs):
+        calls.append("provision")
+        return {"id": "user-a", "tenant_id": "tenant-a"}
+
+    async def owned_session(*_args, **_kwargs):
+        calls.append("session")
+        return {
+            "id": "session-owned",
+            "workspace_id": "workspace-owned",
+            "agent_id": "general-agent",
+        }
+
+    async def claim_submission(*_args, **kwargs):
+        calls.append("claim")
+        assert calls == ["provision", "session", "claim"]
+        assert kwargs["workspace_id"] == "workspace-owned"
+        return (
+            {
+                "submission_id": str(request.submission_id),
+                "request_fingerprint_sha256": fingerprint,
+                "state": "queued",
+                "outcome_json": {
+                    "session_id": "session-owned",
+                    "run_id": "run-owned",
+                    "status": "queued",
+                    "submission_id": str(request.submission_id),
+                },
+            },
+            False,
+        )
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", no_existing_submission, raising=False)
+    monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal, raising=False)
+    monkeypatch.setattr(repository_module, "get_authorized_session", owned_session, raising=False)
+    monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission, raising=False)
+
+    response = await chat_stream(request, principal=principal())
+
+    assert response.session_id == "session-owned"
+    assert calls == ["provision", "session", "claim"]
+
+
+@pytest.mark.asyncio
+async def test_keyed_rejection_provisions_principal_before_saved_workspace_ledger(monkeypatch):
+    request = ChatStreamRequest(
+        message="reject before mutation",
+        session_id="session-owned",
+        skill_id="raw-skill-forbidden-to-user",
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+    calls: list[str] = []
+
+    async def provision_principal(*_args, **_kwargs):
+        calls.append("provision")
+        return {"id": "user-a", "tenant_id": "tenant-a"}
+
+    async def owned_session(*_args, **_kwargs):
+        calls.append("session")
+        return {
+            "id": "session-owned",
+            "workspace_id": "workspace-owned",
+            "agent_id": "general-agent",
+        }
+
+    async def claim_submission(*_args, **kwargs):
+        calls.append("claim")
+        assert calls == ["provision", "session", "claim"]
+        assert kwargs["workspace_id"] == "workspace-owned"
+        return ({"state": "resolving"}, True)
+
+    async def finalize_submission(*_args, **kwargs):
+        calls.append("finalize")
+        assert kwargs["workspace_id"] == "workspace-owned"
+        assert kwargs["state"] == "rejected_before_persist"
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "ensure_submission_principal", provision_principal, raising=False)
+    monkeypatch.setattr(repository_module, "get_authorized_session", owned_session, raising=False)
+    monkeypatch.setattr(repository_module, "claim_chat_submission", claim_submission, raising=False)
+    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize_submission, raising=False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(request, principal=principal())
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail["code"] == "raw_skill_selector_forbidden"
+    assert calls == ["provision", "session", "claim", "finalize"]
+
+
+@pytest.mark.asyncio
 async def test_chat_submission_resolver_is_exactly_principal_scoped(monkeypatch):
     calls = []
 
