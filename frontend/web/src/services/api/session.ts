@@ -154,7 +154,6 @@ export function buildSubmitChatBody({
   sessionId,
   agentOptions,
   attachments,
-  projectId,
   disabledSkills,
   enabledSkills,
   disabledMcpTools,
@@ -166,7 +165,6 @@ export function buildSubmitChatBody({
   sessionId?: string;
   agentOptions?: Record<string, boolean | string | number>;
   attachments?: MessageAttachment[];
-  projectId?: string;
   disabledSkills?: string[];
   enabledSkills?: string[];
   disabledMcpTools?: string[];
@@ -194,9 +192,6 @@ export function buildSubmitChatBody({
 
   if (userTimezone) {
     body.user_timezone = userTimezone;
-  }
-  if (projectId) {
-    body.project_id = projectId;
   }
   return body;
 }
@@ -240,9 +235,7 @@ export function buildSessionListUrl(params?: {
   status?: string;
   limit?: number;
   skip?: number;
-  project_id?: string;
   search?: string;
-  favorites_only?: boolean;
 }): string {
   const searchParams = new URLSearchParams();
   if (params?.status) searchParams.set("status", params.status);
@@ -261,9 +254,7 @@ export const sessionApi = {
     status?: string;
     limit?: number;
     skip?: number;
-    project_id?: string;
     search?: string;
-    favorites_only?: boolean;
   }): Promise<SessionListResponse | BackendSession[]> {
     return authFetch<SessionListResponse | BackendSession[]>(
       buildSessionListUrl(params),
@@ -408,7 +399,6 @@ export const sessionApi = {
     sessionId?: string,
     agentOptions?: Record<string, boolean | string | number>,
     attachments?: MessageAttachment[],
-    projectId?: string,
     disabledSkills?: string[],
     disabledMcpTools?: string[],
     selectedSkill?: SelectedSkillRequest | null,
@@ -420,7 +410,6 @@ export const sessionApi = {
       sessionId,
       agentOptions,
       attachments,
-      projectId,
       disabledSkills,
       disabledMcpTools,
       userTimezone: getBrowserTimezone(),

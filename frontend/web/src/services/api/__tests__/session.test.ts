@@ -15,10 +15,10 @@ import {
   resolveChatSessionAgentId,
 } from "../session.ts";
 
-test("fails closed instead of sending unsupported project or favorite filters", () => {
+test("builds the active session list URL with pagination", () => {
   assert.equal(
-    buildSessionListUrl({ project_id: "project-1", favorites_only: true }),
-    "/api/sessions",
+    buildSessionListUrl({ status: "active", limit: 20, skip: 40 }),
+    "/api/sessions?status=active&limit=20&skip=40",
   );
 });
 

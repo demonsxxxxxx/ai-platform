@@ -410,7 +410,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionAgentId, setSessionAgentId] = useState(DEFAULT_CHAT_AGENT_ID);
-  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
@@ -422,8 +421,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
   // Refs for connection management
   const abortControllerRef = useRef<AbortController | null>(null);
-  const pendingProjectIdRef = useRef<string | null>(null);
-  const autoExpandProjectIdRef = useRef<string | null>(null);
   const isConnectingRef = useRef(false);
   const isLoadingHistoryRef = useRef(false);
   const isSendingRef = useRef(false);
@@ -886,7 +883,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         runId: null,
         sequence: null,
       };
-      pendingProjectIdRef.current = null;
       isLoadingHistoryRef.current = false;
       isSendingRef.current = false;
       isConnectingRef.current = false;
@@ -982,9 +978,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           const loadedAgentId = sessionData.agent_id || DEFAULT_CHAT_AGENT_ID;
           sessionAgentIdRef.current = loadedAgentId;
           setSessionAgentId(loadedAgentId);
-          setCurrentProjectId(
-            (sessionData.metadata?.project_id as string) || null,
-          );
 
           // 从 metadata 提取配置信息
           const sessionConfig = {
@@ -1397,7 +1390,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           requestSessionId ?? undefined,
           fullAgentOptions,
           attachments,
-          pendingProjectIdRef.current ?? undefined,
           disabledSkills,
           disabledMcpTools,
           selectedSkill,
@@ -1416,7 +1408,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         const protocolEchoed = submitData.submission_id === submissionId;
 
         if (isChatStreamNeedsConfirmation(submitData)) {
-          pendingProjectIdRef.current = null;
           const confirmationMessages = projectOwnedConfirmationMessages(
             messagesRef.current,
             submitData.suggestions,
@@ -1482,12 +1473,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           submitData,
           requestAgentId,
         );
-        const projectId = pendingProjectIdRef.current;
         sessionAgentIdRef.current = routedAgentId;
         setSessionAgentId(routedAgentId);
-
-        // Clear pending project ID after use
-        pendingProjectIdRef.current = null;
 
         // Handle queued status — show toast and wait via SSE
         if (submitData.status === "queued") {
@@ -1510,10 +1497,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             disabled_skills: disabledSkills,
             disabled_mcp_tools: disabledMcpTools,
           };
-          if (projectId) {
-            conversationConfig.project_id = projectId;
-          }
-
           const newSession: BackendSession = {
             id: newSessionId,
             agent_id: routedAgentId,
@@ -1523,7 +1506,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             metadata: conversationConfig,
           };
           setNewlyCreatedSession(newSession);
-          setCurrentProjectId(projectId);
 
           sessionApi
             .generateTitle(newSessionId, content, i18n.language)
@@ -1776,7 +1758,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     sessionGenerationRef.current += 1;
     submissionTokenRef.current += 1;
     streamVersionRef.current += 1;
-    pendingProjectIdRef.current = null;
     isLoadingHistoryRef.current = false;
     isSendingRef.current = false;
     isConnectingRef.current = false;
@@ -1790,7 +1771,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
     setError(null);
     setCurrentRunId(null);
-    setCurrentProjectId(null);
     setNewlyCreatedSession(null);
     setIsLoading(false);
     setIsLoadingHistory(false);
@@ -2167,21 +2147,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     clearMessages,
     loadHistory,
     reconnectSSE: handleReconnectSSE,
-    setPendingProjectId: (id: string | null) => {
-      pendingProjectIdRef.current = id;
-      autoExpandProjectIdRef.current = id;
-    },
-    autoExpandProjectId: autoExpandProjectIdRef.current,
-    clearAutoExpandProjectId: (id?: string | null) => {
-      if (
-        id === undefined ||
-        id === null ||
-        autoExpandProjectIdRef.current === id
-      ) {
-        autoExpandProjectIdRef.current = null;
-      }
-    },
-    currentProjectId,
   };
 }
 
