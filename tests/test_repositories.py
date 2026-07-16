@@ -3133,21 +3133,52 @@ async def test_cancel_run_closes_non_terminal_run_steps():
             self.calls = []
 
         async def execute(self, sql, params):
-            self.calls.append((" ".join(sql.split()), params))
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if "set permission_terminalization_target" in normalized:
+                return SingleRowCursor(
+                    {
+                        "id": "run-a",
+                        "trace_id": "trace-a",
+                        "permission_terminalization_target": "cancelled",
+                    }
+                )
+            if normalized.startswith("select id, trace_id, permission_terminalization_target"):
+                return SingleRowCursor(
+                    {
+                        "id": "run-a",
+                        "permission_terminalization_target": "cancelled",
+                        "permission_terminalization_reason": "run_cancelled",
+                    }
+                )
+            if "has_unterminalized" in normalized:
+                return SingleRowCursor({"has_unterminalized": False})
+            if "set status = 'cancelled'" in normalized:
+                return SingleRowCursor({"id": "run-a", "status": "cancelled"})
             return FakeCursor()
 
     conn = RecordingConnection()
 
-    await cancel_run(conn, tenant_id="tenant-a", run_id="run-a", result_json={"message": "cancelled"})
+    result = await cancel_run(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        result_json={"message": "cancelled"},
+    )
 
-    assert len(conn.calls) == 3
-    assert conn.calls[0][0].startswith("update runs")
-    assert conn.calls[1][0].startswith("update run_steps")
-    assert "status = 'cancelled'" in conn.calls[1][0]
-    assert "status in ('pending', 'running')" in conn.calls[1][0]
-    assert conn.calls[1][1] == ("tenant-a", "run-a")
-    assert conn.calls[2][0].startswith("update run_tool_permission_requests")
-    assert conn.calls[2][1] == ("cancelled", "run_cancelled", "tenant-a", "run-a")
+    assert result is True
+    assert len(conn.calls) == 6
+    assert "set permission_terminalization_target" in conn.calls[0][0]
+    assert conn.calls[0][1][0:2] == ("cancelled", "run_cancelled")
+    assert conn.calls[0][1][-2:] == ("tenant-a", "run-a")
+    assert conn.calls[1][0].startswith("select id, trace_id, permission_terminalization_target")
+    assert conn.calls[2][0].startswith("with locked_run as")
+    assert conn.calls[2][1] == ("tenant-a", "run-a", "tenant-a", "run-a", 50, "cancelled", "run_cancelled")
+    assert "has_unterminalized" in conn.calls[3][0]
+    assert "set status = 'cancelled'" in conn.calls[4][0]
+    assert conn.calls[5][0].startswith("update run_steps")
+    assert "status in ('pending', 'running')" in conn.calls[5][0]
+    assert conn.calls[5][1] == ("tenant-a", "run-a")
 
 
 @pytest.mark.asyncio
@@ -3157,12 +3188,36 @@ async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_prog
             self.calls = []
 
         async def execute(self, sql, params):
-            self.calls.append((" ".join(sql.split()), params))
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if "set permission_terminalization_target" in normalized:
+                return SingleRowCursor(
+                    {
+                        "id": "run-a",
+                        "trace_id": "trace-a",
+                        "permission_terminalization_target": "failed",
+                    }
+                )
+            if normalized.startswith("select id, trace_id, permission_terminalization_target"):
+                return SingleRowCursor(
+                    {
+                        "id": "run-a",
+                        "permission_terminalization_target": "failed",
+                        "permission_terminalization_reason": "run_failed",
+                        "permission_terminalization_result_json": {"message": "failed"},
+                        "permission_terminalization_error_code": "executor_failure",
+                        "permission_terminalization_error_message": "boom",
+                    }
+                )
+            if "has_unterminalized" in normalized:
+                return SingleRowCursor({"has_unterminalized": False})
+            if "set status = 'failed'" in normalized:
+                return SingleRowCursor({"id": "run-a", "status": "failed"})
             return FakeCursor()
 
     conn = RecordingConnection()
 
-    await fail_run(
+    result = await fail_run(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
@@ -3171,14 +3226,21 @@ async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_prog
         result_json={"message": "failed"},
     )
 
-    assert len(conn.calls) == 3
-    assert conn.calls[0][0].startswith("update runs")
-    assert conn.calls[1][0].startswith("update run_steps")
-    assert "case when status = 'running' then 'failed' else 'cancelled' end" in conn.calls[1][0]
-    assert "status in ('pending', 'running')" in conn.calls[1][0]
-    assert conn.calls[1][1] == ("tenant-a", "run-a")
-    assert conn.calls[2][0].startswith("update run_tool_permission_requests")
-    assert conn.calls[2][1] == ("failed", "run_failed", "tenant-a", "run-a")
+    assert result is True
+    assert len(conn.calls) == 7
+    assert "set permission_terminalization_target" in conn.calls[0][0]
+    assert conn.calls[0][1][0:2] == ("failed", "run_failed")
+    assert conn.calls[0][1][-2:] == ("tenant-a", "run-a")
+    assert conn.calls[1][0].startswith("select id, trace_id, permission_terminalization_target")
+    assert conn.calls[2][0].startswith("with locked_run as")
+    assert conn.calls[2][1] == ("tenant-a", "run-a", "tenant-a", "run-a", 50, "failed", "run_failed")
+    assert "has_unterminalized" in conn.calls[3][0]
+    assert "set status = 'failed'" in conn.calls[4][0]
+    assert "set latency_ms" in conn.calls[5][0]
+    assert conn.calls[6][0].startswith("update run_steps")
+    assert "case when status = 'running' then 'failed' else 'cancelled' end" in conn.calls[6][0]
+    assert "status in ('pending', 'running')" in conn.calls[6][0]
+    assert conn.calls[6][1] == ("tenant-a", "run-a")
 
 
 @pytest.mark.asyncio
@@ -3223,12 +3285,25 @@ async def test_expired_permission_request_emits_tenant_run_scoped_terminal_audit
 
     assert row["id"] == "tpr-a"
     assert "status = 'expired'" in calls[0][1]
-    assert calls[0][2] == ("tenant-a", "user-a", "user-a", "run-a", "run-a", "tpr-a", "tpr-a", 1)
-    assert calls[1][1]["payload"]["permission_request_id"] == "tpr-a"
-    assert calls[1][1]["payload"]["status"] == "expired"
-    assert calls[1][1]["payload"]["tool_call_id"] == "call-a"
-    assert calls[2][1]["tenant_id"] == "tenant-a"
-    assert calls[2][1]["target_id"] == "tpr-a"
+    assert calls[0][2] == (
+        "tenant-a", "run-a", "run-a", "user-a", "user-a", "tpr-a", "tpr-a", 1,
+        "tenant-a", "user-a", "user-a", "run-a", "run-a", "tpr-a", "tpr-a", 1,
+    )
+    events = [entry[1] for entry in calls if entry[0] == "event"]
+    audits = [entry[1] for entry in calls if entry[0] == "audit"]
+    assert len(events) == 1
+    assert events[0]["tenant_id"] == "tenant-a"
+    assert events[0]["run_id"] == "run-a"
+    assert events[0]["event_type"] == "tool_permission_terminalized"
+    assert events[0]["payload"]["permission_request_id"] == "tpr-a"
+    assert events[0]["payload"]["status"] == "expired"
+    assert events[0]["payload"]["tool_call_id"] == "call-a"
+    assert len(audits) == 1
+    assert audits[0]["tenant_id"] == "tenant-a"
+    assert audits[0]["user_id"] is None
+    assert audits[0]["target_id"] == "tpr-a"
+    assert audits[0]["payload_json"]["run_id"] == "run-a"
+    assert audits[0]["payload_json"]["request_user_id"] == "user-a"
 
 
 @pytest.mark.asyncio
@@ -5741,7 +5816,7 @@ async def test_list_admin_memory_records_projects_operator_fields_without_conten
     assert "where tenant_id = %s" in sql
     assert "and workspace_id = %s" in sql
     assert "(%s::text is null or user_id = %s)" in sql
-    assert "(%s = 'all' or permission_request.status = %s)" in sql
+    assert "(%s = 'all' or status = %s)" in sql
     assert params == ("tenant-a", "workspace-a", "user-b", "user-b", "active", "active", 25)
     assert rows[0]["id"] == "mem-ops"
 
@@ -5904,13 +5979,27 @@ async def test_decision_loses_a_barrier_synchronized_cancel_race(monkeypatch):
                 self.decision_ready.set()
                 await self.cancel_terminalized.wait()
                 return SingleRowCursor(None)
-            if normalized.startswith("update runs"):
+            if normalized.startswith("update runs") and "set cancel_requested_at" in normalized:
                 await self.decision_ready.wait()
                 return SingleRowCursor({"id": "run-a", "status": "running", "trace_id": "trace-a"})
-            if normalized.startswith("update run_tool_permission_requests"):
+            if normalized.startswith("update runs") and "coalesce(permission_terminalization_target" in normalized:
+                return SingleRowCursor({"id": "run-a", "permission_terminalization_target": "cancel_requested"})
+            if normalized.startswith("select id, trace_id, permission_terminalization_target"):
+                return SingleRowCursor(
+                    {
+                        "id": "run-a",
+                        "permission_terminalization_target": "cancel_requested",
+                        "permission_terminalization_reason": "run_cancel_requested",
+                    }
+                )
+            if normalized.startswith("with locked_run as"):
                 self.terminalizations.append(params)
                 self.cancel_terminalized.set()
                 return FakeCursor()
+            if "has_unterminalized" in normalized:
+                return SingleRowCursor({"has_unterminalized": False})
+            if normalized.startswith("update runs") and "permission_terminalization_target = null" in normalized:
+                return SingleRowCursor({"id": "run-a", "status": "running"})
             raise AssertionError(normalized)
 
     async def no_active_leases(conn, *, tenant_id, run_id):
@@ -5943,7 +6032,9 @@ async def test_decision_loses_a_barrier_synchronized_cancel_race(monkeypatch):
 
     assert decision is None
     assert cancellation == {"run_id": "run-a", "status": "cancel_requested"}
-    assert conn.terminalizations == [("cancelled", "run_cancel_requested", "tenant-a", "run-a")]
+    assert conn.terminalizations == [
+        ("tenant-a", "run-a", "tenant-a", "run-a", 50, "cancelled", "run_cancel_requested")
+    ]
 
 
 @pytest.mark.asyncio
@@ -5960,13 +6051,27 @@ async def test_request_creation_loses_a_barrier_synchronized_cancel_race(monkeyp
                 self.request_ready.set()
                 await self.cancel_terminalized.wait()
                 return SingleRowCursor(None)
-            if normalized.startswith("update runs"):
+            if normalized.startswith("update runs") and "set cancel_requested_at" in normalized:
                 await self.request_ready.wait()
                 return SingleRowCursor({"id": "run-a", "status": "running", "trace_id": "trace-a"})
-            if normalized.startswith("update run_tool_permission_requests"):
+            if normalized.startswith("update runs") and "coalesce(permission_terminalization_target" in normalized:
+                return SingleRowCursor({"id": "run-a", "permission_terminalization_target": "cancel_requested"})
+            if normalized.startswith("select id, trace_id, permission_terminalization_target"):
+                return SingleRowCursor(
+                    {
+                        "id": "run-a",
+                        "permission_terminalization_target": "cancel_requested",
+                        "permission_terminalization_reason": "run_cancel_requested",
+                    }
+                )
+            if normalized.startswith("with locked_run as"):
                 self.terminalizations.append(params)
                 self.cancel_terminalized.set()
                 return FakeCursor()
+            if "has_unterminalized" in normalized:
+                return SingleRowCursor({"has_unterminalized": False})
+            if normalized.startswith("update runs") and "permission_terminalization_target = null" in normalized:
+                return SingleRowCursor({"id": "run-a", "status": "running"})
             raise AssertionError(normalized)
 
     async def no_active_leases(conn, *, tenant_id, run_id):
@@ -6006,7 +6111,9 @@ async def test_request_creation_loses_a_barrier_synchronized_cancel_race(monkeyp
         await request_task
 
     assert cancellation == {"run_id": "run-a", "status": "cancel_requested"}
-    assert conn.terminalizations == [("cancelled", "run_cancel_requested", "tenant-a", "run-a")]
+    assert conn.terminalizations == [
+        ("tenant-a", "run-a", "tenant-a", "run-a", 50, "cancelled", "run_cancel_requested")
+    ]
 
 
 @pytest.mark.asyncio
@@ -6114,16 +6221,22 @@ async def test_tenant_permission_inbox_expiry_is_bounded_and_makes_batch_progres
 
     assert [row["id"] for row in rows] == ["tpr-a", "tpr-b"]
     expiry_sql, expiry_params = calls[0]
-    assert "with expired_requests as" in expiry_sql
-    assert "with locked_runs as materialized" in expiry_sql
+    assert expiry_sql.startswith("with locked_runs as materialized")
+    assert "), expired_requests as" in expiry_sql
     assert "from runs" in expiry_sql
     assert "runs.permission_terminalization_target is null" in expiry_sql
-    assert "tenant_id = %s" in expiry_sql
-    assert "order by expires_at asc, id asc" in expiry_sql
+    assert "runs.tenant_id = %s" in expiry_sql
+    assert "permission_request.tenant_id = %s" in expiry_sql
+    assert "order by permission_request.expires_at asc, permission_request.id asc" in expiry_sql
     assert "limit %s" in expiry_sql
     assert "for update skip locked" in expiry_sql
+    assert "for update of permission_request skip locked" in expiry_sql
+    assert expiry_params[0] == "tenant-a"
+    assert expiry_params[8] == "tenant-a"
+    assert expiry_params[7] == 50
     assert expiry_params[-1] == 50
     assert [entry[1]["target_id"] for entry in calls if entry[0] == "audit"] == ["tpr-a", "tpr-b"]
+    assert [entry[1]["run_id"] for entry in calls if entry[0] == "event"] == ["run-a", "run-b"]
 
 
 @pytest.mark.asyncio
@@ -6487,13 +6600,27 @@ async def test_allow_for_run_lookup_loses_a_barrier_synchronized_cancel_race(mon
                 self.lookup_ready.set()
                 await self.cancel_terminalized.wait()
                 return SingleRowCursor(None)
-            if normalized.startswith("update runs"):
+            if normalized.startswith("update runs") and "set cancel_requested_at" in normalized:
                 await self.lookup_ready.wait()
                 return SingleRowCursor({"id": "run-a", "status": "running", "trace_id": "trace-a"})
-            if normalized.startswith("update run_tool_permission_requests"):
+            if normalized.startswith("update runs") and "coalesce(permission_terminalization_target" in normalized:
+                return SingleRowCursor({"id": "run-a", "permission_terminalization_target": "cancel_requested"})
+            if normalized.startswith("select id, trace_id, permission_terminalization_target"):
+                return SingleRowCursor(
+                    {
+                        "id": "run-a",
+                        "permission_terminalization_target": "cancel_requested",
+                        "permission_terminalization_reason": "run_cancel_requested",
+                    }
+                )
+            if normalized.startswith("with locked_run as"):
                 self.terminalizations.append(params)
                 self.cancel_terminalized.set()
                 return FakeCursor()
+            if "has_unterminalized" in normalized:
+                return SingleRowCursor({"has_unterminalized": False})
+            if normalized.startswith("update runs") and "permission_terminalization_target = null" in normalized:
+                return SingleRowCursor({"id": "run-a", "status": "running"})
             raise AssertionError(normalized)
 
     async def no_active_leases(conn, *, tenant_id, run_id):
@@ -6525,7 +6652,9 @@ async def test_allow_for_run_lookup_loses_a_barrier_synchronized_cancel_race(mon
 
     assert reusable_grant is None
     assert cancellation == {"run_id": "run-a", "status": "cancel_requested"}
-    assert conn.terminalizations == [("cancelled", "run_cancel_requested", "tenant-a", "run-a")]
+    assert conn.terminalizations == [
+        ("tenant-a", "run-a", "tenant-a", "run-a", 50, "cancelled", "run_cancel_requested")
+    ]
 
 
 @pytest.mark.asyncio

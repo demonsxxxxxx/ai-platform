@@ -4024,7 +4024,7 @@ async def list_memory_records(
           and deleted_at is null
           and (%s::text is null or agent_id = %s)
           and (%s::text is null or session_id = %s)
-          and expires_at > now()
+          and (expires_at is null or expires_at > now())
         order by created_at desc
         limit %s
         """,
