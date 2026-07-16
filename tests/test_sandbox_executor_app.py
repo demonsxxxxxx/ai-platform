@@ -270,7 +270,8 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "accepted"
+    assert body["status"] == "failed"
+    assert body["error_code"] == "tool_permission_malformed_response"
     assert body["sdk_session_id"] == "sdk-session-a"
     assert calls["cwd"] == Path(tmp_path)
     assert calls["skill_id"] == "general-chat"
@@ -537,7 +538,7 @@ def test_executor_permission_broker_failures_emit_controlled_denial_event(
         for event in callback_payload.get("events", [])
         if event.get("payload", {}).get("tool_call_id") == "tool-mcp-denied"
     ]
-    assert [event["type"] for event in permission_events] == ["tool_call_started", "tool_call_completed"]
+    assert [event["type"] for event in permission_events] == ["tool_call_started", "tool_permission_denied"]
     assert permission_events[-1]["payload"]["allowed"] is False
     assert permission_events[-1]["payload"]["reason"] == expected_reason
 

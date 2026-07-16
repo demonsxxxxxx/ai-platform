@@ -313,6 +313,8 @@ async def _default_executor_runner(
             return
         await emit_event(AgentEvent(type="assistant_delta", message=delta, payload={"delta": delta}))
 
+    permission_denials: list[dict[str, Any]] = []
+
     async def on_tool_permission(permission_request: dict[str, Any]) -> dict[str, Any]:
         tool_name = str(permission_request.get("tool_name") or "tool")
         tool_call_id = str(permission_request.get("tool_call_id") or "")
@@ -340,7 +342,7 @@ async def _default_executor_runner(
         async def emit_permission_outcome(outcome: dict[str, Any]) -> None:
             await emit_event(
                 AgentEvent(
-                    type="tool_call_completed",
+                    type="tool_call_completed" if outcome.get("allowed") is True else "tool_permission_denied",
                     message=f"{tool_name} permission {'allowed' if outcome.get('allowed') is True else 'denied'}",
                     payload={
                         **payload,
@@ -378,9 +380,12 @@ async def _default_executor_runner(
         except Exception:
             outcome = {"allowed": False, "reason": "tool_permission_broker_failed"}
             await emit_permission_outcome(outcome)
+            permission_denials.append(outcome)
             return outcome
         outcome = _normalize_tool_permission_response(broker_result, default_reason=reason)
         await emit_permission_outcome(outcome)
+        if outcome.get("allowed") is not True:
+            permission_denials.append(outcome)
         return outcome
 
     async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
@@ -423,8 +428,9 @@ async def _default_executor_runner(
 
     used_sdk = bool(getattr(sdk_result, "used_sdk", False))
     error = getattr(sdk_result, "error", None)
+    permission_denial = permission_denials[-1] if permission_denials else None
     response = {
-        "status": "completed" if used_sdk and not error else "failed",
+        "status": "completed" if used_sdk and not error and permission_denial is None else "failed",
         "message": str(getattr(sdk_result, "message", "") or ""),
         "sdk_session_id": getattr(sdk_result, "session_id", None),
         "sdk_usage": getattr(sdk_result, "usage", {}) or {},
@@ -433,7 +439,10 @@ async def _default_executor_runner(
         "used_skills": list(getattr(sdk_result, "used_skills", []) or []),
         "used_skills_source": str(getattr(sdk_result, "used_skills_source", "") or ""),
     }
-    if error:
+    if permission_denial is not None:
+        response["error_code"] = str(permission_denial.get("reason") or "tool_permission_denied")
+        response["error_message"] = "Tool permission was not granted; execution did not complete."
+    elif error:
         response["error_code"] = str(error)
         response["error_message"] = str(error)
     elif not used_sdk:

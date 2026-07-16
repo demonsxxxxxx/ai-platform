@@ -33,6 +33,7 @@ import type {
 import { Permission } from "../../types";
 import { WorkbenchStateSurface } from "./WorkbenchStateSurface";
 import { workbenchSurface } from "./workbenchSurface";
+import { AdminToolPermissionInboxSection } from "../panels/AdminToolPermissionInboxSection";
 
 type LoadState<T> = {
   data: T | null;
@@ -793,6 +794,7 @@ export function WorkbenchSettingsProjectionPanel() {
         },
       ]}
     >
+      <AdminToolPermissionInboxSection />
       <div className="grid gap-3 xl:grid-cols-2">
         {groups.length === 0 ? (
           <EmptyProjection message={t("workbench.projections.settings.empty")} />

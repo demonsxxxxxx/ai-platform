@@ -138,6 +138,15 @@ def default_cancel_not_requested(monkeypatch):
 
     monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested, raising=False)
 
+    async def has_pending_tool_permission_requests(conn, *, tenant_id, run_id):
+        return False
+
+    monkeypatch.setattr(
+        "app.worker.repositories.has_pending_tool_permission_requests",
+        has_pending_tool_permission_requests,
+        raising=False,
+    )
+
     async def validate_run_skill_snapshots_for_dispatch(*_args, **_kwargs):
         return None
 
@@ -581,6 +590,90 @@ async def test_worker_completes_successful_adapter_run(monkeypatch):
     assert any(item[0] == "artifact" for item in calls)
     assert ("complete", "fake-adapter/1") in calls
     assert calls[-1] == ("event", "status", "worker", "Run succeeded")
+
+
+@pytest.mark.asyncio
+async def test_worker_fails_and_terminalizes_when_a_pending_permission_would_bypass_success(monkeypatch):
+    calls = []
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def has_pending(conn, *, tenant_id, run_id):
+        assert (tenant_id, run_id) == ("tenant-a", "run-a")
+        return True
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", error_code, error_message))
+        return True
+
+    async def complete_run(conn, **kwargs):
+        raise AssertionError("a pending permission must prevent complete_run")
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-a"
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.has_pending_tool_permission_requests", has_pending)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+
+    assert outcome.status == "failed"
+    assert ("fail", "tool_permission_pending", "A pending tool-permission request blocks successful completion.") in calls
+    assert not any(event_type == "run_succeeded" for kind, event_type, *_ in calls if kind == "event")
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_file_required_skill_success_without_an_artifact(monkeypatch):
+    calls = []
+
+    class NoArtifactAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="no-artifact/1",
+                executor_type="fake",
+                executor_version="test",
+                capabilities={},
+                result={"message": "done"},
+                executor_payload={"artifact_contract_required": True},
+            )
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def has_pending(conn, *, tenant_id, run_id):
+        return False
+
+    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
+        calls.append(("fail", error_code, error_message))
+        return True
+
+    async def complete_run(conn, **kwargs):
+        raise AssertionError("a file-required Skill without an artifact must not complete")
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs["event_type"], kwargs["stage"]))
+        return "evt-a"
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.has_pending_tool_permission_requests", has_pending)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": NoArtifactAdapter()}))
+
+    assert outcome.status == "failed"
+    assert ("fail", "required_artifact_missing", "The file-required Skill produced no user-visible artifact.") in calls
 
 
 @pytest.mark.asyncio

@@ -11,8 +11,13 @@ from pathlib import Path
 import pytest
 
 import app.skills.dependencies as dependency_policy
+import app.executors.claude_agent_worker as claude_agent_worker
 from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
-from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter, PreparedSdkRun
+from app.executors.claude_agent_worker import (
+    ClaudeAgentWorkerAdapter,
+    PreparedSdkRun,
+    resolve_claude_sdk_tool_permission,
+)
 from app.executors.claude_agent_worker import _allowed_skill_names
 from app.executors.claude_agent_worker import _inferred_used_skill_names
 from app.executors.claude_agent_worker import _ordinary_run_requires_sandbox
@@ -142,6 +147,60 @@ async def fake_transaction():
     yield object()
 
 
+async def expired_permission_request(*args, **kwargs):
+    return {"status": "expired"}
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_waits_for_admin_decision_before_allowing_execution(monkeypatch):
+    calls = []
+
+    async def fake_broker(conn, **kwargs):
+        calls.append(kwargs["request"]["tool_call_id"])
+        if len(calls) == 1:
+            return {
+                "allowed": False,
+                "reason": "tool_permission_required",
+                "permission_request_id": "tpr-pending",
+            }
+        return {
+            "allowed": True,
+            "reason": "tool_permission_decided",
+            "permission_request_id": "tpr-pending",
+        }
+
+    async def fake_expire(conn, **kwargs):
+        return None
+
+    async def fake_get_request(conn, **kwargs):
+        assert kwargs["tenant_id"] == "default"
+        assert kwargs["run_id"] == "run_1"
+        assert kwargs["request_id"] == "tpr-pending"
+        return {"status": "decided"}
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-1"},
+        wait_timeout_seconds=0.1,
+        poll_interval_seconds=0.01,
+    )
+
+    assert result["allowed"] is True
+    assert calls == ["call-1", "call-1"]
+
+
 def _snapshot_hash(files):
     digest = hashlib.sha256()
     for item in sorted(files, key=lambda value: str(value["relative_path"])):
@@ -233,7 +292,7 @@ def settings(tmp_path, *, sdk_enabled=True, legacy_fallback=False):
         {
             "claude_agent_sdk_enabled": sdk_enabled,
             "claude_agent_workspace_root": str(tmp_path / "workspaces"),
-            "sandbox_workspace_root": str(tmp_path.parents[1] / f"s-{short_id}"),
+            "sandbox_workspace_root": str(tmp_path / f"s-{short_id}"),
             "sandbox_container_provider": "docker",
             "sandbox_callback_base_url": "http://platform.test",
             "claude_agent_model": "deepseek-v4-flash",
@@ -4074,6 +4133,10 @@ async def test_claude_worker_sdk_permission_hook_creates_request_event_and_audit
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.expire_tool_permission_request",
+        expired_permission_request,
+    )
 
     result = await adapter._try_run_sdk(
         payload(trace_id="trace-sdk"),
@@ -4083,7 +4146,7 @@ async def test_claude_worker_sdk_permission_hook_creates_request_event_and_audit
         staged_skill_names=[],
     )
 
-    assert result.error == "tool_permission_required"
+    assert result.error == "tool_permission_expired"
     command = "python write_business_system.py --id 123"
     lookup_call = next(item[1] for item in calls if item[0] == "decision_lookup")
     assert lookup_call["tenant_id"] == "default"
@@ -4774,6 +4837,10 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_decision_fo
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.expire_tool_permission_request",
+        expired_permission_request,
+    )
 
     result = await adapter._try_run_sdk(
         payload(trace_id="trace-sdk"),
@@ -4783,7 +4850,7 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_decision_fo
         staged_skill_names=[],
     )
 
-    assert result.error == "tool_permission_required"
+    assert result.error == "tool_permission_expired"
     request_call = next(item[1] for item in calls if item[0] == "request")
     assert request_call["tool_call_id"] == "tool-current"
     assert calls[-1][0] == "gate"
@@ -4887,6 +4954,10 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_deny_for_ot
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.expire_tool_permission_request",
+        expired_permission_request,
+    )
 
     result = await adapter._try_run_sdk(
         payload(trace_id="trace-sdk"),
@@ -4896,16 +4967,13 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_deny_for_ot
         staged_skill_names=[],
     )
 
-    assert result.error == "tool_permission_required"
+    assert result.error == "tool_permission_expired"
     request_call = next(item[1] for item in calls if item[0] == "request")
     assert request_call["tool_call_id"] == "tool-current"
     assert calls[-1][0] == "gate"
     assert calls[-1][1] == {
         "allowed": False,
-        "reason": "tool_permission_required",
-        "risk_level": "high",
-        "write_capable": True,
-        "decision": "",
+        "reason": "tool_permission_expired",
         "permission_request_id": "tpr-current",
     }
 

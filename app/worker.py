@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import time as _time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from pydantic import ValidationError
@@ -2431,6 +2431,47 @@ async def process_run_payload(
     reconciled_parent = None
     try:
         async with transaction() as conn:
+            pending_permission_blocks_success = (
+                result.status == "succeeded"
+                and await repositories.has_pending_tool_permission_requests(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                )
+            )
+            missing_required_artifact = (
+                result.status == "succeeded"
+                and result.executor_payload.get("artifact_contract_required") is True
+                and not result.artifacts
+            )
+            if pending_permission_blocks_success or missing_required_artifact:
+                error_code = (
+                    "tool_permission_pending"
+                    if pending_permission_blocks_success
+                    else "required_artifact_missing"
+                )
+                error_message = (
+                    "A pending tool-permission request blocks successful completion."
+                    if pending_permission_blocks_success
+                    else "The file-required Skill produced no user-visible artifact."
+                )
+                result = replace(
+                    result,
+                    status="failed",
+                    artifacts=[],
+                    result={
+                        **result.result,
+                        "message": error_message,
+                        "error_code": error_code,
+                    },
+                )
+                artifact_records = []
+                result_payload = {
+                    **result_payload,
+                    "message": error_message,
+                    "error_code": error_code,
+                    "artifacts": [],
+                }
             cancel_requested = await repositories.is_cancel_requested(conn, tenant_id=payload.tenant_id, run_id=payload.run_id)
             if result.status == "succeeded" and cancel_requested:
                 result_payload = {

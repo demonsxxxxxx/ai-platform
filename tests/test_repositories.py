@@ -20,6 +20,7 @@ from app.repositories import (
     admin_delete_memory_record,
     delete_memory_record,
     enforce_user_active_run_admission,
+    expire_tool_permission_request,
     fail_run,
     get_admin_run_detail,
     get_context_snapshot_for_worker,
@@ -3138,12 +3139,14 @@ async def test_cancel_run_closes_non_terminal_run_steps():
 
     await cancel_run(conn, tenant_id="tenant-a", run_id="run-a", result_json={"message": "cancelled"})
 
-    assert len(conn.calls) == 2
+    assert len(conn.calls) == 3
     assert conn.calls[0][0].startswith("update runs")
     assert conn.calls[1][0].startswith("update run_steps")
     assert "status = 'cancelled'" in conn.calls[1][0]
     assert "status in ('pending', 'running')" in conn.calls[1][0]
     assert conn.calls[1][1] == ("tenant-a", "run-a")
+    assert conn.calls[2][0].startswith("update run_tool_permission_requests")
+    assert conn.calls[2][1] == ("cancelled", "run_cancelled", "tenant-a", "run-a")
 
 
 @pytest.mark.asyncio
@@ -3167,12 +3170,57 @@ async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_prog
         result_json={"message": "failed"},
     )
 
-    assert len(conn.calls) == 2
+    assert len(conn.calls) == 3
     assert conn.calls[0][0].startswith("update runs")
     assert conn.calls[1][0].startswith("update run_steps")
     assert "case when status = 'running' then 'failed' else 'cancelled' end" in conn.calls[1][0]
     assert "status in ('pending', 'running')" in conn.calls[1][0]
     assert conn.calls[1][1] == ("tenant-a", "run-a")
+    assert conn.calls[2][0].startswith("update run_tool_permission_requests")
+    assert conn.calls[2][1] == ("failed", "run_failed", "tenant-a", "run-a")
+
+
+@pytest.mark.asyncio
+async def test_expired_permission_request_emits_tenant_run_scoped_terminal_audit(monkeypatch):
+    calls = []
+
+    class ExpiredRequestConnection:
+        async def execute(self, sql, params):
+            calls.append(("sql", " ".join(sql.split()), params))
+            return SingleRowCursor(
+                {
+                    "id": "tpr-a",
+                    "user_id": "user-a",
+                    "trace_id": "trace-a",
+                }
+            )
+
+    async def fake_append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+        return "evt-a"
+
+    async def fake_append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+        return "aud-a"
+
+    monkeypatch.setattr("app.repositories.append_event", fake_append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+
+    row = await expire_tool_permission_request(
+        ExpiredRequestConnection(),
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        request_id="tpr-a",
+    )
+
+    assert row["id"] == "tpr-a"
+    assert "status = 'expired'" in calls[0][1]
+    assert calls[0][2] == ("tenant-a", "user-a", "run-a", "tpr-a")
+    assert calls[1][1]["payload"]["permission_request_id"] == "tpr-a"
+    assert calls[1][1]["payload"]["status"] == "expired"
+    assert calls[2][1]["tenant_id"] == "tenant-a"
+    assert calls[2][1]["target_id"] == "tpr-a"
 
 
 @pytest.mark.asyncio

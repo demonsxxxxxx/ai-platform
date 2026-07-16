@@ -9,6 +9,7 @@ EVENT_STAGE_MAP = {
     "tool_call_started": "tool",
     "tool_call_delta": "tool",
     "tool_call_completed": "tool",
+    "tool_permission_denied": "tool_policy",
     "browser_snapshot": "browser",
     "workspace_file_changed": "workspace",
     "artifact_created": "artifact",

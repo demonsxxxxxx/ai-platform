@@ -4340,17 +4340,32 @@ async def create_tool_permission_request(
     write_capable: bool,
     reason: str,
     request_payload_json: dict[str, Any],
+    expires_in_seconds: int = 900,
 ) -> dict[str, Any]:
+    """Create one pending, expiring permission request only for an open run."""
     request_id = new_id("tpr")
-    await conn.execute(
+    cursor = await conn.execute(
         """
+        with eligible_run as (
+          select id
+          from runs
+          where tenant_id = %s
+            and id = %s
+            and status not in ('succeeded', 'failed', 'cancelled')
+          for update
+        )
         insert into run_tool_permission_requests(
           id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
-          tool_id, tool_call_id, action, risk_level, write_capable, reason, request_payload_json
+          tool_id, tool_call_id, action, risk_level, write_capable, reason, request_payload_json, expires_at
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
+               now() + (%s * interval '1 second')
+        from eligible_run
+        returning id
         """,
         (
+            tenant_id,
+            run_id,
             request_id,
             tenant_id,
             workspace_id,
@@ -4365,8 +4380,11 @@ async def create_tool_permission_request(
             write_capable,
             reason,
             dumps_json(request_payload_json),
+            int(expires_in_seconds),
         ),
     )
+    if await cursor.fetchone() is None:
+        raise RepositoryConflictError("tool_permission_run_not_open")
     return {
         "id": request_id,
         "tenant_id": tenant_id,
@@ -4384,6 +4402,144 @@ async def create_tool_permission_request(
         "reason": reason,
         "request_payload_json": request_payload_json,
     }
+
+
+async def expire_tool_permission_request(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    run_id: str,
+    request_id: str,
+) -> dict[str, Any] | None:
+    """Mark one still-pending request expired when its deadline has elapsed."""
+    cursor = await conn.execute(
+        """
+        update run_tool_permission_requests
+        set status = 'expired', reason = 'permission_request_expired', updated_at = now()
+        where tenant_id = %s and user_id = %s and run_id = %s and id = %s
+          and status = 'pending' and expires_at is not null and expires_at <= now()
+        returning *
+        """,
+        (tenant_id, user_id, run_id, request_id),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    trace_id = str(row.get("trace_id") or "")
+    await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        trace_id=trace_id,
+        event_type="tool_permission_terminalized",
+        stage="tool_policy",
+        message="工具权限请求已过期",
+        payload={
+            "visible_to_user": True,
+            "permission_request_id": request_id,
+            "status": "expired",
+            "reason": "permission_request_expired",
+        },
+    )
+    await append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=None,
+        action="tool_permission.terminalized",
+        target_type="tool_permission_request",
+        target_id=request_id,
+        trace_id=trace_id,
+        payload_json={
+            "run_id": run_id,
+            "request_user_id": str(row.get("user_id") or ""),
+            "status": "expired",
+            "reason": "permission_request_expired",
+        },
+    )
+    return row
+
+
+async def terminalize_pending_tool_permission_requests(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    terminal_status: str,
+    terminal_reason: str,
+) -> list[dict[str, Any]]:
+    """Close pending requests with the terminal run fact and durable audit/event records."""
+    if terminal_status not in {"invalidated", "failed", "cancelled", "expired"}:
+        raise ValueError("invalid_tool_permission_terminal_status")
+    cursor = await conn.execute(
+        """
+        update run_tool_permission_requests
+        set status = %s,
+            reason = %s,
+            expires_at = coalesce(expires_at, now()),
+            updated_at = now()
+        where tenant_id = %s and run_id = %s and status = 'pending'
+        returning id, user_id, trace_id, tool_id, tool_call_id
+        """,
+        (terminal_status, terminal_reason, tenant_id, run_id),
+    )
+    rows = list(await cursor.fetchall())
+    for row in rows:
+        request_id = str(row["id"])
+        trace_id = str(row.get("trace_id") or "")
+        await append_event(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            trace_id=trace_id,
+            event_type="tool_permission_terminalized",
+            stage="tool_policy",
+            message="工具权限请求已终结",
+            payload={
+                "visible_to_user": True,
+                "permission_request_id": request_id,
+                "status": terminal_status,
+                "reason": terminal_reason,
+            },
+        )
+        await append_audit_log(
+            conn,
+            tenant_id=tenant_id,
+            user_id=None,
+            action="tool_permission.terminalized",
+            target_type="tool_permission_request",
+            target_id=request_id,
+            trace_id=trace_id,
+            payload_json={
+                "run_id": run_id,
+                "request_user_id": str(row.get("user_id") or ""),
+                "tool_id": str(row.get("tool_id") or ""),
+                "tool_call_id": str(row.get("tool_call_id") or ""),
+                "status": terminal_status,
+                "reason": terminal_reason,
+            },
+        )
+    return rows
+
+
+async def has_pending_tool_permission_requests(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> bool:
+    """Return whether an open run still has a permission gate that blocks success."""
+    cursor = await conn.execute(
+        """
+        select exists(
+          select 1 from run_tool_permission_requests
+          where tenant_id = %s and run_id = %s and status = 'pending'
+        ) as has_pending
+        """,
+        (tenant_id, run_id),
+    )
+    row = await cursor.fetchone()
+    return bool(row and row.get("has_pending"))
 
 
 async def get_tool_permission_request(
@@ -8810,6 +8966,12 @@ async def complete_run(
         where tenant_id = %s
           and id = %s
           and status not in ('succeeded', 'failed', 'cancelled')
+          and not exists (
+            select 1 from run_tool_permission_requests
+            where run_tool_permission_requests.tenant_id = runs.tenant_id
+              and run_tool_permission_requests.run_id = runs.id
+              and run_tool_permission_requests.status = 'pending'
+          )
         returning id
         """,
         (
@@ -8824,7 +8986,16 @@ async def complete_run(
         ),
     )
     row = await cursor.fetchone()
-    return row is not None
+    if row is None:
+        return False
+    await terminalize_pending_tool_permission_requests(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        terminal_status="invalidated",
+        terminal_reason="run_succeeded",
+    )
+    return True
 
 
 async def fail_run(
@@ -8873,6 +9044,13 @@ async def fail_run(
     if row is None:
         return False
     await _fail_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+    await terminalize_pending_tool_permission_requests(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        terminal_status="failed",
+        terminal_reason="run_failed",
+    )
     return True
 
 
@@ -8898,6 +9076,13 @@ async def cancel_run(
     if row is None:
         return False
     await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+    await terminalize_pending_tool_permission_requests(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        terminal_status="cancelled",
+        terminal_reason="run_cancelled",
+    )
     return True
 
 

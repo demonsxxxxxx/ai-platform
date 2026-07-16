@@ -45,6 +45,8 @@ from app.tool_policy import evaluate_tool_policy
 NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
 _CONTROLLED_RUNNER_SKILLS = {"qa-file-reviewer", "baoyu-translate"}
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"accepted", "completed", "succeeded"}
+_TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS = 900.0
+_TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -282,6 +284,107 @@ async def broker_claude_sdk_tool_permission(
     }
 
 
+async def resolve_claude_sdk_tool_permission(
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+    agent_id: str,
+    skill_id: str,
+    trace_id: str,
+    request: dict[str, Any],
+    wait_timeout_seconds: float = _TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS,
+    poll_interval_seconds: float = _TOOL_PERMISSION_POLL_INTERVAL_SECONDS,
+) -> dict[str, Any]:
+    """Wait for the exact tenant/run-scoped decision instead of letting a pending gate succeed."""
+    async with transaction() as conn:
+        outcome = await broker_claude_sdk_tool_permission(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+            agent_id=agent_id,
+            skill_id=skill_id,
+            trace_id=trace_id,
+            request=request,
+        )
+    if outcome.get("reason") != "tool_permission_required":
+        return outcome
+
+    request_id = str(outcome.get("permission_request_id") or "")
+    if not request_id:
+        return {"allowed": False, "reason": "tool_permission_request_missing"}
+    deadline = asyncio.get_running_loop().time() + max(float(wait_timeout_seconds), 0.0)
+    while True:
+        async with transaction() as conn:
+            expired = await repositories.expire_tool_permission_request(
+                conn,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                run_id=run_id,
+                request_id=request_id,
+            )
+            if expired is not None:
+                return {
+                    "allowed": False,
+                    "reason": "tool_permission_expired",
+                    "permission_request_id": request_id,
+                }
+            pending = await repositories.get_tool_permission_request(
+                conn,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                run_id=run_id,
+                request_id=request_id,
+            )
+            if pending is None:
+                return {
+                    "allowed": False,
+                    "reason": "tool_permission_request_missing",
+                    "permission_request_id": request_id,
+                }
+            pending_status = str(pending.get("status") or "")
+            if pending_status == "decided":
+                return await broker_claude_sdk_tool_permission(
+                    conn,
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                    run_id=run_id,
+                    agent_id=agent_id,
+                    skill_id=skill_id,
+                    trace_id=trace_id,
+                    request=request,
+                )
+            if pending_status != "pending":
+                return {
+                    "allowed": False,
+                    "reason": f"tool_permission_{pending_status or 'unavailable'}",
+                    "permission_request_id": request_id,
+                }
+        if asyncio.get_running_loop().time() >= deadline:
+            async with transaction() as conn:
+                expired = await repositories.expire_tool_permission_request(
+                    conn,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    run_id=run_id,
+                    request_id=request_id,
+                )
+            return {
+                "allowed": False,
+                "reason": "tool_permission_wait_timed_out",
+                "permission_request_id": request_id,
+                "expired": expired is not None,
+            }
+        await asyncio.sleep(max(float(poll_interval_seconds), 0.01))
+
+
 def _execution_tier(payload: RunPayload) -> str:
     for source in (payload.context_pack, payload.context_snapshot, payload.input):
         if not isinstance(source, dict):
@@ -298,6 +401,11 @@ def _ordinary_run_requires_sandbox(payload: RunPayload) -> bool:
         execution_mode=str(payload.input.get("execution_mode") or ""),
         execution_tier=_execution_tier(payload),
     ).requires_real_sandbox
+
+
+def _requires_user_visible_artifact(payload: RunPayload) -> bool:
+    """Identify file Skills whose successful executor result must carry an artifact."""
+    return bool(payload.file_ids) and payload.skill_id in _CONTROLLED_RUNNER_SKILLS
 
 
 def _sandbox_workspace(settings: object, payload: RunPayload) -> Path:
@@ -1162,6 +1270,7 @@ class ClaudeAgentWorkerAdapter:
             "skill_manifests": skill_manifests,
             "sandbox_provider": sandbox_provider,
             "sandbox_runtime_used": True,
+            "artifact_contract_required": _requires_user_visible_artifact(payload),
             "sandbox_timings": sandbox_timings,
         }
         if runtime_status not in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
@@ -1307,6 +1416,7 @@ class ClaudeAgentWorkerAdapter:
                     "used_skills_source": used_skills_source,
                     "inferred_used_skills": inferred_used_skill_names,
                     "skill_manifests": skill_manifests,
+                    "artifact_contract_required": _requires_user_visible_artifact(payload),
                 },
             )
         controlled_result = await self._try_controlled_runner(
@@ -1499,6 +1609,7 @@ class ClaudeAgentWorkerAdapter:
                 "used_skills_source": "platform_controlled_runner",
                 "controlled_runner_used": True,
                 "controlled_runner_reason": "empty_bash_tool_input_loop",
+                "artifact_contract_required": _requires_user_visible_artifact(payload),
             },
             artifacts=artifacts,
             executor_payload={
@@ -1516,6 +1627,7 @@ class ClaudeAgentWorkerAdapter:
                 "skill_manifests": skill_manifests,
                 "controlled_runner_used": True,
                 "controlled_runner_reason": "empty_bash_tool_input_loop",
+                "artifact_contract_required": _requires_user_visible_artifact(payload),
             },
         )
 
@@ -1551,6 +1663,8 @@ class ClaudeAgentWorkerAdapter:
             context_pack=context_pack,
         )
         context_retrieval, context_retrieval_identity = self._context_retrieval_for_payload(payload, context_pack)
+        permission_denials: list[dict[str, Any]] = []
+
         async def on_text(delta: str) -> None:
             if event_sink:
                 await event_sink(
@@ -1578,19 +1692,20 @@ class ClaudeAgentWorkerAdapter:
 
         async def on_tool_permission(request: dict[str, Any]) -> dict[str, Any]:
             trace_id = payload.trace_id or standard_trace_id(payload.run_id)
-            async with transaction() as conn:
-                return await broker_claude_sdk_tool_permission(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    workspace_id=payload.workspace_id,
-                    user_id=payload.user_id,
-                    session_id=payload.session_id,
-                    run_id=payload.run_id,
-                    trace_id=trace_id,
-                    agent_id=payload.agent_id,
-                    skill_id=payload.skill_id,
-                    request=request,
-                )
+            outcome = await resolve_claude_sdk_tool_permission(
+                tenant_id=payload.tenant_id,
+                workspace_id=payload.workspace_id,
+                user_id=payload.user_id,
+                session_id=payload.session_id,
+                run_id=payload.run_id,
+                trace_id=trace_id,
+                agent_id=payload.agent_id,
+                skill_id=payload.skill_id,
+                request=request,
+            )
+            if outcome.get("allowed") is not True:
+                permission_denials.append(outcome)
+            return outcome
 
         try:
             continuity = await self._session_continuity.resolve(
@@ -1620,9 +1735,19 @@ class ClaudeAgentWorkerAdapter:
                 if context_retrieval is not None and context_retrieval_identity is not None:
                     sdk_kwargs["context_retrieval"] = context_retrieval
                     sdk_kwargs["context_retrieval_identity"] = context_retrieval_identity
-                return await run_claude_agent_sdk(
+                sdk_result = await run_claude_agent_sdk(
                     **sdk_kwargs,
                 )
+                if permission_denials:
+                    denial = permission_denials[-1]
+                    return type("SdkPermissionDenied", (), {
+                        "used_sdk": True,
+                        "message": "工具权限未获准，任务未完成",
+                        "session_id": getattr(sdk_result, "session_id", None),
+                        "usage": getattr(sdk_result, "usage", {}) or {},
+                        "error": str(denial.get("reason") or "tool_permission_denied"),
+                    })()
+                return sdk_result
         except ClaudeAgentSdkNotAvailable as exc:
             return type("SdkUnavailable", (), {
                 "used_sdk": False,

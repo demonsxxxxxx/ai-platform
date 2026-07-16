@@ -195,8 +195,8 @@ def test_runtime_tool_permission_callback_accepts_valid_request(monkeypatch):
             "trace_id": "trace-run-a",
         }
 
-    async def fake_broker(conn, **kwargs):
-        calls.append(("broker", kwargs))
+    async def fake_resolve(**kwargs):
+        calls.append(("resolve", kwargs))
         return {
             "allowed": False,
             "reason": "tool_permission_required",
@@ -211,7 +211,7 @@ def test_runtime_tool_permission_callback_accepts_valid_request(monkeypatch):
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run", fake_get_run)
-    monkeypatch.setattr(runtime_callbacks, "broker_claude_sdk_tool_permission", fake_broker, raising=False)
+    monkeypatch.setattr(runtime_callbacks, "resolve_claude_sdk_tool_permission", fake_resolve)
     client = TestClient(create_app())
 
     response = client.post(
@@ -242,15 +242,15 @@ def test_runtime_tool_permission_callback_accepts_valid_request(monkeypatch):
     }
     assert calls[0] == ("identity", "run-a", True)
     assert calls[1] == ("run", "tenant-a", "run-a", True)
-    broker_call = calls[2][1]
-    assert broker_call["tenant_id"] == "tenant-a"
-    assert broker_call["workspace_id"] == "workspace-a"
-    assert broker_call["user_id"] == "user-a"
-    assert broker_call["session_id"] == "session-a"
-    assert broker_call["run_id"] == "run-a"
-    assert broker_call["agent_id"] == "general-agent"
-    assert broker_call["skill_id"] == "general-chat"
-    assert broker_call["request"]["tool_input"] == {"command": "python write_business_system.py"}
+    resolve_call = calls[2][1]
+    assert resolve_call["tenant_id"] == "tenant-a"
+    assert resolve_call["workspace_id"] == "workspace-a"
+    assert resolve_call["user_id"] == "user-a"
+    assert resolve_call["session_id"] == "session-a"
+    assert resolve_call["run_id"] == "run-a"
+    assert resolve_call["agent_id"] == "general-agent"
+    assert resolve_call["skill_id"] == "general-chat"
+    assert resolve_call["request"]["tool_input"] == {"command": "python write_business_system.py"}
 
 
 def test_executor_callback_persists_callback_status_event(monkeypatch):
