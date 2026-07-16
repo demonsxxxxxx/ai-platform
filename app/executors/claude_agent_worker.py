@@ -2,10 +2,12 @@ import asyncio
 import base64
 import binascii
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
 import posixpath
+import re
 import shutil
 import subprocess
 import sys
@@ -64,6 +66,14 @@ _WORDPROCESSINGML_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingm
 _WORD_MAIN_DOCUMENT_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
 )
+_OPC_RELATIONSHIP_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9._-]*$")
+
+
+class _PermissionDeadlineElapsed(RuntimeError):
+    """Abort the current database transaction before deadline-late authority commits."""
+
+    def __init__(self, permission_request_id: str | None = None) -> None:
+        self.permission_request_id = permission_request_id or ""
 
 
 @dataclass(frozen=True)
@@ -115,6 +125,7 @@ async def broker_claude_sdk_tool_permission(
     trace_id: str,
     request: dict[str, Any],
     expires_in_seconds: float = tool_permission_budget().request_ttl_seconds,
+    absolute_expires_at: datetime | None = None,
     permission_deadline_monotonic: float | None = None,
     monotonic: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
@@ -126,6 +137,8 @@ async def broker_claude_sdk_tool_permission(
         return permission_deadline_monotonic is not None and monotonic() >= permission_deadline_monotonic
 
     def deadline_failure(permission_request_id: str | None = None) -> dict[str, Any]:
+        if permission_deadline_monotonic is not None:
+            raise _PermissionDeadlineElapsed(permission_request_id)
         return {
             "allowed": False,
             "reason": "tool_permission_wait_timed_out",
@@ -252,6 +265,8 @@ async def broker_claude_sdk_tool_permission(
                 "permission_request_id": tool_gate.permission_request_id,
             },
         )
+        if deadline_exhausted():
+            return deadline_failure(tool_gate.permission_request_id)
         return {
             "allowed": True,
             "reason": tool_gate.reason,
@@ -281,6 +296,7 @@ async def broker_claude_sdk_tool_permission(
             reason=reason,
             request_payload_json=request_payload,
             expires_in_seconds=max(float(expires_in_seconds), 0.0),
+            absolute_expires_at=absolute_expires_at,
         )
         permission_request_id = str(row["id"])
         if deadline_exhausted():
@@ -328,6 +344,8 @@ async def broker_claude_sdk_tool_permission(
             "permission_request_id": permission_request_id,
         },
     )
+    if deadline_exhausted():
+        return deadline_failure(permission_request_id)
     return {
         "allowed": False,
         "reason": tool_gate.reason,
@@ -360,6 +378,7 @@ async def resolve_claude_sdk_tool_permission(
     allowed_wait_seconds = tool_permission_budget().aggregate_permission_wait_seconds
     bounded_wait_timeout_seconds = max(min(float(wait_timeout_seconds), allowed_wait_seconds), 0.0)
     deadline = monotonic() + bounded_wait_timeout_seconds
+    absolute_expires_at = datetime.now(timezone.utc) + timedelta(seconds=bounded_wait_timeout_seconds)
 
     async def terminalize_timeout(request_id: str) -> dict[str, Any]:
         async with transaction() as conn:
@@ -378,27 +397,34 @@ async def resolve_claude_sdk_tool_permission(
             "expired": bool(terminalized),
         }
 
-    async with transaction() as conn:
-        outcome = await broker_claude_sdk_tool_permission(
-            conn,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            session_id=session_id,
-            run_id=run_id,
-            agent_id=agent_id,
-            skill_id=skill_id,
-            trace_id=trace_id,
-            request=request,
-            expires_in_seconds=max(deadline - monotonic(), 0.0),
-            permission_deadline_monotonic=deadline,
-            monotonic=monotonic,
-        )
-    if monotonic() >= deadline and outcome.get("allowed"):
-        outcome = {
+    try:
+        async with transaction() as conn:
+            outcome = await broker_claude_sdk_tool_permission(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                session_id=session_id,
+                run_id=run_id,
+                agent_id=agent_id,
+                skill_id=skill_id,
+                trace_id=trace_id,
+                request=request,
+                expires_in_seconds=max(deadline - monotonic(), 0.0),
+                absolute_expires_at=absolute_expires_at,
+                permission_deadline_monotonic=deadline,
+                monotonic=monotonic,
+            )
+            # The broker normally raises this signal itself before a
+            # decision-derived mutation. Recheck at the resolver boundary as
+            # well so an awaited broker implementation cannot hand a deadline-
+            # late allow result back to a transaction that then commits.
+            if monotonic() >= deadline:
+                raise _PermissionDeadlineElapsed(str(outcome.get("permission_request_id") or ""))
+    except _PermissionDeadlineElapsed as exc:
+        return await terminalize_timeout(exc.permission_request_id) if exc.permission_request_id else {
             "allowed": False,
             "reason": "tool_permission_wait_timed_out",
-            "permission_request_id": str(outcome.get("permission_request_id") or ""),
         }
     if outcome.get("reason") == "tool_permission_wait_timed_out":
         request_id = str(outcome.get("permission_request_id") or "")
@@ -409,7 +435,10 @@ async def resolve_claude_sdk_tool_permission(
     request_id = str(outcome.get("permission_request_id") or "")
     if not request_id:
         return {"allowed": False, "reason": "tool_permission_request_missing"}
-    while True:
+
+    async def poll_once() -> dict[str, Any]:
+        """Run one decision poll in a transaction; deadline signals must escape it."""
+
         async with transaction() as conn:
             expired = await repositories.expire_tool_permission_request(
                 conn,
@@ -419,11 +448,7 @@ async def resolve_claude_sdk_tool_permission(
                 request_id=request_id,
             )
             if expired is not None:
-                return {
-                    "allowed": False,
-                    "reason": "tool_permission_expired",
-                    "permission_request_id": request_id,
-                }
+                return {"state": "expired"}
             pending = await repositories.get_tool_permission_request(
                 conn,
                 tenant_id=tenant_id,
@@ -432,15 +457,11 @@ async def resolve_claude_sdk_tool_permission(
                 request_id=request_id,
             )
             if pending is None:
-                return {
-                    "allowed": False,
-                    "reason": "tool_permission_request_missing",
-                    "permission_request_id": request_id,
-                }
+                return {"state": "missing"}
             pending_status = str(pending.get("status") or "")
             if pending_status == "decided":
                 if monotonic() >= deadline:
-                    break
+                    raise _PermissionDeadlineElapsed(request_id)
                 decision_outcome = await broker_claude_sdk_tool_permission(
                     conn,
                     tenant_id=tenant_id,
@@ -453,18 +474,32 @@ async def resolve_claude_sdk_tool_permission(
                     trace_id=trace_id,
                     request=request,
                     expires_in_seconds=max(deadline - monotonic(), 0.0),
+                    absolute_expires_at=absolute_expires_at,
                     permission_deadline_monotonic=deadline,
                     monotonic=monotonic,
                 )
-                if monotonic() >= deadline or decision_outcome.get("reason") == "tool_permission_wait_timed_out":
-                    break
+                if monotonic() >= deadline:
+                    raise _PermissionDeadlineElapsed(
+                        str(decision_outcome.get("permission_request_id") or request_id)
+                    )
                 return decision_outcome
-            if pending_status != "pending":
-                return {
-                    "allowed": False,
-                    "reason": f"tool_permission_{pending_status or 'unavailable'}",
-                    "permission_request_id": request_id,
-                }
+            return {"state": pending_status or "unavailable"}
+
+    while True:
+        try:
+            poll_outcome = await poll_once()
+        except _PermissionDeadlineElapsed as exc:
+            return await terminalize_timeout(exc.permission_request_id or request_id)
+        if poll_outcome.get("state") == "expired":
+            return {"allowed": False, "reason": "tool_permission_expired", "permission_request_id": request_id}
+        if poll_outcome.get("state") == "missing":
+            return {"allowed": False, "reason": "tool_permission_request_missing", "permission_request_id": request_id}
+        if poll_outcome.get("state") == "pending":
+            pass
+        elif "allowed" in poll_outcome:
+            return poll_outcome
+        else:
+            return {"allowed": False, "reason": f"tool_permission_{poll_outcome.get('state')}", "permission_request_id": request_id}
         if monotonic() >= deadline:
             break
         await sleep(max(float(poll_interval_seconds), 0.01))
@@ -2332,12 +2367,22 @@ def _is_usable_docx(path: Path) -> bool:
         and item.attrib.get("ContentType") == _WORD_MAIN_DOCUMENT_CONTENT_TYPE
         for item in content_types_root
     )
-    has_main_document_relationship = any(
-        item.tag == f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationship"
-        and str(item.attrib.get("Type") or "") == _OPC_OFFICE_DOCUMENT_RELATIONSHIP
-        and str(item.attrib.get("TargetMode") or "").lower() != "external"
-        and _resolve_root_relationship_target(str(item.attrib.get("Target") or "")) == "word/document.xml"
-        for item in relationships_root
+    relationship_ids: set[str] = set()
+    root_office_document_relationships = []
+    for item in relationships_root:
+        if item.tag != f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationship":
+            return False
+        relationship_id = str(item.attrib.get("Id") or "")
+        if not _OPC_RELATIONSHIP_ID_RE.fullmatch(relationship_id) or relationship_id in relationship_ids:
+            return False
+        relationship_ids.add(relationship_id)
+        if str(item.attrib.get("Type") or "") == _OPC_OFFICE_DOCUMENT_RELATIONSHIP:
+            root_office_document_relationships.append(item)
+    has_main_document_relationship = (
+        len(root_office_document_relationships) == 1
+        and str(root_office_document_relationships[0].attrib.get("TargetMode") or "").lower() != "external"
+        and _resolve_root_relationship_target(str(root_office_document_relationships[0].attrib.get("Target") or ""))
+        == "word/document.xml"
     )
     body = next((item for item in document_root if item.tag == f"{{{_WORDPROCESSINGML_NAMESPACE}}}body"), None)
     return has_document_override and has_main_document_relationship and body is not None and any(True for _ in body)

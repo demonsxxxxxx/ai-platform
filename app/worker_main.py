@@ -19,7 +19,7 @@ from app.multi_agent_dispatcher import dispatch_multi_agent_ready_steps_for_work
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
 from app.settings import get_settings
-from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization
+from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 from app.worker import WorkerOutcome, process_run_payload
 
 
@@ -139,7 +139,20 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
             transaction_factory=transaction,
             max_batches=4,
         )
-        progress.append({"tenant_id": tenant_id, "run_id": run_id, **(outcome or {})})
+        if outcome is not None and outcome.get("did_transition") and outcome.get("needs_reconcile"):
+            await reconcile_terminalized_permission_run(
+                tenant_id=tenant_id, run_id=run_id, progress=outcome, transaction_factory=transaction
+            )
+        progress.append(
+            {
+                "tenant_id": tenant_id,
+                "run_id": run_id,
+                "completed": outcome.get("completed") if outcome is not None else False,
+                "status": outcome.get("status") if outcome is not None else None,
+                "did_transition": bool(outcome.get("did_transition")) if outcome is not None else False,
+                "needs_reconcile": bool(outcome.get("needs_reconcile")) if outcome is not None else False,
+            }
+        )
     return progress
 
 

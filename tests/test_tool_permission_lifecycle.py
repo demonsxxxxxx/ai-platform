@@ -1,4 +1,14 @@
-from app.tool_permission_lifecycle import ToolPermissionWaitLedger, tool_permission_budget
+from contextlib import asynccontextmanager
+
+import pytest
+
+from app import repositories
+from app.tool_permission_lifecycle import (
+    ToolPermissionWaitLedger,
+    drain_run_tool_permission_terminalization,
+    reconcile_terminalized_permission_run,
+    tool_permission_budget,
+)
 
 
 def test_permission_budget_strictly_nests_the_full_wait_and_executor_callbacks():
@@ -40,3 +50,33 @@ def test_permission_wait_ledger_consumes_one_monotonic_aggregate_allowance():
     clock["now"] += second.wait_timeout_seconds
     ledger.finish_callback(second)
     assert ledger.begin_callback() is None
+
+
+@pytest.mark.asyncio
+async def test_drain_propagates_typed_partial_then_final_and_stops(monkeypatch):
+    results = [
+        repositories.ToolPermissionTerminalizationProgress(False, "failed"),
+        repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True),
+    ]
+
+    @asynccontextmanager
+    async def tx():
+        yield object()
+
+    async def progress(_conn, **_kwargs):
+        return results.pop(0)
+
+    monkeypatch.setattr(repositories, "progress_run_tool_permission_terminalization", progress)
+    result = await drain_run_tool_permission_terminalization(tenant_id="tenant-a", run_id="run-a", transaction_factory=tx)
+    assert result.completed is True and result.did_transition is True and result.needs_reconcile is True
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_post_commit_reconcile_is_noop_unless_final_transition(monkeypatch):
+    @asynccontextmanager
+    async def tx():
+        yield object()
+
+    partial = repositories.ToolPermissionTerminalizationProgress(False, "failed")
+    assert await reconcile_terminalized_permission_run(tenant_id="tenant-a", run_id="run-a", progress=partial, transaction_factory=tx) is None

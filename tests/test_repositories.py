@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 import json
 
 import pytest
@@ -3166,8 +3167,9 @@ async def test_cancel_run_closes_non_terminal_run_steps():
         result_json={"message": "cancelled"},
     )
 
-    assert result is True
-    assert len(conn.calls) == 6
+    assert result.completed is True
+    assert result.did_transition is True
+    assert result.status == "cancelled"
     assert "set permission_terminalization_target" in conn.calls[0][0]
     assert conn.calls[0][1][0:2] == ("cancelled", "run_cancelled")
     assert conn.calls[0][1][-2:] == ("tenant-a", "run-a")
@@ -3176,9 +3178,10 @@ async def test_cancel_run_closes_non_terminal_run_steps():
     assert conn.calls[2][1] == ("tenant-a", "run-a", "tenant-a", "run-a", None, None, 50, "cancelled", "run_cancelled")
     assert "has_unterminalized" in conn.calls[3][0]
     assert "set status = 'cancelled'" in conn.calls[4][0]
-    assert conn.calls[5][0].startswith("update run_steps")
-    assert "status in ('pending', 'running')" in conn.calls[5][0]
-    assert conn.calls[5][1] == ("tenant-a", "run-a")
+    step_updates = [call for call in conn.calls if call[0].startswith("update run_steps")]
+    assert len(step_updates) == 1
+    assert "status in ('pending', 'running')" in step_updates[0][0]
+    assert step_updates[0][1] == ("tenant-a", "run-a")
 
 
 @pytest.mark.asyncio
@@ -3226,8 +3229,9 @@ async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_prog
         result_json={"message": "failed"},
     )
 
-    assert result is True
-    assert len(conn.calls) == 7
+    assert result.completed is True
+    assert result.did_transition is True
+    assert result.status == "failed"
     assert "set permission_terminalization_target" in conn.calls[0][0]
     assert conn.calls[0][1][0:2] == ("failed", "run_failed")
     assert conn.calls[0][1][-2:] == ("tenant-a", "run-a")
@@ -3236,11 +3240,11 @@ async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_prog
     assert conn.calls[2][1] == ("tenant-a", "run-a", "tenant-a", "run-a", None, None, 50, "failed", "run_failed")
     assert "has_unterminalized" in conn.calls[3][0]
     assert "set status = 'failed'" in conn.calls[4][0]
-    assert "set latency_ms" in conn.calls[5][0]
-    assert conn.calls[6][0].startswith("update run_steps")
-    assert "case when status = 'running' then 'failed' else 'cancelled' end" in conn.calls[6][0]
-    assert "status in ('pending', 'running')" in conn.calls[6][0]
-    assert conn.calls[6][1] == ("tenant-a", "run-a")
+    step_updates = [call for call in conn.calls if call[0].startswith("update run_steps")]
+    assert len(step_updates) == 1
+    assert "case when status = 'running' then 'failed' else 'cancelled' end" in step_updates[0][0]
+    assert "status in ('pending', 'running')" in step_updates[0][0]
+    assert step_updates[0][1] == ("tenant-a", "run-a")
 
 
 @pytest.mark.asyncio
@@ -3316,7 +3320,25 @@ async def test_terminal_run_writes_do_not_overwrite_existing_terminal_status():
 
     update_runs_sql = [sql for sql, _params in conn.calls if "update runs" in sql]
     assert len(update_runs_sql) == 3
-    assert all("status not in ('succeeded', 'failed', 'cancelled')" in sql for sql in update_runs_sql)
+    completion_lock_index, completion_lock_sql = next(
+        (index, sql)
+        for index, (sql, _params) in enumerate(conn.calls)
+        if sql.startswith("select runs.id") and "for update" in sql
+    )
+    completion_index, completion_sql = next(
+        (index, sql)
+        for index, (sql, _params) in enumerate(conn.calls)
+        if "update runs" in sql and "status = 'succeeded'" in sql
+    )
+    assert completion_lock_index < completion_index
+    assert "status not in ('succeeded', 'failed', 'cancelled')" in completion_lock_sql
+    assert "cancel_requested_at is null" in completion_lock_sql
+    assert "permission_terminalization_target is null" in completion_lock_sql
+    assert "where runs.tenant_id = %s and runs.id = %s" in completion_sql
+
+    staged_terminal_updates = [sql for sql in update_runs_sql if "permission_terminalization_target = coalesce" in sql]
+    assert len(staged_terminal_updates) == 2
+    assert all("status not in ('succeeded', 'failed', 'cancelled')" in sql for sql in staged_terminal_updates)
 
 
 @pytest.mark.asyncio
@@ -5851,6 +5873,26 @@ async def test_create_tool_permission_request_persists_pending_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_create_tool_permission_request_persists_caller_absolute_expiry_after_run_lock_wait():
+    """The locked insert receives the original absolute expiry, never a post-lock extension."""
+
+    conn = RecordingConnection()
+    absolute_expiry = datetime(2030, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    await create_tool_permission_request(
+        conn,
+        tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a",
+        run_id="run-a", trace_id="trace-a", tool_id="Bash", tool_call_id="call-absolute",
+        action="execute", risk_level="high", write_capable=True, reason="waited on run lock",
+        request_payload_json={}, expires_in_seconds=900, absolute_expires_at=absolute_expiry,
+    )
+
+    sql, params = conn.calls[0]
+    assert "coalesce(%s::timestamptz, clock_timestamp() + (%s * interval '1 second'))" in sql
+    assert params[-2] == absolute_expiry
+    assert params[-1] == 900.0
+
+
+@pytest.mark.asyncio
 async def test_decide_tool_permission_request_preserves_the_request_deadline():
     class DecisionConnection:
         def __init__(self):
@@ -6270,7 +6312,21 @@ async def test_tenant_permission_inbox_expiry_is_bounded_and_makes_batch_progres
 
 
 @pytest.mark.asyncio
-async def test_terminalization_progresses_in_bounded_crash_retry_batches_without_duplicate_facts(monkeypatch):
+@pytest.mark.parametrize(
+    ("request_count", "batch_size", "target_status"),
+    [
+        (2, 1, "failed"),
+        (51, 50, "failed"),
+        (51, 50, "cancelled"),
+    ],
+    ids=["existing-one-plus-one", "failed-51", "cancelled-51"],
+)
+async def test_terminalization_progresses_in_bounded_crash_retry_batches_without_duplicate_facts(
+    monkeypatch,
+    request_count,
+    batch_size,
+    target_status,
+):
     events = []
     audits = []
 
@@ -6282,30 +6338,43 @@ async def test_terminalization_progresses_in_bounded_crash_retry_batches_without
             return self.rows
 
     class ProgressConnection:
-        def __init__(self):
+        def __init__(self, request_count=2, target_status="failed", batch_size=50):
             self.batch = 0
             self.sql = []
+            self.remaining_request_ids = (
+                ["tpr-a", "tpr-b"]
+                if request_count == 2
+                else [f"tpr-{index}" for index in range(request_count)]
+            )
+            self.target_status = target_status
+            self.batch_size = batch_size
+            self.finalized = False
+            self.run_status = "running"
+            self.permission_terminalization_target = target_status
+            self.closed_steps = []
 
         async def execute(self, sql, params):
             normalized = " ".join(sql.split())
+            normalized_lower = normalized.lower()
             self.sql.append((normalized, params))
-            if normalized.startswith("select id, trace_id, status, permission_terminalization_target"):
+            if normalized_lower.startswith("select id, trace_id, status, permission_terminalization_target"):
                 return SingleRowCursor(
                     {
                         "id": "run-a",
                         "trace_id": "trace-a",
-                        "permission_terminalization_target": "failed",
-                        "permission_terminalization_reason": "run_failed",
+                        "status": self.run_status,
+                        "permission_terminalization_target": self.permission_terminalization_target,
+                        "permission_terminalization_reason": f"run_{self.target_status}",
                         "permission_terminalization_result_json": {"message": "failed"},
                         "permission_terminalization_error_code": "executor_failure",
                         "permission_terminalization_error_message": "failed",
                     }
                 )
-            if normalized.startswith("with locked_run as"):
+            if normalized_lower.startswith("with locked_run as"):
                 self.batch += 1
-                request_id = "tpr-a" if self.batch == 1 else "tpr-b"
-                return RowsCursor(
-                    [
+                batch_ids = self.remaining_request_ids[:self.batch_size]
+                self.remaining_request_ids = self.remaining_request_ids[self.batch_size:]
+                return RowsCursor([
                         {
                             "id": request_id,
                             "user_id": "user-a",
@@ -6316,13 +6385,18 @@ async def test_terminalization_progresses_in_bounded_crash_retry_batches_without
                             "risk_level": "high",
                             "write_capable": True,
                             "decision": "allow_for_run",
-                        }
-                    ]
-                )
-            if "has_unterminalized" in normalized:
-                return SingleRowCursor({"has_unterminalized": self.batch == 1})
-            if normalized.startswith("update runs") and "set status = 'failed'" in normalized:
-                return SingleRowCursor({"id": "run-a", "status": "failed"})
+                        } for request_id in batch_ids
+                ])
+            if "has_unterminalized" in normalized_lower:
+                return SingleRowCursor({"has_unterminalized": bool(self.remaining_request_ids)})
+            if normalized_lower.startswith("update runs") and "set status" in normalized_lower:
+                self.finalized = True
+                self.run_status = self.target_status
+                self.permission_terminalization_target = None
+                return SingleRowCursor({"id": "run-a", "status": self.target_status})
+            if normalized_lower.startswith("update run_steps"):
+                self.closed_steps.append(self.target_status)
+                return FakeCursor()
             raise AssertionError(normalized)
 
     async def append_event(conn, **kwargs):
@@ -6333,25 +6407,71 @@ async def test_terminalization_progresses_in_bounded_crash_retry_batches_without
 
     monkeypatch.setattr(repositories, "append_event", append_event)
     monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
-    conn = ProgressConnection()
+    conn = ProgressConnection(
+        request_count=request_count,
+        target_status=target_status,
+        batch_size=batch_size,
+    )
 
     first = await repositories.progress_run_tool_permission_terminalization(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
     )
+
+    request_events = [event for event in events if event["event_type"] == "tool_permission_terminalized"]
+    run_events = [event for event in events if event["event_type"] == f"run_{target_status}"]
+    request_audits = [audit for audit in audits if audit["target_type"] == "tool_permission_request"]
+    run_audits = [audit for audit in audits if audit["target_type"] == "run"]
+
+    assert first.completed is False
+    assert first.status == target_status
+    assert first.did_transition is False and first.needs_reconcile is False
+    assert len(request_events) == batch_size
+    assert len({event["payload"]["permission_request_id"] for event in request_events}) == batch_size
+    assert len(request_audits) == batch_size
+    assert len(run_events) == len(run_audits) == 0
+    assert len(conn.remaining_request_ids) == request_count - batch_size
+    assert conn.run_status == "running"
+    assert conn.permission_terminalization_target == target_status
+    assert conn.closed_steps == []
+
     second = await repositories.progress_run_tool_permission_terminalization(
         conn,
         tenant_id="tenant-a",
         run_id="run-a",
     )
 
-    assert first == {"completed": False, "status": "failed"}
-    assert second == {"completed": True, "status": "failed"}
-    assert [event["payload"]["permission_request_id"] for event in events] == ["tpr-a", "tpr-b"]
-    assert [audit["target_id"] for audit in audits] == ["tpr-a", "tpr-b"]
+    request_events = [event for event in events if event["event_type"] == "tool_permission_terminalized"]
+    run_events = [event for event in events if event["event_type"] == f"run_{target_status}"]
+    request_audits = [audit for audit in audits if audit["target_type"] == "tool_permission_request"]
+    run_audits = [audit for audit in audits if audit["target_type"] == "run"]
+
+    assert second.completed is True
+    assert second.status == target_status
+    assert second.did_transition is True and second.needs_reconcile is True
+    assert len(request_events) == request_count
+    request_ids = [event["payload"]["permission_request_id"] for event in request_events]
+    assert len(set(request_ids)) == request_count
+    assert len(request_audits) == request_count
+    assert len({audit["target_id"] for audit in request_audits}) == request_count
+    assert len(run_events) == len(run_audits) == 1
+    assert conn.remaining_request_ids == []
+    assert conn.run_status == target_status
+    assert conn.permission_terminalization_target is None
+    assert conn.closed_steps == [target_status]
+
+    before_retry_facts = (len(events), len(audits))
+    retry = await repositories.progress_run_tool_permission_terminalization(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+    )
+    assert retry.completed is True and retry.status == target_status
+    assert retry.did_transition is False and retry.needs_reconcile is False
+    assert (len(events), len(audits)) == before_retry_facts
     batch_sql = [sql for sql, _ in conn.sql if sql.startswith("with locked_run as")]
-    assert len(batch_sql) == 2
+    assert len(batch_sql) == 3
     assert all("limit %s" in sql and "for update of permission_request skip locked" in sql for sql in batch_sql)
 
 
@@ -6414,7 +6534,7 @@ async def test_terminalization_maintenance_progresses_legacy_null_expiry_without
         run_id="run-a",
     )
 
-    assert result == {"completed": False, "status": "running"}
+    assert result.completed is False and result.status == "running" and result.did_transition is False
     assert expired_calls == [{"tenant_id": "tenant-a", "run_id": "run-a"}]
 
 
@@ -9829,7 +9949,7 @@ async def test_complete_run_persists_g2_observability_columns_from_result_json()
         },
     )
 
-    sql, params = conn.calls[0]
+    sql, params = conn.calls[1]
     assert "latency_ms" in sql
     assert "input_token_count" in sql
     assert "output_token_count" in sql
@@ -9848,13 +9968,36 @@ async def test_complete_run_consumes_valid_allow_for_run_before_its_final_pendin
 
     await complete_run(conn, tenant_id="tenant-a", run_id="run-a", result_json={"message": "done"})
 
-    sql, _params = conn.calls[0]
-    assert "with locked_run as materialized" in sql
-    assert "consumed_run_grants" in sql
-    assert "permission_request.decision = 'allow_for_run'" in sql
-    assert "permission_request.status = 'decided'" in sql
-    assert "permission_request.expires_at > clock_timestamp()" in sql
-    assert "status in ('pending', 'decided')" in sql
+    lock_sql, _params = conn.calls[0]
+    completion_sql, _params = conn.calls[1]
+    consume_sql, _params = conn.calls[2]
+    assert "for update" in lock_sql
+    assert "permission_request.status = 'pending'" in lock_sql
+    assert "permission_request.decision = 'allow_for_run'" in lock_sql
+    assert "permission_request.expires_at > clock_timestamp()" in lock_sql
+    assert "update runs" in completion_sql
+    assert "update run_tool_permission_requests" in consume_sql
+    assert "decision = 'allow_for_run'" in consume_sql
+
+
+@pytest.mark.asyncio
+async def test_complete_run_permission_blocker_returns_before_any_run_or_grant_mutation():
+    class Cursor:
+        async def fetchone(self):
+            return {"id": "run-a", "has_permission_blocker": True}
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return Cursor()
+
+    conn = Connection()
+    assert await complete_run(conn, tenant_id="tenant-a", run_id="run-a", result_json={}) is False
+    assert len(conn.calls) == 1
+    assert "for update" in conn.calls[0][0]
 
 
 @pytest.mark.asyncio

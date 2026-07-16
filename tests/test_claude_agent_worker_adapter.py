@@ -527,6 +527,72 @@ async def test_tool_permission_decision_arriving_after_the_absolute_deadline_nev
     ]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("crossing_await", ["consume", "allowed_audit"])
+async def test_deadline_late_authority_rolls_back_before_separate_timeout_terminalization(monkeypatch, crossing_await):
+    """A deadline crossing inside broker work aborts that transaction, never its authority writes."""
+
+    clock = {"value": 0.0}
+    committed: list[str] = []
+    terminalized: list[dict] = []
+    transaction_results: list[str] = []
+
+    @asynccontextmanager
+    async def recording_transaction():
+        staged: list[str] = []
+        try:
+            yield staged
+        except claude_agent_worker._PermissionDeadlineElapsed:
+            transaction_results.append("rollback")
+            raise
+        else:
+            transaction_results.append("commit")
+            committed.extend(staged)
+
+    async def get_exact(conn, **_kwargs):
+        command_hash = hashlib.sha256(b"").hexdigest()
+        return {
+            "id": "tpr-deadline",
+            "decision": "allow_once",
+            "tool_call_id": "call-deadline",
+            "request_payload_json": {"command_sha256": command_hash},
+        }
+
+    async def consume(conn, **_kwargs):
+        conn.append("consume")
+        if crossing_await == "consume":
+            clock["value"] = 1.0
+        return {"id": "tpr-deadline", "status": "consumed"}
+
+    async def audit(conn, **kwargs):
+        conn.append("allowed_audit")
+        if kwargs["action"] == "claude_sdk_tool_policy_allowed":
+            clock["value"] = 1.0
+
+    async def terminalize(conn, **kwargs):
+        conn.append("terminalized")
+        terminalized.append(kwargs)
+        return [{"id": "tpr-deadline", "status": "expired"}]
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", recording_transaction)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_exact_tool_permission_decision", get_exact)
+    monkeypatch.setattr(claude_agent_worker.repositories, "consume_tool_permission_decision", consume)
+    monkeypatch.setattr(claude_agent_worker.repositories, "append_audit_log", audit)
+    monkeypatch.setattr(claude_agent_worker.repositories, "terminalize_pending_tool_permission_requests", terminalize)
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default", workspace_id="default", user_id="user-a", session_id="ses_1",
+        run_id="run_1", agent_id="qa-word-review", skill_id="qa-file-reviewer", trace_id="trace-run-1",
+        request={"tool_name": "Bash", "tool_call_id": "call-deadline", "write_capable": True},
+        wait_timeout_seconds=1.0, monotonic=lambda: clock["value"],
+    )
+
+    assert result["reason"] == "tool_permission_wait_timed_out"
+    assert transaction_results == ["rollback", "commit"]
+    assert committed == ["terminalized"]
+    assert terminalized[0]["request_id"] == "tpr-deadline"
+
+
 def _snapshot_hash(files):
     digest = hashlib.sha256()
     for item in sorted(files, key=lambda value: str(value["relative_path"])):
@@ -971,6 +1037,17 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
         ),
         usable_docx_bytes(
             document=(
+                b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                b"<w:body><w:p/></w:body></w:document>"
+            ),
+            relationships=(
+                b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                b'<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                b'Target="word/document.xml"/></Relationships>'
+            ),
+        ),
+        usable_docx_bytes(
+            document=(
                 b'<w:document xmlns:w="urn:wrong-wordprocessingml">'
                 b"<w:body><w:p/></w:body></w:document>"
             ),
@@ -988,6 +1065,7 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
         "path-traversing-root-relationship",
         "namespace-less-root-relationship",
         "wrong-wordprocessingml-namespace",
+        "missing-root-relationship-id",
     ],
 )
 @pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
@@ -3561,6 +3639,11 @@ async def test_multi_agent_file_skill_resume_reuses_completed_steps_without_reru
     assert result.capabilities["multi_agent"] is True
     assert result.result["checkpoint_reused"] is True
     assert result.result["delegate_executor_type"] == "multi-agent-resume"
+    # A reused checkpoint deliberately carries no executor-owned artifact
+    # contract. The worker must derive the selected capability contract rather
+    # than trusting this resumed executor payload.
+    assert result.artifacts == []
+    assert result.executor_payload.get("required_artifact_types") is None
     step_events = [event for event in events if event["event_type"].startswith("agent_step_")]
     assert [event["event_type"] for event in step_events] == [
         "agent_step_reused",

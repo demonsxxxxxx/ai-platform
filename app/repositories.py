@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import hashlib
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
 from typing import Any
 
 from psycopg import AsyncConnection
@@ -4347,6 +4350,7 @@ async def create_tool_permission_request(
     reason: str,
     request_payload_json: dict[str, Any],
     expires_in_seconds: float = TOOL_PERMISSION_REQUEST_TTL_SECONDS,
+    absolute_expires_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Create one pending, expiring permission request only for an open run."""
     request_id = new_id("tpr")
@@ -4367,7 +4371,7 @@ async def create_tool_permission_request(
           tool_id, tool_call_id, action, risk_level, write_capable, reason, request_payload_json, expires_at
         )
         select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
-               clock_timestamp() + (%s * interval '1 second')
+               coalesce(%s::timestamptz, clock_timestamp() + (%s * interval '1 second'))
         from eligible_run
         returning id
         """,
@@ -4388,6 +4392,7 @@ async def create_tool_permission_request(
             write_capable,
             reason,
             dumps_json(request_payload_json),
+            absolute_expires_at,
             max(float(expires_in_seconds), 0.0),
         ),
     )
@@ -4794,14 +4799,10 @@ async def progress_run_tool_permission_terminalization(
                 terminal_status=terminal_status,
                 terminal_reason="legacy_terminal_run_permission_drain",
             )
-            return {
-                "completed": not await _has_unterminalized_run_tool_permissions(
-                    conn,
-                    tenant_id=tenant_id,
-                    run_id=run_id,
-                ),
-                "status": run_status,
-            }
+            return ToolPermissionTerminalizationProgress(
+                completed=not await _has_unterminalized_run_tool_permissions(conn, tenant_id=tenant_id, run_id=run_id),
+                status=run_status,
+            )
         if run_status == "running":
             expired_rows = await expire_pending_tool_permission_requests(
                 conn,
@@ -4809,8 +4810,8 @@ async def progress_run_tool_permission_terminalization(
                 run_id=run_id,
             )
             if expired_rows:
-                return {"completed": False, "status": "running"}
-        return {"completed": False, "status": None}
+                return ToolPermissionTerminalizationProgress(completed=False, status="running")
+        return ToolPermissionTerminalizationProgress(completed=False, status=None)
     terminal_reason = str(staged.get("permission_terminalization_reason") or "run_terminalized")
     await terminalize_pending_tool_permission_requests(
         conn,
@@ -4820,7 +4821,7 @@ async def progress_run_tool_permission_terminalization(
         terminal_reason=terminal_reason,
     )
     if await _has_unterminalized_run_tool_permissions(conn, tenant_id=tenant_id, run_id=run_id):
-        return {"completed": False, "status": target_status}
+        return ToolPermissionTerminalizationProgress(completed=False, status=target_status)
     if target_status == "cancel_requested":
         cursor = await conn.execute(
             """
@@ -4898,7 +4899,21 @@ async def progress_run_tool_permission_terminalization(
             (tenant_id, run_id),
         )
     finalized = await cursor.fetchone()
-    return {"completed": finalized is not None, "status": target_status}
+    if finalized is None:
+        return ToolPermissionTerminalizationProgress(completed=False, status=target_status)
+    if target_status == "failed":
+        await _fail_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+        event_type, stage, message = "run_failed", "worker", "Run failed"
+    elif target_status == "cancelled":
+        await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+        event_type, stage, message = "run_cancelled", "control", "任务已取消"
+    else:
+        return ToolPermissionTerminalizationProgress(completed=True, status=target_status)
+    await append_event(conn, tenant_id=tenant_id, run_id=run_id, trace_id=staged.get("trace_id"), event_type=event_type,
+                       stage=stage, message=message, payload={"visible_to_user": True, "severity": "error" if target_status == "failed" else "warning"})
+    await append_audit_log(conn, tenant_id=tenant_id, user_id=None, action=f"run.{target_status}", target_type="run",
+                           target_id=run_id, trace_id=staged.get("trace_id"), payload_json={"reason": terminal_reason})
+    return ToolPermissionTerminalizationProgress(completed=True, status=target_status, did_transition=True, needs_reconcile=True)
 
 
 async def has_pending_tool_permission_requests(
@@ -9518,33 +9533,39 @@ async def complete_run(
     result_json: dict[str, Any],
 ) -> bool:
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
+    lock_cursor = await conn.execute(
+        """
+        select runs.id,
+               exists (
+                 select 1
+                 from run_tool_permission_requests as permission_request
+                 where permission_request.tenant_id = runs.tenant_id
+                   and permission_request.run_id = runs.id
+                   and (
+                     permission_request.status = 'pending'
+                     or (
+                       permission_request.status = 'decided'
+                       and not (
+                         permission_request.decision = 'allow_for_run'
+                         and permission_request.expires_at > clock_timestamp()
+                       )
+                     )
+                   )
+               ) as has_permission_blocker
+        from runs
+        where runs.tenant_id = %s and runs.id = %s
+          and runs.status not in ('succeeded', 'failed', 'cancelled')
+          and runs.cancel_requested_at is null
+          and runs.permission_terminalization_target is null
+        for update
+        """,
+        (tenant_id, run_id),
+    )
+    locked_run = await lock_cursor.fetchone()
+    if locked_run is None or bool(locked_run.get("has_permission_blocker")):
+        return False
     cursor = await conn.execute(
         """
-        with locked_run as materialized (
-          select id
-          from runs
-          where tenant_id = %s
-            and id = %s
-            and status not in ('succeeded', 'failed', 'cancelled')
-            and cancel_requested_at is null
-            and permission_terminalization_target is null
-          for update
-        ), consumed_run_grants as (
-          update run_tool_permission_requests as permission_request
-          set status = 'consumed',
-              reason = case
-                when permission_request.reason = '' then 'allow_for_run_completed'
-                else permission_request.reason
-              end,
-              updated_at = clock_timestamp()
-          from locked_run
-          where permission_request.tenant_id = %s
-            and permission_request.run_id = locked_run.id
-            and permission_request.status = 'decided'
-            and permission_request.decision = 'allow_for_run'
-            and permission_request.expires_at > clock_timestamp()
-          returning permission_request.id
-        )
         update runs
         set
           status = 'succeeded',
@@ -9557,25 +9578,11 @@ async def complete_run(
           output_token_count = %s,
           total_token_count = %s,
           estimated_cost_minor = %s
-        from locked_run
         where runs.tenant_id = %s
           and runs.id = %s
-          and locked_run.id = runs.id
-          and status not in ('succeeded', 'failed', 'cancelled')
-          and cancel_requested_at is null
-          and permission_terminalization_target is null
-          and not exists (
-            select 1 from run_tool_permission_requests
-            where run_tool_permission_requests.tenant_id = runs.tenant_id
-              and run_tool_permission_requests.run_id = runs.id
-            and run_tool_permission_requests.status in ('pending', 'decided')
-          )
         returning id
         """,
         (
-            tenant_id,
-            run_id,
-            tenant_id,
             dumps_json(result_json),
             latency_ms,
             input_tokens,
@@ -9588,13 +9595,18 @@ async def complete_run(
     )
     row = await cursor.fetchone()
     if row is None:
-        return False
-    await terminalize_pending_tool_permission_requests(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        terminal_status="invalidated",
-        terminal_reason="run_succeeded",
+        raise RepositoryConflictError("run_completion_lost_after_run_lock")
+    await conn.execute(
+        """
+        update run_tool_permission_requests
+        set status = 'consumed',
+            reason = case when reason = '' then 'allow_for_run_completed' else reason end,
+            updated_at = clock_timestamp()
+        where tenant_id = %s and run_id = %s
+          and status = 'decided' and decision = 'allow_for_run'
+          and expires_at > clock_timestamp()
+        """,
+        (tenant_id, run_id),
     )
     return True
 
@@ -9607,7 +9619,7 @@ async def fail_run(
     error_code: str,
     error_message: str,
     result_json: dict[str, Any] | None = None,
-) -> bool:
+) -> ToolPermissionTerminalizationProgress:
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
     staged = await _stage_run_tool_permission_terminalization(
         conn,
@@ -9620,14 +9632,14 @@ async def fail_run(
         error_message=error_message,
     )
     if staged is None:
-        return False
+        return ToolPermissionTerminalizationProgress(completed=False, status=None)
     progress = await progress_run_tool_permission_terminalization(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
     )
     if progress is None or progress.get("completed") is not True or progress.get("status") != "failed":
-        return False
+        return progress
     await conn.execute(
         """
         update runs
@@ -9640,8 +9652,7 @@ async def fail_run(
         """,
         (latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor, tenant_id, run_id),
     )
-    await _fail_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
-    return True
+    return progress
 
 
 async def cancel_run(
@@ -9650,7 +9661,7 @@ async def cancel_run(
     tenant_id: str,
     run_id: str,
     result_json: dict[str, Any] | None = None,
-) -> bool:
+) -> ToolPermissionTerminalizationProgress:
     staged = await _stage_run_tool_permission_terminalization(
         conn,
         tenant_id=tenant_id,
@@ -9660,16 +9671,15 @@ async def cancel_run(
         result_json=result_json,
     )
     if staged is None:
-        return False
+        return ToolPermissionTerminalizationProgress(completed=False, status=None)
     progress = await progress_run_tool_permission_terminalization(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
     )
     if progress is None or progress.get("completed") is not True or progress.get("status") != "cancelled":
-        return False
-    await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
-    return True
+        return progress
+    return progress
 
 
 async def _cancel_open_run_steps(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> None:
@@ -10203,3 +10213,21 @@ async def list_authorized_user_messages_for_runs(
         (tenant_id, session_id, user_id, target_run_ids),
     )
     return list(await cursor.fetchall())
+
+
+@dataclass(frozen=True)
+class ToolPermissionTerminalizationProgress:
+    """One bounded run-first permission-drain result with transition ownership."""
+
+    completed: bool
+    status: str | None
+    did_transition: bool = False
+    needs_reconcile: bool = False
+    terminalized_count: int = 0
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Return a result field with mapping-style compatibility for callers."""
+        return getattr(self, key, default)
+
+    def __bool__(self) -> bool:
+        return self.completed

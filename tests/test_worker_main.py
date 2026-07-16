@@ -5,6 +5,7 @@ import sys
 import pytest
 
 import app.worker_main as worker_main
+from app import repositories
 from app.queue import QueueMessage
 from app.worker import WorkerOutcome
 from app.worker_main import run_once
@@ -164,9 +165,55 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
         ("drain", "tenant-b", "run-b", 4),
     ]
     assert rows == [
-        {"tenant_id": "tenant-a", "run_id": "run-a", "completed": True, "status": "failed"},
-        {"tenant_id": "tenant-b", "run_id": "run-b", "completed": False, "status": "failed"},
+        {"tenant_id": "tenant-a", "run_id": "run-a", "completed": True, "status": "failed", "did_transition": False, "needs_reconcile": False},
+        {"tenant_id": "tenant-b", "run_id": "run-b", "completed": False, "status": "failed", "did_transition": False, "needs_reconcile": False},
     ]
+
+
+@pytest.mark.asyncio
+async def test_permission_terminalization_maintenance_reconciles_only_one_final_transition(monkeypatch):
+    calls = []
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Settings:
+        tool_permission_terminalization_maintenance_limit = 3
+
+    async def list_runs(_conn, *, limit):
+        assert limit == 3
+        return [
+            {"tenant_id": "tenant-a", "run_id": "partial"},
+            {"tenant_id": "tenant-a", "run_id": "final"},
+            {"tenant_id": "tenant-a", "run_id": "retry"},
+        ]
+
+    async def drain(**kwargs):
+        status = kwargs["run_id"]
+        return {
+            "partial": repositories.ToolPermissionTerminalizationProgress(False, "failed"),
+            "final": repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True),
+            "retry": repositories.ToolPermissionTerminalizationProgress(True, "failed"),
+        }[status]
+
+    async def reconcile(**kwargs):
+        calls.append((kwargs["tenant_id"], kwargs["run_id"], kwargs["progress"].did_transition))
+
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr(
+        "app.worker_main.progress_pending_tool_permission_terminalizations_for_worker",
+        _ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE,
+    )
+    monkeypatch.setattr("app.worker_main.repositories.list_runs_requiring_tool_permission_terminalization", list_runs)
+    monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
+    monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
+
+    await worker_main.progress_pending_tool_permission_terminalizations_for_worker(Settings())
+    assert calls == [("tenant-a", "final", True)]
 
 
 @pytest.mark.asyncio

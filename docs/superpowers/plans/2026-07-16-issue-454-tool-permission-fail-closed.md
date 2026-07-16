@@ -220,3 +220,26 @@ office-document relationship/content type, and a real WordprocessingML body.
 The frontend part reducer is monotonic: a terminal card cannot be overwritten
 by a stale/replayed decision, including when the decision reducer rather than
 the upsert reducer receives the event.
+
+## Generation 4f repair boundary
+
+The broker receives one absolute monotonic deadline and its matching
+caller-derived wall-clock expiry.  A private rollback signal crosses the
+transaction seam whenever either clock has elapsed after a decision-derived
+await; the caller catches it only after rollback and terminalizes the exact
+request in a separate transaction.  This prevents a consumed grant or allowed
+audit from committing after the callback has already failed.
+
+Run completion uses a run-first, sequential repository protocol rather than a
+data-modifying CTE visibility assumption: inspect blockers and grants under the
+run lock, consume only valid run-wide grants, then perform the final guarded
+completion.  A lost guard must abort the transaction so partial consumption
+cannot survive.  The durable terminalization progress seam remains the single
+owner for bounded batches and idempotent terminal run side effects.
+
+DOCX relationship sets require exactly one root office-document relationship
+whose Id is a unique XML NCName-compatible value.  Checkpoint-resume success
+uses the same capability-owned required-artifact gate as ordinary execution.
+
+`CHANGELOG.md` remains unchanged because #454 is still an open Draft PR and
+requires independent test and Sol review before issue or release closure.

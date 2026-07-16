@@ -40,7 +40,7 @@ from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.settings import get_settings
 from app.tool_policy import evaluate_tool_policy
-from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization
+from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 
 
 class _WorkerClock:
@@ -257,7 +257,7 @@ async def _fail_run_and_reconcile_with_write(
         error_message=error_message,
         result_json=result_json,
     )
-    if terminal_written is False:
+    if not terminal_written:
         return False, None
     if tenant_id == payload.tenant_id and run_id == payload.run_id:
         return True, await _reconcile_multi_agent_child_terminal_state(
@@ -368,6 +368,12 @@ async def append_user_event(
     total_token_count: int | None = None,
     estimated_cost_minor: int | None = None,
 ) -> None:
+    # fail_run/cancel_run terminalize through the repository-owned durable
+    # progress seam.  The repository writes the one authoritative terminal
+    # event/audit when its final transition succeeds; worker branches retain
+    # diagnostics but must not duplicate that run-level fact.
+    if event_type in {"run_failed", "run_cancelled"}:
+        return
     merged = {"visible_to_user": True, "severity": "info"}
     if payload:
         merged.update(payload)
@@ -694,7 +700,7 @@ async def _fail_policy_denied_run(
             error_code=error_code,
             error_message=error_message,
         )
-        if terminal_written is False:
+        if not terminal_written:
             return WorkerOutcome(
                 "skipped",
                 payload.run_id,
@@ -1482,7 +1488,7 @@ async def _fail_locked_run_snapshot(
         error_code=error_code,
         error_message=error_message,
     )
-    if terminal_written is False:
+    if not terminal_written:
         return _WorkerTerminalAfterTransaction(
             WorkerOutcome(
                 "skipped",
@@ -1530,7 +1536,7 @@ async def _fail_worker_capability_authorization(
         error_code=error_code,
         error_message=error_message,
     )
-    if terminal_written is False:
+    if not terminal_written:
         return _WorkerTerminalAfterTransaction(
             WorkerOutcome(
                 "skipped",
@@ -1820,7 +1826,7 @@ async def process_run_payload(
                         error_code=error_code,
                         error_message=error_message,
                     )
-                    if terminal_written is False:
+                    if not terminal_written:
                         terminal_after_transaction = _WorkerTerminalAfterTransaction(
                             WorkerOutcome(
                                 "skipped",
@@ -1869,7 +1875,7 @@ async def process_run_payload(
                     error_code=error_code,
                     error_message=error_message,
                 )
-                if terminal_written is False:
+                if not terminal_written:
                     terminal_after_transaction = _WorkerTerminalAfterTransaction(
                         WorkerOutcome(
                             "skipped",
@@ -1960,7 +1966,7 @@ async def process_run_payload(
                     run_id=run_identity["run_id"],
                     result_json=cancel_result,
                 )
-                if terminal_written is False:
+                if not terminal_written:
                     terminal_after_transaction = _WorkerTerminalAfterTransaction(
                         WorkerOutcome(
                             "skipped",
@@ -2030,7 +2036,7 @@ async def process_run_payload(
                     error_code="legacy_runtime211_direct_executor_disabled",
                     error_message="Direct runtime211 queue execution is disabled; use Claude worker legacy fallback only.",
                 )
-                if terminal_written is False:
+                if not terminal_written:
                     terminal_after_transaction = _WorkerTerminalAfterTransaction(
                         WorkerOutcome(
                             "skipped",
@@ -2082,7 +2088,7 @@ async def process_run_payload(
                     error_code="unknown_executor_type",
                     error_message=str(exc),
                 )
-                if terminal_written is False:
+                if not terminal_written:
                     terminal_after_transaction = _WorkerTerminalAfterTransaction(
                         WorkerOutcome(
                             "skipped",
@@ -2285,7 +2291,7 @@ async def process_run_payload(
                 run_id=payload.run_id,
                 result_json=cancel_result,
             )
-            if terminal_written is False:
+            if not terminal_written:
                 return WorkerOutcome(
                     "skipped",
                     payload.run_id,
@@ -2322,7 +2328,7 @@ async def process_run_payload(
                     run_id=payload.run_id,
                     result_json=cancel_result,
                 )
-                if terminal_written is False:
+                if not terminal_written:
                     outcome_after_exception = WorkerOutcome(
                         "skipped",
                         payload.run_id,
@@ -2356,7 +2362,7 @@ async def process_run_payload(
                     error_code="executor_failure",
                     error_message=str(exc),
                 )
-                if terminal_written is False:
+                if not terminal_written:
                     outcome_after_exception = WorkerOutcome(
                         "skipped",
                         payload.run_id,
@@ -2597,7 +2603,7 @@ async def process_run_payload(
                     run_id=payload.run_id,
                     result_json=result_payload,
                 )
-                if terminal_written is False:
+                if not terminal_written:
                     raise _WorkerSuccessCommitBlocked()
                 else:
                     await record_ragflow_completion(conn)
@@ -2646,7 +2652,7 @@ async def process_run_payload(
                         run_id=payload.run_id,
                         result_json=cancel_result,
                     )
-                    if terminal_written is False:
+                    if not terminal_written:
                         terminal_outcome = WorkerOutcome(
                             "skipped",
                             payload.run_id,
@@ -2681,7 +2687,7 @@ async def process_run_payload(
                         error_message=reported_error_message,
                         result_json=result_payload,
                     )
-                    if terminal_written is False:
+                    if not terminal_written:
                         terminal_outcome = WorkerOutcome(
                             "skipped",
                             payload.run_id,
@@ -2766,7 +2772,7 @@ async def process_run_payload(
                     error_message="A pending tool-permission request blocked successful completion.",
                     result_json=blocked_result_payload,
                 )
-                if terminal_written is False:
+                if not terminal_written:
                     terminal_outcome = WorkerOutcome(
                         "skipped",
                         payload.run_id,
@@ -2815,6 +2821,17 @@ async def process_run_payload(
             run_id=payload.run_id,
             transaction_factory=transaction,
         )
+        if (
+            terminalization_progress is not None
+            and terminalization_progress.get("did_transition")
+            and terminalization_progress.get("needs_reconcile")
+        ):
+            await reconcile_terminalized_permission_run(
+                tenant_id=payload.tenant_id,
+                run_id=payload.run_id,
+                progress=terminalization_progress,
+                transaction_factory=transaction,
+            )
         if terminalization_progress and terminalization_progress.get("completed") is True:
             final_status = str(terminalization_progress.get("status") or "")
             if final_status in {"failed", "cancelled"}:
