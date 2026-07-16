@@ -24,10 +24,7 @@ from app.executors.claude_agent_worker import _ordinary_run_requires_sandbox
 from app.executors.claude_agent_worker import _required_artifact_types
 from app.executors.claude_agent_sdk_runner import _sdk_run_timeout_seconds
 from app.storage import StoredObject
-from app.tool_permission_lifecycle import (
-    TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS,
-    TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS,
-)
+from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS, tool_permission_budget
 from app.executors.claude_agent_sdk_runner import build_sdk_env, build_skill_prompt, run_claude_agent_sdk
 from app.executors.registry import AdapterRegistry
 from app.runtime.sandbox.container_provider import (
@@ -252,7 +249,7 @@ async def test_tool_permission_wait_accepts_a_decision_after_the_former_outer_ti
         skill_id="qa-file-reviewer",
         trace_id="trace-run-1",
         request={"tool_call_id": "call-delayed"},
-        wait_timeout_seconds=TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS,
+        wait_timeout_seconds=tool_permission_budget().permission_wait_seconds,
         poll_interval_seconds=131.0,
         monotonic=lambda: clock["value"],
         sleep=advance_clock,
@@ -862,12 +859,26 @@ def test_file_skill_artifact_contract_is_owned_by_the_selected_capability():
 
 def test_sandbox_brokered_sdk_timeout_covers_the_shared_permission_transport_deadline():
     settings = types.SimpleNamespace(claude_agent_sdk_timeout_seconds=5.0)
+    budget = tool_permission_budget(5.0)
 
+    assert TOOL_PERMISSION_REQUEST_TTL_SECONDS == budget.request_ttl_seconds == 900.0
+    assert budget.aggregate_permission_wait_seconds == budget.permission_wait_seconds
+    assert budget.permission_callback_timeout_seconds > budget.permission_wait_seconds
+    assert budget.sandbox_sdk_timeout_seconds > 5.0 + budget.permission_wait_seconds
+    assert budget.outer_executor_timeout_seconds > budget.sandbox_sdk_timeout_seconds
+    assert budget.non_permission_callback_timeout_seconds < budget.permission_wait_seconds
     assert (
         _sdk_run_timeout_seconds(settings, sandbox_brokered=True, full_access=False)
-        == TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS
+        == budget.sandbox_sdk_timeout_seconds
     )
     assert _sdk_run_timeout_seconds(settings, sandbox_brokered=False, full_access=False) == 5.0
+
+
+def test_sandbox_brokered_budget_preserves_pre_permission_work_and_one_full_wait():
+    budget = tool_permission_budget(130.0)
+
+    assert budget.sandbox_sdk_timeout_seconds > 130.0 + budget.aggregate_permission_wait_seconds
+    assert budget.outer_executor_timeout_seconds > budget.sandbox_sdk_timeout_seconds
 
 
 @pytest.mark.asyncio

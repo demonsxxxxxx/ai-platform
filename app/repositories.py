@@ -41,6 +41,10 @@ from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import SkillVersionMaterializationError, build_skill_snapshot_governance
 from app.skills.release_policy import resolve_rollout_skill_decision
 from app.tool_policy import max_risk
+from app.tool_permission_lifecycle import (
+    TOOL_PERMISSION_EXPIRY_BATCH_LIMIT,
+    TOOL_PERMISSION_REQUEST_TTL_SECONDS,
+)
 
 
 DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker", "ragflow"}
@@ -4340,7 +4344,7 @@ async def create_tool_permission_request(
     write_capable: bool,
     reason: str,
     request_payload_json: dict[str, Any],
-    expires_in_seconds: int = 900,
+    expires_in_seconds: int = int(TOOL_PERMISSION_REQUEST_TTL_SECONDS),
 ) -> dict[str, Any]:
     """Create one pending, expiring permission request only for an open run."""
     request_id = new_id("tpr")
@@ -4420,6 +4424,7 @@ async def expire_tool_permission_request(
         user_id=user_id,
         run_id=run_id,
         request_id=request_id,
+        limit=1,
     )
     return rows[0] if rows else None
 
@@ -4431,22 +4436,33 @@ async def expire_pending_tool_permission_requests(
     user_id: str | None = None,
     run_id: str | None = None,
     request_id: str | None = None,
+    limit: int = TOOL_PERMISSION_EXPIRY_BATCH_LIMIT,
 ) -> list[dict[str, Any]]:
-    """Terminalize expired pending requests in one scoped, auditable path."""
+    """Terminalize one bounded, scoped batch of expired requests with audit facts."""
+    bounded_limit = max(1, min(int(limit), TOOL_PERMISSION_EXPIRY_BATCH_LIMIT))
     cursor = await conn.execute(
         """
-        update run_tool_permission_requests
+        with expired_requests as (
+          select id
+          from run_tool_permission_requests
+          where tenant_id = %s
+            and status = 'pending'
+            and expires_at is not null
+            and expires_at <= now()
+            and (%s::text is null or user_id = %s)
+            and (%s::text is null or run_id = %s)
+            and (%s::text is null or id = %s)
+          order by expires_at asc, id asc
+          limit %s
+          for update skip locked
+        )
+        update run_tool_permission_requests as permission_request
         set status = 'expired', reason = 'permission_request_expired', updated_at = now()
-        where tenant_id = %s
-          and status = 'pending'
-          and expires_at is not null
-          and expires_at <= now()
-          and (%s::text is null or user_id = %s)
-          and (%s::text is null or run_id = %s)
-          and (%s::text is null or id = %s)
-        returning *
+        from expired_requests
+        where permission_request.id = expired_requests.id
+        returning permission_request.*
         """,
-        (tenant_id, user_id, user_id, run_id, run_id, request_id, request_id),
+        (tenant_id, user_id, user_id, run_id, run_id, request_id, request_id, bounded_limit),
     )
     rows = list(await cursor.fetchall())
     for row in rows:
@@ -4508,6 +4524,7 @@ async def _record_tool_permission_terminalization(
             "request_user_id": str(row.get("user_id") or ""),
             "tool_id": str(row.get("tool_id") or ""),
             "tool_call_id": str(row.get("tool_call_id") or ""),
+            "decision": str(row.get("decision") or ""),
             "status": terminal_status,
             "reason": terminal_reason,
         },
@@ -4532,8 +4549,8 @@ async def terminalize_pending_tool_permission_requests(
             reason = %s,
             expires_at = coalesce(expires_at, now()),
             updated_at = now()
-        where tenant_id = %s and run_id = %s and status = 'pending'
-        returning id, user_id, trace_id, tool_id, tool_call_id, action, risk_level, write_capable
+        where tenant_id = %s and run_id = %s and status in ('pending', 'decided')
+        returning id, user_id, trace_id, tool_id, tool_call_id, action, risk_level, write_capable, decision
         """,
         (terminal_status, terminal_reason, tenant_id, run_id),
     )
@@ -4714,7 +4731,7 @@ async def decide_tool_permission_request(
     decision: str,
     reason: str,
     decision_payload_json: dict[str, Any],
-    expires_in_seconds: int = 900,
+    expires_in_seconds: int = int(TOOL_PERMISSION_REQUEST_TTL_SECONDS),
 ) -> dict[str, Any] | None:
     expired = await expire_tool_permission_request(
         conn,
@@ -4799,20 +4816,30 @@ async def get_exact_tool_permission_decision(
     exact_filter = f"and ({' or '.join(exact_clauses)})" if exact_clauses else ""
     cursor = await conn.execute(
         f"""
-        select *
-        from run_tool_permission_requests
-        where tenant_id = %s
-          and user_id = %s
-          and run_id = %s
-          and tool_id = %s
-          and action = %s
-          and status = 'decided'
-          and (expires_at is null or expires_at > now())
+        with executable_run as (
+          select id
+          from runs
+          where tenant_id = %s
+            and id = %s
+            and status = 'running'
+            and cancel_requested_at is null
+          for update
+        )
+        select permission_request.*
+        from run_tool_permission_requests as permission_request
+        join executable_run on executable_run.id = permission_request.run_id
+        where permission_request.tenant_id = %s
+          and permission_request.user_id = %s
+          and permission_request.run_id = %s
+          and permission_request.tool_id = %s
+          and permission_request.action = %s
+          and permission_request.status = 'decided'
+          and (permission_request.expires_at is null or permission_request.expires_at > now())
           {exact_filter}
-        order by decided_at desc, updated_at desc, created_at desc
+        order by permission_request.decided_at desc, permission_request.updated_at desc, permission_request.created_at desc
         limit 1
         """,
-        tuple(params),
+        tuple([tenant_id, run_id, *params]),
     )
     return await cursor.fetchone()
 
@@ -4851,19 +4878,30 @@ async def consume_tool_permission_decision(
 ) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """
-        update run_tool_permission_requests
+        with executable_run as (
+          select id
+          from runs
+          where tenant_id = %s
+            and id = %s
+            and status = 'running'
+            and cancel_requested_at is null
+          for update
+        )
+        update run_tool_permission_requests as permission_request
         set status = 'consumed',
             updated_at = now()
-        where tenant_id = %s
-          and user_id = %s
-          and run_id = %s
-          and id = %s
-          and decision = 'allow_once'
-          and status = 'decided'
-          and (expires_at is null or expires_at > now())
-        returning *
+        from executable_run
+        where permission_request.tenant_id = %s
+          and permission_request.user_id = %s
+          and permission_request.run_id = %s
+          and executable_run.id = permission_request.run_id
+          and permission_request.id = %s
+          and permission_request.decision = 'allow_once'
+          and permission_request.status = 'decided'
+          and (permission_request.expires_at is null or permission_request.expires_at > now())
+        returning permission_request.*
         """,
-        (tenant_id, user_id, run_id, request_id),
+        (tenant_id, run_id, tenant_id, user_id, run_id, request_id),
     )
     return await cursor.fetchone()
 

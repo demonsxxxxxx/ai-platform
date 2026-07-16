@@ -3223,7 +3223,7 @@ async def test_expired_permission_request_emits_tenant_run_scoped_terminal_audit
 
     assert row["id"] == "tpr-a"
     assert "status = 'expired'" in calls[0][1]
-    assert calls[0][2] == ("tenant-a", "user-a", "user-a", "run-a", "run-a", "tpr-a", "tpr-a")
+    assert calls[0][2] == ("tenant-a", "user-a", "user-a", "run-a", "run-a", "tpr-a", "tpr-a", 1)
     assert calls[1][1]["payload"]["permission_request_id"] == "tpr-a"
     assert calls[1][1]["payload"]["status"] == "expired"
     assert calls[1][1]["payload"]["tool_call_id"] == "call-a"
@@ -5866,7 +5866,7 @@ async def test_decide_tool_permission_request_terminalizes_at_or_beyond_expiry(m
 
     assert result is None
     assert "expires_at <= now()" in calls[0][1]
-    assert calls[0][2] == ("tenant-a", "user-a", "user-a", "run-a", "run-a", "tpr-expired", "tpr-expired")
+    assert calls[0][2] == ("tenant-a", "user-a", "user-a", "run-a", "run-a", "tpr-expired", "tpr-expired", 1)
     assert calls[1][1]["payload"]["status"] == "expired"
     assert not any("set status = 'decided'" in call[1] for call in calls if call[0] == "sql")
 
@@ -6034,7 +6034,74 @@ async def test_list_tool_permission_inbox_for_tenant_excludes_admin_user_filter(
     assert "expires_at > now()" in sql
     assert params == ("tenant-a", "pending", "pending", 25)
     assert "set status = 'expired'" in conn.calls[0][0]
+    assert "order by expires_at asc, id asc" in conn.calls[0][0]
+    assert "for update skip locked" in conn.calls[0][0]
+    assert conn.calls[0][1][-1] == 50
     assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_tenant_permission_inbox_expiry_is_bounded_and_makes_batch_progress(monkeypatch):
+    calls = []
+
+    class BatchCursor:
+        async def fetchall(self):
+            return [
+                {
+                    "id": "tpr-a",
+                    "tenant_id": "tenant-a",
+                    "run_id": "run-a",
+                    "user_id": "user-a",
+                    "trace_id": "trace-a",
+                    "tool_id": "Bash",
+                    "tool_call_id": "call-a",
+                    "action": "execute",
+                    "risk_level": "high",
+                    "write_capable": True,
+                },
+                {
+                    "id": "tpr-b",
+                    "tenant_id": "tenant-a",
+                    "run_id": "run-b",
+                    "user_id": "user-b",
+                    "trace_id": "trace-b",
+                    "tool_id": "Bash",
+                    "tool_call_id": "call-b",
+                    "action": "execute",
+                    "risk_level": "high",
+                    "write_capable": True,
+                },
+            ]
+
+    class BatchConnection:
+        async def execute(self, sql, params):
+            calls.append((" ".join(sql.split()), params))
+            return BatchCursor()
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+
+    async def append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+
+    monkeypatch.setattr(repositories, "append_event", append_event)
+    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
+
+    rows = await repositories.expire_pending_tool_permission_requests(
+        BatchConnection(),
+        tenant_id="tenant-a",
+        limit=10_000,
+    )
+
+    assert [row["id"] for row in rows] == ["tpr-a", "tpr-b"]
+    expiry_sql, expiry_params = calls[0]
+    assert "with expired_requests as" in expiry_sql
+    assert "tenant_id = %s" in expiry_sql
+    assert "order by expires_at asc, id asc" in expiry_sql
+    assert "limit %s" in expiry_sql
+    assert "for update skip locked" in expiry_sql
+    assert expiry_params[-1] == 50
+    assert [entry[1]["target_id"] for entry in calls if entry[0] == "audit"] == ["tpr-a", "tpr-b"]
 
 
 @pytest.mark.asyncio
@@ -6130,7 +6197,12 @@ async def test_get_exact_tool_permission_decision_filters_tool_call_or_fingerpri
     assert "tool_call_id = %s" in sql
     assert "decision = 'allow_for_run'" in sql
     assert "request_payload_json ->> %s = %s" in sql
+    assert "with executable_run as" in sql
+    assert "cancel_requested_at is null" in sql
+    assert "for update" in sql
     assert params == (
+        "tenant-a",
+        "run-a",
         "tenant-a",
         "user-a",
         "run-a",
@@ -6162,6 +6234,8 @@ async def test_legacy_latest_tool_permission_decision_wrapper_uses_exact_lookup_
     assert "decision = 'allow_for_run'" in sql
     assert params == (
         "tenant-a",
+        "run-a",
+        "tenant-a",
         "user-a",
         "run-a",
         "ragflow-knowledge-search",
@@ -6190,15 +6264,191 @@ async def test_consume_tool_permission_decision_marks_only_decided_allow_once_co
     assert row["id"] == "step-a"
     assert "update run_tool_permission_requests" in sql
     assert "set status = 'consumed'" in sql
-    assert "where tenant_id = %s" in sql
-    assert "and user_id = %s" in sql
-    assert "and run_id = %s" in sql
-    assert "and id = %s" in sql
-    assert "and decision = 'allow_once'" in sql
-    assert "and status = 'decided'" in sql
-    assert "(expires_at is null or expires_at > now())" in sql
-    assert "returning *" in sql
-    assert params == ("tenant-a", "user-a", "run-a", "tpr-a")
+    assert "with executable_run as" in sql
+    assert "cancel_requested_at is null" in sql
+    assert "permission_request.tenant_id = %s" in sql
+    assert "permission_request.user_id = %s" in sql
+    assert "permission_request.run_id = %s" in sql
+    assert "permission_request.id = %s" in sql
+    assert "permission_request.decision = 'allow_once'" in sql
+    assert "permission_request.status = 'decided'" in sql
+    assert "(permission_request.expires_at is null or permission_request.expires_at > now())" in sql
+    assert "returning permission_request.*" in sql
+    assert params == ("tenant-a", "run-a", "tenant-a", "user-a", "run-a", "tpr-a")
+
+
+@pytest.mark.asyncio
+async def test_permission_grant_lookup_locks_an_executable_run_before_reuse():
+    conn = RecordingConnection()
+
+    await get_exact_tool_permission_decision(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        tool_id="claude-sdk:Bash",
+        tool_call_id="call-a",
+    )
+
+    sql, params = conn.calls[0]
+    assert "with executable_run as" in sql
+    assert "status = 'running'" in sql
+    assert "cancel_requested_at is null" in sql
+    assert "for update" in sql
+    assert "join executable_run on executable_run.id = permission_request.run_id" in sql
+    assert params[:5] == ("tenant-a", "run-a", "tenant-a", "user-a", "run-a")
+
+
+@pytest.mark.asyncio
+async def test_allow_once_consumption_loses_a_barrier_synchronized_cancel_race(monkeypatch):
+    class ConsumeCancelRaceConnection:
+        def __init__(self):
+            self.consume_ready = asyncio.Event()
+            self.cancel_terminalized = asyncio.Event()
+            self.terminalizations = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            if "set status = 'consumed'" in normalized:
+                self.consume_ready.set()
+                await self.cancel_terminalized.wait()
+                return SingleRowCursor(None)
+            if normalized.startswith("update runs"):
+                await self.consume_ready.wait()
+                return SingleRowCursor({"id": "run-a", "status": "running", "trace_id": "trace-a"})
+            if normalized.startswith("update run_tool_permission_requests"):
+                self.terminalizations.append(params)
+                self.cancel_terminalized.set()
+                return FakeCursor()
+            raise AssertionError(normalized)
+
+    async def no_active_leases(conn, *, tenant_id, run_id):
+        return []
+
+    async def no_op_event_or_audit(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
+    monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
+    monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
+    conn = ConsumeCancelRaceConnection()
+
+    consume_task = asyncio.create_task(
+        repositories.consume_tool_permission_decision(
+            conn,
+            tenant_id="tenant-a",
+            user_id="user-a",
+            run_id="run-a",
+            request_id="tpr-a",
+        )
+    )
+    cancel_task = asyncio.create_task(
+        repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+    )
+    consumed, cancellation = await asyncio.gather(consume_task, cancel_task)
+
+    assert consumed is None
+    assert cancellation == {"run_id": "run-a", "status": "cancel_requested"}
+    assert conn.terminalizations == [("cancelled", "run_cancel_requested", "tenant-a", "run-a")]
+
+
+@pytest.mark.asyncio
+async def test_allow_for_run_lookup_loses_a_barrier_synchronized_cancel_race(monkeypatch):
+    class ReuseCancelRaceConnection:
+        def __init__(self):
+            self.lookup_ready = asyncio.Event()
+            self.cancel_terminalized = asyncio.Event()
+            self.terminalizations = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            if normalized.startswith("with executable_run as") and "select permission_request.*" in normalized:
+                self.lookup_ready.set()
+                await self.cancel_terminalized.wait()
+                return SingleRowCursor(None)
+            if normalized.startswith("update runs"):
+                await self.lookup_ready.wait()
+                return SingleRowCursor({"id": "run-a", "status": "running", "trace_id": "trace-a"})
+            if normalized.startswith("update run_tool_permission_requests"):
+                self.terminalizations.append(params)
+                self.cancel_terminalized.set()
+                return FakeCursor()
+            raise AssertionError(normalized)
+
+    async def no_active_leases(conn, *, tenant_id, run_id):
+        return []
+
+    async def no_op_event_or_audit(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
+    monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
+    monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
+    conn = ReuseCancelRaceConnection()
+
+    reuse_task = asyncio.create_task(
+        repositories.get_exact_tool_permission_decision(
+            conn,
+            tenant_id="tenant-a",
+            user_id="user-a",
+            run_id="run-a",
+            tool_id="claude-sdk:Bash",
+            tool_call_id="call-a",
+            request_payload_json={"command_sha256": "a" * 64},
+        )
+    )
+    cancel_task = asyncio.create_task(
+        repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+    )
+    reusable_grant, cancellation = await asyncio.gather(reuse_task, cancel_task)
+
+    assert reusable_grant is None
+    assert cancellation == {"run_id": "run-a", "status": "cancel_requested"}
+    assert conn.terminalizations == [("cancelled", "run_cancel_requested", "tenant-a", "run-a")]
+
+
+@pytest.mark.asyncio
+async def test_terminalization_revokes_decided_authority_and_preserves_its_audit_value(monkeypatch):
+    calls = []
+
+    class DecidedGrantConnection:
+        async def execute(self, sql, params):
+            calls.append(("sql", " ".join(sql.split()), params))
+            return SingleRowCursor(
+                {
+                    "id": "tpr-allow-for-run",
+                    "user_id": "user-a",
+                    "trace_id": "trace-a",
+                    "tool_id": "Bash",
+                    "tool_call_id": "call-a",
+                    "action": "execute",
+                    "risk_level": "high",
+                    "write_capable": True,
+                    "decision": "allow_for_run",
+                }
+            )
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+
+    async def append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+
+    monkeypatch.setattr(repositories, "append_event", append_event)
+    monkeypatch.setattr(repositories, "append_audit_log", append_audit_log)
+
+    rows = await repositories.terminalize_pending_tool_permission_requests(
+        DecidedGrantConnection(),
+        tenant_id="tenant-a",
+        run_id="run-a",
+        terminal_status="cancelled",
+        terminal_reason="run_cancel_requested",
+    )
+
+    assert rows[0]["decision"] == "allow_for_run"
+    assert "status in ('pending', 'decided')" in calls[0][1]
+    audit = next(entry[1] for entry in calls if entry[0] == "audit")
+    assert audit["payload_json"]["decision"] == "allow_for_run"
 
 
 @pytest.mark.asyncio

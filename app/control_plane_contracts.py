@@ -205,6 +205,7 @@ STANDARD_EVENT_TYPES = frozenset(
         "tool_permission_denied",
         "tool_permission_decided",
         "tool_permission_requested",
+        "tool_permission_terminalized",
         "worker_started",
     }
 )

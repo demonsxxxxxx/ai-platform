@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 import hashlib
 import json
@@ -11,6 +12,7 @@ from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.worker import (
+    WorkerOutcome,
     _locked_run_principal,
     _multi_agent_result_summary,
     _payload_from_locked_run,
@@ -741,6 +743,9 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
         calls.append(("complete", run_id))
         return False
 
+    async def fail_run(conn, **kwargs):
+        return False
+
     async def release_sandbox_lease(conn, **kwargs):
         calls.append(("release", kwargs["reason"]))
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
@@ -750,6 +755,7 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
@@ -760,6 +766,84 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
     assert ("complete", "run-a") in calls
     assert not any(item[0] == "event" and item[1] in {"run_succeeded", "status"} for item in calls)
     assert not any(item == ("release", "run_succeeded") for item in calls)
+
+
+@pytest.mark.asyncio
+async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrives_before_final_completion(monkeypatch):
+    visible_writes = []
+    initial_permission_check = asyncio.Event()
+    permission_inserted = asyncio.Event()
+
+    class TransactionConnection:
+        def __init__(self):
+            self.pending_writes = []
+
+    @asynccontextmanager
+    async def transactional_connection():
+        conn = TransactionConnection()
+        try:
+            yield conn
+        except Exception:
+            # A real database transaction drops these writes before recovery.
+            raise
+        else:
+            visible_writes.extend(conn.pending_writes)
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def has_pending(conn, *, tenant_id, run_id):
+        initial_permission_check.set()
+        return False
+
+    async def insert_permission_after_initial_check():
+        await initial_permission_check.wait()
+        permission_inserted.set()
+
+    async def create_artifact(conn, **kwargs):
+        conn.pending_writes.append(("artifact", kwargs["artifact_type"]))
+
+    async def append_message(conn, **kwargs):
+        conn.pending_writes.append(("message", kwargs["role"]))
+        return "msg-a"
+
+    async def append_event(conn, **kwargs):
+        conn.pending_writes.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    async def complete_run(conn, **kwargs):
+        await permission_inserted.wait()
+        return False
+
+    async def fail_run(conn, **kwargs):
+        conn.pending_writes.append(("fail", kwargs["error_code"]))
+        return True
+
+    monkeypatch.setattr("app.worker.transaction", transactional_connection)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.has_pending_tool_permission_requests", has_pending)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+
+    injector = asyncio.create_task(insert_permission_after_initial_check())
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+    await injector
+
+    assert outcome == WorkerOutcome(
+        "failed",
+        "run-a",
+        "tool_permission_pending",
+        "A pending tool-permission request blocked successful completion.",
+    )
+    assert ("fail", "tool_permission_pending") in visible_writes
+    assert not any(kind in {"artifact", "message"} for kind, *_ in visible_writes)
+    assert not any(
+        kind == "event" and event_type in {"artifact_created", "assistant_message_created", "run_succeeded", "status"}
+        for kind, event_type in visible_writes
+    )
 
 
 @pytest.mark.asyncio

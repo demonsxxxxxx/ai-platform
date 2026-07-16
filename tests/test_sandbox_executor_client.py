@@ -1,9 +1,12 @@
+import asyncio
+
+import httpx
 import pytest
 
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorCallbackEvent, ExecutorTaskRequest
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events, container_started_event
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
-from app.tool_permission_lifecycle import TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS
+from app.tool_permission_lifecycle import tool_permission_budget
 
 
 def lease() -> ContainerLease:
@@ -165,7 +168,7 @@ async def test_executor_client_posts_task_request(monkeypatch):
         (
             "http://executor.test/v1/tasks/execute",
             request.model_dump(),
-            TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS,
+            tool_permission_budget(120.0).outer_executor_timeout_seconds,
         )
     ]
 
@@ -280,3 +283,28 @@ async def test_executor_client_allows_explicit_timeout_override():
     await client.execute("http://executor.test", request)
 
     assert calls == [3.0]
+
+
+@pytest.mark.asyncio
+async def test_executor_client_deadline_and_cancellation_never_return_an_accepted_result():
+    request = ExecutorTaskRequest(
+        session_id="session-a",
+        run_id="run-a",
+        prompt="hello",
+        callback_url="http://callback",
+        callback_token_id="cbt_run-a",
+        callback_token="secret",
+        callback_base_url="http://callback-base",
+        config={"model": "deepseek-v4-flash"},
+    )
+
+    async def deadline_post_json(*args, **kwargs):
+        raise httpx.TimeoutException("executor deadline elapsed")
+
+    async def cancelled_post_json(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    with pytest.raises(httpx.TimeoutException):
+        await SandboxExecutorClient(post_json=deadline_post_json).execute("http://executor.test", request)
+    with pytest.raises(asyncio.CancelledError):
+        await SandboxExecutorClient(post_json=cancelled_post_json).execute("http://executor.test", request)

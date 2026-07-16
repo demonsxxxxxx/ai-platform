@@ -65,3 +65,54 @@ Compatibility: `pending`, `decided`, `consumed`, and existing terminal request
 rows remain readable.  New terminal cards are display-only and preserve the
 existing administrator-only inbox authorization.  Tests use controllable
 deadlines/barriers rather than real waits for timing or cancellation races.
+
+## Generation 3 repair boundary
+
+The permission lifecycle keeps one deep authority seam: a structured budget
+defines the request TTL, one aggregate wait allowance for a sandbox-brokered
+SDK execution, and the nested transports which carry that wait.  The callback
+transport exceeds the wait; the sandbox SDK total exceeds its ordinary
+execution budget plus the aggregate wait and an inner margin; and the outer
+executor transport exceeds that SDK total plus an outer margin.  Non-permission
+callbacks retain their short transport timeout.  Repeated permission waits
+share the single aggregate allowance: once the SDK's total budget is exhausted,
+the active callback is cancelled and fails closed rather than gaining another
+full wait.
+
+The repository locks the run before looking up, consuming, or reusing a grant.
+Only a `running` run without `cancel_requested_at` may use a decision; a
+cancelled/terminal run terminalizes both pending and still-usable decided
+requests while retaining their audit history.  The worker writes success-only
+artifacts, assistant messages, snapshots, and completion in one transaction.
+If the final pending guard loses to a newly-created request, that transaction
+rolls back and a separate failure transition terminalizes the gate.  Sandbox
+PreToolUse never speculates a request event: request creation alone emits the
+identifier-bearing public fact.
+
+Inbox expiry is bounded to a deterministic, tenant-scoped locked batch before
+listing, so a large expired population cannot turn one administrator GET into
+an unbounded write transaction.  Subsequent inbox calls and normal lifecycle
+maintenance converge the remaining rows.  `tool_permission_terminalized` is
+added to the standard public event taxonomy.  Compatibility is preserved for
+ordinary callback/run timeouts and read-only request history; no ordinary-user
+decision controls or endpoint reachability changes.
+
+Focused RED/GREEN coverage uses injected clocks and barriers for nested timing,
+cancel-versus-consume, late-request rollback, event provenance, and expiry
+batch progress.  It is followed by the affected repository/worker/sandbox/SDK
+and event-contract tests, compileall, projection audit, and diff/scope/secret
+checks.  No live request or deployment action is in scope.
+
+### Generation 3 local evidence
+
+The focused RED import failure established the missing structured budget before
+implementation.  The repaired backend scope passed the repository, worker,
+SDK adapter, sandbox app/client, and control-plane contract set with
+`610 passed, 3 skipped`; the projection, route, callback, and sandbox
+integration set passed with `66 passed`.  `python -m compileall -q app tools
+scripts`, `tools/frontend_projection_audit.py --format json` (status
+`pass_with_policy_gaps`), and `git diff --check` also passed.  The independent
+frontend projection-audit unit currently has an unrelated expectation drift for
+`/api/env-vars`; it is outside this lifecycle change.  This worktree has no
+`frontend/web/node_modules`, so no TypeScript/lint/build command was run and no
+dependency or lockfile mutation was made.

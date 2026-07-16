@@ -11,10 +11,7 @@ from fastapi.testclient import TestClient
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.contracts import ExecutorTaskRequest
 from app.runtime.sandbox.executor_app import _default_callback_sender, create_executor_app
-from app.tool_permission_lifecycle import (
-    TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS,
-    TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS,
-)
+from app.tool_permission_lifecycle import tool_permission_budget
 
 
 EXECUTOR_AUTH_TOKEN = "executor-secret"
@@ -122,11 +119,49 @@ async def test_default_permission_callback_transport_outlives_the_control_plane_
 
     monkeypatch.setattr("app.runtime.sandbox.executor_app.httpx.AsyncClient", build_client)
 
-    result = await _default_callback_sender("https://control-plane.test/permission", {"request": "a"}, "token-a")
+    result = await _default_callback_sender(
+        "https://control-plane.test/permission",
+        {"tool_name": "Bash", "tool_call_id": "call-a"},
+        "token-a",
+    )
 
     assert result == {"allowed": True}
-    assert observed["timeout"] == TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS
-    assert TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS > TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS
+    budget = tool_permission_budget(120.0)
+    assert observed["timeout"] == budget.permission_callback_timeout_seconds
+    assert observed["timeout"] > budget.permission_wait_seconds
+
+
+@pytest.mark.asyncio
+async def test_default_non_permission_callback_fails_fast(monkeypatch):
+    observed = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"accepted": True}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, *, json, headers):
+            return FakeResponse()
+
+    def build_client(*, timeout):
+        observed["timeout"] = timeout
+        return FakeClient()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.httpx.AsyncClient", build_client)
+
+    assert await _default_callback_sender("https://control-plane.test/event", {"status": "running"}, "token-a") == {
+        "accepted": True
+    }
+    assert observed["timeout"] == tool_permission_budget(120.0).non_permission_callback_timeout_seconds
 
 
 def test_executor_runtime_identity_requires_lease_credential_and_returns_only_effective_ids(tmp_path, monkeypatch):
@@ -328,7 +363,7 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
         for event in callback.get("events", [])
         if event.get("payload", {}).get("tool_call_id") == "tool-a"
     ]
-    assert permission_event_types == ["tool_permission_requested", "tool_permission_denied"]
+    assert permission_event_types == ["tool_permission_denied"]
     assert "tool_call_completed" not in permission_event_types
 
 
@@ -506,9 +541,10 @@ def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeyp
         for event in callback_payload.get("events", [])
         if event.get("payload", {}).get("tool_call_id") == "tool-mcp-a"
     ]
-    assert [event["type"] for event in permission_events] == ["tool_permission_requested", "tool_permission_authorized"]
+    assert [event["type"] for event in permission_events] == ["tool_permission_authorized"]
     assert permission_events[-1]["payload"]["allowed"] is True
     assert permission_events[-1]["payload"]["reason"] == "tool_permission_allowed"
+    assert permission_events[-1]["payload"]["permission_request_id"] == "tpr-sdk"
 
 
 @pytest.mark.parametrize(
@@ -580,7 +616,7 @@ def test_executor_permission_broker_failures_emit_controlled_denial_event(
         for event in callback_payload.get("events", [])
         if event.get("payload", {}).get("tool_call_id") == "tool-mcp-denied"
     ]
-    assert [event["type"] for event in permission_events] == ["tool_permission_requested", "tool_permission_denied"]
+    assert [event["type"] for event in permission_events] == ["tool_permission_denied"]
     assert permission_events[-1]["payload"]["allowed"] is False
     assert permission_events[-1]["payload"]["reason"] == expected_reason
 

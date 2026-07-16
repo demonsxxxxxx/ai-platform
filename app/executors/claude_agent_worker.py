@@ -42,7 +42,7 @@ from app.skills.dependencies import skill_dependency_ids, with_skill_dependencie
 from app.skills.stager import SkillStager
 from app.storage import ObjectStorage
 from app.tool_policy import evaluate_tool_policy
-from app.tool_permission_lifecycle import TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS
+from app.tool_permission_lifecycle import tool_permission_budget
 
 NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
 _CONTROLLED_RUNNER_SKILLS = {"qa-file-reviewer", "baoyu-translate"}
@@ -296,7 +296,7 @@ async def resolve_claude_sdk_tool_permission(
     skill_id: str,
     trace_id: str,
     request: dict[str, Any],
-    wait_timeout_seconds: float = TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS,
+    wait_timeout_seconds: float = tool_permission_budget().permission_wait_seconds,
     poll_interval_seconds: float = _TOOL_PERMISSION_POLL_INTERVAL_SECONDS,
     monotonic: Callable[[], float] | None = None,
     sleep: Callable[[float], Awaitable[None]] | None = None,
