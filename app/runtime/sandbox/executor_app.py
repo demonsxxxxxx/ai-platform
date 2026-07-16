@@ -647,22 +647,25 @@ def create_executor_app(
             if timed_out
             else {}
         )
-        completed_event = ExecutorCallbackEvent(
+        execution_observation = ExecutorCallbackEvent(
             session_id=request.session_id,
             run_id=request.run_id,
             callback_token_id=request.callback_token_id,
-            status="failed" if failed else "completed",
-            progress=100 if not failed else 5,
+            status="running",
+            progress=99,
             state_patch=(
-                {"error_code": error_code, **timeout_observation}
+                {"stage": "executor_finished", "error_code": error_code, **timeout_observation}
                 if failed
-                else {"marker_path": f"/workspace/runtime/{marker_path.name}"}
+                else {
+                    "stage": "executor_finished",
+                    "marker_path": f"/workspace/runtime/{marker_path.name}",
+                }
             ),
             sdk_session_id=str(runner_result.get("sdk_session_id") or request.sdk_session_id or "") or None,
             error_message=error_message,
         )
 
-        await dispatch_callback_event(completed_event)
+        await dispatch_callback_event(execution_observation)
 
         executor_model_latency_ms = _elapsed_ms(started_at)
         response: dict[str, Any] = {

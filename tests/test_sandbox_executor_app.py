@@ -222,7 +222,7 @@ def test_executor_runtime_identity_requires_lease_credential_and_returns_only_ef
     assert response.json() == {"uid": 10001, "gid": 10001}
 
 
-def test_executor_execute_posts_running_and_completed_callbacks(tmp_path, monkeypatch):
+def test_executor_execute_posts_only_non_terminal_execution_callbacks(tmp_path, monkeypatch):
     callbacks = []
 
     class StubSettings:
@@ -260,11 +260,12 @@ def test_executor_execute_posts_running_and_completed_callbacks(tmp_path, monkey
     assert body["run_id"] == "run-a"
     assert isinstance(body["executor_model_latency_ms"], int)
     assert isinstance(body["document_processing_latency_ms"], int)
-    assert [item[1]["status"] for item in callbacks] == ["running", "completed"]
+    assert [item[1]["status"] for item in callbacks] == ["running", "running"]
     assert {item[2] for item in callbacks} == {"secret"}
     assert {item[1]["callback_token_id"] for item in callbacks} == {"cbt_run-a"}
     assert callbacks[0][1]["progress"] == 5
-    assert callbacks[1][1]["progress"] == 100
+    assert callbacks[1][1]["progress"] == 99
+    assert callbacks[1][1]["state_patch"]["stage"] == "executor_finished"
 
 
 def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
@@ -323,7 +324,7 @@ def test_executor_execute_streams_runner_events_and_phase_timings(tmp_path):
         "running",
         "running",
         "running",
-        "completed",
+        "running",
     ]
     assert callbacks[1][1]["events"][0]["type"] == "assistant_delta"
     assert callbacks[2][1]["events"][0]["type"] == "tool_call_started"
@@ -660,7 +661,7 @@ def test_executor_permission_broker_failures_emit_controlled_denial_event(
     assert permission_events[-1]["payload"]["reason"] == expected_reason
 
 
-def test_executor_execute_reports_platform_timeout_probe_as_failed_callback(tmp_path):
+def test_executor_execute_reports_platform_timeout_probe_as_nonterminal_observation(tmp_path):
     callbacks = []
     payload = task_payload()
     payload["config"]["resource_limits"] = {"max_seconds": 0}
@@ -681,9 +682,10 @@ def test_executor_execute_reports_platform_timeout_probe_as_failed_callback(tmp_
     assert body["error_message"] == "Executor health timeout"
     assert body["requested_max_seconds"] == 0
     assert isinstance(body["timeout_elapsed_ms"], int)
-    assert [item[1]["status"] for item in callbacks] == ["running", "failed"]
+    assert [item[1]["status"] for item in callbacks] == ["running", "running"]
     assert callbacks[-1][1]["error_message"] == "Executor health timeout"
     assert callbacks[-1][1]["state_patch"] == {
+        "stage": "executor_finished",
         "error_code": "executor_health_timeout",
         "requested_max_seconds": 0,
         "timeout_elapsed_ms": body["timeout_elapsed_ms"],
@@ -732,8 +734,9 @@ def test_executor_execute_enforces_fractional_positive_timeout_and_cancels_runne
     assert runner_cancelled.wait(timeout=0.1)
     time.sleep(0.1)
     assert not late_side_effect.is_set()
-    assert [item[1]["status"] for item in callbacks] == ["running", "failed"]
+    assert [item[1]["status"] for item in callbacks] == ["running", "running"]
     assert callbacks[-1][1]["state_patch"] == {
+        "stage": "executor_finished",
         "error_code": "executor_deadline_exceeded",
         "requested_max_seconds": 0.03,
         "timeout_elapsed_ms": body["timeout_elapsed_ms"],
@@ -807,7 +810,7 @@ async def test_executor_deadline_returns_when_runner_swallows_cancellation_and_i
         await asyncio.sleep(0)
 
         assert late_event_attempted.is_set()
-        assert [callback["status"] for callback in callbacks] == ["running", "failed"]
+        assert [callback["status"] for callback in callbacks] == ["running", "running"]
         assert all(
             event.get("message") != "late"
             for callback in callbacks
@@ -844,7 +847,8 @@ def test_executor_execute_allows_runner_with_larger_fractional_deadline(tmp_path
 
     assert response.status_code == 200
     assert response.json()["status"] == "accepted"
-    assert [item["status"] for item in callbacks] == ["running", "completed"]
+    assert [item["status"] for item in callbacks] == ["running", "running"]
+    assert callbacks[-1]["state_patch"]["stage"] == "executor_finished"
 
 
 def test_executor_execute_does_not_rewrite_runner_timeout_error_as_deadline(tmp_path):
@@ -1130,8 +1134,8 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path, monk
         )()
 
     def callback_sender(url, payload, token):
-        callbacks.append(payload["status"])
-        if payload["status"] == "completed":
+        callbacks.append((payload["status"], payload.get("state_patch", {}).get("stage")))
+        if payload.get("state_patch", {}).get("stage") == "executor_finished":
             raise RuntimeError("callback failed")
         return {"accepted": True}
 
@@ -1145,13 +1149,13 @@ def test_executor_execute_reports_callback_errors_without_raising(tmp_path, monk
     body = response.json()
     assert body["status"] == "accepted"
     assert body["run_id"] == "run-a"
-    assert body["callback_errors"] == ["completed"]
+    assert body["callback_errors"] == ["running"]
     assert isinstance(body["executor_model_latency_ms"], int)
     assert isinstance(body["document_processing_latency_ms"], int)
-    assert callbacks == ["running", "completed"]
+    assert callbacks == [("running", "accepted"), ("running", "executor_finished")]
 
 
-def test_executor_completed_callback_marker_path_is_container_path(tmp_path, monkeypatch):
+def test_executor_finished_observation_marker_path_is_container_path(tmp_path, monkeypatch):
     callbacks = []
 
     class StubSettings:
@@ -1183,6 +1187,8 @@ def test_executor_completed_callback_marker_path_is_container_path(tmp_path, mon
     response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
 
     assert response.status_code == 200
+    assert callbacks[-1]["status"] == "running"
+    assert callbacks[-1]["state_patch"]["stage"] == "executor_finished"
     marker_path = callbacks[-1]["state_patch"]["marker_path"]
     assert marker_path == "/workspace/runtime/run-a.json"
     assert str(tmp_path) not in marker_path

@@ -11,6 +11,7 @@ from app.worker_main import run_once
 
 
 _ORIGINAL_MEMORY_CLEANUP_FOR_WORKER = worker_main.cleanup_expired_memory_records_for_worker
+_ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE = worker_main.progress_pending_tool_permission_terminalizations_for_worker
 
 
 def test_write_worker_runtime_heartbeat_records_process_commit(monkeypatch, tmp_path):
@@ -64,6 +65,9 @@ def default_sandbox_cleanup(monkeypatch):
     async def cleanup_expired_memory_records_for_worker(settings=None):
         return []
 
+    async def progress_pending_tool_permission_terminalizations_for_worker(settings=None):
+        return []
+
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_sandbox_leases",
         cleanup_expired_sandbox_leases,
@@ -72,6 +76,11 @@ def default_sandbox_cleanup(monkeypatch):
     monkeypatch.setattr(
         "app.worker_main.cleanup_expired_memory_records_for_worker",
         cleanup_expired_memory_records_for_worker,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "app.worker_main.progress_pending_tool_permission_terminalizations_for_worker",
+        progress_pending_tool_permission_terminalizations_for_worker,
         raising=False,
     )
 
@@ -86,6 +95,10 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
     async def dispatch_multi_agent_ready_steps_for_worker(settings):
         calls.append(("dispatch", settings.queue_lease_visibility_timeout_seconds))
 
+    async def progress_pending_tool_permission_terminalizations_for_worker(settings):
+        calls.append(("permission_terminalization", settings.queue_lease_visibility_timeout_seconds))
+        return [{"tenant_id": "tenant-a", "run_id": "run-a", "completed": False}]
+
     async def reclaim_expired_leases(**kwargs):
         calls.append(("reclaim", kwargs))
         return {"reclaimed": 0, "dead_lettered": 0}
@@ -94,13 +107,65 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
         "app.worker_main.dispatch_multi_agent_ready_steps_for_worker",
         dispatch_multi_agent_ready_steps_for_worker,
     )
+    monkeypatch.setattr(
+        "app.worker_main.progress_pending_tool_permission_terminalizations_for_worker",
+        progress_pending_tool_permission_terminalizations_for_worker,
+        raising=False,
+    )
     monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
 
     await worker_main.run_worker_maintenance(Settings())
 
     assert calls == [
+        ("permission_terminalization", 12),
         ("dispatch", 12),
         ("reclaim", {"visibility_timeout_seconds": 12}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_permission_terminalization_maintenance_drains_bounded_durable_run_work_items(monkeypatch):
+    calls = []
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Settings:
+        tool_permission_terminalization_maintenance_limit = 2
+
+    async def list_runs(conn, *, limit):
+        calls.append(("list", limit))
+        return [
+            {"tenant_id": "tenant-a", "run_id": "run-a"},
+            {"tenant_id": "tenant-b", "run_id": "run-b"},
+        ]
+
+    async def drain(**kwargs):
+        calls.append(("drain", kwargs["tenant_id"], kwargs["run_id"], kwargs["max_batches"]))
+        return {"completed": kwargs["run_id"] == "run-a", "status": "failed"}
+
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr(
+        "app.worker_main.progress_pending_tool_permission_terminalizations_for_worker",
+        _ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE,
+    )
+    monkeypatch.setattr("app.worker_main.repositories.list_runs_requiring_tool_permission_terminalization", list_runs)
+    monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
+
+    rows = await worker_main.progress_pending_tool_permission_terminalizations_for_worker(Settings())
+
+    assert calls == [
+        ("list", 2),
+        ("drain", "tenant-a", "run-a", 4),
+        ("drain", "tenant-b", "run-b", 4),
+    ]
+    assert rows == [
+        {"tenant_id": "tenant-a", "run_id": "run-a", "completed": True, "status": "failed"},
+        {"tenant_id": "tenant-b", "run_id": "run-b", "completed": False, "status": "failed"},
     ]
 
 

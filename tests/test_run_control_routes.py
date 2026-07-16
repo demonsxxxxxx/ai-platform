@@ -6149,8 +6149,13 @@ async def test_finalize_multi_agent_parent_run_success_writes_public_result_even
         calls.append(("audit", kwargs))
         return "aud-parent-finalized"
 
+    async def complete_parent(conn, **kwargs):
+        calls.append(("complete", kwargs))
+        return True
+
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.repositories.complete_run", complete_parent)
 
     result = await repositories.finalize_multi_agent_parent_run_if_ready(
         FakeConnection(),
@@ -6166,8 +6171,7 @@ async def test_finalize_multi_agent_parent_run_success_writes_public_result_even
         "audit_id": "aud-parent-finalized",
         "counts": {"total": 2, "succeeded": 2, "failed": 0, "cancelled": 0},
     }
-    update_params = next(params for kind, sql, params in calls if kind == "sql" and sql.startswith("update runs"))
-    result_payload = json.loads(update_params[1])
+    result_payload = next(item[1]["result_json"] for item in calls if item[0] == "complete")
     assert result_payload["message"] == "Multi-agent run succeeded"
     assert result_payload["multi_agent"]["status"] == "succeeded"
     assert result_payload["multi_agent"]["triggered_by_child_run_id"] == "run-child-code"
@@ -6237,8 +6241,18 @@ async def test_finalize_multi_agent_parent_run_failure_and_cancel_statuses(monke
         calls.append(("audit", kwargs))
         return f"aud-{kwargs['payload_json']['status']}"
 
+    async def fail_parent(conn, **kwargs):
+        statuses_seen.append("failed")
+        return True
+
+    async def cancel_parent(conn, **kwargs):
+        statuses_seen.append("cancelled")
+        return True
+
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
+    monkeypatch.setattr("app.repositories.fail_run", fail_parent)
+    monkeypatch.setattr("app.repositories.cancel_run", cancel_parent)
 
     failed = await repositories.finalize_multi_agent_parent_run_if_ready(
         FakeConnection(

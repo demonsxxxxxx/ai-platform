@@ -255,7 +255,7 @@ def test_runtime_tool_permission_callback_accepts_valid_request(monkeypatch):
     assert resolve_call["request"]["tool_input"] == {"command": "python write_business_system.py"}
 
 
-def test_executor_callback_persists_callback_status_event(monkeypatch):
+def test_executor_callback_rejects_terminal_status_before_persisting_public_events(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     calls = []
 
@@ -287,14 +287,9 @@ def test_executor_callback_persists_callback_status_event(monkeypatch):
         json=callback_payload(status="completed", progress=100),
     )
 
-    assert response.status_code == 200
-    assert response.json() == {"accepted": True, "event_count": 2}
-    assert calls[0] == ("identity", "run-a", True)
-    assert calls[1][0:3] == ("executor_callback", "executor", "Executor callback: completed")
-    assert calls[1][3]["callback_status"] == "completed"
-    assert calls[1][3]["callback_token_id"] == "cbt_run-a"
-    assert calls[1][3]["progress"] == 100
-    assert calls[2][0:3] == ("run_completed", "runtime", "Executor completed")
+    assert response.status_code == 409
+    assert response.json() == {"detail": "executor_terminal_callback_not_allowed"}
+    assert calls == []
 
 
 def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeypatch):
@@ -333,8 +328,8 @@ def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeyp
         json=callback_payload(status="completed", progress=100),
     )
 
-    assert response.status_code == 200
-    assert response.json() == {"accepted": True, "event_count": 2}
+    assert response.status_code == 409
+    assert response.json() == {"detail": "executor_terminal_callback_not_allowed"}
     assert calls == []
 
 
@@ -406,8 +401,8 @@ def test_executor_callback_rejects_late_callback_for_terminal_run(monkeypatch):
     )
 
     assert response.status_code == 409
-    assert response.json() == {"detail": "run_already_terminal"}
-    assert calls == [("identity", "run-a", True)]
+    assert response.json() == {"detail": "executor_terminal_callback_not_allowed"}
+    assert calls == []
 
 
 def test_executor_callback_persists_typed_events_with_standard_stages(monkeypatch):

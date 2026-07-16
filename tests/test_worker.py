@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import hashlib
 import json
+import types
 
 import pytest
 
@@ -746,6 +747,12 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
     async def fail_run(conn, **kwargs):
         return False
 
+    async def classify_success_commit_block(conn, *, tenant_id, run_id):
+        return "stale_terminal_state"
+
+    async def drain_terminalization(**kwargs):
+        return None
+
     async def release_sandbox_lease(conn, **kwargs):
         calls.append(("release", kwargs["reason"]))
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
@@ -756,6 +763,8 @@ async def test_worker_does_not_append_success_terminal_events_when_run_is_alread
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.classify_success_commit_block", classify_success_commit_block, raising=False)
+    monkeypatch.setattr("app.worker.drain_run_tool_permission_terminalization", drain_terminalization)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
@@ -819,6 +828,9 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
         conn.pending_writes.append(("fail", kwargs["error_code"]))
         return True
 
+    async def classify_success_commit_block(conn, *, tenant_id, run_id):
+        return "tool_permission_pending"
+
     monkeypatch.setattr("app.worker.transaction", transactional_connection)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.has_pending_tool_permission_requests", has_pending)
@@ -827,6 +839,7 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.classify_success_commit_block", classify_success_commit_block, raising=False)
 
     injector = asyncio.create_task(insert_permission_after_initial_check())
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeSuccessAdapter()}))
@@ -844,6 +857,72 @@ async def test_worker_rolls_back_success_visible_writes_when_a_permission_arrive
         kind == "event" and event_type in {"artifact_created", "assistant_message_created", "run_succeeded", "status"}
         for kind, event_type in visible_writes
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_classifies_success_commit_cancel_race_without_permission_failure(monkeypatch):
+    committed = []
+
+    @asynccontextmanager
+    async def transactional_connection():
+        pending = []
+        try:
+            yield types.SimpleNamespace(pending=pending)
+        except Exception:
+            raise
+        else:
+            committed.extend(pending)
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def has_pending(conn, *, tenant_id, run_id):
+        return False
+
+    async def complete_run(conn, **kwargs):
+        return False
+
+    async def classify_success_commit_block(conn, *, tenant_id, run_id):
+        return "cancel_requested"
+
+    async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
+        conn.pending.append(("cancel", result_json))
+        return True
+
+    async def fail_run(conn, **kwargs):
+        raise AssertionError("accepted cancellation must not be reported as tool_permission_pending")
+
+    async def append_event(conn, **kwargs):
+        conn.pending.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    async def append_message(conn, **kwargs):
+        conn.pending.append(("message", kwargs["role"]))
+        return "msg-a"
+
+    async def create_artifact(conn, **kwargs):
+        conn.pending.append(("artifact", kwargs["artifact_type"]))
+
+    async def upsert_run_skill_snapshot(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.worker.transaction", transactional_connection)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.has_pending_tool_permission_requests", has_pending)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.classify_success_commit_block", classify_success_commit_block, raising=False)
+    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
+    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeSuccessAdapter()}))
+
+    assert outcome == WorkerOutcome("cancelled", "run-a")
+    assert ("cancel", {"message": "任务已取消"}) in committed
+    assert not any(item == ("event", "run_failed") for item in committed)
 
 
 @pytest.mark.asyncio
@@ -1231,11 +1310,15 @@ async def test_worker_does_not_append_failure_terminal_events_when_run_is_alread
         calls.append(("release", kwargs["reason"]))
         return {"id": kwargs["lease_id"], "status": "released", **kwargs}
 
+    async def drain_terminalization(**kwargs):
+        return None
+
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
+    monkeypatch.setattr("app.worker.drain_run_tool_permission_terminalization", drain_terminalization)
 
     outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": FakeFailureAdapter()}))
 
@@ -5632,6 +5715,9 @@ async def test_worker_rolls_back_ragflow_completion_when_final_success_guard_los
         conn.pending.append(("fail", kwargs["error_code"]))
         return True
 
+    async def classify_success_commit_block(conn, *, tenant_id, run_id):
+        return "tool_permission_pending"
+
     async def upsert_run_skill_snapshot(conn, **kwargs):
         return None
 
@@ -5643,6 +5729,7 @@ async def test_worker_rolls_back_ragflow_completion_when_final_success_guard_los
     monkeypatch.setattr("app.worker.repositories.append_message", append_message)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.classify_success_commit_block", classify_success_commit_block, raising=False)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
 
     outcome = await process_run_payload(

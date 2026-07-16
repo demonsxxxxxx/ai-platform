@@ -158,3 +158,40 @@ the permission lifecycle suites after the rebase.  A missing or malformed
 permission expiry is now fail-closed for both decision acceptance and published
 `allowed_decisions`; historic request cards remain readable but cannot expose a
 new approval action.
+
+## Generation 4d repair boundary
+
+The terminal authority seam is the worker repository transaction.  Sandbox and
+executor callbacks may report running progress and private execution
+observations, but they never emit `run_completed`, `run_failed`, or
+`run_cancelled`; those public facts follow the worker's final artifact,
+permission, and cancellation guards only.
+
+One callback's monotonic remaining permission allowance is passed through the
+resolver into the newly-created request expiry.  Local exhaustion explicitly
+terminalizes that exact request, including an unconsumed decision, so a later
+database decision cannot authorize an already-failed SDK callback.  Normal
+sandbox transport retains a small outer callback margin while governed nesting
+continues to use the structured budget.
+
+The additive schema upgrade and lifecycle treat old NULL-expiry pending
+permission rows as immediately expired without changing the independent
+NULL-expiry memory-record contract. Existing worker maintenance discovers
+bounded staged, terminal, and expired-permission work, then invokes the same
+durable run-first drain; it is the retry owner after worker crash or
+high-cardinality batches, not a new scheduler. Multi-agent child enqueue
+failure and parent rollup use the same terminalization seam rather than direct
+terminal SQL. A blocked success is classified under the run lock as
+cancellation, pending permission, or stale state before a truthful terminal
+event is published.
+
+Required reviewed/translated DOCX artifacts are accepted only after bounded
+OPC validation: safe entry cardinality and sizes, package and office-document
+relationships, content type, and a non-empty main document.  Ordinary owner
+permission projections never include decision controls; the existing
+administrator inbox remains the only decision surface.
+
+RED coverage uses callback fakes, injected clocks, barrier races, schema SQL
+assertions, bounded maintenance fakes, and synthetic OPC archives.  GREEN
+verification includes affected runtime, lifecycle, repository, worker,
+multi-agent, RBAC, artifact, schema, coexistence, and exact backend-CI suites.

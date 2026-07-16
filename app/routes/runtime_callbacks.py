@@ -14,9 +14,14 @@ router = APIRouter()
 
 
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "canceled"}
+_TERMINAL_EXECUTOR_CALLBACK_STATUSES = {"completed", "failed", "cancelled"}
 
 
 async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str, object]:
+    """Persist only non-terminal sandbox observations; worker owns run terminal facts."""
+
+    if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
+        raise HTTPException(status_code=409, detail="executor_terminal_callback_not_allowed")
     events = callback_event_to_run_events(callback)
     async with transaction() as conn:
         run_identity = await repositories.get_run_identity(conn, run_id=callback.run_id, for_update=True)

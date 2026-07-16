@@ -19,6 +19,7 @@ from app.multi_agent_dispatcher import dispatch_multi_agent_ready_steps_for_work
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.routes.sandbox_runtime_cleanup import cleanup_expired_sandbox_runtime_leases
 from app.settings import get_settings
+from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization
 from app.worker import WorkerOutcome, process_run_payload
 
 
@@ -116,10 +117,37 @@ async def cleanup_expired_memory_records_for_worker(settings: object | None = No
     return rows
 
 
+async def progress_pending_tool_permission_terminalizations_for_worker(
+    settings: object | None = None,
+) -> list[dict[str, object]]:
+    """Use worker maintenance as the durable, bounded owner of staged permission drains."""
+
+    settings = settings or get_settings()
+    limit = max(1, min(int(getattr(settings, "tool_permission_terminalization_maintenance_limit", 50)), 50))
+    async with transaction() as conn:
+        candidates = await repositories.list_runs_requiring_tool_permission_terminalization(conn, limit=limit)
+
+    progress: list[dict[str, object]] = []
+    for candidate in candidates:
+        tenant_id = str(candidate.get("tenant_id") or "")
+        run_id = str(candidate.get("run_id") or "")
+        if not tenant_id or not run_id:
+            continue
+        outcome = await drain_run_tool_permission_terminalization(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            transaction_factory=transaction,
+            max_batches=4,
+        )
+        progress.append({"tenant_id": tenant_id, "run_id": run_id, **(outcome or {})})
+    return progress
+
+
 async def run_worker_maintenance(settings: object | None = None) -> None:
     settings = settings or get_settings()
     await cleanup_expired_sandbox_leases()
     await cleanup_expired_memory_records_for_worker(settings)
+    await progress_pending_tool_permission_terminalizations_for_worker(settings)
     await dispatch_multi_agent_ready_steps_for_worker(settings)
     await queue.reclaim_expired_leases(
         visibility_timeout_seconds=int(getattr(settings, "queue_lease_visibility_timeout_seconds", 900))

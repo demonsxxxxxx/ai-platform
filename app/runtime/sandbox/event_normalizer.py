@@ -42,31 +42,11 @@ def callback_event_to_run_events(callback: ExecutorCallbackEvent) -> list[AgentE
                 )
             )
 
-    if callback.status == "completed":
-        events.append(
-            AgentEvent(
-                type="run_completed",
-                message="Executor completed",
-                payload={"progress": callback.progress},
-            )
-        )
-    elif callback.status == "failed":
-        error_message = callback.error_message or "Executor failed"
-        events.append(
-            AgentEvent(
-                type="run_failed",
-                message=error_message,
-                payload={"error_message": error_message},
-            )
-        )
-    elif callback.status == "cancelled":
-        events.append(
-            AgentEvent(
-                type="run_cancelled",
-                message="Executor cancelled",
-                payload={"progress": callback.progress},
-            )
-        )
-
-    events.extend(callback.events)
+    # The executor has no authority to publish a run terminal fact.  The
+    # worker emits one only after its final repository transaction succeeds.
+    events.extend(
+        event
+        for event in callback.events
+        if event.type not in {"run_completed", "run_failed", "run_cancelled"}
+    )
     return events

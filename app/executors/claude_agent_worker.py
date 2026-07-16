@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+import posixpath
 import shutil
 import subprocess
 import sys
@@ -50,6 +51,10 @@ NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
 _CONTROLLED_RUNNER_SKILLS = {"qa-file-reviewer", "baoyu-translate"}
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"accepted", "completed", "succeeded"}
 _TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
+_REQUIRED_DOCX_MAX_ENTRY_COUNT = 128
+_REQUIRED_DOCX_MAX_COMPRESSED_BYTES = 16 * 1024 * 1024
+_REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
+_REQUIRED_DOCX_MAX_COMPRESSION_RATIO = 100
 
 
 @dataclass(frozen=True)
@@ -100,6 +105,7 @@ async def broker_claude_sdk_tool_permission(
     skill_id: str,
     trace_id: str,
     request: dict[str, Any],
+    expires_in_seconds: float = tool_permission_budget().request_ttl_seconds,
 ) -> dict[str, Any]:
     """Apply platform tool policy to a Claude Agent SDK tool-permission callback."""
 
@@ -234,6 +240,7 @@ async def broker_claude_sdk_tool_permission(
             write_capable=tool_gate.write_capable,
             reason=reason,
             request_payload_json=request_payload,
+            expires_in_seconds=max(float(expires_in_seconds), 0.0),
         )
         permission_request_id = str(row["id"])
         await repositories.append_event(
@@ -304,6 +311,11 @@ async def resolve_claude_sdk_tool_permission(
     sleep: Callable[[float], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Wait for the exact tenant/run-scoped decision instead of letting a pending gate succeed."""
+    monotonic = monotonic or asyncio.get_running_loop().time
+    sleep = sleep or asyncio.sleep
+    allowed_wait_seconds = tool_permission_budget().aggregate_permission_wait_seconds
+    bounded_wait_timeout_seconds = max(min(float(wait_timeout_seconds), allowed_wait_seconds), 0.0)
+    deadline = monotonic() + bounded_wait_timeout_seconds
     async with transaction() as conn:
         outcome = await broker_claude_sdk_tool_permission(
             conn,
@@ -316,6 +328,7 @@ async def resolve_claude_sdk_tool_permission(
             skill_id=skill_id,
             trace_id=trace_id,
             request=request,
+            expires_in_seconds=max(deadline - monotonic(), 0.0),
         )
     if outcome.get("reason") != "tool_permission_required":
         return outcome
@@ -323,11 +336,6 @@ async def resolve_claude_sdk_tool_permission(
     request_id = str(outcome.get("permission_request_id") or "")
     if not request_id:
         return {"allowed": False, "reason": "tool_permission_request_missing"}
-    monotonic = monotonic or asyncio.get_running_loop().time
-    sleep = sleep or asyncio.sleep
-    allowed_wait_seconds = tool_permission_budget().aggregate_permission_wait_seconds
-    bounded_wait_timeout_seconds = max(min(float(wait_timeout_seconds), allowed_wait_seconds), 0.0)
-    deadline = monotonic() + bounded_wait_timeout_seconds
     while True:
         async with transaction() as conn:
             expired = await repositories.expire_tool_permission_request(
@@ -358,6 +366,8 @@ async def resolve_claude_sdk_tool_permission(
                 }
             pending_status = str(pending.get("status") or "")
             if pending_status == "decided":
+                if monotonic() >= deadline:
+                    break
                 return await broker_claude_sdk_tool_permission(
                     conn,
                     tenant_id=tenant_id,
@@ -369,6 +379,7 @@ async def resolve_claude_sdk_tool_permission(
                     skill_id=skill_id,
                     trace_id=trace_id,
                     request=request,
+                    expires_in_seconds=max(deadline - monotonic(), 0.0),
                 )
             if pending_status != "pending":
                 return {
@@ -377,21 +388,24 @@ async def resolve_claude_sdk_tool_permission(
                     "permission_request_id": request_id,
                 }
         if monotonic() >= deadline:
-            async with transaction() as conn:
-                expired = await repositories.expire_tool_permission_request(
-                    conn,
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    run_id=run_id,
-                    request_id=request_id,
-                )
-            return {
-                "allowed": False,
-                "reason": "tool_permission_wait_timed_out",
-                "permission_request_id": request_id,
-                "expired": expired is not None,
-            }
+            break
         await sleep(max(float(poll_interval_seconds), 0.01))
+
+    async with transaction() as conn:
+        terminalized = await repositories.terminalize_pending_tool_permission_requests(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            request_id=request_id,
+            terminal_status="expired",
+            terminal_reason="permission_wait_exhausted",
+        )
+    return {
+        "allowed": False,
+        "reason": "tool_permission_wait_timed_out",
+        "permission_request_id": request_id,
+        "expired": bool(terminalized),
+    }
 
 
 def _execution_tier(payload: RunPayload) -> str:
@@ -2222,18 +2236,23 @@ def _artifact_type(filename: str, skill_id: str | None = None) -> str:
 
 
 def _is_usable_docx(path: Path) -> bool:
-    """Accept a required DOCX only when its essential OpenXML parts are usable."""
+    """Accept a required DOCX only when its bounded OPC package is usable."""
 
     try:
-        if path.stat().st_size <= 0:
+        if not 0 < path.stat().st_size <= _REQUIRED_DOCX_MAX_COMPRESSED_BYTES:
             return False
         with zipfile.ZipFile(path) as archive:
+            entries = archive.infolist()
+            if not _docx_archive_entries_are_bounded(entries):
+                return False
             content_types = archive.read("[Content_Types].xml")
+            relationships = archive.read("_rels/.rels")
             document = archive.read("word/document.xml")
     except (KeyError, OSError, ValueError, zipfile.BadZipFile):
         return False
     try:
         content_types_root = ElementTree.fromstring(content_types)
+        relationships_root = ElementTree.fromstring(relationships)
         document_root = ElementTree.fromstring(document)
     except ElementTree.ParseError:
         return False
@@ -2246,8 +2265,62 @@ def _is_usable_docx(path: Path) -> bool:
         == "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
         for item in content_types_root
     )
+    has_main_document_relationship = any(
+        _xml_local_name(item.tag) == "Relationship"
+        and str(item.attrib.get("Type") or "").endswith("/officeDocument")
+        and str(item.attrib.get("TargetMode") or "").lower() != "external"
+        and _resolve_root_relationship_target(str(item.attrib.get("Target") or "")) == "word/document.xml"
+        for item in relationships_root
+    )
     body = next((item for item in document_root if _xml_local_name(item.tag) == "body"), None)
-    return has_document_override and body is not None and any(True for _ in body)
+    return has_document_override and has_main_document_relationship and body is not None and any(True for _ in body)
+
+
+def _docx_archive_entries_are_bounded(entries: list[zipfile.ZipInfo]) -> bool:
+    """Reject malformed, path-traversing, or expansion-prone OPC archive metadata before reads."""
+
+    if not entries or len(entries) > _REQUIRED_DOCX_MAX_ENTRY_COUNT:
+        return False
+    compressed_total = 0
+    uncompressed_total = 0
+    for entry in entries:
+        filename = str(entry.filename or "")
+        package_path = filename[:-1] if entry.is_dir() and filename.endswith("/") else filename
+        if (
+            not package_path
+            or "\x00" in filename
+            or "\\" in filename
+            or filename.startswith("/")
+            or any(part in {"", ".", ".."} for part in package_path.split("/"))
+        ):
+            return False
+        compressed_size = int(entry.compress_size)
+        uncompressed_size = int(entry.file_size)
+        if compressed_size < 0 or uncompressed_size < 0:
+            return False
+        compressed_total += compressed_size
+        uncompressed_total += uncompressed_size
+        if (
+            compressed_total > _REQUIRED_DOCX_MAX_COMPRESSED_BYTES
+            or uncompressed_total > _REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES
+            or (
+                compressed_size > 0
+                and uncompressed_size > compressed_size * _REQUIRED_DOCX_MAX_COMPRESSION_RATIO
+            )
+        ):
+            return False
+    return True
+
+
+def _resolve_root_relationship_target(target: str) -> str | None:
+    """Resolve a root OPC relationship only when it stays within the package root."""
+
+    if not target or "\\" in target or target.startswith("/"):
+        return None
+    normalized = posixpath.normpath(target)
+    if normalized.startswith("../") or normalized in {".", ".."}:
+        return None
+    return normalized
 
 
 def _xml_local_name(tag: str) -> str:

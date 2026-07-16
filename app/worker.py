@@ -2707,55 +2707,101 @@ async def process_run_payload(
                         await release_runtime_sandbox_lease(conn, reason="run_failed")
                         terminal_outcome = WorkerOutcome("failed", payload.run_id, reported_error_code, reported_error_message)
     except _WorkerSuccessCommitBlocked:
-        blocked_result_payload = {
-            **result_payload,
-            "message": "A pending tool-permission request blocked successful completion.",
-            "error_code": "tool_permission_pending",
-            "artifacts": [],
-        }
         async with transaction() as conn:
-            terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
+            blocked_reason = await repositories.classify_success_commit_block(
                 conn,
-                payload=payload,
                 tenant_id=payload.tenant_id,
                 run_id=payload.run_id,
-                error_code="tool_permission_pending",
-                error_message="A pending tool-permission request blocked successful completion.",
-                result_json=blocked_result_payload,
             )
-            if terminal_written is False:
+            if blocked_reason == "cancel_requested":
+                cancel_result = {"message": "任务已取消"}
+                terminal_written = await repositories.cancel_run(
+                    conn,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    result_json=cancel_result,
+                )
+                if terminal_written:
+                    reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
+                        conn,
+                        payload=payload,
+                        child_status="cancelled",
+                        result_json=cancel_result,
+                    )
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="run_cancelled",
+                        stage="control",
+                        message="任务已取消",
+                        payload={"severity": "warning"},
+                    )
+                    await release_runtime_sandbox_lease(conn, reason="run_cancelled")
+                    terminal_outcome = WorkerOutcome("cancelled", payload.run_id)
+                else:
+                    terminal_outcome = WorkerOutcome(
+                        "skipped",
+                        payload.run_id,
+                        "stale_terminal_state",
+                        "Run already reached a terminal state",
+                    )
+            elif blocked_reason == "tool_permission_pending":
+                blocked_result_payload = {
+                    **result_payload,
+                    "message": "A pending tool-permission request blocked successful completion.",
+                    "error_code": "tool_permission_pending",
+                    "artifacts": [],
+                }
+                terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
+                    conn,
+                    payload=payload,
+                    tenant_id=payload.tenant_id,
+                    run_id=payload.run_id,
+                    error_code="tool_permission_pending",
+                    error_message="A pending tool-permission request blocked successful completion.",
+                    result_json=blocked_result_payload,
+                )
+                if terminal_written is False:
+                    terminal_outcome = WorkerOutcome(
+                        "skipped",
+                        payload.run_id,
+                        "stale_terminal_state",
+                        "Run already reached a terminal state",
+                    )
+                else:
+                    await append_user_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="run_failed",
+                        stage="worker",
+                        message="Run failed",
+                        payload={"artifact_count": 0, "severity": "error"},
+                        **terminal_event_kwargs,
+                    )
+                    await repositories.append_event(
+                        conn,
+                        tenant_id=payload.tenant_id,
+                        run_id=payload.run_id,
+                        event_type="error",
+                        stage="worker",
+                        message="Run failed",
+                        payload={"artifact_count": 0, "visible_to_user": False},
+                    )
+                    await release_runtime_sandbox_lease(conn, reason="run_failed")
+                    terminal_outcome = WorkerOutcome(
+                        "failed",
+                        payload.run_id,
+                        "tool_permission_pending",
+                        "A pending tool-permission request blocked successful completion.",
+                    )
+            else:
                 terminal_outcome = WorkerOutcome(
                     "skipped",
                     payload.run_id,
                     "stale_terminal_state",
                     "Run already reached a terminal state",
-                )
-            else:
-                await append_user_event(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    event_type="run_failed",
-                    stage="worker",
-                    message="Run failed",
-                    payload={"artifact_count": 0, "severity": "error"},
-                    **terminal_event_kwargs,
-                )
-                await repositories.append_event(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    event_type="error",
-                    stage="worker",
-                    message="Run failed",
-                    payload={"artifact_count": 0, "visible_to_user": False},
-                )
-                await release_runtime_sandbox_lease(conn, reason="run_failed")
-                terminal_outcome = WorkerOutcome(
-                    "failed",
-                    payload.run_id,
-                    "tool_permission_pending",
-                    "A pending tool-permission request blocked successful completion.",
                 )
     finally:
         await cleanup_runtime_sandbox_lease_after_interruption()

@@ -341,6 +341,9 @@ async def test_tool_permission_wait_fails_closed_at_its_deadline(monkeypatch):
     async def fake_get_request(conn, **kwargs):
         return {"status": "pending"}
 
+    async def fake_terminalize(conn, **kwargs):
+        return []
+
     async def advance_clock(delay):
         clock["value"] += delay
 
@@ -348,6 +351,11 @@ async def test_tool_permission_wait_fails_closed_at_its_deadline(monkeypatch):
     monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
     monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
     monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
+    monkeypatch.setattr(
+        claude_agent_worker.repositories,
+        "terminalize_pending_tool_permission_requests",
+        fake_terminalize,
+    )
 
     result = await resolve_claude_sdk_tool_permission(
         tenant_id="default",
@@ -371,6 +379,78 @@ async def test_tool_permission_wait_fails_closed_at_its_deadline(monkeypatch):
         "permission_request_id": "tpr-timeout",
         "expired": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_wait_persists_its_remaining_budget_and_terminalizes_exact_request(monkeypatch):
+    """The local monotonic deadline and persisted request lifetime are one authority."""
+    clock = {"value": 10.0}
+    broker_expiries = []
+    terminalized = []
+
+    async def fake_broker(conn, **kwargs):
+        broker_expiries.append(kwargs["expires_in_seconds"])
+        return {
+            "allowed": False,
+            "reason": "tool_permission_required",
+            "permission_request_id": "tpr-budget",
+        }
+
+    async def fake_expire(conn, **kwargs):
+        return None
+
+    async def fake_get_request(conn, **kwargs):
+        return {"status": "pending"}
+
+    async def fake_terminalize(conn, **kwargs):
+        terminalized.append(kwargs)
+        return [{"id": "tpr-budget", "status": "expired"}]
+
+    async def advance_clock(delay):
+        clock["value"] += delay
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
+    monkeypatch.setattr(
+        claude_agent_worker.repositories,
+        "terminalize_pending_tool_permission_requests",
+        fake_terminalize,
+    )
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-budget"},
+        wait_timeout_seconds=5.0,
+        poll_interval_seconds=5.0,
+        monotonic=lambda: clock["value"],
+        sleep=advance_clock,
+    )
+
+    assert broker_expiries == [5.0]
+    assert result == {
+        "allowed": False,
+        "reason": "tool_permission_wait_timed_out",
+        "permission_request_id": "tpr-budget",
+        "expired": True,
+    }
+    assert terminalized == [
+        {
+            "tenant_id": "default",
+            "run_id": "run_1",
+            "request_id": "tpr-budget",
+            "terminal_status": "expired",
+            "terminal_reason": "permission_wait_exhausted",
+        }
+    ]
 
 
 def _snapshot_hash(files):
@@ -658,7 +738,14 @@ def symlink_or_skip(target, link):
         pytest.skip(f"symlink creation not available: {exc}")
 
 
-def usable_docx_bytes(*, document: bytes | None = None, content_types: bytes | None = None) -> bytes:
+def usable_docx_bytes(
+    *,
+    document: bytes | None = None,
+    content_types: bytes | None = None,
+    relationships: bytes | None = None,
+    include_relationships: bool = True,
+    extra_entries: dict[str, bytes] | None = None,
+) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         content_types_entry = zipfile.ZipInfo("[Content_Types].xml", date_time=(2024, 1, 1, 0, 0, 0))
@@ -674,6 +761,22 @@ def usable_docx_bytes(*, document: bytes | None = None, content_types: bytes | N
                 b"</Types>"
             ),
         )
+        if include_relationships:
+            relationship_entry = zipfile.ZipInfo("_rels/.rels", date_time=(2024, 1, 1, 0, 0, 0))
+            relationship_entry.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(
+                relationship_entry,
+                relationships
+                if relationships is not None
+                else (
+                    b'<?xml version="1.0"?><Relationships '
+                    b'xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                    b'<Relationship Id="rId1" '
+                    b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                    b'Target="word/document.xml"/>'
+                    b"</Relationships>"
+                ),
+            )
         if document is not None:
             document_entry = zipfile.ZipInfo("word/document.xml", date_time=(2024, 1, 1, 0, 0, 0))
             document_entry.compress_type = zipfile.ZIP_DEFLATED
@@ -681,6 +784,10 @@ def usable_docx_bytes(*, document: bytes | None = None, content_types: bytes | N
                 document_entry,
                 document,
             )
+        for name, content in (extra_entries or {}).items():
+            extra_entry = zipfile.ZipInfo(name, date_time=(2024, 1, 1, 0, 0, 0))
+            extra_entry.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(extra_entry, content)
     return buffer.getvalue()
 
 
@@ -768,6 +875,15 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
         usable_docx_bytes(document=b"<document/>"),
         usable_docx_bytes(document=b"<w:document>not valid XML</w:document>"),
         usable_docx_bytes(document=b"<document><body><p/></body></document>", content_types=b"not XML"),
+        usable_docx_bytes(document=b"<document><body><p/></body></document>", include_relationships=False),
+        usable_docx_bytes(
+            document=b"<document><body><p/></body></document>",
+            relationships=(
+                b'<Relationships><Relationship '
+                b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                b'Target="../word/document.xml"/></Relationships>'
+            ),
+        ),
     ],
     ids=[
         "zero-byte",
@@ -777,6 +893,8 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
         "document-without-body",
         "invalid-document-xml",
         "invalid-content-types",
+        "missing-root-relationship",
+        "path-traversing-root-relationship",
     ],
 )
 @pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
@@ -801,6 +919,42 @@ def test_collect_workspace_artifacts_rejects_unusable_required_docx(monkeypatch,
 
     assert artifacts == []
     assert stored == []
+
+
+@pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
+@pytest.mark.parametrize(
+    ("limit_name", "limit_value", "content"),
+    [
+        ("_REQUIRED_DOCX_MAX_ENTRY_COUNT", 3, usable_docx_bytes(document=valid_docx_bytes(), extra_entries={"extra.txt": b"x"})),
+        ("_REQUIRED_DOCX_MAX_COMPRESSED_BYTES", 1, valid_docx_bytes()),
+        ("_REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES", 1, valid_docx_bytes()),
+    ],
+)
+def test_collect_workspace_artifacts_rejects_required_docx_zip_bounds_before_read(
+    monkeypatch,
+    tmp_path,
+    skill_id,
+    limit_name,
+    limit_value,
+    content,
+):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    (output / "review.docx").write_bytes(content)
+
+    def fail_read(*_args, **_kwargs):
+        raise AssertionError("bounded metadata rejection must happen before archive.read")
+
+    monkeypatch.setattr(claude_agent_worker, limit_name, limit_value)
+    monkeypatch.setattr(zipfile.ZipFile, "read", fail_read)
+
+    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+        payload(skill_id=skill_id),
+        workspace,
+    )
+
+    assert artifacts == []
 
 
 @pytest.mark.parametrize(

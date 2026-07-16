@@ -46,7 +46,9 @@ def _redact_tool_permission_private_payload(value: Any) -> Any:
     return value
 
 
-def permission_response(row: dict[str, Any], *, decision_endpoint: str | None = None) -> dict[str, Any]:
+def permission_response(row: dict[str, Any]) -> dict[str, Any]:
+    """Return an owner-visible permission record without governance controls."""
+
     run_id = str(row["run_id"])
     request_id = str(row["id"])
     return {
@@ -65,8 +67,6 @@ def permission_response(row: dict[str, Any], *, decision_endpoint: str | None = 
         "status": str(row.get("status") or "pending"),
         "decision": row.get("decision"),
         "reason": sanitize_public_text(row.get("reason")),
-        "decision_endpoint": decision_endpoint or tool_permission_decision_endpoint(run_id, request_id),
-        "decision_options": list(TOOL_PERMISSION_DECISION_OPTIONS),
         "created_at": row.get("created_at"),
         "decided_at": row.get("decided_at"),
         "expires_at": row.get("expires_at"),

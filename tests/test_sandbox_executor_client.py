@@ -77,15 +77,8 @@ def test_callback_current_step_maps_to_tool_call_delta():
     assert events[0].payload["current_step"] == "reading workspace"
 
 
-@pytest.mark.parametrize(
-    ("status", "expected_type"),
-    [
-        ("completed", "run_completed"),
-        ("failed", "run_failed"),
-        ("cancelled", "run_cancelled"),
-    ],
-)
-def test_callback_terminal_status_maps_to_run_event(status, expected_type):
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
+def test_callback_terminal_status_does_not_map_to_authoritative_run_event(status):
     callback = ExecutorCallbackEvent(
         session_id="session-a",
         run_id="run-a",
@@ -99,8 +92,7 @@ def test_callback_terminal_status_maps_to_run_event(status, expected_type):
 
     events = callback_event_to_run_events(callback)
 
-    assert len(events) == 1
-    assert events[0].type == expected_type
+    assert events == []
 
 
 def test_callback_typed_events_are_appended_after_compatibility_events():
@@ -168,7 +160,7 @@ async def test_executor_client_posts_task_request(monkeypatch):
         (
             "http://executor.test/v1/tasks/execute",
             request.model_dump(),
-            120.0,
+            tool_permission_budget(120.0).normal_outer_executor_timeout_seconds,
         )
     ]
 

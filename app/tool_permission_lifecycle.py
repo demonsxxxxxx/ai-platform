@@ -30,6 +30,7 @@ class ToolPermissionBudget:
     post_authorization_execution_seconds: float
     sandbox_sdk_timeout_seconds: float
     executor_callback_timeout_seconds: float
+    normal_outer_executor_timeout_seconds: float
     outer_executor_timeout_seconds: float
     non_permission_callback_timeout_seconds: float
 
@@ -92,6 +93,7 @@ def tool_permission_budget(normal_execution_timeout_seconds: float = 120.0) -> T
         + _SANDBOX_SDK_INNER_MARGIN_SECONDS
     )
     executor_callback_timeout_seconds = _NON_PERMISSION_CALLBACK_TIMEOUT_SECONDS
+    normal_outer_executor_timeout_seconds = normal_execution_seconds + executor_callback_timeout_seconds
     outer_executor_timeout_seconds = (
         sandbox_sdk_timeout_seconds
         + (2 * executor_callback_timeout_seconds)
@@ -106,6 +108,7 @@ def tool_permission_budget(normal_execution_timeout_seconds: float = 120.0) -> T
         post_authorization_execution_seconds=_POST_AUTHORIZATION_EXECUTION_SECONDS,
         sandbox_sdk_timeout_seconds=sandbox_sdk_timeout_seconds,
         executor_callback_timeout_seconds=executor_callback_timeout_seconds,
+        normal_outer_executor_timeout_seconds=normal_outer_executor_timeout_seconds,
         outer_executor_timeout_seconds=outer_executor_timeout_seconds,
         non_permission_callback_timeout_seconds=_NON_PERMISSION_CALLBACK_TIMEOUT_SECONDS,
     )

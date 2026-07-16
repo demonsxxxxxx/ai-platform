@@ -447,6 +447,8 @@ def test_tool_permission_response_hides_internal_request_and_decision_payloads(m
     permission_request = response.json()["permission_request"]
     assert "request_payload" not in permission_request
     assert "decision_payload" not in permission_request
+    assert "decision_endpoint" not in permission_request
+    assert "decision_options" not in permission_request
     assert permission_request["reason"] == ""
     assert "tool-reason-token" not in str(permission_request)
     assert "/var/lib/ai-platform" not in str(permission_request)

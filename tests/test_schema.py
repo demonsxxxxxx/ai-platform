@@ -390,6 +390,16 @@ def test_schema_declares_tool_permission_inbox_index():
     assert "on run_tool_permission_requests(tenant_id, user_id, status, created_at desc)" in schema
 
 
+def test_schema_additively_upgrades_permission_request_expiry_without_changing_memory_null_expiry():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "alter table run_tool_permission_requests add column if not exists expires_at timestamptz;" in schema
+    assert "idx_run_tool_permission_requests_pending_expiry" in schema
+    assert "where status = 'pending';" in schema
+    assert "idx_memory_records_expired_cleanup" in schema
+    assert "and expires_at is not null;" in schema
+
+
 def test_schema_seeds_builtin_skill_versions_without_exposing_internal_dependencies():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 

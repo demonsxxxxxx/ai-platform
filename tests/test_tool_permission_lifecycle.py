@@ -14,6 +14,7 @@ def test_permission_budget_strictly_nests_the_full_wait_and_executor_callbacks()
         budget.sandbox_sdk_timeout_seconds
         + (2 * budget.executor_callback_timeout_seconds)
     )
+    assert budget.normal_outer_executor_timeout_seconds > budget.normal_execution_timeout_seconds
 
 
 def test_permission_wait_ledger_consumes_one_monotonic_aggregate_allowance():
