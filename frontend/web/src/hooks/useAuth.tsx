@@ -27,7 +27,10 @@ import {
 import { ApiRequestError } from "../services/api/fetch";
 import { clearAuthScopedCaches } from "../services/api/authCacheInvalidation";
 import { classifyBrowserAuthStorageEvent } from "./browserAuthStorage";
-import { ensureBrowserAuthContext } from "./browserAuthCoordinator";
+import {
+  ensureBrowserAuthContext,
+  ensureBrowserAuthContextBeforeLogin,
+} from "./browserAuthCoordinator";
 import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../components/layout/AppContent/useAgentOptions";
 import {
   hasAllEffectivePermissions,
@@ -437,7 +440,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (isCurrentAuthOperation(owner)) setIsLoading(true);
       let sessionEstablished = false;
       try {
-        await ensureBrowserAuthContext(owner.abortController.signal);
+        await ensureBrowserAuthContextBeforeLogin(owner.abortController.signal);
         if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
         await authApi.login(
           credentials,

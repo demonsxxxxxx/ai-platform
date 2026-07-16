@@ -761,12 +761,17 @@ async function rotateV2Owner(
 async function ensureV2BrowserAuthContext(
   signal?: AbortSignal,
   forceBootstrap = false,
+  recoveryOnly = false,
 ): Promise<void> {
   let owned: OwnedV2State | null = null;
   try {
     owned = await acquireV2Owner(signal);
     const current = await assertV2Owner(owned, signal);
     if (current.pendingRotation) {
+      // Login recovery may only repair an exact confirmed server context. A
+      // pending rotation needs the ordinary coordinator's ticketed protocol;
+      // never let the login path enter that unmarked bootstrap chain.
+      if (recoveryOnly) throw unavailable();
       await rotateV2Owner({ state: current, ownerToken: owned.ownerToken }, signal);
       return;
     }
@@ -781,6 +786,7 @@ async function ensureV2BrowserAuthContext(
         protocol_version: 2,
         browser_incarnation: current.incarnation,
         generation: current.currentGeneration,
+        ...(recoveryOnly ? { recovery_only: true } : {}),
       },
       signal,
     );
@@ -847,7 +853,7 @@ async function ensureV1BrowserAuthContext(
  */
 export async function ensureBrowserAuthContext(
   signal?: AbortSignal,
-  options: { forceBootstrap?: boolean } = {},
+  options: { forceBootstrap?: boolean; recoveryOnly?: boolean } = {},
 ): Promise<void> {
   throwIfAborted(signal);
   const storage = browserStorage();
@@ -858,11 +864,32 @@ export async function ensureBrowserAuthContext(
     return;
   }
   try {
-    await ensureV2BrowserAuthContext(signal, options.forceBootstrap === true);
+    await ensureV2BrowserAuthContext(
+      signal,
+      options.forceBootstrap === true,
+      options.recoveryOnly === true,
+    );
   } catch (error) {
     if (error instanceof BrowserAuthCoordinatorError || isAbortError(error) || error instanceof ApiRequestError) {
       throw error;
     }
     throw unavailable();
   }
+}
+
+/**
+ * Revalidate the V2 server authority before the one login mutation.
+ *
+ * A confirmed IndexedDB generation deliberately skips ordinary bootstrap work,
+ * but JavaScript cannot observe whether its paired HttpOnly cookie expired.
+ * This bounded, idempotent authority check lets the server reissue only the
+ * exact current V2 context before login; it never submits or retries login.
+ */
+export async function ensureBrowserAuthContextBeforeLogin(
+  signal?: AbortSignal,
+): Promise<void> {
+  await ensureBrowserAuthContext(signal, {
+    forceBootstrap: true,
+    recoveryOnly: true,
+  });
 }

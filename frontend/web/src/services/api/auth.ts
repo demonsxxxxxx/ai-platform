@@ -35,6 +35,7 @@ export type AuthContextBootstrapRequest =
       browser_incarnation: string;
       generation: number;
       rotation_ticket?: string;
+      recovery_only?: true;
     };
 
 export type AuthContextBootstrapResponse =

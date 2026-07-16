@@ -1546,3 +1546,59 @@ test("typed stale mutation failure never replays login POST", async () => {
     await mounted.cleanup();
   }
 });
+
+test("login issues one context bootstrap before one business login mutation", async () => {
+  const calls: string[] = [];
+  let currentUserCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.bootstrapAuthContext = async () => {
+      calls.push("bootstrap");
+    };
+    api.login = async () => {
+      calls.push("login");
+    };
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      return currentUserCalls === 1
+        ? authUser("initial-user", "tenant-a")
+        : authUser("login-user", "tenant-b");
+    };
+  });
+  try {
+    await mounted.flush();
+    calls.length = 0;
+    await mounted.React.act(async () => {
+      await mounted.auth.login({ username: "test-user", password: "test-password" });
+    });
+
+    assert.deepEqual(calls, ["bootstrap", "login"]);
+    assert.equal(calls.filter((call) => call === "login").length, 1);
+    assert.equal(mounted.auth.user?.id, "login-user");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("a fail-closed browser context recovery never reaches the login mutation", async () => {
+  const { BrowserAuthCoordinatorError } = await import("../browserAuthCoordinator.ts");
+  let loginCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.bootstrapAuthContext = async () => {
+      throw new BrowserAuthCoordinatorError("auth_context_coordination_unavailable");
+    };
+    api.login = async () => {
+      loginCalls += 1;
+    };
+  });
+  try {
+    await mounted.React.act(async () => {
+      await assert.rejects(
+        () => mounted.auth.login({ username: "test-user", password: "test-password" }),
+        (error: unknown) => error instanceof BrowserAuthCoordinatorError,
+      );
+    });
+    assert.equal(loginCalls, 0);
+  } finally {
+    await mounted.cleanup();
+  }
+});
