@@ -665,6 +665,320 @@ test("ordinary V2 ensure retains pending-rotation completion behavior", async ()
   }
 });
 
+test("missing confirmed V2 recovery persists one fresh identity before one ordinary bootstrap", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const idb = installTransactionalIndexedDb();
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  const oldState = {
+    id: "current",
+    version: 2,
+    incarnation: "I".repeat(43),
+    currentGeneration: 1,
+    currentNonce: "A".repeat(43),
+    confirmedGeneration: 1,
+    ownerToken: "",
+    leaseExpiresAt: 0,
+  };
+  idb.records.set("current", JSON.parse(JSON.stringify(oldState)));
+  const submitted: Array<Record<string, unknown>> = [];
+  authApi.bootstrapAuthContext = async (request) => {
+    assert.notEqual(typeof request, "string");
+    const v2 = request as Record<string, unknown>;
+    submitted.push(v2);
+    if (submitted.length === 1) {
+      assert.equal(v2.recovery_only, true);
+      throw new ApiRequestError("missing auth context", 401, "auth_context_missing");
+    }
+    assert.equal(v2.recovery_only, undefined);
+    assert.equal(v2.generation, 1);
+    assert.notEqual(v2.browser_incarnation, oldState.incarnation);
+    assert.notEqual(v2.nonce, oldState.currentNonce);
+    const persisted = idb.currentState() as {
+      incarnation: string;
+      currentGeneration: number;
+      currentNonce: string;
+      confirmedGeneration: number;
+      pendingRotation?: unknown;
+    };
+    assert.equal(persisted.incarnation, v2.browser_incarnation);
+    assert.equal(persisted.currentGeneration, 1);
+    assert.equal(persisted.currentNonce, v2.nonce);
+    assert.equal(persisted.confirmedGeneration, 0);
+    assert.equal(persisted.pendingRotation, undefined);
+    return { status: "ready", protocol_version: 2, generation: 1 };
+  };
+
+  try {
+    await ensureLoginContextRecovery();
+    assert.equal(submitted.length, 2);
+    const confirmed = idb.currentState() as {
+      incarnation: string;
+      currentGeneration: number;
+      currentNonce: string;
+      confirmedGeneration: number;
+      pendingRotation?: unknown;
+      ownerToken: string;
+      leaseExpiresAt: number;
+    };
+    assert.notEqual(confirmed.incarnation, oldState.incarnation);
+    assert.notEqual(confirmed.currentNonce, oldState.currentNonce);
+    assert.equal(confirmed.currentGeneration, 1);
+    assert.equal(confirmed.confirmedGeneration, 1);
+    assert.equal(confirmed.pendingRotation, undefined);
+    assert.equal(confirmed.ownerToken, "");
+    assert.equal(confirmed.leaseExpiresAt, 0);
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    idb.restore();
+    stubs.restore();
+  }
+});
+
+test("a corrupt V2 record fails closed without creating a replacement identity", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const idb = installTransactionalIndexedDb();
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  const corruptState = { id: "current", version: 2, incarnation: "not-a-valid-record" };
+  idb.records.set("current", corruptState);
+  let bootstrapCalls = 0;
+  authApi.bootstrapAuthContext = async () => {
+    bootstrapCalls += 1;
+    return { status: "ready", protocol_version: 2, generation: 1 };
+  };
+
+  try {
+    await assert.rejects(
+      () => ensureLoginContextRecovery(),
+      (error: unknown) => error instanceof BrowserAuthCoordinatorError,
+    );
+    assert.equal(bootstrapCalls, 0);
+    assert.deepEqual(idb.currentState(), corruptState);
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    idb.restore();
+    stubs.restore();
+  }
+});
+
+test("only missing recovery response can replace a confirmed V2 identity", async () => {
+  for (const error of [
+    new ApiRequestError("unavailable", 503, "auth_context_unavailable"),
+    new ApiRequestError("stale", 409, "auth_context_stale"),
+    new Error("unknown bootstrap response"),
+  ]) {
+    const stubs = installBrowserCoordinatorStubs();
+    const idb = installTransactionalIndexedDb();
+    Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+    const originalBootstrap = authApi.bootstrapAuthContext;
+    const originalState = {
+      id: "current",
+      version: 2,
+      incarnation: "I".repeat(43),
+      currentGeneration: 1,
+      currentNonce: "A".repeat(43),
+      confirmedGeneration: 1,
+      ownerToken: "",
+      leaseExpiresAt: 0,
+    };
+    idb.records.set("current", JSON.parse(JSON.stringify(originalState)));
+    let bootstrapCalls = 0;
+    authApi.bootstrapAuthContext = async () => {
+      bootstrapCalls += 1;
+      throw error;
+    };
+
+    try {
+      await assert.rejects(() => ensureLoginContextRecovery());
+      assert.equal(bootstrapCalls, 1);
+      assert.deepEqual(idb.currentState(), originalState);
+    } finally {
+      authApi.bootstrapAuthContext = originalBootstrap;
+      idb.restore();
+      stubs.restore();
+    }
+  }
+});
+
+test("an abort after missing recovery cannot replace the confirmed V2 identity", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const idb = installTransactionalIndexedDb();
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  const originalState = {
+    id: "current",
+    version: 2,
+    incarnation: "I".repeat(43),
+    currentGeneration: 1,
+    currentNonce: "A".repeat(43),
+    confirmedGeneration: 1,
+    ownerToken: "",
+    leaseExpiresAt: 0,
+  };
+  idb.records.set("current", JSON.parse(JSON.stringify(originalState)));
+  const controller = new AbortController();
+  let bootstrapCalls = 0;
+  authApi.bootstrapAuthContext = async () => {
+    bootstrapCalls += 1;
+    controller.abort(new DOMException("superseded", "AbortError"));
+    throw new ApiRequestError("missing auth context", 401, "auth_context_missing");
+  };
+
+  try {
+    await assert.rejects(
+      () => ensureLoginContextRecovery(controller.signal),
+      (error: unknown) => error instanceof DOMException && error.name === "AbortError",
+    );
+    assert.equal(bootstrapCalls, 1);
+    assert.deepEqual(idb.currentState(), originalState);
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    idb.restore();
+    stubs.restore();
+  }
+});
+
+test("ambiguous fresh initial bootstrap keeps its identity for the next login recovery", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const idb = installTransactionalIndexedDb();
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  idb.records.set("current", {
+    id: "current",
+    version: 2,
+    incarnation: "I".repeat(43),
+    currentGeneration: 1,
+    currentNonce: "A".repeat(43),
+    confirmedGeneration: 1,
+    ownerToken: "",
+    leaseExpiresAt: 0,
+  });
+  const submitted: Array<Record<string, unknown>> = [];
+  authApi.bootstrapAuthContext = async (request) => {
+    assert.notEqual(typeof request, "string");
+    const v2 = request as Record<string, unknown>;
+    submitted.push(v2);
+    if (submitted.length === 1) {
+      throw new ApiRequestError("missing auth context", 401, "auth_context_missing");
+    }
+    if (submitted.length === 2) {
+      throw new ApiRequestError("lost initial response", 503, "auth_context_unavailable");
+    }
+    assert.equal(v2.recovery_only, undefined);
+    assert.equal(v2.browser_incarnation, submitted[1].browser_incarnation);
+    assert.equal(v2.nonce, submitted[1].nonce);
+    return { status: "ready", protocol_version: 2, generation: 1 };
+  };
+
+  try {
+    await assert.rejects(
+      () => ensureLoginContextRecovery(),
+      (error: unknown) => error instanceof ApiRequestError && error.code === "auth_context_unavailable",
+    );
+    const unconfirmed = idb.currentState() as {
+      incarnation: string;
+      currentGeneration: number;
+      currentNonce: string;
+      confirmedGeneration: number;
+      ownerToken: string;
+      leaseExpiresAt: number;
+    };
+    assert.equal(unconfirmed.confirmedGeneration, 0);
+    assert.equal(unconfirmed.ownerToken, "");
+    assert.equal(unconfirmed.leaseExpiresAt, 0);
+
+    await ensureLoginContextRecovery();
+    assert.equal(submitted.length, 3);
+    const confirmed = idb.currentState() as {
+      incarnation: string;
+      currentNonce: string;
+      currentGeneration: number;
+      confirmedGeneration: number;
+    };
+    assert.equal(confirmed.incarnation, unconfirmed.incarnation);
+    assert.equal(confirmed.currentNonce, unconfirmed.currentNonce);
+    assert.equal(confirmed.currentGeneration, 1);
+    assert.equal(confirmed.confirmedGeneration, 1);
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    idb.restore();
+    stubs.restore();
+  }
+});
+
+test("a superseded fresh-bootstrap owner cannot confirm before its successor reuses the identity", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const idb = installTransactionalIndexedDb();
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  idb.records.set("current", {
+    id: "current",
+    version: 2,
+    incarnation: "I".repeat(43),
+    currentGeneration: 1,
+    currentNonce: "A".repeat(43),
+    confirmedGeneration: 1,
+    ownerToken: "",
+    leaseExpiresAt: 0,
+  });
+  const initialStarted = deferred<void>();
+  const releaseInitial = deferred<{
+    status: "ready";
+    protocol_version: 2;
+    generation: number;
+  }>();
+  const submitted: Array<Record<string, unknown>> = [];
+  authApi.bootstrapAuthContext = async (request) => {
+    assert.notEqual(typeof request, "string");
+    const v2 = request as Record<string, unknown>;
+    submitted.push(v2);
+    if (submitted.length === 1) {
+      throw new ApiRequestError("missing auth context", 401, "auth_context_missing");
+    }
+    if (submitted.length === 2) {
+      initialStarted.resolve();
+      return releaseInitial.promise;
+    }
+    assert.equal(v2.browser_incarnation, submitted[1].browser_incarnation);
+    assert.equal(v2.nonce, submitted[1].nonce);
+    assert.equal(v2.recovery_only, undefined);
+    return { status: "ready", protocol_version: 2, generation: 1 };
+  };
+
+  try {
+    const controller = new AbortController();
+    const first = ensureLoginContextRecovery(controller.signal);
+    await initialStarted.promise;
+    controller.abort(new DOMException("superseded", "AbortError"));
+    const second = ensureLoginContextRecovery();
+    releaseInitial.resolve({ status: "ready", protocol_version: 2, generation: 1 });
+    await assert.rejects(
+      () => first,
+      (error: unknown) => error instanceof DOMException && error.name === "AbortError",
+    );
+    await second;
+
+    assert.equal(submitted.length, 3);
+    const finalState = idb.currentState() as {
+      incarnation: string;
+      currentNonce: string;
+      currentGeneration: number;
+      confirmedGeneration: number;
+      ownerToken: string;
+    };
+    assert.equal(finalState.incarnation, submitted[1].browser_incarnation);
+    assert.equal(finalState.currentNonce, submitted[1].nonce);
+    assert.equal(finalState.currentGeneration, 1);
+    assert.equal(finalState.confirmedGeneration, 1);
+    assert.equal(finalState.ownerToken, "");
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    idb.restore();
+    stubs.restore();
+  }
+});
+
 test("concurrent or aborted V2 login-context recovery stays serially single-owner and bounded", async () => {
   const stubs = installBrowserCoordinatorStubs();
   const idb = installTransactionalIndexedDb();

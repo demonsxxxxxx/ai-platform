@@ -144,6 +144,10 @@ function isAuthContextStale(error: unknown): boolean {
   return error instanceof ApiRequestError && error.code === "auth_context_stale";
 }
 
+function isAuthContextMissing(error: unknown): boolean {
+  return error instanceof ApiRequestError && error.code === "auth_context_missing";
+}
+
 function isUnknownRotationResult(error: unknown): boolean {
   return error instanceof ApiRequestError && error.code === "auth_context_unavailable";
 }
@@ -463,6 +467,25 @@ function createInitialV2State(): BrowserAuthV2State {
   };
 }
 
+function createFreshUnconfirmedV2State(
+  ownerToken: string,
+  leaseExpiresAt: number,
+): BrowserAuthV2State {
+  return {
+    id: BROWSER_AUTH_CONTEXT_V2_RECORD_KEY,
+    version: 2,
+    // This is a new anonymous context, not a V1-to-V2 migration. Never reuse
+    // a legacy nonce here: an ambiguous initial request must be reconciled by
+    // this exact V2 identity rather than by a second browser incarnation.
+    incarnation: createV2Random(),
+    currentGeneration: 1,
+    currentNonce: createNonce(),
+    confirmedGeneration: 0,
+    ownerToken,
+    leaseExpiresAt,
+  };
+}
+
 function waitForRetry(milliseconds: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const cleanup = () => {
@@ -550,6 +573,32 @@ async function persistPendingRotation(
     return { result: cloneState(state), next: state };
   });
   return { state: next, ownerToken: owned.ownerToken };
+}
+
+async function replaceConfirmedV2StateWithFreshIdentity(
+  owned: OwnedV2State,
+  expected: BrowserAuthV2State,
+  signal?: AbortSignal,
+): Promise<OwnedV2State> {
+  const deadline = Date.now() + ACQUISITION_TIMEOUT_MS;
+  const fresh = await withCoordinatorDb(signal, deadline, (state) => {
+    if (
+      !state
+      || !ownerMatches(state, owned)
+      || !sameCurrentState(state, expected)
+      || state.confirmedGeneration !== expected.confirmedGeneration
+      || state.confirmedGeneration !== state.currentGeneration
+      || state.pendingRotation !== undefined
+    ) {
+      throw unavailable();
+    }
+    const next = createFreshUnconfirmedV2State(
+      owned.ownerToken,
+      state.leaseExpiresAt,
+    );
+    return { result: cloneState(next), next };
+  });
+  return { state: fresh, ownerToken: owned.ownerToken };
 }
 
 async function replacePendingRotationTicket(
@@ -780,17 +829,61 @@ async function ensureV2BrowserAuthContext(
       if (!released) throw unavailable();
       return;
     }
-    const response = await authApi.bootstrapAuthContext(
-      {
-        nonce: current.currentNonce,
-        protocol_version: 2,
-        browser_incarnation: current.incarnation,
-        generation: current.currentGeneration,
-        ...(recoveryOnly ? { recovery_only: true } : {}),
-      },
-      signal,
-    );
+    const confirmedRecovery = recoveryOnly
+      && current.confirmedGeneration === current.currentGeneration;
+    let response: AuthContextBootstrapResponse | void;
+    try {
+      response = await authApi.bootstrapAuthContext(
+        {
+          nonce: current.currentNonce,
+          protocol_version: 2,
+          browser_incarnation: current.incarnation,
+          generation: current.currentGeneration,
+          ...(confirmedRecovery ? { recovery_only: true } : {}),
+        },
+        signal,
+      );
+    } catch (error) {
+      // PR #459 intentionally makes recovery_only fail closed when the exact
+      // server authority is gone. Explicit login is the one user-authorized
+      // liveness transition: only that typed missing result may atomically
+      // replace an already confirmed, non-pending local identity. Persist the
+      // replacement before its one ordinary initial bootstrap; any ambiguous
+      // result leaves that same unconfirmed identity for a successor to reuse.
+      if (!confirmedRecovery || !isAuthContextMissing(error)) throw error;
+      owned = await replaceConfirmedV2StateWithFreshIdentity(
+        { state: current, ownerToken: owned.ownerToken },
+        current,
+        signal,
+      );
+      const fresh = await assertV2Owner(owned, signal);
+      if (
+        fresh.confirmedGeneration !== 0
+        || fresh.currentGeneration !== 1
+        || fresh.pendingRotation !== undefined
+      ) {
+        throw unavailable();
+      }
+      throwIfAborted(signal);
+      const freshResponse = await authApi.bootstrapAuthContext(
+        {
+          nonce: fresh.currentNonce,
+          protocol_version: 2,
+          browser_incarnation: fresh.incarnation,
+          generation: fresh.currentGeneration,
+        },
+        signal,
+      );
+      const afterFreshResponse = await assertV2Owner(owned, signal);
+      assertV2Ready(freshResponse, afterFreshResponse.currentGeneration);
+      await confirmAndReleaseV2Owner(
+        { state: afterFreshResponse, ownerToken: owned.ownerToken },
+        signal,
+      );
+      return;
+    }
     if (response?.status === "rebootstrap_required") {
+      if (recoveryOnly) throw unavailable();
       const pendingOwner = await persistPendingRotation(
         { state: current, ownerToken: owned.ownerToken },
         response.rotation_ticket,
