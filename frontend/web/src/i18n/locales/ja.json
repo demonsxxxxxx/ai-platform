@@ -346,6 +346,24 @@
     "goodMorning": "おはようございます、{{name}}",
     "helpDocs": "ヘルプドキュメント",
     "keyboardShortcuts": "キーボードショートカット",
+    "toolPermission": {
+      "cancelled": {
+        "message": "実行がキャンセルされたため、このツール権限は使用されませんでした。",
+        "title": "ツール権限はキャンセルされました"
+      },
+      "expired": {
+        "message": "このツール権限は決定される前に期限切れになりました。",
+        "title": "ツール権限の有効期限切れ"
+      },
+      "invalidated": {
+        "message": "実行が終了したため、このツール権限は使用されませんでした。",
+        "title": "ツール権限は終了しました"
+      },
+      "terminalFailed": {
+        "message": "実行を継続できないため、このツール権限は終了しました。",
+        "title": "ツール権限は終了しました"
+      }
+    },
     "message": {
       "allFiles": "すべてのファイル",
       "args": "引数",

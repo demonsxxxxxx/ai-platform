@@ -2,21 +2,31 @@ import base64
 import asyncio
 from contextlib import asynccontextmanager
 import hashlib
+import io
 import json
 import subprocess
 import sys
 import types
+import zipfile
 from pathlib import Path
 
 import pytest
 
 import app.skills.dependencies as dependency_policy
+import app.executors.claude_agent_worker as claude_agent_worker
 from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
-from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter, PreparedSdkRun
+from app.executors.claude_agent_worker import (
+    ClaudeAgentWorkerAdapter,
+    PreparedSdkRun,
+    resolve_claude_sdk_tool_permission,
+)
 from app.executors.claude_agent_worker import _allowed_skill_names
 from app.executors.claude_agent_worker import _inferred_used_skill_names
 from app.executors.claude_agent_worker import _ordinary_run_requires_sandbox
+from app.executors.claude_agent_worker import _required_artifact_types
+from app.executors.claude_agent_sdk_runner import _sdk_run_timeout_seconds
 from app.storage import StoredObject
+from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS, tool_permission_budget
 from app.executors.claude_agent_sdk_runner import build_sdk_env, build_skill_prompt, run_claude_agent_sdk
 from app.executors.registry import AdapterRegistry
 from app.runtime.sandbox.container_provider import (
@@ -142,6 +152,447 @@ async def fake_transaction():
     yield object()
 
 
+async def expired_permission_request(*args, **kwargs):
+    return {"status": "expired"}
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_waits_for_admin_decision_before_allowing_execution(monkeypatch):
+    calls = []
+
+    async def fake_broker(conn, **kwargs):
+        calls.append(kwargs["request"]["tool_call_id"])
+        if len(calls) == 1:
+            return {
+                "allowed": False,
+                "reason": "tool_permission_required",
+                "permission_request_id": "tpr-pending",
+            }
+        return {
+            "allowed": True,
+            "reason": "tool_permission_decided",
+            "permission_request_id": "tpr-pending",
+        }
+
+    async def fake_expire(conn, **kwargs):
+        return None
+
+    async def fake_get_request(conn, **kwargs):
+        assert kwargs["tenant_id"] == "default"
+        assert kwargs["run_id"] == "run_1"
+        assert kwargs["request_id"] == "tpr-pending"
+        return {"status": "decided"}
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-1"},
+        wait_timeout_seconds=0.1,
+        poll_interval_seconds=0.01,
+    )
+
+    assert result["allowed"] is True
+    assert calls == ["call-1", "call-1"]
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_wait_accepts_a_decision_after_the_former_outer_timeout_without_sleep(monkeypatch):
+    calls = []
+    clock = {"value": 0.0}
+
+    async def fake_broker(conn, **kwargs):
+        calls.append(("broker", kwargs["request"]["tool_call_id"]))
+        return (
+            {
+                "allowed": False,
+                "reason": "tool_permission_required",
+                "permission_request_id": "tpr-delayed",
+            }
+            if len(calls) == 1
+            else {
+                "allowed": True,
+                "reason": "tool_permission_decided",
+                "permission_request_id": "tpr-delayed",
+            }
+        )
+
+    async def fake_expire(conn, **kwargs):
+        return None
+
+    async def fake_get_request(conn, **kwargs):
+        return {"status": "decided" if clock["value"] > 130 else "pending"}
+
+    async def advance_clock(delay):
+        clock["value"] += delay
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-delayed"},
+        wait_timeout_seconds=tool_permission_budget().permission_wait_seconds,
+        poll_interval_seconds=131.0,
+        monotonic=lambda: clock["value"],
+        sleep=advance_clock,
+    )
+
+    assert result["allowed"] is True
+    assert clock["value"] == 131.0
+    assert calls == [("broker", "call-delayed"), ("broker", "call-delayed")]
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_wait_fails_closed_when_cancelled(monkeypatch):
+    async def fake_broker(conn, **kwargs):
+        return {"allowed": False, "reason": "tool_permission_required", "permission_request_id": "tpr-cancelled"}
+
+    async def fake_expire(conn, **kwargs):
+        return None
+
+    async def fake_get_request(conn, **kwargs):
+        return {"status": "cancelled"}
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-cancelled"},
+    )
+
+    assert result == {
+        "allowed": False,
+        "reason": "tool_permission_cancelled",
+        "permission_request_id": "tpr-cancelled",
+    }
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_wait_fails_closed_when_expired(monkeypatch):
+    async def fake_broker(conn, **kwargs):
+        return {"allowed": False, "reason": "tool_permission_required", "permission_request_id": "tpr-expired"}
+
+    async def fake_expire(conn, **kwargs):
+        return {"id": "tpr-expired", "status": "expired"}
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-expired"},
+    )
+
+    assert result == {
+        "allowed": False,
+        "reason": "tool_permission_expired",
+        "permission_request_id": "tpr-expired",
+    }
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_wait_fails_closed_at_its_deadline(monkeypatch):
+    clock = {"value": 0.0}
+
+    async def fake_broker(conn, **kwargs):
+        return {"allowed": False, "reason": "tool_permission_required", "permission_request_id": "tpr-timeout"}
+
+    async def fake_expire(conn, **kwargs):
+        return None
+
+    async def fake_get_request(conn, **kwargs):
+        return {"status": "pending"}
+
+    async def fake_terminalize(conn, **kwargs):
+        return []
+
+    async def advance_clock(delay):
+        clock["value"] += delay
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
+    monkeypatch.setattr(
+        claude_agent_worker.repositories,
+        "terminalize_pending_tool_permission_requests",
+        fake_terminalize,
+    )
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-timeout"},
+        wait_timeout_seconds=5.0,
+        poll_interval_seconds=5.0,
+        monotonic=lambda: clock["value"],
+        sleep=advance_clock,
+    )
+
+    assert result == {
+        "allowed": False,
+        "reason": "tool_permission_wait_timed_out",
+        "permission_request_id": "tpr-timeout",
+        "expired": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_wait_persists_its_remaining_budget_and_terminalizes_exact_request(monkeypatch):
+    """The local monotonic deadline and persisted request lifetime are one authority."""
+    clock = {"value": 10.0}
+    broker_expiries = []
+    terminalized = []
+
+    async def fake_broker(conn, **kwargs):
+        broker_expiries.append(kwargs["expires_in_seconds"])
+        return {
+            "allowed": False,
+            "reason": "tool_permission_required",
+            "permission_request_id": "tpr-budget",
+        }
+
+    async def fake_expire(conn, **kwargs):
+        return None
+
+    async def fake_get_request(conn, **kwargs):
+        return {"status": "pending"}
+
+    async def fake_terminalize(conn, **kwargs):
+        terminalized.append(kwargs)
+        return [{"id": "tpr-budget", "status": "expired"}]
+
+    async def advance_clock(delay):
+        clock["value"] += delay
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
+    monkeypatch.setattr(
+        claude_agent_worker.repositories,
+        "terminalize_pending_tool_permission_requests",
+        fake_terminalize,
+    )
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-budget"},
+        wait_timeout_seconds=5.0,
+        poll_interval_seconds=5.0,
+        monotonic=lambda: clock["value"],
+        sleep=advance_clock,
+    )
+
+    assert broker_expiries == [5.0]
+    assert result == {
+        "allowed": False,
+        "reason": "tool_permission_wait_timed_out",
+        "permission_request_id": "tpr-budget",
+        "expired": True,
+    }
+    assert terminalized == [
+        {
+            "tenant_id": "default",
+            "run_id": "run_1",
+            "request_id": "tpr-budget",
+            "terminal_status": "expired",
+            "terminal_reason": "permission_wait_exhausted",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_decision_arriving_after_the_absolute_deadline_never_allows_or_audits(monkeypatch):
+    """An awaited broker result may not revive a request after its shared deadline."""
+
+    clock = {"value": 0.0}
+    terminalized = []
+    broker_calls = []
+
+    async def fake_broker(conn, **kwargs):
+        broker_calls.append(kwargs)
+        if len(broker_calls) == 1:
+            return {
+                "allowed": False,
+                "reason": "tool_permission_required",
+                "permission_request_id": "tpr-late",
+            }
+        clock["value"] = 5.0
+        return {
+            "allowed": True,
+            "reason": "tool_permission_allowed",
+            "permission_request_id": "tpr-late",
+        }
+
+    async def fake_expire(conn, **kwargs):
+        return None
+
+    async def fake_get_request(conn, **kwargs):
+        return {"status": "decided"}
+
+    async def fake_terminalize(conn, **kwargs):
+        terminalized.append(kwargs)
+        return [{"id": "tpr-late", "status": "expired"}]
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
+    monkeypatch.setattr(
+        claude_agent_worker.repositories,
+        "terminalize_pending_tool_permission_requests",
+        fake_terminalize,
+    )
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-late"},
+        wait_timeout_seconds=5.0,
+        monotonic=lambda: clock["value"],
+    )
+
+    assert result == {
+        "allowed": False,
+        "reason": "tool_permission_wait_timed_out",
+        "permission_request_id": "tpr-late",
+        "expired": True,
+    }
+    assert terminalized == [
+        {
+            "tenant_id": "default",
+            "run_id": "run_1",
+            "request_id": "tpr-late",
+            "terminal_status": "expired",
+            "terminal_reason": "permission_wait_exhausted",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("crossing_await", ["consume", "allowed_audit"])
+async def test_deadline_late_authority_rolls_back_before_separate_timeout_terminalization(monkeypatch, crossing_await):
+    """A deadline crossing inside broker work aborts that transaction, never its authority writes."""
+
+    clock = {"value": 0.0}
+    committed: list[str] = []
+    terminalized: list[dict] = []
+    transaction_results: list[str] = []
+
+    @asynccontextmanager
+    async def recording_transaction():
+        staged: list[str] = []
+        try:
+            yield staged
+        except claude_agent_worker._PermissionDeadlineElapsed:
+            transaction_results.append("rollback")
+            raise
+        else:
+            transaction_results.append("commit")
+            committed.extend(staged)
+
+    async def get_exact(conn, **_kwargs):
+        command_hash = hashlib.sha256(b"").hexdigest()
+        return {
+            "id": "tpr-deadline",
+            "decision": "allow_once",
+            "tool_call_id": "call-deadline",
+            "request_payload_json": {"command_sha256": command_hash},
+        }
+
+    async def consume(conn, **_kwargs):
+        conn.append("consume")
+        if crossing_await == "consume":
+            clock["value"] = 1.0
+        return {"id": "tpr-deadline", "status": "consumed"}
+
+    async def audit(conn, **kwargs):
+        conn.append("allowed_audit")
+        if kwargs["action"] == "claude_sdk_tool_policy_allowed":
+            clock["value"] = 1.0
+
+    async def terminalize(conn, **kwargs):
+        conn.append("terminalized")
+        terminalized.append(kwargs)
+        return [{"id": "tpr-deadline", "status": "expired"}]
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", recording_transaction)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_exact_tool_permission_decision", get_exact)
+    monkeypatch.setattr(claude_agent_worker.repositories, "consume_tool_permission_decision", consume)
+    monkeypatch.setattr(claude_agent_worker.repositories, "append_audit_log", audit)
+    monkeypatch.setattr(claude_agent_worker.repositories, "terminalize_pending_tool_permission_requests", terminalize)
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default", workspace_id="default", user_id="user-a", session_id="ses_1",
+        run_id="run_1", agent_id="qa-word-review", skill_id="qa-file-reviewer", trace_id="trace-run-1",
+        request={"tool_name": "Bash", "tool_call_id": "call-deadline", "write_capable": True},
+        wait_timeout_seconds=1.0, monotonic=lambda: clock["value"],
+    )
+
+    assert result["reason"] == "tool_permission_wait_timed_out"
+    assert transaction_results == ["rollback", "commit"]
+    assert committed == ["terminalized"]
+    assert terminalized[0]["request_id"] == "tpr-deadline"
+
+
 def _snapshot_hash(files):
     digest = hashlib.sha256()
     for item in sorted(files, key=lambda value: str(value["relative_path"])):
@@ -233,7 +684,7 @@ def settings(tmp_path, *, sdk_enabled=True, legacy_fallback=False):
         {
             "claude_agent_sdk_enabled": sdk_enabled,
             "claude_agent_workspace_root": str(tmp_path / "workspaces"),
-            "sandbox_workspace_root": str(tmp_path.parents[1] / f"s-{short_id}"),
+            "sandbox_workspace_root": str(tmp_path / f"s-{short_id}"),
             "sandbox_container_provider": "docker",
             "sandbox_callback_base_url": "http://platform.test",
             "claude_agent_model": "deepseek-v4-flash",
@@ -356,12 +807,14 @@ def write_runner_skill(
     skill_dir = write_skill(root, name=name, description=description)
     scripts_dir = skill_dir / "scripts"
     scripts_dir.mkdir()
+    encoded_docx = base64.b64encode(valid_docx_bytes()).decode("ascii")
     (scripts_dir / script_name).write_text(
+        "import base64\n"
         "import pathlib\n"
         "import sys\n"
         "out = pathlib.Path(sys.argv[2])\n"
         "out.mkdir(parents=True, exist_ok=True)\n"
-        f"(out / {artifact_name!r}).write_bytes(b'reviewed artifact')\n"
+        f"(out / {artifact_name!r}).write_bytes(base64.b64decode({encoded_docx!r}))\n"
         "print('deterministic runner completed')\n",
         encoding="utf-8",
     )
@@ -423,6 +876,69 @@ def symlink_or_skip(target, link):
         link.symlink_to(target, target_is_directory=target.is_dir())
     except (NotImplementedError, OSError) as exc:
         pytest.skip(f"symlink creation not available: {exc}")
+
+
+def usable_docx_bytes(
+    *,
+    document: bytes | None = None,
+    content_types: bytes | None = None,
+    relationships: bytes | None = None,
+    include_relationships: bool = True,
+    extra_entries: dict[str, bytes] | None = None,
+) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        content_types_entry = zipfile.ZipInfo("[Content_Types].xml", date_time=(2024, 1, 1, 0, 0, 0))
+        content_types_entry.compress_type = zipfile.ZIP_DEFLATED
+        archive.writestr(
+            content_types_entry,
+            content_types
+            if content_types is not None
+            else (
+                b'<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                b'<Override PartName="/word/document.xml" '
+                b'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                b"</Types>"
+            ),
+        )
+        if include_relationships:
+            relationship_entry = zipfile.ZipInfo("_rels/.rels", date_time=(2024, 1, 1, 0, 0, 0))
+            relationship_entry.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(
+                relationship_entry,
+                relationships
+                if relationships is not None
+                else (
+                    b'<?xml version="1.0"?><Relationships '
+                    b'xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                    b'<Relationship Id="rId1" '
+                    b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                    b'Target="word/document.xml"/>'
+                    b"</Relationships>"
+                ),
+            )
+        if document is not None:
+            document_entry = zipfile.ZipInfo("word/document.xml", date_time=(2024, 1, 1, 0, 0, 0))
+            document_entry.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(
+                document_entry,
+                document,
+            )
+        for name, content in (extra_entries or {}).items():
+            extra_entry = zipfile.ZipInfo(name, date_time=(2024, 1, 1, 0, 0, 0))
+            extra_entry.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(extra_entry, content)
+    return buffer.getvalue()
+
+
+def valid_docx_bytes() -> bytes:
+    return usable_docx_bytes(
+        document=(
+            b'<?xml version="1.0"?><w:document '
+            b'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            b"<w:body><w:p/></w:body></w:document>"
+        )
+    )
 
 
 def test_registry_exposes_claude_agent_worker():
@@ -487,6 +1003,275 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"",
+        b"not-a-zip",
+        usable_docx_bytes(document=None),
+        usable_docx_bytes(document=b""),
+        usable_docx_bytes(document=b"<document/>"),
+        usable_docx_bytes(document=b"<w:document>not valid XML</w:document>"),
+        usable_docx_bytes(document=b"<document><body><p/></body></document>", content_types=b"not XML"),
+        usable_docx_bytes(document=b"<document><body><p/></body></document>", include_relationships=False),
+        usable_docx_bytes(
+            document=b"<document><body><p/></body></document>",
+            relationships=(
+                b'<Relationships><Relationship '
+                b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                b'Target="../word/document.xml"/></Relationships>'
+            ),
+        ),
+        usable_docx_bytes(
+            document=(
+                b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                b"<w:body><w:p/></w:body></w:document>"
+            ),
+            relationships=(
+                b'<Relationships><Relationship Id="rId1" '
+                b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                b'Target="word/document.xml"/></Relationships>'
+            ),
+        ),
+        usable_docx_bytes(
+            document=(
+                b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                b"<w:body><w:p/></w:body></w:document>"
+            ),
+            relationships=(
+                b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                b'<Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                b'Target="word/document.xml"/></Relationships>'
+            ),
+        ),
+        usable_docx_bytes(
+            document=(
+                b'<w:document xmlns:w="urn:wrong-wordprocessingml">'
+                b"<w:body><w:p/></w:body></w:document>"
+            ),
+        ),
+    ],
+    ids=[
+        "zero-byte",
+        "corrupt-zip",
+        "missing-document",
+        "empty-document",
+        "document-without-body",
+        "invalid-document-xml",
+        "invalid-content-types",
+        "missing-root-relationship",
+        "path-traversing-root-relationship",
+        "namespace-less-root-relationship",
+        "wrong-wordprocessingml-namespace",
+        "missing-root-relationship-id",
+    ],
+)
+@pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
+def test_collect_workspace_artifacts_rejects_unusable_required_docx(monkeypatch, tmp_path, content, skill_id):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    (output / "review.docx").write_bytes(content)
+    stored = []
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append((storage_key, content, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+
+    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+        payload(skill_id=skill_id),
+        workspace,
+    )
+
+    assert artifacts == []
+    assert stored == []
+
+
+@pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
+@pytest.mark.parametrize(
+    ("limit_name", "limit_value", "content"),
+    [
+        ("_REQUIRED_DOCX_MAX_ENTRY_COUNT", 3, usable_docx_bytes(document=valid_docx_bytes(), extra_entries={"extra.txt": b"x"})),
+        ("_REQUIRED_DOCX_MAX_COMPRESSED_BYTES", 1, valid_docx_bytes()),
+        ("_REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES", 1, valid_docx_bytes()),
+    ],
+)
+def test_collect_workspace_artifacts_rejects_required_docx_zip_bounds_before_read(
+    monkeypatch,
+    tmp_path,
+    skill_id,
+    limit_name,
+    limit_value,
+    content,
+):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    (output / "review.docx").write_bytes(content)
+
+    def fail_read(*_args, **_kwargs):
+        raise AssertionError("bounded metadata rejection must happen before archive.read")
+
+    monkeypatch.setattr(claude_agent_worker, limit_name, limit_value)
+    monkeypatch.setattr(zipfile.ZipFile, "read", fail_read)
+
+    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+        payload(skill_id=skill_id),
+        workspace,
+    )
+
+    assert artifacts == []
+
+
+def test_required_docx_rejects_duplicate_case_colliding_or_encrypted_part_before_read(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    path = output / "review.docx"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, content in {
+            "[Content_Types].xml": (
+                b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                b'<Override PartName="/word/document.xml" '
+                b'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                b"</Types>"
+            ),
+            "_rels/.rels": (
+                b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                b'<Relationship Id="rId1" '
+                b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                b'Target="word/document.xml"/></Relationships>'
+            ),
+            "word/document.xml": (
+                b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                b"<w:body><w:p/></w:body></w:document>"
+            ),
+        }.items():
+            archive.writestr(name, content)
+        archive.writestr("WORD/DOCUMENT.XML", b"duplicate")
+
+    def fail_read(*_args, **_kwargs):
+        raise AssertionError("unsafe archive metadata must fail before archive.read")
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", fail_read)
+    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+        payload(skill_id="qa-file-reviewer"), workspace
+    )
+
+    assert artifacts == []
+
+
+@pytest.mark.parametrize(
+    ("skill_id", "expected_type"),
+    [("qa-file-reviewer", "reviewed_docx"), ("baoyu-translate", "translated_docx")],
+)
+def test_collect_workspace_artifacts_accepts_usable_required_docx(monkeypatch, tmp_path, skill_id, expected_type):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    content = valid_docx_bytes()
+    (output / "review.docx").write_bytes(content)
+    stored = []
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append((storage_key, content, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+
+    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+        payload(skill_id=skill_id),
+        workspace,
+    )
+
+    assert [artifact.artifact_type for artifact in artifacts] == [expected_type]
+    assert stored[0][1] == content
+
+
+@pytest.mark.parametrize(
+    ("relationship_id", "accepted"),
+    [
+        ("关系\u0301", True),
+        ("Ångström", True),
+        ("", False),
+        ("1relationship", False),
+        ("relationship:id", False),
+        ("relationship id", False),
+    ],
+    ids=["unicode-letter-mark", "unicode-letter", "missing", "numeric-start", "colon", "whitespace"],
+)
+def test_required_docx_validates_xml_ncname_relationship_ids(monkeypatch, tmp_path, relationship_id, accepted):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    relationships = (
+        b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + f'<Relationship Id="{relationship_id}" '.encode("utf-8")
+        + b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        + b'Target="word/document.xml"/></Relationships>'
+    )
+    (output / "review.docx").write_bytes(usable_docx_bytes(document=(
+        b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        b"<w:body><w:p/></w:body></w:document>"
+    ), relationships=relationships))
+    stored = []
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append(content)
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+        payload(skill_id="qa-file-reviewer"), workspace
+    )
+
+    assert bool(artifacts) is accepted
+    assert bool(stored) is accepted
+
+
+@pytest.mark.parametrize(
+    "relationships",
+    [
+        (
+            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+            b'<Relationship Id="rId1" Type="urn:example:other" Target="custom.xml"/>'
+            b"</Relationships>"
+        ),
+        (
+            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+            b'<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+            b"</Relationships>"
+        ),
+    ],
+    ids=["duplicate-relationship-id", "multiple-office-document-relationships"],
+)
+def test_required_docx_rejects_non_unique_or_ambiguous_root_relationships(monkeypatch, tmp_path, relationships):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    (output / "review.docx").write_bytes(usable_docx_bytes(document=(
+        b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        b"<w:body><w:p/></w:body></w:document>"
+    ), relationships=relationships))
+
+    class FakeStorage:
+        def put_bytes(self, **_kwargs):
+            raise AssertionError("invalid relationship packages must not be stored")
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+        payload(skill_id="qa-file-reviewer"), workspace
+    )
+    assert artifacts == []
 
 
 @pytest.mark.asyncio
@@ -610,6 +1395,7 @@ async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, t
     assert result.status == "succeeded"
     assert runtime_requests[0].skill_ids == ["qa-file-reviewer", "legacy-helper"]
     assert result.executor_payload["skill_manifests"][0]["dependency_ids"] == ["legacy-helper"]
+    assert result.executor_payload["required_artifact_types"] == ["reviewed_docx"]
 
 
 def test_general_chat_does_not_stage_all_platform_skills_by_default():
@@ -619,6 +1405,136 @@ def test_general_chat_does_not_stage_all_platform_skills_by_default():
     )
 
     assert selected == []
+
+
+def test_file_skill_artifact_contract_is_owned_by_the_selected_capability():
+    assert _required_artifact_types(payload(skill_id="qa-file-reviewer")) == ("reviewed_docx",)
+    assert _required_artifact_types(payload(skill_id="baoyu-translate")) == ("translated_docx",)
+    assert _required_artifact_types(payload(skill_id="general-chat", file_ids=[])) == ()
+
+
+def test_sandbox_brokered_sdk_timeout_covers_the_shared_permission_transport_deadline():
+    settings = types.SimpleNamespace(claude_agent_sdk_timeout_seconds=5.0)
+    budget = tool_permission_budget(5.0)
+
+    assert TOOL_PERMISSION_REQUEST_TTL_SECONDS == budget.request_ttl_seconds == 900.0
+    assert budget.aggregate_permission_wait_seconds == budget.permission_wait_seconds
+    assert budget.permission_callback_timeout_seconds > budget.permission_wait_seconds
+    assert budget.sandbox_sdk_timeout_seconds > 5.0 + budget.permission_wait_seconds
+    assert budget.outer_executor_timeout_seconds > budget.sandbox_sdk_timeout_seconds
+    assert budget.non_permission_callback_timeout_seconds < budget.permission_wait_seconds
+    assert (
+        _sdk_run_timeout_seconds(settings, sandbox_brokered=True, full_access=False)
+        == budget.sandbox_sdk_timeout_seconds
+    )
+    assert _sdk_run_timeout_seconds(settings, sandbox_brokered=False, full_access=False) == 5.0
+
+
+def test_sandbox_brokered_budget_preserves_pre_permission_work_and_one_full_wait():
+    budget = tool_permission_budget(130.0)
+
+    assert budget.sandbox_sdk_timeout_seconds > 130.0 + budget.aggregate_permission_wait_seconds
+    assert budget.outer_executor_timeout_seconds > budget.sandbox_sdk_timeout_seconds
+
+
+@pytest.mark.asyncio
+async def test_sandbox_sdk_starts_at_the_normal_deadline_then_extends_only_for_a_governed_callback(monkeypatch, tmp_path):
+    captured = {"timeouts": [], "rescheduled": [], "permission_requests": []}
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = {}
+        model_usage = {}
+        result = "ok"
+        is_error = False
+        errors = []
+        stop_reason = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.hooks = kwargs["hooks"]
+
+    class HookMatcher:
+        def __init__(self, matcher=None, hooks=None, timeout=None):
+            self.matcher = matcher
+            self.hooks = hooks or []
+            self.timeout = timeout
+
+    class ObservedTimeout:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        def reschedule(self, deadline):
+            captured["rescheduled"].append(deadline)
+
+    async def query(prompt, options):
+        hook = options.hooks["PreToolUse"][0].hooks[0]
+        captured["hook_result"] = await hook(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Write",
+                "tool_input": {"file_path": "output.txt", "content": "governed"},
+                "tool_use_id": "tool-governed",
+            },
+            "tool-governed",
+            {},
+        )
+        yield ResultMessage()
+
+    current_settings = type(
+        "S",
+        (),
+        {
+            "claude_agent_sdk_enabled": True,
+            "anthropic_base_url": "",
+            "anthropic_auth_token": "",
+            "anthropic_model": "",
+            "openai_api_key": "",
+            "claude_agent_model": "deepseek-v4-flash",
+            "claude_agent_sdk_skills": "",
+            "claude_agent_sdk_timeout_seconds": 130.0,
+            "claude_agent_sdk_max_turns": 12,
+        },
+    )()
+    fake_sdk = types.SimpleNamespace(
+        AssistantMessage=type("AssistantMessage", (), {}),
+        ClaudeAgentOptions=ClaudeAgentOptions,
+        HookMatcher=HookMatcher,
+        ResultMessage=ResultMessage,
+        TextBlock=type("TextBlock", (), {}),
+        query=query,
+    )
+
+    async def on_tool_permission(request):
+        captured["permission_requests"].append(request)
+        return {"allowed": True, "reason": "tool_permission_decided"}
+
+    def timeout(seconds):
+        captured["timeouts"].append(seconds)
+        return ObservedTimeout()
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.asyncio.timeout", timeout)
+
+    result = await run_claude_agent_sdk(
+        prompt="hello",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_tool_permission=on_tool_permission,
+    )
+
+    budget = tool_permission_budget(130.0)
+    assert result.error is None
+    assert captured["timeouts"] == [budget.normal_execution_timeout_seconds]
+    assert len(captured["rescheduled"]) == 1
+    assert captured["permission_requests"][0]["permission_wait_seconds"] == budget.aggregate_permission_wait_seconds
+    assert captured["hook_result"]["hookSpecificOutput"]["permissionDecision"] == "allow"
 
 
 @pytest.mark.asyncio
@@ -1562,7 +2478,7 @@ async def test_file_skill_uses_controlled_runner_when_sdk_tool_schema_loops(monk
     assert result.result["controlled_runner_reason"] == "empty_bash_tool_input_loop"
     assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
     assert result.artifacts[0].artifact_type == "reviewed_docx"
-    assert stored[0][1] == b"reviewed artifact"
+    assert stored[0][1] == valid_docx_bytes()
     assert result.result["used_skills"] == ["qa-file-reviewer"]
     assert result.executor_payload["used_skills"] == ["qa-file-reviewer"]
     assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer", "minimax-docx"]
@@ -1619,7 +2535,7 @@ async def test_baoyu_translate_uses_controlled_runner_when_sdk_tool_schema_loops
     assert result.status == "succeeded"
     assert result.result["controlled_runner_used"] is True
     assert result.artifacts[0].artifact_type == "translated_docx"
-    assert stored[0][1] == b"reviewed artifact"
+    assert stored[0][1] == valid_docx_bytes()
 
 
 @pytest.mark.asyncio
@@ -2803,6 +3719,11 @@ async def test_multi_agent_file_skill_resume_reuses_completed_steps_without_reru
     assert result.capabilities["multi_agent"] is True
     assert result.result["checkpoint_reused"] is True
     assert result.result["delegate_executor_type"] == "multi-agent-resume"
+    # A reused checkpoint deliberately carries no executor-owned artifact
+    # contract. The worker must derive the selected capability contract rather
+    # than trusting this resumed executor payload.
+    assert result.artifacts == []
+    assert result.executor_payload.get("required_artifact_types") is None
     step_events = [event for event in events if event["event_type"].startswith("agent_step_")]
     assert [event["event_type"] for event in step_events] == [
         "agent_step_reused",
@@ -4074,6 +4995,10 @@ async def test_claude_worker_sdk_permission_hook_creates_request_event_and_audit
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.expire_tool_permission_request",
+        expired_permission_request,
+    )
 
     result = await adapter._try_run_sdk(
         payload(trace_id="trace-sdk"),
@@ -4083,7 +5008,7 @@ async def test_claude_worker_sdk_permission_hook_creates_request_event_and_audit
         staged_skill_names=[],
     )
 
-    assert result.error == "tool_permission_required"
+    assert result.error == "tool_permission_expired"
     command = "python write_business_system.py --id 123"
     lookup_call = next(item[1] for item in calls if item[0] == "decision_lookup")
     assert lookup_call["tenant_id"] == "default"
@@ -4774,6 +5699,10 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_decision_fo
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.expire_tool_permission_request",
+        expired_permission_request,
+    )
 
     result = await adapter._try_run_sdk(
         payload(trace_id="trace-sdk"),
@@ -4783,7 +5712,7 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_decision_fo
         staged_skill_names=[],
     )
 
-    assert result.error == "tool_permission_required"
+    assert result.error == "tool_permission_expired"
     request_call = next(item[1] for item in calls if item[0] == "request")
     assert request_call["tool_call_id"] == "tool-current"
     assert calls[-1][0] == "gate"
@@ -4887,6 +5816,10 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_deny_for_ot
     )
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr(
+        "app.executors.claude_agent_worker.repositories.expire_tool_permission_request",
+        expired_permission_request,
+    )
 
     result = await adapter._try_run_sdk(
         payload(trace_id="trace-sdk"),
@@ -4896,16 +5829,13 @@ async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_deny_for_ot
         staged_skill_names=[],
     )
 
-    assert result.error == "tool_permission_required"
+    assert result.error == "tool_permission_expired"
     request_call = next(item[1] for item in calls if item[0] == "request")
     assert request_call["tool_call_id"] == "tool-current"
     assert calls[-1][0] == "gate"
     assert calls[-1][1] == {
         "allowed": False,
-        "reason": "tool_permission_required",
-        "risk_level": "high",
-        "write_capable": True,
-        "decision": "",
+        "reason": "tool_permission_expired",
         "permission_request_id": "tpr-current",
     }
 
@@ -5618,6 +6548,8 @@ async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_othe
     captured = {}
     permission_calls = []
     used_skill_events = []
+    decisions = {}
+    side_effect_tools = ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "WebFetch", "WebSearch"]
 
     class TextBlock:
         def __init__(self, text):
@@ -5653,6 +6585,23 @@ async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_othe
             self.interrupt = interrupt
 
     async def query(prompt, options):
+        broker_hook = captured["hooks"]["PreToolUse"][0].hooks[0]
+        for tool_name in [*side_effect_tools, "mcp__knowledge__search"]:
+            tool_input = (
+                {"command": "python .claude/skills/qa-file-reviewer/scripts/run_qa_review.py inputs/a.docx"}
+                if tool_name == "Bash"
+                else {"value": "x"}
+            )
+            decisions[tool_name] = await broker_hook(
+                {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "tool_use_id": f"tool-{tool_name}",
+                },
+                f"tool-{tool_name}",
+                {},
+            )
         yield AssistantMessage([TextBlock("ok")])
         yield ResultMessage()
 
@@ -5714,6 +6663,7 @@ async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_othe
         execution_policy="sandbox_brokered",
     )
 
+    assert result.error is None
     assert result.message == "ok"
     assert captured["permission_mode"] == "dontAsk"
     internal_context_tools = [
@@ -5725,7 +6675,6 @@ async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_othe
     ]
     assert captured["allowed_tools"] == ["Read", "Glob", "LS", *internal_context_tools]
     assert captured["disallowed_tools"] == []
-    side_effect_tools = ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "WebFetch", "WebSearch"]
     assert captured["tools"] == ["Read", "Glob", "LS", *side_effect_tools]
     pre_tool_matchers = captured["hooks"]["PreToolUse"]
     assert len(pre_tool_matchers) == 1
@@ -5734,21 +6683,7 @@ async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_othe
     assert len(captured["hooks"]["PostToolUse"]) == 1
     assert captured["hooks"]["PostToolUse"][0].matcher == "Skill"
     broker_hook = pre_tool_matchers[0].hooks[0]
-
-    decisions = {}
     brokered_tools = [*side_effect_tools, "mcp__knowledge__search"]
-    for tool_name in brokered_tools:
-        tool_input = {"command": "python .claude/skills/qa-file-reviewer/scripts/run_qa_review.py inputs/a.docx"} if tool_name == "Bash" else {"value": "x"}
-        decisions[tool_name] = await broker_hook(
-            {
-                "hook_event_name": "PreToolUse",
-                "tool_name": tool_name,
-                "tool_input": tool_input,
-                "tool_use_id": f"tool-{tool_name}",
-            },
-            f"tool-{tool_name}",
-            {},
-        )
 
     assert [request["tool_name"] for request in permission_calls] == brokered_tools
     mcp_request = permission_calls[-1]
@@ -5759,7 +6694,7 @@ async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_othe
     assert decisions["Bash"]["hookSpecificOutput"]["permissionDecision"] == "allow"
     assert decisions["mcp__knowledge__search"]["hookSpecificOutput"]["permissionDecision"] == "allow"
     assert decisions["Write"]["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert decisions["WebFetch"]["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_broker_failed"
+    assert decisions["WebFetch"]["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_broker_timed_out"
     assert decisions["WebSearch"]["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_malformed_response"
 
     permission_count_before_governed_tools = len(permission_calls)

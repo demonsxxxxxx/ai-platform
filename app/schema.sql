@@ -347,7 +347,12 @@ create table if not exists runs (
   created_at timestamptz not null default now(),
   copied_from_run_id text references runs(id),
   cancel_requested_at timestamptz,
-  cancel_requested_by text
+  cancel_requested_by text,
+  permission_terminalization_target text,
+  permission_terminalization_reason text not null default '',
+  permission_terminalization_result_json jsonb not null default '{}'::jsonb,
+  permission_terminalization_error_code text,
+  permission_terminalization_error_message text
 );
 
 create index if not exists idx_runs_tenant_created on runs(tenant_id, created_at desc);
@@ -363,6 +368,11 @@ alter table runs add column if not exists auth_source text;
 alter table runs add column if not exists copied_from_run_id text references runs(id);
 alter table runs add column if not exists cancel_requested_at timestamptz;
 alter table runs add column if not exists cancel_requested_by text;
+alter table runs add column if not exists permission_terminalization_target text;
+alter table runs add column if not exists permission_terminalization_reason text not null default '';
+alter table runs add column if not exists permission_terminalization_result_json jsonb not null default '{}'::jsonb;
+alter table runs add column if not exists permission_terminalization_error_code text;
+alter table runs add column if not exists permission_terminalization_error_message text;
 alter table runs add column if not exists latency_ms integer;
 alter table runs add column if not exists input_token_count integer not null default 0;
 alter table runs add column if not exists output_token_count integer not null default 0;
@@ -885,6 +895,10 @@ create index if not exists idx_run_tool_permission_requests_run
   on run_tool_permission_requests(tenant_id, run_id, created_at desc);
 create index if not exists idx_run_tool_permission_requests_inbox
   on run_tool_permission_requests(tenant_id, user_id, status, created_at desc);
+alter table run_tool_permission_requests add column if not exists expires_at timestamptz;
+create index if not exists idx_run_tool_permission_requests_pending_expiry
+  on run_tool_permission_requests(tenant_id, expires_at asc, created_at asc, id)
+  where status = 'pending';
 
 create table if not exists sandbox_leases (
   id text primary key,

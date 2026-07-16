@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import hashlib
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
 from typing import Any
 
 from psycopg import AsyncConnection
@@ -41,6 +44,10 @@ from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import SkillVersionMaterializationError, build_skill_snapshot_governance
 from app.skills.release_policy import resolve_rollout_skill_decision
 from app.tool_policy import max_risk
+from app.tool_permission_lifecycle import (
+    TOOL_PERMISSION_EXPIRY_BATCH_LIMIT,
+    TOOL_PERMISSION_REQUEST_TTL_SECONDS,
+)
 
 
 DEFAULT_RUN_EXECUTOR_TYPES = {"claude-agent-worker", "ragflow"}
@@ -48,6 +55,8 @@ ACTIVE_RUN_STATUSES = {"queued", "running"}
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled"}
 RETRYABLE_RUN_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered"}
 MEMORY_RETENTION_CLEANUP_CURSOR_KEY = "memory_retention_cleanup"
+TOOL_PERMISSION_TERMINALIZATION_BATCH_LIMIT = TOOL_PERMISSION_EXPIRY_BATCH_LIMIT
+TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT = TOOL_PERMISSION_EXPIRY_BATCH_LIMIT
 
 
 def new_id(prefix: str) -> str:
@@ -4340,17 +4349,35 @@ async def create_tool_permission_request(
     write_capable: bool,
     reason: str,
     request_payload_json: dict[str, Any],
+    expires_in_seconds: float = TOOL_PERMISSION_REQUEST_TTL_SECONDS,
+    absolute_expires_at: datetime | None = None,
 ) -> dict[str, Any]:
+    """Create one pending, expiring permission request only for an open run."""
     request_id = new_id("tpr")
-    await conn.execute(
+    cursor = await conn.execute(
         """
+        with eligible_run as (
+          select id
+          from runs
+          where tenant_id = %s
+            and id = %s
+            and status = 'running'
+            and cancel_requested_at is null
+            and permission_terminalization_target is null
+          for update
+        )
         insert into run_tool_permission_requests(
           id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
-          tool_id, tool_call_id, action, risk_level, write_capable, reason, request_payload_json
+          tool_id, tool_call_id, action, risk_level, write_capable, reason, request_payload_json, expires_at
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
+               coalesce(%s::timestamptz, clock_timestamp() + (%s * interval '1 second'))
+        from eligible_run
+        returning id
         """,
         (
+            tenant_id,
+            run_id,
             request_id,
             tenant_id,
             workspace_id,
@@ -4365,8 +4392,12 @@ async def create_tool_permission_request(
             write_capable,
             reason,
             dumps_json(request_payload_json),
+            absolute_expires_at,
+            max(float(expires_in_seconds), 0.0),
         ),
     )
+    if await cursor.fetchone() is None:
+        raise RepositoryConflictError("tool_permission_run_not_open")
     return {
         "id": request_id,
         "tenant_id": tenant_id,
@@ -4384,6 +4415,682 @@ async def create_tool_permission_request(
         "reason": reason,
         "request_payload_json": request_payload_json,
     }
+
+
+async def expire_tool_permission_request(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str,
+    run_id: str,
+    request_id: str,
+) -> dict[str, Any] | None:
+    """Mark one still-pending request expired when its deadline has elapsed."""
+    rows = await expire_pending_tool_permission_requests(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        run_id=run_id,
+        request_id=request_id,
+        limit=1,
+    )
+    return rows[0] if rows else None
+
+
+async def expire_pending_tool_permission_requests(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str | None = None,
+    run_id: str | None = None,
+    request_id: str | None = None,
+    limit: int = TOOL_PERMISSION_EXPIRY_BATCH_LIMIT,
+) -> list[dict[str, Any]]:
+    """Terminalize one bounded, scoped batch of expired requests with audit facts."""
+    bounded_limit = max(1, min(int(limit), TOOL_PERMISSION_EXPIRY_BATCH_LIMIT))
+    cursor = await conn.execute(
+        """
+        with locked_runs as materialized (
+          select runs.id
+          from runs
+          where runs.tenant_id = %s
+            and runs.permission_terminalization_target is null
+            and (%s::text is null or runs.id = %s)
+            and exists (
+              select 1
+              from run_tool_permission_requests as candidate
+              where candidate.tenant_id = runs.tenant_id
+                and candidate.run_id = runs.id
+                and candidate.status = 'pending'
+                and (candidate.expires_at is null or candidate.expires_at <= clock_timestamp())
+                and (%s::text is null or candidate.user_id = %s)
+                and (%s::text is null or candidate.id = %s)
+            )
+          order by runs.id asc
+          limit %s
+          for update skip locked
+        ), expired_requests as (
+          select permission_request.id
+          from run_tool_permission_requests as permission_request
+          join locked_runs on locked_runs.id = permission_request.run_id
+          where permission_request.tenant_id = %s
+            and permission_request.status = 'pending'
+            and (permission_request.expires_at is null or permission_request.expires_at <= clock_timestamp())
+            and (%s::text is null or permission_request.user_id = %s)
+            and (%s::text is null or permission_request.run_id = %s)
+            and (%s::text is null or permission_request.id = %s)
+          order by permission_request.expires_at asc, permission_request.id asc
+          limit %s
+          for update of permission_request skip locked
+        )
+        update run_tool_permission_requests as permission_request
+        set status = 'expired',
+            reason = 'permission_request_expired',
+            expires_at = coalesce(permission_request.expires_at, clock_timestamp()),
+            updated_at = clock_timestamp()
+        from expired_requests
+        where permission_request.id = expired_requests.id
+        returning permission_request.*
+        """,
+        (
+            tenant_id,
+            run_id,
+            run_id,
+            user_id,
+            user_id,
+            request_id,
+            request_id,
+            bounded_limit,
+            tenant_id,
+            user_id,
+            user_id,
+            run_id,
+            run_id,
+            request_id,
+            request_id,
+            bounded_limit,
+        ),
+    )
+    rows = list(await cursor.fetchall())
+    for row in rows:
+        await _record_tool_permission_terminalization(
+            conn,
+            tenant_id=tenant_id,
+            run_id=str(row.get("run_id") or run_id or ""),
+            row=row,
+            terminal_status="expired",
+            terminal_reason="permission_request_expired",
+            message="工具权限请求已过期",
+        )
+    return rows
+
+
+async def _record_tool_permission_terminalization(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    row: dict[str, Any],
+    terminal_status: str,
+    terminal_reason: str,
+    message: str,
+) -> None:
+    """Write the public terminal fact and its tenant/run/request audit record."""
+    request_id = str(row["id"])
+    trace_id = str(row.get("trace_id") or "")
+    await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        trace_id=trace_id,
+        event_type="tool_permission_terminalized",
+        stage="tool_policy",
+        message=message,
+        payload={
+            "visible_to_user": True,
+            "permission_request_id": request_id,
+            "tool_id": str(row.get("tool_id") or "tool"),
+            "tool_call_id": str(row.get("tool_call_id") or ""),
+            "action": str(row.get("action") or "execute"),
+            "risk_level": str(row.get("risk_level") or "low"),
+            "write_capable": bool(row.get("write_capable")),
+            "status": terminal_status,
+            "reason": terminal_reason,
+        },
+    )
+    await append_audit_log(
+        conn,
+        tenant_id=tenant_id,
+        user_id=None,
+        action="tool_permission.terminalized",
+        target_type="tool_permission_request",
+        target_id=request_id,
+        trace_id=trace_id,
+        payload_json={
+            "run_id": run_id,
+            "request_user_id": str(row.get("user_id") or ""),
+            "tool_id": str(row.get("tool_id") or ""),
+            "tool_call_id": str(row.get("tool_call_id") or ""),
+            "decision": str(row.get("decision") or ""),
+            "status": terminal_status,
+            "reason": terminal_reason,
+        },
+    )
+
+
+async def terminalize_pending_tool_permission_requests(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    request_id: str | None = None,
+    terminal_status: str,
+    terminal_reason: str,
+) -> list[dict[str, Any]]:
+    """Close one run-first bounded batch with durable per-request facts."""
+    if terminal_status not in {"invalidated", "failed", "cancelled", "expired"}:
+        raise ValueError("invalid_tool_permission_terminal_status")
+    cursor = await conn.execute(
+        """
+        with locked_run as materialized (
+          select id
+          from runs
+          where tenant_id = %s and id = %s
+          for update
+        ), terminalized_requests as (
+          select permission_request.id
+          from run_tool_permission_requests as permission_request
+          join locked_run on locked_run.id = permission_request.run_id
+          where permission_request.tenant_id = %s
+            and permission_request.run_id = %s
+            and permission_request.status in ('pending', 'decided')
+            and (%s::text is null or permission_request.id = %s)
+          order by permission_request.created_at asc, permission_request.id asc
+          limit %s
+          for update of permission_request skip locked
+        )
+        update run_tool_permission_requests as permission_request
+        set status = %s,
+            reason = %s,
+            expires_at = coalesce(expires_at, clock_timestamp()),
+            updated_at = clock_timestamp()
+        from terminalized_requests
+        where permission_request.id = terminalized_requests.id
+        returning permission_request.id, permission_request.user_id, permission_request.trace_id,
+                  permission_request.tool_id, permission_request.tool_call_id, permission_request.action,
+                  permission_request.risk_level, permission_request.write_capable, permission_request.decision
+        """,
+        (
+            tenant_id,
+            run_id,
+            tenant_id,
+            run_id,
+            request_id,
+            request_id,
+            TOOL_PERMISSION_TERMINALIZATION_BATCH_LIMIT,
+            terminal_status,
+            terminal_reason,
+        ),
+    )
+    rows = list(await cursor.fetchall())
+    for row in rows:
+        await _record_tool_permission_terminalization(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            row=row,
+            terminal_status=terminal_status,
+            terminal_reason=terminal_reason,
+            message="工具权限请求已终结",
+        )
+    return rows
+
+
+async def list_runs_requiring_tool_permission_terminalization(
+    conn: AsyncConnection,
+    *,
+    limit: int = TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT,
+) -> list[dict[str, Any]]:
+    """Return a bounded set of durable permission-drain work items for worker maintenance."""
+
+    bounded_limit = max(1, min(int(limit), TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT))
+    cursor = await conn.execute(
+        """
+        select runs.tenant_id, runs.id as run_id
+        from runs
+        where runs.permission_terminalization_target is not null
+           or (
+             runs.status in ('succeeded', 'failed', 'cancelled')
+             and exists (
+               select 1
+               from run_tool_permission_requests as permission_request
+               where permission_request.tenant_id = runs.tenant_id
+                 and permission_request.run_id = runs.id
+                 and permission_request.status in ('pending', 'decided')
+             )
+           )
+           or exists (
+             select 1
+             from run_tool_permission_requests as permission_request
+             where permission_request.tenant_id = runs.tenant_id
+               and permission_request.run_id = runs.id
+               and permission_request.status = 'pending'
+               and (permission_request.expires_at is null or permission_request.expires_at <= clock_timestamp())
+           )
+        order by coalesce(runs.finished_at, runs.started_at, runs.created_at) asc, runs.tenant_id asc, runs.id asc
+        limit %s
+        for update skip locked
+        """,
+        (bounded_limit,),
+    )
+    return list(await cursor.fetchall())
+
+
+async def list_multi_agent_terminal_children_requiring_reconciliation(
+    conn: AsyncConnection,
+    *,
+    limit: int = TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT,
+) -> list[dict[str, Any]]:
+    """Return bounded terminal children whose durable handed-off parent step still needs reconciliation."""
+
+    bounded_limit = max(1, min(int(limit), TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT))
+    cursor = await conn.execute(
+        """
+        select child.tenant_id, child.id as run_id, child.status
+        from runs child
+        join run_steps parent_step
+          on parent_step.tenant_id = child.tenant_id
+         and parent_step.run_id = child.copied_from_run_id
+         and parent_step.payload_json->>'dispatch_child_run_id' = child.id
+        where child.copied_from_run_id is not null
+          and child.status in ('succeeded', 'failed', 'cancelled')
+          and parent_step.payload_json->>'dispatch_state' = 'handed_off'
+        order by coalesce(child.finished_at, child.started_at, child.created_at) asc,
+                 child.tenant_id asc, child.id asc
+        limit %s
+        for update of child, parent_step skip locked
+        """,
+        (bounded_limit,),
+    )
+    return list(await cursor.fetchall())
+
+
+async def list_multi_agent_parent_runs_requiring_finalization(
+    conn: AsyncConnection,
+    *,
+    limit: int = TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT,
+) -> list[dict[str, Any]]:
+    """Return bounded, ready multi-agent parents whose exact-once rollup facts are still absent."""
+
+    bounded_limit = max(1, min(int(limit), TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT))
+    cursor = await conn.execute(
+        """
+        select parent.tenant_id, parent.id as run_id
+        from runs parent
+        where parent.copied_from_run_id is null
+          and (
+            parent.status in ('running', 'succeeded', 'failed', 'cancelled')
+            or (parent.status = 'queued' and parent.cancel_requested_at is not null)
+          )
+          and (
+            parent.input_json#>>'{input,execution_mode}' = 'multi_agent'
+            or parent.input_json->>'execution_mode' = 'multi_agent'
+          )
+          and exists (
+            select 1 from run_steps parent_step
+            where parent_step.tenant_id = parent.tenant_id
+              and parent_step.run_id = parent.id
+          )
+          and not exists (
+            select 1 from run_steps parent_step
+            where parent_step.tenant_id = parent.tenant_id
+              and parent_step.run_id = parent.id
+              and parent_step.status not in ('succeeded', 'failed', 'cancelled')
+          )
+          and (
+            not exists (
+              select 1 from run_events parent_event
+              where parent_event.tenant_id = parent.tenant_id
+                and parent_event.run_id = parent.id
+                and parent_event.event_type = 'multi_agent_parent_finalized'
+            )
+            or not exists (
+              select 1 from audit_logs parent_audit
+              where parent_audit.tenant_id = parent.tenant_id
+                and parent_audit.target_type = 'run'
+                and parent_audit.target_id = parent.id
+                and parent_audit.action = 'run.multi_agent.parent.finalize'
+            )
+          )
+        order by coalesce(parent.finished_at, parent.started_at, parent.created_at) asc,
+                 parent.tenant_id asc, parent.id asc
+        limit %s
+        for update of parent skip locked
+        """,
+        (bounded_limit,),
+    )
+    return list(await cursor.fetchall())
+
+
+async def _stage_run_tool_permission_terminalization(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    target_status: str,
+    terminal_reason: str,
+    result_json: dict[str, Any] | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any] | None:
+    """Persist the first terminal intent while holding the owning run row first."""
+
+    if target_status not in {"failed", "cancel_requested", "cancelled"}:
+        raise ValueError("invalid_run_tool_permission_terminal_target")
+    cursor = await conn.execute(
+        """
+        update runs
+        set permission_terminalization_target = case
+              when permission_terminalization_target = 'cancel_requested'
+                   and %s = 'cancelled' then 'cancelled'
+              else coalesce(permission_terminalization_target, %s)
+            end,
+            permission_terminalization_reason = case
+              when permission_terminalization_target is null
+                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
+              else permission_terminalization_reason
+            end,
+            permission_terminalization_result_json = case
+              when permission_terminalization_target is null
+                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s::jsonb
+              else permission_terminalization_result_json
+            end,
+            permission_terminalization_error_code = case
+              when permission_terminalization_target is null
+                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
+              else permission_terminalization_error_code
+            end,
+            permission_terminalization_error_message = case
+              when permission_terminalization_target is null
+                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
+              else permission_terminalization_error_message
+            end
+        where tenant_id = %s
+          and id = %s
+          and status not in ('succeeded', 'failed', 'cancelled')
+        returning id, trace_id, permission_terminalization_target,
+                  permission_terminalization_reason, permission_terminalization_result_json,
+                  permission_terminalization_error_code, permission_terminalization_error_message
+        """,
+        (
+            target_status,
+            target_status,
+            target_status,
+            terminal_reason,
+            target_status,
+            dumps_json(result_json or {}),
+            target_status,
+            error_code,
+            target_status,
+            error_message,
+            tenant_id,
+            run_id,
+        ),
+    )
+    return await cursor.fetchone()
+
+
+async def _has_unterminalized_run_tool_permissions(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> bool:
+    """Return whether a staged run still has an authority-bearing permission row."""
+
+    cursor = await conn.execute(
+        """
+        select exists(
+          select 1
+          from run_tool_permission_requests
+          where tenant_id = %s
+            and run_id = %s
+            and status in ('pending', 'decided')
+        ) as has_unterminalized
+        """,
+        (tenant_id, run_id),
+    )
+    row = await cursor.fetchone()
+    return bool(row and row.get("has_unterminalized"))
+
+
+async def progress_run_tool_permission_terminalization(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    """Advance one durable, bounded terminalization transaction and finalize only when clear."""
+
+    cursor = await conn.execute(
+        """
+        select id, trace_id, status, permission_terminalization_target,
+               permission_terminalization_reason, permission_terminalization_result_json,
+               permission_terminalization_error_code, permission_terminalization_error_message,
+               latency_ms, input_token_count, output_token_count, total_token_count,
+               estimated_cost_minor
+        from runs
+        where tenant_id = %s and id = %s
+        for update
+        """,
+        (tenant_id, run_id),
+    )
+    staged = await cursor.fetchone()
+    if staged is None:
+        return None
+    target_status = str(staged.get("permission_terminalization_target") or "")
+    if target_status not in {"failed", "cancel_requested", "cancelled"}:
+        run_status = str(staged.get("status") or "")
+        if run_status in {"succeeded", "failed", "cancelled"}:
+            terminal_status = "invalidated" if run_status == "succeeded" else run_status
+            await terminalize_pending_tool_permission_requests(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                terminal_status=terminal_status,
+                terminal_reason="legacy_terminal_run_permission_drain",
+            )
+            return ToolPermissionTerminalizationProgress(
+                completed=not await _has_unterminalized_run_tool_permissions(conn, tenant_id=tenant_id, run_id=run_id),
+                status=run_status,
+            )
+        if run_status == "running":
+            expired_rows = await expire_pending_tool_permission_requests(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+            )
+            if expired_rows:
+                return ToolPermissionTerminalizationProgress(completed=False, status="running")
+        return ToolPermissionTerminalizationProgress(completed=False, status=None)
+    terminal_reason = str(staged.get("permission_terminalization_reason") or "run_terminalized")
+    await terminalize_pending_tool_permission_requests(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        terminal_status="cancelled" if target_status == "cancel_requested" else target_status,
+        terminal_reason=terminal_reason,
+    )
+    if await _has_unterminalized_run_tool_permissions(conn, tenant_id=tenant_id, run_id=run_id):
+        return ToolPermissionTerminalizationProgress(completed=False, status=target_status)
+    if target_status == "cancel_requested":
+        cursor = await conn.execute(
+            """
+            update runs
+            set permission_terminalization_target = null,
+                permission_terminalization_reason = '',
+                permission_terminalization_result_json = '{}'::jsonb,
+                permission_terminalization_error_code = null,
+                permission_terminalization_error_message = null
+            where tenant_id = %s
+              and id = %s
+              and permission_terminalization_target = 'cancel_requested'
+              and not exists (
+                select 1 from run_tool_permission_requests
+                where run_tool_permission_requests.tenant_id = runs.tenant_id
+                  and run_tool_permission_requests.run_id = runs.id
+                  and run_tool_permission_requests.status in ('pending', 'decided')
+              )
+            returning id, status
+            """,
+            (tenant_id, run_id),
+        )
+    elif target_status == "failed":
+        cursor = await conn.execute(
+            """
+            update runs
+            set status = 'failed',
+                result_json = permission_terminalization_result_json,
+                finished_at = now(),
+                error_code = permission_terminalization_error_code,
+                error_message = permission_terminalization_error_message,
+                permission_terminalization_target = null,
+                permission_terminalization_reason = '',
+                permission_terminalization_result_json = '{}'::jsonb,
+                permission_terminalization_error_code = null,
+                permission_terminalization_error_message = null
+            where tenant_id = %s
+              and id = %s
+              and permission_terminalization_target = 'failed'
+              and not exists (
+                select 1 from run_tool_permission_requests
+                where run_tool_permission_requests.tenant_id = runs.tenant_id
+                  and run_tool_permission_requests.run_id = runs.id
+                  and run_tool_permission_requests.status in ('pending', 'decided')
+              )
+            returning id, status
+            """,
+            (tenant_id, run_id),
+        )
+    else:
+        cursor = await conn.execute(
+            """
+            update runs
+            set status = 'cancelled',
+                result_json = permission_terminalization_result_json,
+                finished_at = now(),
+                error_code = null,
+                error_message = null,
+                permission_terminalization_target = null,
+                permission_terminalization_reason = '',
+                permission_terminalization_result_json = '{}'::jsonb,
+                permission_terminalization_error_code = null,
+                permission_terminalization_error_message = null
+            where tenant_id = %s
+              and id = %s
+              and permission_terminalization_target = 'cancelled'
+              and not exists (
+                select 1 from run_tool_permission_requests
+                where run_tool_permission_requests.tenant_id = runs.tenant_id
+                  and run_tool_permission_requests.run_id = runs.id
+                  and run_tool_permission_requests.status in ('pending', 'decided')
+              )
+            returning id, status
+            """,
+            (tenant_id, run_id),
+        )
+    finalized = await cursor.fetchone()
+    if finalized is None:
+        return ToolPermissionTerminalizationProgress(completed=False, status=target_status)
+    if target_status not in {"failed", "cancelled"}:
+        return ToolPermissionTerminalizationProgress(completed=False, status="cancel_requested")
+    result_payload = (
+        staged.get("permission_terminalization_result_json")
+        if isinstance(staged.get("permission_terminalization_result_json"), dict)
+        else {}
+    )
+    result_latency, result_input, result_output, result_total, result_cost = _result_observability_values(result_payload)
+    latency_ms = result_latency or _coerce_int(staged.get("latency_ms"))
+    input_tokens = result_input or _coerce_int(staged.get("input_token_count"))
+    output_tokens = result_output or _coerce_int(staged.get("output_token_count"))
+    total_tokens = result_total or _coerce_int(staged.get("total_token_count"))
+    estimated_cost_minor = result_cost or _coerce_int(staged.get("estimated_cost_minor"))
+    artifact_cursor = await conn.execute(
+        "select count(*) as artifact_count from artifacts where tenant_id = %s and run_id = %s",
+        (tenant_id, run_id),
+    )
+    artifact_row = await artifact_cursor.fetchone()
+    artifact_count = _coerce_int(artifact_row.get("artifact_count")) if artifact_row is not None else 0
+    if target_status == "failed":
+        await _fail_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+        event_type, stage, message = "run_failed", "worker", "Run failed"
+    elif target_status == "cancelled":
+        await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+        event_type, stage, message = "run_cancelled", "control", "任务已取消"
+    event_payload = {
+        "visible_to_user": True,
+        "severity": "error" if target_status == "failed" else "warning",
+        "artifact_count": artifact_count,
+        "result_status": target_status,
+        "result": sanitize_public_payload(result_payload),
+    }
+    if target_status == "failed" and staged.get("permission_terminalization_error_code"):
+        event_payload["error_code"] = str(staged["permission_terminalization_error_code"])
+        safe_error_message = sanitize_public_text(staged.get("permission_terminalization_error_message"))
+        if safe_error_message:
+            event_payload["error_message"] = safe_error_message
+    await append_event(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        trace_id=staged.get("trace_id"),
+        event_type=event_type,
+        stage=stage,
+        message=message,
+        payload=event_payload,
+        latency_ms=latency_ms,
+        input_token_count=input_tokens,
+        output_token_count=output_tokens,
+        total_token_count=total_tokens,
+        estimated_cost_minor=estimated_cost_minor,
+    )
+    await append_audit_log(conn, tenant_id=tenant_id, user_id=None, action=f"run.{target_status}", target_type="run",
+                           target_id=run_id, trace_id=staged.get("trace_id"), payload_json={
+                               "reason": terminal_reason,
+                               "artifact_count": artifact_count,
+                               "latency_ms": latency_ms,
+                               "input_token_count": input_tokens,
+                               "output_token_count": output_tokens,
+                               "total_token_count": total_tokens,
+                               "estimated_cost_minor": estimated_cost_minor,
+                               "error_code": staged.get("permission_terminalization_error_code"),
+                           })
+    return ToolPermissionTerminalizationProgress(completed=True, status=target_status, did_transition=True, needs_reconcile=True)
+
+
+async def has_pending_tool_permission_requests(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> bool:
+    """Return whether an open run still has a permission gate that blocks success."""
+    await expire_pending_tool_permission_requests(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+    )
+    cursor = await conn.execute(
+        """
+        select exists(
+          select 1 from run_tool_permission_requests
+          where tenant_id = %s and run_id = %s and status = 'pending'
+        ) as has_pending
+        """,
+        (tenant_id, run_id),
+    )
+    row = await cursor.fetchone()
+    return bool(row and row.get("has_pending"))
 
 
 async def get_tool_permission_request(
@@ -4415,9 +5122,11 @@ async def get_tool_permission_request_for_tenant(
     """Fetch one permission request for tenant-scoped administrator governance."""
     cursor = await conn.execute(
         """
-        select *
-        from run_tool_permission_requests
-        where tenant_id = %s and run_id = %s and id = %s
+        select permission_request.*, runs.status as run_status,
+               runs.cancel_requested_at, runs.permission_terminalization_target
+        from run_tool_permission_requests as permission_request
+        join runs on runs.tenant_id = permission_request.tenant_id and runs.id = permission_request.run_id
+        where permission_request.tenant_id = %s and permission_request.run_id = %s and permission_request.id = %s
         """,
         (tenant_id, run_id, request_id),
     )
@@ -4452,9 +5161,11 @@ async def get_tool_permission_request_by_id_for_tenant(
     """Fetch one tenant request for the admin inbox without owner filtering."""
     cursor = await conn.execute(
         """
-        select *
-        from run_tool_permission_requests
-        where tenant_id = %s and id = %s
+        select permission_request.*, runs.status as run_status,
+               runs.cancel_requested_at, runs.permission_terminalization_target
+        from run_tool_permission_requests as permission_request
+        join runs on runs.tenant_id = permission_request.tenant_id and runs.id = permission_request.run_id
+        where permission_request.tenant_id = %s and permission_request.id = %s
         """,
         (tenant_id, request_id),
     )
@@ -4470,13 +5181,21 @@ async def list_tool_permission_inbox(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """List current-user permission requests for the standalone approval inbox."""
+    await expire_pending_tool_permission_requests(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+    )
     cursor = await conn.execute(
         """
-        select *
-        from run_tool_permission_requests
-        where tenant_id = %s and user_id = %s
-          and (%s = 'all' or status = %s)
-        order by created_at desc, id desc
+        select permission_request.*, runs.status as run_status,
+               runs.cancel_requested_at, runs.permission_terminalization_target
+        from run_tool_permission_requests as permission_request
+        join runs on runs.tenant_id = permission_request.tenant_id and runs.id = permission_request.run_id
+        where permission_request.tenant_id = %s and permission_request.user_id = %s
+          and (%s = 'all' or permission_request.status = %s)
+          and (permission_request.status <> 'pending' or permission_request.expires_at > clock_timestamp())
+        order by permission_request.created_at desc, permission_request.id desc
         limit %s
         """,
         (tenant_id, user_id, status, status, int(limit)),
@@ -4492,13 +5211,17 @@ async def list_tool_permission_inbox_for_tenant(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """List tenant permission requests for the administrator governance inbox."""
+    await expire_pending_tool_permission_requests(conn, tenant_id=tenant_id)
     cursor = await conn.execute(
         """
-        select *
-        from run_tool_permission_requests
-        where tenant_id = %s
-          and (%s = 'all' or status = %s)
-        order by created_at desc, id desc
+        select permission_request.*, runs.status as run_status,
+               runs.cancel_requested_at, runs.permission_terminalization_target
+        from run_tool_permission_requests as permission_request
+        join runs on runs.tenant_id = permission_request.tenant_id and runs.id = permission_request.run_id
+        where permission_request.tenant_id = %s
+          and (%s = 'all' or permission_request.status = %s)
+          and (permission_request.status <> 'pending' or permission_request.expires_at > clock_timestamp())
+        order by permission_request.created_at desc, permission_request.id desc
         limit %s
         """,
         (tenant_id, status, status, int(limit)),
@@ -4516,30 +5239,56 @@ async def decide_tool_permission_request(
     decision: str,
     reason: str,
     decision_payload_json: dict[str, Any],
-    expires_in_seconds: int = 900,
+    expires_in_seconds: int = int(TOOL_PERMISSION_REQUEST_TTL_SECONDS),
 ) -> dict[str, Any] | None:
+    # Kept for caller compatibility: a decision must never extend the TTL
+    # established when this exact request was created.
+    _ = expires_in_seconds
+    expired = await expire_tool_permission_request(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        run_id=run_id,
+        request_id=request_id,
+    )
+    if expired is not None:
+        return None
     cursor = await conn.execute(
         """
-        update run_tool_permission_requests
+        with executable_run as (
+          select id
+          from runs
+          where tenant_id = %s
+            and id = %s
+            and status = 'running'
+            and cancel_requested_at is null
+            and permission_terminalization_target is null
+          for update
+        )
+        update run_tool_permission_requests as permission_request
         set status = 'decided',
             decision = %s,
             reason = %s,
             decision_payload_json = %s::jsonb,
-            expires_at = now() + (%s * interval '1 second'),
-            decided_at = now(),
-            updated_at = now()
-        where tenant_id = %s
-          and user_id = %s
-          and run_id = %s
-          and id = %s
-          and status = 'pending'
-        returning *
+            expires_at = permission_request.expires_at,
+            decided_at = clock_timestamp(),
+            updated_at = clock_timestamp()
+        from executable_run
+        where permission_request.tenant_id = %s
+          and permission_request.user_id = %s
+          and permission_request.run_id = %s
+          and executable_run.id = permission_request.run_id
+          and permission_request.id = %s
+          and permission_request.status = 'pending'
+          and permission_request.expires_at > clock_timestamp()
+        returning permission_request.*
         """,
         (
+            tenant_id,
+            run_id,
             decision,
             reason,
             dumps_json(decision_payload_json),
-            int(expires_in_seconds),
             tenant_id,
             user_id,
             run_id,
@@ -4578,20 +5327,31 @@ async def get_exact_tool_permission_decision(
     exact_filter = f"and ({' or '.join(exact_clauses)})" if exact_clauses else ""
     cursor = await conn.execute(
         f"""
-        select *
-        from run_tool_permission_requests
-        where tenant_id = %s
-          and user_id = %s
-          and run_id = %s
-          and tool_id = %s
-          and action = %s
-          and status = 'decided'
-          and (expires_at is null or expires_at > now())
+        with executable_run as (
+          select id
+          from runs
+          where tenant_id = %s
+            and id = %s
+            and status = 'running'
+            and cancel_requested_at is null
+            and permission_terminalization_target is null
+          for update
+        )
+        select permission_request.*
+        from run_tool_permission_requests as permission_request
+        join executable_run on executable_run.id = permission_request.run_id
+        where permission_request.tenant_id = %s
+          and permission_request.user_id = %s
+          and permission_request.run_id = %s
+          and permission_request.tool_id = %s
+          and permission_request.action = %s
+          and permission_request.status = 'decided'
+          and permission_request.expires_at > clock_timestamp()
           {exact_filter}
-        order by decided_at desc, updated_at desc, created_at desc
+        order by permission_request.decided_at desc, permission_request.updated_at desc, permission_request.created_at desc
         limit 1
         """,
-        tuple(params),
+        tuple([tenant_id, run_id, *params]),
     )
     return await cursor.fetchone()
 
@@ -4630,19 +5390,31 @@ async def consume_tool_permission_decision(
 ) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """
-        update run_tool_permission_requests
+        with executable_run as (
+          select id
+          from runs
+          where tenant_id = %s
+            and id = %s
+            and status = 'running'
+            and cancel_requested_at is null
+            and permission_terminalization_target is null
+          for update
+        )
+        update run_tool_permission_requests as permission_request
         set status = 'consumed',
-            updated_at = now()
-        where tenant_id = %s
-          and user_id = %s
-          and run_id = %s
-          and id = %s
-          and decision = 'allow_once'
-          and status = 'decided'
-          and (expires_at is null or expires_at > now())
-        returning *
+            updated_at = clock_timestamp()
+        from executable_run
+        where permission_request.tenant_id = %s
+          and permission_request.user_id = %s
+          and permission_request.run_id = %s
+          and executable_run.id = permission_request.run_id
+          and permission_request.id = %s
+          and permission_request.decision = 'allow_once'
+          and permission_request.status = 'decided'
+          and permission_request.expires_at > clock_timestamp()
+        returning permission_request.*
         """,
-        (tenant_id, user_id, run_id, request_id),
+        (tenant_id, run_id, tenant_id, user_id, run_id, request_id),
     )
     return await cursor.fetchone()
 
@@ -6839,23 +7611,36 @@ async def mark_multi_agent_dispatch_enqueue_failed(
         return None
     child_cursor = await conn.execute(
         """
-        update runs
-        set
-          status = 'failed',
-          finished_at = now(),
-          error_code = 'multi_agent_child_enqueue_failed',
-          error_message = %s
+        select id
+        from runs
         where tenant_id = %s
           and id = %s
           and copied_from_run_id = %s
           and status = 'queued'
-        returning id
+        for update
         """,
-        (safe_reason, tenant_id, child_run_id, parent_run_id),
+        (tenant_id, child_run_id, parent_run_id),
     )
     child = await child_cursor.fetchone()
     if child is None:
         raise RepositoryConflictError("dispatch_child_not_queued")
+    staged = await _stage_run_tool_permission_terminalization(
+        conn,
+        tenant_id=tenant_id,
+        run_id=child_run_id,
+        target_status="failed",
+        terminal_reason="multi_agent_child_enqueue_failed",
+        result_json={"message": safe_reason},
+        error_code="multi_agent_child_enqueue_failed",
+        error_message=safe_reason,
+    )
+    if staged is None:
+        raise RepositoryConflictError("dispatch_child_not_open")
+    progress = await progress_run_tool_permission_terminalization(
+        conn,
+        tenant_id=tenant_id,
+        run_id=child_run_id,
+    )
     event_id = await append_event(
         conn,
         tenant_id=tenant_id,
@@ -6893,6 +7678,7 @@ async def mark_multi_agent_dispatch_enqueue_failed(
         "parent_step_id": parent_step_id,
         "step_key": str(step["step_key"]),
         "child_run_id": child_run_id,
+        "child_terminalization_completed": bool(progress and progress.completed),
         "event_id": event_id,
         "audit_id": audit_id,
     }
@@ -7071,9 +7857,8 @@ async def finalize_multi_agent_parent_run_if_ready(
     if parent_run.get("copied_from_run_id"):
         return None
     parent_status = str(parent_run.get("status") or "")
-    if parent_status in TERMINAL_RUN_STATUSES:
-        return None
-    if parent_status != "running" and parent_run.get("cancel_requested_at") is None:
+    parent_is_terminal = parent_status in TERMINAL_RUN_STATUSES
+    if not parent_is_terminal and parent_status != "running" and parent_run.get("cancel_requested_at") is None:
         return None
     execution_input = _run_execution_input_from_row(parent_run)
     if str(execution_input.get("execution_mode") or "") != "multi_agent":
@@ -7095,7 +7880,7 @@ async def finalize_multi_agent_parent_run_if_ready(
         return None
     if _multi_agent_parent_has_open_dispatch(steps):
         return None
-    target_status = _multi_agent_parent_status(parent_run, steps)
+    target_status = parent_status if parent_is_terminal else _multi_agent_parent_status(parent_run, steps)
     if target_status is None:
         return None
     active_cursor = await conn.execute(
@@ -7128,31 +7913,82 @@ async def finalize_multi_agent_parent_run_if_ready(
     safe_triggered_by = sanitize_public_text(triggered_by_child_run_id)
     if safe_triggered_by:
         result_json["multi_agent"]["triggered_by_child_run_id"] = safe_triggered_by
-    update_cursor = await conn.execute(
+    terminal_written: bool | ToolPermissionTerminalizationProgress = parent_is_terminal
+    if not parent_is_terminal:
+        if target_status == "succeeded":
+            terminal_written = await complete_run(
+                conn,
+                tenant_id=tenant_id,
+                run_id=parent_run_id,
+                result_json=result_json,
+            )
+            if not terminal_written:
+                blocked_reason = await classify_success_commit_block(
+                    conn,
+                    tenant_id=tenant_id,
+                    run_id=parent_run_id,
+                )
+                if blocked_reason == "tool_permission_pending":
+                    terminal_written = await fail_run(
+                        conn,
+                        tenant_id=tenant_id,
+                        run_id=parent_run_id,
+                        error_code="tool_permission_pending",
+                        error_message="A pending tool-permission request blocked successful completion.",
+                        result_json={
+                            **result_json,
+                            "message": "A pending tool-permission request blocked successful completion.",
+                            "error_code": "tool_permission_pending",
+                        },
+                    )
+                    target_status = "failed"
+                elif blocked_reason == "cancel_requested":
+                    terminal_written = await cancel_run(
+                        conn,
+                        tenant_id=tenant_id,
+                        run_id=parent_run_id,
+                        result_json={"message": "任务已取消", "multi_agent": result_json["multi_agent"]},
+                    )
+                    target_status = "cancelled"
+        elif target_status == "failed":
+            terminal_written = await fail_run(
+                conn,
+                tenant_id=tenant_id,
+                run_id=parent_run_id,
+                error_code="multi_agent_child_failed",
+                error_message="Multi-agent child step failed",
+                result_json=result_json,
+            )
+        else:
+            terminal_written = await cancel_run(
+                conn,
+                tenant_id=tenant_id,
+                run_id=parent_run_id,
+                result_json=result_json,
+            )
+    if not terminal_written:
+        return None
+    facts_cursor = await conn.execute(
         """
-        update runs
-        set
-          status = %s,
-          result_json = %s::jsonb,
-          finished_at = now(),
-          error_code = case when %s = 'failed' then 'multi_agent_child_failed' else null end,
-          error_message = case when %s = 'failed' then 'Multi-agent child step failed' else null end
-        where tenant_id = %s
-          and id = %s
-          and status not in ('succeeded', 'failed', 'cancelled')
-        returning id, status
+        select
+          exists (
+            select 1 from run_events
+            where tenant_id = %s and run_id = %s and event_type = 'multi_agent_parent_finalized'
+          ) as has_parent_finalized_event,
+          exists (
+            select 1 from audit_logs
+            where tenant_id = %s
+              and target_type = 'run'
+              and target_id = %s
+              and action = 'run.multi_agent.parent.finalize'
+          ) as has_parent_finalized_audit
         """,
-        (
-            target_status,
-            dumps_json(result_json),
-            target_status,
-            target_status,
-            tenant_id,
-            parent_run_id,
-        ),
+        (tenant_id, parent_run_id, tenant_id, parent_run_id),
     )
-    updated = await update_cursor.fetchone()
-    if updated is None:
+    parent_facts = await facts_cursor.fetchone() or {}
+    has_parent_event = bool(parent_facts.get("has_parent_finalized_event"))
+    has_parent_audit = bool(parent_facts.get("has_parent_finalized_audit"))
+    if has_parent_event and has_parent_audit:
         return None
     event_payload: dict[str, Any] = {
         "visible_to_user": False,
@@ -7161,30 +7997,34 @@ async def finalize_multi_agent_parent_run_if_ready(
     }
     if safe_triggered_by:
         event_payload["triggered_by_child_run_id"] = safe_triggered_by
-    event_id = await append_event(
-        conn,
-        tenant_id=tenant_id,
-        run_id=parent_run_id,
-        trace_id=parent_run.get("trace_id"),
-        event_type="multi_agent_parent_finalized",
-        stage="control",
-        message=_parent_multi_agent_message(target_status),
-        visible_to_user=False,
-        payload=event_payload,
-    )
+    event_id = None
+    if not has_parent_event:
+        event_id = await append_event(
+            conn,
+            tenant_id=tenant_id,
+            run_id=parent_run_id,
+            trace_id=parent_run.get("trace_id"),
+            event_type="multi_agent_parent_finalized",
+            stage="control",
+            message=_parent_multi_agent_message(target_status),
+            visible_to_user=False,
+            payload=event_payload,
+        )
     audit_payload: dict[str, Any] = {"status": target_status, "counts": counts}
     if safe_triggered_by:
         audit_payload["triggered_by_child_run_id"] = safe_triggered_by
-    audit_id = await append_audit_log(
-        conn,
-        tenant_id=tenant_id,
-        user_id=None,
-        action="run.multi_agent.parent.finalize",
-        target_type="run",
-        target_id=parent_run_id,
-        trace_id=parent_run.get("trace_id"),
-        payload_json=audit_payload,
-    )
+    audit_id = None
+    if not has_parent_audit:
+        audit_id = await append_audit_log(
+            conn,
+            tenant_id=tenant_id,
+            user_id=None,
+            action="run.multi_agent.parent.finalize",
+            target_type="run",
+            target_id=parent_run_id,
+            trace_id=parent_run.get("trace_id"),
+            payload_json=audit_payload,
+        )
     return {
         "parent_run_id": parent_run_id,
         "status": target_status,
@@ -7450,9 +8290,7 @@ async def propagate_multi_agent_parent_cancel(
             update runs
             set
               cancel_requested_at = coalesce(cancel_requested_at, now()),
-              cancel_requested_by = coalesce(cancel_requested_by, %s),
-              status = case when status = 'queued' then 'cancelled' else status end,
-              finished_at = case when status = 'queued' then now() else finished_at end
+              cancel_requested_by = coalesce(cancel_requested_by, %s)
             where tenant_id = %s
               and id = %s
               and status in ('queued', 'running')
@@ -7463,21 +8301,7 @@ async def propagate_multi_agent_parent_cancel(
         updated = await update_cursor.fetchone()
         if updated is None:
             continue
-        child_status = str(updated.get("status") or "")
-        result["child_run_ids"].append(child_run_id)
-        if child_status == "cancelled":
-            result["queued_child_run_ids"].append(child_run_id)
-            await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=child_run_id)
-        else:
-            result["running_child_run_ids"].append(child_run_id)
-
-        active_sandbox_leases = await list_active_sandbox_leases_for_run(
-            conn,
-            tenant_id=tenant_id,
-            run_id=child_run_id,
-        )
-        result["active_sandbox_leases"].extend(active_sandbox_leases)
-
+        initial_child_status = str(updated.get("status") or "")
         if row.get("cancel_requested_at") is None:
             event_id = await append_event(
                 conn,
@@ -7497,37 +8321,44 @@ async def propagate_multi_agent_parent_cancel(
                 },
             )
             result["event_ids"].append(event_id)
-
-        if child_status == "cancelled":
-            cancelled_event_id = await append_event(
+        staged = await _stage_run_tool_permission_terminalization(
+            conn,
+            tenant_id=tenant_id,
+            run_id=child_run_id,
+            target_status="cancelled" if initial_child_status == "queued" else "cancel_requested",
+            terminal_reason="parent_cancel_requested",
+            result_json={"message": "parent_cancel_requested"},
+            error_code="parent_cancel_requested",
+            error_message="parent_cancel_requested",
+        )
+        progress = (
+            await progress_run_tool_permission_terminalization(
                 conn,
                 tenant_id=tenant_id,
                 run_id=child_run_id,
-                trace_id=updated.get("trace_id"),
-                event_type="run_cancelled",
-                stage="control",
-                message="任务已取消",
-                payload={
-                    "visible_to_user": True,
-                    "severity": "warning",
-                    "source": "multi_agent_parent_cancel",
-                },
             )
-            result["event_ids"].append(cancelled_event_id)
-            reconciled = await reconcile_multi_agent_child_run_terminal_state(
-                conn,
-                tenant_id=tenant_id,
-                child_run_id=child_run_id,
-                child_status="cancelled",
-                result_json={"message": "parent_cancel_requested"},
-                error_code="parent_cancel_requested",
-                error_message="parent_cancel_requested",
-            )
-            if reconciled:
-                if reconciled.get("event_id"):
-                    result["event_ids"].append(reconciled["event_id"])
-                if reconciled.get("audit_id"):
-                    result["audit_ids"].append(reconciled["audit_id"])
+            if staged is not None
+            else None
+        )
+        if progress is not None and progress.did_transition and progress.needs_reconcile:
+            result.setdefault("_permission_terminalization_child_progress", {})[child_run_id] = progress
+        child_status = (
+            str(progress.get("status") or initial_child_status)
+            if progress and progress.completed
+            else initial_child_status
+        )
+        result["child_run_ids"].append(child_run_id)
+        if initial_child_status == "queued":
+            result["queued_child_run_ids"].append(child_run_id)
+        else:
+            result["running_child_run_ids"].append(child_run_id)
+
+        active_sandbox_leases = await list_active_sandbox_leases_for_run(
+            conn,
+            tenant_id=tenant_id,
+            run_id=child_run_id,
+        )
+        result["active_sandbox_leases"].extend(active_sandbox_leases)
 
         audit_id = await append_audit_log(
             conn,
@@ -8067,64 +8898,73 @@ async def get_admin_run_detail(conn: AsyncConnection, *, tenant_id: str, run_id:
 async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: str, run_id: str) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """
+        with eligible_run as (
+          select id, tenant_id, status, trace_id,
+                 cancel_requested_at is null as cancel_requested_newly
+          from runs
+          where tenant_id = %s
+            and id = %s
+            and user_id = %s
+            and (
+              status in ('queued', 'running')
+              or (
+                status = 'cancelled'
+                and exists (
+                  select 1
+                  from sandbox_leases
+                  where sandbox_leases.tenant_id = runs.tenant_id
+                    and sandbox_leases.run_id = runs.id
+                    and sandbox_leases.status = 'active'
+                )
+              )
+            )
+          for update
+        )
         update runs
         set
           cancel_requested_at = coalesce(cancel_requested_at, now()),
-          cancel_requested_by = coalesce(cancel_requested_by, %s),
-          status = case when status = 'queued' then 'cancelled' else status end,
-          finished_at = case when status = 'queued' then now() else finished_at end
-        where tenant_id = %s
-          and id = %s
-          and user_id = %s
-          and (
-            status in ('queued', 'running')
-            or (
-              status = 'cancelled'
-              and exists (
-                select 1
-                from sandbox_leases
-                where sandbox_leases.tenant_id = runs.tenant_id
-                  and sandbox_leases.run_id = runs.id
-                  and sandbox_leases.status = 'active'
-              )
-            )
-          )
-        returning id, status, trace_id
+          cancel_requested_by = coalesce(cancel_requested_by, %s)
+        from eligible_run
+        where runs.tenant_id = eligible_run.tenant_id
+          and runs.id = eligible_run.id
+        returning runs.id, runs.status, eligible_run.trace_id,
+                  eligible_run.cancel_requested_newly
         """,
-        (user_id, tenant_id, run_id, user_id),
+        (tenant_id, run_id, user_id, user_id),
     )
     row = await cursor.fetchone()
     if row is None:
         return None
-    if row["status"] == "cancelled":
-        await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
-    active_sandbox_leases = await list_active_sandbox_leases_for_run(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-    )
-    await append_event(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        trace_id=row.get("trace_id"),
-        event_type="cancel_requested",
-        stage="control",
-        message="已请求取消",
-        payload={"visible_to_user": True, "severity": "warning", "requested_by": user_id},
-    )
-    status = "cancelled" if row["status"] == "cancelled" else "cancel_requested"
-    if row["status"] == "cancelled":
+    if row.get("cancel_requested_newly"):
         await append_event(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
             trace_id=row.get("trace_id"),
-            event_type="run_cancelled",
+            event_type="cancel_requested",
             stage="control",
-            message="任务已取消",
-            payload={"visible_to_user": True, "severity": "warning"},
+            message="已请求取消",
+            payload={"visible_to_user": True, "severity": "warning", "requested_by": user_id},
         )
+    staged = await _stage_run_tool_permission_terminalization(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        target_status="cancelled" if row["status"] == "queued" else "cancel_requested",
+        terminal_reason="run_cancel_requested",
+    )
+    progress = (
+        await progress_run_tool_permission_terminalization(conn, tenant_id=tenant_id, run_id=run_id)
+        if staged is not None
+        else None
+    )
+    actual_terminal_status = progress.status if progress is not None and progress.is_terminal() else None
+    active_sandbox_leases = await list_active_sandbox_leases_for_run(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+    )
+    status = actual_terminal_status or ("cancelled" if row["status"] == "cancelled" else "cancel_requested")
     await append_audit_log(
         conn,
         tenant_id=tenant_id,
@@ -8140,6 +8980,8 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
         },
     )
     result = {"run_id": row["id"], "status": status}
+    if progress is not None and progress.did_transition and progress.needs_reconcile:
+        result["_permission_terminalization_progress"] = progress
     if active_sandbox_leases:
         result["trace_id"] = row.get("trace_id")
         result["active_sandbox_leases"] = active_sandbox_leases
@@ -8155,69 +8997,78 @@ async def request_admin_run_cancel(
 ) -> dict[str, Any] | None:
     cursor = await conn.execute(
         """
+        with eligible_run as (
+          select id, tenant_id, status, user_id, trace_id,
+                 cancel_requested_at is null as cancel_requested_newly
+          from runs
+          where tenant_id = %s
+            and id = %s
+            and (
+              status in ('queued', 'running')
+              or (
+                status = 'cancelled'
+                and exists (
+                  select 1
+                  from sandbox_leases
+                  where sandbox_leases.tenant_id = runs.tenant_id
+                    and sandbox_leases.run_id = runs.id
+                    and sandbox_leases.status = 'active'
+                )
+              )
+            )
+          for update
+        )
         update runs
         set
           cancel_requested_at = coalesce(cancel_requested_at, now()),
-          cancel_requested_by = coalesce(cancel_requested_by, %s),
-          status = case when status = 'queued' then 'cancelled' else status end,
-          finished_at = case when status = 'queued' then now() else finished_at end
-        where tenant_id = %s
-          and id = %s
-          and (
-            status in ('queued', 'running')
-            or (
-              status = 'cancelled'
-              and exists (
-                select 1
-                from sandbox_leases
-                where sandbox_leases.tenant_id = runs.tenant_id
-                  and sandbox_leases.run_id = runs.id
-                  and sandbox_leases.status = 'active'
-              )
-            )
-          )
-        returning id, status, user_id, trace_id
+          cancel_requested_by = coalesce(cancel_requested_by, %s)
+        from eligible_run
+        where runs.tenant_id = eligible_run.tenant_id
+          and runs.id = eligible_run.id
+        returning runs.id, runs.status, eligible_run.user_id, eligible_run.trace_id,
+                  eligible_run.cancel_requested_newly
         """,
-        (admin_user_id, tenant_id, run_id),
+        (tenant_id, run_id, admin_user_id),
     )
     row = await cursor.fetchone()
     if row is None:
         return None
-    result_status = "cancelled" if row["status"] == "cancelled" else "cancel_requested"
-    if result_status == "cancelled":
-        await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
+    if row.get("cancel_requested_newly"):
+        await append_event(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            trace_id=row.get("trace_id"),
+            event_type="cancel_requested",
+            stage="control",
+            message="管理员已请求取消",
+            payload={
+                "visible_to_user": True,
+                "severity": "warning",
+                "requested_by": admin_user_id,
+                "requested_by_role": "admin",
+                "target_user_id": row.get("user_id"),
+            },
+        )
+    staged = await _stage_run_tool_permission_terminalization(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        target_status="cancelled" if row["status"] == "queued" else "cancel_requested",
+        terminal_reason="run_cancel_requested",
+    )
+    progress = (
+        await progress_run_tool_permission_terminalization(conn, tenant_id=tenant_id, run_id=run_id)
+        if staged is not None
+        else None
+    )
+    actual_terminal_status = progress.status if progress is not None and progress.is_terminal() else None
+    result_status = actual_terminal_status or ("cancelled" if row["status"] == "cancelled" else "cancel_requested")
     active_sandbox_leases = await list_active_sandbox_leases_for_run(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
     )
-    await append_event(
-        conn,
-        tenant_id=tenant_id,
-        run_id=run_id,
-        trace_id=row.get("trace_id"),
-        event_type="cancel_requested",
-        stage="control",
-        message="管理员已请求取消",
-        payload={
-            "visible_to_user": True,
-            "severity": "warning",
-            "requested_by": admin_user_id,
-            "requested_by_role": "admin",
-            "target_user_id": row.get("user_id"),
-        },
-    )
-    if row["status"] == "cancelled":
-        await append_event(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            event_type="run_cancelled",
-            stage="control",
-            message="任务已取消",
-            payload={"visible_to_user": True, "severity": "warning"},
-            trace_id=row.get("trace_id"),
-        )
     await append_audit_log(
         conn,
         tenant_id=tenant_id,
@@ -8233,6 +9084,8 @@ async def request_admin_run_cancel(
         },
     )
     result = {"run_id": row["id"], "status": result_status}
+    if progress is not None and progress.did_transition and progress.needs_reconcile:
+        result["_permission_terminalization_progress"] = progress
     if active_sandbox_leases:
         result["trace_id"] = row.get("trace_id")
         result["active_sandbox_leases"] = active_sandbox_leases
@@ -8246,6 +9099,40 @@ async def is_cancel_requested(conn: AsyncConnection, *, tenant_id: str, run_id: 
     )
     row = await cursor.fetchone()
     return bool(row and row.get("cancel_requested_at"))
+
+
+async def classify_success_commit_block(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> str:
+    """Classify a failed success CAS while holding the owning run before permission rows."""
+
+    cursor = await conn.execute(
+        """
+        select runs.status,
+               runs.cancel_requested_at,
+               runs.permission_terminalization_target,
+               exists (
+                 select 1
+                 from run_tool_permission_requests as permission_request
+                 where permission_request.tenant_id = runs.tenant_id
+                   and permission_request.run_id = runs.id
+                   and permission_request.status in ('pending', 'decided')
+               ) as has_unterminalized_permission
+        from runs
+        where runs.tenant_id = %s and runs.id = %s
+        for update
+        """,
+        (tenant_id, run_id),
+    )
+    row = await cursor.fetchone()
+    if row is None or str(row.get("status") or "") in TERMINAL_RUN_STATUSES:
+        return "stale_terminal_state"
+    if row.get("cancel_requested_at") or str(row.get("permission_terminalization_target") or "") in {
+        "cancel_requested",
+        "cancelled",
+    }:
+        return "cancel_requested"
+    if bool(row.get("has_unterminalized_permission")):
+        return "tool_permission_pending"
+    return "stale_terminal_state"
 
 
 async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id: str, run_id: str) -> dict[str, Any] | None:
@@ -8792,7 +9679,60 @@ async def complete_run(
     run_id: str,
     result_json: dict[str, Any],
 ) -> bool:
+    """Complete one run after a run-first, fixed-time permission-grant transaction."""
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
+    lock_cursor = await conn.execute(
+        """
+        select id
+        from runs
+        where runs.tenant_id = %s and runs.id = %s
+          and runs.status not in ('succeeded', 'failed', 'cancelled')
+          and runs.cancel_requested_at is null
+          and runs.permission_terminalization_target is null
+        for update
+        """,
+        (tenant_id, run_id),
+    )
+    locked_run = await lock_cursor.fetchone()
+    if locked_run is None:
+        return False
+
+    clock_cursor = await conn.execute("select clock_timestamp() as authority_now", ())
+    clock_row = await clock_cursor.fetchone()
+    authority_now = clock_row.get("authority_now") if clock_row is not None else None
+    if not isinstance(authority_now, datetime):
+        raise RepositoryConflictError("run_completion_authority_clock_missing")
+
+    permission_cursor = await conn.execute(
+        """
+        select id, status, decision, expires_at
+        from run_tool_permission_requests
+        where tenant_id = %s
+          and run_id = %s
+          and status in ('pending', 'decided')
+        for update
+        """,
+        (tenant_id, run_id),
+    )
+    permission_rows = list(await permission_cursor.fetchall())
+    valid_allow_for_run_ids: list[str] = []
+    for permission in permission_rows:
+        status = str(permission.get("status") or "")
+        if status == "pending":
+            return False
+        expires_at = permission.get("expires_at")
+        valid_allow_for_run = (
+            status == "decided"
+            and str(permission.get("decision") or "") == "allow_for_run"
+            and isinstance(expires_at, datetime)
+            and expires_at > authority_now
+        )
+        if not valid_allow_for_run:
+            return False
+        valid_allow_for_run_ids.append(str(permission.get("id") or ""))
+    if any(not request_id for request_id in valid_allow_for_run_ids):
+        raise RepositoryConflictError("allow_for_run_id_missing")
+
     cursor = await conn.execute(
         """
         update runs
@@ -8807,9 +9747,8 @@ async def complete_run(
           output_token_count = %s,
           total_token_count = %s,
           estimated_cost_minor = %s
-        where tenant_id = %s
-          and id = %s
-          and status not in ('succeeded', 'failed', 'cancelled')
+        where runs.tenant_id = %s
+          and runs.id = %s
         returning id
         """,
         (
@@ -8824,7 +9763,28 @@ async def complete_run(
         ),
     )
     row = await cursor.fetchone()
-    return row is not None
+    if row is None:
+        raise RepositoryConflictError("run_completion_lost_after_run_lock")
+    if valid_allow_for_run_ids:
+        consumed_cursor = await conn.execute(
+            """
+            update run_tool_permission_requests
+            set status = 'consumed',
+                reason = case when reason = '' then 'allow_for_run_completed' else reason end,
+                updated_at = clock_timestamp()
+            where tenant_id = %s
+              and run_id = %s
+              and id = any(%s::text[])
+              and status = 'decided'
+              and decision = 'allow_for_run'
+            returning id
+            """,
+            (tenant_id, run_id, valid_allow_for_run_ids),
+        )
+        consumed_ids = {str(item.get("id") or "") for item in await consumed_cursor.fetchall()}
+        if consumed_ids != set(valid_allow_for_run_ids):
+            raise RepositoryConflictError("allow_for_run_consumption_mismatch")
+    return True
 
 
 async def fail_run(
@@ -8835,45 +9795,43 @@ async def fail_run(
     error_code: str,
     error_message: str,
     result_json: dict[str, Any] | None = None,
-) -> bool:
+) -> ToolPermissionTerminalizationProgress:
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
-    cursor = await conn.execute(
+    staged = await _stage_run_tool_permission_terminalization(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        target_status="failed",
+        terminal_reason="run_failed",
+        result_json=result_json,
+        error_code=error_code,
+        error_message=error_message,
+    )
+    if staged is None:
+        return ToolPermissionTerminalizationProgress(completed=False, status=None)
+    staged_target = str(staged.get("permission_terminalization_target") or "")
+    if staged_target != "failed":
+        return ToolPermissionTerminalizationProgress(completed=False, status=staged_target or None)
+    await conn.execute(
         """
         update runs
-        set
-          status = 'failed',
-          result_json = %s::jsonb,
-          finished_at = now(),
-          error_code = %s,
-          error_message = %s,
-          latency_ms = %s,
-          input_token_count = %s,
-          output_token_count = %s,
-          total_token_count = %s,
-          estimated_cost_minor = %s
+        set latency_ms = %s,
+            input_token_count = %s,
+            output_token_count = %s,
+            total_token_count = %s,
+            estimated_cost_minor = %s
         where tenant_id = %s
           and id = %s
           and status not in ('succeeded', 'failed', 'cancelled')
-        returning id
         """,
-        (
-            dumps_json(result_json or {}),
-            error_code,
-            error_message,
-            latency_ms,
-            input_tokens,
-            output_tokens,
-            total_tokens,
-            estimated_cost_minor,
-            tenant_id,
-            run_id,
-        ),
+        (latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor, tenant_id, run_id),
     )
-    row = await cursor.fetchone()
-    if row is None:
-        return False
-    await _fail_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
-    return True
+    progress = await progress_run_tool_permission_terminalization(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+    )
+    return _terminalization_progress_for_requested_status(progress, requested_status="failed")
 
 
 async def cancel_run(
@@ -8882,23 +9840,26 @@ async def cancel_run(
     tenant_id: str,
     run_id: str,
     result_json: dict[str, Any] | None = None,
-) -> bool:
-    cursor = await conn.execute(
-        """
-        update runs
-        set status = 'cancelled', result_json = %s::jsonb, finished_at = now(), error_code = null, error_message = null
-        where tenant_id = %s
-          and id = %s
-          and status not in ('succeeded', 'failed', 'cancelled')
-        returning id
-        """,
-        (dumps_json(result_json or {}), tenant_id, run_id),
+) -> ToolPermissionTerminalizationProgress:
+    staged = await _stage_run_tool_permission_terminalization(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        target_status="cancelled",
+        terminal_reason="run_cancelled",
+        result_json=result_json,
     )
-    row = await cursor.fetchone()
-    if row is None:
-        return False
-    await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
-    return True
+    if staged is None:
+        return ToolPermissionTerminalizationProgress(completed=False, status=None)
+    staged_target = str(staged.get("permission_terminalization_target") or "")
+    if staged_target != "cancelled":
+        return ToolPermissionTerminalizationProgress(completed=False, status=staged_target or None)
+    progress = await progress_run_tool_permission_terminalization(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+    )
+    return _terminalization_progress_for_requested_status(progress, requested_status="cancelled")
 
 
 async def _cancel_open_run_steps(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> None:
@@ -9432,3 +10393,50 @@ async def list_authorized_user_messages_for_runs(
         (tenant_id, session_id, user_id, target_run_ids),
     )
     return list(await cursor.fetchall())
+
+
+@dataclass(frozen=True)
+class ToolPermissionTerminalizationProgress:
+    """One bounded run-first permission-drain result with transition ownership."""
+
+    completed: bool
+    status: str | None
+    did_transition: bool = False
+    needs_reconcile: bool = False
+    terminalized_count: int = 0
+
+    def get(self, key: str, default: Any = None) -> Any:
+        """Return a result field with mapping-style compatibility for callers."""
+        return getattr(self, key, default)
+
+    def is_terminal(self, requested_status: str | None = None) -> bool:
+        """Return whether this result records a completed actual terminal state, optionally the requested one."""
+
+        return (
+            self.completed
+            and self.status in TERMINAL_RUN_STATUSES
+            and (requested_status is None or self.status == requested_status)
+        )
+
+    def __bool__(self) -> bool:
+        return self.is_terminal()
+
+
+def _terminalization_progress_for_requested_status(
+    progress: ToolPermissionTerminalizationProgress | None,
+    *,
+    requested_status: str,
+) -> ToolPermissionTerminalizationProgress:
+    """Preserve an observed status but deny completion to a caller whose terminal intent did not win."""
+
+    if progress is None:
+        return ToolPermissionTerminalizationProgress(completed=False, status=None)
+    if progress.is_terminal(requested_status):
+        return progress
+    return ToolPermissionTerminalizationProgress(
+        completed=False,
+        status=progress.status,
+        did_transition=progress.did_transition,
+        needs_reconcile=progress.needs_reconcile,
+        terminalized_count=progress.terminalized_count,
+    )

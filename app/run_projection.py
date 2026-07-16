@@ -89,6 +89,7 @@ PUBLIC_EVENT_TYPE_ALIASES = {
     "skill_selected": "capability_selected",
     "tool_permission_decided": "tool_permission_card",
     "tool_permission_requested": "tool_permission_card",
+    "tool_permission_terminalized": "tool_permission_card",
     "worker_started": "run_started",
 }
 
@@ -150,7 +151,11 @@ def run_event_response(run_id: str, row: dict[str, object], principal: AuthPrinc
         payload = {}
     if principal is not None and not is_ai_admin(principal):
         payload = sanitize_user_control_input(payload)
-        if raw_event_type in {"tool_permission_requested", "tool_permission_decided"}:
+        if raw_event_type in {
+            "tool_permission_requested",
+            "tool_permission_decided",
+            "tool_permission_terminalized",
+        }:
             payload = tool_permission_public_event_payload(
                 run_id=run_id,
                 event_type=raw_event_type,

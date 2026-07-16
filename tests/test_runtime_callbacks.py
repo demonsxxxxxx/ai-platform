@@ -195,8 +195,8 @@ def test_runtime_tool_permission_callback_accepts_valid_request(monkeypatch):
             "trace_id": "trace-run-a",
         }
 
-    async def fake_broker(conn, **kwargs):
-        calls.append(("broker", kwargs))
+    async def fake_resolve(**kwargs):
+        calls.append(("resolve", kwargs))
         return {
             "allowed": False,
             "reason": "tool_permission_required",
@@ -211,7 +211,7 @@ def test_runtime_tool_permission_callback_accepts_valid_request(monkeypatch):
     monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
     monkeypatch.setattr(runtime_callbacks.repositories, "get_run", fake_get_run)
-    monkeypatch.setattr(runtime_callbacks, "broker_claude_sdk_tool_permission", fake_broker, raising=False)
+    monkeypatch.setattr(runtime_callbacks, "resolve_claude_sdk_tool_permission", fake_resolve)
     client = TestClient(create_app())
 
     response = client.post(
@@ -228,6 +228,7 @@ def test_runtime_tool_permission_callback_accepts_valid_request(monkeypatch):
             "risk_level": "high",
             "write_capable": True,
             "reason": "needs shell",
+            "permission_wait_seconds": 130,
         },
     )
 
@@ -242,18 +243,19 @@ def test_runtime_tool_permission_callback_accepts_valid_request(monkeypatch):
     }
     assert calls[0] == ("identity", "run-a", True)
     assert calls[1] == ("run", "tenant-a", "run-a", True)
-    broker_call = calls[2][1]
-    assert broker_call["tenant_id"] == "tenant-a"
-    assert broker_call["workspace_id"] == "workspace-a"
-    assert broker_call["user_id"] == "user-a"
-    assert broker_call["session_id"] == "session-a"
-    assert broker_call["run_id"] == "run-a"
-    assert broker_call["agent_id"] == "general-agent"
-    assert broker_call["skill_id"] == "general-chat"
-    assert broker_call["request"]["tool_input"] == {"command": "python write_business_system.py"}
+    resolve_call = calls[2][1]
+    assert resolve_call["tenant_id"] == "tenant-a"
+    assert resolve_call["workspace_id"] == "workspace-a"
+    assert resolve_call["user_id"] == "user-a"
+    assert resolve_call["session_id"] == "session-a"
+    assert resolve_call["run_id"] == "run-a"
+    assert resolve_call["wait_timeout_seconds"] == 130.0
+    assert resolve_call["agent_id"] == "general-agent"
+    assert resolve_call["skill_id"] == "general-chat"
+    assert resolve_call["request"]["tool_input"] == {"command": "python write_business_system.py"}
 
 
-def test_executor_callback_persists_callback_status_event(monkeypatch):
+def test_executor_callback_rejects_terminal_status_before_persisting_public_events(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     calls = []
 
@@ -285,14 +287,9 @@ def test_executor_callback_persists_callback_status_event(monkeypatch):
         json=callback_payload(status="completed", progress=100),
     )
 
-    assert response.status_code == 200
-    assert response.json() == {"accepted": True, "event_count": 2}
-    assert calls[0] == ("identity", "run-a", True)
-    assert calls[1][0:3] == ("executor_callback", "executor", "Executor callback: completed")
-    assert calls[1][3]["callback_status"] == "completed"
-    assert calls[1][3]["callback_token_id"] == "cbt_run-a"
-    assert calls[1][3]["progress"] == 100
-    assert calls[2][0:3] == ("run_completed", "runtime", "Executor completed")
+    assert response.status_code == 409
+    assert response.json() == {"detail": "executor_terminal_callback_not_allowed"}
+    assert calls == []
 
 
 def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeypatch):
@@ -331,8 +328,8 @@ def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeyp
         json=callback_payload(status="completed", progress=100),
     )
 
-    assert response.status_code == 200
-    assert response.json() == {"accepted": True, "event_count": 2}
+    assert response.status_code == 409
+    assert response.json() == {"detail": "executor_terminal_callback_not_allowed"}
     assert calls == []
 
 
@@ -404,8 +401,8 @@ def test_executor_callback_rejects_late_callback_for_terminal_run(monkeypatch):
     )
 
     assert response.status_code == 409
-    assert response.json() == {"detail": "run_already_terminal"}
-    assert calls == [("identity", "run-a", True)]
+    assert response.json() == {"detail": "executor_terminal_callback_not_allowed"}
+    assert calls == []
 
 
 def test_executor_callback_persists_typed_events_with_standard_stages(monkeypatch):

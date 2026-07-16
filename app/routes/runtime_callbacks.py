@@ -2,20 +2,26 @@ from fastapi import APIRouter, Header, HTTPException, status
 
 from app import repositories
 from app.db import transaction
-from app.executors.claude_agent_worker import broker_claude_sdk_tool_permission
+from app.executors.claude_agent_worker import resolve_claude_sdk_tool_permission
 from app.runtime.sandbox.callback_tokens import callback_token_id_belongs_to_run, callback_token_matches
 from app.runtime.sandbox.contracts import ExecutorCallbackEvent, ExecutorToolPermissionRequest
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.settings import get_settings
+from app.tool_permission_lifecycle import tool_permission_budget
 
 router = APIRouter()
 
 
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "canceled"}
+_TERMINAL_EXECUTOR_CALLBACK_STATUSES = {"completed", "failed", "cancelled"}
 
 
 async def record_executor_callback(callback: ExecutorCallbackEvent) -> dict[str, object]:
+    """Persist only non-terminal sandbox observations; worker owns run terminal facts."""
+
+    if callback.status in _TERMINAL_EXECUTOR_CALLBACK_STATUSES:
+        raise HTTPException(status_code=409, detail="executor_terminal_callback_not_allowed")
     events = callback_event_to_run_events(callback)
     async with transaction() as conn:
         run_identity = await repositories.get_run_identity(conn, run_id=callback.run_id, for_update=True)
@@ -72,18 +78,25 @@ async def record_executor_tool_permission(callback: ExecutorToolPermissionReques
         run = await repositories.get_run(conn, tenant_id=tenant_id, run_id=callback.run_id, for_update=True)
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
-        return await broker_claude_sdk_tool_permission(
-            conn,
-            tenant_id=tenant_id,
-            workspace_id=str(run.get("workspace_id") or ""),
-            user_id=str(run.get("user_id") or ""),
-            session_id=str(run.get("session_id") or ""),
-            run_id=callback.run_id,
-            agent_id=str(run.get("agent_id") or ""),
-            skill_id=str(run.get("skill_id") or ""),
-            trace_id=str(run.get("trace_id") or ""),
-            request=callback.model_dump(),
-        )
+        scope = {
+            "tenant_id": tenant_id,
+            "workspace_id": str(run.get("workspace_id") or ""),
+            "user_id": str(run.get("user_id") or ""),
+            "session_id": str(run.get("session_id") or ""),
+            "run_id": callback.run_id,
+            "agent_id": str(run.get("agent_id") or ""),
+            "skill_id": str(run.get("skill_id") or ""),
+            "trace_id": str(run.get("trace_id") or ""),
+        }
+    return await resolve_claude_sdk_tool_permission(
+        **scope,
+        request=callback.model_dump(),
+        wait_timeout_seconds=(
+            callback.permission_wait_seconds
+            if callback.permission_wait_seconds is not None
+            else tool_permission_budget().aggregate_permission_wait_seconds
+        ),
+    )
 
 
 def _require_valid_callback_token(provided_token: str | None, callback_token_id: str, run_id: str) -> None:

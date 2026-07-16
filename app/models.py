@@ -5,6 +5,7 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from app.control_plane_contracts import RUN_PAYLOAD_SCHEMA_VERSION
 from app.skills.release_policy import validate_release_decision_lock, validate_release_decision_payload
+from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 
 from app.validation import assert_safe_id, assert_safe_principal_user_id
 
@@ -445,7 +446,7 @@ class ToolPermissionDecisionRequest(BaseModel):
     decision: Literal["allow_once", "deny", "allow_for_run"]
     reason: str = Field(default="", max_length=2000)
     decision_payload: dict[str, Any] = Field(default_factory=dict)
-    expires_in_seconds: int = Field(default=900, ge=30, le=86400)
+    expires_in_seconds: int = Field(default=int(TOOL_PERMISSION_REQUEST_TTL_SECONDS), ge=30, le=86400)
 
 
 class AdminToolPolicyUpdateRequest(BaseModel):

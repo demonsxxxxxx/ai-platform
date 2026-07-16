@@ -19,6 +19,30 @@ export function getOrdinaryUserToolPermissionPresentation(
       messageKey: "chat.toolPermission.pending.message",
     };
   }
+  if (part.status === "expired") {
+    return {
+      titleKey: "chat.toolPermission.expired.title",
+      messageKey: "chat.toolPermission.expired.message",
+    };
+  }
+  if (part.status === "cancelled") {
+    return {
+      titleKey: "chat.toolPermission.cancelled.title",
+      messageKey: "chat.toolPermission.cancelled.message",
+    };
+  }
+  if (part.status === "failed") {
+    return {
+      titleKey: "chat.toolPermission.terminalFailed.title",
+      messageKey: "chat.toolPermission.terminalFailed.message",
+    };
+  }
+  if (part.status === "invalidated") {
+    return {
+      titleKey: "chat.toolPermission.invalidated.title",
+      messageKey: "chat.toolPermission.invalidated.message",
+    };
+  }
   if (part.decision === "allow_once") {
     return {
       titleKey: "chat.toolPermission.allowedOnce.title",

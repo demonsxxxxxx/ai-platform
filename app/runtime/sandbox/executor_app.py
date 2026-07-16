@@ -34,6 +34,7 @@ from app.runtime.sandbox.contracts import (
 )
 from app.settings import get_settings
 from app.storage import ObjectStorage
+from app.tool_permission_lifecycle import callback_timeout_seconds, tool_permission_budget
 
 
 CallbackPayload = dict[str, Any]
@@ -48,7 +49,7 @@ ExecutorRunner = Callable[
 
 async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
     headers = {"X-AI-Platform-Callback-Token": token}
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=callback_timeout_seconds(payload)) as client:
         response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
@@ -313,6 +314,8 @@ async def _default_executor_runner(
             return
         await emit_event(AgentEvent(type="assistant_delta", message=delta, payload={"delta": delta}))
 
+    permission_denials: list[dict[str, Any]] = []
+
     async def on_tool_permission(permission_request: dict[str, Any]) -> dict[str, Any]:
         tool_name = str(permission_request.get("tool_name") or "tool")
         tool_call_id = str(permission_request.get("tool_call_id") or "")
@@ -328,19 +331,10 @@ async def _default_executor_runner(
             "write_capable": write_capable,
             "reason": reason,
         }
-        await emit_event(
-            AgentEvent(
-                type="tool_call_started",
-                message=f"{tool_name} requested permission",
-                payload=payload,
-                admin_only=True,
-            )
-        )
-
         async def emit_permission_outcome(outcome: dict[str, Any]) -> None:
             await emit_event(
                 AgentEvent(
-                    type="tool_call_completed",
+                    type="tool_permission_authorized" if outcome.get("allowed") is True else "tool_permission_denied",
                     message=f"{tool_name} permission {'allowed' if outcome.get('allowed') is True else 'denied'}",
                     payload={
                         **payload,
@@ -367,6 +361,7 @@ async def _default_executor_runner(
             risk_level=risk_level,
             write_capable=write_capable,
             reason=reason,
+            permission_wait_seconds=permission_request.get("permission_wait_seconds"),
         )
         try:
             broker_result = await _dispatch_callback(
@@ -378,9 +373,12 @@ async def _default_executor_runner(
         except Exception:
             outcome = {"allowed": False, "reason": "tool_permission_broker_failed"}
             await emit_permission_outcome(outcome)
+            permission_denials.append(outcome)
             return outcome
         outcome = _normalize_tool_permission_response(broker_result, default_reason=reason)
         await emit_permission_outcome(outcome)
+        if outcome.get("allowed") is not True:
+            permission_denials.append(outcome)
         return outcome
 
     async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
@@ -423,8 +421,9 @@ async def _default_executor_runner(
 
     used_sdk = bool(getattr(sdk_result, "used_sdk", False))
     error = getattr(sdk_result, "error", None)
+    permission_denial = permission_denials[-1] if permission_denials else None
     response = {
-        "status": "completed" if used_sdk and not error else "failed",
+        "status": "completed" if used_sdk and not error and permission_denial is None else "failed",
         "message": str(getattr(sdk_result, "message", "") or ""),
         "sdk_session_id": getattr(sdk_result, "session_id", None),
         "sdk_usage": getattr(sdk_result, "usage", {}) or {},
@@ -433,7 +432,10 @@ async def _default_executor_runner(
         "used_skills": list(getattr(sdk_result, "used_skills", []) or []),
         "used_skills_source": str(getattr(sdk_result, "used_skills_source", "") or ""),
     }
-    if error:
+    if permission_denial is not None:
+        response["error_code"] = str(permission_denial.get("reason") or "tool_permission_denied")
+        response["error_message"] = "Tool permission was not granted; execution did not complete."
+    elif error:
         response["error_code"] = str(error)
         response["error_message"] = str(error)
     elif not used_sdk:
@@ -529,6 +531,14 @@ def create_executor_app(
             if isinstance(resource_limits, dict)
             else None
         )
+        if max_seconds is not None and request.governed_permission_wait:
+            sdk_normal_timeout = float(
+                getattr(get_settings(), "claude_agent_sdk_timeout_seconds", 120.0) or 120.0
+            )
+            max_seconds = max(
+                max_seconds,
+                tool_permission_budget(sdk_normal_timeout).sandbox_sdk_timeout_seconds,
+            )
         invalid_max_seconds = max_seconds_present and max_seconds is None
         timed_out = max_seconds is not None and max_seconds <= 0
         executor_started_at = time.monotonic()
@@ -637,22 +647,25 @@ def create_executor_app(
             if timed_out
             else {}
         )
-        completed_event = ExecutorCallbackEvent(
+        execution_observation = ExecutorCallbackEvent(
             session_id=request.session_id,
             run_id=request.run_id,
             callback_token_id=request.callback_token_id,
-            status="failed" if failed else "completed",
-            progress=100 if not failed else 5,
+            status="running",
+            progress=99,
             state_patch=(
-                {"error_code": error_code, **timeout_observation}
+                {"stage": "executor_finished", "error_code": error_code, **timeout_observation}
                 if failed
-                else {"marker_path": f"/workspace/runtime/{marker_path.name}"}
+                else {
+                    "stage": "executor_finished",
+                    "marker_path": f"/workspace/runtime/{marker_path.name}",
+                }
             ),
             sdk_session_id=str(runner_result.get("sdk_session_id") or request.sdk_session_id or "") or None,
             error_message=error_message,
         )
 
-        await dispatch_callback_event(completed_event)
+        await dispatch_callback_event(execution_observation)
 
         executor_model_latency_ms = _elapsed_ms(started_at)
         response: dict[str, Any] = {

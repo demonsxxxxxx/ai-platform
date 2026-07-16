@@ -2,15 +2,21 @@ import asyncio
 import base64
 import binascii
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
+import posixpath
+import re
 import shutil
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Awaitable, Callable
+import zipfile
+from xml.etree import ElementTree
 
 from app import repositories
+from app.capabilities import required_artifact_types_for_skill
 from app.control_plane_contracts import artifact_lineage_contract, standard_trace_id
 from app.context_builder import executor_context_pack_from_snapshot
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
@@ -41,10 +47,32 @@ from app.skills.dependencies import skill_dependency_ids, with_skill_dependencie
 from app.skills.stager import SkillStager
 from app.storage import ObjectStorage
 from app.tool_policy import evaluate_tool_policy
+from app.tool_permission_lifecycle import tool_permission_budget
 
 NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
 _CONTROLLED_RUNNER_SKILLS = {"qa-file-reviewer", "baoyu-translate"}
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"accepted", "completed", "succeeded"}
+_TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
+_REQUIRED_DOCX_MAX_ENTRY_COUNT = 128
+_REQUIRED_DOCX_MAX_COMPRESSED_BYTES = 16 * 1024 * 1024
+_REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
+_REQUIRED_DOCX_MAX_COMPRESSION_RATIO = 100
+_OPC_CONTENT_TYPES_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/content-types"
+_OPC_RELATIONSHIPS_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships"
+_OPC_OFFICE_DOCUMENT_RELATIONSHIP = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+)
+_WORDPROCESSINGML_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_WORD_MAIN_DOCUMENT_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+)
+
+
+class _PermissionDeadlineElapsed(RuntimeError):
+    """Abort the current database transaction before deadline-late authority commits."""
+
+    def __init__(self, permission_request_id: str | None = None) -> None:
+        self.permission_request_id = permission_request_id or ""
 
 
 @dataclass(frozen=True)
@@ -95,8 +123,26 @@ async def broker_claude_sdk_tool_permission(
     skill_id: str,
     trace_id: str,
     request: dict[str, Any],
+    expires_in_seconds: float = tool_permission_budget().request_ttl_seconds,
+    absolute_expires_at: datetime | None = None,
+    permission_deadline_monotonic: float | None = None,
+    monotonic: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
     """Apply platform tool policy to a Claude Agent SDK tool-permission callback."""
+
+    monotonic = monotonic or asyncio.get_running_loop().time
+
+    def deadline_exhausted() -> bool:
+        return permission_deadline_monotonic is not None and monotonic() >= permission_deadline_monotonic
+
+    def deadline_failure(permission_request_id: str | None = None) -> dict[str, Any]:
+        if permission_deadline_monotonic is not None:
+            raise _PermissionDeadlineElapsed(permission_request_id)
+        return {
+            "allowed": False,
+            "reason": "tool_permission_wait_timed_out",
+            "permission_request_id": permission_request_id or "",
+        }
 
     tool_name = str(request.get("tool_name") or "")
     tool_id = _claude_sdk_tool_id(tool_name)
@@ -122,6 +168,13 @@ async def broker_claude_sdk_tool_permission(
         tool_call_id=tool_call_id,
         request_payload_json=request_payload,
     )
+    # The repository locks and evaluates the persisted deadline with its
+    # current wall clock.  This local absolute deadline closes the gap after an
+    # awaited control-plane boundary before any decision-derived side effect.
+    if deadline_exhausted():
+        return deadline_failure(
+            str(permission_decision.get("id") or "") if permission_decision is not None else None
+        )
     if tool_id == "claude-sdk:Bash" and permission_decision is not None:
         decision = str(permission_decision.get("decision") or "")
         decision_tool_call_id = str(permission_decision.get("tool_call_id") or "")
@@ -144,6 +197,8 @@ async def broker_claude_sdk_tool_permission(
         requested_write_capable=requested_write_capable,
     )
     if tool_gate.allowed:
+        if deadline_exhausted():
+            return deadline_failure(tool_gate.permission_request_id)
         if tool_gate.decision == "allow_once":
             consumed_decision = await repositories.consume_tool_permission_decision(
                 conn,
@@ -152,7 +207,11 @@ async def broker_claude_sdk_tool_permission(
                 run_id=run_id,
                 request_id=tool_gate.permission_request_id,
             )
+            if deadline_exhausted():
+                return deadline_failure(tool_gate.permission_request_id)
             if consumed_decision is None:
+                if deadline_exhausted():
+                    return deadline_failure(tool_gate.permission_request_id)
                 await repositories.append_audit_log(
                     conn,
                     tenant_id=tenant_id,
@@ -182,6 +241,8 @@ async def broker_claude_sdk_tool_permission(
                     "decision": tool_gate.decision,
                     "permission_request_id": tool_gate.permission_request_id,
                 }
+        if deadline_exhausted():
+            return deadline_failure(tool_gate.permission_request_id)
         await repositories.append_audit_log(
             conn,
             tenant_id=tenant_id,
@@ -203,6 +264,8 @@ async def broker_claude_sdk_tool_permission(
                 "permission_request_id": tool_gate.permission_request_id,
             },
         )
+        if deadline_exhausted():
+            return deadline_failure(tool_gate.permission_request_id)
         return {
             "allowed": True,
             "reason": tool_gate.reason,
@@ -214,6 +277,8 @@ async def broker_claude_sdk_tool_permission(
 
     permission_request_id = tool_gate.permission_request_id
     if tool_gate.reason == "tool_permission_required":
+        if deadline_exhausted():
+            return deadline_failure(permission_request_id)
         row = await repositories.create_tool_permission_request(
             conn,
             tenant_id=tenant_id,
@@ -229,8 +294,12 @@ async def broker_claude_sdk_tool_permission(
             write_capable=tool_gate.write_capable,
             reason=reason,
             request_payload_json=request_payload,
+            expires_in_seconds=max(float(expires_in_seconds), 0.0),
+            absolute_expires_at=absolute_expires_at,
         )
         permission_request_id = str(row["id"])
+        if deadline_exhausted():
+            return deadline_failure(permission_request_id)
         await repositories.append_event(
             conn,
             tenant_id=tenant_id,
@@ -251,6 +320,8 @@ async def broker_claude_sdk_tool_permission(
                 "status": "pending",
             },
         )
+    if deadline_exhausted():
+        return deadline_failure(permission_request_id)
     await repositories.append_audit_log(
         conn,
         tenant_id=tenant_id,
@@ -272,6 +343,8 @@ async def broker_claude_sdk_tool_permission(
             "permission_request_id": permission_request_id,
         },
     )
+    if deadline_exhausted():
+        return deadline_failure(permission_request_id)
     return {
         "allowed": False,
         "reason": tool_gate.reason,
@@ -280,6 +353,157 @@ async def broker_claude_sdk_tool_permission(
         "decision": tool_gate.decision,
         "permission_request_id": permission_request_id,
     }
+
+
+async def resolve_claude_sdk_tool_permission(
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+    agent_id: str,
+    skill_id: str,
+    trace_id: str,
+    request: dict[str, Any],
+    wait_timeout_seconds: float = tool_permission_budget().permission_wait_seconds,
+    poll_interval_seconds: float = _TOOL_PERMISSION_POLL_INTERVAL_SECONDS,
+    monotonic: Callable[[], float] | None = None,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
+    """Wait for the exact tenant/run-scoped decision instead of letting a pending gate succeed."""
+    monotonic = monotonic or asyncio.get_running_loop().time
+    sleep = sleep or asyncio.sleep
+    allowed_wait_seconds = tool_permission_budget().aggregate_permission_wait_seconds
+    bounded_wait_timeout_seconds = max(min(float(wait_timeout_seconds), allowed_wait_seconds), 0.0)
+    deadline = monotonic() + bounded_wait_timeout_seconds
+    absolute_expires_at = datetime.now(timezone.utc) + timedelta(seconds=bounded_wait_timeout_seconds)
+
+    async def terminalize_timeout(request_id: str) -> dict[str, Any]:
+        async with transaction() as conn:
+            terminalized = await repositories.terminalize_pending_tool_permission_requests(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                request_id=request_id,
+                terminal_status="expired",
+                terminal_reason="permission_wait_exhausted",
+            )
+        return {
+            "allowed": False,
+            "reason": "tool_permission_wait_timed_out",
+            "permission_request_id": request_id,
+            "expired": bool(terminalized),
+        }
+
+    try:
+        async with transaction() as conn:
+            outcome = await broker_claude_sdk_tool_permission(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                session_id=session_id,
+                run_id=run_id,
+                agent_id=agent_id,
+                skill_id=skill_id,
+                trace_id=trace_id,
+                request=request,
+                expires_in_seconds=max(deadline - monotonic(), 0.0),
+                absolute_expires_at=absolute_expires_at,
+                permission_deadline_monotonic=deadline,
+                monotonic=monotonic,
+            )
+            # The broker normally raises this signal itself before a
+            # decision-derived mutation. Recheck at the resolver boundary as
+            # well so an awaited broker implementation cannot hand a deadline-
+            # late allow result back to a transaction that then commits.
+            if monotonic() >= deadline:
+                raise _PermissionDeadlineElapsed(str(outcome.get("permission_request_id") or ""))
+    except _PermissionDeadlineElapsed as exc:
+        return await terminalize_timeout(exc.permission_request_id) if exc.permission_request_id else {
+            "allowed": False,
+            "reason": "tool_permission_wait_timed_out",
+        }
+    if outcome.get("reason") == "tool_permission_wait_timed_out":
+        request_id = str(outcome.get("permission_request_id") or "")
+        return await terminalize_timeout(request_id) if request_id else outcome
+    if outcome.get("reason") != "tool_permission_required":
+        return outcome
+
+    request_id = str(outcome.get("permission_request_id") or "")
+    if not request_id:
+        return {"allowed": False, "reason": "tool_permission_request_missing"}
+
+    async def poll_once() -> dict[str, Any]:
+        """Run one decision poll in a transaction; deadline signals must escape it."""
+
+        async with transaction() as conn:
+            expired = await repositories.expire_tool_permission_request(
+                conn,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                run_id=run_id,
+                request_id=request_id,
+            )
+            if expired is not None:
+                return {"state": "expired"}
+            pending = await repositories.get_tool_permission_request(
+                conn,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                run_id=run_id,
+                request_id=request_id,
+            )
+            if pending is None:
+                return {"state": "missing"}
+            pending_status = str(pending.get("status") or "")
+            if pending_status == "decided":
+                if monotonic() >= deadline:
+                    raise _PermissionDeadlineElapsed(request_id)
+                decision_outcome = await broker_claude_sdk_tool_permission(
+                    conn,
+                    tenant_id=tenant_id,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                    run_id=run_id,
+                    agent_id=agent_id,
+                    skill_id=skill_id,
+                    trace_id=trace_id,
+                    request=request,
+                    expires_in_seconds=max(deadline - monotonic(), 0.0),
+                    absolute_expires_at=absolute_expires_at,
+                    permission_deadline_monotonic=deadline,
+                    monotonic=monotonic,
+                )
+                if monotonic() >= deadline:
+                    raise _PermissionDeadlineElapsed(
+                        str(decision_outcome.get("permission_request_id") or request_id)
+                    )
+                return decision_outcome
+            return {"state": pending_status or "unavailable"}
+
+    while True:
+        try:
+            poll_outcome = await poll_once()
+        except _PermissionDeadlineElapsed as exc:
+            return await terminalize_timeout(exc.permission_request_id or request_id)
+        if poll_outcome.get("state") == "expired":
+            return {"allowed": False, "reason": "tool_permission_expired", "permission_request_id": request_id}
+        if poll_outcome.get("state") == "missing":
+            return {"allowed": False, "reason": "tool_permission_request_missing", "permission_request_id": request_id}
+        if poll_outcome.get("state") == "pending":
+            pass
+        elif "allowed" in poll_outcome:
+            return poll_outcome
+        else:
+            return {"allowed": False, "reason": f"tool_permission_{poll_outcome.get('state')}", "permission_request_id": request_id}
+        if monotonic() >= deadline:
+            break
+        await sleep(max(float(poll_interval_seconds), 0.01))
+
+    return await terminalize_timeout(request_id)
 
 
 def _execution_tier(payload: RunPayload) -> str:
@@ -298,6 +522,11 @@ def _ordinary_run_requires_sandbox(payload: RunPayload) -> bool:
         execution_mode=str(payload.input.get("execution_mode") or ""),
         execution_tier=_execution_tier(payload),
     ).requires_real_sandbox
+
+
+def _required_artifact_types(payload: RunPayload) -> tuple[str, ...]:
+    """Resolve the capability-owned artifact contract for this selected Skill."""
+    return required_artifact_types_for_skill(payload.skill_id)
 
 
 def _sandbox_workspace(settings: object, payload: RunPayload) -> Path:
@@ -1062,6 +1291,7 @@ class ClaudeAgentWorkerAdapter:
             context_manifest=dict(context_manifest or {}),
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             sdk_session_id=continuity.sdk_session_id,
+            governed_permission_wait=True,
         )
         runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
         runtime_event_sink = None
@@ -1162,6 +1392,7 @@ class ClaudeAgentWorkerAdapter:
             "skill_manifests": skill_manifests,
             "sandbox_provider": sandbox_provider,
             "sandbox_runtime_used": True,
+            "required_artifact_types": list(_required_artifact_types(payload)),
             "sandbox_timings": sandbox_timings,
         }
         if runtime_status not in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
@@ -1307,6 +1538,7 @@ class ClaudeAgentWorkerAdapter:
                     "used_skills_source": used_skills_source,
                     "inferred_used_skills": inferred_used_skill_names,
                     "skill_manifests": skill_manifests,
+                    "required_artifact_types": list(_required_artifact_types(payload)),
                 },
             )
         controlled_result = await self._try_controlled_runner(
@@ -1499,6 +1731,7 @@ class ClaudeAgentWorkerAdapter:
                 "used_skills_source": "platform_controlled_runner",
                 "controlled_runner_used": True,
                 "controlled_runner_reason": "empty_bash_tool_input_loop",
+                "required_artifact_types": list(_required_artifact_types(payload)),
             },
             artifacts=artifacts,
             executor_payload={
@@ -1516,6 +1749,7 @@ class ClaudeAgentWorkerAdapter:
                 "skill_manifests": skill_manifests,
                 "controlled_runner_used": True,
                 "controlled_runner_reason": "empty_bash_tool_input_loop",
+                "required_artifact_types": list(_required_artifact_types(payload)),
             },
         )
 
@@ -1551,6 +1785,8 @@ class ClaudeAgentWorkerAdapter:
             context_pack=context_pack,
         )
         context_retrieval, context_retrieval_identity = self._context_retrieval_for_payload(payload, context_pack)
+        permission_denials: list[dict[str, Any]] = []
+
         async def on_text(delta: str) -> None:
             if event_sink:
                 await event_sink(
@@ -1578,19 +1814,20 @@ class ClaudeAgentWorkerAdapter:
 
         async def on_tool_permission(request: dict[str, Any]) -> dict[str, Any]:
             trace_id = payload.trace_id or standard_trace_id(payload.run_id)
-            async with transaction() as conn:
-                return await broker_claude_sdk_tool_permission(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    workspace_id=payload.workspace_id,
-                    user_id=payload.user_id,
-                    session_id=payload.session_id,
-                    run_id=payload.run_id,
-                    trace_id=trace_id,
-                    agent_id=payload.agent_id,
-                    skill_id=payload.skill_id,
-                    request=request,
-                )
+            outcome = await resolve_claude_sdk_tool_permission(
+                tenant_id=payload.tenant_id,
+                workspace_id=payload.workspace_id,
+                user_id=payload.user_id,
+                session_id=payload.session_id,
+                run_id=payload.run_id,
+                trace_id=trace_id,
+                agent_id=payload.agent_id,
+                skill_id=payload.skill_id,
+                request=request,
+            )
+            if outcome.get("allowed") is not True:
+                permission_denials.append(outcome)
+            return outcome
 
         try:
             continuity = await self._session_continuity.resolve(
@@ -1620,9 +1857,19 @@ class ClaudeAgentWorkerAdapter:
                 if context_retrieval is not None and context_retrieval_identity is not None:
                     sdk_kwargs["context_retrieval"] = context_retrieval
                     sdk_kwargs["context_retrieval_identity"] = context_retrieval_identity
-                return await run_claude_agent_sdk(
+                sdk_result = await run_claude_agent_sdk(
                     **sdk_kwargs,
                 )
+                if permission_denials:
+                    denial = permission_denials[-1]
+                    return type("SdkPermissionDenied", (), {
+                        "used_sdk": True,
+                        "message": "工具权限未获准，任务未完成",
+                        "session_id": getattr(sdk_result, "session_id", None),
+                        "usage": getattr(sdk_result, "usage", {}) or {},
+                        "error": str(denial.get("reason") or "tool_permission_denied"),
+                    })()
+                return sdk_result
         except ClaudeAgentSdkNotAvailable as exc:
             return type("SdkUnavailable", (), {
                 "used_sdk": False,
@@ -1684,6 +1931,8 @@ class ClaudeAgentWorkerAdapter:
         for index, path in enumerate(candidates, start=1):
             content_type = _artifact_content_type(path.name)
             artifact_type = _artifact_type(path.name, payload.skill_id)
+            if artifact_type in {"reviewed_docx", "translated_docx"} and not _is_usable_docx(path):
+                continue
             storage_key = (
                 f"tenants/{payload.tenant_id}/workspaces/{payload.workspace_id}/"
                 f"sessions/{payload.session_id}/runs/{payload.run_id}/artifacts/{index}/{path.name}"
@@ -2082,6 +2331,165 @@ def _artifact_type(filename: str, skill_id: str | None = None) -> str:
     if lower.endswith(".txt") or lower.endswith(".md"):
         return "report_txt"
     return "runtime_file"
+
+
+def _is_usable_docx(path: Path) -> bool:
+    """Accept a required DOCX only when its bounded OPC package is usable."""
+
+    try:
+        if not 0 < path.stat().st_size <= _REQUIRED_DOCX_MAX_COMPRESSED_BYTES:
+            return False
+        with zipfile.ZipFile(path) as archive:
+            entries = archive.infolist()
+            if not _docx_archive_entries_are_bounded(entries):
+                return False
+            content_types = archive.read("[Content_Types].xml")
+            relationships = archive.read("_rels/.rels")
+            document = archive.read("word/document.xml")
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile):
+        return False
+    try:
+        content_types_root = ElementTree.fromstring(content_types)
+        relationships_root = ElementTree.fromstring(relationships)
+        document_root = ElementTree.fromstring(document)
+    except ElementTree.ParseError:
+        return False
+    if (
+        content_types_root.tag != f"{{{_OPC_CONTENT_TYPES_NAMESPACE}}}Types"
+        or relationships_root.tag != f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationships"
+        or document_root.tag != f"{{{_WORDPROCESSINGML_NAMESPACE}}}document"
+    ):
+        return False
+    has_document_override = any(
+        item.tag == f"{{{_OPC_CONTENT_TYPES_NAMESPACE}}}Override"
+        and item.attrib.get("PartName") == "/word/document.xml"
+        and item.attrib.get("ContentType") == _WORD_MAIN_DOCUMENT_CONTENT_TYPE
+        for item in content_types_root
+    )
+    relationship_ids: set[str] = set()
+    root_office_document_relationships = []
+    for item in relationships_root:
+        if item.tag != f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationship":
+            return False
+        relationship_id = str(item.attrib.get("Id") or "")
+        if not _is_valid_opc_relationship_id(relationship_id) or relationship_id in relationship_ids:
+            return False
+        relationship_ids.add(relationship_id)
+        if str(item.attrib.get("Type") or "") == _OPC_OFFICE_DOCUMENT_RELATIONSHIP:
+            root_office_document_relationships.append(item)
+    has_main_document_relationship = (
+        len(root_office_document_relationships) == 1
+        and str(root_office_document_relationships[0].attrib.get("TargetMode") or "").lower() != "external"
+        and _resolve_root_relationship_target(str(root_office_document_relationships[0].attrib.get("Target") or ""))
+        == "word/document.xml"
+    )
+    body = next((item for item in document_root if item.tag == f"{{{_WORDPROCESSINGML_NAMESPACE}}}body"), None)
+    return has_document_override and has_main_document_relationship and body is not None and any(True for _ in body)
+
+
+def _is_valid_opc_relationship_id(value: str) -> bool:
+    """Return whether an OPC relationship Id is a non-colon XML NCName.
+
+    OPC relationship identifiers are XML ``xsd:ID`` values.  XML allows
+    Unicode letters and combining marks, but a colon would make the value a
+    QName rather than the required NCName.  This small predicate keeps the
+    package parser dependency-free while accepting the XML name classes that
+    legitimate non-ASCII producers use.
+    """
+
+    if not value or ":" in value or not _is_xml_ncname_start(value[0]):
+        return False
+    return all(_is_xml_ncname_char(character) for character in value[1:])
+
+
+def _is_xml_ncname_start(character: str) -> bool:
+    """Implement XML 1.0 ``NameStartChar`` ranges excluding the QName colon."""
+
+    codepoint = ord(character)
+    return (
+        character == "_"
+        or "A" <= character <= "Z"
+        or "a" <= character <= "z"
+        or 0xC0 <= codepoint <= 0xD6
+        or 0xD8 <= codepoint <= 0xF6
+        or 0xF8 <= codepoint <= 0x2FF
+        or 0x370 <= codepoint <= 0x37D
+        or 0x37F <= codepoint <= 0x1FFF
+        or 0x200C <= codepoint <= 0x200D
+        or 0x2070 <= codepoint <= 0x218F
+        or 0x2C00 <= codepoint <= 0x2FEF
+        or 0x3001 <= codepoint <= 0xD7FF
+        or 0xF900 <= codepoint <= 0xFDCF
+        or 0xFDF0 <= codepoint <= 0xFFFD
+        or 0x10000 <= codepoint <= 0xEFFFF
+    )
+
+
+def _is_xml_ncname_char(character: str) -> bool:
+    """Implement XML 1.0 ``NameChar`` ranges for a non-colon NCName."""
+
+    codepoint = ord(character)
+    return (
+        _is_xml_ncname_start(character)
+        or character in {"-", "."}
+        or "0" <= character <= "9"
+        or codepoint == 0xB7
+        or 0x300 <= codepoint <= 0x36F
+        or 0x203F <= codepoint <= 0x2040
+    )
+
+
+def _docx_archive_entries_are_bounded(entries: list[zipfile.ZipInfo]) -> bool:
+    """Reject malformed, path-traversing, or expansion-prone OPC archive metadata before reads."""
+
+    if not entries or len(entries) > _REQUIRED_DOCX_MAX_ENTRY_COUNT:
+        return False
+    compressed_total = 0
+    uncompressed_total = 0
+    seen_package_parts: set[str] = set()
+    for entry in entries:
+        filename = str(entry.filename or "")
+        package_path = filename[:-1] if entry.is_dir() and filename.endswith("/") else filename
+        if (
+            not package_path
+            or "\x00" in filename
+            or "\\" in filename
+            or filename.startswith("/")
+            or any(part in {"", ".", ".."} for part in package_path.split("/"))
+            or bool(entry.flag_bits & 0x1)
+        ):
+            return False
+        normalized_part = package_path.casefold()
+        if normalized_part in seen_package_parts:
+            return False
+        seen_package_parts.add(normalized_part)
+        compressed_size = int(entry.compress_size)
+        uncompressed_size = int(entry.file_size)
+        if compressed_size < 0 or uncompressed_size < 0:
+            return False
+        compressed_total += compressed_size
+        uncompressed_total += uncompressed_size
+        if (
+            compressed_total > _REQUIRED_DOCX_MAX_COMPRESSED_BYTES
+            or uncompressed_total > _REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES
+            or (
+                compressed_size > 0
+                and uncompressed_size > compressed_size * _REQUIRED_DOCX_MAX_COMPRESSION_RATIO
+            )
+        ):
+            return False
+    return True
+
+
+def _resolve_root_relationship_target(target: str) -> str | None:
+    """Resolve a root OPC relationship only when it stays within the package root."""
+
+    if not target or "\\" in target or target.startswith("/"):
+        return None
+    normalized = posixpath.normpath(target)
+    if normalized.startswith("../") or normalized in {".", ".."}:
+        return None
+    return normalized
 
 
 def _artifact_label(filename: str, artifact_type: str) -> str:

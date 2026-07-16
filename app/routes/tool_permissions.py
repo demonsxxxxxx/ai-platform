@@ -36,7 +36,7 @@ def _permission_response_for_inbox(row: dict[str, object]) -> dict[str, object]:
 
 
 def _raise_if_unsupported_decision(row: dict[str, object], decision: str) -> None:
-    if decision == "allow_for_run" and decision not in inbox_allowed_decisions(row):
+    if decision not in inbox_allowed_decisions(row):
         raise HTTPException(status_code=409, detail="tool_permission_decision_not_supported")
 
 

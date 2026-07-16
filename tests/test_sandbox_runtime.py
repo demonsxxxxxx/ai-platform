@@ -651,6 +651,7 @@ async def test_executor_client_posts_private_executor_headers():
                 "callback_base_url": "http://platform.test",
                 "sdk_session_id": None,
                 "permission_mode": "default",
+                "governed_permission_wait": False,
                 "config": {},
             },
             3.0,

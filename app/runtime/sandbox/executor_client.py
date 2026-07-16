@@ -6,6 +6,7 @@ import httpx
 
 from app.runtime.sandbox.contracts import ExecutorTaskRequest
 from app.settings import get_settings
+from app.tool_permission_lifecycle import tool_permission_budget
 
 
 PostJson = Callable[..., Awaitable[dict[str, Any]]]
@@ -76,7 +77,7 @@ async def _default_post_json(
 class SandboxExecutorClient:
     def __init__(self, post_json: PostJson | None = None, timeout_seconds: float | None = None) -> None:
         self._post_json = post_json or _default_post_json
-        self._timeout_seconds = timeout_seconds if timeout_seconds is not None else _default_timeout_seconds()
+        self._timeout_seconds = timeout_seconds
 
     async def execute(
         self,
@@ -87,10 +88,15 @@ class SandboxExecutorClient:
     ) -> dict[str, Any]:
         logical_url = f"{executor_url.rstrip('/')}/v1/tasks/execute"
         url, outgoing_headers = prepare_executor_http_request(logical_url, executor_headers)
-        return await self._post_json(url, request.model_dump(), self._timeout_seconds, outgoing_headers)
+        timeout_seconds = self._timeout_seconds if self._timeout_seconds is not None else _default_timeout_seconds(request)
+        return await self._post_json(url, request.model_dump(), timeout_seconds, outgoing_headers)
 
 
-def _default_timeout_seconds() -> float:
+def _default_timeout_seconds(request: ExecutorTaskRequest | None = None) -> float:
+    """Keep normal executor requests at their old limit unless governance can wait."""
+
     settings = get_settings()
     sdk_timeout = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0) or 120.0)
-    return max(30.0, sdk_timeout + 10.0)
+    if request is not None and request.governed_permission_wait:
+        return tool_permission_budget(sdk_timeout).outer_executor_timeout_seconds
+    return tool_permission_budget(sdk_timeout).normal_outer_executor_timeout_seconds

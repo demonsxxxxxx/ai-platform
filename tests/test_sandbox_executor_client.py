@@ -1,8 +1,12 @@
+import asyncio
+
+import httpx
 import pytest
 
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorCallbackEvent, ExecutorTaskRequest
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events, container_started_event
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.tool_permission_lifecycle import tool_permission_budget
 
 
 def lease() -> ContainerLease:
@@ -73,15 +77,8 @@ def test_callback_current_step_maps_to_tool_call_delta():
     assert events[0].payload["current_step"] == "reading workspace"
 
 
-@pytest.mark.parametrize(
-    ("status", "expected_type"),
-    [
-        ("completed", "run_completed"),
-        ("failed", "run_failed"),
-        ("cancelled", "run_cancelled"),
-    ],
-)
-def test_callback_terminal_status_maps_to_run_event(status, expected_type):
+@pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
+def test_callback_terminal_status_does_not_map_to_authoritative_run_event(status):
     callback = ExecutorCallbackEvent(
         session_id="session-a",
         run_id="run-a",
@@ -95,8 +92,7 @@ def test_callback_terminal_status_maps_to_run_event(status, expected_type):
 
     events = callback_event_to_run_events(callback)
 
-    assert len(events) == 1
-    assert events[0].type == expected_type
+    assert events == []
 
 
 def test_callback_typed_events_are_appended_after_compatibility_events():
@@ -164,9 +160,37 @@ async def test_executor_client_posts_task_request(monkeypatch):
         (
             "http://executor.test/v1/tasks/execute",
             request.model_dump(),
-            130.0,
+            tool_permission_budget(120.0).normal_outer_executor_timeout_seconds,
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_executor_client_uses_the_nested_outer_deadline_only_for_governed_permission_runs(monkeypatch):
+    calls = []
+
+    async def post_json(url, payload, timeout, headers=None):
+        calls.append(timeout)
+        return {"status": "accepted"}
+
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_client.get_settings",
+        lambda: type("S", (), {"claude_agent_sdk_timeout_seconds": 120.0})(),
+    )
+    request = ExecutorTaskRequest(
+        session_id="session-a",
+        run_id="run-a",
+        prompt="hello",
+        callback_url="http://callback",
+        callback_token_id="cbt_run-a",
+        callback_token="secret",
+        callback_base_url="http://callback-base",
+        governed_permission_wait=True,
+    )
+
+    await SandboxExecutorClient(post_json=post_json).execute("http://executor.test", request)
+
+    assert calls == [tool_permission_budget(120.0).outer_executor_timeout_seconds]
 
 
 @pytest.mark.asyncio
@@ -279,3 +303,28 @@ async def test_executor_client_allows_explicit_timeout_override():
     await client.execute("http://executor.test", request)
 
     assert calls == [3.0]
+
+
+@pytest.mark.asyncio
+async def test_executor_client_deadline_and_cancellation_never_return_an_accepted_result():
+    request = ExecutorTaskRequest(
+        session_id="session-a",
+        run_id="run-a",
+        prompt="hello",
+        callback_url="http://callback",
+        callback_token_id="cbt_run-a",
+        callback_token="secret",
+        callback_base_url="http://callback-base",
+        config={"model": "deepseek-v4-flash"},
+    )
+
+    async def deadline_post_json(*args, **kwargs):
+        raise httpx.TimeoutException("executor deadline elapsed")
+
+    async def cancelled_post_json(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    with pytest.raises(httpx.TimeoutException):
+        await SandboxExecutorClient(post_json=deadline_post_json).execute("http://executor.test", request)
+    with pytest.raises(asyncio.CancelledError):
+        await SandboxExecutorClient(post_json=cancelled_post_json).execute("http://executor.test", request)

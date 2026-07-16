@@ -760,8 +760,6 @@ def test_run_playback_projects_tool_permission_card_for_ordinary_user(monkeypatc
         "reason": "需要运行写入命令",
         "status": "pending",
         "decision": None,
-        "decision_endpoint": "/api/ai/runs/run-a/tool-permissions/tpr-a/decision",
-        "decision_options": ["allow_once", "allow_for_run", "deny"],
     }
     public_dump = str(body)
     assert "write_business_system" not in public_dump

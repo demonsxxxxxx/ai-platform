@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
@@ -45,7 +46,9 @@ def _redact_tool_permission_private_payload(value: Any) -> Any:
     return value
 
 
-def permission_response(row: dict[str, Any], *, decision_endpoint: str | None = None) -> dict[str, Any]:
+def permission_response(row: dict[str, Any]) -> dict[str, Any]:
+    """Return an owner-visible permission record without governance controls."""
+
     run_id = str(row["run_id"])
     request_id = str(row["id"])
     return {
@@ -64,8 +67,6 @@ def permission_response(row: dict[str, Any], *, decision_endpoint: str | None = 
         "status": str(row.get("status") or "pending"),
         "decision": row.get("decision"),
         "reason": sanitize_public_text(row.get("reason")),
-        "decision_endpoint": decision_endpoint or tool_permission_decision_endpoint(run_id, request_id),
-        "decision_options": list(TOOL_PERMISSION_DECISION_OPTIONS),
         "created_at": row.get("created_at"),
         "decided_at": row.get("decided_at"),
         "expires_at": row.get("expires_at"),
@@ -91,7 +92,16 @@ def inbox_permission_response(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def inbox_allowed_decisions(row: dict[str, Any]) -> list[str]:
-    """Expose run-scoped approval only when its exact replay fingerprint exists."""
+    """Expose approval only for a currently executable, unexpired pending request."""
+
+    if str(row.get("status") or "") != "pending":
+        return []
+    if str(row.get("run_status") or "") != "running":
+        return []
+    if row.get("cancel_requested_at") is not None or row.get("permission_terminalization_target") is not None:
+        return []
+    if _permission_request_expired(row.get("expires_at")):
+        return []
     decisions = ["allow_once"]
     payload = row.get("request_payload_json")
     payload = payload if isinstance(payload, dict) else {}
@@ -105,6 +115,25 @@ def inbox_allowed_decisions(row: dict[str, Any]) -> list[str]:
     return decisions
 
 
+def _permission_request_expired(value: object) -> bool:
+    """Fail closed for an invalid persisted expiry and close elapsed cards truthfully."""
+
+    if value is None:
+        return True
+    if isinstance(value, datetime):
+        expires_at = value
+    elif isinstance(value, str):
+        try:
+            expires_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+    else:
+        return True
+    if expires_at.tzinfo is None:
+        return True
+    return expires_at <= datetime.now(timezone.utc)
+
+
 def tool_permission_public_event_payload(
     *,
     run_id: str,
@@ -114,6 +143,10 @@ def tool_permission_public_event_payload(
     card = tool_permission_card_from_payload(run_id=run_id, event_type=event_type, payload=payload)
     if card is None:
         return sanitize_tool_permission_payload(payload)
+    # Ordinary-user playback is historical only. Governance actions belong to
+    # the tenant-admin inbox, so do not project raw decision controls here.
+    card.pop("decision_endpoint", None)
+    card.pop("decision_options", None)
     return {
         "visible_to_user": bool(payload.get("visible_to_user", True)),
         "tool_permission_card": card,

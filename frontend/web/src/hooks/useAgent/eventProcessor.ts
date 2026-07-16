@@ -18,6 +18,7 @@ import type {
   RunStatusPart,
   ToolPermissionDecision,
   ToolPermissionPart,
+  ToolPermissionStatus,
   ArtifactPart,
   TodoPart,
   SummaryPart,
@@ -537,6 +538,15 @@ export function processMessageEvent(
           break;
         }
       }
+      if (data.event_type === "tool_permission_terminalized") {
+        const permissionTerminal =
+          createToolPermissionCardPart(data) ??
+          createToolPermissionTerminalizedPart(data);
+        if (permissionTerminal) {
+          result.parts = upsertToolPermissionPart(parts, permissionTerminal);
+          break;
+        }
+      }
       if (!shouldProjectRunStatus(data)) {
         break;
       }
@@ -772,6 +782,24 @@ function toolPermissionDecision(
     : undefined;
 }
 
+const TOOL_PERMISSION_TERMINAL_STATUSES = new Set<ToolPermissionStatus>([
+  "expired",
+  "cancelled",
+  "failed",
+  "invalidated",
+]);
+
+function toolPermissionStatus(value: unknown): ToolPermissionStatus | undefined {
+  return value === "pending" ||
+    value === "decided" ||
+    value === "expired" ||
+    value === "cancelled" ||
+    value === "failed" ||
+    value === "invalidated"
+    ? value
+    : undefined;
+}
+
 function createToolPermissionRequestedPart(
   data: EventData,
 ): ToolPermissionPart | null {
@@ -844,8 +872,7 @@ function createToolPermissionCardPart(
   const toolId = stringField(card, "tool_id");
   const toolCallId = stringField(card, "tool_call_id");
   const decision = toolPermissionDecision(card.decision);
-  const status =
-    stringField(card, "status") === "decided" || decision ? "decided" : "pending";
+  const status = toolPermissionStatus(card.status) ?? (decision ? "decided" : "pending");
   if (!eventId || !requestId || !runId || !toolId || !toolCallId) {
     return null;
   }
@@ -876,6 +903,41 @@ function createToolPermissionCardPart(
   };
 }
 
+function createToolPermissionTerminalizedPart(
+  data: EventData,
+): ToolPermissionPart | null {
+  const payload = asRecord(data.payload);
+  const eventId = String(data.event_id || data.id || "");
+  const requestId = stringField(payload, "permission_request_id");
+  const runId = data.run_id || stringField(payload, "run_id");
+  const toolId = stringField(payload, "tool_id");
+  const toolCallId = stringField(payload, "tool_call_id");
+  const status = toolPermissionStatus(payload.status);
+  if (
+    !eventId ||
+    !requestId ||
+    !runId ||
+    !toolId ||
+    !toolCallId ||
+    !status ||
+    !TOOL_PERMISSION_TERMINAL_STATUSES.has(status)
+  ) {
+    return null;
+  }
+  return {
+    type: "tool_permission",
+    event_id: eventId,
+    run_id: runId,
+    permission_request_id: requestId,
+    tool_id: toolId,
+    tool_call_id: toolCallId,
+    risk_level: stringField(payload, "risk_level") || "low",
+    write_capable: payload.write_capable === true,
+    status,
+    sequence: typeof data.sequence === "number" ? data.sequence : undefined,
+  };
+}
+
 function upsertToolPermissionPart(
   parts: MessagePart[],
   toolPermissionPart: ToolPermissionPart,
@@ -890,6 +952,9 @@ function upsertToolPermissionPart(
         p.permission_request_id === toolPermissionPart.permission_request_id
           ? p.status === "decided" && toolPermissionPart.status === "pending"
             ? p
+            : TOOL_PERMISSION_TERMINAL_STATUSES.has(p.status) &&
+                !TOOL_PERMISSION_TERMINAL_STATUSES.has(toolPermissionPart.status)
+              ? p
             : { ...p, ...toolPermissionPart }
           : p,
       )
@@ -919,21 +984,26 @@ function applyToolPermissionDecisionPart(
     ? parts.map((p) =>
         p.type === "tool_permission" &&
         p.permission_request_id === decisionPart.permission_request_id
-          ? {
-              ...p,
-              run_id: decisionPart.run_id || p.run_id,
-              tool_id: decisionPart.tool_id || p.tool_id,
-              tool_call_id: decisionPart.tool_call_id || p.tool_call_id,
-              risk_level: riskLevelFromEvent ? decisionPart.risk_level : p.risk_level,
-              write_capable: writeCapableFromEvent
-                ? decisionPart.write_capable
-                : p.write_capable,
-              decided_event_id: decisionPart.decided_event_id,
-              status: decisionPart.status,
-              decision: decisionPart.decision,
-              sequence: decisionPart.sequence,
-              decided_at: decisionPart.decided_at,
-            }
+          ? TOOL_PERMISSION_TERMINAL_STATUSES.has(p.status) ||
+              (typeof p.sequence === "number" &&
+                typeof decisionPart.sequence === "number" &&
+                decisionPart.sequence < p.sequence)
+            ? p
+            : {
+                ...p,
+                run_id: decisionPart.run_id || p.run_id,
+                tool_id: decisionPart.tool_id || p.tool_id,
+                tool_call_id: decisionPart.tool_call_id || p.tool_call_id,
+                risk_level: riskLevelFromEvent ? decisionPart.risk_level : p.risk_level,
+                write_capable: writeCapableFromEvent
+                  ? decisionPart.write_capable
+                  : p.write_capable,
+                decided_event_id: decisionPart.decided_event_id,
+                status: decisionPart.status,
+                decision: decisionPart.decision,
+                sequence: decisionPart.sequence,
+                decided_at: decisionPart.decided_at,
+              }
           : p,
       )
     : [...parts, normalizedDecisionPart];

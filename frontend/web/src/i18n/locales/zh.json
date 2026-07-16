@@ -417,9 +417,21 @@
         "message": "管理员未批准此操作；系统将保持拒绝状态。",
         "title": "操作未获授权"
       },
+      "expired": {
+        "message": "该工具权限在作出决策前已过期。",
+        "title": "工具权限已过期"
+      },
+      "invalidated": {
+        "message": "运行已结束，因此未使用此工具权限。",
+        "title": "工具权限已关闭"
+      },
       "pending": {
         "message": "该操作需要管理员处理后才能继续。",
         "title": "正在等待管理员处理"
+      },
+      "cancelled": {
+        "message": "运行已取消，因此未使用此工具权限。",
+        "title": "工具权限已取消"
       },
       "readOnly": "只读操作",
       "recordedDecision": "已记录决策：{{decision}}",
@@ -431,6 +443,10 @@
         "medium": "中"
       },
       "submitting": "提交中…",
+      "terminalFailed": {
+        "message": "运行无法继续，因此该工具权限已终结。",
+        "title": "工具权限已终结"
+      },
       "writeCapable": "可写操作"
     },
     "message": {

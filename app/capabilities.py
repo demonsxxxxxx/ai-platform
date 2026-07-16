@@ -14,6 +14,7 @@ class CapabilityDefinition:
     skill_id: str
     input_modes: list[str]
     output_modes: list[str]
+    required_artifact_types: list[str]
     user_visible: bool = True
 
 
@@ -26,6 +27,7 @@ CAPABILITIES: dict[str, CapabilityDefinition] = {
         skill_id="general-chat",
         input_modes=["chat"],
         output_modes=["answer"],
+        required_artifact_types=[],
     ),
     "document_review": CapabilityDefinition(
         capability_id="document_review",
@@ -35,6 +37,7 @@ CAPABILITIES: dict[str, CapabilityDefinition] = {
         skill_id="qa-file-reviewer",
         input_modes=["docx"],
         output_modes=["reviewed_docx"],
+        required_artifact_types=["reviewed_docx"],
     ),
     "document_translation": CapabilityDefinition(
         capability_id="document_translation",
@@ -44,6 +47,7 @@ CAPABILITIES: dict[str, CapabilityDefinition] = {
         skill_id="baoyu-translate",
         input_modes=["docx"],
         output_modes=["translated_docx"],
+        required_artifact_types=["translated_docx"],
     ),
     "knowledge_answer": CapabilityDefinition(
         capability_id="knowledge_answer",
@@ -53,9 +57,18 @@ CAPABILITIES: dict[str, CapabilityDefinition] = {
         skill_id="ragflow-knowledge-search",
         input_modes=["chat"],
         output_modes=["answer", "citations"],
+        required_artifact_types=[],
     ),
 }
 
 
 def get_capability(capability_id: str) -> CapabilityDefinition | None:
     return CAPABILITIES.get(capability_id)
+
+
+def required_artifact_types_for_skill(skill_id: str) -> tuple[str, ...]:
+    """Return the declared artifact contract for a selected platform Skill."""
+    for capability in CAPABILITIES.values():
+        if capability.skill_id == skill_id:
+            return tuple(capability.required_artifact_types)
+    return ()
