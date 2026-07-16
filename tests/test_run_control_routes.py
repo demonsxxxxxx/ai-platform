@@ -10,6 +10,23 @@ from app.models import QueueRunPayload
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError
 
 
+@pytest.fixture(autouse=True)
+def _stub_permission_terminalization_for_run_control_mocks(monkeypatch):
+    """Keep legacy route fakes focused on route-side cancel effects, not batch SQL internals."""
+
+    async def stage(conn, **kwargs):
+        return {"id": kwargs["run_id"], "permission_terminalization_target": kwargs["target_status"]}
+
+    async def progress(conn, *, tenant_id, run_id):
+        return {
+            "completed": True,
+            "status": "cancelled" if "queued" in run_id else "cancel_requested",
+        }
+
+    monkeypatch.setattr(repository_module, "_stage_run_tool_permission_terminalization", stage)
+    monkeypatch.setattr(repository_module, "progress_run_tool_permission_terminalization", progress)
+
+
 def replay_manifest(skill_id: str, version: str = "hash-v1") -> dict:
     return {
         "skill_id": skill_id,
@@ -6900,8 +6917,9 @@ async def test_propagate_multi_agent_parent_cancel_cancels_server_owned_children
                 assert "payload_json->>'dispatch_state'" in normalized
                 return Cursor(rows=child_rows)
             if normalized.startswith("update runs"):
+                assert "status = case when status = 'queued' then 'cancelled' else status end" not in normalized
                 child_id = params[2]
-                status = "cancelled" if child_id == "run-child-queued" else "running"
+                status = "queued" if child_id == "run-child-queued" else "running"
                 return Cursor(row={"id": child_id, "status": status, "trace_id": f"trace-{child_id}"})
             if normalized.startswith("update run_steps"):
                 return Cursor()
@@ -6931,9 +6949,22 @@ async def test_propagate_multi_agent_parent_cancel_cancels_server_owned_children
         calls.append(("reconcile", kwargs))
         return {"event_id": "evt-reconcile", "audit_id": "aud-reconcile"}
 
+    async def fake_stage(conn, **kwargs):
+        calls.append(("stage", kwargs))
+        return {"id": kwargs["run_id"]}
+
+    async def fake_progress(conn, **kwargs):
+        calls.append(("progress", kwargs))
+        return {
+            "completed": True,
+            "status": "cancelled" if kwargs["run_id"] == "run-child-queued" else "cancel_requested",
+        }
+
     monkeypatch.setattr("app.repositories.append_event", fake_append_event)
     monkeypatch.setattr("app.repositories.append_audit_log", fake_append_audit_log)
     monkeypatch.setattr("app.repositories.reconcile_multi_agent_child_run_terminal_state", fake_reconcile)
+    monkeypatch.setattr("app.repositories._stage_run_tool_permission_terminalization", fake_stage)
+    monkeypatch.setattr("app.repositories.progress_run_tool_permission_terminalization", fake_progress)
 
     result = await repositories.propagate_multi_agent_parent_cancel(
         FakeConnection(),
@@ -6947,6 +6978,14 @@ async def test_propagate_multi_agent_parent_cancel_cancels_server_owned_children
     assert result["running_child_run_ids"] == ["run-child-running"]
     assert result["active_sandbox_leases"] == [
         {"id": "lease-running", "run_id": "run-child-running", "trace_id": "trace-lease"}
+    ]
+    assert [(call[1]["run_id"], call[1]["target_status"]) for call in calls if call[0] == "stage"] == [
+        ("run-child-queued", "cancelled"),
+        ("run-child-running", "cancel_requested"),
+    ]
+    assert [call[1]["run_id"] for call in calls if call[0] == "progress"] == [
+        "run-child-queued",
+        "run-child-running",
     ]
     assert any(call[0] == "reconcile" and call[1]["child_run_id"] == "run-child-queued" for call in calls)
     dump = json.dumps([call[1] for call in calls if call[0] in {"event", "audit"}], ensure_ascii=False)
@@ -8137,7 +8176,6 @@ async def test_request_run_cancel_allows_cancelled_run_with_active_sandbox_lease
             normalized = " ".join(sql.split())
             calls.append((normalized, params))
             if normalized.startswith("update runs"):
-                assert "status = 'cancelled'" in normalized
                 assert "exists ( select 1 from sandbox_leases" in normalized
                 assert "sandbox_leases.status = 'active'" in normalized
                 return RunCursor()
@@ -8647,7 +8685,6 @@ async def test_request_admin_run_cancel_allows_cancelled_run_with_active_sandbox
             normalized = " ".join(sql.split())
             calls.append((normalized, params))
             if normalized.startswith("update runs"):
-                assert "status = 'cancelled'" in normalized
                 assert "exists ( select 1 from sandbox_leases" in normalized
                 assert "sandbox_leases.status = 'active'" in normalized
                 assert "and user_id =" not in normalized

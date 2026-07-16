@@ -2,10 +2,12 @@ import base64
 import asyncio
 from contextlib import asynccontextmanager
 import hashlib
+import io
 import json
 import subprocess
 import sys
 import types
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -585,12 +587,14 @@ def write_runner_skill(
     skill_dir = write_skill(root, name=name, description=description)
     scripts_dir = skill_dir / "scripts"
     scripts_dir.mkdir()
+    encoded_docx = base64.b64encode(valid_docx_bytes()).decode("ascii")
     (scripts_dir / script_name).write_text(
+        "import base64\n"
         "import pathlib\n"
         "import sys\n"
         "out = pathlib.Path(sys.argv[2])\n"
         "out.mkdir(parents=True, exist_ok=True)\n"
-        f"(out / {artifact_name!r}).write_bytes(b'reviewed artifact')\n"
+        f"(out / {artifact_name!r}).write_bytes(base64.b64decode({encoded_docx!r}))\n"
         "print('deterministic runner completed')\n",
         encoding="utf-8",
     )
@@ -652,6 +656,42 @@ def symlink_or_skip(target, link):
         link.symlink_to(target, target_is_directory=target.is_dir())
     except (NotImplementedError, OSError) as exc:
         pytest.skip(f"symlink creation not available: {exc}")
+
+
+def usable_docx_bytes(*, document: bytes | None = None, content_types: bytes | None = None) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        content_types_entry = zipfile.ZipInfo("[Content_Types].xml", date_time=(2024, 1, 1, 0, 0, 0))
+        content_types_entry.compress_type = zipfile.ZIP_DEFLATED
+        archive.writestr(
+            content_types_entry,
+            content_types
+            if content_types is not None
+            else (
+                b'<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                b'<Override PartName="/word/document.xml" '
+                b'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                b"</Types>"
+            ),
+        )
+        if document is not None:
+            document_entry = zipfile.ZipInfo("word/document.xml", date_time=(2024, 1, 1, 0, 0, 0))
+            document_entry.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(
+                document_entry,
+                document,
+            )
+    return buffer.getvalue()
+
+
+def valid_docx_bytes() -> bytes:
+    return usable_docx_bytes(
+        document=(
+            b'<?xml version="1.0"?><w:document '
+            b'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            b"<w:body><w:p/></w:body></w:document>"
+        )
+    )
 
 
 def test_registry_exposes_claude_agent_worker():
@@ -716,6 +756,79 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
     ]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"",
+        b"not-a-zip",
+        usable_docx_bytes(document=None),
+        usable_docx_bytes(document=b""),
+        usable_docx_bytes(document=b"<document/>"),
+        usable_docx_bytes(document=b"<w:document>not valid XML</w:document>"),
+        usable_docx_bytes(document=b"<document><body><p/></body></document>", content_types=b"not XML"),
+    ],
+    ids=[
+        "zero-byte",
+        "corrupt-zip",
+        "missing-document",
+        "empty-document",
+        "document-without-body",
+        "invalid-document-xml",
+        "invalid-content-types",
+    ],
+)
+@pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
+def test_collect_workspace_artifacts_rejects_unusable_required_docx(monkeypatch, tmp_path, content, skill_id):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    (output / "review.docx").write_bytes(content)
+    stored = []
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append((storage_key, content, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+
+    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+        payload(skill_id=skill_id),
+        workspace,
+    )
+
+    assert artifacts == []
+    assert stored == []
+
+
+@pytest.mark.parametrize(
+    ("skill_id", "expected_type"),
+    [("qa-file-reviewer", "reviewed_docx"), ("baoyu-translate", "translated_docx")],
+)
+def test_collect_workspace_artifacts_accepts_usable_required_docx(monkeypatch, tmp_path, skill_id, expected_type):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    content = valid_docx_bytes()
+    (output / "review.docx").write_bytes(content)
+    stored = []
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append((storage_key, content, content_type))
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+
+    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+        payload(skill_id=skill_id),
+        workspace,
+    )
+
+    assert [artifact.artifact_type for artifact in artifacts] == [expected_type]
+    assert stored[0][1] == content
 
 
 @pytest.mark.asyncio
@@ -879,6 +992,106 @@ def test_sandbox_brokered_budget_preserves_pre_permission_work_and_one_full_wait
 
     assert budget.sandbox_sdk_timeout_seconds > 130.0 + budget.aggregate_permission_wait_seconds
     assert budget.outer_executor_timeout_seconds > budget.sandbox_sdk_timeout_seconds
+
+
+@pytest.mark.asyncio
+async def test_sandbox_sdk_starts_at_the_normal_deadline_then_extends_only_for_a_governed_callback(monkeypatch, tmp_path):
+    captured = {"timeouts": [], "rescheduled": [], "permission_requests": []}
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = {}
+        model_usage = {}
+        result = "ok"
+        is_error = False
+        errors = []
+        stop_reason = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.hooks = kwargs["hooks"]
+
+    class HookMatcher:
+        def __init__(self, matcher=None, hooks=None, timeout=None):
+            self.matcher = matcher
+            self.hooks = hooks or []
+            self.timeout = timeout
+
+    class ObservedTimeout:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        def reschedule(self, deadline):
+            captured["rescheduled"].append(deadline)
+
+    async def query(prompt, options):
+        hook = options.hooks["PreToolUse"][0].hooks[0]
+        captured["hook_result"] = await hook(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Write",
+                "tool_input": {"file_path": "output.txt", "content": "governed"},
+                "tool_use_id": "tool-governed",
+            },
+            "tool-governed",
+            {},
+        )
+        yield ResultMessage()
+
+    current_settings = type(
+        "S",
+        (),
+        {
+            "claude_agent_sdk_enabled": True,
+            "anthropic_base_url": "",
+            "anthropic_auth_token": "",
+            "anthropic_model": "",
+            "openai_api_key": "",
+            "claude_agent_model": "deepseek-v4-flash",
+            "claude_agent_sdk_skills": "",
+            "claude_agent_sdk_timeout_seconds": 130.0,
+            "claude_agent_sdk_max_turns": 12,
+        },
+    )()
+    fake_sdk = types.SimpleNamespace(
+        AssistantMessage=type("AssistantMessage", (), {}),
+        ClaudeAgentOptions=ClaudeAgentOptions,
+        HookMatcher=HookMatcher,
+        ResultMessage=ResultMessage,
+        TextBlock=type("TextBlock", (), {}),
+        query=query,
+    )
+
+    async def on_tool_permission(request):
+        captured["permission_requests"].append(request)
+        return {"allowed": True, "reason": "tool_permission_decided"}
+
+    def timeout(seconds):
+        captured["timeouts"].append(seconds)
+        return ObservedTimeout()
+
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.asyncio.timeout", timeout)
+
+    result = await run_claude_agent_sdk(
+        prompt="hello",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        execution_policy="sandbox_brokered",
+        on_tool_permission=on_tool_permission,
+    )
+
+    budget = tool_permission_budget(130.0)
+    assert result.error is None
+    assert captured["timeouts"] == [budget.normal_execution_timeout_seconds]
+    assert len(captured["rescheduled"]) == 1
+    assert captured["permission_requests"][0]["permission_wait_seconds"] == budget.aggregate_permission_wait_seconds
+    assert captured["hook_result"]["hookSpecificOutput"]["permissionDecision"] == "allow"
 
 
 @pytest.mark.asyncio
@@ -1822,7 +2035,7 @@ async def test_file_skill_uses_controlled_runner_when_sdk_tool_schema_loops(monk
     assert result.result["controlled_runner_reason"] == "empty_bash_tool_input_loop"
     assert result.result["sdk_error"] == "Reached maximum number of turns (128)"
     assert result.artifacts[0].artifact_type == "reviewed_docx"
-    assert stored[0][1] == b"reviewed artifact"
+    assert stored[0][1] == valid_docx_bytes()
     assert result.result["used_skills"] == ["qa-file-reviewer"]
     assert result.executor_payload["used_skills"] == ["qa-file-reviewer"]
     assert result.executor_payload["inferred_used_skills"] == ["qa-file-reviewer", "minimax-docx"]
@@ -1879,7 +2092,7 @@ async def test_baoyu_translate_uses_controlled_runner_when_sdk_tool_schema_loops
     assert result.status == "succeeded"
     assert result.result["controlled_runner_used"] is True
     assert result.artifacts[0].artifact_type == "translated_docx"
-    assert stored[0][1] == b"reviewed artifact"
+    assert stored[0][1] == valid_docx_bytes()
 
 
 @pytest.mark.asyncio
@@ -5887,6 +6100,8 @@ async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_othe
     captured = {}
     permission_calls = []
     used_skill_events = []
+    decisions = {}
+    side_effect_tools = ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "WebFetch", "WebSearch"]
 
     class TextBlock:
         def __init__(self, text):
@@ -5922,6 +6137,23 @@ async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_othe
             self.interrupt = interrupt
 
     async def query(prompt, options):
+        broker_hook = captured["hooks"]["PreToolUse"][0].hooks[0]
+        for tool_name in [*side_effect_tools, "mcp__knowledge__search"]:
+            tool_input = (
+                {"command": "python .claude/skills/qa-file-reviewer/scripts/run_qa_review.py inputs/a.docx"}
+                if tool_name == "Bash"
+                else {"value": "x"}
+            )
+            decisions[tool_name] = await broker_hook(
+                {
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "tool_use_id": f"tool-{tool_name}",
+                },
+                f"tool-{tool_name}",
+                {},
+            )
         yield AssistantMessage([TextBlock("ok")])
         yield ResultMessage()
 
@@ -5983,6 +6215,7 @@ async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_othe
         execution_policy="sandbox_brokered",
     )
 
+    assert result.error is None
     assert result.message == "ok"
     assert captured["permission_mode"] == "dontAsk"
     internal_context_tools = [
@@ -5994,7 +6227,6 @@ async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_othe
     ]
     assert captured["allowed_tools"] == ["Read", "Glob", "LS", *internal_context_tools]
     assert captured["disallowed_tools"] == []
-    side_effect_tools = ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "WebFetch", "WebSearch"]
     assert captured["tools"] == ["Read", "Glob", "LS", *side_effect_tools]
     pre_tool_matchers = captured["hooks"]["PreToolUse"]
     assert len(pre_tool_matchers) == 1
@@ -6003,21 +6235,7 @@ async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_othe
     assert len(captured["hooks"]["PostToolUse"]) == 1
     assert captured["hooks"]["PostToolUse"][0].matcher == "Skill"
     broker_hook = pre_tool_matchers[0].hooks[0]
-
-    decisions = {}
     brokered_tools = [*side_effect_tools, "mcp__knowledge__search"]
-    for tool_name in brokered_tools:
-        tool_input = {"command": "python .claude/skills/qa-file-reviewer/scripts/run_qa_review.py inputs/a.docx"} if tool_name == "Bash" else {"value": "x"}
-        decisions[tool_name] = await broker_hook(
-            {
-                "hook_event_name": "PreToolUse",
-                "tool_name": tool_name,
-                "tool_input": tool_input,
-                "tool_use_id": f"tool-{tool_name}",
-            },
-            f"tool-{tool_name}",
-            {},
-        )
 
     assert [request["tool_name"] for request in permission_calls] == brokered_tools
     mcp_request = permission_calls[-1]
@@ -6028,7 +6246,7 @@ async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_othe
     assert decisions["Bash"]["hookSpecificOutput"]["permissionDecision"] == "allow"
     assert decisions["mcp__knowledge__search"]["hookSpecificOutput"]["permissionDecision"] == "allow"
     assert decisions["Write"]["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert decisions["WebFetch"]["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_broker_failed"
+    assert decisions["WebFetch"]["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_broker_timed_out"
     assert decisions["WebSearch"]["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_malformed_response"
 
     permission_count_before_governed_tools = len(permission_calls)

@@ -13,7 +13,7 @@ from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied
 from app.control_plane_contracts import sanitize_public_payload
 from app.public_context_keys import safe_public_context_pack_version
 from app.settings import get_settings
-from app.tool_permission_lifecycle import tool_permission_budget
+from app.tool_permission_lifecycle import ToolPermissionWaitLedger, tool_permission_budget
 
 _SDK_ENV_ALLOWLIST = {
     "PATH",
@@ -968,6 +968,21 @@ async def run_claude_agent_sdk(
         sandbox_brokered=sandbox_brokered,
         full_access=full_access,
     )
+    permission_budget = tool_permission_budget(
+        float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0) or 120.0)
+    )
+    initial_timeout_seconds = (
+        permission_budget.normal_execution_timeout_seconds if sandbox_brokered else timeout_seconds
+    )
+    event_loop = asyncio.get_running_loop()
+    permission_wait_ledger = (
+        ToolPermissionWaitLedger(permission_budget, monotonic=event_loop.time) if sandbox_brokered else None
+    )
+    permission_timeout_state: dict[str, object] = {
+        "activated": False,
+        "deadline": None,
+        "reschedule": None,
+    }
 
     async def record_used_skill(skill_name: str, metadata: dict[str, Any]) -> None:
         if allowed_skill_names and skill_name not in allowed_skill_names:
@@ -977,6 +992,47 @@ async def run_claude_agent_sdk(
         used_skill_names.append(skill_name)
         if on_skill_use:
             await on_skill_use(skill_name, metadata)
+
+    async def request_sandbox_permission(permission_request: dict[str, Any]) -> dict[str, Any]:
+        """Spend one shared wait slice and reserve post-decision execution before approval."""
+
+        if on_tool_permission is None or permission_wait_ledger is None:
+            return {"allowed": False, "reason": "tool_permission_broker_unavailable"}
+        window = permission_wait_ledger.begin_callback()
+        if window is None:
+            return {"allowed": False, "reason": "tool_permission_wait_exhausted"}
+        deadline = permission_timeout_state.get("deadline")
+        reschedule = permission_timeout_state.get("reschedule")
+        if not isinstance(deadline, int | float) or not callable(reschedule):
+            permission_wait_ledger.finish_callback(window)
+            return {"allowed": False, "reason": "tool_permission_execution_window_exhausted"}
+        if permission_timeout_state["activated"] is not True:
+            reschedule(float(deadline))
+            permission_timeout_state["activated"] = True
+        callback_deadline = float(deadline) - permission_budget.post_authorization_execution_seconds
+        callback_timeout_seconds = min(window.transport_timeout_seconds, callback_deadline - event_loop.time())
+        if callback_timeout_seconds <= 0:
+            permission_wait_ledger.finish_callback(window)
+            return {"allowed": False, "reason": "tool_permission_execution_window_exhausted"}
+        try:
+            result = await asyncio.wait_for(
+                on_tool_permission(
+                    {
+                        **permission_request,
+                        "permission_wait_seconds": window.wait_timeout_seconds,
+                    }
+                ),
+                timeout=callback_timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            return {"allowed": False, "reason": "tool_permission_broker_timed_out"}
+        finally:
+            permission_wait_ledger.finish_callback(window)
+        if result.get("allowed") is True and event_loop.time() >= callback_deadline:
+            return {"allowed": False, "reason": "tool_permission_execution_window_exhausted"}
+        return result
 
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
         if sandbox_brokered:
@@ -1099,17 +1155,20 @@ async def run_claude_agent_sdk(
             }
         if on_tool_permission is not None:
             try:
-                permission = await on_tool_permission(
-                    {
-                        "tool_name": tool_name,
-                        "tool_call_id": str(hook_input.get("tool_use_id") or tool_use_id or ""),
-                        "tool_input_keys": sorted(str(key) for key in tool_input),
-                        "risk_level": "high",
-                        "write_capable": True,
-                        "action": "execute",
-                        "reason": f"Claude SDK requested {tool_name} through the platform sandbox permission broker",
-                        "tool_input": tool_input,
-                    }
+                permission_request = {
+                    "tool_name": tool_name,
+                    "tool_call_id": str(hook_input.get("tool_use_id") or tool_use_id or ""),
+                    "tool_input_keys": sorted(str(key) for key in tool_input),
+                    "risk_level": "high",
+                    "write_capable": True,
+                    "action": "execute",
+                    "reason": f"Claude SDK requested {tool_name} through the platform sandbox permission broker",
+                    "tool_input": tool_input,
+                }
+                permission = (
+                    await request_sandbox_permission(permission_request)
+                    if sandbox_brokered
+                    else await on_tool_permission(permission_request)
                 )
             except Exception:
                 permission = {"allowed": False, "reason": "tool_permission_broker_failed"}
@@ -1246,6 +1305,17 @@ async def run_claude_agent_sdk(
         )
 
     try:
+        if sandbox_brokered:
+            # Keep the initial no-permission window short.  The first governed
+            # callback alone extends it to the independently nested aggregate
+            # permission budget; using the normal SDK timeout here would cut a
+            # valid decision short as soon as the hook rescheduled.
+            permission_timeout_state["deadline"] = (
+                event_loop.time() + permission_budget.sandbox_sdk_timeout_seconds
+            )
+            async with asyncio.timeout(initial_timeout_seconds) as sandbox_timeout:
+                permission_timeout_state["reschedule"] = sandbox_timeout.reschedule
+                return await consume()
         return await asyncio.wait_for(consume(), timeout=timeout_seconds)
     except asyncio.CancelledError:
         raise

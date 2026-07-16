@@ -116,3 +116,45 @@ frontend projection-audit unit currently has an unrelated expectation drift for
 `/api/env-vars`; it is outside this lifecycle change.  This worktree has no
 `frontend/web/node_modules`, so no TypeScript/lint/build command was run and no
 dependency or lockfile mutation was made.
+
+## Generation 4 repair boundary
+
+Generation 4 preserves the accepted fail-closed path and deepens its two
+authoritative seams.  `tool_permission_lifecycle` owns a measured aggregate
+permission-wait allowance for one sandbox-brokered SDK execution.  Each
+permission callback consumes the same monotonic allowance; callback transport,
+SDK total, and outer executor total are strictly nested with enough post-decision
+execution and terminal-callback margin.  Ordinary callbacks and executions that
+cannot request governed permissions keep their existing short/normal deadlines.
+
+The repository takes the owning `runs` row lock before permission rows for
+expiry, decision, cancellation, lookup, consumption, and terminalization.
+Terminalization is durable and progressive: a short run-first transition blocks
+new requests, bounded batches terminalize and audit individual rows, and only a
+verified empty gate permits the final run state.  Retry after a crash resumes
+the same marker without duplicate events or a terminal run coexisting with a
+pending request.  Multi-agent parent cancellation uses that same seam for
+queued children rather than directly writing `cancelled`; a post-commit drain
+continues bounded child progress after queue removal.  The tenant administrator
+inbox continues to expose history,
+but publishes decision options only for a pending, unexpired request whose run
+is still executable; all other records are display-only.  These additions are
+additive for stored rows and preserve ordinary-user RBAC and public card data.
+
+The Generation 4 RED set uses injected monotonic clocks and transaction/barrier
+fakes for aggregate waits, deadline nesting, expiry/decision/cancel ordering,
+batch retry/progress, and inbox truth.  It also keeps the Generation 4a worker
+transactional completion and usable-DOCX artifact checks: failed or late-blocked
+results leave no completion side effect, and reviewed/translated DOCX artifacts
+must contain valid non-empty OpenXML document parts.
+
+### Generation 4 latest-main integration
+
+The candidate is rebased onto `06296b18963e40aa6f9df929103e43370befc14f`, the
+#455 chat-submission integration base.  Its additive `chat_submissions` schema
+and principal-scoped repository operations remain separate from the `runs`
+permission-terminalization marker.  Direct chat-route coverage runs alongside
+the permission lifecycle suites after the rebase.  A missing or malformed
+permission expiry is now fail-closed for both decision acceptance and published
+`allowed_decisions`; historic request cards remain readable but cannot expose a
+new approval action.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
@@ -91,7 +92,16 @@ def inbox_permission_response(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def inbox_allowed_decisions(row: dict[str, Any]) -> list[str]:
-    """Expose run-scoped approval only when its exact replay fingerprint exists."""
+    """Expose approval only for a currently executable, unexpired pending request."""
+
+    if str(row.get("status") or "") != "pending":
+        return []
+    if str(row.get("run_status") or "") != "running":
+        return []
+    if row.get("cancel_requested_at") is not None or row.get("permission_terminalization_target") is not None:
+        return []
+    if _permission_request_expired(row.get("expires_at")):
+        return []
     decisions = ["allow_once"]
     payload = row.get("request_payload_json")
     payload = payload if isinstance(payload, dict) else {}
@@ -103,6 +113,25 @@ def inbox_allowed_decisions(row: dict[str, Any]) -> list[str]:
         decisions.append("allow_for_run")
     decisions.append("deny")
     return decisions
+
+
+def _permission_request_expired(value: object) -> bool:
+    """Fail closed for an invalid persisted expiry and close elapsed cards truthfully."""
+
+    if value is None:
+        return True
+    if isinstance(value, datetime):
+        expires_at = value
+    elif isinstance(value, str):
+        try:
+            expires_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+    else:
+        return True
+    if expires_at.tzinfo is None:
+        return True
+    return expires_at <= datetime.now(timezone.utc)
 
 
 def tool_permission_public_event_payload(

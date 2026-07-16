@@ -228,6 +228,7 @@ def test_runtime_tool_permission_callback_accepts_valid_request(monkeypatch):
             "risk_level": "high",
             "write_capable": True,
             "reason": "needs shell",
+            "permission_wait_seconds": 130,
         },
     )
 
@@ -248,6 +249,7 @@ def test_runtime_tool_permission_callback_accepts_valid_request(monkeypatch):
     assert resolve_call["user_id"] == "user-a"
     assert resolve_call["session_id"] == "session-a"
     assert resolve_call["run_id"] == "run-a"
+    assert resolve_call["wait_timeout_seconds"] == 130.0
     assert resolve_call["agent_id"] == "general-agent"
     assert resolve_call["skill_id"] == "general-chat"
     assert resolve_call["request"]["tool_input"] == {"command": "python write_business_system.py"}

@@ -8,6 +8,7 @@ from app.runtime.sandbox.contracts import ExecutorCallbackEvent, ExecutorToolPer
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.settings import get_settings
+from app.tool_permission_lifecycle import tool_permission_budget
 
 router = APIRouter()
 
@@ -85,6 +86,11 @@ async def record_executor_tool_permission(callback: ExecutorToolPermissionReques
     return await resolve_claude_sdk_tool_permission(
         **scope,
         request=callback.model_dump(),
+        wait_timeout_seconds=(
+            callback.permission_wait_seconds
+            if callback.permission_wait_seconds is not None
+            else tool_permission_budget().aggregate_permission_wait_seconds
+        ),
     )
 
 

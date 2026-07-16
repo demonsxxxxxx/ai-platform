@@ -9,6 +9,8 @@ import shutil
 import subprocess
 import sys
 from typing import Any, Awaitable, Callable
+import zipfile
+from xml.etree import ElementTree
 
 from app import repositories
 from app.capabilities import required_artifact_types_for_skill
@@ -323,7 +325,9 @@ async def resolve_claude_sdk_tool_permission(
         return {"allowed": False, "reason": "tool_permission_request_missing"}
     monotonic = monotonic or asyncio.get_running_loop().time
     sleep = sleep or asyncio.sleep
-    deadline = monotonic() + max(float(wait_timeout_seconds), 0.0)
+    allowed_wait_seconds = tool_permission_budget().aggregate_permission_wait_seconds
+    bounded_wait_timeout_seconds = max(min(float(wait_timeout_seconds), allowed_wait_seconds), 0.0)
+    deadline = monotonic() + bounded_wait_timeout_seconds
     while True:
         async with transaction() as conn:
             expired = await repositories.expire_tool_permission_request(
@@ -1175,6 +1179,7 @@ class ClaudeAgentWorkerAdapter:
             context_manifest=dict(context_manifest or {}),
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             sdk_session_id=continuity.sdk_session_id,
+            governed_permission_wait=True,
         )
         runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
         runtime_event_sink = None
@@ -1814,6 +1819,8 @@ class ClaudeAgentWorkerAdapter:
         for index, path in enumerate(candidates, start=1):
             content_type = _artifact_content_type(path.name)
             artifact_type = _artifact_type(path.name, payload.skill_id)
+            if artifact_type in {"reviewed_docx", "translated_docx"} and not _is_usable_docx(path):
+                continue
             storage_key = (
                 f"tenants/{payload.tenant_id}/workspaces/{payload.workspace_id}/"
                 f"sessions/{payload.session_id}/runs/{payload.run_id}/artifacts/{index}/{path.name}"
@@ -2212,6 +2219,39 @@ def _artifact_type(filename: str, skill_id: str | None = None) -> str:
     if lower.endswith(".txt") or lower.endswith(".md"):
         return "report_txt"
     return "runtime_file"
+
+
+def _is_usable_docx(path: Path) -> bool:
+    """Accept a required DOCX only when its essential OpenXML parts are usable."""
+
+    try:
+        if path.stat().st_size <= 0:
+            return False
+        with zipfile.ZipFile(path) as archive:
+            content_types = archive.read("[Content_Types].xml")
+            document = archive.read("word/document.xml")
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile):
+        return False
+    try:
+        content_types_root = ElementTree.fromstring(content_types)
+        document_root = ElementTree.fromstring(document)
+    except ElementTree.ParseError:
+        return False
+    if _xml_local_name(content_types_root.tag) != "Types" or _xml_local_name(document_root.tag) != "document":
+        return False
+    has_document_override = any(
+        _xml_local_name(item.tag) == "Override"
+        and item.attrib.get("PartName") == "/word/document.xml"
+        and item.attrib.get("ContentType")
+        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+        for item in content_types_root
+    )
+    body = next((item for item in document_root if _xml_local_name(item.tag) == "body"), None)
+    return has_document_override and body is not None and any(True for _ in body)
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
 
 
 def _artifact_label(filename: str, artifact_type: str) -> str:

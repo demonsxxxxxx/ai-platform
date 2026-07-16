@@ -34,7 +34,7 @@ from app.runtime.sandbox.contracts import (
 )
 from app.settings import get_settings
 from app.storage import ObjectStorage
-from app.tool_permission_lifecycle import callback_timeout_seconds
+from app.tool_permission_lifecycle import callback_timeout_seconds, tool_permission_budget
 
 
 CallbackPayload = dict[str, Any]
@@ -361,6 +361,7 @@ async def _default_executor_runner(
             risk_level=risk_level,
             write_capable=write_capable,
             reason=reason,
+            permission_wait_seconds=permission_request.get("permission_wait_seconds"),
         )
         try:
             broker_result = await _dispatch_callback(
@@ -530,6 +531,14 @@ def create_executor_app(
             if isinstance(resource_limits, dict)
             else None
         )
+        if max_seconds is not None and request.governed_permission_wait:
+            sdk_normal_timeout = float(
+                getattr(get_settings(), "claude_agent_sdk_timeout_seconds", 120.0) or 120.0
+            )
+            max_seconds = max(
+                max_seconds,
+                tool_permission_budget(sdk_normal_timeout).sandbox_sdk_timeout_seconds,
+            )
         invalid_max_seconds = max_seconds_present and max_seconds is None
         timed_out = max_seconds is not None and max_seconds <= 0
         executor_started_at = time.monotonic()

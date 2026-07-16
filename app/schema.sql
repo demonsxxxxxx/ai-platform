@@ -347,7 +347,12 @@ create table if not exists runs (
   created_at timestamptz not null default now(),
   copied_from_run_id text references runs(id),
   cancel_requested_at timestamptz,
-  cancel_requested_by text
+  cancel_requested_by text,
+  permission_terminalization_target text,
+  permission_terminalization_reason text not null default '',
+  permission_terminalization_result_json jsonb not null default '{}'::jsonb,
+  permission_terminalization_error_code text,
+  permission_terminalization_error_message text
 );
 
 create index if not exists idx_runs_tenant_created on runs(tenant_id, created_at desc);
@@ -363,6 +368,11 @@ alter table runs add column if not exists auth_source text;
 alter table runs add column if not exists copied_from_run_id text references runs(id);
 alter table runs add column if not exists cancel_requested_at timestamptz;
 alter table runs add column if not exists cancel_requested_by text;
+alter table runs add column if not exists permission_terminalization_target text;
+alter table runs add column if not exists permission_terminalization_reason text not null default '';
+alter table runs add column if not exists permission_terminalization_result_json jsonb not null default '{}'::jsonb;
+alter table runs add column if not exists permission_terminalization_error_code text;
+alter table runs add column if not exists permission_terminalization_error_message text;
 alter table runs add column if not exists latency_ms integer;
 alter table runs add column if not exists input_token_count integer not null default 0;
 alter table runs add column if not exists output_token_count integer not null default 0;

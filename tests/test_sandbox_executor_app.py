@@ -132,6 +132,45 @@ async def test_default_permission_callback_transport_outlives_the_control_plane_
 
 
 @pytest.mark.asyncio
+async def test_permission_callback_transport_uses_the_sdk_remaining_aggregate_wait(monkeypatch):
+    observed = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"allowed": True}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, *, json, headers):
+            return FakeResponse()
+
+    def build_client(*, timeout):
+        observed["timeout"] = timeout
+        return FakeClient()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.httpx.AsyncClient", build_client)
+    budget = tool_permission_budget(120.0)
+
+    await _default_callback_sender(
+        "https://control-plane.test/permission",
+        {"tool_name": "Bash", "tool_call_id": "call-a", "permission_wait_seconds": 130.0},
+        "token-a",
+    )
+
+    assert observed["timeout"] == 130.0 + (
+        budget.permission_callback_timeout_seconds - budget.permission_wait_seconds
+    )
+
+
+@pytest.mark.asyncio
 async def test_default_non_permission_callback_fails_fast(monkeypatch):
     observed = {}
 

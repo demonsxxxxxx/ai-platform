@@ -39,6 +39,7 @@ from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.settings import get_settings
 from app.tool_policy import evaluate_tool_policy
+from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization
 
 
 class _WorkerClock:
@@ -2223,6 +2224,38 @@ async def process_run_payload(
         except Exception:
             return
 
+    async def record_ragflow_completion(conn) -> None:
+        """Persist Ragflow completion only inside the final successful run transaction."""
+
+        if payload.executor_type != "ragflow":
+            return
+        await append_user_event(
+            conn,
+            tenant_id=payload.tenant_id,
+            run_id=payload.run_id,
+            event_type="mcp_tool_call_completed",
+            stage="tool",
+            message="知识库检索完成",
+            payload={"mcp_tool_id": payload.skill_id, "write_capable": False},
+        )
+        await repositories.append_audit_log(
+            conn,
+            tenant_id=payload.tenant_id,
+            user_id=None,
+            action="mcp_tool_call_completed",
+            target_type="mcp_tool",
+            target_id=payload.skill_id,
+            trace_id=trace_id,
+            payload_json={
+                "run_id": payload.run_id,
+                "session_id": payload.session_id,
+                "agent_id": payload.agent_id,
+                "skill_id": payload.skill_id,
+                "write_capable": False,
+                **_ragflow_audit_payload(result.executor_payload),
+            },
+        )
+
     try:
         if payload.executor_type == "ragflow":
             async with transaction() as conn:
@@ -2241,34 +2274,6 @@ async def process_run_payload(
         result = await adapter.submit_run(run_payload, event_sink=event_sink)
         latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
         result.validate()
-        if payload.executor_type == "ragflow":
-            async with transaction() as conn:
-                await append_user_event(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    run_id=payload.run_id,
-                    event_type="mcp_tool_call_completed",
-                    stage="tool",
-                    message="知识库检索完成",
-                    payload={"mcp_tool_id": payload.skill_id, "write_capable": False},
-                )
-                await repositories.append_audit_log(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    user_id=None,
-                    action="mcp_tool_call_completed",
-                    target_type="mcp_tool",
-                    target_id=payload.skill_id,
-                    trace_id=trace_id,
-                    payload_json={
-                        "run_id": payload.run_id,
-                        "session_id": payload.session_id,
-                        "agent_id": payload.agent_id,
-                        "skill_id": payload.skill_id,
-                        "write_capable": False,
-                        **_ragflow_audit_payload(result.executor_payload),
-                    },
-                )
     except WorkerRunCancelled:
         reconciled_parent = None
         async with transaction() as conn:
@@ -2591,6 +2596,7 @@ async def process_run_payload(
                 if terminal_written is False:
                     raise _WorkerSuccessCommitBlocked()
                 else:
+                    await record_ragflow_completion(conn)
                     reconciled_parent = await _reconcile_multi_agent_child_terminal_state(
                         conn,
                         payload=payload,
@@ -2753,5 +2759,20 @@ async def process_run_payload(
                 )
     finally:
         await cleanup_runtime_sandbox_lease_after_interruption()
+    if terminal_outcome.status == "skipped":
+        terminalization_progress = await drain_run_tool_permission_terminalization(
+            tenant_id=payload.tenant_id,
+            run_id=payload.run_id,
+            transaction_factory=transaction,
+        )
+        if terminalization_progress and terminalization_progress.get("completed") is True:
+            final_status = str(terminalization_progress.get("status") or "")
+            if final_status in {"failed", "cancelled"}:
+                terminal_outcome = WorkerOutcome(
+                    final_status,
+                    payload.run_id,
+                    terminal_outcome.error_code if final_status == "failed" else None,
+                    terminal_outcome.error_message if final_status == "failed" else None,
+                )
     await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
     return terminal_outcome

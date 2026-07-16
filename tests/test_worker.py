@@ -5514,6 +5514,150 @@ async def test_worker_audits_read_only_ragflow_tool_call(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_worker_does_not_publish_ragflow_completion_for_failed_result(monkeypatch):
+    events = []
+    audits = []
+
+    class FailedRagflowAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="failed",
+                adapter_version="ragflow-adapter/1",
+                executor_type="ragflow",
+                executor_version="ragflow-retrieval-http",
+                capabilities={"tools": True, "streaming": False},
+                result={"message": "RAGFlow retrieval failed.", "error_code": "ragflow_api_error"},
+                executor_payload={"dataset_ids": ["dataset-a"]},
+            )
+
+    class Registry:
+        def get(self, executor_type):
+            return FailedRagflowAdapter()
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
+        return {"id": tool_id, "status": "active", "write_capable": False, "risk_level": "low"}
+
+    async def append_event(conn, **kwargs):
+        events.append(kwargs["event_type"])
+        return "evt-a"
+
+    async def append_audit_log(conn, **kwargs):
+        audits.append(kwargs["action"])
+        return "audit-a"
+
+    async def fail_run(conn, **kwargs):
+        return True
+
+    async def upsert_run_skill_snapshot(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+
+    outcome = await process_run_payload(
+        base_payload(skill_id="ragflow-knowledge-search", executor_type="ragflow"),
+        registry=Registry(),
+        worker_id="worker-ragflow",
+    )
+
+    assert outcome.status == "failed"
+    assert "mcp_tool_call_completed" not in events
+    assert "mcp_tool_call_completed" not in audits
+
+
+@pytest.mark.asyncio
+async def test_worker_rolls_back_ragflow_completion_when_final_success_guard_loses(monkeypatch):
+    committed = []
+
+    class TransactionConnection:
+        def __init__(self):
+            self.pending = []
+
+    @asynccontextmanager
+    async def transactional_connection():
+        conn = TransactionConnection()
+        try:
+            yield conn
+        except Exception:
+            raise
+        else:
+            committed.extend(conn.pending)
+
+    class RagflowAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            return ExecutorResult(
+                status="succeeded",
+                adapter_version="ragflow-adapter/1",
+                executor_type="ragflow",
+                executor_version="ragflow-retrieval-http",
+                capabilities={"tools": True, "streaming": False},
+                result={"message": "answer"},
+                executor_payload={"dataset_ids": ["dataset-a"]},
+            )
+
+    class Registry:
+        def get(self, executor_type):
+            return RagflowAdapter()
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
+        return {"id": tool_id, "status": "active", "write_capable": False, "risk_level": "low"}
+
+    async def append_event(conn, **kwargs):
+        conn.pending.append(("event", kwargs["event_type"]))
+        return "evt-a"
+
+    async def append_audit_log(conn, **kwargs):
+        conn.pending.append(("audit", kwargs["action"]))
+        return "audit-a"
+
+    async def append_message(conn, **kwargs):
+        conn.pending.append(("message", kwargs["role"]))
+        return "msg-a"
+
+    async def complete_run(conn, **kwargs):
+        return False
+
+    async def fail_run(conn, **kwargs):
+        conn.pending.append(("fail", kwargs["error_code"]))
+        return True
+
+    async def upsert_run_skill_snapshot(conn, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.worker.transaction", transactional_connection)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
+    monkeypatch.setattr("app.worker.repositories.append_message", append_message)
+    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
+    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+
+    outcome = await process_run_payload(
+        base_payload(skill_id="ragflow-knowledge-search", executor_type="ragflow"),
+        registry=Registry(),
+        worker_id="worker-ragflow",
+    )
+
+    assert outcome.status == "failed"
+    assert ("fail", "tool_permission_pending") in committed
+    assert ("event", "mcp_tool_call_completed") not in committed
+    assert ("audit", "mcp_tool_call_completed") not in committed
+
+
+@pytest.mark.asyncio
 async def test_worker_does_not_mark_failed_ragflow_result_as_native_used(monkeypatch):
     snapshots = []
     failures = []

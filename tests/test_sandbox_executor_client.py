@@ -168,9 +168,37 @@ async def test_executor_client_posts_task_request(monkeypatch):
         (
             "http://executor.test/v1/tasks/execute",
             request.model_dump(),
-            tool_permission_budget(120.0).outer_executor_timeout_seconds,
+            120.0,
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_executor_client_uses_the_nested_outer_deadline_only_for_governed_permission_runs(monkeypatch):
+    calls = []
+
+    async def post_json(url, payload, timeout, headers=None):
+        calls.append(timeout)
+        return {"status": "accepted"}
+
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_client.get_settings",
+        lambda: type("S", (), {"claude_agent_sdk_timeout_seconds": 120.0})(),
+    )
+    request = ExecutorTaskRequest(
+        session_id="session-a",
+        run_id="run-a",
+        prompt="hello",
+        callback_url="http://callback",
+        callback_token_id="cbt_run-a",
+        callback_token="secret",
+        callback_base_url="http://callback-base",
+        governed_permission_wait=True,
+    )
+
+    await SandboxExecutorClient(post_json=post_json).execute("http://executor.test", request)
+
+    assert calls == [tool_permission_budget(120.0).outer_executor_timeout_seconds]
 
 
 @pytest.mark.asyncio

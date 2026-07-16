@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.settings import Settings
+from app.tool_permission_projection import inbox_allowed_decisions
 
 
 INBOX_PERMISSION_RESPONSE_KEYS = {
@@ -57,11 +58,36 @@ def permission_row(**overrides):
         "status": "pending",
         "decision": None,
         "reason": "",
+        "expires_at": "2099-01-01T00:00:00+00:00",
         "request_payload_json": {},
         "decision_payload_json": {},
+        "run_status": "running",
+        "cancel_requested_at": None,
+        "permission_terminalization_target": None,
     }
     values.update(overrides)
     return values
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"status": "decided"},
+        {"status": "consumed"},
+        {"status": "cancelled"},
+        {"status": "expired"},
+        {"status": "failed"},
+        {"run_status": "failed"},
+        {"cancel_requested_at": "2026-07-16T00:00:00Z"},
+        {"permission_terminalization_target": "cancelled"},
+    ],
+)
+def test_inbox_only_exposes_decisions_for_a_currently_actionable_request(overrides):
+    assert inbox_allowed_decisions(permission_row(**overrides)) == []
+
+
+def test_inbox_fails_closed_when_a_pending_request_lacks_an_expiry():
+    assert inbox_allowed_decisions(permission_row(expires_at=None)) == []
 
 
 def test_tool_permission_request_uses_registry_risk_and_emits_event(monkeypatch):
@@ -205,7 +231,7 @@ def test_same_tenant_admin_decides_another_users_request_and_audits_actor(monkey
     assert permission_request["request_id"] == "tpr-a"
     assert permission_request["status"] == "decided"
     assert permission_request["expires_at"] == "2026-06-05T12:15:00Z"
-    assert permission_request["allowed_decisions"] == ["allow_once", "allow_for_run", "deny"]
+    assert permission_request["allowed_decisions"] == []
     for private_key in (
         "tenant_id",
         "workspace_id",
@@ -660,11 +686,7 @@ def test_tool_permission_inbox_admin_decision_writes_event_and_audit(monkeypatch
     permission_request = response.json()["permission_request"]
     assert set(permission_request) == INBOX_PERMISSION_RESPONSE_KEYS
     assert permission_request["request_id"] == "tpr-a"
-    assert permission_request["allowed_decisions"] == [
-        "allow_once",
-        "allow_for_run",
-        "deny",
-    ]
+    assert permission_request["allowed_decisions"] == []
     assert calls[0][1]["run_id"] == "run-a"
     assert calls[0][1]["user_id"] == "run-owner"
     assert calls[0][1]["expires_in_seconds"] == 1200
@@ -785,5 +807,5 @@ def test_tool_permission_inbox_decision_returns_409_for_already_decided_request(
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "tool_permission_request_not_pending"
-    assert calls[0]["request_id"] == "tpr-a"
+    assert response.json()["detail"] == "tool_permission_decision_not_supported"
+    assert calls == []
