@@ -39,9 +39,9 @@ export function reconcileSessionList(input: {
   return dedup(merged);
 }
 
-// ─── Per-project paginated session list ─────────────────────────────
+// ─── Paginated active session list ──────────────────────────────────
 
-interface UseProjectSessionListReturn {
+interface UseSessionListReturn {
   sessions: BackendSession[];
   isLoading: boolean;
   isLoadingMore: boolean;
@@ -55,15 +55,10 @@ interface UseProjectSessionListReturn {
   updateSession: (session: BackendSession) => void;
 }
 
-interface SessionListFilter {
-  projectId?: string;
-  favoritesOnly?: boolean;
-}
-
-export function useFilteredSessionList(
-  filter: SessionListFilter,
+/** Lists active chat sessions with pagination, deduplication, and refresh helpers. */
+export function useSessionList(
   scrollRoot?: Element | null,
-): UseProjectSessionListReturn {
+): UseSessionListReturn {
   const [sessions, setSessions] = useState<BackendSession[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -80,11 +75,6 @@ export function useFilteredSessionList(
   const fetchSessions = async (reset = false) => {
     const targetSkip = reset ? 0 : skip;
     if (!reset && (isLoadingMore || !hasMore)) return;
-    const projectId =
-      filter.projectId && filter.projectId !== "all"
-        ? filter.projectId
-        : undefined;
-
     if (reset) {
       setIsLoading(true);
       setSkip(0);
@@ -95,11 +85,9 @@ export function useFilteredSessionList(
 
     try {
       const response = await sessionApi.list({
-        project_id: projectId,
         limit: PAGE_SIZE,
         skip: targetSkip,
         status: "active",
-        favorites_only: filter.favoritesOnly,
       });
 
       const newSessions =
@@ -139,7 +127,7 @@ export function useFilteredSessionList(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inView, hasMore, isLoadingMore, isLoading]);
 
-  // Re-fetch when projectId changes
+  // Fetch the active session projection on mount.
   useEffect(() => {
     setSessions([]);
     setSkip(0);
@@ -147,29 +135,23 @@ export function useFilteredSessionList(
     loadedCountRef.current = PAGE_SIZE;
     fetchSessions(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter.favoritesOnly, filter.projectId]);
+  }, []);
 
   const refresh = useCallback(async () => {
     await fetchSessions(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter.favoritesOnly, filter.projectId]);
+  }, []);
 
   const softRefresh = useCallback(async () => {
     try {
-      const projectId =
-        filter.projectId && filter.projectId !== "all"
-          ? filter.projectId
-          : undefined;
       const requestLimit = Math.min(
         100,
         Math.max(PAGE_SIZE, loadedCountRef.current),
       );
       const response = await sessionApi.list({
-        project_id: projectId,
         limit: requestLimit,
         skip: 0,
         status: "active",
-        favorites_only: filter.favoritesOnly,
       });
       const newSessions =
         "sessions" in response
@@ -181,7 +163,7 @@ export function useFilteredSessionList(
         reconcileSessionList({
           previous: prev,
           latest: newSessions,
-          removeMissing: filter.favoritesOnly || projectId !== undefined,
+          removeMissing: false,
         }),
       );
       loadedCountRef.current = Math.max(PAGE_SIZE, newSessions.length);
@@ -190,7 +172,7 @@ export function useFilteredSessionList(
     } catch {
       // silent — soft refresh is best-effort
     }
-  }, [filter.favoritesOnly, filter.projectId]);
+  }, []);
 
   const prependSession = useCallback((session: BackendSession) => {
     setSessions((prev) => {
@@ -220,19 +202,6 @@ export function useFilteredSessionList(
     removeSession,
     updateSession,
   };
-}
-
-export function useProjectSessionList(
-  projectId: string,
-  scrollRoot?: Element | null,
-): UseProjectSessionListReturn {
-  return useFilteredSessionList({ projectId }, scrollRoot);
-}
-
-export function useFavoriteSessionList(
-  scrollRoot?: Element | null,
-): UseProjectSessionListReturn {
-  return useFilteredSessionList({ favoritesOnly: true }, scrollRoot);
 }
 
 // ─── Single session operations ──────────────────────────────────────

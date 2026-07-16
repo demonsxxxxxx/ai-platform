@@ -1,10 +1,7 @@
 import type { BackendSession } from "../../services/api/session";
-import { isSessionFavorite } from "./sessionFavorites";
 
 export interface UnreadEntry {
   count: number;
-  projectId: string | null;
-  isFavorite?: boolean;
 }
 
 export type UnreadBySession = Map<string, UnreadEntry>;
@@ -14,8 +11,6 @@ export function mergeUnreadUpdate(
   update: {
     sessionId: string;
     unreadCount: number;
-    projectId?: string | null;
-    isFavorite?: boolean;
   },
 ): UnreadBySession {
   const next = new Map(unreadBySession);
@@ -24,40 +19,14 @@ export function mergeUnreadUpdate(
     return next;
   }
 
-  const previous = next.get(update.sessionId);
   next.set(update.sessionId, {
     count: update.unreadCount,
-    projectId: update.projectId ?? previous?.projectId ?? null,
-    isFavorite: update.isFavorite ?? previous?.isFavorite ?? false,
   });
   return next;
 }
 
-export function getUnreadCountForProject({
-  projectId,
-  loadedSessions,
-  unreadBySession,
-}: {
-  projectId: string;
-  loadedSessions: BackendSession[];
-  unreadBySession: UnreadBySession;
-}): number {
-  const loadedIds = new Set(loadedSessions.map((session) => session.id));
-  const loadedCount = loadedSessions.reduce(
-    (total, session) => total + Math.max(0, session.unread_count ?? 0),
-    0,
-  );
-  const externalCount = Array.from(unreadBySession.entries()).reduce(
-    (total, [sessionId, entry]) =>
-      entry.projectId === projectId && !loadedIds.has(sessionId)
-        ? total + entry.count
-        : total,
-    0,
-  );
-  return loadedCount + externalCount;
-}
-
-export function getUnreadCountForUncategorized({
+/** Combines loaded session unread counts with websocket updates not yet loaded. */
+export function getUnreadCount({
   loadedSessions,
   unreadBySession,
 }: {
@@ -71,28 +40,7 @@ export function getUnreadCountForUncategorized({
   );
   const externalCount = Array.from(unreadBySession.entries()).reduce(
     (total, [sessionId, entry]) =>
-      entry.projectId === null && !loadedIds.has(sessionId)
-        ? total + entry.count
-        : total,
-    0,
-  );
-  return loadedCount + externalCount;
-}
-
-export function getUnreadCountForFavorites(
-  loadedSessions: BackendSession[],
-  unreadBySession: UnreadBySession,
-): number {
-  const loadedIds = new Set(loadedSessions.map((session) => session.id));
-  const loadedCount = loadedSessions
-    .filter(isSessionFavorite)
-    .reduce(
-      (total, session) => total + Math.max(0, session.unread_count ?? 0),
-      0,
-    );
-  const externalCount = Array.from(unreadBySession.entries()).reduce(
-    (total, [sessionId, entry]) =>
-      entry.isFavorite && !loadedIds.has(sessionId)
+      !loadedIds.has(sessionId)
         ? total + entry.count
         : total,
     0,

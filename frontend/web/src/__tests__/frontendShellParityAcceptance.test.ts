@@ -223,10 +223,39 @@ test("authenticated sidebar uses governed workbench entries instead of old plaza
   assert.doesNotMatch(sidebar, /Permission\.ROLE_READ|Permission\.AGENT_ADMIN|Permission\.MODEL_READ|Permission\.CHANNEL_READ/);
   assert.doesNotMatch(sidebar, /onOpenPersonaPlaza|onOpenFileLibrary/);
   assert.doesNotMatch(sidebar, /hasMoreMenuItems|MobileMoreMenuSheet|DesktopMoreMenu/);
-  assert.match(sidebar, /useProjectSessionList\("all"/);
+  assert.match(sidebar, /useSessionList\(scrollEl\)/);
   assert.doesNotMatch(sidebar, /ProjectItem|showProjectSection|sidebar\.projects/);
   assert.doesNotMatch(sidebar, /FolderPlus|sidebar\.newProject|onOpenNewProjectModal|NewProjectModal/);
   assert.doesNotMatch(sidebar, /font-serif|icons\/icon\.svg/);
+});
+
+test("session project and favorites code cannot return through the frontend shell", () => {
+  const sessionHook = readFileSync(join(root, "src/hooks/useSession.ts"), "utf8");
+  const sessionApi = readFileSync(
+    join(root, "src/services/api/session.ts"),
+    "utf8",
+  );
+  const useAgent = readFileSync(join(root, "src/hooks/useAgent.ts"), "utf8");
+
+  for (const source of [sessionHook, sessionApi, useAgent]) {
+    assert.doesNotMatch(
+      source,
+      /useFilteredSessionList|useProjectSessionList|useFavoriteSessionList|pendingProjectId|currentProjectId|autoExpandProjectId/,
+    );
+  }
+  assert.doesNotMatch(sessionApi, /project_id|favorites_only/);
+  for (const file of [
+    "src/components/sidebar/ProjectItem.tsx",
+    "src/components/sidebar/ProjectMenu.tsx",
+    "src/components/sidebar/autoExpandProject.ts",
+    "src/components/sidebar/sessionFavorites.ts",
+    "src/components/panels/NewProjectModal.tsx",
+    "src/components/common/DeleteProjectDialog.tsx",
+    "src/hooks/useProjectManager.ts",
+    "src/hooks/useTouchDrag.ts",
+  ]) {
+    assert.equal(existsSync(join(root, file)), false, `${file} must stay removed`);
+  }
 });
 
 test("post-login navigation keeps MCP in the authoritative sidebar instead of the account menu", () => {
@@ -375,10 +404,6 @@ test("authenticated workbench adopts one LibreChat light application shell", () 
     join(root, "src/components/panels/SidebarParts/SidebarRail.tsx"),
     "utf8",
   );
-  const projectItem = readFileSync(
-    join(root, "src/components/sidebar/ProjectItem.tsx"),
-    "utf8",
-  );
   const sessionItem = readFileSync(
     join(root, "src/components/sidebar/SessionItem.tsx"),
     "utf8",
@@ -412,14 +437,11 @@ test("authenticated workbench adopts one LibreChat light application shell", () 
   assert.match(sidebarList, /bg-\[var\(--theme-sidebar-panel\)\]/);
   assert.match(sidebarList, /data-workbench-sidebar-panel/);
   assert.match(sidebarRail, /bg-\[var\(--theme-sidebar-rail\)\]/);
-  assert.match(projectItem, /hover:bg-\[var\(--theme-sidebar-panel-muted\)\]/);
   assert.match(sessionItem, /hover:bg-\[var\(--theme-sidebar-panel-muted\)\]/);
   assert.doesNotMatch(sidebarList, /text-slate-100|text-white|border-slate-800/);
   assert.doesNotMatch(sidebarRail, /text-slate-200|text-white|rgba\(255,255,255,0\.1\)/);
-  assert.doesNotMatch(projectItem, /text-slate-300/);
   assert.doesNotMatch(sessionItem, /text-slate-300/);
   assert.doesNotMatch(sidebarList, /rounded-\[10px\]/);
-  assert.doesNotMatch(projectItem, /rounded-\[10px\]/);
   assert.doesNotMatch(sessionItem, /rounded-\[10px\]/);
   assert.doesNotMatch(sidebarRail, /style=\{\{[\s\S]{0,160}backgroundColor/);
 });
@@ -600,7 +622,6 @@ test("authenticated overlay surfaces share the workbench visual language", () =>
     "src/components/notification/NotificationDialog.tsx",
     "src/components/share/ShareDialog.tsx",
     "src/components/sidebar/RecentChatsDialog.tsx",
-    "src/components/sidebar/ProjectMenu.tsx",
   ];
 
   const sources = overlayFiles.map((file) => [

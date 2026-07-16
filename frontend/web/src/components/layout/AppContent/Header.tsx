@@ -24,13 +24,10 @@ import { useSessionTitle } from "../../../hooks/useSessionTitle";
 import { NotificationDialog } from "../../notification/NotificationDialog";
 import { Permission } from "../../../types";
 import type { TabType } from "./types";
-import type { Project } from "../../../types";
 
 interface HeaderProps {
   activeTab: TabType;
   setMobileSidebarOpen: (open: boolean) => void;
-  currentProjectId: string | null;
-  projectManager: { projects: Project[] };
   onNewSession: () => void;
   availableModels?:
     | {
@@ -53,8 +50,6 @@ interface HeaderProps {
 export function Header({
   activeTab,
   setMobileSidebarOpen,
-  currentProjectId,
-  projectManager,
   onNewSession,
   availableModels,
   currentModelId,
@@ -169,28 +164,6 @@ export function Header({
                   />
                 )}
 
-              {currentProjectId &&
-                (() => {
-                  const project = projectManager.projects.find(
-                    (p) => p.id === currentProjectId,
-                  );
-                  if (!project) return null;
-                  return (
-                    <div className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-[var(--theme-bg-card)] border border-[var(--theme-border)]">
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 24 24"
-                        fill="currentColor"
-                        className="size-3 text-[var(--theme-text-tertiary)]"
-                      >
-                        <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14z" />
-                      </svg>
-                      <span className="text-xs text-[var(--theme-text-secondary)] truncate max-w-[120px]">
-                        {project.name}
-                      </span>
-                    </div>
-                  );
-                })()}
             </>
           ) : (
             <div className="flex items-center gap-1.5">

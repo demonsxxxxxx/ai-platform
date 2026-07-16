@@ -233,7 +233,6 @@ export interface UseAgentReturn {
   isLoadingHistory: boolean;
   error: string | null;
   sessionId: string | null;
-  currentProjectId: string | null;
   currentRunId: string | null;
   isReconnecting: boolean;
   connectionStatus: ConnectionStatus;
@@ -255,9 +254,6 @@ export interface UseAgentReturn {
     targetRunId?: string,
   ) => Promise<SessionConfig | null>;
   reconnectSSE: () => Promise<void>;
-  setPendingProjectId: (id: string | null) => void;
-  autoExpandProjectId: string | null;
-  clearAutoExpandProjectId: (id?: string | null) => void;
 }
 
 // Session configuration restored from metadata
