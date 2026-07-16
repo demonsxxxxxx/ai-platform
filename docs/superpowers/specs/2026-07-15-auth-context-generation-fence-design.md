@@ -122,6 +122,20 @@ Chat, and all other mutation POSTs are never replayed automatically.  IDB
 unavailable, corrupt, blocked, timed out, or cancelled before acquisition
 fails before bootstrap with the localized safe-coordination UI.
 
+Before the single company-login mutation, the no-Web-Locks V2 caller performs
+one forced, idempotent bootstrap using its persisted current
+`(incarnation, generation, nonce)`. This is required because JavaScript cannot
+inspect the paired HttpOnly cookie: a confirmed IDB generation may outlive a
+missing or expired cookie. The V2 bootstrap Lua path may return `repair` and
+reissue a cookie only when that exact request identity equals both the current
+authority and context record with consistent remaining `PTTL`; it changes
+neither record nor TTL. A different nonce/handle/generation, malformed or
+missing authority/context, TTL mismatch, or Redis loss remains typed
+fail-closed before login. The Web Locks V1 path is unchanged. The login helper
+never invokes, retries, or otherwise replays the login mutation; the existing
+IDB owner lease serializes each recovery attempt, and cancellation before its
+request sends no bootstrap.
+
 If a rotation response succeeds server-side but local IDB promotion is aborted,
 expired, or versionchanged, the next owner retries the persisted pending target.
 A signed target cookie can reconcile without a cookie write. If fetch aborted or
@@ -183,8 +197,8 @@ sessions).  It must not rewrite V2 cookies as V1.
 
 Backend tests cover strict parser/MAC checks, V1 compatibility and migration,
 same-nonce dedupe, context/generation conflicts, target-cookie reconciliation,
-base-cookie committed-target repair, ticket single-use/reissue/late-response
-ordering/expiry, TTL preservation,
+base-cookie committed-target repair, exact-current no-cookie cookie reissue,
+ticket single-use/reissue/late-response ordering/expiry, TTL preservation,
 partial ticket tuples, Redis loss/corruption, stale-cookie reversed arrival,
 principal/login/logout/OAuth/commit fencing, and different-user operation
 races. Frontend tests use an asynchronous IDB/transaction/cookie-jar double

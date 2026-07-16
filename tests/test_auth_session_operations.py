@@ -1073,6 +1073,46 @@ def test_v2_route_emits_only_authorized_generation_cookies_and_repairs_a_late_ol
     assert repaired.cookies["ai_platform_auth_context"] == current_cookie
 
 
+def test_v2_route_reissues_only_the_exact_current_cookie_when_the_browser_cookie_is_missing(monkeypatch):
+    """An IDB-proven current V2 identity can restore, but never replace, its cookie."""
+
+    redis = FakeAuthRedis()
+    install_auth_context_dependencies(monkeypatch, redis)
+    incarnation = "I" * 43
+    request = {
+        "nonce": "A" * 43,
+        "protocol_version": 2,
+        "browser_incarnation": incarnation,
+        "generation": 1,
+    }
+    created = TestClient(create_app()).post("/api/ai/auth/bootstrap", json=request)
+    assert created.status_code == 200, created.text
+    current_cookie = created.cookies["ai_platform_auth_context"]
+    before_repair = dict(redis.values)
+
+    # A fresh client has no HttpOnly cookie. The server can only use the V2
+    # request proof plus exact authority/context equality to reissue this one.
+    repaired = TestClient(create_app()).post("/api/ai/auth/bootstrap", json=request)
+    assert repaired.status_code == 200, repaired.text
+    assert repaired.cookies["ai_platform_auth_context"] == current_cookie
+    assert "set-cookie" in repaired.headers
+    assert redis.values == before_repair
+
+    wrong_nonce = TestClient(create_app()).post(
+        "/api/ai/auth/bootstrap",
+        json={**request, "nonce": "B" * 43},
+    )
+    assert wrong_nonce.status_code == 409
+    assert wrong_nonce.json()["detail"] == "auth_context_stale"
+    assert "set-cookie" not in wrong_nonce.headers
+
+    redis.available = False
+    unavailable = TestClient(create_app()).post("/api/ai/auth/bootstrap", json=request)
+    assert unavailable.status_code == 503
+    assert unavailable.json()["detail"] == "auth_context_unavailable"
+    assert "set-cookie" not in unavailable.headers
+
+
 @pytest.mark.asyncio
 async def test_v2_rotation_reconciles_only_the_exact_server_accepted_target(monkeypatch):
     """A lost local promotion can recover only from the exact target identity."""

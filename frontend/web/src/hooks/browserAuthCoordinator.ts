@@ -866,3 +866,17 @@ export async function ensureBrowserAuthContext(
     throw unavailable();
   }
 }
+
+/**
+ * Revalidate the V2 server authority before the one login mutation.
+ *
+ * A confirmed IndexedDB generation deliberately skips ordinary bootstrap work,
+ * but JavaScript cannot observe whether its paired HttpOnly cookie expired.
+ * This bounded, idempotent authority check lets the server reissue only the
+ * exact current V2 context before login; it never submits or retries login.
+ */
+export async function ensureBrowserAuthContextBeforeLogin(
+  signal?: AbortSignal,
+): Promise<void> {
+  await ensureBrowserAuthContext(signal, { forceBootstrap: true });
+}
