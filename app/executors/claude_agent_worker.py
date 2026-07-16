@@ -66,7 +66,6 @@ _WORDPROCESSINGML_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingm
 _WORD_MAIN_DOCUMENT_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
 )
-_OPC_RELATIONSHIP_ID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9._-]*$")
 
 
 class _PermissionDeadlineElapsed(RuntimeError):
@@ -2373,7 +2372,7 @@ def _is_usable_docx(path: Path) -> bool:
         if item.tag != f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationship":
             return False
         relationship_id = str(item.attrib.get("Id") or "")
-        if not _OPC_RELATIONSHIP_ID_RE.fullmatch(relationship_id) or relationship_id in relationship_ids:
+        if not _is_valid_opc_relationship_id(relationship_id) or relationship_id in relationship_ids:
             return False
         relationship_ids.add(relationship_id)
         if str(item.attrib.get("Type") or "") == _OPC_OFFICE_DOCUMENT_RELATIONSHIP:
@@ -2386,6 +2385,58 @@ def _is_usable_docx(path: Path) -> bool:
     )
     body = next((item for item in document_root if item.tag == f"{{{_WORDPROCESSINGML_NAMESPACE}}}body"), None)
     return has_document_override and has_main_document_relationship and body is not None and any(True for _ in body)
+
+
+def _is_valid_opc_relationship_id(value: str) -> bool:
+    """Return whether an OPC relationship Id is a non-colon XML NCName.
+
+    OPC relationship identifiers are XML ``xsd:ID`` values.  XML allows
+    Unicode letters and combining marks, but a colon would make the value a
+    QName rather than the required NCName.  This small predicate keeps the
+    package parser dependency-free while accepting the XML name classes that
+    legitimate non-ASCII producers use.
+    """
+
+    if not value or ":" in value or not _is_xml_ncname_start(value[0]):
+        return False
+    return all(_is_xml_ncname_char(character) for character in value[1:])
+
+
+def _is_xml_ncname_start(character: str) -> bool:
+    """Implement XML 1.0 ``NameStartChar`` ranges excluding the QName colon."""
+
+    codepoint = ord(character)
+    return (
+        character == "_"
+        or "A" <= character <= "Z"
+        or "a" <= character <= "z"
+        or 0xC0 <= codepoint <= 0xD6
+        or 0xD8 <= codepoint <= 0xF6
+        or 0xF8 <= codepoint <= 0x2FF
+        or 0x370 <= codepoint <= 0x37D
+        or 0x37F <= codepoint <= 0x1FFF
+        or 0x200C <= codepoint <= 0x200D
+        or 0x2070 <= codepoint <= 0x218F
+        or 0x2C00 <= codepoint <= 0x2FEF
+        or 0x3001 <= codepoint <= 0xD7FF
+        or 0xF900 <= codepoint <= 0xFDCF
+        or 0xFDF0 <= codepoint <= 0xFFFD
+        or 0x10000 <= codepoint <= 0xEFFFF
+    )
+
+
+def _is_xml_ncname_char(character: str) -> bool:
+    """Implement XML 1.0 ``NameChar`` ranges for a non-colon NCName."""
+
+    codepoint = ord(character)
+    return (
+        _is_xml_ncname_start(character)
+        or character in {"-", "."}
+        or "0" <= character <= "9"
+        or codepoint == 0xB7
+        or 0x300 <= codepoint <= 0x36F
+        or 0x203F <= codepoint <= 0x2040
+    )
 
 
 def _docx_archive_entries_are_bounded(entries: list[zipfile.ZipInfo]) -> bool:

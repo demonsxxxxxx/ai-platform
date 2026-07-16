@@ -10,7 +10,7 @@ from app.queue import get_queue_insight, get_run_queue_position, remove_queued_r
 from app.routes.sandbox_runtime_cleanup import SandboxRuntimeCleanupError, stop_sandbox_leases
 from app.runtime.sandbox.container_provider import create_container_provider
 from app.control_plane_contracts import sanitize_public_text
-from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization
+from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -148,6 +148,10 @@ async def admin_run_cancel(
                 result["queued_child_run_ids"] = list(propagation["queued_child_run_ids"])
             if propagation.get("child_run_ids"):
                 result["_permission_terminalization_child_run_ids"] = list(propagation["child_run_ids"])
+            if propagation.get("_permission_terminalization_child_progress"):
+                result["_permission_terminalization_child_progress"] = propagation[
+                    "_permission_terminalization_child_progress"
+                ]
             if propagation.get("active_sandbox_leases"):
                 result["active_sandbox_leases"] = [
                     *list(result.get("active_sandbox_leases") or []),
@@ -161,22 +165,56 @@ async def admin_run_cancel(
             if finalized_parent and finalized_parent.get("status"):
                 result["status"] = str(finalized_parent["status"])
     if result is not None:
+        initial_progress = result.pop("_permission_terminalization_progress", None)
+        if initial_progress is not None:
+            await reconcile_terminalized_permission_run(
+                tenant_id=principal.tenant_id,
+                run_id=run_id,
+                progress=initial_progress,
+                transaction_factory=transaction,
+            )
         progress = await drain_run_tool_permission_terminalization(
             tenant_id=principal.tenant_id,
             run_id=run_id,
             transaction_factory=transaction,
         )
-        if progress and progress.get("completed") is True:
-            progressed_status = str(progress.get("status") or result["status"])
+        if progress and progress.completed:
+            progressed_status = str(progress.status or result["status"])
             if result["status"] not in {"succeeded", "failed", "cancelled"} or progressed_status in {
                 "failed",
                 "cancelled",
             }:
                 result["status"] = progressed_status
+        await reconcile_terminalized_permission_run(
+            tenant_id=principal.tenant_id,
+            run_id=run_id,
+            progress=progress,
+            transaction_factory=transaction,
+        )
+        child_progress_by_id = result.pop("_permission_terminalization_child_progress", {})
         for child_run_id in result.pop("_permission_terminalization_child_run_ids", []):
-            await drain_run_tool_permission_terminalization(
+            child_run_id = str(child_run_id)
+            initial_child_progress = (
+                child_progress_by_id.get(child_run_id)
+                if isinstance(child_progress_by_id, dict)
+                else None
+            )
+            if initial_child_progress is not None:
+                await reconcile_terminalized_permission_run(
+                    tenant_id=principal.tenant_id,
+                    run_id=child_run_id,
+                    progress=initial_child_progress,
+                    transaction_factory=transaction,
+                )
+            child_progress = await drain_run_tool_permission_terminalization(
                 tenant_id=principal.tenant_id,
-                run_id=str(child_run_id),
+                run_id=child_run_id,
+                transaction_factory=transaction,
+            )
+            await reconcile_terminalized_permission_run(
+                tenant_id=principal.tenant_id,
+                run_id=child_run_id,
+                progress=child_progress,
                 transaction_factory=transaction,
             )
     if result is None:

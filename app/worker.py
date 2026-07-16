@@ -78,7 +78,7 @@ class _WorkerSuccessCommitBlocked(Exception):
 class _WorkerTerminalAfterTransaction:
     outcome: WorkerOutcome
     payload: QueueRunPayload
-    reconciled_parent: dict[str, Any] | None
+    reconciled_parent: Any | None
 
 
 @dataclass(frozen=True)
@@ -135,8 +135,6 @@ class _WorkerAdminBypassAudit:
     payload_json: dict[str, Any]
 
 
-_PARENT_ROLLUP_RETRY_ATTEMPTS = 3
-_PARENT_ROLLUP_RETRY_DELAY_SECONDS = 0.05
 _EXECUTOR_ERROR_REQUEST_ID_RE = re.compile(
     r"\brequest[_ -]?id\s*[:=]\s*[A-Za-z0-9._~+/=-]+\b",
     re.IGNORECASE,
@@ -172,49 +170,38 @@ async def _reconcile_multi_agent_child_terminal_state(
     result_json: dict[str, Any] | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
-) -> dict[str, Any] | None:
-    return await repositories.reconcile_multi_agent_child_run_terminal_state(
-        conn,
-        tenant_id=payload.tenant_id,
-        child_run_id=payload.run_id,
-        child_status=child_status,
-        result_json=result_json,
-        error_code=error_code,
-        error_message=error_message,
+    is_multi_agent_child: bool | None = None,
+) -> repositories.ToolPermissionTerminalizationProgress | None:
+    """Carry one committed child transition to the shared post-commit lifecycle seam."""
+
+    del conn, result_json, error_code, error_message
+    child_dispatch = isinstance(payload.input.get("multi_agent_dispatch"), dict)
+    if child_status not in {"succeeded", "failed", "cancelled"} or not (
+        child_dispatch if is_multi_agent_child is None else is_multi_agent_child
+    ):
+        return None
+    return repositories.ToolPermissionTerminalizationProgress(
+        completed=True,
+        status=child_status,
+        did_transition=True,
+        needs_reconcile=True,
     )
-
-
-def _parent_rollup_retry_args(
-    payload: QueueRunPayload,
-    reconciled: dict[str, Any] | None,
-) -> dict[str, str] | None:
-    if not isinstance(reconciled, dict):
-        return None
-    parent_run_id = str(reconciled.get("parent_run_id") or "").strip()
-    if not parent_run_id:
-        return None
-    return {
-        "tenant_id": payload.tenant_id,
-        "parent_run_id": parent_run_id,
-        "triggered_by_child_run_id": payload.run_id,
-    }
 
 
 async def _finalize_multi_agent_parent_after_child_commit(
     payload: QueueRunPayload,
-    reconciled: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    retry_args = _parent_rollup_retry_args(payload, reconciled)
-    if retry_args is None:
+    reconciled: Any | None,
+) -> Any | None:
+    """Use the shared post-commit owner for worker child reconciliation and parent rollup."""
+
+    if not isinstance(reconciled, repositories.ToolPermissionTerminalizationProgress):
         return None
-    for attempt in range(_PARENT_ROLLUP_RETRY_ATTEMPTS):
-        async with transaction() as conn:
-            finalized = await repositories.finalize_multi_agent_parent_run_if_ready(conn, **retry_args)
-        if finalized is not None:
-            return finalized
-        if attempt + 1 < _PARENT_ROLLUP_RETRY_ATTEMPTS:
-            await asyncio.sleep(_PARENT_ROLLUP_RETRY_DELAY_SECONDS)
-    return None
+    return await reconcile_terminalized_permission_run(
+        tenant_id=payload.tenant_id,
+        run_id=payload.run_id,
+        progress=reconciled,
+        transaction_factory=transaction,
+    )
 
 
 async def _fail_run_and_reconcile(
@@ -248,7 +235,8 @@ async def _fail_run_and_reconcile_with_write(
     error_code: str,
     error_message: str,
     result_json: dict[str, Any] | None = None,
-) -> tuple[bool, dict[str, Any] | None]:
+    is_multi_agent_child: bool | None = None,
+) -> tuple[bool, Any | None]:
     terminal_written = await repositories.fail_run(
         conn,
         tenant_id=tenant_id,
@@ -267,6 +255,7 @@ async def _fail_run_and_reconcile_with_write(
             result_json=result_json,
             error_code=error_code,
             error_message=error_message,
+            is_multi_agent_child=is_multi_agent_child,
         )
     return True, None
 
@@ -989,6 +978,16 @@ def _locked_run_principal(locked_run: object, run_identity: dict[str, str]) -> A
     )
 
 
+def _locked_run_is_multi_agent_child(locked_run: object) -> bool:
+    """Read the durable child-dispatch marker when the queue snapshot is unusable."""
+
+    if not isinstance(locked_run, dict):
+        return False
+    input_json = locked_run.get("input_json")
+    input_payload = input_json.get("input") if isinstance(input_json, dict) else None
+    return isinstance(input_payload, dict) and isinstance(input_payload.get("multi_agent_dispatch"), dict)
+
+
 def _worker_capability_context(principal: AuthPrincipal) -> CapabilityAccessContext:
     return CapabilityAccessContext(
         tenant_id=principal.tenant_id,
@@ -1487,6 +1486,7 @@ async def _fail_locked_run_snapshot(
         run_id=run_identity["run_id"],
         error_code=error_code,
         error_message=error_message,
+        is_multi_agent_child=_locked_run_is_multi_agent_child(locked_run),
     )
     if not terminal_written:
         return _WorkerTerminalAfterTransaction(
@@ -1984,15 +1984,6 @@ async def process_run_payload(
                     child_status="cancelled",
                     result_json=cancel_result,
                 )
-                await append_user_event(
-                    conn,
-                    tenant_id=run_identity["tenant_id"],
-                    run_id=run_identity["run_id"],
-                    event_type="run_cancelled",
-                    stage="control",
-                    message="任务已取消",
-                    payload={"severity": "warning"},
-                )
                 terminal_after_transaction = _WorkerTerminalAfterTransaction(
                     WorkerOutcome("cancelled", run_identity["run_id"]),
                     payload,
@@ -2304,15 +2295,6 @@ async def process_run_payload(
                 child_status="cancelled",
                 result_json=cancel_result,
             )
-            await append_user_event(
-                conn,
-                tenant_id=payload.tenant_id,
-                run_id=payload.run_id,
-                event_type="run_cancelled",
-                stage="control",
-                message="任务已取消",
-                payload={"severity": "warning"},
-            )
             await release_runtime_sandbox_lease(conn, reason="run_cancelled")
         await _finalize_multi_agent_parent_after_child_commit(payload, reconciled_parent)
         return WorkerOutcome("cancelled", payload.run_id)
@@ -2342,15 +2324,6 @@ async def process_run_payload(
                         child_status="cancelled",
                         result_json=cancel_result,
                     )
-                    await append_user_event(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        event_type="run_cancelled",
-                        stage="control",
-                        message="任务已取消",
-                        payload={"severity": "warning"},
-                    )
                     await release_runtime_sandbox_lease(conn, reason="run_cancelled")
                     outcome_after_exception = WorkerOutcome("cancelled", payload.run_id)
             else:
@@ -2370,15 +2343,6 @@ async def process_run_payload(
                         "Run already reached a terminal state",
                     )
                 else:
-                    await append_user_event(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        event_type="run_failed",
-                        stage="executor",
-                        message="Executor failed",
-                        payload={"error": str(exc), "executor_type": payload.executor_type, "severity": "error"},
-                    )
                     await repositories.append_event(
                         conn,
                         tenant_id=payload.tenant_id,
@@ -2666,15 +2630,6 @@ async def process_run_payload(
                             child_status="cancelled",
                             result_json=cancel_result,
                         )
-                        await append_user_event(
-                            conn,
-                            tenant_id=payload.tenant_id,
-                            run_id=payload.run_id,
-                            event_type="run_cancelled",
-                            stage="control",
-                            message="任务已取消",
-                            payload={"severity": "warning"},
-                        )
                         await release_runtime_sandbox_lease(conn, reason="run_cancelled")
                         terminal_outcome = WorkerOutcome("cancelled", payload.run_id)
                 else:
@@ -2695,16 +2650,6 @@ async def process_run_payload(
                             "Run already reached a terminal state",
                         )
                     else:
-                        await append_user_event(
-                            conn,
-                            tenant_id=payload.tenant_id,
-                            run_id=payload.run_id,
-                            event_type="run_failed",
-                            stage="worker",
-                            message="Run failed",
-                            payload={"artifact_count": len(result.artifacts), "severity": "error"},
-                            **terminal_event_kwargs,
-                        )
                         await repositories.append_event(
                             conn,
                             tenant_id=payload.tenant_id,
@@ -2737,15 +2682,6 @@ async def process_run_payload(
                         payload=payload,
                         child_status="cancelled",
                         result_json=cancel_result,
-                    )
-                    await append_user_event(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        event_type="run_cancelled",
-                        stage="control",
-                        message="任务已取消",
-                        payload={"severity": "warning"},
                     )
                     await release_runtime_sandbox_lease(conn, reason="run_cancelled")
                     terminal_outcome = WorkerOutcome("cancelled", payload.run_id)
@@ -2780,16 +2716,6 @@ async def process_run_payload(
                         "Run already reached a terminal state",
                     )
                 else:
-                    await append_user_event(
-                        conn,
-                        tenant_id=payload.tenant_id,
-                        run_id=payload.run_id,
-                        event_type="run_failed",
-                        stage="worker",
-                        message="Run failed",
-                        payload={"artifact_count": 0, "severity": "error"},
-                        **terminal_event_kwargs,
-                    )
                     await repositories.append_event(
                         conn,
                         tenant_id=payload.tenant_id,

@@ -139,7 +139,7 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
             transaction_factory=transaction,
             max_batches=4,
         )
-        if outcome is not None and outcome.get("did_transition") and outcome.get("needs_reconcile"):
+        if outcome is not None and outcome.did_transition and outcome.needs_reconcile:
             await reconcile_terminalized_permission_run(
                 tenant_id=tenant_id, run_id=run_id, progress=outcome, transaction_factory=transaction
             )
@@ -147,11 +147,26 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
             {
                 "tenant_id": tenant_id,
                 "run_id": run_id,
-                "completed": outcome.get("completed") if outcome is not None else False,
-                "status": outcome.get("status") if outcome is not None else None,
-                "did_transition": bool(outcome.get("did_transition")) if outcome is not None else False,
-                "needs_reconcile": bool(outcome.get("needs_reconcile")) if outcome is not None else False,
+                "completed": outcome.completed if outcome is not None else False,
+                "status": outcome.status if outcome is not None else None,
+                "did_transition": outcome.did_transition if outcome is not None else False,
+                "needs_reconcile": outcome.needs_reconcile if outcome is not None else False,
             }
+        )
+    async with transaction() as conn:
+        recovery_candidates = await repositories.list_multi_agent_terminal_children_requiring_reconciliation(
+            conn,
+            limit=limit,
+        )
+    for candidate in recovery_candidates:
+        tenant_id = str(candidate.get("tenant_id") or "")
+        run_id = str(candidate.get("run_id") or "")
+        if not tenant_id or not run_id:
+            continue
+        await reconcile_terminalized_permission_run(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            transaction_factory=transaction,
         )
     return progress
 

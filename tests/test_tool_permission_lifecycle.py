@@ -80,3 +80,50 @@ async def test_post_commit_reconcile_is_noop_unless_final_transition(monkeypatch
 
     partial = repositories.ToolPermissionTerminalizationProgress(False, "failed")
     assert await reconcile_terminalized_permission_run(tenant_id="tenant-a", run_id="run-a", progress=partial, transaction_factory=tx) is None
+
+
+@pytest.mark.asyncio
+async def test_post_commit_reconcile_loads_durable_child_and_rolls_up_once(monkeypatch):
+    """The worker/routes helper rehydrates committed child state instead of ephemeral executor data."""
+
+    calls = []
+
+    @asynccontextmanager
+    async def tx():
+        yield object()
+
+    async def get_run(_conn, *, tenant_id, run_id, for_update):
+        calls.append(("get", tenant_id, run_id, for_update))
+        return {
+            "id": run_id,
+            "tenant_id": tenant_id,
+            "status": "cancelled",
+            "result_json": {"message": "任务已取消"},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def reconcile(_conn, **kwargs):
+        calls.append(("reconcile", kwargs["child_run_id"], kwargs["child_status"], kwargs["result_json"]))
+        return {"parent_run_id": "parent-a", "status": "cancelled"}
+
+    monkeypatch.setattr(repositories, "get_run", get_run)
+    monkeypatch.setattr(repositories, "reconcile_multi_agent_child_run_terminal_state", reconcile)
+    final = repositories.ToolPermissionTerminalizationProgress(True, "cancelled", True, True)
+
+    result = await reconcile_terminalized_permission_run(
+        tenant_id="tenant-a", run_id="child-a", progress=final, transaction_factory=tx
+    )
+    retry = await reconcile_terminalized_permission_run(
+        tenant_id="tenant-a",
+        run_id="child-a",
+        progress=repositories.ToolPermissionTerminalizationProgress(True, "cancelled"),
+        transaction_factory=tx,
+    )
+
+    assert result == {"parent_run_id": "parent-a", "status": "cancelled"}
+    assert retry is None
+    assert calls == [
+        ("get", "tenant-a", "child-a", True),
+        ("reconcile", "child-a", "cancelled", {"message": "任务已取消"}),
+    ]

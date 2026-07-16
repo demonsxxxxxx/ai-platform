@@ -243,3 +243,31 @@ uses the same capability-owned required-artifact gate as ordinary execution.
 
 `CHANGELOG.md` remains unchanged because #454 is still an open Draft PR and
 requires independent test and Sol review before issue or release closure.
+
+## Generation 4g repair boundary
+
+`complete_run` is the single time-and-grant seam: it locks the run before
+obtaining one database wall-clock value, locks and classifies every open
+permission row against that value, then consumes only the exact valid
+`allow_for_run` IDs after the guarded success transition. Any missing or extra
+consumption result aborts the transaction, so an expiry crossing between
+statements cannot leave a succeeded run or partial grant consumption.
+
+Terminal child reconciliation has a durable recovery owner. A terminal child
+whose parent dispatch step is still `handed_off` remains discoverable in a
+bounded maintenance query until the existing idempotent child reconciliation
+and parent finalizer settle it; worker, worker maintenance, and owner/admin
+cancel routes invoke the same post-commit lifecycle helper. No schema change is
+needed because the handed-off parent-step link already supplies the durable
+tenant-scoped work item.
+
+Queued cancellation records `cancel_requested` before staging permission
+drain. The repository finalizer is the sole writer of `run_cancelled`, so a
+50+1 drain emits no terminal fact in its first batch and retries cannot add a
+duplicate. That same finalizer derives terminal event metrics and artifact
+count from durable run/result and artifact state, preserving public projection
+observability after crash recovery. OPC relationship IDs use Unicode XML Name
+semantics without new dependencies. RED coverage includes fixed-clock grant
+boundaries, partial consumption rollback, handed-off crash recovery, route
+reconciliation, cancel ordering, durable terminal metrics, and Unicode ID
+controls.

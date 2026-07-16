@@ -1194,6 +1194,86 @@ def test_collect_workspace_artifacts_accepts_usable_required_docx(monkeypatch, t
     assert stored[0][1] == content
 
 
+@pytest.mark.parametrize(
+    ("relationship_id", "accepted"),
+    [
+        ("关系\u0301", True),
+        ("Ångström", True),
+        ("", False),
+        ("1relationship", False),
+        ("relationship:id", False),
+        ("relationship id", False),
+    ],
+    ids=["unicode-letter-mark", "unicode-letter", "missing", "numeric-start", "colon", "whitespace"],
+)
+def test_required_docx_validates_xml_ncname_relationship_ids(monkeypatch, tmp_path, relationship_id, accepted):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    relationships = (
+        b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + f'<Relationship Id="{relationship_id}" '.encode("utf-8")
+        + b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+        + b'Target="word/document.xml"/></Relationships>'
+    )
+    (output / "review.docx").write_bytes(usable_docx_bytes(document=(
+        b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        b"<w:body><w:p/></w:body></w:document>"
+    ), relationships=relationships))
+    stored = []
+
+    class FakeStorage:
+        def put_bytes(self, *, storage_key, content, content_type):
+            stored.append(content)
+            return StoredObject(storage_key=storage_key, sha256="hash", size_bytes=len(content))
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+        payload(skill_id="qa-file-reviewer"), workspace
+    )
+
+    assert bool(artifacts) is accepted
+    assert bool(stored) is accepted
+
+
+@pytest.mark.parametrize(
+    "relationships",
+    [
+        (
+            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+            b'<Relationship Id="rId1" Type="urn:example:other" Target="custom.xml"/>'
+            b"</Relationships>"
+        ),
+        (
+            b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+            b'<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+            b"</Relationships>"
+        ),
+    ],
+    ids=["duplicate-relationship-id", "multiple-office-document-relationships"],
+)
+def test_required_docx_rejects_non_unique_or_ambiguous_root_relationships(monkeypatch, tmp_path, relationships):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    (output / "review.docx").write_bytes(usable_docx_bytes(document=(
+        b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        b"<w:body><w:p/></w:body></w:document>"
+    ), relationships=relationships))
+
+    class FakeStorage:
+        def put_bytes(self, **_kwargs):
+            raise AssertionError("invalid relationship packages must not be stored")
+
+    monkeypatch.setattr("app.executors.claude_agent_worker.ObjectStorage", FakeStorage)
+    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+        payload(skill_id="qa-file-reviewer"), workspace
+    )
+    assert artifacts == []
+
+
 @pytest.mark.asyncio
 async def test_materialize_files_rejects_symlinked_workspace(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace-link"

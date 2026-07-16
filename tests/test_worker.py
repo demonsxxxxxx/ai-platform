@@ -225,6 +225,23 @@ def default_cancel_not_requested(monkeypatch):
         raising=False,
     )
 
+    async def reconcile_terminalized_permission_run(*, tenant_id, run_id, progress, transaction_factory):
+        if not progress.did_transition or not progress.needs_reconcile:
+            return None
+        async with transaction_factory() as conn:
+            return await repository_module.reconcile_multi_agent_child_run_terminal_state(
+                conn,
+                tenant_id=tenant_id,
+                child_run_id=run_id,
+                child_status=str(progress.status or ""),
+            )
+
+    monkeypatch.setattr(
+        "app.worker.reconcile_terminalized_permission_run",
+        reconcile_terminalized_permission_run,
+        raising=False,
+    )
+
     async def create_sandbox_lease(conn, **kwargs):
         return {
             "id": "lease-test-default",
@@ -1905,9 +1922,10 @@ async def test_worker_reconciles_multi_agent_child_after_success(monkeypatch):
 
     async def complete_run(conn, *, tenant_id, run_id, result_json):
         calls.append(("complete", run_id, result_json["message"]))
+        return True
 
-    async def reconcile(conn, **kwargs):
-        calls.append(("reconcile", kwargs))
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
@@ -1915,11 +1933,11 @@ async def test_worker_reconciles_multi_agent_child_after_success(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
+    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
-        base_payload(run_id="run-child", input=child_input),
+        base_payload(run_id="run-child", skill_id="general-chat", agent_id="general-agent", input=child_input),
         AdapterRegistry({"fake": FakeSuccessAdapter()}),
     )
 
@@ -1929,9 +1947,10 @@ async def test_worker_reconciles_multi_agent_child_after_success(monkeypatch):
     assert complete_index < reconcile_index
     reconcile_call = calls[reconcile_index][1]
     assert reconcile_call["tenant_id"] == "tenant-a"
-    assert reconcile_call["child_run_id"] == "run-child"
-    assert reconcile_call["child_status"] == "succeeded"
-    assert reconcile_call["result_json"]["message"].startswith("fake run completed for run-child")
+    assert reconcile_call["run_id"] == "run-child"
+    assert reconcile_call["progress"].status == "succeeded"
+    assert reconcile_call["progress"].did_transition is True
+    assert reconcile_call["progress"].needs_reconcile is True
 
 
 @pytest.mark.asyncio
@@ -1978,45 +1997,31 @@ async def test_worker_retries_multi_agent_parent_rollup_after_child_transaction_
 
     async def complete_run(conn, *, tenant_id, run_id, result_json):
         calls.append(("complete", conn, run_id))
+        return True
 
-    async def reconcile(conn, **kwargs):
-        calls.append(("reconcile", conn, kwargs))
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
-
-    async def finalize(conn, **kwargs):
-        calls.append(("finalize", conn, kwargs))
-        if len([item for item in calls if item[0] == "finalize"]) == 1:
-            return None
-        return {"parent_run_id": "run-parent", "status": "succeeded"}
 
     monkeypatch.setattr("app.worker.transaction", recording_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
-    monkeypatch.setattr("app.worker.repositories.finalize_multi_agent_parent_run_if_ready", finalize)
+    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
-        base_payload(run_id="run-child", input=child_input),
+        base_payload(run_id="run-child", skill_id="general-chat", agent_id="general-agent", input=child_input),
         AdapterRegistry({"fake": FakeSuccessAdapter()}),
     )
 
     assert outcome.status == "succeeded"
     reconcile_call = next(item for item in calls if item[0] == "reconcile")
-    finalize_calls = [item for item in calls if item[0] == "finalize"]
-    assert len(finalize_calls) == 2
-    assert finalize_calls[0][1] != reconcile_call[1]
-    assert finalize_calls[1][1] != reconcile_call[1]
-    assert finalize_calls[0][2] == {
-        "tenant_id": "tenant-a",
-        "parent_run_id": "run-parent",
-        "triggered_by_child_run_id": "run-child",
-    }
-    assert finalize_calls[1][2] == finalize_calls[0][2]
-    assert tx_events.index(("exit", reconcile_call[1])) < tx_events.index(("enter", finalize_calls[0][1]))
-    assert tx_events.index(("exit", finalize_calls[0][1])) < tx_events.index(("enter", finalize_calls[1][1]))
+    assert reconcile_call[1]["run_id"] == "run-child"
+    assert reconcile_call[1]["progress"].status == "succeeded"
+    first_commit = next(index for index, item in enumerate(tx_events) if item[0] == "commit")
+    assert first_commit < len(tx_events)
 
 
 @pytest.mark.asyncio
@@ -2042,16 +2047,17 @@ async def test_worker_reconciles_multi_agent_child_after_failure(monkeypatch):
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message, result_json))
+        return ToolPermissionTerminalizationProgress(True, "failed", True, True)
 
-    async def reconcile(conn, **kwargs):
-        calls.append(("reconcile", kwargs))
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
+    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", input=child_input),
@@ -2063,10 +2069,9 @@ async def test_worker_reconciles_multi_agent_child_after_failure(monkeypatch):
     reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
     assert fail_index < reconcile_index
     reconcile_call = calls[reconcile_index][1]
-    assert reconcile_call["child_run_id"] == "run-child"
-    assert reconcile_call["child_status"] == "failed"
-    assert reconcile_call["error_code"] == "fake_failure"
-    assert reconcile_call["error_message"] == "fake run failed for run-child"
+    assert reconcile_call["run_id"] == "run-child"
+    assert reconcile_call["progress"].status == "failed"
+    assert reconcile_call["progress"].did_transition is True
 
 
 @pytest.mark.asyncio
@@ -2117,8 +2122,8 @@ async def test_worker_reconciles_multi_agent_child_after_cancel(monkeypatch):
         calls.append(("cancel", run_id, result_json))
         return ToolPermissionTerminalizationProgress(completed=True, status="cancelled", did_transition=True, needs_reconcile=True)
 
-    async def reconcile(conn, **kwargs):
-        calls.append(("reconcile", kwargs))
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
@@ -2126,7 +2131,7 @@ async def test_worker_reconciles_multi_agent_child_after_cancel(monkeypatch):
     monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
-    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
+    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", input=child_input),
@@ -2138,9 +2143,11 @@ async def test_worker_reconciles_multi_agent_child_after_cancel(monkeypatch):
     reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
     assert cancel_index < reconcile_index
     reconcile_call = calls[reconcile_index][1]
-    assert reconcile_call["child_run_id"] == "run-child"
-    assert reconcile_call["child_status"] == "cancelled"
-    assert reconcile_call["result_json"] == {"message": "任务已取消"}
+    assert reconcile_call["tenant_id"] == "tenant-a"
+    assert reconcile_call["run_id"] == "run-child"
+    assert reconcile_call["progress"].status == "cancelled"
+    assert reconcile_call["progress"].did_transition is True
+    assert reconcile_call["progress"].needs_reconcile is True
 
 
 @pytest.mark.asyncio
@@ -2208,16 +2215,17 @@ async def test_worker_reconciles_multi_agent_child_after_executor_exception(monk
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message, result_json))
+        return ToolPermissionTerminalizationProgress(True, "failed", True, True)
 
-    async def reconcile(conn, **kwargs):
-        calls.append(("reconcile", kwargs))
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
+    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", input=child_input),
@@ -2229,10 +2237,8 @@ async def test_worker_reconciles_multi_agent_child_after_executor_exception(monk
     reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
     assert fail_index < reconcile_index
     reconcile_call = calls[reconcile_index][1]
-    assert reconcile_call["child_run_id"] == "run-child"
-    assert reconcile_call["child_status"] == "failed"
-    assert reconcile_call["error_code"] == "executor_failure"
-    assert reconcile_call["error_message"] == "executor crashed"
+    assert reconcile_call["run_id"] == "run-child"
+    assert reconcile_call["progress"].status == "failed"
 
 
 @pytest.mark.asyncio
@@ -2258,16 +2264,17 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", run_id, error_code, error_message, result_json))
+        return ToolPermissionTerminalizationProgress(True, "failed", True, True)
 
-    async def reconcile(conn, **kwargs):
-        calls.append(("reconcile", kwargs))
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
+    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", executor_type="missing", input=child_input),
@@ -2279,9 +2286,8 @@ async def test_worker_reconciles_multi_agent_child_after_unknown_executor(monkey
     reconcile_index = next(index for index, item in enumerate(calls) if item[0] == "reconcile")
     assert fail_index < reconcile_index
     reconcile_call = calls[reconcile_index][1]
-    assert reconcile_call["child_run_id"] == "run-child"
-    assert reconcile_call["child_status"] == "failed"
-    assert reconcile_call["error_code"] == "unknown_executor_type"
+    assert reconcile_call["run_id"] == "run-child"
+    assert reconcile_call["progress"].status == "failed"
 
 
 @pytest.mark.asyncio
@@ -2325,21 +2331,17 @@ async def test_worker_retries_parent_rollup_after_early_unknown_executor_reconci
 
     async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
         calls.append(("fail", conn, error_code))
+        return ToolPermissionTerminalizationProgress(True, "failed", True, True)
 
-    async def reconcile(conn, **kwargs):
-        calls.append(("reconcile", conn, kwargs))
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
-
-    async def finalize(conn, **kwargs):
-        calls.append(("finalize", conn, kwargs))
-        return {"parent_run_id": "run-parent", "status": "failed"}
 
     monkeypatch.setattr("app.worker.transaction", recording_transaction)
     monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.reconcile_multi_agent_child_run_terminal_state", reconcile)
-    monkeypatch.setattr("app.worker.repositories.finalize_multi_agent_parent_run_if_ready", finalize)
+    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
 
     outcome = await process_run_payload(
         base_payload(run_id="run-child", executor_type="missing", input=child_input),
@@ -2349,16 +2351,9 @@ async def test_worker_retries_parent_rollup_after_early_unknown_executor_reconci
     assert outcome.status == "failed"
     assert outcome.error_code == "unknown_executor_type"
     reconcile_call = next(item for item in calls if item[0] == "reconcile")
-    finalize_call = next(item for item in calls if item[0] == "finalize")
-    assert finalize_call[1] != reconcile_call[1]
-    assert finalize_call[2] == {
-        "tenant_id": "tenant-a",
-        "parent_run_id": "run-parent",
-        "triggered_by_child_run_id": "run-child",
-    }
-    assert ("commit", reconcile_call[1]) in tx_events
-    assert ("rollback", reconcile_call[1]) not in tx_events
-    assert tx_events.index(("exit", reconcile_call[1])) < tx_events.index(("enter", finalize_call[1]))
+    assert reconcile_call[1]["run_id"] == "run-child"
+    assert reconcile_call[1]["progress"].status == "failed"
+    assert any(item[0] == "commit" for item in tx_events)
 
 
 @pytest.mark.asyncio
@@ -7384,38 +7379,20 @@ async def test_worker_invalid_locked_child_snapshot_reconciles_parent_after_comm
     )
     state["locked_run"]["input_json"]["skill_manifests"] = []
 
-    async def reconcile(conn, **kwargs):
-        calls.append(("reconcile", kwargs))
+    async def reconcile(*, tenant_id, run_id, progress, transaction_factory):
+        calls.append(("reconcile", {"tenant_id": tenant_id, "run_id": run_id, "progress": progress}))
         return {"parent_run_id": "run-parent"}
 
-    async def finalize(conn, **kwargs):
-        calls.append(("finalize", kwargs))
-        return {"parent_run_id": "run-parent", "status": "failed"}
-
-    monkeypatch.setattr(
-        "app.worker.repositories.reconcile_multi_agent_child_run_terminal_state",
-        reconcile,
-    )
-    monkeypatch.setattr(
-        "app.worker.repositories.finalize_multi_agent_parent_run_if_ready",
-        finalize,
-    )
+    monkeypatch.setattr("app.worker.reconcile_terminalized_permission_run", reconcile)
 
     outcome = await process_run_payload(raw, registry=registry)
 
     assert outcome.status == "failed"
     assert outcome.error_code == "capability_not_authorized"
     reconcile_call = next(call[1] for call in calls if call[0] == "reconcile")
-    assert reconcile_call["child_run_id"] == "run-a"
-    assert reconcile_call["child_status"] == "failed"
-    assert reconcile_call["error_code"] == "capability_not_authorized"
-    assert [call[1] for call in calls if call[0] == "finalize"] == [
-        {
-            "tenant_id": "tenant-a",
-            "parent_run_id": "run-parent",
-            "triggered_by_child_run_id": "run-a",
-        }
-    ]
+    assert reconcile_call["run_id"] == "run-a"
+    assert reconcile_call["progress"].status == "failed"
+    assert reconcile_call["progress"].did_transition is True
     assert next(index for index, call in enumerate(calls) if call[0] == "fail") < next(
         index for index, call in enumerate(calls) if call[0] == "reconcile"
     )

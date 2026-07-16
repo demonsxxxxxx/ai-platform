@@ -147,7 +147,14 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
 
     async def drain(**kwargs):
         calls.append(("drain", kwargs["tenant_id"], kwargs["run_id"], kwargs["max_batches"]))
-        return {"completed": kwargs["run_id"] == "run-a", "status": "failed"}
+        return repositories.ToolPermissionTerminalizationProgress(
+            completed=kwargs["run_id"] == "run-a",
+            status="failed",
+        )
+
+    async def recovery_candidates(_conn, *, limit):
+        calls.append(("recovery", limit))
+        return []
 
     monkeypatch.setattr("app.worker_main.transaction", Transaction)
     monkeypatch.setattr(
@@ -155,6 +162,7 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
         _ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE,
     )
     monkeypatch.setattr("app.worker_main.repositories.list_runs_requiring_tool_permission_terminalization", list_runs)
+    monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_terminal_children_requiring_reconciliation", recovery_candidates)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
 
     rows = await worker_main.progress_pending_tool_permission_terminalizations_for_worker(Settings())
@@ -163,6 +171,7 @@ async def test_permission_terminalization_maintenance_drains_bounded_durable_run
         ("list", 2),
         ("drain", "tenant-a", "run-a", 4),
         ("drain", "tenant-b", "run-b", 4),
+        ("recovery", 2),
     ]
     assert rows == [
         {"tenant_id": "tenant-a", "run_id": "run-a", "completed": True, "status": "failed", "did_transition": False, "needs_reconcile": False},
@@ -203,17 +212,68 @@ async def test_permission_terminalization_maintenance_reconciles_only_one_final_
     async def reconcile(**kwargs):
         calls.append((kwargs["tenant_id"], kwargs["run_id"], kwargs["progress"].did_transition))
 
+    async def recovery_candidates(_conn, *, limit):
+        assert limit == 3
+        return []
+
     monkeypatch.setattr("app.worker_main.transaction", Transaction)
     monkeypatch.setattr(
         "app.worker_main.progress_pending_tool_permission_terminalizations_for_worker",
         _ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE,
     )
     monkeypatch.setattr("app.worker_main.repositories.list_runs_requiring_tool_permission_terminalization", list_runs)
+    monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_terminal_children_requiring_reconciliation", recovery_candidates)
     monkeypatch.setattr("app.worker_main.drain_run_tool_permission_terminalization", drain)
     monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
 
     await worker_main.progress_pending_tool_permission_terminalizations_for_worker(Settings())
     assert calls == [("tenant-a", "final", True)]
+
+
+@pytest.mark.asyncio
+async def test_permission_terminalization_maintenance_recovers_committed_handed_off_child(monkeypatch):
+    """A crash after child terminal commit is recovered from durable handed-off state."""
+
+    calls = []
+
+    class Transaction:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class Settings:
+        tool_permission_terminalization_maintenance_limit = 2
+
+    async def list_runs(_conn, *, limit):
+        assert limit == 2
+        return []
+
+    recovery_rounds = [[{"tenant_id": "tenant-a", "run_id": "child-a", "status": "cancelled"}], []]
+
+    async def recovery_candidates(_conn, *, limit):
+        assert limit == 2
+        return recovery_rounds.pop(0)
+
+    async def reconcile(**kwargs):
+        calls.append((kwargs["tenant_id"], kwargs["run_id"], kwargs.get("progress")))
+
+    monkeypatch.setattr("app.worker_main.transaction", Transaction)
+    monkeypatch.setattr(
+        "app.worker_main.progress_pending_tool_permission_terminalizations_for_worker",
+        _ORIGINAL_PERMISSION_TERMINALIZATION_MAINTENANCE,
+    )
+    monkeypatch.setattr("app.worker_main.repositories.list_runs_requiring_tool_permission_terminalization", list_runs)
+    monkeypatch.setattr("app.worker_main.repositories.list_multi_agent_terminal_children_requiring_reconciliation", recovery_candidates)
+    monkeypatch.setattr("app.worker_main.reconcile_terminalized_permission_run", reconcile)
+
+    rows = await worker_main.progress_pending_tool_permission_terminalizations_for_worker(Settings())
+    retry_rows = await worker_main.progress_pending_tool_permission_terminalizations_for_worker(Settings())
+
+    assert rows == []
+    assert retry_rows == []
+    assert calls == [("tenant-a", "child-a", None)]
 
 
 @pytest.mark.asyncio

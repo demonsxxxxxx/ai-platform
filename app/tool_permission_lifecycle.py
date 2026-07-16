@@ -1,8 +1,13 @@
 """One structured timeout budget for governed tool-permission execution."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from time import monotonic as system_monotonic
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from app.repositories import ToolPermissionTerminalizationProgress
 
 
 TOOL_PERMISSION_REQUEST_TTL_SECONDS = 900.0
@@ -142,12 +147,12 @@ async def drain_run_tool_permission_terminalization(
     run_id: str,
     transaction_factory: Callable[[], Any],
     max_batches: int = 4,
-) -> dict[str, Any] | None:
+) -> ToolPermissionTerminalizationProgress | None:
     """Commit a bounded number of durable terminalization batches for one exact run."""
 
     from app import repositories
 
-    result: dict[str, Any] | None = None
+    result: ToolPermissionTerminalizationProgress | None = None
     for _ in range(max(1, int(max_batches))):
         async with transaction_factory() as conn:
             result = await repositories.progress_run_tool_permission_terminalization(
@@ -155,17 +160,23 @@ async def drain_run_tool_permission_terminalization(
                 tenant_id=tenant_id,
                 run_id=run_id,
             )
-        if result is None or result.get("completed") is True or result.get("status") is None:
+        if result is None or result.completed or result.status is None:
             return result
     return result
 
 
 async def reconcile_terminalized_permission_run(
-    *, tenant_id: str, run_id: str, progress: Any, transaction_factory: Callable[[], Any]
+    *,
+    tenant_id: str,
+    run_id: str,
+    transaction_factory: Callable[[], Any],
+    progress: Any | None = None,
 ) -> dict[str, Any] | None:
-    """Reconcile one final repository-owned child transition after its transaction commits."""
+    """Reconcile one final child transition after commit, or one durably selected recovery item."""
 
-    if progress is None or not progress.get("did_transition") or not progress.get("needs_reconcile"):
+    if progress is not None and (
+        not progress.did_transition or not progress.needs_reconcile
+    ):
         return None
     from app import repositories
 
@@ -173,7 +184,7 @@ async def reconcile_terminalized_permission_run(
         run = await repositories.get_run(conn, tenant_id=tenant_id, run_id=run_id, for_update=True)
         if run is None:
             return None
-        status = str(progress.get("status") or "")
+        status = str(run.get("status") or "")
         reconciled = await repositories.reconcile_multi_agent_child_run_terminal_state(
             conn, tenant_id=tenant_id, child_run_id=run_id, child_status=status,
             result_json=run.get("result_json") if isinstance(run.get("result_json"), dict) else {},
