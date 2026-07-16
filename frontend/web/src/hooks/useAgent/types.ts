@@ -246,6 +246,8 @@ export interface UseAgentReturn {
     attachments?: MessageAttachment[],
     selectedSkill?: SelectedSkillRequest | null,
   ) => Promise<SubmissionOutcome>;
+  canRetryPendingSubmission: boolean;
+  retryPendingSubmission: () => Promise<void>;
   stopGeneration: () => Promise<void>;
   clearMessages: () => void;
   loadHistory: (

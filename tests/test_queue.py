@@ -236,9 +236,29 @@ class FakeRedis:
     async def eval(self, script, numkeys, *keys_and_args):
         self.eval_calls.append((script, numkeys, keys_and_args))
         if "enqueue-run-with-metadata" in script:
-            queued_key, queued_meta_key, queued_run_index_key, queued_order_key, queued_sequence_key = keys_and_args[:numkeys]
+            (
+                queued_key,
+                queued_meta_key,
+                queued_run_index_key,
+                queued_order_key,
+                queued_sequence_key,
+                processing_meta_key,
+                retry_meta_key,
+            ) = keys_and_args[:numkeys]
             raw, message_id, run_index_field, metadata_json = keys_and_args[numkeys:]
-            message_ids = [candidate for candidate in indexed_message_ids(self, run_index_field) if candidate != message_id]
+            existing_message_ids = indexed_message_ids(self, run_index_field)
+            if message_id in existing_message_ids and message_id in self.metadata_by_message_id:
+                metadata = json.loads(self.metadata_by_message_id[message_id])
+                return json.dumps(
+                    {
+                        "status": "already_enqueued",
+                        "position": await self.zrank(queued_order_key, message_id) + 1,
+                        "sequence": metadata.get("sequence"),
+                    }
+                )
+            if message_id in self.meta or message_id in self.retry:
+                return json.dumps({"status": "already_leased", "position": 0, "sequence": 0})
+            message_ids = [candidate for candidate in existing_message_ids if candidate != message_id]
             message_ids.append(message_id)
             self.sequence += 1
             self.queued.append(raw)
@@ -573,6 +593,43 @@ async def test_enqueue_run_with_metadata_returns_trusted_admission_ordinal(monke
     )
     assert second_position == 2
     assert fake.closed is True
+
+
+@pytest.mark.asyncio
+async def test_enqueue_run_with_metadata_deduplicates_an_identical_run_admission(monkeypatch):
+    payload = queue_payload(run_id="run-deduplicated", tenant_id="tenant-a").model_dump()
+    fake = FakeRedis()
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    first = await queue.enqueue_run_with_metadata(payload)
+    second = await queue.enqueue_run_with_metadata(payload)
+
+    assert first.message_id == second.message_id
+    assert first.queue_admission_ordinal == second.queue_admission_ordinal
+    assert fake.queued == [QueueRunPayload.model_validate(payload).model_dump_json()]
+
+
+@pytest.mark.asyncio
+async def test_enqueue_run_with_metadata_does_not_requeue_a_processing_identity(monkeypatch):
+    payload = queue_payload(run_id="run-processing", tenant_id="tenant-a").model_dump()
+    fake = FakeRedis()
+    raw = QueueRunPayload.model_validate(payload).model_dump_json()
+    message_id = queue.message_id_for_raw(raw)
+    fake.meta[message_id] = json.dumps({"tenant_id": "tenant-a", "run_id": "run-processing"})
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+
+    admission = await queue.enqueue_run_with_metadata(payload)
+
+    assert admission.source == "redis_existing_lease"
+    assert fake.queued == []
 
 
 @pytest.mark.asyncio

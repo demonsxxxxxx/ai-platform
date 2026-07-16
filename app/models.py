@@ -1,4 +1,5 @@
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -734,6 +735,7 @@ class ChatStreamRequest(BaseModel):
     disabled_mcp_tools: list[str] = Field(default_factory=list)
     user_timezone: str | None = None
     confirmed_capability_id: str | None = None
+    submission_id: UUID | None = None
 
     @field_validator("workspace_id")
     @classmethod
@@ -759,11 +761,23 @@ class ChatStreamRequest(BaseModel):
 class ChatStreamResponse(BaseModel):
     session_id: str | None = None
     run_id: str | None = None
-    status: Literal["queued", "needs_confirmation"]
+    status: Literal["queued", "accepted_pending_enqueue", "needs_confirmation"]
+    submission_id: str | None = None
+    submission_disposition: Literal["rejected_before_persist"] | None = None
     queue_position: int | None = None
     queue_insight: dict[str, Any] | None = None
     intent_decision: IntentDecisionResponse | None = None
     suggestions: list[CapabilitySuggestionResponse] = Field(default_factory=list)
+
+
+class ChatSubmissionResponse(BaseModel):
+    """Principal-scoped durable resolution of one keyed chat submission."""
+
+    submission_id: str
+    state: Literal["queued", "accepted_pending_enqueue", "needs_confirmation", "rejected_before_persist"]
+    submission_disposition: Literal["rejected_before_persist"] | None = None
+    rejection_code: str | None = None
+    outcome: ChatStreamResponse | None = None
 
 
 class AdminRunSummaryResponse(BaseModel):

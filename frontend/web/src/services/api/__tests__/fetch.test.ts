@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { ApiRequestError, authFetch } from "../fetch.ts";
+import { apiRequestErrorFromResponse } from "../fetch.ts";
 import { registerAuthScopedCacheClearer } from "../authCacheInvalidation.ts";
 
 function installFetchAuthStubs({
@@ -99,6 +100,24 @@ function installFetchAuthStubs({
     },
   };
 }
+
+test("retains only the server-controlled submission disposition", async () => {
+  const error = await apiRequestErrorFromResponse(
+    new Response(
+      JSON.stringify({
+        detail: {
+          code: "session_workspace_mismatch",
+          submission_disposition: "rejected_before_persist",
+          private_diagnostic: "must not be projected",
+        },
+      }),
+      { status: 409, headers: { "Content-Type": "application/json" } },
+    ),
+  );
+
+  assert.equal(error.code, "session_workspace_mismatch");
+  assert.equal(error.submissionDisposition, "rejected_before_persist");
+});
 
 test("authFetch uses cookie credentials without mutating legacy auth storage", async () => {
   const calls: Array<{ input: string; init?: RequestInit }> = [];

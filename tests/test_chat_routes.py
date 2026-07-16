@@ -13,12 +13,15 @@ from app.models import ChatSessionRequest, ChatStreamRequest, QueueRunPayload
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError
 from app.routes.chat import (
+    _admit_chat_submission,
     _validate_queue_payload_for_enqueue,
     chat_stream,
     create_chat_session,
+    get_chat_submission,
     list_messages,
     list_sessions,
 )
+from app.queue import QueueAdmissionMetadata
 
 
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
@@ -65,6 +68,252 @@ def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
 
     monkeypatch.setattr(repository_module, "authorize_files_for_run", authorize_files, raising=False)
     monkeypatch.setattr(repository_module, "ensure_workspace_belongs_to_tenant", ensure_workspace, raising=False)
+
+
+@pytest.mark.asyncio
+async def test_keyed_chat_replay_returns_the_recorded_outcome_before_routing(monkeypatch):
+    request = ChatStreamRequest(
+        message="durable replay",
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+    fingerprint = repository_module.chat_submission_fingerprint(
+        {"request": request.model_dump(mode="json", exclude={"submission_id"}), "query_agent_id": None},
+        tenant_id="tenant-a",
+        user_id="user-a",
+    )
+    calls = []
+
+    async def existing_submission(conn, **kwargs):
+        calls.append(kwargs)
+        return {
+            "submission_id": str(request.submission_id),
+            "request_fingerprint_sha256": fingerprint,
+            "state": "queued",
+            "outcome_json": {
+                "session_id": "ses_replayed",
+                "run_id": "run_replayed",
+                "status": "queued",
+                "submission_id": str(request.submission_id),
+            },
+        }
+
+    def forbidden_route(*_args, **_kwargs):
+        raise AssertionError("replay must not route intent")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", existing_submission, raising=False)
+    monkeypatch.setattr("app.routes.chat.route_intent", forbidden_route)
+
+    response = await chat_stream(request, principal=principal())
+
+    assert response.session_id == "ses_replayed"
+    assert response.run_id == "run_replayed"
+    assert calls == [
+        {
+            "tenant_id": "tenant-a",
+            "user_id": "user-a",
+            "submission_id": str(request.submission_id),
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_keyed_chat_payload_mismatch_is_rejected_before_routing(monkeypatch):
+    request = ChatStreamRequest(
+        message="different payload",
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+
+    async def existing_submission(*_args, **_kwargs):
+        return {
+            "submission_id": str(request.submission_id),
+            "request_fingerprint_sha256": "f" * 64,
+            "state": "queued",
+            "outcome_json": {},
+        }
+
+    def forbidden_route(*_args, **_kwargs):
+        raise AssertionError("mismatched replay must not route intent")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", existing_submission, raising=False)
+    monkeypatch.setattr("app.routes.chat.route_intent", forbidden_route)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(request, principal=principal())
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "submission_payload_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_chat_submission_resolver_is_exactly_principal_scoped(monkeypatch):
+    calls = []
+
+    async def missing_submission(conn, **kwargs):
+        calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", missing_submission, raising=False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_chat_submission(
+            "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+            principal=principal(tenant_id="tenant-b", user_id="user-b"),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert calls == [
+        {
+            "tenant_id": "tenant-b",
+            "user_id": "user-b",
+            "submission_id": "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        }
+    ]
+
+
+def _pending_submission_row(*, state: str = "accepted_pending_enqueue") -> dict[str, object]:
+    return {
+        "submission_id": "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        "state": state,
+        "run_id": "run-durable",
+        "outcome_json": {
+            "session_id": "ses-durable",
+            "run_id": "run-durable",
+            "status": "accepted_pending_enqueue",
+            "submission_id": "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        },
+    }
+
+
+def _durable_run_row(*, status: str = "queued") -> dict[str, object]:
+    return {
+        "id": "run-durable",
+        "status": status,
+        "workspace_id": "default",
+        "session_id": "ses-durable",
+        "agent_id": "general-agent",
+        "skill_id": "general-chat",
+        "input_json": {},
+    }
+
+
+@pytest.mark.asyncio
+async def test_retry_admission_keeps_committed_submission_pending_when_redis_fails(monkeypatch):
+    submission = _pending_submission_row()
+    finalized: list[dict[str, object]] = []
+
+    async def get_submission(*_args, **_kwargs):
+        return submission
+
+    async def get_run(*_args, **_kwargs):
+        return _durable_run_row()
+
+    async def fail_enqueue(_payload):
+        raise RuntimeError("redis unavailable after database commit")
+
+    async def finalize(*_args, **kwargs):
+        finalized.append(kwargs)
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
+    monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
+    monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
+    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", fail_enqueue)
+    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
+
+    response = await _admit_chat_submission(
+        principal=principal(),
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+
+    assert response.state == "accepted_pending_enqueue"
+    assert response.outcome is not None
+    assert response.outcome.status == "accepted_pending_enqueue"
+    assert finalized == []
+
+
+@pytest.mark.asyncio
+async def test_retry_admission_does_not_requeue_a_processing_run(monkeypatch):
+    submission = _pending_submission_row()
+    finalized: list[dict[str, object]] = []
+
+    async def get_submission(*_args, **_kwargs):
+        return submission
+
+    async def get_run(*_args, **_kwargs):
+        return _durable_run_row(status="processing")
+
+    async def forbidden_enqueue(_payload):
+        raise AssertionError("a processing run must never be re-enqueued")
+
+    async def finalize(*_args, **kwargs):
+        finalized.append(kwargs)
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
+    monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
+    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", forbidden_enqueue)
+    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
+
+    response = await _admit_chat_submission(
+        principal=principal(),
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+
+    assert response.state == "queued"
+    assert finalized[0]["state"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(monkeypatch):
+    submission = _pending_submission_row()
+    enqueued_payloads: list[dict[str, object]] = []
+    finalize_attempts = 0
+
+    async def get_submission(*_args, **_kwargs):
+        return submission
+
+    async def get_run(*_args, **_kwargs):
+        return _durable_run_row()
+
+    async def enqueue(payload):
+        enqueued_payloads.append(payload)
+        return QueueAdmissionMetadata(1, 7, "stable-message-id")
+
+    async def append_event(*_args, **_kwargs):
+        return None
+
+    async def finalize(*_args, **kwargs):
+        nonlocal finalize_attempts
+        finalize_attempts += 1
+        if finalize_attempts == 1:
+            raise RuntimeError("response/ledger update lost after Redis success")
+        submission["state"] = "queued"
+        submission["outcome_json"] = kwargs["outcome_json"]
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
+    monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
+    monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
+    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
+    monkeypatch.setattr(repository_module, "append_event", append_event, raising=False)
+    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
+
+    with pytest.raises(RuntimeError, match="ledger update lost"):
+        await _admit_chat_submission(
+            principal=principal(),
+            submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        )
+    response = await _admit_chat_submission(
+        principal=principal(),
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+
+    assert response.state == "queued"
+    assert len(enqueued_payloads) == 2
+    assert enqueued_payloads[0] == enqueued_payloads[1]
 
 
 @pytest.mark.asyncio

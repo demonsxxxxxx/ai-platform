@@ -51,9 +51,10 @@ principal-scoped continuation decision.
    optimistic user turn and reports an unknown submission status without an
    assistant turn or automatic replay. Only a typed 4xx whose explicit code is
    known to be rejected before persistence restores the pre-submit message list
-   and enables a manual retry. A known-session unknown result remains blocked
-   until authoritative history/status refresh succeeds; an unknown fresh
-   session requires a page-level refresh because no trusted session id exists.
+   and enables a manual retry. A known-session history/status refresh alone
+   cannot prove an unknown POST has stopped; both existing and fresh
+   submissions remain blocked until the durable resolver or explicit admission
+   retry returns a server-defined outcome.
 
 ## Ordering and race constraints
 
@@ -91,3 +92,44 @@ Validation will use the
 changed-scope frontend tests, chat-route tests, TypeScript/lint/build as needed,
 `python -m compileall -q app tools scripts`, and `git diff --check`; no full
 pytest suite or deployment is in scope.
+
+## Generation 4: durable submission resolution
+
+The earlier unknown-outcome fence is insufficient: a history GET can complete
+before the preceding chat POST commits, and an unknown fresh submission has no
+trusted session id to reload. The authoritative seam is therefore a keyed chat
+submission resolution flow, not a frontend error-code guess.
+
+1. A keyed request creates one tenant/user-scoped ledger record with an
+   immutable effective workspace, a server-computed canonical request hash,
+   and either a stable pre-persistence rejection or the session/run created in
+   the same database transaction. The unique key is
+   `(tenant_id, user_id, submission_id)`; workspace is deliberately not part
+   of that uniqueness constraint, so a changed workspace cannot create a
+   second mutation under the same key.
+2. The existing chat route remains the sole session/run creation authority.
+   Its keyed branch resolves an existing ledger record before intent,
+   capability, file, queue, run, or context work. Same key plus hash returns
+   the recorded outcome; a changed hash returns a non-leaking conflict.
+3. Accepted records begin as `accepted_pending_enqueue`. Queue delivery is
+   rebuilt from the already-authoritative run execution snapshot and is
+   idempotent for the deterministic tenant/run/message identity across queued,
+   processing, and retry Redis state. A delivery failure remains truthful and
+   retry admission cannot create another chat mutation.
+4. A principal-scoped resolver exposes only the caller's exact submission;
+   an explicit retry-admission operation takes no user payload. The browser
+   persists only the opaque key and a structural owner tuple, resolves through
+   the server after refresh, and never treats ordinary history absence as
+   proof of rejection or performs automatic POST replay.
+5. A server-controlled `rejected_before_persist` disposition replaces the
+   frontend allowlist. Before a resolver/history publication can unlock the
+   composer, it updates `messagesRef.current` and all generation-owned state
+   synchronously. The layout-phase auth reset remains the authority for a
+   principal replacement.
+
+The change is additive. Callers without a key retain the legacy route and no
+dedupe guarantee. Rollout is schema/backend first: a frontend only enables
+keyed recovery after an exact submission-id echo; a backend that silently
+ignores the optional field remains fail-closed. Ledger rows are intentionally
+not deleted in this slice, so a cleanup cannot resurrect an old key as a new
+mutation; bounded retention requires a later tombstone/expiry design.

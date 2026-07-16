@@ -271,10 +271,17 @@ const dom = installTestDom();
 async function loadReactHarness({
   strict = false,
   onAuthScopeLayout,
+  preserveSubmissionReferences = false,
 }: {
   strict?: boolean;
   onAuthScopeLayout?: () => void;
+  preserveSubmissionReferences?: boolean;
 } = {}) {
+  if (!preserveSubmissionReferences) {
+    dom.window.localStorage.removeItem(
+      "ai_platform_chat_submission_references_v1",
+    );
+  }
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
   const { AuthProvider, useAuth } = await import("../../useAuth.tsx");
@@ -502,8 +509,8 @@ test("useAgent carries the routed agent into a same-tab continuation", async () 
   const originalMarkRead = sessionApi.markRead;
   const originalGenerateTitle = sessionApi.generateTitle;
   const submissions: unknown[][] = [];
-  let sseCalls = 0;
   const originalFetch = dom.window.fetch;
+  let sseCalls = 0;
   dom.window.fetch = async () => {
     sseCalls += 1;
     return completedSseResponse();
@@ -611,9 +618,9 @@ test("useAgent clears colliding rotated auth scopes before fresh and owned-sessi
   const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
   const originalGenerateTitle = sessionApi.generateTitle;
+  const originalGetStatus = sessionApi.getStatus;
   const originalFetch = dom.window.fetch;
   const submissions: unknown[][] = [];
-  let sseCalls = 0;
   let resolveStaleSubmit!: (value: ChatStreamResponse) => void;
   const staleSubmit = new Promise<ChatStreamResponse>((resolve) => {
     resolveStaleSubmit = resolve;
@@ -629,12 +636,16 @@ test("useAgent clears colliding rotated auth scopes before fresh and owned-sessi
     metadata: {},
   });
   sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.getStatus = async () => ({
+    session_id: "session-owned-a",
+    status: "idle",
+    raw_status: "idle",
+  });
   sessionApi.generateTitle = async (sessionId) => ({
     title: "新会话",
     session_id: sessionId,
   });
   dom.window.fetch = async () => {
-    sseCalls += 1;
     return completedSseResponse();
   };
   sessionApi.submitChat = (async (...args) => {
@@ -687,7 +698,8 @@ test("useAgent clears colliding rotated auth scopes before fresh and owned-sessi
     assert.equal(harness.hook.sessionId, null);
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.messages.length, 0);
-    assert.equal(sseCalls, 0);
+    // Resolver/status transport can perform a safe GET, but the stale submit
+    // itself must not publish a run/session/message under the replacement owner.
 
     await harness.act(async () => {
       await harness.hook.sendMessage("新身份新对话");
@@ -712,7 +724,11 @@ test("useAgent clears colliding rotated auth scopes before fresh and owned-sessi
       const outcome = await harness.hook.sendMessage("可重试失败");
       assert.deepEqual(outcome, { status: "failed" });
     });
-    assert.equal(harness.hook.messages.length, 0);
+    // A legacy 4xx without the server-controlled disposition is still an
+    // unknown mutation result, so it remains locked instead of claiming the
+    // optimistic user message was never persisted.
+    assert.equal(harness.hook.messages.length, 1);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
     assert.equal(harness.hook.currentRunId, null);
   } finally {
     sessionApi.get = originalGet;
@@ -720,6 +736,7 @@ test("useAgent clears colliding rotated auth scopes before fresh and owned-sessi
     sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.generateTitle = originalGenerateTitle;
+    sessionApi.getStatus = originalGetStatus;
     dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
@@ -855,6 +872,7 @@ test("useAgent permits a retry only after a typed pre-persistence rejection", as
         "invalid selector",
         400,
         "skill_selector_conflict",
+        "rejected_before_persist",
       );
     }
     return {
@@ -932,14 +950,16 @@ test("useAgent retains an unknown submission and blocks an automatic duplicate",
   }
 });
 
-test("useAgent reopens a known unknown submission only after history reconciliation", async () => {
+test("useAgent keeps an unknown submission locked until explicit admission retry", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
   const originalGetEvents = sessionApi.getEvents;
   const originalMarkRead = sessionApi.markRead;
   const originalSubmitChat = sessionApi.submitChat;
+  const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
   let submissions = 0;
+  let retryAdmissions = 0;
   sessionApi.markRead = async () => {};
   sessionApi.get = async () => ({
     id: "session-known-uncertain",
@@ -957,6 +977,20 @@ test("useAgent reopens a known unknown submission only after history reconciliat
     }
     return { status: "needs_confirmation", suggestions: [] };
   }) as typeof sessionApi.submitChat;
+  sessionApi.retryChatSubmissionAdmission = async (submissionId) => {
+    retryAdmissions += 1;
+    return {
+      submission_id: submissionId,
+      state: "queued",
+      outcome: {
+        session_id: "session-known-uncertain",
+        run_id: "run-known-uncertain",
+        trace_id: "trace-known-uncertain",
+        status: "queued",
+        submission_id: submissionId,
+      },
+    };
+  };
 
   try {
     await harness.act(async () => {
@@ -968,16 +1002,172 @@ test("useAgent reopens a known unknown submission only after history reconciliat
 
     await harness.act(async () => {
       await harness.hook.loadHistory("session-known-uncertain");
-      assert.deepEqual(await harness.hook.sendMessage("刷新后才允许重试"), {
-        status: "accepted",
+      assert.deepEqual(await harness.hook.sendMessage("history 不得解除未知状态"), {
+        status: "failed",
       });
     });
-    assert.equal(submissions, 2);
+    assert.equal(submissions, 1);
+
+    await harness.act(async () => {
+      await harness.hook.retryPendingSubmission();
+    });
+    assert.equal(retryAdmissions, 1);
   } finally {
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
+    sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent resolves a fresh unknown submission after reload without another chat POST", async () => {
+  const first = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  let submissions = 0;
+  let resolverCalls = 0;
+  let submissionId = "";
+  sessionApi.markRead = async () => {};
+  sessionApi.submitChat = (async (...args) => {
+    submissions += 1;
+    submissionId = String(args[8]);
+    throw new Error("response lost after commit");
+  }) as typeof sessionApi.submitChat;
+
+  try {
+    await first.act(async () => {
+      await first.hook.sendMessage("fresh reload must resolve");
+    });
+    assert.equal(submissions, 1);
+    const stored = dom.window.localStorage.getItem(
+      "ai_platform_chat_submission_references_v1",
+    );
+    assert.match(stored || "", new RegExp(submissionId));
+    assert.doesNotMatch(stored || "", /fresh reload must resolve/);
+
+    sessionApi.getChatSubmission = async (id) => {
+      resolverCalls += 1;
+      assert.equal(id, submissionId);
+      return {
+        submission_id: id,
+        state: "queued",
+        outcome: {
+          session_id: "session-fresh-reloaded",
+          run_id: "run-fresh-reloaded",
+          trace_id: "trace-fresh-reloaded",
+          status: "queued",
+          submission_id: id,
+        },
+      };
+    };
+    sessionApi.get = async () => ({
+      id: "session-fresh-reloaded",
+      agent_id: "general-agent",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      is_active: true,
+      metadata: {},
+    });
+    sessionApi.getEvents = async () => ({ events: [] });
+    sessionApi.getStatus = async () => ({
+      session_id: "session-fresh-reloaded",
+      run_id: "run-fresh-reloaded",
+      status: "idle",
+      raw_status: "idle",
+    });
+    await first.cleanup();
+
+    const reloaded = await loadReactHarness({
+      preserveSubmissionReferences: true,
+    });
+    try {
+      await settle(reloaded.act);
+      assert.equal(resolverCalls, 1);
+      assert.equal(submissions, 1);
+      assert.equal(reloaded.hook.sessionId, "session-fresh-reloaded");
+    } finally {
+      await reloaded.cleanup();
+    }
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+  }
+});
+
+test("useAgent keeps persisted submissions structurally isolated across A-to-B-to-A", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  let resolverCalls = 0;
+  dom.window.localStorage.setItem(
+    "ai_platform_chat_submission_references_v1",
+    JSON.stringify([
+      {
+        version: 1,
+        owner: ["a:b", "c"],
+        submissionId: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+      },
+    ]),
+  );
+  sessionApi.getChatSubmission = async (submissionId) => {
+    resolverCalls += 1;
+    return {
+      submission_id: submissionId,
+      state: "queued",
+      outcome: {
+        session_id: "session-owner-a",
+        run_id: "run-owner-a",
+        trace_id: "trace-owner-a",
+        status: "queued",
+        submission_id: submissionId,
+      },
+    };
+  };
+  sessionApi.get = async () => ({
+    id: "session-owner-a",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.getStatus = async () => ({
+    session_id: "session-owner-a",
+    run_id: "run-owner-a",
+    status: "idle",
+    raw_status: "idle",
+  });
+
+  try {
+    await harness.rotateAuthScope("b:c", "a");
+    await settle(harness.act);
+    assert.equal(resolverCalls, 0);
+    assert.equal(harness.hook.sessionId, null);
+
+    await harness.rotateAuthScope("c", "a:b");
+    await settle(harness.act);
+    assert.equal(resolverCalls, 1);
+    assert.equal(harness.hook.sessionId, "session-owner-a");
+  } finally {
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
     await harness.cleanup();
   }
 });

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Any
+from uuid import UUID
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
@@ -16,6 +17,7 @@ from app.models import (
     ChatSessionsResponse,
     ChatStreamRequest,
     ChatStreamResponse,
+    ChatSubmissionResponse,
     IntentDecisionResponse,
     QueueRunPayload,
 )
@@ -48,6 +50,222 @@ from app.validation import assert_safe_principal_user_id
 router = APIRouter()
 _MISSING = object()
 _ORIGINAL_ENQUEUE_RUN = enqueue_run
+
+
+def _chat_submission_http_error(*, status_code: int, code: str) -> HTTPException:
+    """Return the sole server-controlled pre-persistence rejection signal."""
+
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "submission_disposition": "rejected_before_persist",
+        },
+    )
+
+
+def _submission_code(detail: object, fallback: str = "chat_submission_rejected") -> str:
+    if isinstance(detail, dict) and isinstance(detail.get("code"), str):
+        return str(detail["code"])
+    if isinstance(detail, str) and detail:
+        return detail
+    return fallback
+
+
+def _chat_stream_response_from_submission(row: dict[str, Any]) -> ChatStreamResponse:
+    state = str(row.get("state") or "")
+    if state == "rejected_before_persist":
+        raise _chat_submission_http_error(
+            status_code=409,
+            code=str(row.get("rejection_code") or "chat_submission_rejected"),
+        )
+    outcome = row.get("outcome_json")
+    if isinstance(outcome, dict) and outcome:
+        return ChatStreamResponse.model_validate(outcome)
+    if state == "accepted_pending_enqueue" and row.get("session_id") and row.get("run_id"):
+        return ChatStreamResponse(
+            session_id=str(row["session_id"]),
+            run_id=str(row["run_id"]),
+            status="accepted_pending_enqueue",
+            submission_id=str(row["submission_id"]),
+        )
+    raise HTTPException(status_code=409, detail="chat_submission_unresolved")
+
+
+def _chat_submission_resolution(row: dict[str, Any]) -> ChatSubmissionResponse:
+    outcome = row.get("outcome_json")
+    return ChatSubmissionResponse(
+        submission_id=str(row["submission_id"]),
+        state=str(row.get("state") or "accepted_pending_enqueue"),
+        submission_disposition=(
+            "rejected_before_persist"
+            if row.get("submission_disposition") == "rejected_before_persist"
+            else None
+        ),
+        rejection_code=str(row["rejection_code"]) if row.get("rejection_code") else None,
+        outcome=ChatStreamResponse.model_validate(outcome) if isinstance(outcome, dict) and outcome else None,
+    )
+
+
+async def _persist_pre_persistence_rejection(
+    *,
+    principal: AuthPrincipal,
+    submission_id: str | None,
+    request_fingerprint: str | None,
+    workspace_id: str | None,
+    code: str,
+) -> None:
+    """Record a deterministic rejection after the mutation transaction rolled back."""
+
+    if submission_id is None or request_fingerprint is None:
+        return
+    async with transaction() as conn:
+        row, created = await repositories.claim_chat_submission(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            submission_id=submission_id,
+            workspace_id=workspace_id,
+            request_fingerprint_sha256=request_fingerprint,
+        )
+        if not created and row.get("request_fingerprint_sha256") != request_fingerprint:
+            return
+        if created or row.get("state") == "resolving":
+            await repositories.finalize_chat_submission(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                submission_id=submission_id,
+                state="rejected_before_persist",
+                workspace_id=workspace_id,
+                submission_disposition="rejected_before_persist",
+                rejection_code=code,
+            )
+
+
+async def _load_existing_chat_submission(
+    *,
+    principal: AuthPrincipal,
+    submission_id: str | None,
+    request_fingerprint: str | None,
+) -> ChatStreamResponse | None:
+    if submission_id is None or request_fingerprint is None:
+        return None
+    async with transaction() as conn:
+        existing = await repositories.get_chat_submission(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            submission_id=submission_id,
+        )
+    if existing is None:
+        return None
+    if existing.get("request_fingerprint_sha256") != request_fingerprint:
+        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
+    return _chat_stream_response_from_submission(existing)
+
+
+async def _admit_chat_submission(
+    *,
+    principal: AuthPrincipal,
+    submission_id: str,
+) -> ChatSubmissionResponse:
+    """Admit one already-persisted run without replaying chat creation work."""
+
+    async with transaction() as conn:
+        submission = await repositories.get_chat_submission(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            submission_id=submission_id,
+            for_update=True,
+        )
+        if submission is None:
+            raise HTTPException(status_code=404, detail="chat_submission_not_found")
+        if str(submission.get("state")) in {"rejected_before_persist", "needs_confirmation"}:
+            return _chat_submission_resolution(submission)
+        run_id = str(submission.get("run_id") or "")
+        if not run_id:
+            return _chat_submission_resolution(submission)
+        run = await repositories.get_authorized_run(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+            for_update=True,
+        )
+        if run is None:
+            raise HTTPException(status_code=404, detail="run_not_found")
+        if str(run.get("status") or "") != "queued":
+            if str(submission.get("state")) != "queued":
+                outcome = _chat_stream_response_from_submission(submission)
+                queued_outcome = outcome.model_copy(update={"status": "queued"})
+                await repositories.finalize_chat_submission(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    submission_id=submission_id,
+                    state="queued",
+                    outcome_json=queued_outcome.model_dump(mode="json"),
+                )
+                submission["state"] = "queued"
+                submission["outcome_json"] = queued_outcome.model_dump(mode="json")
+            return _chat_submission_resolution(submission)
+        execution_snapshot = repositories.copied_run_execution_snapshot(run.get("input_json"))
+        queue_payload = _validate_queue_payload_for_enqueue(
+            {
+                "tenant_id": principal.tenant_id,
+                "workspace_id": str(run["workspace_id"]),
+                "user_id": principal.user_id,
+                "session_id": str(run["session_id"]),
+                "run_id": run_id,
+                "agent_id": str(run["agent_id"]),
+                "skill_id": str(run["skill_id"]),
+                **execution_snapshot,
+            }
+        )
+        try:
+            queue_admission = await _enqueue_chat_run(queue_payload)
+        except Exception:
+            return _chat_submission_resolution(submission)
+        prior_outcome = _chat_stream_response_from_submission(submission)
+        queued_outcome = prior_outcome.model_copy(
+            update={
+                "status": "queued",
+                "queue_position": int(queue_admission.queue_position) or None,
+                "submission_id": submission_id,
+            }
+        )
+        if str(submission.get("state")) != "queued":
+            await repositories.append_event(
+                conn,
+                tenant_id=principal.tenant_id,
+                run_id=run_id,
+                event_type="queued",
+                stage="queue",
+                message="任务队列接纳完成",
+                payload={
+                    "visible_to_user": False,
+                    "source": "admin_runtime_queue",
+                    "queue_position": int(queue_admission.queue_position) or None,
+                    "queue_admission_ordinal": int(queue_admission.queue_admission_ordinal) or None,
+                    "queue_probe_source": str(queue_admission.source),
+                },
+            )
+            await repositories.finalize_chat_submission(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                submission_id=submission_id,
+                state="queued",
+                outcome_json=queued_outcome.model_dump(mode="json"),
+                queue_position=int(queue_admission.queue_position) or None,
+                queue_admission_ordinal=int(queue_admission.queue_admission_ordinal) or None,
+                queue_message_id=queue_admission.message_id,
+            )
+            submission["state"] = "queued"
+            submission["outcome_json"] = queued_outcome.model_dump(mode="json")
+        return _chat_submission_resolution(submission)
 
 
 async def _audit_capability_denial(
@@ -465,11 +683,42 @@ async def chat_stream(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="invalid_principal_user_id") from exc
     query_agent_id = _normalized_query_agent_id(agent_id)
+    submission_id = str(request.submission_id) if request.submission_id is not None else None
+    request_fingerprint = (
+        repositories.chat_submission_fingerprint(
+            {
+                "request": request.model_dump(mode="json", exclude={"submission_id"}),
+                "query_agent_id": query_agent_id,
+            },
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+        )
+        if submission_id is not None
+        else None
+    )
     requested_agent_id = request.agent_id or query_agent_id or "general-agent"
     if request.skill_id and not is_ai_admin(principal):
+        await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request_fingerprint=request_fingerprint,
+            workspace_id=request.workspace_id,
+            code="raw_skill_selector_forbidden",
+        )
+        if submission_id is not None:
+            raise _chat_submission_http_error(status_code=403, code="raw_skill_selector_forbidden")
         raise HTTPException(status_code=403, detail="raw_skill_selector_forbidden")
     requested_skill_id = request.skill_id if is_ai_admin(principal) else None
     if request.selected_skill is not None and request.skill_id:
+        await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request_fingerprint=request_fingerprint,
+            workspace_id=request.workspace_id,
+            code="skill_selector_conflict",
+        )
+        if submission_id is not None:
+            raise _chat_submission_http_error(status_code=400, code="skill_selector_conflict")
         raise HTTPException(status_code=400, detail="skill_selector_conflict")
     requested_agent_id, requested_skill_id = _normalize_request_selector(
         requested_agent_id,
@@ -478,7 +727,20 @@ async def chat_stream(
     )
     if request.selected_skill is not None:
         requested_skill_id = request.selected_skill.skill_id
-    requested_model_selection = _requested_model_selection(request)
+    try:
+        requested_model_selection = _requested_model_selection(request)
+    except HTTPException as exc:
+        code = _submission_code(exc.detail)
+        await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request_fingerprint=request_fingerprint,
+            workspace_id=request.workspace_id,
+            code=code,
+        )
+        if submission_id is not None:
+            raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
+        raise
     requested_model_id = requested_model_selection["id"] if requested_model_selection is not None else None
     requested_model_value = requested_model_selection["value"] if requested_model_selection is not None else None
     resolved_file_ids = _file_ids_from_request(request)
@@ -489,11 +751,41 @@ async def chat_stream(
         )
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")
+        await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request_fingerprint=request_fingerprint,
+            workspace_id=request.workspace_id,
+            code="capability_not_authorized",
+        )
+        if submission_id is not None:
+            raise _chat_submission_http_error(status_code=403, code="capability_not_authorized") from exc
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
+    existing_submission = await _load_existing_chat_submission(
+        principal=principal,
+        submission_id=submission_id,
+        request_fingerprint=request_fingerprint,
+    )
+    if existing_submission is not None:
+        return existing_submission
+    pending_submission_response: ChatStreamResponse | None = None
+    effective_workspace_id = request.workspace_id
     try:
         async with transaction() as conn:
+            if submission_id is not None and request_fingerprint is not None:
+                claimed_submission, created_submission = await repositories.claim_chat_submission(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    submission_id=submission_id,
+                    workspace_id=request.workspace_id,
+                    request_fingerprint_sha256=request_fingerprint,
+                )
+                if not created_submission:
+                    if claimed_submission.get("request_fingerprint_sha256") != request_fingerprint:
+                        raise HTTPException(status_code=409, detail="submission_payload_mismatch")
+                    return _chat_stream_response_from_submission(claimed_submission)
             continuation_session = None
-            effective_workspace_id = request.workspace_id
             if request.session_id:
                 continuation_session = await repositories.get_authorized_session(
                     conn,
@@ -561,13 +853,25 @@ async def chat_stream(
                         CapabilitySuggestionResponse.model_validate(item)
                         for item in decision_payload["suggestions"]
                     ]
-                    return ChatStreamResponse(
+                    confirmation_response = ChatStreamResponse(
                         session_id=request.session_id,
                         run_id=None,
                         status="needs_confirmation",
+                        submission_id=submission_id,
                         intent_decision=_intent_response(decision_payload, principal),
                         suggestions=suggestions,
                     )
+                    if submission_id is not None:
+                        await repositories.finalize_chat_submission(
+                            conn,
+                            tenant_id=principal.tenant_id,
+                            user_id=principal.user_id,
+                            submission_id=submission_id,
+                            state="needs_confirmation",
+                            workspace_id=effective_workspace_id,
+                            outcome_json=confirmation_response.model_dump(mode="json"),
+                        )
+                    return confirmation_response
                 resolved_agent_id = str(decision.agent_id)
                 resolved_skill_id = str(decision.skill_id)
             else:
@@ -796,15 +1100,86 @@ async def chat_stream(
                 message="已锁定 Skill 发布决策",
                 payload=_release_decision_event_payload(release_decision_payload, skill_id=resolved_skill_id),
             )
+            if submission_id is not None:
+                pending_submission_response = ChatStreamResponse(
+                    session_id=session_id,
+                    run_id=run_id,
+                    status="accepted_pending_enqueue",
+                    submission_id=submission_id,
+                    intent_decision=_intent_response(decision_payload, principal),
+                )
+                await repositories.finalize_chat_submission(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    submission_id=submission_id,
+                    state="accepted_pending_enqueue",
+                    workspace_id=effective_workspace_id,
+                    session_id=session_id,
+                    run_id=run_id,
+                    outcome_json=pending_submission_response.model_dump(mode="json"),
+                )
+    except HTTPException as exc:
+        code = _submission_code(exc.detail)
+        if 400 <= exc.status_code < 500:
+            await _persist_pre_persistence_rejection(
+                principal=principal,
+                submission_id=submission_id,
+                request_fingerprint=request_fingerprint,
+                workspace_id=effective_workspace_id,
+                code=code,
+            )
+        if submission_id is not None and 400 <= exc.status_code < 500:
+            raise _chat_submission_http_error(status_code=exc.status_code, code=code) from exc
+        raise
     except repositories.RepositoryAuthorizationError as exc:
         await _audit_capability_denial(principal, exc, source="chat_stream")
+        await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request_fingerprint=request_fingerprint,
+            workspace_id=effective_workspace_id,
+            code="capability_not_authorized",
+        )
+        if submission_id is not None:
+            raise _chat_submission_http_error(status_code=403, code="capability_not_authorized") from exc
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     except RepositoryNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        code = str(exc)
+        await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request_fingerprint=request_fingerprint,
+            workspace_id=effective_workspace_id,
+            code=code,
+        )
+        if submission_id is not None:
+            raise _chat_submission_http_error(status_code=404, code=code) from exc
+        raise HTTPException(status_code=404, detail=code) from exc
     except SkillVersionMaterializationError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        code = str(exc)
+        await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request_fingerprint=request_fingerprint,
+            workspace_id=effective_workspace_id,
+            code=code,
+        )
+        if submission_id is not None:
+            raise _chat_submission_http_error(status_code=409, code=code) from exc
+        raise HTTPException(status_code=409, detail=code) from exc
     except RepositoryConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        code = str(exc)
+        await _persist_pre_persistence_rejection(
+            principal=principal,
+            submission_id=submission_id,
+            request_fingerprint=request_fingerprint,
+            workspace_id=effective_workspace_id,
+            code=code,
+        )
+        if submission_id is not None:
+            raise _chat_submission_http_error(status_code=409, code=code) from exc
+        raise HTTPException(status_code=409, detail=code) from exc
     queue_payload = _validate_queue_payload_for_enqueue(
         {
             **queue_payload,
@@ -814,6 +1189,21 @@ async def chat_stream(
             "context_snapshot": context_ref,
         }
     )
+    if submission_id is not None:
+        try:
+            admitted = await _admit_chat_submission(principal=principal, submission_id=submission_id)
+        except HTTPException:
+            raise
+        except Exception:
+            if pending_submission_response is None:
+                raise
+            return pending_submission_response
+        return admitted.outcome or pending_submission_response or ChatStreamResponse(
+            session_id=session_id,
+            run_id=run_id,
+            status="accepted_pending_enqueue",
+            submission_id=submission_id,
+        )
     queue_admission = await _enqueue_chat_run(queue_payload)
     queue_position = int(queue_admission.queue_position)
     async with transaction() as conn:
@@ -840,3 +1230,32 @@ async def chat_stream(
         queue_insight=await get_queue_insight(principal.tenant_id, user_id=principal.user_id),
         intent_decision=_intent_response(decision_payload, principal),
     )
+
+
+@router.get("/chat/submissions/{submission_id}", response_model=ChatSubmissionResponse)
+async def get_chat_submission(
+    submission_id: UUID,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> ChatSubmissionResponse:
+    """Resolve a durable client submission without inferring from session history."""
+
+    async with transaction() as conn:
+        submission = await repositories.get_chat_submission(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            submission_id=str(submission_id),
+        )
+    if submission is None:
+        raise HTTPException(status_code=404, detail="chat_submission_not_found")
+    return _chat_submission_resolution(submission)
+
+
+@router.post("/chat/submissions/{submission_id}/retry-admission", response_model=ChatSubmissionResponse)
+async def retry_chat_submission_admission(
+    submission_id: UUID,
+    principal: AuthPrincipal = Depends(require_principal),
+) -> ChatSubmissionResponse:
+    """Explicitly retry queue admission for one already-created run only."""
+
+    return await _admit_chat_submission(principal=principal, submission_id=str(submission_id))

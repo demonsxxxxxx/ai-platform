@@ -48,6 +48,43 @@ from app.repositories import (
 )
 
 
+def test_chat_submission_fingerprint_is_canonical_and_scope_bound():
+    first = repositories.chat_submission_fingerprint(
+        {
+            "message": "same message",
+            "workspace_id": "default",
+            "file_ids": ["file-a", "file-b"],
+            "input": {"b": 2, "a": 1},
+        },
+        tenant_id="tenant-a",
+        user_id="user-a",
+    )
+    reordered = repositories.chat_submission_fingerprint(
+        {
+            "input": {"a": 1, "b": 2},
+            "file_ids": ["file-a", "file-b"],
+            "message": "same message",
+            "workspace_id": "default",
+        },
+        tenant_id="tenant-a",
+        user_id="user-a",
+    )
+    changed_scope = repositories.chat_submission_fingerprint(
+        {
+            "input": {"a": 1, "b": 2},
+            "file_ids": ["file-a", "file-b"],
+            "message": "same message",
+            "workspace_id": "default",
+        },
+        tenant_id="tenant-b",
+        user_id="user-a",
+    )
+
+    assert first == reordered
+    assert first != changed_scope
+    assert len(first) == 64
+
+
 class FakeCursor:
     async def fetchone(self):
         return {"count": 2, "id": "step-a"}

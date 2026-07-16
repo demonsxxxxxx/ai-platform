@@ -90,26 +90,12 @@ function getSelectedSkillRecoverableCode(
   );
 }
 
-const PRE_PERSISTENCE_CHAT_REJECTION_CODES = new Set<string>([
-  "invalid_principal_user_id",
-  "raw_skill_selector_forbidden",
-  "skill_selector_conflict",
-  "model_id_not_available",
-  "capability_not_authorized",
-  "session_not_found",
-  "session_workspace_mismatch",
-  "skill_selection_stale",
-  "file_required_for_skill",
-  "skill_version_not_materializable",
-]);
-
 function isProvenPrePersistenceChatRejection(error: unknown): boolean {
   return (
     error instanceof ApiRequestError &&
     error.status >= 400 &&
     error.status < 500 &&
-    typeof error.code === "string" &&
-    PRE_PERSISTENCE_CHAT_REJECTION_CODES.has(error.code)
+    error.submissionDisposition === "rejected_before_persist"
   );
 }
 
@@ -185,6 +171,78 @@ type AuthScope = readonly [tenantId: string, userId: string];
 
 interface SubmissionUncertainty {
   sessionId: string | null;
+  submissionId: string;
+  owner: AuthScope;
+  previousMessages?: Message[];
+}
+
+interface PersistedSubmissionReference {
+  version: 1;
+  owner: AuthScope;
+  submissionId: string;
+}
+
+const CHAT_SUBMISSION_STORAGE_KEY = "ai_platform_chat_submission_references_v1";
+
+function readPersistedSubmissionReferences(): PersistedSubmissionReference[] {
+  try {
+    const raw = localStorage.getItem(CHAT_SUBMISSION_STORAGE_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((item): PersistedSubmissionReference[] => {
+      if (
+        item !== null &&
+        typeof item === "object" &&
+        (item as { version?: unknown }).version === 1 &&
+        Array.isArray((item as { owner?: unknown }).owner) &&
+        (item as { owner: unknown[] }).owner.length === 2 &&
+        typeof (item as { owner: unknown[] }).owner[0] === "string" &&
+        typeof (item as { owner: unknown[] }).owner[1] === "string" &&
+        typeof (item as { submissionId?: unknown }).submissionId === "string"
+      ) {
+        return [
+          {
+            version: 1,
+            owner: [
+              (item as { owner: string[] }).owner[0],
+              (item as { owner: string[] }).owner[1],
+            ],
+            submissionId: (item as { submissionId: string }).submissionId,
+          },
+        ];
+      }
+      return [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function writePersistedSubmissionReferences(references: PersistedSubmissionReference[]): void {
+  try {
+    localStorage.setItem(CHAT_SUBMISSION_STORAGE_KEY, JSON.stringify(references));
+  } catch {
+    // A private-mode quota failure cannot make an unknown mutation safe to retry.
+  }
+}
+
+function persistSubmissionReference(reference: PersistedSubmissionReference): void {
+  const retained = readPersistedSubmissionReferences().filter(
+    (candidate) => !authScopesEqual(candidate.owner, reference.owner),
+  );
+  writePersistedSubmissionReferences([...retained, reference]);
+}
+
+function removePersistedSubmissionReference(owner: AuthScope, submissionId: string): void {
+  writePersistedSubmissionReferences(
+    readPersistedSubmissionReferences().filter(
+      (candidate) =>
+        !(
+          authScopesEqual(candidate.owner, owner) &&
+          candidate.submissionId === submissionId
+        ),
+    ),
+  );
 }
 
 function authScopesEqual(left: AuthScope | null, right: AuthScope | null): boolean {
@@ -269,6 +327,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const submissionTokenRef = useRef(0);
   const authScopeRef = useRef<AuthScope | null>(null);
   const submissionUncertaintyRef = useRef<SubmissionUncertainty | null>(null);
+  const [pendingSubmissionId, setPendingSubmissionId] = useState<string | null>(null);
 
   // Stream version to invalidate stale SSE events after clearMessages
   const streamVersionRef = useRef(0);
@@ -933,6 +992,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             reconstructedMessages = prepared.messages;
             streamingMessageId = prepared.streamingMessageId;
           }
+          messagesRef.current = reconstructedMessages;
           setMessages(reconstructedMessages);
 
           const historyMessageId = historyCurrentRunId
@@ -976,6 +1036,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                     historyCurrentRunId,
                     historyMessageId || historyCurrentRunId,
                   );
+                  messagesRef.current = reconstructedMessages;
                   setMessages(reconstructedMessages);
                   exactAssistant = reconstructedMessages.find(
                     (message) =>
@@ -1028,13 +1089,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                 console.warn("[loadHistory] SSE reconciliation failed");
               });
             });
-          }
-
-          if (
-            submissionUncertaintyRef.current?.sessionId === targetSessionId &&
-            !statusUnavailable
-          ) {
-            submissionUncertaintyRef.current = null;
           }
 
           // Return sessionConfig *before* any SSE reconnect so that the
@@ -1134,6 +1188,17 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       lastHistoryTimestampRef.current = null;
 
       const previousMessages = messagesRef.current;
+      const submissionOwner = authScopeRef.current;
+      if (submissionOwner === null) {
+        finishCurrentSubmission();
+        return { status: "failed" };
+      }
+      const submissionId = uuid();
+      persistSubmissionReference({
+        version: 1,
+        owner: submissionOwner,
+        submissionId,
+      });
       const {
         messages: optimisticMessages,
         userMessageId,
@@ -1145,6 +1210,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           attachments,
         });
 
+      messagesRef.current = optimisticMessages;
       setMessages(optimisticMessages);
       setIsLoading(true);
       setError(null);
@@ -1176,6 +1242,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           disabledSkills,
           disabledMcpTools,
           selectedSkill,
+          submissionId,
           requestAgentId,
         );
 
@@ -1183,7 +1250,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return { status: "failed" };
         }
 
+        // An old backend silently ignores the optional key. A concrete legacy
+        // response can still drive its existing session/run lifecycle, but it
+        // never enables submission resolver/retry recovery; transport loss
+        // remains fail-closed because the persisted key cannot resolve.
+        const protocolEchoed = submitData.submission_id === submissionId;
+
         if (isChatStreamNeedsConfirmation(submitData)) {
+          removePersistedSubmissionReference(submissionOwner, submissionId);
           pendingProjectIdRef.current = null;
           const confirmationMessage = formatConfirmationMessage(
             submitData.suggestions,
@@ -1205,6 +1279,38 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           setIsLoading(false);
           finishCurrentSubmission();
           return { status: "accepted" };
+        }
+
+        if (submitData.status === "accepted_pending_enqueue") {
+          if (!protocolEchoed) {
+            throw new Error("chat_submission_protocol_unavailable");
+          }
+          const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
+            defaultValue: i18n.t("chat.requestFailed"),
+          });
+          const pendingMessages = optimisticMessages.filter(
+            (message) => message.id !== assistantMessageId,
+          );
+          messagesRef.current = pendingMessages;
+          setMessages(pendingMessages);
+          if (!requestSessionId && submitData.session_id) {
+            sessionIdRef.current = submitData.session_id;
+            setSessionId(submitData.session_id);
+          }
+          submissionUncertaintyRef.current = {
+            sessionId: submitData.session_id || requestSessionId,
+            submissionId,
+            owner: submissionOwner,
+            previousMessages,
+          };
+          setPendingSubmissionId(submissionId);
+          setError(statusUnavailable);
+          toast.error(statusUnavailable);
+          setConnectionStatus("disconnected");
+          setIsInitializingSandbox(false);
+          setIsLoading(false);
+          finishCurrentSubmission();
+          return { status: "failed" };
         }
 
         const newSessionId = submitData.session_id;
@@ -1340,6 +1446,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           throw new Error("Missing session_id or run_id");
         }
         admissionAccepted = true;
+        removePersistedSubmissionReference(submissionOwner, submissionId);
+        setPendingSubmissionId(null);
 
         isReconnectFromHistoryRef.current = false;
         const ctx = createSSEContext();
@@ -1385,6 +1493,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         const prePersistenceRejection =
           !admissionAccepted && isProvenPrePersistenceChatRejection(err);
         if (prePersistenceRejection) {
+          removePersistedSubmissionReference(submissionOwner, submissionId);
+          setPendingSubmissionId(null);
           messagesRef.current = previousMessages;
           setMessages(previousMessages);
           const recoverableCode = selectedSkill
@@ -1421,7 +1531,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           setMessages(uncertainMessages);
           submissionUncertaintyRef.current = {
             sessionId: requestSessionId,
+            submissionId,
+            owner: submissionOwner,
+            previousMessages,
           };
+          setPendingSubmissionId(submissionId);
           setError(statusUnavailable);
           toast.error(statusUnavailable);
         } else {
@@ -1563,8 +1677,141 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     if (previousAuthScope !== null || authScope === null) {
       clearMessages();
       submissionUncertaintyRef.current = null;
+      setPendingSubmissionId(null);
     }
   }, [authScope, clearMessages]);
+
+  const resolvePersistedSubmission = useCallback(
+    async (owner: AuthScope, submissionId: string) => {
+      const currentScope = authScopeRef.current;
+      if (!authScopesEqual(currentScope, owner)) return;
+      const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
+        defaultValue: i18n.t("chat.requestFailed"),
+      });
+      try {
+        const resolution = await sessionApi.getChatSubmission(submissionId);
+        if (!authScopesEqual(authScopeRef.current, owner)) return;
+        const outcome = resolution.outcome;
+        if (resolution.state === "rejected_before_persist") {
+          const previous = submissionUncertaintyRef.current?.previousMessages || [];
+          messagesRef.current = previous;
+          setMessages(previous);
+          submissionUncertaintyRef.current = null;
+          setPendingSubmissionId(null);
+          removePersistedSubmissionReference(owner, submissionId);
+          return;
+        }
+        if (
+          resolution.state === "queued" &&
+          outcome?.session_id &&
+          outcome.run_id
+        ) {
+          submissionUncertaintyRef.current = {
+            sessionId: outcome.session_id,
+            submissionId,
+            owner,
+          };
+          setPendingSubmissionId(submissionId);
+          const restored = await loadHistory(outcome.session_id, outcome.run_id);
+          if (
+            restored !== null &&
+            authScopesEqual(authScopeRef.current, owner) &&
+            submissionUncertaintyRef.current?.submissionId === submissionId
+          ) {
+            submissionUncertaintyRef.current = null;
+            setPendingSubmissionId(null);
+            removePersistedSubmissionReference(owner, submissionId);
+          }
+          return;
+        }
+        if (resolution.state === "needs_confirmation") {
+          submissionUncertaintyRef.current = null;
+          setPendingSubmissionId(null);
+          removePersistedSubmissionReference(owner, submissionId);
+          return;
+        }
+        submissionUncertaintyRef.current = {
+          sessionId: outcome?.session_id || null,
+          submissionId,
+          owner,
+        };
+        setPendingSubmissionId(submissionId);
+        setError(statusUnavailable);
+      } catch {
+        // Missing/old-backend resolver results are unknown, never proof that
+        // the original POST did not persist.
+        if (authScopesEqual(authScopeRef.current, owner)) {
+          submissionUncertaintyRef.current = {
+            sessionId: submissionUncertaintyRef.current?.sessionId || null,
+            submissionId,
+            owner,
+            previousMessages: submissionUncertaintyRef.current?.previousMessages,
+          };
+          setPendingSubmissionId(submissionId);
+          setError(statusUnavailable);
+        }
+      }
+    },
+    [loadHistory],
+  );
+
+  const retryPendingSubmission = useCallback(async (): Promise<void> => {
+    const pending = submissionUncertaintyRef.current;
+    if (!pending || !authScopesEqual(authScopeRef.current, pending.owner)) return;
+    const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
+      defaultValue: i18n.t("chat.requestFailed"),
+    });
+    try {
+      const resolution = await sessionApi.retryChatSubmissionAdmission(
+        pending.submissionId,
+      );
+      if (!authScopesEqual(authScopeRef.current, pending.owner)) return;
+      if (resolution.state === "rejected_before_persist") {
+        const previous = pending.previousMessages || [];
+        messagesRef.current = previous;
+        setMessages(previous);
+        submissionUncertaintyRef.current = null;
+        setPendingSubmissionId(null);
+        removePersistedSubmissionReference(pending.owner, pending.submissionId);
+        return;
+      }
+      if (
+        resolution.state === "queued" &&
+        resolution.outcome?.session_id &&
+        resolution.outcome.run_id
+      ) {
+        const restored = await loadHistory(
+          resolution.outcome.session_id,
+          resolution.outcome.run_id,
+        );
+        if (
+          restored !== null &&
+          authScopesEqual(authScopeRef.current, pending.owner) &&
+          submissionUncertaintyRef.current?.submissionId === pending.submissionId
+        ) {
+          submissionUncertaintyRef.current = null;
+          setPendingSubmissionId(null);
+          removePersistedSubmissionReference(pending.owner, pending.submissionId);
+        }
+        return;
+      }
+      setError(statusUnavailable);
+    } catch {
+      if (authScopesEqual(authScopeRef.current, pending.owner)) {
+        setError(statusUnavailable);
+      }
+    }
+  }, [loadHistory]);
+
+  useEffect(() => {
+    if (authScope === null) return;
+    const persisted = readPersistedSubmissionReferences().find((candidate) =>
+      authScopesEqual(candidate.owner, authScope),
+    );
+    if (persisted) {
+      void resolvePersistedSubmission(persisted.owner, persisted.submissionId);
+    }
+  }, [authScope, resolvePersistedSubmission]);
 
   // Reconnect function
   const handleReconnectSSE = reconcileCurrentRun;
@@ -1628,6 +1875,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     isInitializingSandbox,
     sandboxError,
     sendMessage,
+    canRetryPendingSubmission: pendingSubmissionId !== null,
+    retryPendingSubmission,
     stopGeneration,
     clearMessages,
     loadHistory,
