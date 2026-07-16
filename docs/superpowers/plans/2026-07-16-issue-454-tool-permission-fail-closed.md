@@ -271,3 +271,24 @@ semantics without new dependencies. RED coverage includes fixed-clock grant
 boundaries, partial consumption rollback, handed-off crash recovery, route
 reconciliation, cancel ordering, durable terminal metrics, and Unicode ID
 controls.
+
+## Generation 4h repair boundary
+
+`cancel_requested` is a soft cancellation intent, never a completed terminal
+result.  The run-first terminalization seam may upgrade that soft intent only
+when `cancel_run` supplies the concrete `cancelled` target; it never replaces
+an already staged `failed` or `cancelled` target with a conflicting terminal
+intent.  Callers use the returned actual terminal status, so a 50+1 drain
+cannot report cancellation, release a sandbox, or emit a worker outcome before
+the sole finalizer writes `cancelled`.
+
+Parent recovery remains deliberately narrow.  Worker maintenance retries the
+existing idempotent parent finalizer for a bounded, tenant-scoped parent work
+item once all server-owned child steps are terminal but the parent-finalized
+fact is absent.  This covers a skipped parent lock or concurrent last-child
+snapshot without introducing another scheduler or a schema change.  The
+parent-row lock and append predicates remain the exact-once guard for the
+parent event and audit, including when a generic permission drain terminalized
+the parent first.  RED coverage is limited to the 51-row soft-cancel upgrade,
+conflicting final intents, concurrent-last-child retry, and generic-parent
+terminalization recovery repros; non-Critical/Important follow-ups are deferred.

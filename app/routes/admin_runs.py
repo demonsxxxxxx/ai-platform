@@ -178,7 +178,7 @@ async def admin_run_cancel(
             run_id=run_id,
             transaction_factory=transaction,
         )
-        if progress and progress.completed:
+        if progress is not None and progress.is_terminal():
             progressed_status = str(progress.status or result["status"])
             if result["status"] not in {"succeeded", "failed", "cancelled"} or progressed_status in {
                 "failed",

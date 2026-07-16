@@ -6137,6 +6137,8 @@ async def test_finalize_multi_agent_parent_run_success_writes_public_result_even
                 return Cursor(rows=parent_steps)
             if normalized.startswith("select child.id"):
                 return Cursor(rows=[])
+            if "has_parent_finalized_event" in normalized:
+                return Cursor(row={"has_parent_finalized_event": False, "has_parent_finalized_audit": False})
             if normalized.startswith("update runs"):
                 return Cursor(row={"id": "run-parent", "status": "succeeded"})
             raise AssertionError(f"unexpected sql: {normalized}")
@@ -6228,6 +6230,8 @@ async def test_finalize_multi_agent_parent_run_failure_and_cancel_statuses(monke
                 return Cursor(rows=self.parent_statuses["steps"])
             if normalized.startswith("select child.id"):
                 return Cursor(rows=[])
+            if "has_parent_finalized_event" in normalized:
+                return Cursor(row={"has_parent_finalized_event": False, "has_parent_finalized_audit": False})
             if normalized.startswith("update runs"):
                 statuses_seen.append(params[0])
                 return Cursor(row={"id": "run-parent", "status": params[0]})
@@ -7303,8 +7307,28 @@ def test_cancel_run_records_platform_cancel_request(monkeypatch):
             "cancel_requested",
             0,
         ),
+        (
+            "app.routes.runs",
+            "request_run_cancel",
+            "/api/ai/runs/run_active/cancel",
+            False,
+            ToolPermissionTerminalizationProgress(False, "cancel_requested"),
+            ToolPermissionTerminalizationProgress(True, "cancel_requested"),
+            "cancel_requested",
+            0,
+        ),
+        (
+            "app.routes.admin_runs",
+            "request_admin_run_cancel",
+            "/api/ai/admin/runs/run_active/cancel",
+            True,
+            ToolPermissionTerminalizationProgress(False, "cancel_requested"),
+            ToolPermissionTerminalizationProgress(True, "cancel_requested"),
+            "cancel_requested",
+            0,
+        ),
     ],
-    ids=["owner-final", "admin-final", "owner-partial", "admin-partial"],
+    ids=["owner-final", "admin-final", "owner-partial", "admin-partial", "owner-soft-intent", "admin-soft-intent"],
 )
 def test_cancel_routes_reconcile_only_the_final_typed_terminalization_progress(
     monkeypatch,

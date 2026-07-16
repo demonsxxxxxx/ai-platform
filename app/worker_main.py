@@ -168,6 +168,22 @@ async def progress_pending_tool_permission_terminalizations_for_worker(
             run_id=run_id,
             transaction_factory=transaction,
         )
+    async with transaction() as conn:
+        parent_recovery_candidates = await repositories.list_multi_agent_parent_runs_requiring_finalization(
+            conn,
+            limit=limit,
+        )
+    for candidate in parent_recovery_candidates:
+        tenant_id = str(candidate.get("tenant_id") or "")
+        parent_run_id = str(candidate.get("run_id") or "")
+        if not tenant_id or not parent_run_id:
+            continue
+        async with transaction() as conn:
+            await repositories.finalize_multi_agent_parent_run_if_ready(
+                conn,
+                tenant_id=tenant_id,
+                parent_run_id=parent_run_id,
+            )
     return progress
 
 

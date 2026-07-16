@@ -4715,6 +4715,63 @@ async def list_multi_agent_terminal_children_requiring_reconciliation(
     return list(await cursor.fetchall())
 
 
+async def list_multi_agent_parent_runs_requiring_finalization(
+    conn: AsyncConnection,
+    *,
+    limit: int = TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT,
+) -> list[dict[str, Any]]:
+    """Return bounded, ready multi-agent parents whose exact-once rollup facts are still absent."""
+
+    bounded_limit = max(1, min(int(limit), TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT))
+    cursor = await conn.execute(
+        """
+        select parent.tenant_id, parent.id as run_id
+        from runs parent
+        where parent.copied_from_run_id is null
+          and (
+            parent.status in ('running', 'succeeded', 'failed', 'cancelled')
+            or (parent.status = 'queued' and parent.cancel_requested_at is not null)
+          )
+          and (
+            parent.input_json#>>'{input,execution_mode}' = 'multi_agent'
+            or parent.input_json->>'execution_mode' = 'multi_agent'
+          )
+          and exists (
+            select 1 from run_steps parent_step
+            where parent_step.tenant_id = parent.tenant_id
+              and parent_step.run_id = parent.id
+          )
+          and not exists (
+            select 1 from run_steps parent_step
+            where parent_step.tenant_id = parent.tenant_id
+              and parent_step.run_id = parent.id
+              and parent_step.status not in ('succeeded', 'failed', 'cancelled')
+          )
+          and (
+            not exists (
+              select 1 from run_events parent_event
+              where parent_event.tenant_id = parent.tenant_id
+                and parent_event.run_id = parent.id
+                and parent_event.event_type = 'multi_agent_parent_finalized'
+            )
+            or not exists (
+              select 1 from audit_logs parent_audit
+              where parent_audit.tenant_id = parent.tenant_id
+                and parent_audit.target_type = 'run'
+                and parent_audit.target_id = parent.id
+                and parent_audit.action = 'run.multi_agent.parent.finalize'
+            )
+          )
+        order by coalesce(parent.finished_at, parent.updated_at, parent.started_at, parent.created_at) asc,
+                 parent.tenant_id asc, parent.id asc
+        limit %s
+        for update of parent skip locked
+        """,
+        (bounded_limit,),
+    )
+    return list(await cursor.fetchall())
+
+
 async def _stage_run_tool_permission_terminalization(
     conn: AsyncConnection,
     *,
@@ -4733,21 +4790,29 @@ async def _stage_run_tool_permission_terminalization(
     cursor = await conn.execute(
         """
         update runs
-        set permission_terminalization_target = coalesce(permission_terminalization_target, %s),
+        set permission_terminalization_target = case
+              when permission_terminalization_target = 'cancel_requested'
+                   and %s = 'cancelled' then 'cancelled'
+              else coalesce(permission_terminalization_target, %s)
+            end,
             permission_terminalization_reason = case
-              when permission_terminalization_target is null then %s
+              when permission_terminalization_target is null
+                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
               else permission_terminalization_reason
             end,
             permission_terminalization_result_json = case
-              when permission_terminalization_target is null then %s::jsonb
+              when permission_terminalization_target is null
+                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s::jsonb
               else permission_terminalization_result_json
             end,
             permission_terminalization_error_code = case
-              when permission_terminalization_target is null then %s
+              when permission_terminalization_target is null
+                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
               else permission_terminalization_error_code
             end,
             permission_terminalization_error_message = case
-              when permission_terminalization_target is null then %s
+              when permission_terminalization_target is null
+                   or (permission_terminalization_target = 'cancel_requested' and %s = 'cancelled') then %s
               else permission_terminalization_error_message
             end
         where tenant_id = %s
@@ -4759,9 +4824,14 @@ async def _stage_run_tool_permission_terminalization(
         """,
         (
             target_status,
+            target_status,
+            target_status,
             terminal_reason,
+            target_status,
             dumps_json(result_json or {}),
+            target_status,
             error_code,
+            target_status,
             error_message,
             tenant_id,
             run_id,
@@ -4933,7 +5003,7 @@ async def progress_run_tool_permission_terminalization(
     if finalized is None:
         return ToolPermissionTerminalizationProgress(completed=False, status=target_status)
     if target_status not in {"failed", "cancelled"}:
-        return ToolPermissionTerminalizationProgress(completed=True, status=target_status)
+        return ToolPermissionTerminalizationProgress(completed=False, status="cancel_requested")
     result_payload = (
         staged.get("permission_terminalization_result_json")
         if isinstance(staged.get("permission_terminalization_result_json"), dict)
@@ -7787,9 +7857,8 @@ async def finalize_multi_agent_parent_run_if_ready(
     if parent_run.get("copied_from_run_id"):
         return None
     parent_status = str(parent_run.get("status") or "")
-    if parent_status in TERMINAL_RUN_STATUSES:
-        return None
-    if parent_status != "running" and parent_run.get("cancel_requested_at") is None:
+    parent_is_terminal = parent_status in TERMINAL_RUN_STATUSES
+    if not parent_is_terminal and parent_status != "running" and parent_run.get("cancel_requested_at") is None:
         return None
     execution_input = _run_execution_input_from_row(parent_run)
     if str(execution_input.get("execution_mode") or "") != "multi_agent":
@@ -7811,7 +7880,7 @@ async def finalize_multi_agent_parent_run_if_ready(
         return None
     if _multi_agent_parent_has_open_dispatch(steps):
         return None
-    target_status = _multi_agent_parent_status(parent_run, steps)
+    target_status = parent_status if parent_is_terminal else _multi_agent_parent_status(parent_run, steps)
     if target_status is None:
         return None
     active_cursor = await conn.execute(
@@ -7844,58 +7913,82 @@ async def finalize_multi_agent_parent_run_if_ready(
     safe_triggered_by = sanitize_public_text(triggered_by_child_run_id)
     if safe_triggered_by:
         result_json["multi_agent"]["triggered_by_child_run_id"] = safe_triggered_by
-    if target_status == "succeeded":
-        terminal_written = await complete_run(
-            conn,
-            tenant_id=tenant_id,
-            run_id=parent_run_id,
-            result_json=result_json,
-        )
-        if not terminal_written:
-            blocked_reason = await classify_success_commit_block(
+    terminal_written: bool | ToolPermissionTerminalizationProgress = parent_is_terminal
+    if not parent_is_terminal:
+        if target_status == "succeeded":
+            terminal_written = await complete_run(
                 conn,
                 tenant_id=tenant_id,
                 run_id=parent_run_id,
+                result_json=result_json,
             )
-            if blocked_reason == "tool_permission_pending":
-                terminal_written = await fail_run(
+            if not terminal_written:
+                blocked_reason = await classify_success_commit_block(
                     conn,
                     tenant_id=tenant_id,
                     run_id=parent_run_id,
-                    error_code="tool_permission_pending",
-                    error_message="A pending tool-permission request blocked successful completion.",
-                    result_json={
-                        **result_json,
-                        "message": "A pending tool-permission request blocked successful completion.",
-                        "error_code": "tool_permission_pending",
-                    },
                 )
-                target_status = "failed"
-            elif blocked_reason == "cancel_requested":
-                terminal_written = await cancel_run(
-                    conn,
-                    tenant_id=tenant_id,
-                    run_id=parent_run_id,
-                    result_json={"message": "任务已取消", "multi_agent": result_json["multi_agent"]},
-                )
-                target_status = "cancelled"
-    elif target_status == "failed":
-        terminal_written = await fail_run(
-            conn,
-            tenant_id=tenant_id,
-            run_id=parent_run_id,
-            error_code="multi_agent_child_failed",
-            error_message="Multi-agent child step failed",
-            result_json=result_json,
-        )
-    else:
-        terminal_written = await cancel_run(
-            conn,
-            tenant_id=tenant_id,
-            run_id=parent_run_id,
-            result_json=result_json,
-        )
+                if blocked_reason == "tool_permission_pending":
+                    terminal_written = await fail_run(
+                        conn,
+                        tenant_id=tenant_id,
+                        run_id=parent_run_id,
+                        error_code="tool_permission_pending",
+                        error_message="A pending tool-permission request blocked successful completion.",
+                        result_json={
+                            **result_json,
+                            "message": "A pending tool-permission request blocked successful completion.",
+                            "error_code": "tool_permission_pending",
+                        },
+                    )
+                    target_status = "failed"
+                elif blocked_reason == "cancel_requested":
+                    terminal_written = await cancel_run(
+                        conn,
+                        tenant_id=tenant_id,
+                        run_id=parent_run_id,
+                        result_json={"message": "任务已取消", "multi_agent": result_json["multi_agent"]},
+                    )
+                    target_status = "cancelled"
+        elif target_status == "failed":
+            terminal_written = await fail_run(
+                conn,
+                tenant_id=tenant_id,
+                run_id=parent_run_id,
+                error_code="multi_agent_child_failed",
+                error_message="Multi-agent child step failed",
+                result_json=result_json,
+            )
+        else:
+            terminal_written = await cancel_run(
+                conn,
+                tenant_id=tenant_id,
+                run_id=parent_run_id,
+                result_json=result_json,
+            )
     if not terminal_written:
+        return None
+    facts_cursor = await conn.execute(
+        """
+        select
+          exists (
+            select 1 from run_events
+            where tenant_id = %s and run_id = %s and event_type = 'multi_agent_parent_finalized'
+          ) as has_parent_finalized_event,
+          exists (
+            select 1 from audit_logs
+            where tenant_id = %s
+              and target_type = 'run'
+              and target_id = %s
+              and action = 'run.multi_agent.parent.finalize'
+          ) as has_parent_finalized_audit
+        """,
+        (tenant_id, parent_run_id, tenant_id, parent_run_id),
+    )
+    parent_facts = await facts_cursor.fetchone() or {}
+    has_parent_event = bool(parent_facts.get("has_parent_finalized_event"))
+    has_parent_audit = bool(parent_facts.get("has_parent_finalized_audit"))
+    if has_parent_event and has_parent_audit:
         return None
     event_payload: dict[str, Any] = {
         "visible_to_user": False,
@@ -7904,30 +7997,34 @@ async def finalize_multi_agent_parent_run_if_ready(
     }
     if safe_triggered_by:
         event_payload["triggered_by_child_run_id"] = safe_triggered_by
-    event_id = await append_event(
-        conn,
-        tenant_id=tenant_id,
-        run_id=parent_run_id,
-        trace_id=parent_run.get("trace_id"),
-        event_type="multi_agent_parent_finalized",
-        stage="control",
-        message=_parent_multi_agent_message(target_status),
-        visible_to_user=False,
-        payload=event_payload,
-    )
+    event_id = None
+    if not has_parent_event:
+        event_id = await append_event(
+            conn,
+            tenant_id=tenant_id,
+            run_id=parent_run_id,
+            trace_id=parent_run.get("trace_id"),
+            event_type="multi_agent_parent_finalized",
+            stage="control",
+            message=_parent_multi_agent_message(target_status),
+            visible_to_user=False,
+            payload=event_payload,
+        )
     audit_payload: dict[str, Any] = {"status": target_status, "counts": counts}
     if safe_triggered_by:
         audit_payload["triggered_by_child_run_id"] = safe_triggered_by
-    audit_id = await append_audit_log(
-        conn,
-        tenant_id=tenant_id,
-        user_id=None,
-        action="run.multi_agent.parent.finalize",
-        target_type="run",
-        target_id=parent_run_id,
-        trace_id=parent_run.get("trace_id"),
-        payload_json=audit_payload,
-    )
+    audit_id = None
+    if not has_parent_audit:
+        audit_id = await append_audit_log(
+            conn,
+            tenant_id=tenant_id,
+            user_id=None,
+            action="run.multi_agent.parent.finalize",
+            target_type="run",
+            target_id=parent_run_id,
+            trace_id=parent_run.get("trace_id"),
+            payload_json=audit_payload,
+        )
     return {
         "parent_run_id": parent_run_id,
         "status": target_status,
@@ -8861,13 +8958,13 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
         if staged is not None
         else None
     )
-    cancelled = bool(progress and progress.completed and progress.status == "cancelled")
+    actual_terminal_status = progress.status if progress is not None and progress.is_terminal() else None
     active_sandbox_leases = await list_active_sandbox_leases_for_run(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
     )
-    status = "cancelled" if cancelled or row["status"] == "cancelled" else "cancel_requested"
+    status = actual_terminal_status or ("cancelled" if row["status"] == "cancelled" else "cancel_requested")
     await append_audit_log(
         conn,
         tenant_id=tenant_id,
@@ -8965,7 +9062,8 @@ async def request_admin_run_cancel(
         if staged is not None
         else None
     )
-    result_status = "cancelled" if (progress and progress.completed and progress.status == "cancelled") or row["status"] == "cancelled" else "cancel_requested"
+    actual_terminal_status = progress.status if progress is not None and progress.is_terminal() else None
+    result_status = actual_terminal_status or ("cancelled" if row["status"] == "cancelled" else "cancel_requested")
     active_sandbox_leases = await list_active_sandbox_leases_for_run(
         conn,
         tenant_id=tenant_id,
@@ -9711,6 +9809,9 @@ async def fail_run(
     )
     if staged is None:
         return ToolPermissionTerminalizationProgress(completed=False, status=None)
+    staged_target = str(staged.get("permission_terminalization_target") or "")
+    if staged_target != "failed":
+        return ToolPermissionTerminalizationProgress(completed=False, status=staged_target or None)
     await conn.execute(
         """
         update runs
@@ -9730,9 +9831,7 @@ async def fail_run(
         tenant_id=tenant_id,
         run_id=run_id,
     )
-    if progress is None or not progress.completed or progress.status != "failed":
-        return progress
-    return progress
+    return _terminalization_progress_for_requested_status(progress, requested_status="failed")
 
 
 async def cancel_run(
@@ -9752,14 +9851,15 @@ async def cancel_run(
     )
     if staged is None:
         return ToolPermissionTerminalizationProgress(completed=False, status=None)
+    staged_target = str(staged.get("permission_terminalization_target") or "")
+    if staged_target != "cancelled":
+        return ToolPermissionTerminalizationProgress(completed=False, status=staged_target or None)
     progress = await progress_run_tool_permission_terminalization(
         conn,
         tenant_id=tenant_id,
         run_id=run_id,
     )
-    if progress is None or progress.get("completed") is not True or progress.get("status") != "cancelled":
-        return progress
-    return progress
+    return _terminalization_progress_for_requested_status(progress, requested_status="cancelled")
 
 
 async def _cancel_open_run_steps(conn: AsyncConnection, *, tenant_id: str, run_id: str) -> None:
@@ -10309,5 +10409,34 @@ class ToolPermissionTerminalizationProgress:
         """Return a result field with mapping-style compatibility for callers."""
         return getattr(self, key, default)
 
+    def is_terminal(self, requested_status: str | None = None) -> bool:
+        """Return whether this result records a completed actual terminal state, optionally the requested one."""
+
+        return (
+            self.completed
+            and self.status in TERMINAL_RUN_STATUSES
+            and (requested_status is None or self.status == requested_status)
+        )
+
     def __bool__(self) -> bool:
-        return self.completed
+        return self.is_terminal()
+
+
+def _terminalization_progress_for_requested_status(
+    progress: ToolPermissionTerminalizationProgress | None,
+    *,
+    requested_status: str,
+) -> ToolPermissionTerminalizationProgress:
+    """Preserve an observed status but deny completion to a caller whose terminal intent did not win."""
+
+    if progress is None:
+        return ToolPermissionTerminalizationProgress(completed=False, status=None)
+    if progress.is_terminal(requested_status):
+        return progress
+    return ToolPermissionTerminalizationProgress(
+        completed=False,
+        status=progress.status,
+        did_transition=progress.did_transition,
+        needs_reconcile=progress.needs_reconcile,
+        terminalized_count=progress.terminalized_count,
+    )

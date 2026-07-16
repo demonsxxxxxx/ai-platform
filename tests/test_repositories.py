@@ -3175,7 +3175,7 @@ async def test_cancel_run_closes_non_terminal_run_steps():
     assert result.did_transition is True
     assert result.status == "cancelled"
     assert "set permission_terminalization_target" in conn.calls[0][0]
-    assert conn.calls[0][1][0:2] == ("cancelled", "run_cancelled")
+    assert conn.calls[0][1][0:4] == ("cancelled", "cancelled", "cancelled", "run_cancelled")
     assert conn.calls[0][1][-2:] == ("tenant-a", "run-a")
     assert conn.calls[1][0].startswith("select id, trace_id, status, permission_terminalization_target")
     assert conn.calls[2][0].startswith("with locked_run as")
@@ -3237,7 +3237,7 @@ async def test_fail_run_closes_non_terminal_run_steps_without_leaving_stale_prog
     assert result.did_transition is True
     assert result.status == "failed"
     assert "set permission_terminalization_target" in conn.calls[0][0]
-    assert conn.calls[0][1][0:2] == ("failed", "run_failed")
+    assert conn.calls[0][1][0:4] == ("failed", "failed", "failed", "run_failed")
     assert conn.calls[0][1][-2:] == ("tenant-a", "run-a")
     assert "set latency_ms" in conn.calls[1][0]
     assert conn.calls[2][0].startswith("select id, trace_id, status, permission_terminalization_target")
@@ -3317,7 +3317,15 @@ async def test_expired_permission_request_emits_tenant_run_scoped_terminal_audit
 
 @pytest.mark.asyncio
 async def test_terminal_run_writes_do_not_overwrite_existing_terminal_status():
-    conn = RecordingConnection()
+    class TerminalRecordingConnection(RecordingConnection):
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            if "set permission_terminalization_target = case" in normalized:
+                self.calls.append((normalized, params))
+                return SingleRowCursor({"permission_terminalization_target": params[0]})
+            return await super().execute(sql, params)
+
+    conn = TerminalRecordingConnection()
 
     await complete_run(conn, tenant_id="tenant-a", run_id="run-a", result_json={"message": "done"})
     await fail_run(conn, tenant_id="tenant-a", run_id="run-b", error_code="executor_failure", error_message="boom")
@@ -3341,7 +3349,7 @@ async def test_terminal_run_writes_do_not_overwrite_existing_terminal_status():
     assert "permission_terminalization_target is null" in completion_lock_sql
     assert "where runs.tenant_id = %s and runs.id = %s" in completion_sql
 
-    staged_terminal_updates = [sql for sql in update_runs_sql if "permission_terminalization_target = coalesce" in sql]
+    staged_terminal_updates = [sql for sql in update_runs_sql if "permission_terminalization_target = case" in sql]
     assert len(staged_terminal_updates) == 2
     assert all("status not in ('succeeded', 'failed', 'cancelled')" in sql for sql in staged_terminal_updates)
     metric_staging_updates = [sql for sql in update_runs_sql if "set latency_ms" in sql]
@@ -6571,6 +6579,248 @@ async def test_terminalization_progresses_in_bounded_crash_retry_batches_without
 
 
 @pytest.mark.asyncio
+async def test_soft_cancel_51_row_drain_upgrades_to_one_cancelled_terminal_result(monkeypatch):
+    """The route's soft 50-row intent is upgraded by the worker's final cancelled write."""
+
+    events = []
+    audits = []
+
+    class RowsCursor:
+        def __init__(self, rows):
+            self.rows = rows
+
+        async def fetchall(self):
+            return self.rows
+
+    class SoftCancelConnection:
+        def __init__(self):
+            self.target = None
+            self.run_status = "running"
+            self.remaining_request_ids = [f"tpr-{index}" for index in range(51)]
+            self.closed_steps = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            lowered = normalized.lower()
+            if "set permission_terminalization_target = case" in lowered:
+                assert "permission_terminalization_target = 'cancel_requested'" in lowered
+                requested = params[0]
+                if self.target is None or (self.target == "cancel_requested" and requested == "cancelled"):
+                    self.target = requested
+                return SingleRowCursor({"id": "run-a", "trace_id": "trace-a", "permission_terminalization_target": self.target})
+            if lowered.startswith("select id, trace_id, status, permission_terminalization_target"):
+                return SingleRowCursor(
+                    {
+                        "id": "run-a",
+                        "trace_id": "trace-a",
+                        "status": self.run_status,
+                        "permission_terminalization_target": self.target,
+                        "permission_terminalization_reason": "run_cancel_requested",
+                        "permission_terminalization_result_json": {"message": "任务已取消"},
+                        "permission_terminalization_error_code": None,
+                        "permission_terminalization_error_message": None,
+                        "latency_ms": 0,
+                        "input_token_count": 0,
+                        "output_token_count": 0,
+                        "total_token_count": 0,
+                        "estimated_cost_minor": 0,
+                    }
+                )
+            if lowered.startswith("with locked_run as"):
+                batch = self.remaining_request_ids[:50]
+                self.remaining_request_ids = self.remaining_request_ids[50:]
+                return RowsCursor(
+                    [
+                        {
+                            "id": request_id,
+                            "user_id": "user-a",
+                            "trace_id": "trace-a",
+                            "tool_id": "Bash",
+                            "tool_call_id": f"call-{request_id}",
+                            "action": "execute",
+                            "risk_level": "high",
+                            "write_capable": True,
+                            "decision": "allow_for_run",
+                        }
+                        for request_id in batch
+                    ]
+                )
+            if "has_unterminalized" in lowered:
+                return SingleRowCursor({"has_unterminalized": bool(self.remaining_request_ids)})
+            if lowered.startswith("update runs") and "set status = 'cancelled'" in lowered:
+                self.target = None
+                self.run_status = "cancelled"
+                return SingleRowCursor({"id": "run-a", "status": "cancelled"})
+            if lowered.startswith("select count(*) as artifact_count from artifacts"):
+                return SingleRowCursor({"artifact_count": 0})
+            if lowered.startswith("update run_steps"):
+                self.closed_steps.append("cancelled")
+                return FakeCursor()
+            raise AssertionError(normalized)
+
+    async def append_event(_conn, **kwargs):
+        events.append(kwargs)
+
+    async def append_audit(_conn, **kwargs):
+        audits.append(kwargs)
+
+    monkeypatch.setattr(repositories, "append_event", append_event)
+    monkeypatch.setattr(repositories, "append_audit_log", append_audit)
+    conn = SoftCancelConnection()
+
+    staged_soft = await repositories._stage_run_tool_permission_terminalization(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        target_status="cancel_requested",
+        terminal_reason="run_cancel_requested",
+    )
+    first = await repositories.progress_run_tool_permission_terminalization(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+    )
+    final = await repositories.cancel_run(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        result_json={"message": "任务已取消"},
+    )
+
+    assert staged_soft["permission_terminalization_target"] == "cancel_requested"
+    assert first.completed is False and first.status == "cancel_requested"
+    assert bool(first) is False
+    assert final.completed is True and final.status == "cancelled"
+    assert bool(final) is True
+    assert conn.run_status == "cancelled"
+    assert conn.closed_steps == ["cancelled"]
+    assert [event["event_type"] for event in events].count("run_cancelled") == 1
+    assert [audit["action"] for audit in audits].count("run.cancelled") == 1
+
+
+@pytest.mark.asyncio
+async def test_terminal_intent_merge_upgrades_only_soft_cancel_and_preserves_first_final_target():
+    """Conflicting final intents retain their first durable target while a soft cancel can become cancelled."""
+
+    class IntentConnection:
+        def __init__(self):
+            self.target = None
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split()).lower()
+            assert "set permission_terminalization_target = case" in normalized
+            assert "when permission_terminalization_target = 'cancel_requested'" in normalized
+            requested = params[0]
+            if self.target is None or (self.target == "cancel_requested" and requested == "cancelled"):
+                self.target = requested
+            return SingleRowCursor({"id": "run-a", "permission_terminalization_target": self.target})
+
+    conn = IntentConnection()
+    soft = await repositories._stage_run_tool_permission_terminalization(
+        conn, tenant_id="tenant-a", run_id="run-a", target_status="cancel_requested", terminal_reason="route"
+    )
+    upgraded = await repositories._stage_run_tool_permission_terminalization(
+        conn, tenant_id="tenant-a", run_id="run-a", target_status="cancelled", terminal_reason="worker"
+    )
+    conflict = await repositories._stage_run_tool_permission_terminalization(
+        conn, tenant_id="tenant-a", run_id="run-a", target_status="failed", terminal_reason="late_failure"
+    )
+
+    assert soft["permission_terminalization_target"] == "cancel_requested"
+    assert upgraded["permission_terminalization_target"] == "cancelled"
+    assert conflict["permission_terminalization_target"] == "cancelled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "first_target"),
+    [("cancel", "failed"), ("fail", "cancelled")],
+)
+async def test_conflicting_final_intent_returns_actual_status_without_claiming_completion(monkeypatch, operation, first_target):
+    """A later final writer cannot claim its result when the run already has the opposite durable target."""
+
+    async def stage(*_args, **_kwargs):
+        return {"permission_terminalization_target": first_target}
+
+    async def progress(*_args, **_kwargs):
+        raise AssertionError("conflicting target must not drain or mutate the existing final intent")
+
+    monkeypatch.setattr(repositories, "_stage_run_tool_permission_terminalization", stage)
+    monkeypatch.setattr(repositories, "progress_run_tool_permission_terminalization", progress)
+
+    if operation == "cancel":
+        result = await repositories.cancel_run(
+            object(), tenant_id="tenant-a", run_id="run-a", result_json={"message": "cancelled"}
+        )
+    else:
+        result = await repositories.fail_run(
+            object(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            error_code="executor_failure",
+            error_message="boom",
+        )
+
+    assert result.completed is False
+    assert result.status == first_target
+    assert bool(result) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("admin", [False, True], ids=["owner", "admin"])
+async def test_cancel_request_response_reports_actual_conflicting_terminal_status(monkeypatch, admin):
+    """Owner and admin cancellation responses expose a concurrent final failure rather than a soft intent."""
+
+    class Connection:
+        async def execute(self, sql, _params):
+            normalized = " ".join(sql.split())
+            assert normalized.startswith("with eligible_run as")
+            row = {
+                "id": "run-a",
+                "status": "running",
+                "trace_id": "trace-a",
+                "cancel_requested_newly": False,
+            }
+            if admin:
+                row["user_id"] = "owner-a"
+            return SingleRowCursor(row)
+
+    async def stage(*_args, **_kwargs):
+        return {"permission_terminalization_target": "failed"}
+
+    async def progress(*_args, **_kwargs):
+        return repositories.ToolPermissionTerminalizationProgress(True, "failed", True, True)
+
+    async def no_leases(*_args, **_kwargs):
+        return []
+
+    async def no_audit(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(repositories, "_stage_run_tool_permission_terminalization", stage)
+    monkeypatch.setattr(repositories, "progress_run_tool_permission_terminalization", progress)
+    monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_leases)
+    monkeypatch.setattr(repositories, "append_audit_log", no_audit)
+
+    if admin:
+        result = await repositories.request_admin_run_cancel(
+            Connection(), tenant_id="tenant-a", admin_user_id="admin-a", run_id="run-a"
+        )
+    else:
+        result = await repositories.request_run_cancel(
+            Connection(), tenant_id="tenant-a", user_id="owner-a", run_id="run-a"
+        )
+
+    assert result == {
+        "run_id": "run-a",
+        "status": "failed",
+        "_permission_terminalization_progress": repositories.ToolPermissionTerminalizationProgress(
+            True, "failed", True, True
+        ),
+    }
+
+
+@pytest.mark.asyncio
 async def test_terminalization_maintenance_lists_only_bounded_durable_or_legacy_run_work_items():
     class Cursor:
         async def fetchall(self):
@@ -6623,6 +6873,130 @@ async def test_terminalization_maintenance_lists_bounded_durable_handed_off_chil
     assert "child.status in ('succeeded', 'failed', 'cancelled')" in sql
     assert "limit %s" in sql and "for update of child, parent_step skip locked" in sql
     assert params == (50,)
+
+
+@pytest.mark.asyncio
+async def test_terminalization_maintenance_lists_ready_parent_rollup_recovery_work():
+    class Cursor:
+        async def fetchall(self):
+            return [{"tenant_id": "tenant-a", "run_id": "parent-a"}]
+
+    class Connection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            self.calls.append((" ".join(sql.split()), params))
+            return Cursor()
+
+    conn = Connection()
+    rows = await repositories.list_multi_agent_parent_runs_requiring_finalization(conn, limit=10_000)
+
+    assert rows == [{"tenant_id": "tenant-a", "run_id": "parent-a"}]
+    sql, params = conn.calls[0]
+    assert "parent.status in ('running', 'succeeded', 'failed', 'cancelled')" in sql
+    assert "parent.status = 'queued' and parent.cancel_requested_at is not null" in sql
+    assert "parent_step.status not in ('succeeded', 'failed', 'cancelled')" in sql
+    assert "parent_event.event_type = 'multi_agent_parent_finalized'" in sql
+    assert "parent_audit.action = 'run.multi_agent.parent.finalize'" in sql
+    assert "for update of parent skip locked" in sql
+    assert params == (50,)
+
+
+def test_terminalization_progress_soft_cancel_intent_is_not_truthy_completion():
+    """A recorded cancellation request is not evidence that a run reached cancelled."""
+
+    progress = repositories.ToolPermissionTerminalizationProgress(
+        completed=True,
+        status="cancel_requested",
+    )
+
+    assert bool(progress) is False
+
+
+@pytest.mark.asyncio
+async def test_terminal_parent_missing_rollup_facts_are_written_after_generic_terminalization(monkeypatch):
+    """A parent already terminalized by a bounded drain still gets its one parent fact."""
+
+    events = []
+    audits = []
+
+    class RowsCursor:
+        async def fetchall(self):
+            return []
+
+    class Cursor:
+        async def fetchone(self):
+            return {
+                "id": "parent-a",
+                "tenant_id": "tenant-a",
+                "copied_from_run_id": None,
+                "trace_id": "trace-parent-a",
+                "status": "failed",
+                "cancel_requested_at": None,
+                "input_json": {
+                    "input": {
+                        "execution_mode": "multi_agent",
+                        "multi_agent_steps": [{"step_key": f"child-{index}"} for index in range(51)],
+                    }
+                },
+            }
+
+    class ParentRecoveryConnection:
+        def __init__(self):
+            self.has_event = False
+            self.has_audit = False
+
+        async def execute(self, sql, _params):
+            normalized = " ".join(sql.split()).lower()
+            if normalized.startswith("select id, tenant_id, copied_from_run_id"):
+                return Cursor()
+            if normalized.startswith("select child.id, child.status"):
+                return RowsCursor()
+            if "has_parent_finalized_event" in normalized:
+                return SingleRowCursor(
+                    {"has_parent_finalized_event": self.has_event, "has_parent_finalized_audit": self.has_audit}
+                )
+            raise AssertionError(normalized)
+
+    async def terminal_steps(*_args, **_kwargs):
+        return [
+            {"id": f"step-{index}", "step_key": f"child-{index}", "status": "failed", "payload_json": {}}
+            for index in range(51)
+        ]
+
+    async def append_event(_conn, **kwargs):
+        events.append(kwargs)
+        conn.has_event = True
+        return "evt-parent-a"
+
+    async def append_audit(_conn, **kwargs):
+        audits.append(kwargs)
+        conn.has_audit = True
+        return "aud-parent-a"
+
+    monkeypatch.setattr(repositories, "list_run_steps", terminal_steps)
+    monkeypatch.setattr(repositories, "append_event", append_event)
+    monkeypatch.setattr(repositories, "append_audit_log", append_audit)
+
+    conn = ParentRecoveryConnection()
+    finalized = await repositories.finalize_multi_agent_parent_run_if_ready(
+        conn,
+        tenant_id="tenant-a",
+        parent_run_id="parent-a",
+    )
+    retry = await repositories.finalize_multi_agent_parent_run_if_ready(
+        conn,
+        tenant_id="tenant-a",
+        parent_run_id="parent-a",
+    )
+
+    assert finalized is not None
+    assert finalized["status"] == "failed"
+    assert finalized["counts"]["failed"] == 51
+    assert retry is None
+    assert [event["event_type"] for event in events] == ["multi_agent_parent_finalized"]
+    assert [audit["action"] for audit in audits] == ["run.multi_agent.parent.finalize"]
 
 
 @pytest.mark.asyncio

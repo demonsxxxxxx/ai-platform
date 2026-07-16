@@ -4408,6 +4408,43 @@ async def test_worker_honors_cancel_before_executor_start(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_worker_does_not_report_soft_cancel_intent_as_cancelled(monkeypatch):
+    """A soft route intent cannot produce a cancelled worker outcome or terminal side effect."""
+
+    calls = []
+
+    class ShouldNotRunAdapter:
+        async def submit_run(self, payload, event_sink=None):
+            raise AssertionError("soft cancellation must stop before adapter execution")
+
+    async def mark_run_running(conn, *, tenant_id, run_id):
+        return True
+
+    async def is_cancel_requested(conn, *, tenant_id, run_id):
+        return True
+
+    async def cancel_run(conn, *, tenant_id, run_id, result_json=None):
+        calls.append(("cancel", result_json))
+        return ToolPermissionTerminalizationProgress(completed=True, status="cancel_requested")
+
+    async def append_event(_conn, **kwargs):
+        calls.append(("event", kwargs["event_type"]))
+
+    monkeypatch.setattr("app.worker.transaction", fake_transaction)
+    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
+    monkeypatch.setattr("app.worker.repositories.is_cancel_requested", is_cancel_requested)
+    monkeypatch.setattr("app.worker.repositories.cancel_run", cancel_run)
+    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
+
+    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": ShouldNotRunAdapter()}))
+
+    assert outcome.status == "skipped"
+    assert outcome.error_code == "stale_terminal_state"
+    assert any(call[0] == "cancel" for call in calls)
+    assert [call[1] for call in calls if call[0] == "event"] == ["worker_started"]
+
+
+@pytest.mark.asyncio
 async def test_worker_parks_top_level_multi_agent_parent_for_dispatcher_without_running_adapter(monkeypatch):
     calls = []
 
