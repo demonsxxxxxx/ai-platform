@@ -4705,7 +4705,7 @@ async def list_multi_agent_terminal_children_requiring_reconciliation(
         where child.copied_from_run_id is not null
           and child.status in ('succeeded', 'failed', 'cancelled')
           and parent_step.payload_json->>'dispatch_state' = 'handed_off'
-        order by coalesce(child.finished_at, child.updated_at, child.created_at) asc,
+        order by coalesce(child.finished_at, child.started_at, child.created_at) asc,
                  child.tenant_id asc, child.id asc
         limit %s
         for update of child, parent_step skip locked
@@ -4762,7 +4762,7 @@ async def list_multi_agent_parent_runs_requiring_finalization(
                 and parent_audit.action = 'run.multi_agent.parent.finalize'
             )
           )
-        order by coalesce(parent.finished_at, parent.updated_at, parent.started_at, parent.created_at) asc,
+        order by coalesce(parent.finished_at, parent.started_at, parent.created_at) asc,
                  parent.tenant_id asc, parent.id asc
         limit %s
         for update of parent skip locked

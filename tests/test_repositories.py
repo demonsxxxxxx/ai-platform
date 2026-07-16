@@ -2,6 +2,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 import json
+from pathlib import Path
 
 import pytest
 
@@ -6873,6 +6874,54 @@ async def test_terminalization_maintenance_lists_bounded_durable_handed_off_chil
     assert "child.status in ('succeeded', 'failed', 'cancelled')" in sql
     assert "limit %s" in sql and "for update of child, parent_step skip locked" in sql
     assert params == (50,)
+
+
+@pytest.mark.asyncio
+async def test_multi_agent_recovery_queries_order_only_by_authoritative_runs_columns():
+    """Recovery ordering is schema-bound: `runs` has no `updated_at` column to hide a PostgreSQL failure."""
+
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+    runs_definition = schema.split("create table if not exists runs (", 1)[1].split(");", 1)[0]
+    runs_columns = {
+        line.strip().split(maxsplit=1)[0].rstrip(",")
+        for line in runs_definition.splitlines()
+        if line.strip() and not line.strip().startswith(("primary key", "foreign key", "check", "constraint"))
+    }
+    assert {"id", "tenant_id", "started_at", "finished_at", "created_at"}.issubset(runs_columns)
+    assert "updated_at" not in runs_columns
+
+    class Cursor:
+        def __init__(self, rows):
+            self.rows = rows
+
+        async def fetchall(self):
+            return self.rows
+
+    class SchemaBoundConnection:
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            assert "updated_at" not in normalized
+            if "from runs child" in normalized:
+                assert (
+                    "order by coalesce(child.finished_at, child.started_at, child.created_at) asc, "
+                    "child.tenant_id asc, child.id asc"
+                ) in normalized
+                assert params == (50,)
+                return Cursor([{"tenant_id": "tenant-a", "run_id": "child-a", "status": "failed"}])
+            assert "from runs parent" in normalized
+            assert (
+                "order by coalesce(parent.finished_at, parent.started_at, parent.created_at) asc, "
+                "parent.tenant_id asc, parent.id asc"
+            ) in normalized
+            assert params == (50,)
+            return Cursor([{"tenant_id": "tenant-a", "run_id": "parent-a"}])
+
+    conn = SchemaBoundConnection()
+    child_rows = await repositories.list_multi_agent_terminal_children_requiring_reconciliation(conn, limit=10_000)
+    parent_rows = await repositories.list_multi_agent_parent_runs_requiring_finalization(conn, limit=10_000)
+
+    assert child_rows == [{"tenant_id": "tenant-a", "run_id": "child-a", "status": "failed"}]
+    assert parent_rows == [{"tenant_id": "tenant-a", "run_id": "parent-a"}]
 
 
 @pytest.mark.asyncio
