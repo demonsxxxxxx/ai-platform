@@ -572,6 +572,99 @@ test("a confirmed V2 state restores its own missing server context before login 
   }
 });
 
+test("login recovery fails closed without touching a persisted V2 pending rotation", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const idb = installTransactionalIndexedDb();
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  const pendingState = {
+    id: "current",
+    version: 2 as const,
+    incarnation: "I".repeat(43),
+    currentGeneration: 1,
+    currentNonce: "A".repeat(43),
+    confirmedGeneration: 1,
+    pendingRotation: {
+      baseGeneration: 1,
+      nextNonce: "B".repeat(43),
+      ticket: "T".repeat(43),
+    },
+    ownerToken: "",
+    leaseExpiresAt: 0,
+  };
+  idb.records.set("current", JSON.parse(JSON.stringify(pendingState)));
+  let bootstrapCalls = 0;
+  authApi.bootstrapAuthContext = async () => {
+    bootstrapCalls += 1;
+    return { status: "ready", protocol_version: 2, generation: 2 };
+  };
+
+  try {
+    await assert.rejects(
+      () => ensureLoginContextRecovery(),
+      (error: unknown) => error instanceof BrowserAuthCoordinatorError,
+    );
+    assert.equal(bootstrapCalls, 0);
+    assert.deepEqual(idb.currentState(), pendingState);
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    idb.restore();
+    stubs.restore();
+  }
+});
+
+test("ordinary V2 ensure retains pending-rotation completion behavior", async () => {
+  const stubs = installBrowserCoordinatorStubs();
+  const idb = installTransactionalIndexedDb();
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  const originalBootstrap = authApi.bootstrapAuthContext;
+  idb.records.set("current", {
+    id: "current",
+    version: 2,
+    incarnation: "I".repeat(43),
+    currentGeneration: 1,
+    currentNonce: "A".repeat(43),
+    confirmedGeneration: 1,
+    pendingRotation: {
+      baseGeneration: 1,
+      nextNonce: "B".repeat(43),
+      ticket: "T".repeat(43),
+    },
+    ownerToken: "",
+    leaseExpiresAt: 0,
+  });
+  const submitted: Array<Record<string, unknown>> = [];
+  authApi.bootstrapAuthContext = async (request) => {
+    assert.notEqual(typeof request, "string");
+    const v2 = request as Record<string, unknown>;
+    submitted.push(v2);
+    return { status: "ready", protocol_version: 2, generation: 2 };
+  };
+
+  try {
+    await ensureBrowserAuthContext();
+    assert.equal(submitted.length, 1);
+    assert.equal(submitted[0].generation, 2);
+    assert.equal(submitted[0].nonce, "B".repeat(43));
+    assert.equal(submitted[0].rotation_ticket, "T".repeat(43));
+    assert.equal(submitted[0].recovery_only, undefined);
+    assert.deepEqual(idb.currentState(), {
+      id: "current",
+      version: 2,
+      incarnation: "I".repeat(43),
+      currentGeneration: 2,
+      currentNonce: "B".repeat(43),
+      confirmedGeneration: 2,
+      ownerToken: "",
+      leaseExpiresAt: 0,
+    });
+  } finally {
+    authApi.bootstrapAuthContext = originalBootstrap;
+    idb.restore();
+    stubs.restore();
+  }
+});
+
 test("concurrent or aborted V2 login-context recovery stays serially single-owner and bounded", async () => {
   const stubs = installBrowserCoordinatorStubs();
   const idb = installTransactionalIndexedDb();

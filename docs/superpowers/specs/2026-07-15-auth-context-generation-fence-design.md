@@ -144,6 +144,12 @@ helper never invokes, retries, or otherwise replays the login mutation; the
 existing IDB owner lease serializes each recovery attempt, and cancellation
 before its request sends no bootstrap.
 
+If the persisted V2 state has `pendingRotation`, login recovery fails closed
+locally before any bootstrap or rotation request. It releases its lease without
+changing generation, nonce, pending ticket, or cookie state, leaving the normal
+non-login coordinator path to resolve the existing Generation-6 rotation
+protocol later.
+
 If a rotation response succeeds server-side but local IDB promotion is aborted,
 expired, or versionchanged, the next owner retries the persisted pending target.
 A signed target cookie can reconcile without a cookie write. If fetch aborted or

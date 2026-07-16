@@ -768,6 +768,10 @@ async function ensureV2BrowserAuthContext(
     owned = await acquireV2Owner(signal);
     const current = await assertV2Owner(owned, signal);
     if (current.pendingRotation) {
+      // Login recovery may only repair an exact confirmed server context. A
+      // pending rotation needs the ordinary coordinator's ticketed protocol;
+      // never let the login path enter that unmarked bootstrap chain.
+      if (recoveryOnly) throw unavailable();
       await rotateV2Owner({ state: current, ownerToken: owned.ownerToken }, signal);
       return;
     }

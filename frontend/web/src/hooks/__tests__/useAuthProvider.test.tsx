@@ -1578,3 +1578,27 @@ test("login issues one context bootstrap before one business login mutation", as
     await mounted.cleanup();
   }
 });
+
+test("a fail-closed browser context recovery never reaches the login mutation", async () => {
+  const { BrowserAuthCoordinatorError } = await import("../browserAuthCoordinator.ts");
+  let loginCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.bootstrapAuthContext = async () => {
+      throw new BrowserAuthCoordinatorError("auth_context_coordination_unavailable");
+    };
+    api.login = async () => {
+      loginCalls += 1;
+    };
+  });
+  try {
+    await mounted.React.act(async () => {
+      await assert.rejects(
+        () => mounted.auth.login({ username: "test-user", password: "test-password" }),
+        (error: unknown) => error instanceof BrowserAuthCoordinatorError,
+      );
+    });
+    assert.equal(loginCalls, 0);
+  } finally {
+    await mounted.cleanup();
+  }
+});
