@@ -135,3 +135,9 @@ test("Chat removes preference, selector, mention, and agent command surfaces", (
   assert.doesNotMatch(commands, /["']agent["']/);
   assert.doesNotMatch(chatInput, /MentionPopup|useMentionSearch|useMentionState/);
 });
+
+test("Auth metadata no longer restores the removed agent preference", () => {
+  const useAuthSource = read("hooks/useAuth.tsx");
+
+  assert.doesNotMatch(useAuthSource, /defaultAgentId|agent-preference-updated/);
+});

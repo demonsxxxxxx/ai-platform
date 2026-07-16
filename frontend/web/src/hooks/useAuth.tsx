@@ -49,7 +49,6 @@ function applyUserMetadata(metadata?: {
   theme?: string;
   defaultThinkingLevel?: string;
   sidebarCollapsed?: string;
-  defaultAgentId?: string;
 }) {
   if (!metadata) return;
 
@@ -85,14 +84,6 @@ function applyUserMetadata(metadata?: {
     );
   }
 
-  if (metadata.defaultAgentId) {
-    localStorage.setItem("defaultAgentId", metadata.defaultAgentId);
-    window.dispatchEvent(
-      new CustomEvent("agent-preference-updated", {
-        detail: { agentId: metadata.defaultAgentId },
-      }),
-    );
-  }
 }
 
 /** Explicit completion contract for caller-visible identity operations. */
