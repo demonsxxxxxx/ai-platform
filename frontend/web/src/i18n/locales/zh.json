@@ -2702,6 +2702,13 @@
         "title": "正在加载投影",
         "description": "正在确认该页面的后端工作台合同。"
       },
+      "empty": {
+        "safeReadTitle": "安全投影",
+        "safeReadDescription": "该页面已连接，仅读取受治理的前端数据。",
+        "noRowsTitle": "未返回可展示的数据",
+        "nextActionTitle": "下一步操作",
+        "nextActionDescription": "如需创建或修改记录，请使用受管理员治理的流程。"
+      },
       "forbidden": {
         "title": "投影受权限治理",
         "description": "当前账号缺少 {{permission}}。页面入口保持可见，但后端合同会 fail-closed。"

@@ -152,7 +152,7 @@ export function useWebSocketNotifications({
                 toast.remove();
               }}
               className="absolute top-1.5 right-1.5 z-10 rounded-full p-0.5 text-stone-400 opacity-0 transition-opacity hover:text-stone-600 group-hover:opacity-100 dark:text-stone-500 dark:hover:text-stone-300"
-              aria-label="Dismiss notification"
+              aria-label={t("common.close")}
             >
               <X size={12} />
             </button>

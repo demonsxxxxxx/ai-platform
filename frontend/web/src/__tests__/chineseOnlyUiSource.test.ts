@@ -25,7 +25,7 @@ test("product language controls are absent from authentication, landing, workben
     "components/share/SharedPage.tsx",
   ]) {
     const source = read(relativePath);
-    assert.doesNotMatch(source, /LanguageToggle|LanguageToggle|changeLanguage|common\.language/);
+    assert.doesNotMatch(source, /LanguageToggle|changeLanguage|common\.language/);
   }
 });
 
@@ -41,8 +41,39 @@ test("transport and notification client copy explicitly use Chinese", () => {
   assert.match(fetch, /finalHeaders\.set\("Accept-Language", "zh-CN"\)/);
   assert.match(authApi, /"Accept-Language": "zh-CN"/);
   assert.match(notifications, /i18n\.getFixedT\("zh"\)/);
-  assert.match(projections, /return value\.zh \|\| value\.en/);
+  assert.match(projections, /resolveChineseNotificationText/);
   assert.doesNotMatch(projections, /language\.startsWith/);
+});
+
+test("active notification surfaces use the Chinese-only projection helper", () => {
+  const dialog = read("components/notification/NotificationDialog.tsx");
+  const projections = read("components/workbench/WorkbenchProjectionPages.tsx");
+
+  for (const source of [dialog, projections]) {
+    assert.match(source, /resolveChineseNotificationText/);
+    assert.doesNotMatch(source, /title_i18n\.en|content_i18n\.en/);
+  }
+});
+
+test("empty projections and toast dismissal use Chinese copy", () => {
+  const zh = JSON.parse(read("i18n/locales/zh.json"));
+  const empty = zh.workbench.projections.empty;
+  const projections = read("components/workbench/WorkbenchProjectionPages.tsx");
+  const notifications = read(
+    "components/layout/AppContent/useWebSocketNotifications.tsx",
+  );
+
+  assert.equal(empty.noRowsTitle, "未返回可展示的数据");
+  assert.equal(empty.nextActionTitle, "下一步操作");
+  assert.equal(
+    empty.nextActionDescription,
+    "如需创建或修改记录，请使用受管理员治理的流程。",
+  );
+  assert.doesNotMatch(
+    projections,
+    /"Safe projection"|"No rows returned"|"Next action"/,
+  );
+  assert.match(notifications, /aria-label=\{t\("common\.close"\)\}/);
 });
 
 test("common visible preview controls use Chinese translations instead of inline English", () => {
