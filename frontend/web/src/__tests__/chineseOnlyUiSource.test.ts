@@ -90,3 +90,12 @@ test("common visible preview controls use Chinese translations instead of inline
     assert.doesNotMatch(source, /aria-label="Close"/);
   }
 });
+
+test("chat help control uses the Chinese help-document translation", () => {
+  const helpMenu = read("components/chat/ChatInputHelpMenu.tsx");
+
+  assert.match(helpMenu, /aria-label=\{t\("chat\.helpDocs"\)\}/);
+  assert.match(helpMenu, /t\("chat\.helpDocs", "帮助文档"\)/);
+  assert.doesNotMatch(helpMenu, /aria-label="Help"/);
+  assert.doesNotMatch(helpMenu, /AI Platform documentation/);
+});
