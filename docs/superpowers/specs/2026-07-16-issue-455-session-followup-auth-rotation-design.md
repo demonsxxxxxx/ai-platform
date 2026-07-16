@@ -168,3 +168,20 @@ The PostgreSQL schema node is deterministic but requires
 skip it, while CI can exercise the first-principal immediate-FK path against a
 real schema. No browser storage record contains chat text, attachments,
 credentials, or cookies.
+
+## Generation 6: confirmation recovery has no transcript authority
+
+A resolver response can establish that a submission stopped at
+`needs_confirmation`, but it cannot establish ownership of an optimistic
+assistant placeholder after reload. Resolver and retry recovery therefore keep
+the confirmation suggestions in dedicated non-message hook state and do not
+append a synthetic assistant message. The live submit path may replace only
+the optimistic placeholder it created for that same in-memory submission; when
+that placeholder is absent, it also uses the non-message state.
+
+Persisted recovery references additionally require a canonical lowercase UUID
+and nonempty, at-most-128-character owner tuple elements. The reader removes
+records that cannot have been produced by the protocol (including mismatched
+per-record keys) while retaining and resolving other valid entries. This
+quarantine is local-only; it never deletes a server submission or authorizes a
+new POST.

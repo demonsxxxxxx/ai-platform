@@ -1273,7 +1273,7 @@ test("useAgent drops an A1 resolver result after A-to-B-to-A2", async () => {
   }
 });
 
-test("useAgent projects a recovered confirmation before unlocking the composer", async () => {
+test("useAgent keeps recovered confirmation outside the chat transcript", async () => {
   const submissionId = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
   clearPersistedSubmissionReferences();
   dom.window.localStorage.setItem(
@@ -1301,10 +1301,108 @@ test("useAgent projects a recovered confirmation before unlocking the composer",
 
   try {
     await settle(harness.act);
-    assert.equal(harness.hook.messages.length, 1);
-    assert.equal(harness.hook.messages[0]?.role, "assistant");
-    assert.match(harness.hook.messages[0]?.content || "", /文档审核/);
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.hook.canRetryPendingSubmission, false);
     assert.equal(harness.hook.error, null);
+  } finally {
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent isolates a recovered confirmation from the next unresolved submission", async () => {
+  const confirmationId = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
+  const unresolvedId = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c5";
+  clearPersistedSubmissionReferences();
+  dom.window.localStorage.setItem(
+    "ai_platform_chat_submission_references_v1",
+    JSON.stringify([
+      { version: 1, owner: ["tenant-a", "user-a"], submissionId: confirmationId },
+      { version: 1, owner: ["tenant-a", "user-a"], submissionId: unresolvedId },
+    ]),
+  );
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const resolved: string[] = [];
+  sessionApi.getChatSubmission = async (submissionId) => {
+    resolved.push(submissionId);
+    if (submissionId === confirmationId) {
+      return {
+        submission_id: confirmationId,
+        state: "needs_confirmation",
+        outcome: {
+          status: "needs_confirmation",
+          submission_id: confirmationId,
+          suggestions: [],
+        },
+      };
+    }
+    assert.equal(submissionId, unresolvedId);
+    return {
+      submission_id: unresolvedId,
+      state: "accepted_pending_enqueue",
+      outcome: {
+        session_id: "session-unresolved",
+        run_id: "run-unresolved",
+        status: "accepted_pending_enqueue",
+        submission_id: unresolvedId,
+      },
+    };
+  };
+  const harness = await loadReactHarness({ preserveSubmissionReferences: true });
+
+  try {
+    await settle(harness.act);
+    assert.deepEqual(resolved, [confirmationId, unresolvedId]);
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+  } finally {
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent quarantines malformed persisted records before resolving a valid successor", async () => {
+  const malformedId = "00000000-0000-0000-0000-000000000000";
+  const validId = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
+  const oversizedOwner = "x".repeat(129);
+  clearPersistedSubmissionReferences();
+  dom.window.localStorage.setItem(
+    "ai_platform_chat_submission_references_v1",
+    JSON.stringify([
+      { version: 1, owner: ["tenant-a", "user-a"], submissionId: malformedId },
+      { version: 1, owner: ["tenant-a", oversizedOwner], submissionId: validId },
+      { version: 1, owner: ["tenant-a", "user-a"], submissionId: validId },
+    ]),
+  );
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const resolved: string[] = [];
+  sessionApi.getChatSubmission = async (submissionId) => {
+    resolved.push(submissionId);
+    assert.equal(submissionId, validId);
+    return {
+      submission_id: validId,
+      state: "accepted_pending_enqueue",
+      outcome: {
+        session_id: "session-valid",
+        run_id: "run-valid",
+        status: "accepted_pending_enqueue",
+        submission_id: validId,
+      },
+    };
+  };
+  const harness = await loadReactHarness({ preserveSubmissionReferences: true });
+
+  try {
+    await settle(harness.act);
+    assert.deepEqual(resolved, [validId]);
+    const retained = dom.window.localStorage.getItem(
+      "ai_platform_chat_submission_references_v1",
+    );
+    assert.doesNotMatch(retained || "", new RegExp(malformedId));
+    assert.doesNotMatch(retained || "", new RegExp(oversizedOwner));
+    assert.match(retained || "", new RegExp(validId));
   } finally {
     sessionApi.getChatSubmission = originalGetChatSubmission;
     await harness.cleanup();

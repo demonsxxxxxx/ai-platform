@@ -111,11 +111,11 @@ function formatConfirmationMessage(suggestions: CapabilitySuggestion[]): string 
   return ["需要确认处理方式后再继续。", "", ...items].join("\n");
 }
 
-function projectConfirmationMessages(
+function projectOwnedConfirmationMessages(
   messages: Message[],
   suggestions: CapabilitySuggestion[],
-  assistantMessageId?: string,
-): Message[] {
+  assistantMessageId: string,
+): Message[] | null {
   const confirmationMessage = formatConfirmationMessage(suggestions);
   const project = (message: Message): Message => ({
     ...message,
@@ -123,22 +123,12 @@ function projectConfirmationMessages(
     isStreaming: false,
     parts: [{ type: "text", content: confirmationMessage }],
   });
-  if (assistantMessageId && messages.some((message) => message.id === assistantMessageId)) {
-    return messages.map((message) =>
-      message.id === assistantMessageId ? project(message) : message,
-    );
+  if (!messages.some((message) => message.id === assistantMessageId)) {
+    return null;
   }
-  return [
-    ...messages,
-    {
-      id: `confirmation-${uuid()}`,
-      role: "assistant",
-      content: confirmationMessage,
-      timestamp: new Date(),
-      isStreaming: false,
-      parts: [{ type: "text", content: confirmationMessage }],
-    },
-  ];
+  return messages.map((message) =>
+    message.id === assistantMessageId ? project(message) : message,
+  );
 }
 
 function maxAcceptedRunEventSequence(
@@ -212,9 +202,27 @@ interface PersistedSubmissionReference {
   submissionId: string;
 }
 
+interface ConfirmationRecovery {
+  owner: AuthScope;
+  submissionId: string;
+  suggestions: CapabilitySuggestion[];
+}
+
 const LEGACY_CHAT_SUBMISSION_STORAGE_KEY =
   "ai_platform_chat_submission_references_v1";
 const CHAT_SUBMISSION_STORAGE_PREFIX = "ai_platform_chat_submission_reference_v1:";
+const MAX_PERSISTED_OWNER_ID_LENGTH = 128;
+const CANONICAL_SUBMISSION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function isPersistedOwnerId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_PERSISTED_OWNER_ID_LENGTH &&
+    value.trim().length === value.length
+  );
+}
 
 function parsePersistedSubmissionReference(
   value: unknown,
@@ -225,9 +233,12 @@ function parsePersistedSubmissionReference(
     (value as { version?: unknown }).version !== 1 ||
     !Array.isArray((value as { owner?: unknown }).owner) ||
     (value as { owner: unknown[] }).owner.length !== 2 ||
-    typeof (value as { owner: unknown[] }).owner[0] !== "string" ||
-    typeof (value as { owner: unknown[] }).owner[1] !== "string" ||
-    typeof (value as { submissionId?: unknown }).submissionId !== "string"
+    !isPersistedOwnerId((value as { owner: unknown[] }).owner[0]) ||
+    !isPersistedOwnerId((value as { owner: unknown[] }).owner[1]) ||
+    typeof (value as { submissionId?: unknown }).submissionId !== "string" ||
+    !CANONICAL_SUBMISSION_ID_PATTERN.test(
+      (value as { submissionId: string }).submissionId,
+    )
   ) {
     return null;
   }
@@ -258,30 +269,69 @@ function parseSubmissionReferenceJson(raw: string | null): PersistedSubmissionRe
   }
 }
 
+function quarantinePersistedSubmissionReference(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // A storage failure still leaves sends fail-closed at their verified write.
+  }
+}
+
 function readPersistedSubmissionReferences(): PersistedSubmissionReference[] {
   try {
     const references = new Map<string, PersistedSubmissionReference>();
     const legacyRaw = localStorage.getItem(LEGACY_CHAT_SUBMISSION_STORAGE_KEY);
-    let legacy: unknown = [];
-    if (legacyRaw) {
+    let legacy: unknown = null;
+    if (legacyRaw !== null) {
       try {
         legacy = JSON.parse(legacyRaw);
       } catch {
-        // A corrupt legacy aggregate must not hide independently durable keys.
+        quarantinePersistedSubmissionReference(LEGACY_CHAT_SUBMISSION_STORAGE_KEY);
       }
     }
     if (Array.isArray(legacy)) {
+      const retained: PersistedSubmissionReference[] = [];
       for (const item of legacy) {
         const parsed = parsePersistedSubmissionReference(item);
-        if (parsed) references.set(submissionReferenceIdentity(parsed), parsed);
+        if (!parsed) continue;
+        retained.push(parsed);
+        references.set(submissionReferenceIdentity(parsed), parsed);
       }
+      if (retained.length !== legacy.length) {
+        try {
+          if (retained.length === 0) {
+            localStorage.removeItem(LEGACY_CHAT_SUBMISSION_STORAGE_KEY);
+          } else {
+            localStorage.setItem(
+              LEGACY_CHAT_SUBMISSION_STORAGE_KEY,
+              JSON.stringify(retained),
+            );
+          }
+        } catch {
+          // A failed quarantine cannot authorize a later chat POST.
+        }
+      }
+    } else if (legacyRaw !== null) {
+      quarantinePersistedSubmissionReference(LEGACY_CHAT_SUBMISSION_STORAGE_KEY);
     }
+    const independentKeys: string[] = [];
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
-      if (!key?.startsWith(CHAT_SUBMISSION_STORAGE_PREFIX)) continue;
+      if (key?.startsWith(CHAT_SUBMISSION_STORAGE_PREFIX)) {
+        independentKeys.push(key);
+      }
+    }
+    for (const key of independentKeys) {
       const raw = localStorage.getItem(key);
       const parsed = parseSubmissionReferenceJson(raw);
-      if (parsed) references.set(submissionReferenceIdentity(parsed), parsed);
+      if (
+        !parsed ||
+        submissionReferenceStorageKey(parsed) !== key
+      ) {
+        quarantinePersistedSubmissionReference(key);
+        continue;
+      }
+      references.set(submissionReferenceIdentity(parsed), parsed);
     }
     return [...references.values()].sort((left, right) =>
       submissionReferenceIdentity(left).localeCompare(submissionReferenceIdentity(right)),
@@ -419,6 +469,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const submissionUncertaintyRef = useRef<SubmissionUncertainty | null>(null);
   const submissionResolverOwnerRef = useRef<string | null>(null);
   const [pendingSubmissionId, setPendingSubmissionId] = useState<string | null>(null);
+  // Resolver-only confirmation has no transcript owner. Keep it separate
+  // until a later user action rather than inventing an assistant turn.
+  const [confirmationRecovery, setConfirmationRecovery] =
+    useState<ConfirmationRecovery | null>(null);
 
   // Stream version to invalidate stale SSE events after clearMessages
   const streamVersionRef = useRef(0);
@@ -1301,6 +1355,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         finishCurrentSubmission();
         return { status: "failed" };
       }
+      if (confirmationRecovery !== null) {
+        setConfirmationRecovery(null);
+      }
       const {
         messages: optimisticMessages,
         userMessageId,
@@ -1360,13 +1417,22 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
         if (isChatStreamNeedsConfirmation(submitData)) {
           pendingProjectIdRef.current = null;
-          const confirmationMessages = projectConfirmationMessages(
+          const confirmationMessages = projectOwnedConfirmationMessages(
             messagesRef.current,
             submitData.suggestions,
             assistantMessageId,
           );
-          messagesRef.current = confirmationMessages;
-          setMessages(confirmationMessages);
+          if (confirmationMessages) {
+            messagesRef.current = confirmationMessages;
+            setMessages(confirmationMessages);
+            setConfirmationRecovery(null);
+          } else {
+            setConfirmationRecovery({
+              owner: submissionOwner,
+              submissionId,
+              suggestions: submitData.suggestions,
+            });
+          }
           submissionUncertaintyRef.current = null;
           setPendingSubmissionId(null);
           setError(null);
@@ -1668,6 +1734,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       finalizeRunStatusUnavailable,
       reconcileCurrentRun,
       clearReconcileOwners,
+      confirmationRecovery,
     ],
   );
 
@@ -1717,6 +1784,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     statusRetryCountRef.current = 0;
     clearReconcileOwners();
     setMessages([]);
+    setConfirmationRecovery(null);
     setSessionId(null);
     sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
     setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
@@ -1899,12 +1967,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             setError(statusUnavailable);
             return;
           }
-          const projected = projectConfirmationMessages(
-            messagesRef.current,
-            outcome.suggestions,
-          );
-          messagesRef.current = projected;
-          setMessages(projected);
+          setConfirmationRecovery({
+            owner,
+            submissionId,
+            suggestions: outcome.suggestions,
+          });
           setError(null);
           advancePersistedSubmissionFence(owner, submissionId);
           return;
@@ -1988,12 +2055,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           setError(statusUnavailable);
           return;
         }
-        const projected = projectConfirmationMessages(
-          messagesRef.current,
-          outcome.suggestions,
-        );
-        messagesRef.current = projected;
-        setMessages(projected);
+        setConfirmationRecovery({
+          owner: pending.owner,
+          submissionId: pending.submissionId,
+          suggestions: outcome.suggestions,
+        });
         setError(null);
         advancePersistedSubmissionFence(pending.owner, pending.submissionId);
         return;
