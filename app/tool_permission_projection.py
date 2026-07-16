@@ -114,6 +114,10 @@ def tool_permission_public_event_payload(
     card = tool_permission_card_from_payload(run_id=run_id, event_type=event_type, payload=payload)
     if card is None:
         return sanitize_tool_permission_payload(payload)
+    # Ordinary-user playback is historical only. Governance actions belong to
+    # the tenant-admin inbox, so do not project raw decision controls here.
+    card.pop("decision_endpoint", None)
+    card.pop("decision_options", None)
     return {
         "visible_to_user": bool(payload.get("visible_to_user", True)),
         "tool_permission_card": card,

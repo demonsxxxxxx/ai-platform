@@ -8,9 +8,10 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from app import repositories
+from app.capabilities import required_artifact_types_for_skill
 from app.control_plane_contracts import artifact_lineage_contract, standard_trace_id
 from app.context_builder import executor_context_pack_from_snapshot
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
@@ -41,11 +42,11 @@ from app.skills.dependencies import skill_dependency_ids, with_skill_dependencie
 from app.skills.stager import SkillStager
 from app.storage import ObjectStorage
 from app.tool_policy import evaluate_tool_policy
+from app.tool_permission_lifecycle import TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS
 
 NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
 _CONTROLLED_RUNNER_SKILLS = {"qa-file-reviewer", "baoyu-translate"}
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"accepted", "completed", "succeeded"}
-_TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS = 900.0
 _TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
 
 
@@ -295,8 +296,10 @@ async def resolve_claude_sdk_tool_permission(
     skill_id: str,
     trace_id: str,
     request: dict[str, Any],
-    wait_timeout_seconds: float = _TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS,
+    wait_timeout_seconds: float = TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS,
     poll_interval_seconds: float = _TOOL_PERMISSION_POLL_INTERVAL_SECONDS,
+    monotonic: Callable[[], float] | None = None,
+    sleep: Callable[[float], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     """Wait for the exact tenant/run-scoped decision instead of letting a pending gate succeed."""
     async with transaction() as conn:
@@ -318,7 +321,9 @@ async def resolve_claude_sdk_tool_permission(
     request_id = str(outcome.get("permission_request_id") or "")
     if not request_id:
         return {"allowed": False, "reason": "tool_permission_request_missing"}
-    deadline = asyncio.get_running_loop().time() + max(float(wait_timeout_seconds), 0.0)
+    monotonic = monotonic or asyncio.get_running_loop().time
+    sleep = sleep or asyncio.sleep
+    deadline = monotonic() + max(float(wait_timeout_seconds), 0.0)
     while True:
         async with transaction() as conn:
             expired = await repositories.expire_tool_permission_request(
@@ -367,7 +372,7 @@ async def resolve_claude_sdk_tool_permission(
                     "reason": f"tool_permission_{pending_status or 'unavailable'}",
                     "permission_request_id": request_id,
                 }
-        if asyncio.get_running_loop().time() >= deadline:
+        if monotonic() >= deadline:
             async with transaction() as conn:
                 expired = await repositories.expire_tool_permission_request(
                     conn,
@@ -382,7 +387,7 @@ async def resolve_claude_sdk_tool_permission(
                 "permission_request_id": request_id,
                 "expired": expired is not None,
             }
-        await asyncio.sleep(max(float(poll_interval_seconds), 0.01))
+        await sleep(max(float(poll_interval_seconds), 0.01))
 
 
 def _execution_tier(payload: RunPayload) -> str:
@@ -403,9 +408,9 @@ def _ordinary_run_requires_sandbox(payload: RunPayload) -> bool:
     ).requires_real_sandbox
 
 
-def _requires_user_visible_artifact(payload: RunPayload) -> bool:
-    """Identify file Skills whose successful executor result must carry an artifact."""
-    return bool(payload.file_ids) and payload.skill_id in _CONTROLLED_RUNNER_SKILLS
+def _required_artifact_types(payload: RunPayload) -> tuple[str, ...]:
+    """Resolve the capability-owned artifact contract for this selected Skill."""
+    return required_artifact_types_for_skill(payload.skill_id)
 
 
 def _sandbox_workspace(settings: object, payload: RunPayload) -> Path:
@@ -1270,7 +1275,7 @@ class ClaudeAgentWorkerAdapter:
             "skill_manifests": skill_manifests,
             "sandbox_provider": sandbox_provider,
             "sandbox_runtime_used": True,
-            "artifact_contract_required": _requires_user_visible_artifact(payload),
+            "required_artifact_types": list(_required_artifact_types(payload)),
             "sandbox_timings": sandbox_timings,
         }
         if runtime_status not in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
@@ -1416,7 +1421,7 @@ class ClaudeAgentWorkerAdapter:
                     "used_skills_source": used_skills_source,
                     "inferred_used_skills": inferred_used_skill_names,
                     "skill_manifests": skill_manifests,
-                    "artifact_contract_required": _requires_user_visible_artifact(payload),
+                    "required_artifact_types": list(_required_artifact_types(payload)),
                 },
             )
         controlled_result = await self._try_controlled_runner(
@@ -1609,7 +1614,7 @@ class ClaudeAgentWorkerAdapter:
                 "used_skills_source": "platform_controlled_runner",
                 "controlled_runner_used": True,
                 "controlled_runner_reason": "empty_bash_tool_input_loop",
-                "artifact_contract_required": _requires_user_visible_artifact(payload),
+                "required_artifact_types": list(_required_artifact_types(payload)),
             },
             artifacts=artifacts,
             executor_payload={
@@ -1627,7 +1632,7 @@ class ClaudeAgentWorkerAdapter:
                 "skill_manifests": skill_manifests,
                 "controlled_runner_used": True,
                 "controlled_runner_reason": "empty_bash_tool_input_loop",
-                "artifact_contract_required": _requires_user_visible_artifact(payload),
+                "required_artifact_types": list(_required_artifact_types(payload)),
             },
         )
 

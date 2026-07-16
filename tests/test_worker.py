@@ -630,19 +630,45 @@ async def test_worker_fails_and_terminalizes_when_a_pending_permission_would_byp
 
 
 @pytest.mark.asyncio
-async def test_worker_rejects_file_required_skill_success_without_an_artifact(monkeypatch):
+@pytest.mark.parametrize(
+    ("case", "artifact_types", "required_artifact_types", "skill_id", "expected_status"),
+    [
+        ("correct_type", ["reviewed_docx"], ["reviewed_docx"], "qa-file-reviewer", "succeeded"),
+        ("wrong_type_only", ["execution_log"], ["reviewed_docx"], "qa-file-reviewer", "failed"),
+        ("mixed_types", ["execution_log", "reviewed_docx"], ["reviewed_docx"], "qa-file-reviewer", "succeeded"),
+        ("non_required_non_claude", [], [], "general-chat", "succeeded"),
+    ],
+)
+async def test_worker_enforces_declared_required_artifact_types(
+    monkeypatch,
+    case,
+    artifact_types,
+    required_artifact_types,
+    skill_id,
+    expected_status,
+):
     calls = []
 
-    class NoArtifactAdapter:
+    class ArtifactContractAdapter:
         async def submit_run(self, payload, event_sink=None):
             return ExecutorResult(
                 status="succeeded",
-                adapter_version="no-artifact/1",
+                adapter_version="artifact-contract/1",
                 executor_type="fake",
                 executor_version="test",
                 capabilities={},
                 result={"message": "done"},
-                executor_payload={"artifact_contract_required": True},
+                artifacts=[
+                    ArtifactManifest(
+                        artifact_type=artifact_type,
+                        label=artifact_type,
+                        content_type="text/plain",
+                        storage_key=f"artifacts/{artifact_type}.txt",
+                        size_bytes=1,
+                    )
+                    for artifact_type in artifact_types
+                ],
+                executor_payload={"required_artifact_types": required_artifact_types},
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
@@ -656,7 +682,11 @@ async def test_worker_rejects_file_required_skill_success_without_an_artifact(mo
         return True
 
     async def complete_run(conn, **kwargs):
-        raise AssertionError("a file-required Skill without an artifact must not complete")
+        calls.append(("complete", kwargs["run_id"]))
+        return True
+
+    async def create_artifact(conn, **kwargs):
+        calls.append(("artifact", kwargs["artifact_type"]))
 
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs["event_type"], kwargs["stage"]))
@@ -667,13 +697,30 @@ async def test_worker_rejects_file_required_skill_success_without_an_artifact(mo
     monkeypatch.setattr("app.worker.repositories.has_pending_tool_permission_requests", has_pending)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
-    outcome = await process_run_payload(base_payload(), AdapterRegistry({"fake": NoArtifactAdapter()}))
+    outcome = await process_run_payload(
+        base_payload(
+            skill_id=skill_id,
+            agent_id="general-agent" if skill_id == "general-chat" else "qa-word-review",
+            file_ids=[] if skill_id == "general-chat" else ["file-a"],
+        ),
+        AdapterRegistry({"fake": ArtifactContractAdapter()}),
+    )
 
-    assert outcome.status == "failed"
-    assert ("fail", "required_artifact_missing", "The file-required Skill produced no user-visible artifact.") in calls
+    assert outcome.status == expected_status, case
+    if expected_status == "failed":
+        assert (
+            "fail",
+            "required_artifact_missing",
+            "The file-required Skill did not produce every required artifact type.",
+        ) in calls
+        assert not any(call[0] == "complete" for call in calls)
+    else:
+        assert ("complete", "run-a") in calls
+        assert {call[1] for call in calls if call[0] == "artifact"} == set(artifact_types)
 
 
 @pytest.mark.asyncio

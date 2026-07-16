@@ -77,6 +77,37 @@ test("uses a decided fallback when the history has no known decision", () => {
   );
 });
 
+test("projects terminal permission lifecycle states as read-only history", () => {
+  assert.deepEqual(
+    getOrdinaryUserToolPermissionPresentation({ ...pendingPart, status: "expired" }),
+    {
+      titleKey: "chat.toolPermission.expired.title",
+      messageKey: "chat.toolPermission.expired.message",
+    },
+  );
+  assert.deepEqual(
+    getOrdinaryUserToolPermissionPresentation({ ...pendingPart, status: "cancelled" }),
+    {
+      titleKey: "chat.toolPermission.cancelled.title",
+      messageKey: "chat.toolPermission.cancelled.message",
+    },
+  );
+  assert.deepEqual(
+    getOrdinaryUserToolPermissionPresentation({ ...pendingPart, status: "failed" }),
+    {
+      titleKey: "chat.toolPermission.terminalFailed.title",
+      messageKey: "chat.toolPermission.terminalFailed.message",
+    },
+  );
+  assert.deepEqual(
+    getOrdinaryUserToolPermissionPresentation({ ...pendingPart, status: "invalidated" }),
+    {
+      titleKey: "chat.toolPermission.invalidated.title",
+      messageKey: "chat.toolPermission.invalidated.message",
+    },
+  );
+});
+
 test("renders every chat permission history card read-only even when legacy callers claim admin governance", () => {
   const ReadOnlyCard = ToolPermissionCardItem as React.ComponentType<
     Record<string, unknown>

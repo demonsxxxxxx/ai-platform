@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -3191,7 +3192,13 @@ async def test_expired_permission_request_emits_tenant_run_scoped_terminal_audit
                 {
                     "id": "tpr-a",
                     "user_id": "user-a",
+                    "run_id": "run-a",
                     "trace_id": "trace-a",
+                    "tool_id": "Bash",
+                    "tool_call_id": "call-a",
+                    "action": "execute",
+                    "risk_level": "high",
+                    "write_capable": True,
                 }
             )
 
@@ -3216,9 +3223,10 @@ async def test_expired_permission_request_emits_tenant_run_scoped_terminal_audit
 
     assert row["id"] == "tpr-a"
     assert "status = 'expired'" in calls[0][1]
-    assert calls[0][2] == ("tenant-a", "user-a", "run-a", "tpr-a")
+    assert calls[0][2] == ("tenant-a", "user-a", "user-a", "run-a", "run-a", "tpr-a", "tpr-a")
     assert calls[1][1]["payload"]["permission_request_id"] == "tpr-a"
     assert calls[1][1]["payload"]["status"] == "expired"
+    assert calls[1][1]["payload"]["tool_call_id"] == "call-a"
     assert calls[2][1]["tenant_id"] == "tenant-a"
     assert calls[2][1]["target_id"] == "tpr-a"
 
@@ -5769,7 +5777,18 @@ async def test_create_tool_permission_request_persists_pending_snapshot():
 
 @pytest.mark.asyncio
 async def test_decide_tool_permission_request_sets_decision_expiry():
-    conn = RecordingConnection()
+    class DecisionConnection:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            if "set status = 'expired'" in normalized:
+                return SingleRowCursor(None)
+            return SingleRowCursor({"id": "tpr-a"})
+
+    conn = DecisionConnection()
 
     row = await repositories.decide_tool_permission_request(
         conn,
@@ -5783,12 +5802,19 @@ async def test_decide_tool_permission_request_sets_decision_expiry():
         expires_in_seconds=900,
     )
 
-    sql, params = conn.calls[0]
-    assert row["id"] == "step-a"
+    sql, params = conn.calls[-1]
+    assert row["id"] == "tpr-a"
+    assert "with executable_run as" in sql
+    assert "for update" in sql
+    assert "cancel_requested_at is null" in sql
+    assert "executable_run.id = permission_request.run_id" in sql
     assert "update run_tool_permission_requests" in sql
     assert "expires_at = now() + (%s * interval '1 second')" in sql
+    assert "permission_request.expires_at > now()" in sql
     assert "decision_payload_json = %s::jsonb" in sql
     assert params == (
+        "tenant-a",
+        "run-a",
         "allow_once",
         "approved once",
         '{"source": "card"}',
@@ -5798,6 +5824,172 @@ async def test_decide_tool_permission_request_sets_decision_expiry():
         "run-a",
         "tpr-a",
     )
+
+
+@pytest.mark.asyncio
+async def test_decide_tool_permission_request_terminalizes_at_or_beyond_expiry(monkeypatch):
+    calls = []
+
+    class ExpiredDecisionConnection:
+        async def execute(self, sql, params):
+            calls.append(("sql", " ".join(sql.split()), params))
+            return SingleRowCursor(
+                {
+                    "id": "tpr-expired",
+                    "run_id": "run-a",
+                    "user_id": "user-a",
+                    "trace_id": "trace-a",
+                    "tool_id": "Bash",
+                    "tool_call_id": "call-expired",
+                }
+            )
+
+    async def append_event(conn, **kwargs):
+        calls.append(("event", kwargs))
+
+    async def append_audit_log(conn, **kwargs):
+        calls.append(("audit", kwargs))
+
+    monkeypatch.setattr("app.repositories.append_event", append_event)
+    monkeypatch.setattr("app.repositories.append_audit_log", append_audit_log)
+
+    result = await repositories.decide_tool_permission_request(
+        ExpiredDecisionConnection(),
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        request_id="tpr-expired",
+        decision="allow_once",
+        reason="too late",
+        decision_payload_json={},
+    )
+
+    assert result is None
+    assert "expires_at <= now()" in calls[0][1]
+    assert calls[0][2] == ("tenant-a", "user-a", "user-a", "run-a", "run-a", "tpr-expired", "tpr-expired")
+    assert calls[1][1]["payload"]["status"] == "expired"
+    assert not any("set status = 'decided'" in call[1] for call in calls if call[0] == "sql")
+
+
+@pytest.mark.asyncio
+async def test_decision_loses_a_barrier_synchronized_cancel_race(monkeypatch):
+    class DecisionCancelRaceConnection:
+        def __init__(self):
+            self.decision_ready = asyncio.Event()
+            self.cancel_terminalized = asyncio.Event()
+            self.terminalizations = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            if "set status = 'expired'" in normalized:
+                return SingleRowCursor(None)
+            if "with executable_run as" in normalized:
+                self.decision_ready.set()
+                await self.cancel_terminalized.wait()
+                return SingleRowCursor(None)
+            if normalized.startswith("update runs"):
+                await self.decision_ready.wait()
+                return SingleRowCursor({"id": "run-a", "status": "running", "trace_id": "trace-a"})
+            if normalized.startswith("update run_tool_permission_requests"):
+                self.terminalizations.append(params)
+                self.cancel_terminalized.set()
+                return FakeCursor()
+            raise AssertionError(normalized)
+
+    async def no_active_leases(conn, *, tenant_id, run_id):
+        return []
+
+    async def no_op_event_or_audit(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
+    monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
+    monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
+    conn = DecisionCancelRaceConnection()
+
+    decision_task = asyncio.create_task(
+        repositories.decide_tool_permission_request(
+            conn,
+            tenant_id="tenant-a",
+            user_id="user-a",
+            run_id="run-a",
+            request_id="tpr-a",
+            decision="allow_once",
+            reason="approve",
+            decision_payload_json={},
+        )
+    )
+    cancel_task = asyncio.create_task(
+        repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+    )
+    decision, cancellation = await asyncio.gather(decision_task, cancel_task)
+
+    assert decision is None
+    assert cancellation == {"run_id": "run-a", "status": "cancel_requested"}
+    assert conn.terminalizations == [("cancelled", "run_cancel_requested", "tenant-a", "run-a")]
+
+
+@pytest.mark.asyncio
+async def test_request_creation_loses_a_barrier_synchronized_cancel_race(monkeypatch):
+    class RequestCancelRaceConnection:
+        def __init__(self):
+            self.request_ready = asyncio.Event()
+            self.cancel_terminalized = asyncio.Event()
+            self.terminalizations = []
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            if "with eligible_run as" in normalized:
+                self.request_ready.set()
+                await self.cancel_terminalized.wait()
+                return SingleRowCursor(None)
+            if normalized.startswith("update runs"):
+                await self.request_ready.wait()
+                return SingleRowCursor({"id": "run-a", "status": "running", "trace_id": "trace-a"})
+            if normalized.startswith("update run_tool_permission_requests"):
+                self.terminalizations.append(params)
+                self.cancel_terminalized.set()
+                return FakeCursor()
+            raise AssertionError(normalized)
+
+    async def no_active_leases(conn, *, tenant_id, run_id):
+        return []
+
+    async def no_op_event_or_audit(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(repositories, "list_active_sandbox_leases_for_run", no_active_leases)
+    monkeypatch.setattr(repositories, "append_event", no_op_event_or_audit)
+    monkeypatch.setattr(repositories, "append_audit_log", no_op_event_or_audit)
+    conn = RequestCancelRaceConnection()
+
+    request_task = asyncio.create_task(
+        repositories.create_tool_permission_request(
+            conn,
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            trace_id="trace-a",
+            tool_id="Bash",
+            tool_call_id="call-a",
+            action="execute",
+            risk_level="high",
+            write_capable=True,
+            reason="write requested",
+            request_payload_json={},
+        )
+    )
+    cancel_task = asyncio.create_task(
+        repositories.request_run_cancel(conn, tenant_id="tenant-a", user_id="user-a", run_id="run-a")
+    )
+    cancellation = await cancel_task
+    with pytest.raises(RepositoryConflictError, match="tool_permission_run_not_open"):
+        await request_task
+
+    assert cancellation == {"run_id": "run-a", "status": "cancel_requested"}
+    assert conn.terminalizations == [("cancelled", "run_cancel_requested", "tenant-a", "run-a")]
 
 
 @pytest.mark.asyncio
@@ -5812,12 +6004,14 @@ async def test_list_tool_permission_inbox_filters_current_user_and_status():
         limit=25,
     )
 
-    sql, params = conn.calls[0]
+    sql, params = conn.calls[-1]
     assert "from run_tool_permission_requests" in sql
     assert "where tenant_id = %s and user_id = %s" in sql
     assert "(%s = 'all' or status = %s)" in sql
+    assert "expires_at > now()" in sql
     assert "order by created_at desc, id desc" in sql
     assert params == ("tenant-a", "user-a", "pending", "pending", 25)
+    assert "set status = 'expired'" in conn.calls[0][0]
     assert rows == []
 
 
@@ -5832,12 +6026,14 @@ async def test_list_tool_permission_inbox_for_tenant_excludes_admin_user_filter(
         limit=25,
     )
 
-    sql, params = conn.calls[0]
+    sql, params = conn.calls[-1]
     assert "from run_tool_permission_requests" in sql
     assert "where tenant_id = %s" in sql
     assert "user_id =" not in sql
     assert "(%s = 'all' or status = %s)" in sql
+    assert "expires_at > now()" in sql
     assert params == ("tenant-a", "pending", "pending", 25)
+    assert "set status = 'expired'" in conn.calls[0][0]
     assert rows == []
 
 

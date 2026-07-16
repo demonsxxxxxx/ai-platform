@@ -21,7 +21,13 @@ from app.executors.claude_agent_worker import (
 from app.executors.claude_agent_worker import _allowed_skill_names
 from app.executors.claude_agent_worker import _inferred_used_skill_names
 from app.executors.claude_agent_worker import _ordinary_run_requires_sandbox
+from app.executors.claude_agent_worker import _required_artifact_types
+from app.executors.claude_agent_sdk_runner import _sdk_run_timeout_seconds
 from app.storage import StoredObject
+from app.tool_permission_lifecycle import (
+    TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS,
+    TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS,
+)
 from app.executors.claude_agent_sdk_runner import build_sdk_env, build_skill_prompt, run_claude_agent_sdk
 from app.executors.registry import AdapterRegistry
 from app.runtime.sandbox.container_provider import (
@@ -199,6 +205,173 @@ async def test_tool_permission_waits_for_admin_decision_before_allowing_executio
 
     assert result["allowed"] is True
     assert calls == ["call-1", "call-1"]
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_wait_accepts_a_decision_after_the_former_outer_timeout_without_sleep(monkeypatch):
+    calls = []
+    clock = {"value": 0.0}
+
+    async def fake_broker(conn, **kwargs):
+        calls.append(("broker", kwargs["request"]["tool_call_id"]))
+        return (
+            {
+                "allowed": False,
+                "reason": "tool_permission_required",
+                "permission_request_id": "tpr-delayed",
+            }
+            if len(calls) == 1
+            else {
+                "allowed": True,
+                "reason": "tool_permission_decided",
+                "permission_request_id": "tpr-delayed",
+            }
+        )
+
+    async def fake_expire(conn, **kwargs):
+        return None
+
+    async def fake_get_request(conn, **kwargs):
+        return {"status": "decided" if clock["value"] > 130 else "pending"}
+
+    async def advance_clock(delay):
+        clock["value"] += delay
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-delayed"},
+        wait_timeout_seconds=TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS,
+        poll_interval_seconds=131.0,
+        monotonic=lambda: clock["value"],
+        sleep=advance_clock,
+    )
+
+    assert result["allowed"] is True
+    assert clock["value"] == 131.0
+    assert calls == [("broker", "call-delayed"), ("broker", "call-delayed")]
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_wait_fails_closed_when_cancelled(monkeypatch):
+    async def fake_broker(conn, **kwargs):
+        return {"allowed": False, "reason": "tool_permission_required", "permission_request_id": "tpr-cancelled"}
+
+    async def fake_expire(conn, **kwargs):
+        return None
+
+    async def fake_get_request(conn, **kwargs):
+        return {"status": "cancelled"}
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-cancelled"},
+    )
+
+    assert result == {
+        "allowed": False,
+        "reason": "tool_permission_cancelled",
+        "permission_request_id": "tpr-cancelled",
+    }
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_wait_fails_closed_when_expired(monkeypatch):
+    async def fake_broker(conn, **kwargs):
+        return {"allowed": False, "reason": "tool_permission_required", "permission_request_id": "tpr-expired"}
+
+    async def fake_expire(conn, **kwargs):
+        return {"id": "tpr-expired", "status": "expired"}
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-expired"},
+    )
+
+    assert result == {
+        "allowed": False,
+        "reason": "tool_permission_expired",
+        "permission_request_id": "tpr-expired",
+    }
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_wait_fails_closed_at_its_deadline(monkeypatch):
+    clock = {"value": 0.0}
+
+    async def fake_broker(conn, **kwargs):
+        return {"allowed": False, "reason": "tool_permission_required", "permission_request_id": "tpr-timeout"}
+
+    async def fake_expire(conn, **kwargs):
+        return None
+
+    async def fake_get_request(conn, **kwargs):
+        return {"status": "pending"}
+
+    async def advance_clock(delay):
+        clock["value"] += delay
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-timeout"},
+        wait_timeout_seconds=5.0,
+        poll_interval_seconds=5.0,
+        monotonic=lambda: clock["value"],
+        sleep=advance_clock,
+    )
+
+    assert result == {
+        "allowed": False,
+        "reason": "tool_permission_wait_timed_out",
+        "permission_request_id": "tpr-timeout",
+        "expired": False,
+    }
 
 
 def _snapshot_hash(files):
@@ -669,6 +842,7 @@ async def test_agent_run_records_pinned_manifest_dependency_graph(monkeypatch, t
     assert result.status == "succeeded"
     assert runtime_requests[0].skill_ids == ["qa-file-reviewer", "legacy-helper"]
     assert result.executor_payload["skill_manifests"][0]["dependency_ids"] == ["legacy-helper"]
+    assert result.executor_payload["required_artifact_types"] == ["reviewed_docx"]
 
 
 def test_general_chat_does_not_stage_all_platform_skills_by_default():
@@ -678,6 +852,22 @@ def test_general_chat_does_not_stage_all_platform_skills_by_default():
     )
 
     assert selected == []
+
+
+def test_file_skill_artifact_contract_is_owned_by_the_selected_capability():
+    assert _required_artifact_types(payload(skill_id="qa-file-reviewer")) == ("reviewed_docx",)
+    assert _required_artifact_types(payload(skill_id="baoyu-translate")) == ("translated_docx",)
+    assert _required_artifact_types(payload(skill_id="general-chat", file_ids=[])) == ()
+
+
+def test_sandbox_brokered_sdk_timeout_covers_the_shared_permission_transport_deadline():
+    settings = types.SimpleNamespace(claude_agent_sdk_timeout_seconds=5.0)
+
+    assert (
+        _sdk_run_timeout_seconds(settings, sandbox_brokered=True, full_access=False)
+        == TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS
+    )
+    assert _sdk_run_timeout_seconds(settings, sandbox_brokered=False, full_access=False) == 5.0
 
 
 @pytest.mark.asyncio

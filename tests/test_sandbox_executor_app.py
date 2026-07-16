@@ -10,7 +10,11 @@ from fastapi.testclient import TestClient
 
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.contracts import ExecutorTaskRequest
-from app.runtime.sandbox.executor_app import create_executor_app
+from app.runtime.sandbox.executor_app import _default_callback_sender, create_executor_app
+from app.tool_permission_lifecycle import (
+    TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS,
+    TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS,
+)
 
 
 EXECUTOR_AUTH_TOKEN = "executor-secret"
@@ -88,6 +92,41 @@ def test_executor_health_returns_ready(tmp_path):
 
     assert response.status_code == 200
     assert response.json() == {"status": "ready"}
+
+
+@pytest.mark.asyncio
+async def test_default_permission_callback_transport_outlives_the_control_plane_wait(monkeypatch):
+    observed = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"allowed": True}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def post(self, url, *, json, headers):
+            observed.update({"url": url, "payload": json, "headers": headers})
+            return FakeResponse()
+
+    def build_client(*, timeout):
+        observed["timeout"] = timeout
+        return FakeClient()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.httpx.AsyncClient", build_client)
+
+    result = await _default_callback_sender("https://control-plane.test/permission", {"request": "a"}, "token-a")
+
+    assert result == {"allowed": True}
+    assert observed["timeout"] == TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS
+    assert TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS > TOOL_PERMISSION_WAIT_TIMEOUT_SECONDS
 
 
 def test_executor_runtime_identity_requires_lease_credential_and_returns_only_effective_ids(tmp_path, monkeypatch):
@@ -283,11 +322,14 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
         for callback in callbacks
         for event in callback.get("events", [])
     )
-    assert any(
-        event["type"] == "tool_call_started"
+    permission_event_types = [
+        event["type"]
         for callback in callbacks
         for event in callback.get("events", [])
-    )
+        if event.get("payload", {}).get("tool_call_id") == "tool-a"
+    ]
+    assert permission_event_types == ["tool_permission_requested", "tool_permission_denied"]
+    assert "tool_call_completed" not in permission_event_types
 
 
 def test_executor_execute_fails_when_claude_sdk_disabled(tmp_path, monkeypatch):
@@ -464,7 +506,7 @@ def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeyp
         for event in callback_payload.get("events", [])
         if event.get("payload", {}).get("tool_call_id") == "tool-mcp-a"
     ]
-    assert [event["type"] for event in permission_events] == ["tool_call_started", "tool_call_completed"]
+    assert [event["type"] for event in permission_events] == ["tool_permission_requested", "tool_permission_authorized"]
     assert permission_events[-1]["payload"]["allowed"] is True
     assert permission_events[-1]["payload"]["reason"] == "tool_permission_allowed"
 
@@ -538,7 +580,7 @@ def test_executor_permission_broker_failures_emit_controlled_denial_event(
         for event in callback_payload.get("events", [])
         if event.get("payload", {}).get("tool_call_id") == "tool-mcp-denied"
     ]
-    assert [event["type"] for event in permission_events] == ["tool_call_started", "tool_permission_denied"]
+    assert [event["type"] for event in permission_events] == ["tool_permission_requested", "tool_permission_denied"]
     assert permission_events[-1]["payload"]["allowed"] is False
     assert permission_events[-1]["payload"]["reason"] == expected_reason
 

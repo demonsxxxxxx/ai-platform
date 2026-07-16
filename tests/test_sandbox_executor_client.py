@@ -3,6 +3,7 @@ import pytest
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorCallbackEvent, ExecutorTaskRequest
 from app.runtime.sandbox.event_normalizer import callback_event_to_run_events, container_started_event
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
+from app.tool_permission_lifecycle import TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS
 
 
 def lease() -> ContainerLease:
@@ -164,7 +165,7 @@ async def test_executor_client_posts_task_request(monkeypatch):
         (
             "http://executor.test/v1/tasks/execute",
             request.model_dump(),
-            130.0,
+            TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS,
         )
     ]
 

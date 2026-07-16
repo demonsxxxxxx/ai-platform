@@ -417,9 +417,21 @@
         "message": "An administrator did not approve this action; it remains denied.",
         "title": "Action not authorized"
       },
+      "expired": {
+        "message": "This tool permission expired before it was decided.",
+        "title": "Tool permission expired"
+      },
+      "invalidated": {
+        "message": "The run finished before this tool permission could be used.",
+        "title": "Tool permission closed"
+      },
       "pending": {
         "message": "An administrator must handle this action before it can continue.",
         "title": "Waiting for administrator review"
+      },
+      "cancelled": {
+        "message": "The run was cancelled before this tool permission could be used.",
+        "title": "Tool permission cancelled"
       },
       "readOnly": "Read-only action",
       "recordedDecision": "Recorded decision: {{decision}}",
@@ -431,6 +443,10 @@
         "medium": "Medium"
       },
       "submitting": "Submitting…",
+      "terminalFailed": {
+        "message": "This tool permission closed because the run could not continue.",
+        "title": "Tool permission closed"
+      },
       "writeCapable": "Write-capable action"
     },
     "message": {

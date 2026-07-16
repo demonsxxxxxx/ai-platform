@@ -2439,11 +2439,14 @@ async def process_run_payload(
                     run_id=payload.run_id,
                 )
             )
-            missing_required_artifact = (
-                result.status == "succeeded"
-                and result.executor_payload.get("artifact_contract_required") is True
-                and not result.artifacts
-            )
+            required_artifact_types = {
+                str(value)
+                for value in result.executor_payload.get("required_artifact_types", [])
+                if isinstance(value, str) and value
+            }
+            produced_artifact_types = {artifact.artifact_type for artifact in result.artifacts}
+            missing_required_artifact_types = required_artifact_types - produced_artifact_types
+            missing_required_artifact = result.status == "succeeded" and bool(missing_required_artifact_types)
             if pending_permission_blocks_success or missing_required_artifact:
                 error_code = (
                     "tool_permission_pending"
@@ -2453,7 +2456,7 @@ async def process_run_payload(
                 error_message = (
                     "A pending tool-permission request blocks successful completion."
                     if pending_permission_blocks_success
-                    else "The file-required Skill produced no user-visible artifact."
+                    else "The file-required Skill did not produce every required artifact type."
                 )
                 result = replace(
                     result,
@@ -2463,6 +2466,7 @@ async def process_run_payload(
                         **result.result,
                         "message": error_message,
                         "error_code": error_code,
+                        "missing_required_artifact_types": sorted(missing_required_artifact_types),
                     },
                 )
                 artifact_records = []

@@ -34,6 +34,7 @@ from app.runtime.sandbox.contracts import (
 )
 from app.settings import get_settings
 from app.storage import ObjectStorage
+from app.tool_permission_lifecycle import TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS
 
 
 CallbackPayload = dict[str, Any]
@@ -48,7 +49,7 @@ ExecutorRunner = Callable[
 
 async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
     headers = {"X-AI-Platform-Callback-Token": token}
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS) as client:
         response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
@@ -332,7 +333,7 @@ async def _default_executor_runner(
         }
         await emit_event(
             AgentEvent(
-                type="tool_call_started",
+                type="tool_permission_requested",
                 message=f"{tool_name} requested permission",
                 payload=payload,
                 admin_only=True,
@@ -342,7 +343,7 @@ async def _default_executor_runner(
         async def emit_permission_outcome(outcome: dict[str, Any]) -> None:
             await emit_event(
                 AgentEvent(
-                    type="tool_call_completed" if outcome.get("allowed") is True else "tool_permission_denied",
+                    type="tool_permission_authorized" if outcome.get("allowed") is True else "tool_permission_denied",
                     message=f"{tool_name} permission {'allowed' if outcome.get('allowed') is True else 'denied'}",
                     payload={
                         **payload,

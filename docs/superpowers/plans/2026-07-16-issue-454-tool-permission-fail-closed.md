@@ -36,3 +36,32 @@ with pending requests, terminal request cleanup, artifact-required failure, and
 admin/ordinary settings routing.  Then run affected Python and frontend tests,
 `python -m compileall -q app tools scripts`, the relevant projection/contract
 check, and `git diff --check`.  No live 211 request will be read or mutated.
+
+## Generation 2 repair boundary
+
+The first implementation established the basic fail-closed path.  This repair
+keeps that authority chain and closes six race/projection gaps without adding a
+second permission system:
+
+1. The sandbox callback transport, outer worker-to-sandbox execution, and
+   sandbox-brokered SDK run deadlines share one authoritative permission wait
+   plus a fixed cancellation margin, so a valid delayed decision is not
+   rewritten as a broker failure or truncated by a shorter enclosing timeout.
+2. `tool_permission_terminalized` is a public lifecycle event.  Its payload
+   must carry only the safe exact request/run/tool identifiers and terminal
+   status needed to close an ordinary-user card; it never grants controls.
+3. Request creation and decision SQL must lock and test the owning run, reject
+   cancellation/terminal states, and reject an elapsed expiry in the same
+   update.  A failed race is a denial, never a decision reset.
+4. Both queued and running cancellation transitions must terminalize pending
+   requests in their existing transaction and record the system action.
+5. PreToolUse only records authorization state.  A completed tool event needs
+   an actual post-tool source, so there is no synthetic completion fallback.
+6. Required artifact types come from the authoritative selected capability
+   definition and travel with the executor result; the worker compares declared
+   types rather than treating any workspace file as delivery.
+
+Compatibility: `pending`, `decided`, `consumed`, and existing terminal request
+rows remain readable.  New terminal cards are display-only and preserve the
+existing administrator-only inbox authorization.  Tests use controllable
+deadlines/barriers rather than real waits for timing or cancellation races.

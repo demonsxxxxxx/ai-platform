@@ -96,7 +96,13 @@ export interface ArtifactPart {
 }
 
 export type ToolPermissionDecision = "allow_once" | "allow_for_run" | "deny";
-export type ToolPermissionStatus = "pending" | "decided";
+export type ToolPermissionStatus =
+  | "pending"
+  | "decided"
+  | "expired"
+  | "cancelled"
+  | "failed"
+  | "invalidated";
 
 export interface ToolPermissionPart {
   type: "tool_permission";

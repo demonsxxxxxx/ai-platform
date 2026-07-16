@@ -346,6 +346,24 @@
     "goodMorning": "좋은 아침이에요, {{name}}",
     "helpDocs": "도움말 문서",
     "keyboardShortcuts": "키보드 단축키",
+    "toolPermission": {
+      "cancelled": {
+        "message": "실행이 취소되어 이 도구 권한은 사용되지 않았습니다.",
+        "title": "도구 권한이 취소됨"
+      },
+      "expired": {
+        "message": "이 도구 권한은 결정되기 전에 만료되었습니다.",
+        "title": "도구 권한 만료됨"
+      },
+      "invalidated": {
+        "message": "실행이 종료되어 이 도구 권한은 사용되지 않았습니다.",
+        "title": "도구 권한 종료됨"
+      },
+      "terminalFailed": {
+        "message": "실행을 계속할 수 없어 이 도구 권한이 종료되었습니다.",
+        "title": "도구 권한 종료됨"
+      }
+    },
     "message": {
       "allFiles": "모든 파일",
       "args": "인수",

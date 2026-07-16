@@ -13,6 +13,8 @@ SUPPORTED_AGENT_EVENT_TYPES = {
     "tool_call_started",
     "tool_call_delta",
     "tool_call_completed",
+    "tool_permission_requested",
+    "tool_permission_authorized",
     "tool_permission_denied",
     "browser_snapshot",
     "workspace_file_changed",

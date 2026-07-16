@@ -6,6 +6,7 @@ import httpx
 
 from app.runtime.sandbox.contracts import ExecutorTaskRequest
 from app.settings import get_settings
+from app.tool_permission_lifecycle import TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS
 
 
 PostJson = Callable[..., Awaitable[dict[str, Any]]]
@@ -93,4 +94,4 @@ class SandboxExecutorClient:
 def _default_timeout_seconds() -> float:
     settings = get_settings()
     sdk_timeout = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0) or 120.0)
-    return max(30.0, sdk_timeout + 10.0)
+    return max(30.0, sdk_timeout + 10.0, TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS)

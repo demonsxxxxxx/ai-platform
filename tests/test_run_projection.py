@@ -99,6 +99,62 @@ def test_projection_module_owns_run_progress_event_step_and_artifact_cards():
     assert "storage_key" not in str(card)
 
 
+def test_projection_projects_terminal_tool_permission_cards_without_decision_controls():
+    event = run_event_response(
+        "run-a",
+        {
+            "id": "evt-terminal-permission",
+            "trace_id": "trace_run_a",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "sequence": 9,
+            "event_type": "tool_permission_terminalized",
+            "stage": "tool_policy",
+            "message": "工具权限请求已终结",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "latency_ms": None,
+            "input_token_count": 0,
+            "output_token_count": 0,
+            "total_token_count": 0,
+            "estimated_cost_minor": 0,
+            "payload_json": {
+                "visible_to_user": True,
+                "permission_request_id": "tpr-terminal",
+                "tool_id": "Bash",
+                "tool_call_id": "call-terminal",
+                "action": "execute",
+                "risk_level": "high",
+                "write_capable": True,
+                "status": "cancelled",
+                "reason": "run_cancel_requested",
+                "decision_endpoint": "/api/ai/runs/run-a/tool-permissions/tpr-terminal/decision",
+                "decision_options": ["allow_once", "allow_for_run", "deny"],
+            },
+            "created_at": None,
+        },
+        principal=principal(),
+    )
+
+    assert event["event_type"] == "tool_permission_card"
+    assert event["payload"] == {
+        "visible_to_user": True,
+        "tool_permission_card": {
+            "schema_version": "ai-platform.tool-permission-card.v1",
+            "permission_request_id": "tpr-terminal",
+            "run_id": "run-a",
+            "tool_id": "Bash",
+            "tool_call_id": "call-terminal",
+            "action": "execute",
+            "risk_level": "high",
+            "write_capable": True,
+            "reason": "run_cancel_requested",
+            "status": "cancelled",
+            "decision": None,
+        },
+    }
+
+
 def test_projection_module_rejects_invalid_event_schema_version():
     with pytest.raises(HTTPException) as exc_info:
         run_event_response(

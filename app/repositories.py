@@ -4351,7 +4351,8 @@ async def create_tool_permission_request(
           from runs
           where tenant_id = %s
             and id = %s
-            and status not in ('succeeded', 'failed', 'cancelled')
+            and status = 'running'
+            and cancel_requested_at is null
           for update
         )
         insert into run_tool_permission_requests(
@@ -4413,19 +4414,66 @@ async def expire_tool_permission_request(
     request_id: str,
 ) -> dict[str, Any] | None:
     """Mark one still-pending request expired when its deadline has elapsed."""
+    rows = await expire_pending_tool_permission_requests(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        run_id=run_id,
+        request_id=request_id,
+    )
+    return rows[0] if rows else None
+
+
+async def expire_pending_tool_permission_requests(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str | None = None,
+    run_id: str | None = None,
+    request_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Terminalize expired pending requests in one scoped, auditable path."""
     cursor = await conn.execute(
         """
         update run_tool_permission_requests
         set status = 'expired', reason = 'permission_request_expired', updated_at = now()
-        where tenant_id = %s and user_id = %s and run_id = %s and id = %s
-          and status = 'pending' and expires_at is not null and expires_at <= now()
+        where tenant_id = %s
+          and status = 'pending'
+          and expires_at is not null
+          and expires_at <= now()
+          and (%s::text is null or user_id = %s)
+          and (%s::text is null or run_id = %s)
+          and (%s::text is null or id = %s)
         returning *
         """,
-        (tenant_id, user_id, run_id, request_id),
+        (tenant_id, user_id, user_id, run_id, run_id, request_id, request_id),
     )
-    row = await cursor.fetchone()
-    if row is None:
-        return None
+    rows = list(await cursor.fetchall())
+    for row in rows:
+        await _record_tool_permission_terminalization(
+            conn,
+            tenant_id=tenant_id,
+            run_id=str(row.get("run_id") or run_id or ""),
+            row=row,
+            terminal_status="expired",
+            terminal_reason="permission_request_expired",
+            message="工具权限请求已过期",
+        )
+    return rows
+
+
+async def _record_tool_permission_terminalization(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    run_id: str,
+    row: dict[str, Any],
+    terminal_status: str,
+    terminal_reason: str,
+    message: str,
+) -> None:
+    """Write the public terminal fact and its tenant/run/request audit record."""
+    request_id = str(row["id"])
     trace_id = str(row.get("trace_id") or "")
     await append_event(
         conn,
@@ -4434,12 +4482,17 @@ async def expire_tool_permission_request(
         trace_id=trace_id,
         event_type="tool_permission_terminalized",
         stage="tool_policy",
-        message="工具权限请求已过期",
+        message=message,
         payload={
             "visible_to_user": True,
             "permission_request_id": request_id,
-            "status": "expired",
-            "reason": "permission_request_expired",
+            "tool_id": str(row.get("tool_id") or "tool"),
+            "tool_call_id": str(row.get("tool_call_id") or ""),
+            "action": str(row.get("action") or "execute"),
+            "risk_level": str(row.get("risk_level") or "low"),
+            "write_capable": bool(row.get("write_capable")),
+            "status": terminal_status,
+            "reason": terminal_reason,
         },
     )
     await append_audit_log(
@@ -4453,11 +4506,12 @@ async def expire_tool_permission_request(
         payload_json={
             "run_id": run_id,
             "request_user_id": str(row.get("user_id") or ""),
-            "status": "expired",
-            "reason": "permission_request_expired",
+            "tool_id": str(row.get("tool_id") or ""),
+            "tool_call_id": str(row.get("tool_call_id") or ""),
+            "status": terminal_status,
+            "reason": terminal_reason,
         },
     )
-    return row
 
 
 async def terminalize_pending_tool_permission_requests(
@@ -4479,45 +4533,20 @@ async def terminalize_pending_tool_permission_requests(
             expires_at = coalesce(expires_at, now()),
             updated_at = now()
         where tenant_id = %s and run_id = %s and status = 'pending'
-        returning id, user_id, trace_id, tool_id, tool_call_id
+        returning id, user_id, trace_id, tool_id, tool_call_id, action, risk_level, write_capable
         """,
         (terminal_status, terminal_reason, tenant_id, run_id),
     )
     rows = list(await cursor.fetchall())
     for row in rows:
-        request_id = str(row["id"])
-        trace_id = str(row.get("trace_id") or "")
-        await append_event(
+        await _record_tool_permission_terminalization(
             conn,
             tenant_id=tenant_id,
             run_id=run_id,
-            trace_id=trace_id,
-            event_type="tool_permission_terminalized",
-            stage="tool_policy",
+            row=row,
+            terminal_status=terminal_status,
+            terminal_reason=terminal_reason,
             message="工具权限请求已终结",
-            payload={
-                "visible_to_user": True,
-                "permission_request_id": request_id,
-                "status": terminal_status,
-                "reason": terminal_reason,
-            },
-        )
-        await append_audit_log(
-            conn,
-            tenant_id=tenant_id,
-            user_id=None,
-            action="tool_permission.terminalized",
-            target_type="tool_permission_request",
-            target_id=request_id,
-            trace_id=trace_id,
-            payload_json={
-                "run_id": run_id,
-                "request_user_id": str(row.get("user_id") or ""),
-                "tool_id": str(row.get("tool_id") or ""),
-                "tool_call_id": str(row.get("tool_call_id") or ""),
-                "status": terminal_status,
-                "reason": terminal_reason,
-            },
         )
     return rows
 
@@ -4529,6 +4558,11 @@ async def has_pending_tool_permission_requests(
     run_id: str,
 ) -> bool:
     """Return whether an open run still has a permission gate that blocks success."""
+    await expire_pending_tool_permission_requests(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+    )
     cursor = await conn.execute(
         """
         select exists(
@@ -4626,12 +4660,18 @@ async def list_tool_permission_inbox(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """List current-user permission requests for the standalone approval inbox."""
+    await expire_pending_tool_permission_requests(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+    )
     cursor = await conn.execute(
         """
         select *
         from run_tool_permission_requests
         where tenant_id = %s and user_id = %s
           and (%s = 'all' or status = %s)
+          and (status <> 'pending' or expires_at is null or expires_at > now())
         order by created_at desc, id desc
         limit %s
         """,
@@ -4648,12 +4688,14 @@ async def list_tool_permission_inbox_for_tenant(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     """List tenant permission requests for the administrator governance inbox."""
+    await expire_pending_tool_permission_requests(conn, tenant_id=tenant_id)
     cursor = await conn.execute(
         """
         select *
         from run_tool_permission_requests
         where tenant_id = %s
           and (%s = 'all' or status = %s)
+          and (status <> 'pending' or expires_at is null or expires_at > now())
         order by created_at desc, id desc
         limit %s
         """,
@@ -4674,9 +4716,27 @@ async def decide_tool_permission_request(
     decision_payload_json: dict[str, Any],
     expires_in_seconds: int = 900,
 ) -> dict[str, Any] | None:
+    expired = await expire_tool_permission_request(
+        conn,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        run_id=run_id,
+        request_id=request_id,
+    )
+    if expired is not None:
+        return None
     cursor = await conn.execute(
         """
-        update run_tool_permission_requests
+        with executable_run as (
+          select id
+          from runs
+          where tenant_id = %s
+            and id = %s
+            and status = 'running'
+            and cancel_requested_at is null
+          for update
+        )
+        update run_tool_permission_requests as permission_request
         set status = 'decided',
             decision = %s,
             reason = %s,
@@ -4684,14 +4744,19 @@ async def decide_tool_permission_request(
             expires_at = now() + (%s * interval '1 second'),
             decided_at = now(),
             updated_at = now()
-        where tenant_id = %s
-          and user_id = %s
-          and run_id = %s
-          and id = %s
-          and status = 'pending'
-        returning *
+        from executable_run
+        where permission_request.tenant_id = %s
+          and permission_request.user_id = %s
+          and permission_request.run_id = %s
+          and executable_run.id = permission_request.run_id
+          and permission_request.id = %s
+          and permission_request.status = 'pending'
+          and (permission_request.expires_at is null or permission_request.expires_at > now())
+        returning permission_request.*
         """,
         (
+            tenant_id,
+            run_id,
             decision,
             reason,
             dumps_json(decision_payload_json),
@@ -8252,6 +8317,13 @@ async def request_run_cancel(conn: AsyncConnection, *, tenant_id: str, user_id: 
     row = await cursor.fetchone()
     if row is None:
         return None
+    await terminalize_pending_tool_permission_requests(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        terminal_status="cancelled",
+        terminal_reason="run_cancelled" if row["status"] == "cancelled" else "run_cancel_requested",
+    )
     if row["status"] == "cancelled":
         await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
     active_sandbox_leases = await list_active_sandbox_leases_for_run(
@@ -8340,6 +8412,13 @@ async def request_admin_run_cancel(
     if row is None:
         return None
     result_status = "cancelled" if row["status"] == "cancelled" else "cancel_requested"
+    await terminalize_pending_tool_permission_requests(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        terminal_status="cancelled",
+        terminal_reason="run_cancelled" if result_status == "cancelled" else "run_cancel_requested",
+    )
     if result_status == "cancelled":
         await _cancel_open_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
     active_sandbox_leases = await list_active_sandbox_leases_for_run(

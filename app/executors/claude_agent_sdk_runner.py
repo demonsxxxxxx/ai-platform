@@ -13,6 +13,7 @@ from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied
 from app.control_plane_contracts import sanitize_public_payload
 from app.public_context_keys import safe_public_context_pack_version
 from app.settings import get_settings
+from app.tool_permission_lifecycle import TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS
 
 _SDK_ENV_ALLOWLIST = {
     "PATH",
@@ -49,6 +50,8 @@ _SDK_INTERNAL_CONTEXT_TOOLS = (
     "stage_context_file_to_workspace",
     "search_memory",
 )
+
+
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
 _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS = 1800.0
 _SHELL_UNSAFE_CHARS = set("$`;&|<>{}[]*?!\n\r")
@@ -66,6 +69,21 @@ _TRANSLATION_TARGET_ALIASES = {
     "zh": "Chinese",
 }
 _ALLOWED_TRANSLATION_TARGETS = frozenset(_TRANSLATION_TARGET_ALIASES.values())
+
+
+def _sdk_run_timeout_seconds(
+    settings: object,
+    *,
+    sandbox_brokered: bool,
+    full_access: bool,
+) -> float:
+    """Keep brokered SDK execution alive long enough for a governed decision."""
+    timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0))
+    if sandbox_brokered:
+        timeout_seconds = max(timeout_seconds, TOOL_PERMISSION_CALLBACK_TRANSPORT_TIMEOUT_SECONDS)
+    if full_access:
+        timeout_seconds = max(timeout_seconds, _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS)
+    return timeout_seconds
 
 
 @dataclass(frozen=True)
@@ -945,9 +963,11 @@ async def run_claude_agent_sdk(
             full_access=full_access,
         )
     )
-    timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0))
-    if full_access:
-        timeout_seconds = max(timeout_seconds, _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS)
+    timeout_seconds = _sdk_run_timeout_seconds(
+        settings,
+        sandbox_brokered=sandbox_brokered,
+        full_access=full_access,
+    )
 
     async def record_used_skill(skill_name: str, metadata: dict[str, Any]) -> None:
         if allowed_skill_names and skill_name not in allowed_skill_names:
