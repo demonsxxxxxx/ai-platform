@@ -528,7 +528,7 @@ test("useAgent restores a routed session agent before the next submission", asyn
   }
 });
 
-test("useAgent clears a rotated auth scope before fresh and owned-session submissions", async () => {
+test("useAgent clears colliding rotated auth scopes before fresh and owned-session submissions", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const originalGet = sessionApi.get;
@@ -538,6 +538,7 @@ test("useAgent clears a rotated auth scope before fresh and owned-session submis
   const originalGenerateTitle = sessionApi.generateTitle;
   const originalFetch = dom.window.fetch;
   const submissions: unknown[][] = [];
+  let sseCalls = 0;
   let resolveStaleSubmit!: (value: ChatStreamResponse) => void;
   const staleSubmit = new Promise<ChatStreamResponse>((resolve) => {
     resolveStaleSubmit = resolve;
@@ -557,7 +558,10 @@ test("useAgent clears a rotated auth scope before fresh and owned-session submis
     title: "新会话",
     session_id: sessionId,
   });
-  dom.window.fetch = async () => completedSseResponse();
+  dom.window.fetch = async () => {
+    sseCalls += 1;
+    return completedSseResponse();
+  };
   sessionApi.submitChat = (async (...args) => {
     submissions.push(args);
     if (submissions.length === 1) return staleSubmit;
@@ -579,6 +583,7 @@ test("useAgent clears a rotated auth scope before fresh and owned-session submis
   }) as typeof sessionApi.submitChat;
 
   try {
+    await harness.rotateAuthScope("c", "a:b");
     await harness.act(async () => {
       await harness.hook.loadHistory("session-owned-a");
     });
@@ -588,7 +593,7 @@ test("useAgent clears a rotated auth scope before fresh and owned-session submis
       await Promise.resolve();
     });
 
-    await harness.rotateAuthScope("user-b", "tenant-b");
+    await harness.rotateAuthScope("b:c", "a");
     resolveStaleSubmit({
       session_id: "session-owned-a",
       run_id: "run-old-a",
@@ -603,6 +608,7 @@ test("useAgent clears a rotated auth scope before fresh and owned-session submis
     assert.equal(harness.hook.sessionId, null);
     assert.equal(harness.hook.currentRunId, null);
     assert.equal(harness.hook.messages.length, 0);
+    assert.equal(sseCalls, 0);
 
     await harness.act(async () => {
       await harness.hook.sendMessage("新身份新对话");

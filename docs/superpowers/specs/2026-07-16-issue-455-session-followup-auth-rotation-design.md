@@ -30,7 +30,12 @@ principal-scoped continuation decision.
    existing tenant-and-user authorized repository lookup before capability
    selection or persistence. Continue with the stored session agent; a client
    agent query cannot switch a loaded session, cross a user/tenant boundary, or
-   silently create a replacement session. A missing/foreign session fails closed.
+   silently create a replacement session. The stored session workspace becomes
+   the effective workspace for capability-adjacent routing, file authorization,
+   queue payload, run creation, and context persistence. `workspace_id=default`
+   remains compatible with the current omitted/default wire value; a supplied
+   non-default workspace that differs from the saved workspace fails before
+   routing. A missing/foreign session fails closed.
 3. A request that fails before a confirmed `session_id` and `run_id` restores
    the prior message list, preserves the draft for retry, and emits only a
    stable actionable transport error. It never manufactures an assistant turn.
@@ -38,11 +43,15 @@ principal-scoped continuation decision.
 
 ## Ordering and race constraints
 
-- The auth-scope reset must increment the same generation/token fences used by
-  `clearMessages`; a late history, submit, title, or stream completion must not
-  repopulate the new principal's view.
+- The auth-scope reset compares the tenant/user tuple structurally (not through
+  a delimiter-concatenated string) and must increment the same generation/token
+  fences used by `clearMessages`; a late history, submit, title, or stream
+  completion must not repopulate the new principal's view.
 - The backend lookup remains exact tenant/user ownership. There is no fallback
   search, session reassignment, or cross-scope agent reuse.
+- Workspace disagreement is rejected before intent, capability, file, queue,
+  run, or context side effects. An owned non-default session therefore resumes
+  in its saved workspace even when an older client omits the workspace.
 - Cookie authority and the #453 auth-context generation/CAS protocol are not
   changed. No HTTP mutation is retried automatically.
 
@@ -51,8 +60,10 @@ principal-scoped continuation decision.
 Fresh chats keep existing intent routing. Owned existing sessions continue with
 their persisted agent, preserving existing session/run foreign-key invariants.
 Focused frontend coverage will exercise auth-scope rotation, fresh submit,
-owned follow-up, and a stale completion. Focused backend coverage will exercise
-owned continuation and foreign-session rejection. Validation will use the
+owned follow-up, an ambiguous colon-containing identity pair, and a stale
+completion. Focused backend coverage will exercise owned continuation in a
+non-default workspace, early workspace-mismatch rejection, and foreign-session
+rejection. Validation will use the
 changed-scope frontend tests, chat-route tests, TypeScript/lint/build as needed,
 `python -m compileall -q app tools scripts`, and `git diff --check`; no full
 pytest suite or deployment is in scope.

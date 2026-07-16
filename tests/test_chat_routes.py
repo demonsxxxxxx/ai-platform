@@ -2168,32 +2168,44 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
         }
 
     async def fake_create_session(conn, **kwargs):
-        calls.append(("session", kwargs["session_id"], kwargs["agent_id"]))
+        calls.append(
+            ("session", kwargs["session_id"], kwargs["agent_id"], kwargs["workspace_id"])
+        )
         return kwargs["session_id"]
 
     async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
         assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "ses_routed")
-        return {"id": session_id, "agent_id": "baoyu-translate"}
+        return {"id": session_id, "agent_id": "baoyu-translate", "workspace_id": "workspace-routed"}
 
     async def fake_create_run(conn, **kwargs):
         run_id = next(run_ids)
-        calls.append(("run", kwargs["session_id"], kwargs["agent_id"], run_id))
+        calls.append(
+            ("run", kwargs["session_id"], kwargs["agent_id"], kwargs["workspace_id"], run_id)
+        )
         return run_id
 
     async def noop(*args, **kwargs):
         return None
 
+    async def fake_workspace(conn, *, tenant_id, workspace_id):
+        calls.append(("workspace", workspace_id))
+
+    async def fake_authorize_files(conn, **kwargs):
+        calls.append(("files", kwargs["workspace_id"]))
+
     async def fake_enqueue_run(payload):
-        calls.append(("queue", payload["session_id"], payload["agent_id"]))
+        calls.append(("queue", payload["session_id"], payload["agent_id"], payload["workspace_id"]))
         return 1
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
     monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_workspace_belongs_to_tenant", fake_workspace)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.authorize_files_for_run", fake_authorize_files)
     monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
     monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
     monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
@@ -2242,13 +2254,17 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
     assert second.intent_decision.agent_id == "document-translation"
     assert calls == [
         ("resolve", "baoyu-translate", "baoyu-translate"),
-        ("session", "ses_routed", "baoyu-translate"),
-        ("run", "ses_routed", "baoyu-translate", "run_routed_first"),
-        ("queue", "ses_routed", "baoyu-translate"),
+        ("workspace", "default"),
+        ("files", "default"),
+        ("session", "ses_routed", "baoyu-translate", "default"),
+        ("run", "ses_routed", "baoyu-translate", "default", "run_routed_first"),
+        ("queue", "ses_routed", "baoyu-translate", "default"),
         ("resolve", "baoyu-translate", "baoyu-translate"),
-        ("session", "ses_routed", "baoyu-translate"),
-        ("run", "ses_routed", "baoyu-translate", "run_routed_second"),
-        ("queue", "ses_routed", "baoyu-translate"),
+        ("workspace", "workspace-routed"),
+        ("files", "workspace-routed"),
+        ("session", "ses_routed", "baoyu-translate", "workspace-routed"),
+        ("run", "ses_routed", "baoyu-translate", "workspace-routed", "run_routed_second"),
+        ("queue", "ses_routed", "baoyu-translate", "workspace-routed"),
     ]
 
 
@@ -2292,6 +2308,44 @@ async def test_chat_stream_rejects_a_rotated_principal_stale_session_before_capa
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "session_not_found"
     assert checked == [("tenant-b", "ordinary-user-b", "ses_previous_principal")]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_rejects_a_continuation_workspace_mismatch_before_routing(monkeypatch):
+    """A client may not move an owned session into another workspace after login."""
+
+    calls = []
+
+    async def owned_session(conn, *, tenant_id, user_id, session_id):
+        calls.append(("session", tenant_id, user_id, session_id))
+        return {
+            "id": session_id,
+            "agent_id": "general-agent",
+            "workspace_id": "workspace-owned",
+        }
+
+    async def forbidden_after_workspace_check(*_args, **_kwargs):
+        raise AssertionError("workspace mismatch must fail before routing or persistence")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", owned_session)
+    monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", forbidden_after_workspace_check)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", forbidden_after_workspace_check)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                message="普通后续请求",
+                session_id="ses_owned",
+                workspace_id="workspace-other",
+            ),
+            agent_id="general-agent",
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "session_workspace_mismatch"
+    assert calls == [("session", "tenant-a", "user-a", "ses_owned")]
 
 
 @pytest.mark.asyncio

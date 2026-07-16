@@ -3,7 +3,7 @@
  * Provides agent communication, message management, and SSE streaming
  */
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import toast from "react-hot-toast";
 import i18n from "../i18n";
 import { uuid } from "../utils/uuid";
@@ -150,6 +150,18 @@ interface ReconcileOwner {
 
 type TerminalHydrationOwner = ReconcileOwner;
 
+type AuthScope = readonly [tenantId: string, userId: string];
+
+function authScopesEqual(left: AuthScope | null, right: AuthScope | null): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left[0] === right[0] &&
+      left[1] === right[1])
+  );
+}
+
 /** A terminal result must not leave the composer blocked on a stalled history read. */
 const TERMINAL_HISTORY_HYDRATION_TIMEOUT_MS = 10_000;
 
@@ -220,7 +232,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   // Session changes invalidate both pending submit responses and their SSE stream.
   const sessionGenerationRef = useRef(0);
   const submissionTokenRef = useRef(0);
-  const authScopeRef = useRef<string | null>(null);
+  const authScopeRef = useRef<AuthScope | null>(null);
 
   // Stream version to invalidate stale SSE events after clearMessages
   const streamVersionRef = useRef(0);
@@ -1455,12 +1467,20 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     clearReconnectTimeout(reconnectTimeoutRef);
   }, [clearReconcileOwners]);
 
-  const authScope =
-    isAuthenticated && user ? `${user.tenant_id ?? ""}:${user.id}` : null;
+  const authScopeAuthenticated = isAuthenticated && Boolean(user);
+  const authScopeTenantId = user?.tenant_id ?? "";
+  const authScopeUserId = user?.id ?? "";
+  const authScope = useMemo<AuthScope | null>(
+    () =>
+      authScopeAuthenticated
+        ? [authScopeTenantId, authScopeUserId]
+        : null,
+    [authScopeAuthenticated, authScopeTenantId, authScopeUserId],
+  );
 
   useEffect(() => {
     const previousAuthScope = authScopeRef.current;
-    if (previousAuthScope === authScope) {
+    if (authScopesEqual(previousAuthScope, authScope)) {
       return;
     }
     authScopeRef.current = authScope;

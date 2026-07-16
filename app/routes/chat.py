@@ -493,6 +493,7 @@ async def chat_stream(
     try:
         async with transaction() as conn:
             continuation_session = None
+            effective_workspace_id = request.workspace_id
             if request.session_id:
                 continuation_session = await repositories.get_authorized_session(
                     conn,
@@ -502,6 +503,18 @@ async def chat_stream(
                 )
                 if continuation_session is None:
                     raise HTTPException(status_code=404, detail="session_not_found")
+                continuation_workspace_id = continuation_session.get("workspace_id")
+                if not isinstance(continuation_workspace_id, str) or not continuation_workspace_id:
+                    raise HTTPException(status_code=404, detail="session_not_found")
+                # The persisted session owns its workspace as well as its
+                # agent.  ``default`` remains the legacy/omitted request value;
+                # an explicit non-default workspace must agree before routing.
+                if (
+                    request.workspace_id != "default"
+                    and request.workspace_id != continuation_workspace_id
+                ):
+                    raise HTTPException(status_code=409, detail="session_workspace_mismatch")
+                effective_workspace_id = continuation_workspace_id
                 # A loaded session owns its execution agent. A stale client
                 # selection may not defer ownership validation until write-time
                 # or switch the session to another agent.
@@ -625,7 +638,7 @@ async def chat_stream(
             queue_payload = _validate_queue_payload_for_enqueue(
                 {
                     "tenant_id": principal.tenant_id,
-                    "workspace_id": request.workspace_id,
+                    "workspace_id": effective_workspace_id,
                     "user_id": principal.user_id,
                     "session_id": session_id,
                     "run_id": run_id,
@@ -644,12 +657,12 @@ async def chat_stream(
             await repositories.ensure_workspace_belongs_to_tenant(
                 conn,
                 tenant_id=principal.tenant_id,
-                workspace_id=request.workspace_id,
+                workspace_id=effective_workspace_id,
             )
             await repositories.authorize_files_for_run(
                 conn,
                 tenant_id=principal.tenant_id,
-                workspace_id=request.workspace_id,
+                workspace_id=effective_workspace_id,
                 user_id=principal.user_id,
                 session_id=session_id,
                 run_id=run_id,
@@ -664,7 +677,7 @@ async def chat_stream(
             session_id = await repositories.create_session(
                 conn,
                 tenant_id=principal.tenant_id,
-                workspace_id=request.workspace_id,
+                workspace_id=effective_workspace_id,
                 user_id=principal.user_id,
                 agent_id=resolved_agent_id,
                 title=request.title or request.message[:80],
@@ -673,7 +686,7 @@ async def chat_stream(
             run_id = await repositories.create_run(
                 conn,
                 tenant_id=principal.tenant_id,
-                workspace_id=request.workspace_id,
+                workspace_id=effective_workspace_id,
                 session_id=session_id,
                 user_id=principal.user_id,
                 agent_id=resolved_agent_id,
@@ -726,7 +739,7 @@ async def chat_stream(
             await repositories.bind_files_to_run(
                 conn,
                 tenant_id=principal.tenant_id,
-                workspace_id=request.workspace_id,
+                workspace_id=effective_workspace_id,
                 user_id=principal.user_id,
                 session_id=session_id,
                 run_id=run_id,
@@ -735,7 +748,7 @@ async def chat_stream(
             context_ref = await record_initial_context_snapshot(
                 conn,
                 tenant_id=principal.tenant_id,
-                workspace_id=request.workspace_id,
+                workspace_id=effective_workspace_id,
                 user_id=principal.user_id,
                 session_id=session_id,
                 run_id=run_id,
