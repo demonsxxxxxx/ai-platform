@@ -481,7 +481,6 @@ async def chat_stream(
     requested_model_selection = _requested_model_selection(request)
     requested_model_id = requested_model_selection["id"] if requested_model_selection is not None else None
     requested_model_value = requested_model_selection["value"] if requested_model_selection is not None else None
-    explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
     resolved_file_ids = _file_ids_from_request(request)
     try:
         run_input = _strip_server_owned_control_metadata(
@@ -493,11 +492,37 @@ async def chat_stream(
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
     try:
         async with transaction() as conn:
+            continuation_session = None
+            if request.session_id:
+                continuation_session = await repositories.get_authorized_session(
+                    conn,
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    session_id=request.session_id,
+                )
+                if continuation_session is None:
+                    raise HTTPException(status_code=404, detail="session_not_found")
+                # A loaded session owns its execution agent. A stale client
+                # selection may not defer ownership validation until write-time
+                # or switch the session to another agent.
+                requested_agent_id = str(continuation_session["agent_id"])
+                if request.selected_skill is None and request.skill_id is None:
+                    requested_skill_id = None
+
+            explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
             if explicit_payload is None:
+                continuation_capability = (
+                    capability_id_from_skill(None, requested_agent_id)
+                    if continuation_session is not None
+                    else None
+                )
                 decision = route_intent(
                     request.message,
-                    await _file_summaries_for_intent(conn, request, principal),
-                    confirmed_capability_id=request.confirmed_capability_id,
+                    await _file_summaries_for_intent(conn, request, principal)
+                    if continuation_capability is None
+                    else [],
+                    confirmed_capability_id=continuation_capability
+                    or request.confirmed_capability_id,
                 )
                 decision_payload = decision.as_payload()
                 if decision.status == "needs_confirmation":

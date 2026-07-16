@@ -2171,6 +2171,10 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
         calls.append(("session", kwargs["session_id"], kwargs["agent_id"]))
         return kwargs["session_id"]
 
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "ses_routed")
+        return {"id": session_id, "agent_id": "baoyu-translate"}
+
     async def fake_create_run(conn, **kwargs):
         run_id = next(run_ids)
         calls.append(("run", kwargs["session_id"], kwargs["agent_id"], run_id))
@@ -2186,6 +2190,7 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
     monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.get_authorized_session", fake_get_authorized_session)
     monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
     monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
     monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
@@ -2228,7 +2233,7 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
                 }
             ],
         ),
-        agent_id=first.intent_decision.agent_id,
+        agent_id="general-agent",
         principal=principal(),
     )
 
@@ -2245,6 +2250,48 @@ async def test_chat_stream_keeps_a_publicly_routed_agent_on_the_next_session_tur
         ("run", "ses_routed", "baoyu-translate", "run_routed_second"),
         ("queue", "ses_routed", "baoyu-translate"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_rejects_a_rotated_principal_stale_session_before_capability_or_persistence(monkeypatch):
+    """A post-login principal must never reuse another principal's supplied session id."""
+
+    checked = []
+
+    async def no_owned_session(conn, *, tenant_id, user_id, session_id):
+        checked.append((tenant_id, user_id, session_id))
+        return None
+
+    async def forbidden_after_ownership_check(*_args, **_kwargs):
+        raise AssertionError("foreign session must fail before capability or persistence work")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.get_authorized_session",
+        no_owned_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.authorize_run_capabilities",
+        forbidden_after_ownership_check,
+    )
+    monkeypatch.setattr(
+        "app.routes.chat.repositories.create_session",
+        forbidden_after_ownership_check,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(
+                message="普通后续请求",
+                session_id="ses_previous_principal",
+            ),
+            agent_id="general-agent",
+            principal=principal(user_id="ordinary-user-b", tenant_id="tenant-b"),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "session_not_found"
+    assert checked == [("tenant-b", "ordinary-user-b", "ses_previous_principal")]
 
 
 @pytest.mark.asyncio

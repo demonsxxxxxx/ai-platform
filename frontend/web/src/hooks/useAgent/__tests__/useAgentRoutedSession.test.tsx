@@ -4,7 +4,7 @@ import test from "node:test";
 import type { UseAgentReturn } from "../types.ts";
 import type { ChatStreamResponse } from "../../../services/api/session.ts";
 
-type Listener = (event: { type: string }) => void;
+type Listener = (event: { type: string; [key: string]: unknown }) => void;
 
 class TestEventTarget {
   private readonly listeners = new Map<string, Set<Listener>>();
@@ -19,7 +19,7 @@ class TestEventTarget {
     this.listeners.get(type)?.delete(listener);
   }
 
-  dispatchEvent(event: { type: string }) {
+  dispatchEvent(event: { type: string; [key: string]: unknown }) {
     this.listeners.get(event.type)?.forEach((listener) => listener(event));
     return true;
   }
@@ -279,8 +279,9 @@ async function loadReactHarness({ strict = false }: { strict?: boolean } = {}) {
   const root = createRoot(container as never);
   const originalGetCurrentUser = authApi.getCurrentUser;
   const originalBootstrapAuthContext = authApi.bootstrapAuthContext;
-  authApi.getCurrentUser = async () => ({
+  let currentAuthUser = {
     id: "user-a",
+    tenant_id: "tenant-a",
     username: "user-a",
     email: "user-a@example.test",
     roles: [],
@@ -289,7 +290,8 @@ async function loadReactHarness({ strict = false }: { strict?: boolean } = {}) {
     is_active: true,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
-  });
+  };
+  authApi.getCurrentUser = async () => currentAuthUser;
   authApi.bootstrapAuthContext = async () => {};
   const restoreAuthApi = () => {
     authApi.getCurrentUser = originalGetCurrentUser;
@@ -335,6 +337,30 @@ async function loadReactHarness({ strict = false }: { strict?: boolean } = {}) {
     get hook() {
       assert.ok(snapshot, "useAgent hook should be mounted");
       return snapshot;
+    },
+    async rotateAuthScope(userId: string, tenantId: string) {
+      const oldMarker = dom.window.localStorage.getItem(
+        "ai_platform_session_present",
+      );
+      const nextMarker = `marker-${userId}`;
+      currentAuthUser = {
+        ...currentAuthUser,
+        id: userId,
+        tenant_id: tenantId,
+        username: userId,
+        email: `${userId}@example.test`,
+      };
+      dom.window.localStorage.setItem("ai_platform_session_present", nextMarker);
+      await React.act(async () => {
+        dom.window.dispatchEvent({
+          type: "storage",
+          key: "ai_platform_session_present",
+          oldValue: oldMarker,
+          newValue: nextMarker,
+        });
+        await Promise.resolve();
+      });
+      await settle(React.act);
     },
     unmount,
     async cleanup() {
@@ -498,6 +524,118 @@ test("useAgent restores a routed session agent before the next submission", asyn
     sessionApi.getEvents = originalGetEvents;
     sessionApi.markRead = originalMarkRead;
     sessionApi.submitChat = originalSubmitChat;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent clears a rotated auth scope before fresh and owned-session submissions", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalMarkRead = sessionApi.markRead;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalGenerateTitle = sessionApi.generateTitle;
+  const originalFetch = dom.window.fetch;
+  const submissions: unknown[][] = [];
+  let resolveStaleSubmit!: (value: ChatStreamResponse) => void;
+  const staleSubmit = new Promise<ChatStreamResponse>((resolve) => {
+    resolveStaleSubmit = resolve;
+  });
+
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async (sessionId) => ({
+    id: sessionId,
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({ events: [] });
+  sessionApi.generateTitle = async (sessionId) => ({
+    title: "新会话",
+    session_id: sessionId,
+  });
+  dom.window.fetch = async () => completedSseResponse();
+  sessionApi.submitChat = (async (...args) => {
+    submissions.push(args);
+    if (submissions.length === 1) return staleSubmit;
+    if (submissions.length === 2) {
+      return {
+        session_id: "session-fresh-b",
+        run_id: "run-fresh-b",
+        status: "queued",
+      };
+    }
+    if (submissions.length === 3) {
+      return {
+        session_id: "session-owned-b",
+        run_id: "run-owned-b",
+        status: "queued",
+      };
+    }
+    throw new Error("session_admission_retryable");
+  }) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-owned-a");
+    });
+    let pending: Promise<unknown> | null = null;
+    await harness.act(async () => {
+      pending = harness.hook.sendMessage("旧身份请求");
+      await Promise.resolve();
+    });
+
+    await harness.rotateAuthScope("user-b", "tenant-b");
+    resolveStaleSubmit({
+      session_id: "session-owned-a",
+      run_id: "run-old-a",
+      trace_id: "trace-old-a",
+      status: "queued",
+    });
+    await harness.act(async () => {
+      await pending;
+    });
+    await settle(harness.act);
+
+    assert.equal(harness.hook.sessionId, null);
+    assert.equal(harness.hook.currentRunId, null);
+    assert.equal(harness.hook.messages.length, 0);
+
+    await harness.act(async () => {
+      await harness.hook.sendMessage("新身份新对话");
+    });
+    await settle(harness.act);
+    assert.equal(submissions[1]?.[1], undefined);
+    assert.equal(harness.hook.sessionId, "session-fresh-b");
+
+    await harness.act(async () => {
+      harness.hook.clearMessages();
+      await harness.hook.loadHistory("session-owned-b");
+      await harness.hook.sendMessage("已拥有会话的后续请求");
+    });
+    await settle(harness.act);
+    assert.equal(submissions[2]?.[1], "session-owned-b");
+    assert.equal(harness.hook.sessionId, "session-owned-b");
+
+    await harness.act(async () => {
+      harness.hook.clearMessages();
+    });
+    await harness.act(async () => {
+      const outcome = await harness.hook.sendMessage("可重试失败");
+      assert.deepEqual(outcome, { status: "failed" });
+    });
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.hook.currentRunId, null);
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.generateTitle = originalGenerateTitle;
+    dom.window.fetch = originalFetch;
     await harness.cleanup();
   }
 });

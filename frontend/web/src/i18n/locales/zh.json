@@ -514,6 +514,7 @@
     "queued": "排队中 (第 {{position}} 位)...",
     "rateLimited": "请求过于频繁，请稍后再试",
     "requestFailed": "加载会话失败",
+    "sendNotAcceptedRetry": "消息未发送，请重试。",
     "runTerminal": {
       "failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
       "resultUnavailable": "任务终态已确认，但结果暂时无法加载。请刷新会话。",

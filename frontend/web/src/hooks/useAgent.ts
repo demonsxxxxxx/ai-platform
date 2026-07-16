@@ -154,7 +154,7 @@ type TerminalHydrationOwner = ReconcileOwner;
 const TERMINAL_HISTORY_HYDRATION_TIMEOUT_MS = 10_000;
 
 export function useAgent(options?: UseAgentOptions): UseAgentReturn {
-  const { hasAnyPermission } = useAuth();
+  const { hasAnyPermission, isAuthenticated, user } = useAuth();
   const canReadFeedback = hasAnyPermission([
     Permission.FEEDBACK_READ,
     Permission.FEEDBACK_WRITE,
@@ -220,6 +220,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   // Session changes invalidate both pending submit responses and their SSE stream.
   const sessionGenerationRef = useRef(0);
   const submissionTokenRef = useRef(0);
+  const authScopeRef = useRef<string | null>(null);
 
   // Stream version to invalidate stale SSE events after clearMessages
   const streamVersionRef = useRef(0);
@@ -1084,6 +1085,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       setIsLoading(true);
       setError(null);
       let finalAssistantMessageId = assistantMessageId;
+      let admissionAccepted = false;
 
       try {
         // 用户发送消息时标记当前 session 为已读
@@ -1273,6 +1275,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         if (!streamSessionId || !streamRunId) {
           throw new Error("Missing session_id or run_id");
         }
+        admissionAccepted = true;
 
         isReconnectFromHistoryRef.current = false;
         const ctx = createSSEContext();
@@ -1315,6 +1318,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return { status: "failed" };
         }
         toast.dismiss("chat-queue");
+        if (!admissionAccepted) {
+          setMessages(previousMessages);
+        }
         if (err instanceof Error && err.name === "AbortError") {
           setIsLoading(false);
           finishCurrentSubmission();
@@ -1336,18 +1342,26 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             ? translateBackendError(err.message, i18n.t.bind(i18n))
             : i18n.t("chat.unknownError");
         setError(errorMessage);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === finalAssistantMessageId
-              ? {
-                  ...m,
-                  content: i18n.t("chat.errorPrefix", { error: errorMessage }),
-                  isStreaming: false,
-                  parts: clearAllLoadingStates(m.parts || []),
-                }
-              : m,
-          ),
-        );
+        if (admissionAccepted) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === finalAssistantMessageId
+                ? {
+                    ...m,
+                    content: i18n.t("chat.errorPrefix", { error: errorMessage }),
+                    isStreaming: false,
+                    parts: clearAllLoadingStates(m.parts || []),
+                  }
+                : m,
+            ),
+          );
+        } else {
+          toast.error(
+            i18n.t("chat.sendNotAcceptedRetry", {
+              defaultValue: "消息未发送，请重试。",
+            }),
+          );
+        }
         setConnectionStatus("disconnected");
         setIsInitializingSandbox(false);
         setIsLoading(false);
@@ -1440,6 +1454,24 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     }
     clearReconnectTimeout(reconnectTimeoutRef);
   }, [clearReconcileOwners]);
+
+  const authScope =
+    isAuthenticated && user ? `${user.tenant_id ?? ""}:${user.id}` : null;
+
+  useEffect(() => {
+    const previousAuthScope = authScopeRef.current;
+    if (previousAuthScope === authScope) {
+      return;
+    }
+    authScopeRef.current = authScope;
+
+    // The first authenticated hydration has no prior chat owner. Every later
+    // identity replacement or logout must invalidate the same fences as an
+    // explicit new-chat action before it can publish stale session state.
+    if (previousAuthScope !== null || authScope === null) {
+      clearMessages();
+    }
+  }, [authScope, clearMessages]);
 
   // Reconnect function
   const handleReconnectSSE = reconcileCurrentRun;
