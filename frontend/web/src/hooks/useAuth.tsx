@@ -40,7 +40,6 @@ import {
 import { THEME_STORAGE_KEY } from "../utils/themeDom";
 import { Permission } from "../types";
 import type { User, UserCreate, LoginRequest, AuthState } from "../types";
-import i18n from "../i18n";
 
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = "ai-platform-sidebar-collapsed";
 
@@ -53,11 +52,6 @@ function applyUserMetadata(metadata?: {
   defaultAgentId?: string;
 }) {
   if (!metadata) return;
-
-  if (metadata.language) {
-    localStorage.setItem("language", metadata.language);
-    i18n.changeLanguage(metadata.language);
-  }
 
   if (metadata.theme) {
     localStorage.setItem(THEME_STORAGE_KEY, metadata.theme);

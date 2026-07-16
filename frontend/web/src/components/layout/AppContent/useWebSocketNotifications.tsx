@@ -1,6 +1,5 @@
 import { useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { useTranslation } from "react-i18next";
 import { toast } from "react-hot-toast";
 import { Bell, X } from "lucide-react";
 import { useWebSocket } from "../../../hooks/useWebSocket";
@@ -12,6 +11,7 @@ import {
 } from "./taskNotificationGuards";
 import { buildTaskNotificationCopy } from "./taskNotificationContent";
 import { isMobileDevice } from "../../../utils/mobile";
+import i18n from "../../../i18n";
 
 interface UseWebSocketNotificationsOptions {
   sessionId: string | null;
@@ -29,7 +29,7 @@ export function useWebSocketNotifications({
   enabled = true,
   onSessionUnread,
 }: UseWebSocketNotificationsOptions) {
-  const { t } = useTranslation();
+  const t = i18n.getFixedT("zh");
   const navigate = useNavigate();
   const { notify, isSupported, permission } = useBrowserNotification();
   const onSessionUnreadRef = useRef(onSessionUnread);

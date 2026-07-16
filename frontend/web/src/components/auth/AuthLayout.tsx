@@ -1,6 +1,5 @@
 import { Link } from "react-router-dom";
 import { ThemeToggle } from "../common/ThemeToggle";
-import { LanguageToggle } from "../common/LanguageToggle";
 import { APP_NAME } from "../../constants";
 
 interface AuthLayoutProps {
@@ -30,7 +29,6 @@ export function AuthLayout({ children }: AuthLayoutProps) {
             </span>
           </Link>
           <div className="flex items-center gap-1.5">
-            <LanguageToggle />
             <ThemeToggle />
           </div>
         </div>

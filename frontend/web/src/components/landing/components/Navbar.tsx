@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { ThemeToggle } from "../../common/ThemeToggle";
-import { LanguageToggle } from "../../common/LanguageToggle";
 import { APP_NAME } from "../../../constants";
 import { NAV_ITEMS } from "../constants";
 import { CloseIcon, MenuIcon } from "./Icons";
@@ -71,7 +70,6 @@ export function Navbar({
         </div>
 
         <div className="flex items-center gap-1.5">
-          <LanguageToggle />
           <ThemeToggle />
           <button
             className="md:hidden ml-0.5 flex h-8 w-8 items-center justify-center rounded-lg text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800 transition-colors"

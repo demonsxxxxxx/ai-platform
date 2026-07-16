@@ -89,7 +89,7 @@ const PptPreview = memo(function PptPreview({
                   </div>
                 ) : (
                   <p className="mt-3 text-sm text-stone-500 dark:text-stone-400">
-                    {t("documents.noTextContent", "No extractable text content")}
+                    {t("documents.noTextContent", "没有可提取的文本内容")}
                   </p>
                 )}
               </section>
@@ -98,7 +98,7 @@ const PptPreview = memo(function PptPreview({
             <div className="rounded-lg border border-stone-200 bg-white px-4 py-6 text-center text-sm text-stone-500 shadow-sm dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400">
               {t(
                 "documents.pptPreviewNoSlides",
-                "No slide text could be extracted. Download the file to view the full presentation.",
+                "无法提取幻灯片文字。请下载文件查看完整演示文稿。",
               )}
             </div>
           )}
@@ -111,7 +111,7 @@ const PptPreview = memo(function PptPreview({
     <div className="flex h-full min-h-[400px] items-center justify-center bg-stone-50 p-6 text-center text-sm text-stone-500 dark:bg-stone-900/40 dark:text-stone-400">
       {t(
         "documents.pptPreviewNoData",
-        "No local presentation data is available for preview.",
+        "没有可用于预览的本地演示数据。",
       )}
     </div>
   );
