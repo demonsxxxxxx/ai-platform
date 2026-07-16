@@ -34,6 +34,11 @@ import { Permission } from "../../types";
 import { WorkbenchStateSurface } from "./WorkbenchStateSurface";
 import { workbenchSurface } from "./workbenchSurface";
 import { AdminToolPermissionInboxSection } from "../panels/AdminToolPermissionInboxSection";
+import {
+  CHINESE_NOTIFICATION_CONTENT_FALLBACK,
+  CHINESE_NOTIFICATION_TITLE_FALLBACK,
+  resolveChineseNotificationText,
+} from "../notification/notificationChineseCopy";
 
 type LoadState<T> = {
   data: T | null;
@@ -162,13 +167,9 @@ function governanceState(
 
 function localizedText(
   value: WorkbenchNotification["title_i18n"],
-  language: string,
+  fallback: string,
 ) {
-  if (language.startsWith("zh")) return value.zh || value.en;
-  if (language.startsWith("ja")) return value.ja || value.en;
-  if (language.startsWith("ko")) return value.ko || value.en;
-  if (language.startsWith("ru")) return value.ru || value.en;
-  return value.en || value.zh;
+  return resolveChineseNotificationText(value, fallback);
 }
 
 function formatValue(value: unknown) {
@@ -959,7 +960,7 @@ export function WorkbenchFeedbackProjectionPanel() {
 }
 
 export function WorkbenchNotificationsProjectionPanel() {
-  const { i18n, t } = useTranslation();
+  const { t } = useTranslation();
   const { hasPermission } = useAuth();
   const canAdminNotifications = hasPermission(Permission.NOTIFICATION_ADMIN);
   const active = useProjection(() => workbenchApi.listActiveNotifications(), []);
@@ -1038,11 +1039,17 @@ export function WorkbenchNotificationsProjectionPanel() {
                         <Bell size={15} className="text-[var(--theme-text-secondary)]" />
                       )}
                       <h3 className="truncate text-sm font-semibold text-[var(--theme-text)]">
-                        {localizedText(item.title_i18n, i18n.language)}
+                        {localizedText(
+                          item.title_i18n,
+                          CHINESE_NOTIFICATION_TITLE_FALLBACK,
+                        )}
                       </h3>
                     </div>
                     <p className="mt-1 line-clamp-2 text-xs leading-5 text-[var(--theme-text-secondary)]">
-                      {localizedText(item.content_i18n, i18n.language)}
+                      {localizedText(
+                        item.content_i18n,
+                        CHINESE_NOTIFICATION_CONTENT_FALLBACK,
+                      )}
                     </p>
                     <div className="mt-2 flex flex-wrap gap-2 text-xs text-[var(--theme-text-secondary)]">
                       <span className="inline-flex items-center gap-1 rounded-md bg-[var(--theme-bg-sidebar)] px-2 py-1 ring-1 ring-[var(--theme-border)]">
@@ -1082,21 +1089,21 @@ function EmptyProjection({ message }: { message: string }) {
   const { t } = useTranslation();
   const items = [
     {
-      title: t("workbench.projections.empty.safeReadTitle", "Safe projection"),
+      title: t("workbench.projections.empty.safeReadTitle", "安全投影"),
       description: t(
         "workbench.projections.empty.safeReadDescription",
-        "The page is connected and only reads governed frontend data.",
+        "该页面已连接，仅读取受治理的前端数据。",
       ),
     },
     {
-      title: t("workbench.projections.empty.noRowsTitle", "No rows returned"),
+      title: t("workbench.projections.empty.noRowsTitle", "未返回可展示的数据"),
       description: message,
     },
     {
-      title: t("workbench.projections.empty.nextActionTitle", "Next action"),
+      title: t("workbench.projections.empty.nextActionTitle", "下一步操作"),
       description: t(
         "workbench.projections.empty.nextActionDescription",
-        "Use admin-governed flows when records need to be created or changed.",
+        "如需创建或修改记录，请使用受管理员治理的流程。",
       ),
     },
   ];

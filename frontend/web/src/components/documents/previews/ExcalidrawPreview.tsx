@@ -366,7 +366,7 @@ const ExcalidrawPreview = memo(function ExcalidrawPreview({
           title={t("documents.fitToScreen")}
         >
           <Maximize2 size={14} />
-          <span className="hidden sm:inline">Fit</span>
+          <span className="hidden sm:inline">{t("documents.fitToScreen")}</span>
         </button>
 
         <div className="h-4 w-px bg-stone-200 dark:bg-stone-700" />
@@ -416,7 +416,9 @@ const ExcalidrawPreview = memo(function ExcalidrawPreview({
             dangerouslySetInnerHTML={{ __html: svgContent }}
           />
         ) : (
-          <p className="text-stone-400 dark:text-stone-500">No content</p>
+          <p className="text-stone-400 dark:text-stone-500">
+            {t("documents.noContent")}
+          </p>
         )}
       </div>
     </div>

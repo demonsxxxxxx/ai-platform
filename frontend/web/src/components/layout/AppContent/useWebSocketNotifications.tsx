@@ -1,6 +1,5 @@
 import { useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { useTranslation } from "react-i18next";
 import { toast } from "react-hot-toast";
 import { Bell, X } from "lucide-react";
 import { useWebSocket } from "../../../hooks/useWebSocket";
@@ -12,6 +11,7 @@ import {
 } from "./taskNotificationGuards";
 import { buildTaskNotificationCopy } from "./taskNotificationContent";
 import { isMobileDevice } from "../../../utils/mobile";
+import i18n from "../../../i18n";
 
 interface UseWebSocketNotificationsOptions {
   sessionId: string | null;
@@ -29,7 +29,7 @@ export function useWebSocketNotifications({
   enabled = true,
   onSessionUnread,
 }: UseWebSocketNotificationsOptions) {
-  const { t } = useTranslation();
+  const t = i18n.getFixedT("zh");
   const navigate = useNavigate();
   const { notify, isSupported, permission } = useBrowserNotification();
   const onSessionUnreadRef = useRef(onSessionUnread);
@@ -152,7 +152,7 @@ export function useWebSocketNotifications({
                 toast.remove();
               }}
               className="absolute top-1.5 right-1.5 z-10 rounded-full p-0.5 text-stone-400 opacity-0 transition-opacity hover:text-stone-600 group-hover:opacity-100 dark:text-stone-500 dark:hover:text-stone-300"
-              aria-label="Dismiss notification"
+              aria-label={t("common.close")}
             >
               <X size={12} />
             </button>

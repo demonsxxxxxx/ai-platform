@@ -68,11 +68,11 @@ test("legacy profile source is absent from the authenticated workbench", () => {
   assert.doesNotMatch(read("components/layout/AppContent/index.tsx"), /showProfileModal/);
 });
 
-test("no-preference and fallback language are Chinese while explicit preference stays first", () => {
+test("product UI is fixed to Chinese regardless of historical language storage", () => {
   const i18n = read("i18n/index.ts");
-  assert.match(i18n, /localStorage\.getItem\("language"\)/);
+  assert.doesNotMatch(i18n, /localStorage\.getItem\("language"\)/);
   assert.doesNotMatch(i18n, /navigator\.language/);
-  assert.match(i18n, /typeof window === "undefined"[\s\S]{0,80}return "zh"/);
-  assert.match(i18n, /No preference defaults to Chinese[\s\S]{0,80}return "zh"/);
-  assert.match(i18n, /fallbackLng:\s*"zh"/);
+  assert.match(i18n, /export const PRODUCT_LANGUAGE = "zh"/);
+  assert.match(i18n, /lng:\s*PRODUCT_LANGUAGE/);
+  assert.match(i18n, /fallbackLng:\s*PRODUCT_LANGUAGE/);
 });

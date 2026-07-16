@@ -478,7 +478,7 @@ export function ToolResultPanel({
                       handleUserClose();
                     }}
                     className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
-                    aria-label="Close"
+                    aria-label={t("common.close")}
                     title={t("common.close", "Close")}
                   >
                     <X
@@ -496,7 +496,7 @@ export function ToolResultPanel({
                     handleUserClose();
                   }}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors duration-150 hover:bg-[var(--theme-bg-card)] active:opacity-90"
-                  aria-label="Close"
+                  aria-label={t("common.close")}
                   title={t("common.close", "Close")}
                 >
                   <X size={15} className="text-stone-400 dark:text-stone-500" />
@@ -528,7 +528,7 @@ export function ToolResultPanel({
               handleUserClose();
             }}
             className="flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg border border-[var(--theme-border)] bg-[var(--theme-bg-card)] text-[var(--theme-text)] shadow-[0_8px_18px_rgba(18,38,63,0.08)] transition-colors duration-150 hover:bg-[var(--theme-bg-sidebar)]"
-            aria-label="Close"
+            aria-label={t("common.close")}
           >
             <X size={18} />
           </button>

@@ -6,7 +6,6 @@ import { useTranslation } from "react-i18next";
 import { authApi } from "../../services/api";
 import { LoadingSpinner } from "../common/LoadingSpinner";
 import { ThemeToggle } from "../common/ThemeToggle";
-import { LanguageToggle } from "../common/LanguageToggle";
 import { PasswordInput } from "./PasswordInput";
 import { APP_NAME } from "../../constants";
 
@@ -82,7 +81,6 @@ export function ResetPassword() {
             </span>
           </Link>
           <div className="flex items-center gap-1.5">
-            <LanguageToggle />
             <ThemeToggle />
           </div>
         </div>
@@ -149,7 +147,6 @@ export function ResetPassword() {
             </span>
           </Link>
           <div className="flex items-center gap-1.5">
-            <LanguageToggle />
             <ThemeToggle />
           </div>
         </div>

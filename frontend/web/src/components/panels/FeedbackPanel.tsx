@@ -147,7 +147,7 @@ function FeedbackDetailModal({
               onClick={onClose}
               className="enterprise-icon-button"
             >
-              <span className="sr-only">Close</span>
+              <span className="sr-only">{t("common.close")}</span>
               <X size={18} />
             </button>
           </div>
@@ -251,7 +251,7 @@ function FeedbackDetailModal({
               onClick={onClose}
               className="btn-secondary"
             >
-              {t("common.close") || "Close"}
+              {t("common.close")}
             </button>
           </div>
         </div>

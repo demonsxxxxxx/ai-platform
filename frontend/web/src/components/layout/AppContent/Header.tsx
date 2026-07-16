@@ -7,10 +7,8 @@ import {
   MoreHorizontal,
   MessageSquarePlus,
   Bell,
-  Languages,
   Sun,
   Moon,
-  Check,
   ChevronLeft,
   History,
   ListTree,
@@ -21,7 +19,6 @@ import { ShareDialog } from "../../share/ShareDialog";
 import { useAuth } from "../../../hooks/useAuth";
 import { useTheme } from "../../../contexts/ThemeContext";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
-import { authApi } from "../../../services/api";
 import { notificationPublicApi } from "../../../services/api/notificationPublic";
 import { useSessionTitle } from "../../../hooks/useSessionTitle";
 import { NotificationDialog } from "../../notification/NotificationDialog";
@@ -68,14 +65,13 @@ export function Header({
   onToggleOutline,
   showOutlineButton,
 }: HeaderProps) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const { user } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { pinnedModelIds, togglePinnedModel } = useSettingsContext();
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [langMenuOpen, setLangMenuOpen] = useState(false);
   const [notifDialogOpen, setNotifDialogOpen] = useState(false);
   const [activeNotifCount, setActiveNotifCount] = useState(0);
 
@@ -345,82 +341,11 @@ export function Header({
                         </>
                       )}
                     </button>
-                    <button
-                      onClick={() => setLangMenuOpen(true)}
-                      className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm transition-colors text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-primary-light)]"
-                    >
-                      <span className="flex items-center justify-center w-5 shrink-0">
-                        <Languages size={16} />
-                      </span>
-                      <span className="truncate">{t("common.language")}</span>
-                    </button>
                   </div>
                 </div>,
                 document.body,
               )}
           </div>
-
-          {langMenuOpen &&
-            createPortal(
-              <div
-                className="fixed z-[302] w-56 overflow-hidden rounded-lg border shadow-[0_8px_18px_rgba(18,38,63,0.08)] animate-scale-in"
-                style={{
-                  top: getMenuPosition().top,
-                  right: getMenuPosition().right,
-                  backgroundColor: "var(--theme-bg-card)",
-                  borderColor: "var(--theme-border)",
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <button
-                  onClick={() => setLangMenuOpen(false)}
-                  className="flex w-full items-center gap-2 px-3 py-2.5 text-sm text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-primary-light)] transition-colors"
-                >
-                  <ChevronLeft size={16} className="shrink-0" />
-                  <span>{t("common.language")}</span>
-                </button>
-                <div
-                  className="h-px mx-2"
-                  style={{ backgroundColor: "var(--theme-border)" }}
-                />
-                <div className="py-1">
-                  {[
-                    { code: "en", name: "English" },
-                    { code: "zh", name: "中文" },
-                    { code: "ja", name: "日本語" },
-                    { code: "ko", name: "한국어" },
-                    { code: "ru", name: "Русский" },
-                  ].map((lang) => {
-                    const isActive = i18n.language?.split("-")[0] === lang.code;
-                    return (
-                      <button
-                        key={lang.code}
-                        onClick={() => {
-                          i18n.changeLanguage(lang.code);
-                          localStorage.setItem("language", lang.code);
-                          authApi
-                            .updateMetadata({ language: lang.code })
-                            .catch(() => {});
-                          setLangMenuOpen(false);
-                          setMobileMenuOpen(false);
-                        }}
-                        className={`flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm transition-colors ${
-                          isActive
-                            ? "text-[var(--theme-text)] bg-[var(--theme-primary-light)]"
-                            : "text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-primary-light)]"
-                        }`}
-                      >
-                        <span className="truncate">{lang.name}</span>
-                        {isActive && (
-                          <Check size={14} className="ml-auto shrink-0" />
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>,
-              document.body,
-            )}
 
           <UserMenu />
         </div>

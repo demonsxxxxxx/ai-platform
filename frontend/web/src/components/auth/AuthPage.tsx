@@ -15,7 +15,6 @@ import { useTheme } from "../../contexts/ThemeContext";
 import { Loading, LoadingSpinner } from "../common/LoadingSpinner";
 import { ContactAdminDialog } from "../common/ContactAdminDialog";
 import { ThemeToggle } from "../common/ThemeToggle";
-import { LanguageToggle } from "../common/LanguageToggle";
 import { authApi } from "../../services/api";
 import { APP_HOME_URL, APP_NAME } from "../../constants";
 import {
@@ -340,7 +339,6 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
             </span>
           </a>
           <div className="flex items-center gap-1.5">
-            <LanguageToggle />
             <ThemeToggle />
           </div>
         </div>

@@ -10,9 +10,7 @@ import {
   MessageSquare,
   Sun,
   Moon,
-  Languages,
   MessageCircle,
-  Check,
   Loader2,
   XCircle,
 } from "lucide-react";
@@ -47,79 +45,6 @@ import {
 import { getModelIconUrl, isMonochromeIcon } from "../agent/modelIcon";
 import { ScrollButtons } from "../landing/components/ScrollButtons";
 import { ShareUnavailableState } from "./ShareUnavailableState";
-
-const LANGUAGES = [
-  { code: "en", nativeName: "English" },
-  { code: "zh", nativeName: "中文" },
-  { code: "ja", nativeName: "日本語" },
-  { code: "ko", nativeName: "한국어" },
-  { code: "ru", nativeName: "Русский" },
-];
-
-/** Local-only language toggle — no backend API calls (safe for unauthenticated shared pages) */
-function SharedPageLanguageToggle() {
-  const { i18n, t } = useTranslation();
-  const [isOpen, setIsOpen] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  const selectLanguage = useCallback(
-    (code: string) => {
-      i18n.changeLanguage(code);
-      localStorage.setItem("language", code);
-      setIsOpen(false);
-    },
-    [i18n],
-  );
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        dropdownRef.current &&
-        !dropdownRef.current.contains(event.target as Node)
-      ) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  return (
-    <div className="relative" ref={dropdownRef}>
-      <button
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex items-center justify-center w-9 h-9 rounded-xl bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 transition-all duration-200 hover:scale-105 active:scale-95"
-        title={t("common.language")}
-        aria-label={t("common.language")}
-      >
-        <Languages size={18} className="text-stone-600 dark:text-stone-300" />
-      </button>
-      {isOpen && (
-        <div className="absolute right-0 mt-2 w-40 rounded-lg bg-white dark:bg-stone-800 shadow-lg border border-stone-200 dark:border-stone-700 py-1 z-50">
-          {LANGUAGES.map((lang) => (
-            <button
-              key={lang.code}
-              onClick={() => selectLanguage(lang.code)}
-              className={`w-full px-4 py-2 text-left text-sm flex items-center justify-between transition-colors ${
-                i18n.language === lang.code
-                  ? "bg-stone-100 dark:bg-stone-700 text-stone-900 dark:text-stone-100"
-                  : "text-stone-700 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-700/50"
-              }`}
-            >
-              <span>{lang.nativeName}</span>
-              {i18n.language === lang.code && (
-                <Check
-                  size={16}
-                  className="text-stone-700 dark:text-stone-200"
-                />
-              )}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // Theme management for shared page (independent of main app context)
 function useSharedPageTheme() {
@@ -537,7 +462,6 @@ export function SharedPage() {
             >
               <MessageCircle size={18} />
             </a>
-            <SharedPageLanguageToggle />
             <button
               onClick={toggleTheme}
               className="flex items-center justify-center w-9 h-9 rounded-xl bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 transition-all duration-200 hover:scale-105 active:scale-95"

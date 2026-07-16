@@ -190,7 +190,7 @@ export const authApi = {
       method: "POST",
       credentials: "include",
       headers: {
-        "Accept-Language": i18n.language || "en",
+        "Accept-Language": "zh-CN",
       },
       signal,
     });
@@ -207,7 +207,7 @@ export const authApi = {
     const projection = projectSafeBackendError(
       detail,
       response.status,
-      i18n.t.bind(i18n),
+      i18n.getFixedT("zh"),
     );
     throw new ApiRequestError(
       projection.message,
