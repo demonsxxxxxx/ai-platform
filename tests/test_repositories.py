@@ -3314,7 +3314,7 @@ async def test_terminal_run_writes_do_not_overwrite_existing_terminal_status():
     await fail_run(conn, tenant_id="tenant-a", run_id="run-b", error_code="executor_failure", error_message="boom")
     await cancel_run(conn, tenant_id="tenant-a", run_id="run-c", result_json={"message": "cancelled"})
 
-    update_runs_sql = [sql for sql, _params in conn.calls if sql.startswith("update runs")]
+    update_runs_sql = [sql for sql, _params in conn.calls if "update runs" in sql]
     assert len(update_runs_sql) == 3
     assert all("status not in ('succeeded', 'failed', 'cancelled')" in sql for sql in update_runs_sql)
 
@@ -5886,7 +5886,7 @@ async def test_decide_tool_permission_request_preserves_the_request_deadline():
     assert "update run_tool_permission_requests" in sql
     assert "expires_at = permission_request.expires_at" in sql
     assert "now() + (%s * interval '1 second')" not in sql
-    assert "permission_request.expires_at > now()" in sql
+    assert "permission_request.expires_at > clock_timestamp()" in sql
     assert "decision_payload_json = %s::jsonb" in sql
     assert params == (
         "tenant-a",
@@ -5899,6 +5899,33 @@ async def test_decide_tool_permission_request_preserves_the_request_deadline():
         "run-a",
         "tpr-a",
     )
+
+
+@pytest.mark.asyncio
+async def test_permission_authority_queries_use_current_clock_after_the_run_lock():
+    conn = RecordingConnection()
+
+    await repositories.get_exact_tool_permission_decision(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        tool_id="claude-sdk:Bash",
+        tool_call_id="call-a",
+        request_payload_json={"command_sha256": "a" * 64},
+    )
+    await repositories.consume_tool_permission_decision(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        request_id="tpr-a",
+    )
+
+    authority_sql = [sql for sql, _params in conn.calls]
+    assert len(authority_sql) == 2
+    assert all("for update" in sql for sql in authority_sql)
+    assert all("expires_at > clock_timestamp()" in sql for sql in authority_sql)
 
 
 @pytest.mark.asyncio
@@ -5940,7 +5967,7 @@ async def test_decide_tool_permission_request_terminalizes_at_or_beyond_expiry(m
     )
 
     assert result is None
-    assert "expires_at <= now()" in calls[0][1]
+    assert "expires_at <= clock_timestamp()" in calls[0][1]
     assert calls[0][2] == (
         "tenant-a",
         "run-a",
@@ -6133,7 +6160,7 @@ async def test_list_tool_permission_inbox_filters_current_user_and_status():
     assert "where permission_request.tenant_id = %s and permission_request.user_id = %s" in sql
     assert "runs.status as run_status" in sql
     assert "(%s = 'all' or permission_request.status = %s)" in sql
-    assert "expires_at > now()" in sql
+    assert "expires_at > clock_timestamp()" in sql
     assert "order by permission_request.created_at desc, permission_request.id desc" in sql
     assert params == ("tenant-a", "user-a", "pending", "pending", 25)
     assert "set status = 'expired'" in conn.calls[0][0]
@@ -6157,7 +6184,7 @@ async def test_list_tool_permission_inbox_for_tenant_excludes_admin_user_filter(
     assert "permission_request.user_id =" not in sql
     assert "runs.status as run_status" in sql
     assert "(%s = 'all' or permission_request.status = %s)" in sql
-    assert "expires_at > now()" in sql
+    assert "expires_at > clock_timestamp()" in sql
     assert params == ("tenant-a", "pending", "pending", 25)
     assert "set status = 'expired'" in conn.calls[0][0]
     assert "order by permission_request.expires_at asc, permission_request.id asc" in conn.calls[0][0]
@@ -6227,9 +6254,9 @@ async def test_tenant_permission_inbox_expiry_is_bounded_and_makes_batch_progres
     assert "runs.permission_terminalization_target is null" in expiry_sql
     assert "runs.tenant_id = %s" in expiry_sql
     assert "permission_request.tenant_id = %s" in expiry_sql
-    assert "candidate.expires_at is null or candidate.expires_at <= now()" in expiry_sql
-    assert "permission_request.expires_at is null or permission_request.expires_at <= now()" in expiry_sql
-    assert "expires_at = coalesce(permission_request.expires_at, now())" in expiry_sql
+    assert "candidate.expires_at is null or candidate.expires_at <= clock_timestamp()" in expiry_sql
+    assert "permission_request.expires_at is null or permission_request.expires_at <= clock_timestamp()" in expiry_sql
+    assert "expires_at = coalesce(permission_request.expires_at, clock_timestamp())" in expiry_sql
     assert "order by permission_request.expires_at asc, permission_request.id asc" in expiry_sql
     assert "limit %s" in expiry_sql
     assert "for update skip locked" in expiry_sql
@@ -6350,7 +6377,7 @@ async def test_terminalization_maintenance_lists_only_bounded_durable_or_legacy_
     assert "runs.permission_terminalization_target is not null" in sql
     assert "runs.status in ('succeeded', 'failed', 'cancelled')" in sql
     assert "permission_request.status in ('pending', 'decided')" in sql
-    assert "permission_request.expires_at is null or permission_request.expires_at <= now()" in sql
+    assert "permission_request.expires_at is null or permission_request.expires_at <= clock_timestamp()" in sql
     assert "limit %s" in sql
     assert "for update skip locked" in sql
     assert params == (50,)
@@ -6561,7 +6588,7 @@ async def test_consume_tool_permission_decision_marks_only_decided_allow_once_co
     assert "permission_request.id = %s" in sql
     assert "permission_request.decision = 'allow_once'" in sql
     assert "permission_request.status = 'decided'" in sql
-    assert "permission_request.expires_at > now()" in sql
+    assert "permission_request.expires_at > clock_timestamp()" in sql
     assert "returning permission_request.*" in sql
     assert params == ("tenant-a", "run-a", "tenant-a", "user-a", "run-a", "tpr-a")
 
@@ -9813,6 +9840,21 @@ async def test_complete_run_persists_g2_observability_columns_from_result_json()
     assert 13 in params
     assert 24 in params
     assert 17 in params
+
+
+@pytest.mark.asyncio
+async def test_complete_run_consumes_valid_allow_for_run_before_its_final_pending_guard():
+    conn = RecordingConnection()
+
+    await complete_run(conn, tenant_id="tenant-a", run_id="run-a", result_json={"message": "done"})
+
+    sql, _params = conn.calls[0]
+    assert "with locked_run as materialized" in sql
+    assert "consumed_run_grants" in sql
+    assert "permission_request.decision = 'allow_for_run'" in sql
+    assert "permission_request.status = 'decided'" in sql
+    assert "permission_request.expires_at > clock_timestamp()" in sql
+    assert "status in ('pending', 'decided')" in sql
 
 
 @pytest.mark.asyncio

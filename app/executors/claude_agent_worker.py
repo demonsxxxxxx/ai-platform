@@ -55,6 +55,15 @@ _REQUIRED_DOCX_MAX_ENTRY_COUNT = 128
 _REQUIRED_DOCX_MAX_COMPRESSED_BYTES = 16 * 1024 * 1024
 _REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
 _REQUIRED_DOCX_MAX_COMPRESSION_RATIO = 100
+_OPC_CONTENT_TYPES_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/content-types"
+_OPC_RELATIONSHIPS_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships"
+_OPC_OFFICE_DOCUMENT_RELATIONSHIP = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+)
+_WORDPROCESSINGML_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_WORD_MAIN_DOCUMENT_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+)
 
 
 @dataclass(frozen=True)
@@ -106,8 +115,22 @@ async def broker_claude_sdk_tool_permission(
     trace_id: str,
     request: dict[str, Any],
     expires_in_seconds: float = tool_permission_budget().request_ttl_seconds,
+    permission_deadline_monotonic: float | None = None,
+    monotonic: Callable[[], float] | None = None,
 ) -> dict[str, Any]:
     """Apply platform tool policy to a Claude Agent SDK tool-permission callback."""
+
+    monotonic = monotonic or asyncio.get_running_loop().time
+
+    def deadline_exhausted() -> bool:
+        return permission_deadline_monotonic is not None and monotonic() >= permission_deadline_monotonic
+
+    def deadline_failure(permission_request_id: str | None = None) -> dict[str, Any]:
+        return {
+            "allowed": False,
+            "reason": "tool_permission_wait_timed_out",
+            "permission_request_id": permission_request_id or "",
+        }
 
     tool_name = str(request.get("tool_name") or "")
     tool_id = _claude_sdk_tool_id(tool_name)
@@ -133,6 +156,13 @@ async def broker_claude_sdk_tool_permission(
         tool_call_id=tool_call_id,
         request_payload_json=request_payload,
     )
+    # The repository locks and evaluates the persisted deadline with its
+    # current wall clock.  This local absolute deadline closes the gap after an
+    # awaited control-plane boundary before any decision-derived side effect.
+    if deadline_exhausted():
+        return deadline_failure(
+            str(permission_decision.get("id") or "") if permission_decision is not None else None
+        )
     if tool_id == "claude-sdk:Bash" and permission_decision is not None:
         decision = str(permission_decision.get("decision") or "")
         decision_tool_call_id = str(permission_decision.get("tool_call_id") or "")
@@ -155,6 +185,8 @@ async def broker_claude_sdk_tool_permission(
         requested_write_capable=requested_write_capable,
     )
     if tool_gate.allowed:
+        if deadline_exhausted():
+            return deadline_failure(tool_gate.permission_request_id)
         if tool_gate.decision == "allow_once":
             consumed_decision = await repositories.consume_tool_permission_decision(
                 conn,
@@ -163,7 +195,11 @@ async def broker_claude_sdk_tool_permission(
                 run_id=run_id,
                 request_id=tool_gate.permission_request_id,
             )
+            if deadline_exhausted():
+                return deadline_failure(tool_gate.permission_request_id)
             if consumed_decision is None:
+                if deadline_exhausted():
+                    return deadline_failure(tool_gate.permission_request_id)
                 await repositories.append_audit_log(
                     conn,
                     tenant_id=tenant_id,
@@ -193,6 +229,8 @@ async def broker_claude_sdk_tool_permission(
                     "decision": tool_gate.decision,
                     "permission_request_id": tool_gate.permission_request_id,
                 }
+        if deadline_exhausted():
+            return deadline_failure(tool_gate.permission_request_id)
         await repositories.append_audit_log(
             conn,
             tenant_id=tenant_id,
@@ -225,6 +263,8 @@ async def broker_claude_sdk_tool_permission(
 
     permission_request_id = tool_gate.permission_request_id
     if tool_gate.reason == "tool_permission_required":
+        if deadline_exhausted():
+            return deadline_failure(permission_request_id)
         row = await repositories.create_tool_permission_request(
             conn,
             tenant_id=tenant_id,
@@ -243,6 +283,8 @@ async def broker_claude_sdk_tool_permission(
             expires_in_seconds=max(float(expires_in_seconds), 0.0),
         )
         permission_request_id = str(row["id"])
+        if deadline_exhausted():
+            return deadline_failure(permission_request_id)
         await repositories.append_event(
             conn,
             tenant_id=tenant_id,
@@ -263,6 +305,8 @@ async def broker_claude_sdk_tool_permission(
                 "status": "pending",
             },
         )
+    if deadline_exhausted():
+        return deadline_failure(permission_request_id)
     await repositories.append_audit_log(
         conn,
         tenant_id=tenant_id,
@@ -316,6 +360,24 @@ async def resolve_claude_sdk_tool_permission(
     allowed_wait_seconds = tool_permission_budget().aggregate_permission_wait_seconds
     bounded_wait_timeout_seconds = max(min(float(wait_timeout_seconds), allowed_wait_seconds), 0.0)
     deadline = monotonic() + bounded_wait_timeout_seconds
+
+    async def terminalize_timeout(request_id: str) -> dict[str, Any]:
+        async with transaction() as conn:
+            terminalized = await repositories.terminalize_pending_tool_permission_requests(
+                conn,
+                tenant_id=tenant_id,
+                run_id=run_id,
+                request_id=request_id,
+                terminal_status="expired",
+                terminal_reason="permission_wait_exhausted",
+            )
+        return {
+            "allowed": False,
+            "reason": "tool_permission_wait_timed_out",
+            "permission_request_id": request_id,
+            "expired": bool(terminalized),
+        }
+
     async with transaction() as conn:
         outcome = await broker_claude_sdk_tool_permission(
             conn,
@@ -329,7 +391,18 @@ async def resolve_claude_sdk_tool_permission(
             trace_id=trace_id,
             request=request,
             expires_in_seconds=max(deadline - monotonic(), 0.0),
+            permission_deadline_monotonic=deadline,
+            monotonic=monotonic,
         )
+    if monotonic() >= deadline and outcome.get("allowed"):
+        outcome = {
+            "allowed": False,
+            "reason": "tool_permission_wait_timed_out",
+            "permission_request_id": str(outcome.get("permission_request_id") or ""),
+        }
+    if outcome.get("reason") == "tool_permission_wait_timed_out":
+        request_id = str(outcome.get("permission_request_id") or "")
+        return await terminalize_timeout(request_id) if request_id else outcome
     if outcome.get("reason") != "tool_permission_required":
         return outcome
 
@@ -368,7 +441,7 @@ async def resolve_claude_sdk_tool_permission(
             if pending_status == "decided":
                 if monotonic() >= deadline:
                     break
-                return await broker_claude_sdk_tool_permission(
+                decision_outcome = await broker_claude_sdk_tool_permission(
                     conn,
                     tenant_id=tenant_id,
                     workspace_id=workspace_id,
@@ -380,7 +453,12 @@ async def resolve_claude_sdk_tool_permission(
                     trace_id=trace_id,
                     request=request,
                     expires_in_seconds=max(deadline - monotonic(), 0.0),
+                    permission_deadline_monotonic=deadline,
+                    monotonic=monotonic,
                 )
+                if monotonic() >= deadline or decision_outcome.get("reason") == "tool_permission_wait_timed_out":
+                    break
+                return decision_outcome
             if pending_status != "pending":
                 return {
                     "allowed": False,
@@ -391,21 +469,7 @@ async def resolve_claude_sdk_tool_permission(
             break
         await sleep(max(float(poll_interval_seconds), 0.01))
 
-    async with transaction() as conn:
-        terminalized = await repositories.terminalize_pending_tool_permission_requests(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            request_id=request_id,
-            terminal_status="expired",
-            terminal_reason="permission_wait_exhausted",
-        )
-    return {
-        "allowed": False,
-        "reason": "tool_permission_wait_timed_out",
-        "permission_request_id": request_id,
-        "expired": bool(terminalized),
-    }
+    return await terminalize_timeout(request_id)
 
 
 def _execution_tier(payload: RunPayload) -> str:
@@ -2256,23 +2320,26 @@ def _is_usable_docx(path: Path) -> bool:
         document_root = ElementTree.fromstring(document)
     except ElementTree.ParseError:
         return False
-    if _xml_local_name(content_types_root.tag) != "Types" or _xml_local_name(document_root.tag) != "document":
+    if (
+        content_types_root.tag != f"{{{_OPC_CONTENT_TYPES_NAMESPACE}}}Types"
+        or relationships_root.tag != f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationships"
+        or document_root.tag != f"{{{_WORDPROCESSINGML_NAMESPACE}}}document"
+    ):
         return False
     has_document_override = any(
-        _xml_local_name(item.tag) == "Override"
+        item.tag == f"{{{_OPC_CONTENT_TYPES_NAMESPACE}}}Override"
         and item.attrib.get("PartName") == "/word/document.xml"
-        and item.attrib.get("ContentType")
-        == "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+        and item.attrib.get("ContentType") == _WORD_MAIN_DOCUMENT_CONTENT_TYPE
         for item in content_types_root
     )
     has_main_document_relationship = any(
-        _xml_local_name(item.tag) == "Relationship"
-        and str(item.attrib.get("Type") or "").endswith("/officeDocument")
+        item.tag == f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationship"
+        and str(item.attrib.get("Type") or "") == _OPC_OFFICE_DOCUMENT_RELATIONSHIP
         and str(item.attrib.get("TargetMode") or "").lower() != "external"
         and _resolve_root_relationship_target(str(item.attrib.get("Target") or "")) == "word/document.xml"
         for item in relationships_root
     )
-    body = next((item for item in document_root if _xml_local_name(item.tag) == "body"), None)
+    body = next((item for item in document_root if item.tag == f"{{{_WORDPROCESSINGML_NAMESPACE}}}body"), None)
     return has_document_override and has_main_document_relationship and body is not None and any(True for _ in body)
 
 
@@ -2283,6 +2350,7 @@ def _docx_archive_entries_are_bounded(entries: list[zipfile.ZipInfo]) -> bool:
         return False
     compressed_total = 0
     uncompressed_total = 0
+    seen_package_parts: set[str] = set()
     for entry in entries:
         filename = str(entry.filename or "")
         package_path = filename[:-1] if entry.is_dir() and filename.endswith("/") else filename
@@ -2292,8 +2360,13 @@ def _docx_archive_entries_are_bounded(entries: list[zipfile.ZipInfo]) -> bool:
             or "\\" in filename
             or filename.startswith("/")
             or any(part in {"", ".", ".."} for part in package_path.split("/"))
+            or bool(entry.flag_bits & 0x1)
         ):
             return False
+        normalized_part = package_path.casefold()
+        if normalized_part in seen_package_parts:
+            return False
+        seen_package_parts.add(normalized_part)
         compressed_size = int(entry.compress_size)
         uncompressed_size = int(entry.file_size)
         if compressed_size < 0 or uncompressed_size < 0:
@@ -2321,10 +2394,6 @@ def _resolve_root_relationship_target(target: str) -> str | None:
     if normalized.startswith("../") or normalized in {".", ".."}:
         return None
     return normalized
-
-
-def _xml_local_name(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1]
 
 
 def _artifact_label(filename: str, artifact_type: str) -> str:

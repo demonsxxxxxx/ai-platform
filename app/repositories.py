@@ -4367,7 +4367,7 @@ async def create_tool_permission_request(
           tool_id, tool_call_id, action, risk_level, write_capable, reason, request_payload_json, expires_at
         )
         select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb,
-               now() + (%s * interval '1 second')
+               clock_timestamp() + (%s * interval '1 second')
         from eligible_run
         returning id
         """,
@@ -4457,7 +4457,7 @@ async def expire_pending_tool_permission_requests(
               where candidate.tenant_id = runs.tenant_id
                 and candidate.run_id = runs.id
                 and candidate.status = 'pending'
-                and (candidate.expires_at is null or candidate.expires_at <= now())
+                and (candidate.expires_at is null or candidate.expires_at <= clock_timestamp())
                 and (%s::text is null or candidate.user_id = %s)
                 and (%s::text is null or candidate.id = %s)
             )
@@ -4470,7 +4470,7 @@ async def expire_pending_tool_permission_requests(
           join locked_runs on locked_runs.id = permission_request.run_id
           where permission_request.tenant_id = %s
             and permission_request.status = 'pending'
-            and (permission_request.expires_at is null or permission_request.expires_at <= now())
+            and (permission_request.expires_at is null or permission_request.expires_at <= clock_timestamp())
             and (%s::text is null or permission_request.user_id = %s)
             and (%s::text is null or permission_request.run_id = %s)
             and (%s::text is null or permission_request.id = %s)
@@ -4481,8 +4481,8 @@ async def expire_pending_tool_permission_requests(
         update run_tool_permission_requests as permission_request
         set status = 'expired',
             reason = 'permission_request_expired',
-            expires_at = coalesce(permission_request.expires_at, now()),
-            updated_at = now()
+            expires_at = coalesce(permission_request.expires_at, clock_timestamp()),
+            updated_at = clock_timestamp()
         from expired_requests
         where permission_request.id = expired_requests.id
         returning permission_request.*
@@ -4607,8 +4607,8 @@ async def terminalize_pending_tool_permission_requests(
         update run_tool_permission_requests as permission_request
         set status = %s,
             reason = %s,
-            expires_at = coalesce(expires_at, now()),
-            updated_at = now()
+            expires_at = coalesce(expires_at, clock_timestamp()),
+            updated_at = clock_timestamp()
         from terminalized_requests
         where permission_request.id = terminalized_requests.id
         returning permission_request.id, permission_request.user_id, permission_request.trace_id,
@@ -4670,7 +4670,7 @@ async def list_runs_requiring_tool_permission_terminalization(
              where permission_request.tenant_id = runs.tenant_id
                and permission_request.run_id = runs.id
                and permission_request.status = 'pending'
-               and (permission_request.expires_at is null or permission_request.expires_at <= now())
+               and (permission_request.expires_at is null or permission_request.expires_at <= clock_timestamp())
            )
         order by coalesce(runs.finished_at, runs.started_at, runs.created_at) asc, runs.tenant_id asc, runs.id asc
         limit %s
@@ -5027,7 +5027,7 @@ async def list_tool_permission_inbox(
         join runs on runs.tenant_id = permission_request.tenant_id and runs.id = permission_request.run_id
         where permission_request.tenant_id = %s and permission_request.user_id = %s
           and (%s = 'all' or permission_request.status = %s)
-          and (permission_request.status <> 'pending' or permission_request.expires_at > now())
+          and (permission_request.status <> 'pending' or permission_request.expires_at > clock_timestamp())
         order by permission_request.created_at desc, permission_request.id desc
         limit %s
         """,
@@ -5053,7 +5053,7 @@ async def list_tool_permission_inbox_for_tenant(
         join runs on runs.tenant_id = permission_request.tenant_id and runs.id = permission_request.run_id
         where permission_request.tenant_id = %s
           and (%s = 'all' or permission_request.status = %s)
-          and (permission_request.status <> 'pending' or permission_request.expires_at > now())
+          and (permission_request.status <> 'pending' or permission_request.expires_at > clock_timestamp())
         order by permission_request.created_at desc, permission_request.id desc
         limit %s
         """,
@@ -5104,8 +5104,8 @@ async def decide_tool_permission_request(
             reason = %s,
             decision_payload_json = %s::jsonb,
             expires_at = permission_request.expires_at,
-            decided_at = now(),
-            updated_at = now()
+            decided_at = clock_timestamp(),
+            updated_at = clock_timestamp()
         from executable_run
         where permission_request.tenant_id = %s
           and permission_request.user_id = %s
@@ -5113,7 +5113,7 @@ async def decide_tool_permission_request(
           and executable_run.id = permission_request.run_id
           and permission_request.id = %s
           and permission_request.status = 'pending'
-          and permission_request.expires_at > now()
+          and permission_request.expires_at > clock_timestamp()
         returning permission_request.*
         """,
         (
@@ -5179,7 +5179,7 @@ async def get_exact_tool_permission_decision(
           and permission_request.tool_id = %s
           and permission_request.action = %s
           and permission_request.status = 'decided'
-          and permission_request.expires_at > now()
+          and permission_request.expires_at > clock_timestamp()
           {exact_filter}
         order by permission_request.decided_at desc, permission_request.updated_at desc, permission_request.created_at desc
         limit 1
@@ -5235,7 +5235,7 @@ async def consume_tool_permission_decision(
         )
         update run_tool_permission_requests as permission_request
         set status = 'consumed',
-            updated_at = now()
+            updated_at = clock_timestamp()
         from executable_run
         where permission_request.tenant_id = %s
           and permission_request.user_id = %s
@@ -5244,7 +5244,7 @@ async def consume_tool_permission_decision(
           and permission_request.id = %s
           and permission_request.decision = 'allow_once'
           and permission_request.status = 'decided'
-          and permission_request.expires_at > now()
+          and permission_request.expires_at > clock_timestamp()
         returning permission_request.*
         """,
         (tenant_id, run_id, tenant_id, user_id, run_id, request_id),
@@ -9520,6 +9520,31 @@ async def complete_run(
     latency_ms, input_tokens, output_tokens, total_tokens, estimated_cost_minor = _result_observability_values(result_json)
     cursor = await conn.execute(
         """
+        with locked_run as materialized (
+          select id
+          from runs
+          where tenant_id = %s
+            and id = %s
+            and status not in ('succeeded', 'failed', 'cancelled')
+            and cancel_requested_at is null
+            and permission_terminalization_target is null
+          for update
+        ), consumed_run_grants as (
+          update run_tool_permission_requests as permission_request
+          set status = 'consumed',
+              reason = case
+                when permission_request.reason = '' then 'allow_for_run_completed'
+                else permission_request.reason
+              end,
+              updated_at = clock_timestamp()
+          from locked_run
+          where permission_request.tenant_id = %s
+            and permission_request.run_id = locked_run.id
+            and permission_request.status = 'decided'
+            and permission_request.decision = 'allow_for_run'
+            and permission_request.expires_at > clock_timestamp()
+          returning permission_request.id
+        )
         update runs
         set
           status = 'succeeded',
@@ -9532,8 +9557,10 @@ async def complete_run(
           output_token_count = %s,
           total_token_count = %s,
           estimated_cost_minor = %s
-        where tenant_id = %s
-          and id = %s
+        from locked_run
+        where runs.tenant_id = %s
+          and runs.id = %s
+          and locked_run.id = runs.id
           and status not in ('succeeded', 'failed', 'cancelled')
           and cancel_requested_at is null
           and permission_terminalization_target is null
@@ -9546,6 +9573,9 @@ async def complete_run(
         returning id
         """,
         (
+            tenant_id,
+            run_id,
+            tenant_id,
             dumps_json(result_json),
             latency_ms,
             input_tokens,

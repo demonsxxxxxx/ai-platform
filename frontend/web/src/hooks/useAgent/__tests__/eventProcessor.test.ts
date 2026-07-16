@@ -419,6 +419,52 @@ test("closes the exact permission card from a terminalized run event", () => {
   assert.doesNotMatch(JSON.stringify(part), /decision_endpoint|decision_options/);
 });
 
+test("does not reopen a terminalized permission card from a stale decision replay", () => {
+  const parts: MessagePart[] = [
+    {
+      type: "tool_permission",
+      event_id: "evt-permission-expired",
+      run_id: "run-a",
+      permission_request_id: "tpr-terminal-replay",
+      tool_id: "Bash",
+      tool_call_id: "call-terminal-replay",
+      risk_level: "high",
+      write_capable: true,
+      status: "expired",
+      sequence: 10,
+    } as never,
+  ];
+
+  const result = processMessageEvent(
+    "run_event",
+    {
+      event_id: "evt-permission-decided-stale",
+      run_id: "run-a",
+      sequence: 9,
+      event_type: "tool_permission_decided",
+      stage: "tool_policy",
+      payload: {
+        permission_request_id: "tpr-terminal-replay",
+        tool_id: "Bash",
+        tool_call_id: "call-terminal-replay",
+        decision: "allow_once",
+      },
+    } as never,
+    parts,
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  const part = result.parts[0] as MessagePart & { type: "tool_permission"; status: string; sequence: number };
+  assert.equal(part.type, "tool_permission");
+  assert.equal(part.status, "expired");
+  assert.equal(part.sequence, 10);
+});
+
 test("preserves pending tool risk fields when legacy decision events omit them", () => {
   const parts: MessagePart[] = [
     {

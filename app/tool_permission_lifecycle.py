@@ -93,7 +93,15 @@ def tool_permission_budget(normal_execution_timeout_seconds: float = 120.0) -> T
         + _SANDBOX_SDK_INNER_MARGIN_SECONDS
     )
     executor_callback_timeout_seconds = _NON_PERMISSION_CALLBACK_TIMEOUT_SECONDS
-    normal_outer_executor_timeout_seconds = normal_execution_seconds + executor_callback_timeout_seconds
+    # The ordinary sandbox POST contains the initial callback, runner, final
+    # observation callback, and response hand-off.  Keep this separate from
+    # governed nesting so non-governed runs retain their runner policy while
+    # the transport has room to report truthful observations.
+    normal_outer_executor_timeout_seconds = (
+        normal_execution_seconds
+        + (2 * executor_callback_timeout_seconds)
+        + _OUTER_EXECUTOR_MARGIN_SECONDS
+    )
     outer_executor_timeout_seconds = (
         sandbox_sdk_timeout_seconds
         + (2 * executor_callback_timeout_seconds)

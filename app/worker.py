@@ -18,6 +18,7 @@ from app.capability_distribution import (
     capability_distribution_audit_payload,
     resolve_capability_access,
 )
+from app.capabilities import required_artifact_types_for_skill
 from app.control_plane_contracts import (
     CONTEXT_SNAPSHOT_SCHEMA_VERSION,
     artifact_lineage_contract,
@@ -2448,7 +2449,10 @@ async def process_run_payload(
                     run_id=payload.run_id,
                 )
             )
-            required_artifact_types = {
+            # The selected platform Skill owns this contract.  Preserve an
+            # adapter's additional declared requirements, but never let an
+            # executor omit the capability requirement on resume or retry.
+            required_artifact_types = set(required_artifact_types_for_skill(payload.skill_id)) | {
                 str(value)
                 for value in result.executor_payload.get("required_artifact_types", [])
                 if isinstance(value, str) and value

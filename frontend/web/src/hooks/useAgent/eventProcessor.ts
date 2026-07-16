@@ -984,21 +984,26 @@ function applyToolPermissionDecisionPart(
     ? parts.map((p) =>
         p.type === "tool_permission" &&
         p.permission_request_id === decisionPart.permission_request_id
-          ? {
-              ...p,
-              run_id: decisionPart.run_id || p.run_id,
-              tool_id: decisionPart.tool_id || p.tool_id,
-              tool_call_id: decisionPart.tool_call_id || p.tool_call_id,
-              risk_level: riskLevelFromEvent ? decisionPart.risk_level : p.risk_level,
-              write_capable: writeCapableFromEvent
-                ? decisionPart.write_capable
-                : p.write_capable,
-              decided_event_id: decisionPart.decided_event_id,
-              status: decisionPart.status,
-              decision: decisionPart.decision,
-              sequence: decisionPart.sequence,
-              decided_at: decisionPart.decided_at,
-            }
+          ? TOOL_PERMISSION_TERMINAL_STATUSES.has(p.status) ||
+              (typeof p.sequence === "number" &&
+                typeof decisionPart.sequence === "number" &&
+                decisionPart.sequence < p.sequence)
+            ? p
+            : {
+                ...p,
+                run_id: decisionPart.run_id || p.run_id,
+                tool_id: decisionPart.tool_id || p.tool_id,
+                tool_call_id: decisionPart.tool_call_id || p.tool_call_id,
+                risk_level: riskLevelFromEvent ? decisionPart.risk_level : p.risk_level,
+                write_capable: writeCapableFromEvent
+                  ? decisionPart.write_capable
+                  : p.write_capable,
+                decided_event_id: decisionPart.decided_event_id,
+                status: decisionPart.status,
+                decision: decisionPart.decision,
+                sequence: decisionPart.sequence,
+                decided_at: decisionPart.decided_at,
+              }
           : p,
       )
     : [...parts, normalizedDecisionPart];

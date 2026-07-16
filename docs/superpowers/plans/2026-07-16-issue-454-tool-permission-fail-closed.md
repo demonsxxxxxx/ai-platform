@@ -195,3 +195,28 @@ RED coverage uses callback fakes, injected clocks, barrier races, schema SQL
 assertions, bounded maintenance fakes, and synthetic OPC archives.  GREEN
 verification includes affected runtime, lifecycle, repository, worker,
 multi-agent, RBAC, artifact, schema, coexistence, and exact backend-CI suites.
+
+## Generation 4e repair boundary
+
+The permission deadline remains one deep lifecycle seam: a callback owns one
+absolute monotonic deadline, every awaited broker boundary rechecks it, and the
+database compares permission expiry with `clock_timestamp()` after acquiring
+the run-first lock. A completed deadline can create no decision, consumption,
+or allowed audit. The ordinary outer executor budget explicitly includes its
+initial and final callbacks plus the response margin; governed nesting remains
+strictly larger.
+
+Terminalization stays a durable run work item. Its final owner must close
+steps, emit the terminal run fact and audit once, reconcile a child, and allow
+the existing parent rollup rather than merely writing a run status. A valid
+run-wide grant is invalidated as consumed at successful completion while all
+other pending or decided authority continues to block success. The worker
+unions capability-derived required artifact types with any executor assertion,
+never allowing executor output to weaken the selected Skill contract.
+
+DOCX validation is an OPC seam: bounded archive metadata is accepted only for
+safe, unique package part names, the canonical OpenXML namespaces and exact
+office-document relationship/content type, and a real WordprocessingML body.
+The frontend part reducer is monotonic: a terminal card cannot be overwritten
+by a stale/replayed decision, including when the decision reducer rather than
+the upsert reducer receives the event.

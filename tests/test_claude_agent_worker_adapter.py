@@ -453,6 +453,80 @@ async def test_tool_permission_wait_persists_its_remaining_budget_and_terminaliz
     ]
 
 
+@pytest.mark.asyncio
+async def test_tool_permission_decision_arriving_after_the_absolute_deadline_never_allows_or_audits(monkeypatch):
+    """An awaited broker result may not revive a request after its shared deadline."""
+
+    clock = {"value": 0.0}
+    terminalized = []
+    broker_calls = []
+
+    async def fake_broker(conn, **kwargs):
+        broker_calls.append(kwargs)
+        if len(broker_calls) == 1:
+            return {
+                "allowed": False,
+                "reason": "tool_permission_required",
+                "permission_request_id": "tpr-late",
+            }
+        clock["value"] = 5.0
+        return {
+            "allowed": True,
+            "reason": "tool_permission_allowed",
+            "permission_request_id": "tpr-late",
+        }
+
+    async def fake_expire(conn, **kwargs):
+        return None
+
+    async def fake_get_request(conn, **kwargs):
+        return {"status": "decided"}
+
+    async def fake_terminalize(conn, **kwargs):
+        terminalized.append(kwargs)
+        return [{"id": "tpr-late", "status": "expired"}]
+
+    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
+    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
+    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
+    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
+    monkeypatch.setattr(
+        claude_agent_worker.repositories,
+        "terminalize_pending_tool_permission_requests",
+        fake_terminalize,
+    )
+
+    result = await resolve_claude_sdk_tool_permission(
+        tenant_id="default",
+        workspace_id="default",
+        user_id="user-a",
+        session_id="ses_1",
+        run_id="run_1",
+        agent_id="qa-word-review",
+        skill_id="qa-file-reviewer",
+        trace_id="trace-run-1",
+        request={"tool_call_id": "call-late"},
+        wait_timeout_seconds=5.0,
+        monotonic=lambda: clock["value"],
+    )
+
+    assert result == {
+        "allowed": False,
+        "reason": "tool_permission_wait_timed_out",
+        "permission_request_id": "tpr-late",
+        "expired": True,
+    }
+    assert terminalized == [
+        {
+            "tenant_id": "default",
+            "run_id": "run_1",
+            "request_id": "tpr-late",
+            "terminal_status": "expired",
+            "terminal_reason": "permission_wait_exhausted",
+        }
+    ]
+
+
 def _snapshot_hash(files):
     digest = hashlib.sha256()
     for item in sorted(files, key=lambda value: str(value["relative_path"])):
@@ -884,6 +958,23 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
                 b'Target="../word/document.xml"/></Relationships>'
             ),
         ),
+        usable_docx_bytes(
+            document=(
+                b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                b"<w:body><w:p/></w:body></w:document>"
+            ),
+            relationships=(
+                b'<Relationships><Relationship Id="rId1" '
+                b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                b'Target="word/document.xml"/></Relationships>'
+            ),
+        ),
+        usable_docx_bytes(
+            document=(
+                b'<w:document xmlns:w="urn:wrong-wordprocessingml">'
+                b"<w:body><w:p/></w:body></w:document>"
+            ),
+        ),
     ],
     ids=[
         "zero-byte",
@@ -895,6 +986,8 @@ def test_collect_workspace_artifacts_includes_delivery_outputs(monkeypatch, tmp_
         "invalid-content-types",
         "missing-root-relationship",
         "path-traversing-root-relationship",
+        "namespace-less-root-relationship",
+        "wrong-wordprocessingml-namespace",
     ],
 )
 @pytest.mark.parametrize("skill_id", ["qa-file-reviewer", "baoyu-translate"])
@@ -952,6 +1045,44 @@ def test_collect_workspace_artifacts_rejects_required_docx_zip_bounds_before_rea
     artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
         payload(skill_id=skill_id),
         workspace,
+    )
+
+    assert artifacts == []
+
+
+def test_required_docx_rejects_duplicate_case_colliding_or_encrypted_part_before_read(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    output = workspace / "output"
+    output.mkdir(parents=True)
+    path = output / "review.docx"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, content in {
+            "[Content_Types].xml": (
+                b'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+                b'<Override PartName="/word/document.xml" '
+                b'ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+                b"</Types>"
+            ),
+            "_rels/.rels": (
+                b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                b'<Relationship Id="rId1" '
+                b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+                b'Target="word/document.xml"/></Relationships>'
+            ),
+            "word/document.xml": (
+                b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                b"<w:body><w:p/></w:body></w:document>"
+            ),
+        }.items():
+            archive.writestr(name, content)
+        archive.writestr("WORD/DOCUMENT.XML", b"duplicate")
+
+    def fail_read(*_args, **_kwargs):
+        raise AssertionError("unsafe archive metadata must fail before archive.read")
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", fail_read)
+    artifacts = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())._collect_workspace_artifacts(
+        payload(skill_id="qa-file-reviewer"), workspace
     )
 
     assert artifacts == []

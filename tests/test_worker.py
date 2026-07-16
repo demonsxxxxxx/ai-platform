@@ -636,9 +636,9 @@ async def test_worker_fails_and_terminalizes_when_a_pending_permission_would_byp
 @pytest.mark.parametrize(
     ("case", "artifact_types", "required_artifact_types", "skill_id", "expected_status"),
     [
-        ("correct_type", ["reviewed_docx"], ["reviewed_docx"], "qa-file-reviewer", "succeeded"),
-        ("wrong_type_only", ["execution_log"], ["reviewed_docx"], "qa-file-reviewer", "failed"),
-        ("mixed_types", ["execution_log", "reviewed_docx"], ["reviewed_docx"], "qa-file-reviewer", "succeeded"),
+        ("correct_type", ["reviewed_docx"], [], "qa-file-reviewer", "succeeded"),
+        ("wrong_type_only", ["execution_log"], [], "qa-file-reviewer", "failed"),
+        ("mixed_types", ["execution_log", "reviewed_docx"], [], "qa-file-reviewer", "succeeded"),
         ("non_required_non_claude", [], [], "general-chat", "succeeded"),
     ],
 )
