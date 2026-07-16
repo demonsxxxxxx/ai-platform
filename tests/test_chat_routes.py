@@ -20,6 +20,7 @@ from app.routes.chat import (
     get_chat_submission,
     list_messages,
     list_sessions,
+    _file_row_matches_request_scope,
 )
 from app.queue import QueueAdmissionMetadata
 
@@ -36,6 +37,23 @@ def principal(**overrides):
     values = {"user_id": "user-a", "display_name": "User A", "tenant_id": "tenant-a"}
     values.update(overrides)
     return AuthPrincipal(**values)
+
+
+def test_file_row_scope_uses_effective_continuation_workspace():
+    request = ChatStreamRequest(message="review", workspace_id="default", session_id="ses-owned")
+    row = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-owned",
+        "user_id": "user-a",
+        "session_id": "ses-owned",
+        "run_id": None,
+    }
+    assert _file_row_matches_request_scope(
+        row, request, principal(), workspace_id="workspace-owned"
+    )
+    assert not _file_row_matches_request_scope(
+        row, request, principal(), workspace_id="workspace-other"
+    )
 
 
 @pytest.fixture(autouse=True)

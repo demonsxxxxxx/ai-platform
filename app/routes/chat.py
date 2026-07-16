@@ -427,12 +427,18 @@ def _row_value(row: dict[str, Any], key: str, default: Any = None) -> Any:
         return default
 
 
-def _file_row_matches_request_scope(row: dict[str, Any], request: ChatStreamRequest, principal: AuthPrincipal) -> bool:
+def _file_row_matches_request_scope(
+    row: dict[str, Any],
+    request: ChatStreamRequest,
+    principal: AuthPrincipal,
+    *,
+    workspace_id: str,
+) -> bool:
     tenant_id = _row_value(row, "tenant_id", _MISSING)
     if tenant_id != principal.tenant_id:
         return False
-    workspace_id = _row_value(row, "workspace_id", _MISSING)
-    if workspace_id != request.workspace_id:
+    row_workspace_id = _row_value(row, "workspace_id", _MISSING)
+    if row_workspace_id != workspace_id:
         return False
     user_id = _row_value(row, "user_id", _MISSING)
     if user_id != principal.user_id:
@@ -494,14 +500,22 @@ def _file_summary_from_row(file_id: str, row: dict[str, Any]) -> FileSummary:
     )
 
 
-async def _file_summaries_for_intent(conn, request: ChatStreamRequest, principal: AuthPrincipal) -> list[FileSummary]:
+async def _file_summaries_for_intent(
+    conn,
+    request: ChatStreamRequest,
+    principal: AuthPrincipal,
+    *,
+    workspace_id: str,
+) -> list[FileSummary]:
     summaries = _file_summaries_from_request(request)
     for file_id in _file_ids_for_intent_lookup(request):
         existing = next((item for item in summaries if item.file_id == file_id), None)
         if existing and (existing.name or existing.content_type):
             continue
         row = await repositories.get_file(conn, tenant_id=principal.tenant_id, file_id=file_id)
-        if not row or not _file_row_matches_request_scope(row, request, principal):
+        if not row or not _file_row_matches_request_scope(
+            row, request, principal, workspace_id=workspace_id
+        ):
             continue
         summaries = _merge_file_summaries(summaries, _file_summary_from_row(file_id, row))
     return summaries
@@ -853,7 +867,12 @@ async def chat_stream(
                 )
                 decision = route_intent(
                     request.message,
-                    await _file_summaries_for_intent(conn, request, principal)
+                    await _file_summaries_for_intent(
+                        conn,
+                        request,
+                        principal,
+                        workspace_id=effective_workspace_id,
+                    )
                     if continuation_capability is None
                     else [],
                     confirmed_capability_id=continuation_capability
