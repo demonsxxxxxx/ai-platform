@@ -3,7 +3,14 @@
  * Provides agent communication, message management, and SSE streaming
  */
 
-import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import {
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+} from "react";
 import toast from "react-hot-toast";
 import i18n from "../i18n";
 import { uuid } from "../utils/uuid";
@@ -66,6 +73,7 @@ import {
 import { createOptimisticMessagesForSend } from "./useAgent/optimisticMessages";
 import { translateBackendError } from "../utils/backendErrors";
 import { dispatchSessionTitleUpdated } from "../utils/sessionTitleEvents";
+import { ApiRequestError } from "../services/api/fetch";
 import {
   SELECTED_SKILL_RECOVERABLE_CODES,
   type SelectedSkillRecoverableCode,
@@ -74,11 +82,34 @@ import {
 function getSelectedSkillRecoverableCode(
   error: unknown,
 ): SelectedSkillRecoverableCode | null {
-  if (!(error instanceof Error)) return null;
+  if (!(error instanceof ApiRequestError)) return null;
   return (
     SELECTED_SKILL_RECOVERABLE_CODES.find(
-      (code) => error.message.trim() === code,
+      (code) => error.code === code,
     ) ?? null
+  );
+}
+
+const PRE_PERSISTENCE_CHAT_REJECTION_CODES = new Set<string>([
+  "invalid_principal_user_id",
+  "raw_skill_selector_forbidden",
+  "skill_selector_conflict",
+  "model_id_not_available",
+  "capability_not_authorized",
+  "session_not_found",
+  "session_workspace_mismatch",
+  "skill_selection_stale",
+  "file_required_for_skill",
+  "skill_version_not_materializable",
+]);
+
+function isProvenPrePersistenceChatRejection(error: unknown): boolean {
+  return (
+    error instanceof ApiRequestError &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    typeof error.code === "string" &&
+    PRE_PERSISTENCE_CHAT_REJECTION_CODES.has(error.code)
   );
 }
 
@@ -151,6 +182,10 @@ interface ReconcileOwner {
 type TerminalHydrationOwner = ReconcileOwner;
 
 type AuthScope = readonly [tenantId: string, userId: string];
+
+interface SubmissionUncertainty {
+  sessionId: string | null;
+}
 
 function authScopesEqual(left: AuthScope | null, right: AuthScope | null): boolean {
   return (
@@ -233,6 +268,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const sessionGenerationRef = useRef(0);
   const submissionTokenRef = useRef(0);
   const authScopeRef = useRef<AuthScope | null>(null);
+  const submissionUncertaintyRef = useRef<SubmissionUncertainty | null>(null);
 
   // Stream version to invalidate stale SSE events after clearMessages
   const streamVersionRef = useRef(0);
@@ -994,6 +1030,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             });
           }
 
+          if (
+            submissionUncertaintyRef.current?.sessionId === targetSessionId &&
+            !statusUnavailable
+          ) {
+            submissionUncertaintyRef.current = null;
+          }
+
           // Return sessionConfig *before* any SSE reconnect so that the
           // caller can immediately restore model selection / agent / config.
 
@@ -1037,6 +1080,15 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     ): Promise<SubmissionOutcome> => {
       if (!isMountedRef.current) return { status: "failed" };
       if (!content.trim()) return { status: "failed" };
+
+      if (submissionUncertaintyRef.current !== null) {
+        const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
+          defaultValue: i18n.t("chat.requestFailed"),
+        });
+        setError(statusUnavailable);
+        toast.error(statusUnavailable);
+        return { status: "failed" };
+      }
 
       if (isSendingRef.current) {
         console.log(
@@ -1330,31 +1382,54 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return { status: "failed" };
         }
         toast.dismiss("chat-queue");
-        if (!admissionAccepted) {
+        const prePersistenceRejection =
+          !admissionAccepted && isProvenPrePersistenceChatRejection(err);
+        if (prePersistenceRejection) {
+          messagesRef.current = previousMessages;
           setMessages(previousMessages);
-        }
-        if (err instanceof Error && err.name === "AbortError") {
-          setIsLoading(false);
-          finishCurrentSubmission();
-          return { status: "failed" };
-        }
-        const recoverableCode = selectedSkill
-          ? getSelectedSkillRecoverableCode(err)
-          : null;
-        if (recoverableCode) {
-          setMessages(previousMessages);
-          setConnectionStatus("disconnected");
-          setIsInitializingSandbox(false);
-          setIsLoading(false);
-          finishCurrentSubmission();
-          return { status: "recoverable_error", code: recoverableCode };
-        }
-        const errorMessage =
-          err instanceof Error
-            ? translateBackendError(err.message, i18n.t.bind(i18n))
-            : i18n.t("chat.unknownError");
-        setError(errorMessage);
-        if (admissionAccepted) {
+          const recoverableCode = selectedSkill
+            ? getSelectedSkillRecoverableCode(err)
+            : null;
+          if (recoverableCode) {
+            setConnectionStatus("disconnected");
+            setIsInitializingSandbox(false);
+            setIsLoading(false);
+            finishCurrentSubmission();
+            return { status: "recoverable_error", code: recoverableCode };
+          }
+          const errorMessage =
+            err instanceof Error
+              ? translateBackendError(err.message, i18n.t.bind(i18n))
+              : i18n.t("chat.unknownError");
+          setError(errorMessage);
+          toast.error(
+            i18n.t("chat.sendNotAcceptedRetry", {
+              defaultValue: "消息未发送，请重试。",
+            }),
+          );
+        } else if (!admissionAccepted) {
+          const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
+            defaultValue: i18n.t("chat.requestFailed"),
+          });
+          const uncertainMessages = optimisticMessages.filter(
+            (message) => message.id !== assistantMessageId,
+          );
+          // The request may have committed before its response was lost. Keep
+          // its user turn without projecting an invented assistant result, and
+          // block another mutation until history/status reconciliation.
+          messagesRef.current = uncertainMessages;
+          setMessages(uncertainMessages);
+          submissionUncertaintyRef.current = {
+            sessionId: requestSessionId,
+          };
+          setError(statusUnavailable);
+          toast.error(statusUnavailable);
+        } else {
+          const errorMessage =
+            err instanceof Error
+              ? translateBackendError(err.message, i18n.t.bind(i18n))
+              : i18n.t("chat.unknownError");
+          setError(errorMessage);
           setMessages((prev) =>
             prev.map((m) =>
               m.id === finalAssistantMessageId
@@ -1366,12 +1441,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                   }
                 : m,
             ),
-          );
-        } else {
-          toast.error(
-            i18n.t("chat.sendNotAcceptedRetry", {
-              defaultValue: "消息未发送，请重试。",
-            }),
           );
         }
         setConnectionStatus("disconnected");
@@ -1457,6 +1526,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     };
     lastHistoryTimestampRef.current = null;
     streamingMessageIdRef.current = null;
+    isReconnectFromHistoryRef.current = false;
+    messagesRef.current = [];
     sessionIdRef.current = null;
     currentRunIdRef.current = null;
     activeSubagentStackRef.current = [];
@@ -1465,6 +1536,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       abortControllerRef.current = null;
     }
     clearReconnectTimeout(reconnectTimeoutRef);
+    toast.dismiss("chat-queue");
   }, [clearReconcileOwners]);
 
   const authScopeAuthenticated = isAuthenticated && Boolean(user);
@@ -1478,7 +1550,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     [authScopeAuthenticated, authScopeTenantId, authScopeUserId],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previousAuthScope = authScopeRef.current;
     if (authScopesEqual(previousAuthScope, authScope)) {
       return;
@@ -1490,6 +1562,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     // explicit new-chat action before it can publish stale session state.
     if (previousAuthScope !== null || authScope === null) {
       clearMessages();
+      submissionUncertaintyRef.current = null;
     }
   }, [authScope, clearMessages]);
 

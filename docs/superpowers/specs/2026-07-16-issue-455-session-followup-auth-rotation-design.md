@@ -40,6 +40,20 @@ principal-scoped continuation decision.
    the prior message list, preserves the draft for retry, and emits only a
    stable actionable transport error. It never manufactures an assistant turn.
    Confirmed runs retain the existing SSE/reconciliation lifecycle.
+4. The identity boundary uses a layout-phase reset rather than a passive effect.
+   It clears rendered and ref-held messages, session/run ownership, pending
+   submission/history/stream/status fences, reconnect owners, and transport
+   resources before the replacement principal can paint or act on the prior
+   principal's state.
+5. A chat admission response is not proof that the mutation was absent. The
+   backend commits the session/run/user message before external queue admission,
+   so network loss, 5xx, timeout, parse failure, or response loss retains the
+   optimistic user turn and reports an unknown submission status without an
+   assistant turn or automatic replay. Only a typed 4xx whose explicit code is
+   known to be rejected before persistence restores the pre-submit message list
+   and enables a manual retry. A known-session unknown result remains blocked
+   until authoritative history/status refresh succeeds; an unknown fresh
+   session requires a page-level refresh because no trusted session id exists.
 
 ## Ordering and race constraints
 
@@ -52,6 +66,13 @@ principal-scoped continuation decision.
 - Workspace disagreement is rejected before intent, capability, file, queue,
   run, or context side effects. An owned non-default session therefore resumes
   in its saved workspace even when an older client omits the workspace.
+- The layout reset changes the same monotonic history, submission, session, and
+  stream generations used by existing #453 fencing, clears ref-visible state
+  synchronously, aborts local stream/reconnect resources, and never sends a
+  cross-principal cancellation request.
+- Unknown mutation outcomes are not retried automatically. The UI may only
+  clear that uncertainty through a successful authoritative refresh of the
+  same known session, or through a new mounted auth owner.
 - Cookie authority and the #453 auth-context generation/CAS protocol are not
   changed. No HTTP mutation is retried automatically.
 
@@ -63,7 +84,10 @@ Focused frontend coverage will exercise auth-scope rotation, fresh submit,
 owned follow-up, an ambiguous colon-containing identity pair, and a stale
 completion. Focused backend coverage will exercise owned continuation in a
 non-default workspace, early workspace-mismatch rejection, and foreign-session
-rejection. Validation will use the
+rejection. Focused frontend coverage also exercises a layout-phase identity
+handoff with stale submit/reconnect/cancel work, typed pre-persistence 4xx
+rejection, and network/5xx response loss after simulated server acceptance.
+Validation will use the
 changed-scope frontend tests, chat-route tests, TypeScript/lint/build as needed,
 `python -m compileall -q app tools scripts`, and `git diff --check`; no full
 pytest suite or deployment is in scope.
