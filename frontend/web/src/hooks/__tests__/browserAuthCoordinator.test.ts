@@ -543,6 +543,8 @@ test("a confirmed V2 state restores its own missing server context before login 
     await ensureLoginContextRecovery();
     requireServerContextForLogin();
     assert.equal(submitted.length, 2);
+    assert.equal(submitted[0].recovery_only, undefined);
+    assert.equal(submitted[1].recovery_only, true);
     assert.deepEqual(
       {
         browser_incarnation: submitted[1].browser_incarnation,

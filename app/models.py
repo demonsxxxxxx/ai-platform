@@ -606,6 +606,7 @@ class AuthContextBootstrapRequest(BaseModel):
         max_length=43,
         pattern=r"^[A-Za-z0-9_-]+$",
     )
+    recovery_only: bool = False
 
     @model_validator(mode="after")
     def validate_protocol_fields(self):
@@ -619,7 +620,7 @@ class AuthContextBootstrapRequest(BaseModel):
                     self.generation,
                     self.rotation_ticket,
                 )
-            ):
+            ) or self.recovery_only:
                 raise ValueError("V1 bootstrap cannot carry V2 identity fields")
             return self
         if self.browser_incarnation is None or self.generation is None:

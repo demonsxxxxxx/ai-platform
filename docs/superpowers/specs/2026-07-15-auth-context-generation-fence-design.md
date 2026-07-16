@@ -52,6 +52,13 @@ that the original response reached the browser. A separate base-cookie target
 repair can return `ready` with only the target cookie when the rotation committed
 server-side but its response headers never reached the browser.
 
+The V2-only optional `recovery_only: true` discriminator is reserved for the
+login helper's confirmed-IDB/missing-cookie check. It is absent by default so
+normal first bootstrap remains compatible. A recovery-only request cannot
+create, migrate, issue a rotation ticket, rotate, or reconcile a target: it can
+only prove the exact current authority/context and reissue that context's cookie
+with its remaining PTTL. V1 rejects recovery-only mode.
+
 ## Redis authority and Lua/CAS seams
 
 The existing context key remains:
@@ -126,15 +133,16 @@ Before the single company-login mutation, the no-Web-Locks V2 caller performs
 one forced, idempotent bootstrap using its persisted current
 `(incarnation, generation, nonce)`. This is required because JavaScript cannot
 inspect the paired HttpOnly cookie: a confirmed IDB generation may outlive a
-missing or expired cookie. The V2 bootstrap Lua path may return `repair` and
-reissue a cookie only when that exact request identity equals both the current
-authority and context record with consistent remaining `PTTL`; it changes
-neither record nor TTL. A different nonce/handle/generation, malformed or
-missing authority/context, TTL mismatch, or Redis loss remains typed
-fail-closed before login. The Web Locks V1 path is unchanged. The login helper
-never invokes, retries, or otherwise replays the login mutation; the existing
-IDB owner lease serializes each recovery attempt, and cancellation before its
-request sends no bootstrap.
+missing or expired cookie. It alone sends `recovery_only: true`. The V2
+bootstrap Lua path may return `repair` and reissue a cookie only when that exact
+request identity equals both the current authority and context record with
+consistent remaining `PTTL`; it changes neither record nor TTL. Missing
+authority is `missing` before any context lookup or write, and corrupt,
+partial, mismatched, replaced, TTL-mismatched, or unavailable state remains
+typed fail-closed before login. The Web Locks V1 path is unchanged. The login
+helper never invokes, retries, or otherwise replays the login mutation; the
+existing IDB owner lease serializes each recovery attempt, and cancellation
+before its request sends no bootstrap.
 
 If a rotation response succeeds server-side but local IDB promotion is aborted,
 expired, or versionchanged, the next owner retries the persisted pending target.

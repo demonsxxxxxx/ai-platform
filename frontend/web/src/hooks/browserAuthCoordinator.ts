@@ -761,6 +761,7 @@ async function rotateV2Owner(
 async function ensureV2BrowserAuthContext(
   signal?: AbortSignal,
   forceBootstrap = false,
+  recoveryOnly = false,
 ): Promise<void> {
   let owned: OwnedV2State | null = null;
   try {
@@ -781,6 +782,7 @@ async function ensureV2BrowserAuthContext(
         protocol_version: 2,
         browser_incarnation: current.incarnation,
         generation: current.currentGeneration,
+        ...(recoveryOnly ? { recovery_only: true } : {}),
       },
       signal,
     );
@@ -847,7 +849,7 @@ async function ensureV1BrowserAuthContext(
  */
 export async function ensureBrowserAuthContext(
   signal?: AbortSignal,
-  options: { forceBootstrap?: boolean } = {},
+  options: { forceBootstrap?: boolean; recoveryOnly?: boolean } = {},
 ): Promise<void> {
   throwIfAborted(signal);
   const storage = browserStorage();
@@ -858,7 +860,11 @@ export async function ensureBrowserAuthContext(
     return;
   }
   try {
-    await ensureV2BrowserAuthContext(signal, options.forceBootstrap === true);
+    await ensureV2BrowserAuthContext(
+      signal,
+      options.forceBootstrap === true,
+      options.recoveryOnly === true,
+    );
   } catch (error) {
     if (error instanceof BrowserAuthCoordinatorError || isAbortError(error) || error instanceof ApiRequestError) {
       throw error;
@@ -878,5 +884,8 @@ export async function ensureBrowserAuthContext(
 export async function ensureBrowserAuthContextBeforeLogin(
   signal?: AbortSignal,
 ): Promise<void> {
-  await ensureBrowserAuthContext(signal, { forceBootstrap: true });
+  await ensureBrowserAuthContext(signal, {
+    forceBootstrap: true,
+    recoveryOnly: true,
+  });
 }

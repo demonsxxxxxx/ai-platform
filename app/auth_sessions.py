@@ -428,6 +428,7 @@ local cookie_generation = tonumber(ARGV[8])
 local cookie_context_handle = ARGV[9]
 local ticket_digest = ARGV[10]
 local ticket_seconds = tonumber(ARGV[11])
+local recovery_only = ARGV[12]
 
 if type(incarnation_digest) ~= "string" or incarnation_digest == ""
   or not epoch(generation) or generation < 1
@@ -437,6 +438,7 @@ if type(incarnation_digest) ~= "string" or incarnation_digest == ""
   or (cookie_kind ~= "none" and cookie_kind ~= "v1_matching"
     and cookie_kind ~= "v1_conflict" and cookie_kind ~= "v2"
     and cookie_kind ~= "invalid")
+  or (recovery_only ~= "0" and recovery_only ~= "1")
 then
   return cjson.encode({status = "corrupt"})
 end
@@ -444,6 +446,9 @@ end
 local authority = decode(redis.call("GET", authority_key))
 if authority == false then return cjson.encode({status = "corrupt"}) end
 if not authority then
+  -- Login recovery never creates or migrates state. Its persisted browser
+  -- identity is only sufficient to reissue an exact existing authority.
+  if recovery_only == "1" then return cjson.encode({status = "missing"}) end
   if cookie_kind == "v2" or cookie_kind == "v1_conflict" or cookie_kind == "invalid" then
     return cjson.encode({status = "stale"})
   end
@@ -1322,6 +1327,7 @@ async def bootstrap_auth_context_v2(
     settings: Any | None = None,
     *,
     rotation_ticket: str | None = None,
+    recovery_only: bool = False,
 ) -> AuthBootstrapResult:
     """Atomically establish, migrate, repair, or rotate one V2 browser context."""
 
@@ -1331,6 +1337,7 @@ async def bootstrap_auth_context_v2(
         or type(generation) is not int
         or not 1 <= generation <= AUTH_CONTEXT_MAX_EPOCH
         or (rotation_ticket is not None and not _is_b64url(rotation_ticket, length=AUTH_CONTEXT_V2_TICKET_LENGTH))
+        or type(recovery_only) is not bool
     ):
         raise AuthContextError("auth_context_stale", 409)
     context_handle = auth_context_handle_for_nonce(nonce, current_settings)
@@ -1346,6 +1353,41 @@ async def bootstrap_auth_context_v2(
         context_handle,
         current_settings,
     )
+
+    if recovery_only:
+        # This explicit browser mode is only for a confirmed persisted V2
+        # identity before login. It cannot create, migrate, issue a ticket, or
+        # rotate; the Lua result must be an exact existing/repair proof.
+        if rotation_ticket is not None:
+            raise AuthContextError("auth_context_stale", 409)
+        result = await _eval(
+            V2_BOOTSTRAP_AUTH_CONTEXT_SCRIPT,
+            [_authority_key(incarnation_digest), _context_key(context_handle)],
+            [
+                incarnation_digest,
+                generation,
+                context_handle,
+                _nonce_binding(nonce, current_settings),
+                _context_ttl_seconds(current_settings),
+                cookie_kind,
+                supplied_identity.incarnation_digest if supplied_identity else "",
+                supplied_identity.generation if supplied_identity else 0,
+                supplied_identity.context_handle if supplied_identity else "",
+                "",
+                _operation_lease_seconds(current_settings),
+                "1",
+            ],
+        )
+        status = str(result.get("status") or "")
+        if status in {"existing", "repair"}:
+            return AuthBootstrapResult(
+                "ready",
+                requested_identity,
+                set_cookie=status == "repair",
+                cookie_max_age_seconds=_cookie_max_age_from_result(result),
+            )
+        _raise_for_store_status("bootstrap", status)
+        raise AssertionError("unreachable")
 
     if rotation_ticket is not None:
         # A response may have completed the rotation server-side while this
@@ -1499,6 +1541,7 @@ async def bootstrap_auth_context_v2(
             supplied_identity.context_handle if supplied_identity else "",
             "",
             _operation_lease_seconds(current_settings),
+            "0",
         ],
     )
     status = str(result.get("status") or "")

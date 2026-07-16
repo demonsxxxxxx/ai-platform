@@ -188,12 +188,19 @@ class FakeAuthRedis:
                     cookie_context_handle,
                     _ticket_digest,
                     _ticket_seconds,
+                    recovery_only,
                 ) = args
                 now_value = self.now
-                if not self._is_valid_epoch(generation) or generation < 1:
+                if (
+                    not self._is_valid_epoch(generation)
+                    or generation < 1
+                    or recovery_only not in {"0", "1"}
+                ):
                     return json.dumps({"status": "corrupt"})
                 authority_raw = self._get(str(authority_key), now_value)
                 if authority_raw is None:
+                    if recovery_only == "1":
+                        return json.dumps({"status": "missing"})
                     if cookie_kind in {"v2", "v1_conflict", "invalid"}:
                         return json.dumps({"status": "stale"})
                     if generation != 1:
@@ -1111,6 +1118,150 @@ def test_v2_route_reissues_only_the_exact_current_cookie_when_the_browser_cookie
     assert unavailable.status_code == 503
     assert unavailable.json()["detail"] == "auth_context_unavailable"
     assert "set-cookie" not in unavailable.headers
+
+
+@pytest.mark.asyncio
+async def test_v2_recovery_only_never_creates_and_repairs_only_its_exact_current_context(monkeypatch):
+    """An opt-in recovery must not revive a lost V2 authority or extend its TTL."""
+
+    redis = FakeAuthRedis()
+    settings = install_auth_context_dependencies(monkeypatch, redis)
+    incarnation = "I" * 43
+    nonce = "A" * 43
+
+    with pytest.raises(auth_sessions.AuthContextError, match="auth_context_missing"):
+        await auth_sessions.bootstrap_auth_context_v2(
+            nonce,
+            incarnation,
+            1,
+            "",
+            settings,
+            recovery_only=True,
+        )
+    assert redis.values == {}
+
+    # The unmarked first bootstrap retains its existing anonymous-create path.
+    created = await auth_sessions.bootstrap_auth_context_v2(
+        nonce,
+        incarnation,
+        1,
+        "",
+        settings,
+    )
+    assert created.status == "ready"
+    assert created.identity is not None
+    before_repair = dict(redis.values)
+
+    repaired = await auth_sessions.bootstrap_auth_context_v2(
+        nonce,
+        incarnation,
+        1,
+        "",
+        settings,
+        recovery_only=True,
+    )
+    assert repaired.status == "ready"
+    assert repaired.identity == created.identity
+    assert repaired.set_cookie is True
+    assert redis.values == before_repair
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        ("orphan_context", "auth_context_missing"),
+        ("missing_context", "auth_context_stale"),
+        ("corrupt_authority", "auth_context_unavailable"),
+        ("mismatched_context", "auth_context_stale"),
+        ("ttl_mismatch", "auth_context_stale"),
+        ("unavailable", "auth_context_unavailable"),
+    ],
+)
+async def test_v2_recovery_only_rejects_nonexact_or_unavailable_authority(monkeypatch, mutation, expected_code):
+    """Recovery-only is a read/CAS proof and never repairs damaged server state."""
+
+    redis = FakeAuthRedis()
+    settings = install_auth_context_dependencies(monkeypatch, redis)
+    created = await auth_sessions.bootstrap_auth_context_v2(
+        "A" * 43,
+        "I" * 43,
+        1,
+        "",
+        settings,
+    )
+    assert created.identity is not None
+    authority_key = next(key for key in redis.values if key.startswith("ai-platform:auth-browser-authority:"))
+    context_key = next(key for key in redis.values if key.startswith("ai-platform:auth-context:"))
+    if mutation == "orphan_context":
+        redis.values.pop(authority_key)
+    elif mutation == "missing_context":
+        redis.values.pop(context_key)
+    elif mutation == "corrupt_authority":
+        _raw, expiry = redis.values[authority_key]
+        redis.values[authority_key] = ("{", expiry)
+    elif mutation == "mismatched_context":
+        raw, expiry = redis.values[context_key]
+        record = json.loads(raw)
+        record["generation"] = 2
+        redis.values[context_key] = (json.dumps(record), expiry)
+    elif mutation == "ttl_mismatch":
+        raw, expiry = redis.values[authority_key]
+        redis.values[authority_key] = (raw, expiry - 2)
+    else:
+        redis.available = False
+    before_recovery = dict(redis.values)
+
+    with pytest.raises(auth_sessions.AuthContextError, match=expected_code):
+        await auth_sessions.bootstrap_auth_context_v2(
+            "A" * 43,
+            "I" * 43,
+            1,
+            "",
+            settings,
+            recovery_only=True,
+        )
+    assert redis.values == before_recovery
+
+
+def test_v2_recovery_only_route_never_creates_or_sets_a_cookie_without_exact_authority(monkeypatch):
+    redis = FakeAuthRedis()
+    install_auth_context_dependencies(monkeypatch, redis)
+    request = {
+        "nonce": "A" * 43,
+        "protocol_version": 2,
+        "browser_incarnation": "I" * 43,
+        "generation": 1,
+        "recovery_only": True,
+    }
+
+    missing = TestClient(create_app()).post("/api/ai/auth/bootstrap", json=request)
+    assert missing.status_code == 401
+    assert missing.json()["detail"] == "auth_context_missing"
+    assert "set-cookie" not in missing.headers
+    assert redis.values == {}
+
+    created = TestClient(create_app()).post(
+        "/api/ai/auth/bootstrap",
+        json={key: value for key, value in request.items() if key != "recovery_only"},
+    )
+    assert created.status_code == 200, created.text
+    current_cookie = created.cookies["ai_platform_auth_context"]
+    before_repair = dict(redis.values)
+
+    repaired = TestClient(create_app()).post("/api/ai/auth/bootstrap", json=request)
+    assert repaired.status_code == 200, repaired.text
+    assert repaired.cookies["ai_platform_auth_context"] == current_cookie
+    assert redis.values == before_repair
+
+    alternate = TestClient(create_app()).post(
+        "/api/ai/auth/bootstrap",
+        json={**request, "nonce": "B" * 43},
+    )
+    assert alternate.status_code == 409
+    assert alternate.json()["detail"] == "auth_context_stale"
+    assert "set-cookie" not in alternate.headers
+    assert redis.values == before_repair
 
 
 @pytest.mark.asyncio

@@ -253,6 +253,7 @@ async def bootstrap(
                 supplied_context,
                 settings,
                 rotation_ticket=request.rotation_ticket,
+                recovery_only=request.recovery_only,
             )
             if result.status == "rebootstrap_required":
                 return {
