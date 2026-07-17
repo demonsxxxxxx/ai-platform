@@ -111,6 +111,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         "resource_limits": {"max_seconds": 120, "max_tool_calls": 20},
         "skill_ids": ["general-chat"],
         "mcp_tool_ids": ["knowledge.search"],
+        "tool_policy_subjects": [],
         "input_files": ["file-a"],
     }
     assert [event.type for event in events] == ["runtime_container_started"]
