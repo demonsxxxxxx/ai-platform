@@ -282,3 +282,62 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     assert "context/artifact-a/translated.docx" in artifact_stage_result["content"][0]["text"]
     assert "artifact bytes" not in artifact_stage_result["content"][0]["text"]
     assert (tmp_path / "context" / "artifact-a" / "translated.docx").read_text(encoding="utf-8") == "artifact bytes"
+
+    captured.clear()
+    sandbox_result = await run_claude_agent_sdk(
+        prompt="follow up on the prior artifact",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        skills=["general-chat"],
+        context_retrieval=retrieval,
+        context_retrieval_identity=ScopedContextRetrievalIdentity(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            agent_id="general-agent",
+        ),
+        tool_policy_subjects=[
+            {
+                "identity": "Skill",
+                "registered": True,
+                "declared": True,
+                "active": True,
+                "distributed": True,
+                "identity_authorized": True,
+                "object_authorized": True,
+                "parameters_authorized": True,
+                "risk_level": "low",
+                "write_capable": False,
+                "allowed_skill_names": ["general-chat"],
+                "allowed_parameter_keys": ["skill"],
+                "required_parameter_keys": ["skill"],
+            }
+        ],
+        execution_policy="sandbox_brokered",
+    )
+
+    assert sandbox_result.message == "ok"
+    assert "ai-platform-context" in captured["mcp_servers"]
+    assert "mcp__ai-platform-context__read_session_messages" in captured["allowed_tools"]
+    assert "mcp__ai-platform-context__read_run_artifact" in captured["allowed_tools"]
+    can_use_tool = captured["can_use_tool"]
+    assert (
+        await can_use_tool(
+            "mcp__ai-platform-context__read_run_artifact",
+            {"artifact_id": "artifact-a"},
+        )
+    ).behavior == "allow"
+    assert (
+        await can_use_tool(
+            "mcp__ai-platform-context__read_run_artifact",
+            {"artifact_id": "artifact-a", "scope": "other"},
+        )
+    ).behavior == "deny"
+    assert (
+        await can_use_tool(
+            "mcp__ai-platform-context__unknown",
+            {"artifact_id": "artifact-a"},
+        )
+    ).behavior == "deny"
