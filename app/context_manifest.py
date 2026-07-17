@@ -14,8 +14,36 @@ CONTEXT_RETRIEVAL_TOOLS = (
     "read_context_file",
     "read_run_artifact",
     "stage_context_file_to_workspace",
+    "stage_run_artifact_to_workspace",
     "search_memory",
 )
+
+
+def available_context_retrieval_tools(manifest: dict[str, Any] | None) -> list[str]:
+    """Return only advertised retrieval actions backed by non-empty manifest refs."""
+
+    if not manifest or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
+        return []
+    raw_advertised = manifest.get("available_retrieval_tools")
+    if not isinstance(raw_advertised, list):
+        return []
+    advertised = {
+        str(tool_name)
+        for tool_name in raw_advertised
+        if isinstance(tool_name, str) and tool_name in CONTEXT_RETRIEVAL_TOOLS
+    }
+    selected: list[str] = []
+    for refs_key, tool_names in (
+        ("recent_messages", ("read_session_messages",)),
+        ("files", ("read_context_file", "stage_context_file_to_workspace")),
+        ("artifacts", ("read_run_artifact", "stage_run_artifact_to_workspace")),
+        ("memory_records", ("search_memory",)),
+    ):
+        refs = manifest.get(refs_key)
+        if not isinstance(refs, list) or not refs:
+            continue
+        selected.extend(tool_name for tool_name in tool_names if tool_name in advertised)
+    return selected
 _PRIVATE_KEY_MARKERS = (
     "storage_key",
     "raw_storage_key",
@@ -111,7 +139,10 @@ def public_context_manifest_projection(manifest: dict[str, Any]) -> dict[str, An
         "retrieval": {
             "available": bool(available_tools),
             "tool_count": len(available_tools),
-            "workspace_staging_available": "stage_context_file_to_workspace" in available_tools,
+            "workspace_staging_available": any(
+                tool in available_tools
+                for tool in ("stage_context_file_to_workspace", "stage_run_artifact_to_workspace")
+            ),
         },
         "redaction": {
             "private_payloads_removed": True,

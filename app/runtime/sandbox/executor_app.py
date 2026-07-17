@@ -18,8 +18,6 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, status
 
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
-from app.context_retrieval import ContextRetrieval, TransactionalContextRetrievalRepository
-from app.db import transaction
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
@@ -27,6 +25,7 @@ from app.executors.claude_agent_sdk_runner import (
     run_claude_agent_sdk,
 )
 from app.runtime.kernel_contracts import AgentEvent
+from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
 from app.runtime.sandbox.contracts import (
     EXECUTOR_AUTH_HEADER,
     CallbackTargetValidationError,
@@ -36,7 +35,6 @@ from app.runtime.sandbox.contracts import (
     build_trusted_callback_target,
 )
 from app.settings import get_settings
-from app.storage import ObjectStorage
 
 
 CallbackPayload = dict[str, Any]
@@ -740,7 +738,7 @@ def _validate_executor_request_scope(
 
 def _context_retrieval_for_request(
     request: ExecutorTaskRequest,
-) -> tuple[ContextRetrieval | None, ScopedContextRetrievalIdentity | None, str | None]:
+) -> tuple[PlatformContextRetrievalClient | None, ScopedContextRetrievalIdentity | None, str | None]:
     manifest = request.config.get("context_manifest")
     if not isinstance(manifest, dict) or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
         return None, None, None
@@ -751,7 +749,18 @@ def _context_retrieval_for_request(
         scope = ContextRetrievalScope.model_validate(raw_scope)
     except Exception:
         return None, None, "context_retrieval_scope_invalid"
-    repository = TransactionalContextRetrievalRepository(transaction, storage=ObjectStorage())
+    if scope.session_id != request.session_id or scope.run_id != request.run_id:
+        return None, None, "context_retrieval_scope_invalid"
+    try:
+        callback_target = _trusted_callback_target(request.callback_base_url)
+    except CallbackTargetValidationError:
+        return None, None, "context_retrieval_scope_invalid"
+    retrieval = PlatformContextRetrievalClient(
+        callback_url=callback_target.context_retrieval_url,
+        callback_token_id=request.callback_token_id,
+        callback_token=request.callback_token,
+        scope=scope,
+    )
     identity = ScopedContextRetrievalIdentity(
         tenant_id=scope.tenant_id,
         workspace_id=scope.workspace_id,
@@ -760,7 +769,7 @@ def _context_retrieval_for_request(
         run_id=scope.run_id,
         agent_id=scope.agent_id,
     )
-    return ContextRetrieval(repository), identity, None
+    return retrieval, identity, None
 
 
 async def _default_executor_runner(

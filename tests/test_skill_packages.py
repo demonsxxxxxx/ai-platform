@@ -56,6 +56,44 @@ def test_parse_skill_package_zip_can_infer_skill_name():
     assert [item["relative_path"] for item in parsed.files] == ["SKILL.md", "references/guide.md"]
 
 
+def test_parse_skill_package_zip_accepts_one_wrapped_skill_directory():
+    content = package_zip(
+        {
+            "qa-file-reviewer/SKILL.md": skill_md(),
+            "qa-file-reviewer/references/guide.md": "review guide",
+        }
+    )
+
+    parsed = parse_skill_package_zip(content)
+
+    assert parsed.skill_id == "qa-file-reviewer"
+    assert [item["relative_path"] for item in parsed.files] == ["SKILL.md", "references/guide.md"]
+
+
+def test_parse_skill_package_zip_rejects_ambiguous_multiple_wrapped_skills():
+    content = package_zip(
+        {
+            "skill-a/SKILL.md": skill_md(name="skill-a"),
+            "skill-b/SKILL.md": skill_md(name="skill-b"),
+        }
+    )
+
+    with pytest.raises(ValueError, match="skill_package_multiple_skills_not_supported"):
+        parse_skill_package_zip(content)
+
+
+def test_parse_skill_package_zip_rejects_files_outside_the_single_wrapped_root():
+    content = package_zip(
+        {
+            "qa-file-reviewer/SKILL.md": skill_md(),
+            "outside.txt": "must not be silently imported",
+        }
+    )
+
+    with pytest.raises(ValueError, match="skill_package_mixed_root"):
+        parse_skill_package_zip(content)
+
+
 def test_parse_skill_package_zip_rejects_path_escape():
     content = package_zip(
         {

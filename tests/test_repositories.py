@@ -2530,10 +2530,12 @@ async def test_list_scoped_context_messages_filters_full_scope_and_limits_rows()
 
     assert rows[0]["id"] == "msg-a"
     assert "join sessions" in conn.sql
-    assert "join runs" in conn.sql
-    assert "runs.workspace_id = %s" in conn.sql
-    assert "runs.user_id = %s" in conn.sql
-    assert conn.params == ("tenant-a", "workspace-a", "user-a", "session-a", "run-a", 25, 5)
+    assert "join runs source_runs" in conn.sql
+    assert "join runs current_run" in conn.sql
+    assert "join lateral" in conn.sql
+    assert "context_snapshot.included_message_ids ? messages.id" in conn.sql
+    assert "source_runs.session_id = current_run.session_id" in conn.sql
+    assert conn.params == ("run-a", "tenant-a", "workspace-a", "user-a", "session-a", "run-a", 25, 5)
 
 
 @pytest.mark.asyncio
@@ -2579,17 +2581,78 @@ async def test_scoped_context_file_and_artifact_queries_bind_full_scope():
     )
 
     assert file_row["id"] == "file-a"
-    assert "files.workspace_id = %s" in file_conn.sql
-    assert "files.user_id = %s" in file_conn.sql
-    assert "files.session_id = %s" in file_conn.sql
-    assert "files.run_id = %s" in file_conn.sql
-    assert file_conn.params == ("tenant-a", "workspace-a", "user-a", "session-a", "run-a", "file-a")
+    assert "join runs source_run" in file_conn.sql
+    assert "join runs current_run" in file_conn.sql
+    assert "context_snapshot.included_file_ids ? files.id" in file_conn.sql
+    assert "source_run.session_id = current_run.session_id" in file_conn.sql
+    assert file_conn.params == ("run-a", "tenant-a", "workspace-a", "user-a", "session-a", "run-a", "file-a")
     assert artifact_row["id"] == "artifact-a"
-    assert "join runs" in artifact_conn.sql
-    assert "runs.workspace_id = %s" in artifact_conn.sql
-    assert "runs.user_id = %s" in artifact_conn.sql
-    assert "runs.session_id = %s" in artifact_conn.sql
-    assert artifact_conn.params == ("tenant-a", "workspace-a", "user-a", "session-a", "run-a", "artifact-a")
+    assert "join runs source_run" in artifact_conn.sql
+    assert "join runs current_run" in artifact_conn.sql
+    assert "context_snapshot.included_artifact_ids ? artifacts.id" in artifact_conn.sql
+    assert "source_run.session_id = current_run.session_id" in artifact_conn.sql
+    assert "artifacts.expires_at is null or artifacts.expires_at > now()" in artifact_conn.sql
+    assert artifact_conn.params == ("run-a", "tenant-a", "workspace-a", "user-a", "session-a", "run-a", "artifact-a")
+
+
+@pytest.mark.asyncio
+async def test_session_context_candidates_bind_owner_scope_and_latest_successful_artifact_run():
+    conn = RecordingConnection()
+
+    await repositories.list_session_context_messages(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        limit=8,
+    )
+    messages_sql, messages_params = conn.calls[-1]
+    assert "sessions.status = 'active'" in messages_sql
+    assert "runs.workspace_id = sessions.workspace_id" in messages_sql
+    assert "runs.user_id = sessions.user_id" in messages_sql
+    assert "order by messages.created_at desc" in messages_sql
+    assert "order by created_at asc" in messages_sql
+    assert messages_params == ("tenant-a", "session-a", "workspace-a", "user-a", 8)
+
+    await repositories.list_session_context_files(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        limit=8,
+    )
+    files_sql, files_params = conn.calls[-1]
+    assert "sessions.status = 'active'" in files_sql
+    assert "runs.session_id = files.session_id" in files_sql
+    assert "order by files.created_at desc" in files_sql
+    assert "order by created_at asc" in files_sql
+    assert files_params == ("tenant-a", "workspace-a", "user-a", "session-a", 8)
+
+    await repositories.list_session_context_artifacts(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        exclude_run_id="run-current",
+        limit=8,
+    )
+    artifacts_sql, artifacts_params = conn.calls[-1]
+    assert "with latest_source_run" in artifacts_sql
+    assert "runs.status = 'succeeded'" in artifacts_sql
+    assert "runs.id <> %s" in artifacts_sql
+    assert "artifacts.expires_at is null or artifacts.expires_at > now()" in artifacts_sql
+    assert artifacts_params == (
+        "tenant-a",
+        "workspace-a",
+        "user-a",
+        "session-a",
+        "run-current",
+        "tenant-a",
+        8,
+    )
 
 
 @pytest.mark.asyncio

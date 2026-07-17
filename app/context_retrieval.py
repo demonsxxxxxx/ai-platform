@@ -439,25 +439,19 @@ class ContextRetrieval:
         workspace_root: str,
         max_bytes: int = 1048576,
     ) -> dict[str, Any]:
-        row = await self._get_file_row(
+        exported = await self.export_context_file_for_broker(
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             user_id=user_id,
             session_id=session_id,
             run_id=run_id,
             file_id=file_id,
+            max_bytes=max_bytes,
         )
-        name = self._safe_name(row)
+        name = str(exported["name"])
         file_segment = self._safe_id_segment(file_id)
-        byte_cap = max(1, int(max_bytes))
-        declared_size = self._declared_size_bytes(row)
-        if declared_size is None and not isinstance(self._repository, InMemoryContextRetrievalRepository):
-            raise ContextRetrievalDenied("context_file_size_required")
-        if declared_size is not None and declared_size > byte_cap:
-            raise ContextRetrievalDenied("context_file_too_large")
-        raw_bytes = self._raw_content_bytes(row)
-        if len(raw_bytes) > byte_cap:
-            raise ContextRetrievalDenied("context_file_too_large")
+        byte_cap = int(exported["max_bytes"])
+        raw_bytes = bytes(exported["content_bytes"])
         target_dir = Path(workspace_root) / "context" / file_segment
         target_path = target_dir / name
         ensure_creatable_inside(workspace_root, target_path, "context_file_workspace_escape")
@@ -470,6 +464,116 @@ class ContextRetrieval:
             bytes_staged=len(raw_bytes),
             max_bytes=byte_cap,
         )
+
+    async def stage_run_artifact_to_workspace(
+        self,
+        *,
+        tenant_id: str,
+        workspace_id: str,
+        user_id: str,
+        session_id: str,
+        run_id: str,
+        artifact_id: str,
+        workspace_root: str,
+        max_bytes: int = 16777216,
+    ) -> dict[str, Any]:
+        """Stage an artifact explicitly authorized by the current run snapshot."""
+
+        exported = await self.export_run_artifact_for_broker(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+            artifact_id=artifact_id,
+            max_bytes=max_bytes,
+        )
+        name = str(exported["name"])
+        artifact_segment = self._safe_id_segment(artifact_id)
+        byte_cap = int(exported["max_bytes"])
+        raw_bytes = bytes(exported["content_bytes"])
+        target_dir = Path(workspace_root) / "context" / artifact_segment
+        target_path = target_dir / name
+        ensure_creatable_inside(workspace_root, target_path, "context_artifact_workspace_escape")
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(raw_bytes)
+        return self._envelope(
+            "context_retrieval.stage_run_artifact_to_workspace",
+            artifact_id=artifact_id,
+            workspace_path=f"context/{artifact_segment}/{name}",
+            bytes_staged=len(raw_bytes),
+            max_bytes=byte_cap,
+        )
+
+    async def export_context_file_for_broker(
+        self,
+        *,
+        tenant_id: str,
+        workspace_id: str,
+        user_id: str,
+        session_id: str,
+        run_id: str,
+        file_id: str,
+        max_bytes: int = 1048576,
+    ) -> dict[str, Any]:
+        """Load bounded snapshot-authorized bytes for a trusted runtime broker."""
+
+        row = await self._get_file_row(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+            file_id=file_id,
+        )
+        raw_bytes, byte_cap = self._bounded_export_bytes(
+            row,
+            max_bytes=max_bytes,
+            size_required_reason="context_file_size_required",
+            too_large_reason="context_file_too_large",
+        )
+        return {
+            "file_id": file_id,
+            "name": self._safe_name(row),
+            "content_bytes": raw_bytes,
+            "bytes_read": len(raw_bytes),
+            "max_bytes": byte_cap,
+        }
+
+    async def export_run_artifact_for_broker(
+        self,
+        *,
+        tenant_id: str,
+        workspace_id: str,
+        user_id: str,
+        session_id: str,
+        run_id: str,
+        artifact_id: str,
+        max_bytes: int = 16777216,
+    ) -> dict[str, Any]:
+        """Load bounded snapshot-authorized artifact bytes for a trusted runtime broker."""
+
+        row = await self._get_artifact_row(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+            artifact_id=artifact_id,
+        )
+        raw_bytes, byte_cap = self._bounded_export_bytes(
+            row,
+            max_bytes=max_bytes,
+            size_required_reason="context_artifact_size_required",
+            too_large_reason="context_artifact_too_large",
+        )
+        return {
+            "artifact_id": artifact_id,
+            "name": self._safe_name(row),
+            "content_bytes": raw_bytes,
+            "bytes_read": len(raw_bytes),
+            "max_bytes": byte_cap,
+        }
 
     async def search_memory(
         self,
@@ -637,6 +741,25 @@ class ContextRetrieval:
             return None
         return declared_size if declared_size >= 0 else None
 
+    def _bounded_export_bytes(
+        self,
+        row: dict[str, Any],
+        *,
+        max_bytes: int,
+        size_required_reason: str,
+        too_large_reason: str,
+    ) -> tuple[bytes, int]:
+        byte_cap = max(1, int(max_bytes))
+        declared_size = self._declared_size_bytes(row)
+        if declared_size is None and not isinstance(self._repository, InMemoryContextRetrievalRepository):
+            raise ContextRetrievalDenied(size_required_reason)
+        if declared_size is not None and declared_size > byte_cap:
+            raise ContextRetrievalDenied(too_large_reason)
+        raw_bytes = self._raw_content_bytes(row)
+        if len(raw_bytes) > byte_cap:
+            raise ContextRetrievalDenied(too_large_reason)
+        return raw_bytes, byte_cap
+
     def _bounded_content_from_row(self, row: dict[str, Any], *, max_bytes: int) -> tuple[str, bool]:
         if isinstance(self._repository, InMemoryContextRetrievalRepository):
             return _bounded_text(row.get("content"), max_bytes=max_bytes)
@@ -650,7 +773,7 @@ class ContextRetrieval:
         name = str(row.get("original_name") or row.get("label") or row.get("name") or row.get("file_id") or row.get("artifact_id") or "context.bin")
         normalized = name.replace("\\", "/")
         safe_name = normalized.rsplit("/", 1)[-1]
-        return safe_name or "context.bin"
+        return safe_name if safe_name not in {"", ".", ".."} else "context.bin"
 
     def _safe_id_segment(self, value: object) -> str:
         text = str(value or "").strip()

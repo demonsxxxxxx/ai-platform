@@ -737,6 +737,123 @@ async def test_record_initial_context_snapshot_adds_source_run_artifact_followup
 
 
 @pytest.mark.asyncio
+async def test_record_initial_context_snapshot_builds_bounded_same_session_continuity(monkeypatch):
+    captured = {}
+
+    async def fake_list_messages(conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "limit": 8,
+        }
+        return [
+            {"id": "msg-prior-user", "run_id": "run-prior", "role": "user", "content": "translate it"},
+            {"id": "msg-prior-assistant", "run_id": "run-prior", "role": "assistant", "content": "done"},
+            {"id": "msg-current", "run_id": "run-current", "role": "user", "content": "is it still available?"},
+        ]
+
+    async def fake_list_artifacts(conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "exclude_run_id": "run-current",
+            "limit": 8,
+        }
+        return [
+            {
+                "id": "art-prior",
+                "run_id": "run-prior",
+                "artifact_type": "translated_docx",
+                "label": "translated.docx",
+                "size_bytes": 1234,
+                "manifest_json": {"document_version": "v1"},
+            }
+        ]
+
+    async def fake_list_files(conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "limit": 8,
+        }
+        return [
+            {
+                "id": "file-prior",
+                "run_id": "run-prior",
+                "original_name": "source.docx",
+                "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "size_bytes": 2048,
+            }
+        ]
+
+    async def fake_memory_policy(conn, **kwargs):
+        return {
+            "source": "default",
+            "memory_enabled": True,
+            "long_term_memory_enabled": False,
+            "retention_days": 90,
+        }
+
+    async def fake_create(conn, **kwargs):
+        captured.update(kwargs)
+        return {"id": "ctx-current"}
+
+    async def ignore(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", fake_list_messages)
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", fake_list_files)
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_artifacts", fake_list_artifacts)
+    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_memory_policy)
+    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create)
+    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", ignore)
+    monkeypatch.setattr("app.context_builder.repositories.append_event", ignore)
+
+    await record_initial_context_snapshot(
+        object(),
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-current",
+        trace_id="trace-current",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        input_payload={"message": "is it still available?"},
+        message_ids=["msg-current"],
+        file_ids=["file-current"],
+        source="chat_stream",
+        include_session_history=True,
+    )
+
+    assert captured["included_message_ids"] == [
+        "msg-prior-user",
+        "msg-prior-assistant",
+        "msg-current",
+    ]
+    assert captured["included_artifact_ids"] == ["art-prior"]
+    assert captured["included_file_ids"] == ["file-prior", "file-current"]
+    manifest = captured["payload_json"]["context_manifest"]
+    assert [item["message_id"] for item in manifest["recent_messages"]] == [
+        "msg-prior-user",
+        "msg-prior-assistant",
+        "msg-current",
+    ]
+    assert manifest["artifacts"] == [{"artifact_id": "art-prior", "requires_retrieval": True}]
+    assert manifest["files"] == [
+        {"file_id": "file-prior", "requires_retrieval": True},
+        {"file_id": "file-current", "requires_retrieval": True},
+    ]
+    assert manifest["source_runs"] == [{"run_id": "run-prior"}]
+
+
+@pytest.mark.asyncio
 async def test_record_initial_context_snapshot_does_not_invent_artifact_version_from_count(monkeypatch):
     calls = []
 

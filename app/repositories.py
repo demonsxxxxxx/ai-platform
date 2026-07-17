@@ -565,19 +565,36 @@ async def list_scoped_context_messages(
         select messages.id, messages.session_id, messages.run_id, messages.role, messages.content,
                messages.metadata_json, messages.created_at
         from messages
-        join sessions on sessions.id = messages.session_id and sessions.tenant_id = messages.tenant_id
-        join runs on runs.id = messages.run_id and runs.tenant_id = messages.tenant_id
+        join runs source_runs on source_runs.id = messages.run_id and source_runs.tenant_id = messages.tenant_id
+        join runs current_run on current_run.id = %s and current_run.tenant_id = messages.tenant_id
+        join sessions on sessions.id = current_run.session_id and sessions.tenant_id = current_run.tenant_id
+        join lateral (
+          select included_message_ids
+          from run_context_snapshots
+          where tenant_id = current_run.tenant_id
+            and workspace_id = current_run.workspace_id
+            and user_id = current_run.user_id
+            and session_id = current_run.session_id
+            and run_id = current_run.id
+            and context_kind = 'executor'
+          order by created_at desc, id desc
+          limit 1
+        ) context_snapshot on true
         where messages.tenant_id = %s
-          and runs.workspace_id = %s
-          and runs.user_id = %s
+          and current_run.workspace_id = %s
+          and current_run.user_id = %s
           and messages.session_id = %s
-          and messages.run_id = %s
-          and sessions.user_id = runs.user_id
-          and sessions.workspace_id = runs.workspace_id
+          and current_run.id = %s
+          and source_runs.workspace_id = current_run.workspace_id
+          and source_runs.user_id = current_run.user_id
+          and source_runs.session_id = current_run.session_id
+          and sessions.user_id = current_run.user_id
+          and sessions.workspace_id = current_run.workspace_id
+          and context_snapshot.included_message_ids ? messages.id
         order by messages.created_at asc
         limit %s offset %s
         """,
-        (tenant_id, workspace_id, user_id, session_id, run_id, max(1, int(limit)), max(0, int(offset))),
+        (run_id, tenant_id, workspace_id, user_id, session_id, run_id, max(1, int(limit)), max(0, int(offset))),
     )
     return list(await cursor.fetchall())
 
@@ -596,14 +613,38 @@ async def get_scoped_context_file(
         """
         select files.*
         from files
+        join runs source_run on source_run.id = files.run_id and source_run.tenant_id = files.tenant_id
+        join runs current_run on current_run.id = %s and current_run.tenant_id = files.tenant_id
+        join sessions on sessions.id = current_run.session_id and sessions.tenant_id = current_run.tenant_id
+        join lateral (
+          select included_file_ids
+          from run_context_snapshots
+          where tenant_id = current_run.tenant_id
+            and workspace_id = current_run.workspace_id
+            and user_id = current_run.user_id
+            and session_id = current_run.session_id
+            and run_id = current_run.id
+            and context_kind = 'executor'
+          order by created_at desc, id desc
+          limit 1
+        ) context_snapshot on true
         where files.tenant_id = %s
-          and files.workspace_id = %s
-          and files.user_id = %s
-          and files.session_id = %s
-          and files.run_id = %s
+          and current_run.workspace_id = %s
+          and current_run.user_id = %s
+          and current_run.session_id = %s
+          and current_run.id = %s
+          and files.workspace_id = current_run.workspace_id
+          and files.user_id = current_run.user_id
+          and files.session_id = current_run.session_id
+          and source_run.workspace_id = current_run.workspace_id
+          and source_run.user_id = current_run.user_id
+          and source_run.session_id = current_run.session_id
+          and sessions.user_id = current_run.user_id
+          and sessions.workspace_id = current_run.workspace_id
+          and context_snapshot.included_file_ids ? files.id
           and files.id = %s
         """,
-        (tenant_id, workspace_id, user_id, session_id, run_id, file_id),
+        (run_id, tenant_id, workspace_id, user_id, session_id, run_id, file_id),
     )
     return await cursor.fetchone()
 
@@ -622,17 +663,175 @@ async def get_scoped_context_artifact(
         """
         select artifacts.*
         from artifacts
-        join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
+        join runs source_run on source_run.id = artifacts.run_id and source_run.tenant_id = artifacts.tenant_id
+        join runs current_run on current_run.id = %s and current_run.tenant_id = artifacts.tenant_id
+        join sessions on sessions.id = current_run.session_id and sessions.tenant_id = current_run.tenant_id
+        join lateral (
+          select included_artifact_ids
+          from run_context_snapshots
+          where tenant_id = current_run.tenant_id
+            and workspace_id = current_run.workspace_id
+            and user_id = current_run.user_id
+            and session_id = current_run.session_id
+            and run_id = current_run.id
+            and context_kind = 'executor'
+          order by created_at desc, id desc
+          limit 1
+        ) context_snapshot on true
         where artifacts.tenant_id = %s
-          and runs.workspace_id = %s
-          and runs.user_id = %s
-          and runs.session_id = %s
-          and runs.id = %s
+          and current_run.workspace_id = %s
+          and current_run.user_id = %s
+          and current_run.session_id = %s
+          and current_run.id = %s
+          and source_run.workspace_id = current_run.workspace_id
+          and source_run.user_id = current_run.user_id
+          and source_run.session_id = current_run.session_id
+          and sessions.user_id = current_run.user_id
+          and sessions.workspace_id = current_run.workspace_id
+          and context_snapshot.included_artifact_ids ? artifacts.id
           and artifacts.id = %s
+          and (artifacts.expires_at is null or artifacts.expires_at > now())
         """,
-        (tenant_id, workspace_id, user_id, session_id, run_id, artifact_id),
+        (run_id, tenant_id, workspace_id, user_id, session_id, run_id, artifact_id),
     )
     return await cursor.fetchone()
+
+
+async def list_session_context_messages(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Return a bounded ordered message tail for one exact owned session."""
+
+    cursor = await conn.execute(
+        """
+        select *
+        from (
+          select messages.id, messages.run_id, messages.role, messages.content,
+                 messages.metadata_json, messages.created_at
+          from messages
+          join sessions on sessions.id = messages.session_id and sessions.tenant_id = messages.tenant_id
+          join runs on runs.id = messages.run_id and runs.tenant_id = messages.tenant_id
+          where messages.tenant_id = %s
+            and messages.session_id = %s
+            and sessions.workspace_id = %s
+            and sessions.user_id = %s
+            and sessions.status = 'active'
+            and runs.workspace_id = sessions.workspace_id
+            and runs.user_id = sessions.user_id
+            and runs.session_id = sessions.id
+          order by messages.created_at desc, messages.id desc
+          limit %s
+        ) recent_messages
+        order by created_at asc, id asc
+        """,
+        (tenant_id, session_id, workspace_id, user_id, max(1, int(limit))),
+    )
+    return list(await cursor.fetchall())
+
+
+async def list_session_context_files(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Return a bounded recent file tail for one exact owned session."""
+
+    cursor = await conn.execute(
+        """
+        select *
+        from (
+          select files.id, files.run_id, files.original_name, files.content_type,
+                 files.size_bytes, files.sha256, files.created_at
+          from files
+          join sessions on sessions.id = files.session_id and sessions.tenant_id = files.tenant_id
+          join runs on runs.id = files.run_id and runs.tenant_id = files.tenant_id
+          where files.tenant_id = %s
+            and files.workspace_id = %s
+            and files.user_id = %s
+            and files.session_id = %s
+            and sessions.workspace_id = files.workspace_id
+            and sessions.user_id = files.user_id
+            and sessions.status = 'active'
+            and runs.workspace_id = files.workspace_id
+            and runs.user_id = files.user_id
+            and runs.session_id = files.session_id
+          order by files.created_at desc, files.id desc
+          limit %s
+        ) recent_files
+        order by created_at asc, id asc
+        """,
+        (tenant_id, workspace_id, user_id, session_id, max(1, int(limit))),
+    )
+    return list(await cursor.fetchall())
+
+
+async def list_session_context_artifacts(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    exclude_run_id: str,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Return artifacts from the latest successful prior run in one owned session."""
+
+    cursor = await conn.execute(
+        """
+        with latest_source_run as (
+          select runs.id
+          from runs
+          join sessions on sessions.id = runs.session_id and sessions.tenant_id = runs.tenant_id
+          where runs.tenant_id = %s
+            and runs.workspace_id = %s
+            and runs.user_id = %s
+            and runs.session_id = %s
+            and runs.id <> %s
+            and runs.status = 'succeeded'
+            and sessions.workspace_id = runs.workspace_id
+            and sessions.user_id = runs.user_id
+            and sessions.status = 'active'
+            and exists (
+              select 1 from artifacts
+              where artifacts.tenant_id = runs.tenant_id
+                and artifacts.run_id = runs.id
+                and (artifacts.expires_at is null or artifacts.expires_at > now())
+            )
+          order by runs.created_at desc, runs.id desc
+          limit 1
+        )
+        select artifacts.id, artifacts.run_id, artifacts.trace_id, artifacts.artifact_type,
+               artifacts.label, artifacts.content_type, artifacts.size_bytes,
+               artifacts.manifest_version, artifacts.manifest_json, artifacts.created_at
+        from artifacts
+        join latest_source_run on latest_source_run.id = artifacts.run_id
+        where artifacts.tenant_id = %s
+          and (artifacts.expires_at is null or artifacts.expires_at > now())
+        order by artifacts.created_at asc, artifacts.id asc
+        limit %s
+        """,
+        (
+            tenant_id,
+            workspace_id,
+            user_id,
+            session_id,
+            exclude_run_id,
+            tenant_id,
+            max(1, int(limit)),
+        ),
+    )
+    return list(await cursor.fetchall())
 
 
 async def list_scoped_context_memory_records(
@@ -3465,7 +3664,10 @@ async def get_run(conn: AsyncConnection, *, tenant_id: str, run_id: str, for_upd
 
 
 async def get_run_identity(conn: AsyncConnection, *, run_id: str, for_update: bool = False) -> dict[str, Any] | None:
-    sql = "select id, tenant_id, session_id, status from runs where id = %s"
+    sql = (
+        "select id, tenant_id, workspace_id, user_id, session_id, agent_id, status "
+        "from runs where id = %s"
+    )
     if for_update:
         sql = f"{sql} for update"
     cursor = await conn.execute(
