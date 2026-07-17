@@ -3121,6 +3121,42 @@ async def test_worker_passes_session_continuity_resume_key_to_sdk_runner(monkeyp
     assert captured_session_ids[2] != captured_session_ids[0]
 
 
+def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt():
+    payload = types.SimpleNamespace(
+        input={
+            "_runtime_tool_policy_subjects": [
+                {"identity": "Skill", "registered": True},
+                {
+                    "identity": "mcp__ai-platform-context__search_memory",
+                    "registered": True,
+                    "allowed_parameter_keys": ["query", "scope"],
+                },
+            ]
+        }
+    )
+    subjects = claude_agent_worker._runtime_tool_policy_subjects(
+        payload,
+        {
+            "schema_version": "ai-platform.context-manifest.v1",
+            "available_retrieval_tools": [
+                "read_run_artifact",
+                "stage_run_artifact_to_workspace",
+                "search_memory",
+            ],
+            "artifacts": [{"artifact_id": "artifact-a"}],
+            "memory_records": [],
+        },
+    )
+
+    assert [subject["identity"] for subject in subjects] == [
+        "Skill",
+        "mcp__ai-platform-context__read_run_artifact",
+        "mcp__ai-platform-context__stage_run_artifact_to_workspace",
+    ]
+    assert subjects[1]["allowed_parameter_keys"] == ["artifact_id", "max_bytes"]
+    assert subjects[2]["write_capable"] is True
+
+
 @pytest.mark.asyncio
 async def test_worker_passes_scoped_context_retrieval_to_sdk_runner_for_manifest(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
@@ -3144,7 +3180,12 @@ async def test_worker_passes_scoped_context_retrieval_to_sdk_runner_for_manifest
                 "execution_tier": "document_worker",
                 "context_manifest": {
                     "schema_version": "ai-platform.context-manifest.v1",
-                    "available_retrieval_tools": ["read_context_file"],
+                    "available_retrieval_tools": [
+                        "read_context_file",
+                        "stage_context_file_to_workspace",
+                        "search_memory",
+                    ],
+                    "files": [{"file_id": "file-a", "name": "source.docx"}],
                 },
             },
         )
@@ -3156,6 +3197,23 @@ async def test_worker_passes_scoped_context_retrieval_to_sdk_runner_for_manifest
     assert scope.workspace_id == "default"
     assert scope.user_id == "user-a"
     assert scope.session_id == "ses_1"
+    context_subjects = {
+        subject["identity"]: subject
+        for subject in runtime_requests[0].tool_policy_subjects
+        if str(subject.get("identity") or "").startswith("mcp__ai-platform-context__")
+    }
+    assert set(context_subjects) == {
+        "mcp__ai-platform-context__read_context_file",
+        "mcp__ai-platform-context__stage_context_file_to_workspace",
+    }
+    assert (
+        context_subjects["mcp__ai-platform-context__read_context_file"]["write_capable"]
+        is False
+    )
+    assert (
+        context_subjects["mcp__ai-platform-context__stage_context_file_to_workspace"]["write_capable"]
+        is True
+    )
 
 
 @pytest.mark.asyncio

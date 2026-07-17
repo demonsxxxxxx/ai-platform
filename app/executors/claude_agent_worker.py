@@ -26,6 +26,7 @@ from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
     build_skill_prompt,
+    internal_context_tool_policy_subjects,
     run_claude_agent_sdk,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
@@ -860,7 +861,7 @@ class ClaudeAgentWorkerAdapter:
             agent_id=payload.agent_id,
             skill_ids=_runtime_request_skill_ids(payload, prepared),
             mcp_tool_ids=_string_list(payload.input.get("mcp_tool_ids")),
-            tool_policy_subjects=_runtime_tool_policy_subjects(payload),
+            tool_policy_subjects=_runtime_tool_policy_subjects(payload, context_manifest),
             input_message=prepared.prompt,
             file_ids=payload.file_ids,
             materialized_file_names=prepared.file_names,
@@ -1418,7 +1419,10 @@ class ClaudeAgentWorkerAdapter:
                     "skills": staged_skill_names,
                     "on_text": on_text,
                     "on_skill_use": on_skill_use,
-                    "tool_policy_subjects": _runtime_tool_policy_subjects(payload),
+                    "tool_policy_subjects": _runtime_tool_policy_subjects(
+                        payload,
+                        _context_manifest_from_pack(context_pack),
+                    ),
                 }
                 if context_retrieval is not None and context_retrieval_identity is not None:
                     sdk_kwargs["context_retrieval"] = context_retrieval
@@ -1569,11 +1573,52 @@ def _file_skill_steps(input_payload: dict[str, object]) -> list[dict[str, object
     ]
 
 
-def _runtime_tool_policy_subjects(payload: RunPayload) -> list[dict[str, Any]]:
-    value = payload.input.get("_runtime_tool_policy_subjects")
-    if not isinstance(value, list):
+def _context_retrieval_tool_names(context_manifest: dict[str, Any] | None) -> list[str]:
+    if not context_manifest or context_manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
         return []
-    return [dict(item) for item in value if isinstance(item, dict)]
+    raw_advertised = context_manifest.get("available_retrieval_tools")
+    if not isinstance(raw_advertised, list):
+        return []
+    advertised = {
+        str(tool_name)
+        for tool_name in raw_advertised
+        if isinstance(tool_name, str)
+    }
+    selected: list[str] = []
+    for refs_key, tool_names in (
+        ("recent_messages", ("read_session_messages",)),
+        ("files", ("read_context_file", "stage_context_file_to_workspace")),
+        ("artifacts", ("read_run_artifact", "stage_run_artifact_to_workspace")),
+        ("memory_records", ("search_memory",)),
+    ):
+        refs = context_manifest.get(refs_key)
+        if not isinstance(refs, list) or not refs:
+            continue
+        selected.extend(tool_name for tool_name in tool_names if tool_name in advertised)
+    return selected
+
+
+def _runtime_tool_policy_subjects(
+    payload: RunPayload,
+    context_manifest: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    value = payload.input.get("_runtime_tool_policy_subjects")
+    subjects = (
+        [
+            dict(item)
+            for item in value
+            if isinstance(item, dict)
+            and not str(item.get("identity") or "").startswith("mcp__ai-platform-context__")
+        ]
+        if isinstance(value, list)
+        else []
+    )
+    subjects.extend(
+        internal_context_tool_policy_subjects(
+            _context_retrieval_tool_names(context_manifest)
+        )
+    )
+    return subjects
 
 
 def _string_list(value: object) -> list[str]:
