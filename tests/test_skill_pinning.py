@@ -52,6 +52,23 @@ def test_build_skill_manifest_pins_includes_primary_dependencies_and_file_snapsh
     assert pins[0]["allowed"] is True
     assert pins[0]["staged"] is False
     assert pins[0]["used"] is False
+    assert pins[0]["builtin_tool_identities"] == ["Bash", "Write"]
+    assert pins[1]["builtin_tool_identities"] == ["Bash", "Write"]
+
+
+def test_builtin_tool_identity_snapshot_comes_from_server_skill_declaration_not_input(tmp_path):
+    write_skill(tmp_path, "qa-file-reviewer", "Review Word documents.")
+    write_skill(tmp_path, "minimax-docx", "Manipulate Word documents.")
+    skills = BuiltinSkillRegistry(tmp_path).list_builtin_skills()
+
+    pins = build_skill_manifest_pins(
+        skill_id="qa-file-reviewer",
+        input_payload={"builtin_tool_identities": ["WebFetch", "Agent"]},
+        builtin_skills=skills,
+    )
+
+    assert pins[0]["builtin_tool_identities"] == ["Bash", "Write"]
+    assert pins[1]["builtin_tool_identities"] == ["Bash", "Write"]
 
 
 def test_build_skill_snapshot_governance_summarizes_files_without_package_bytes():
@@ -237,9 +254,10 @@ def test_build_uploaded_skill_manifest_pin_uses_source_snapshot_files():
         "version": "hash-uploaded",
         "content_hash": "hash-uploaded",
         "source": {"kind": "uploaded", "storage_key": "package.zip"},
-        "files": files,
-        "dependency_ids": ["minimax-docx"],
-        "allowed": True,
+            "files": files,
+            "dependency_ids": ["minimax-docx"],
+            "builtin_tool_identities": [],
+            "allowed": True,
         "staged": False,
         "used": False,
     }
@@ -266,9 +284,10 @@ def test_build_skill_version_manifest_pin_uses_builtin_snapshot_files():
         "version": "hash-builtin",
         "content_hash": "hash-builtin",
         "source": {"kind": "builtin", "asset_dir": "qa-file-reviewer", "version": "hash-builtin"},
-        "files": files,
-        "dependency_ids": [],
-        "allowed": True,
+            "files": files,
+            "dependency_ids": [],
+            "builtin_tool_identities": ["Bash", "Write"],
+            "allowed": True,
         "staged": False,
         "used": False,
     }

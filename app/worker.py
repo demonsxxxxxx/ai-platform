@@ -42,6 +42,7 @@ from app.models import QueueRunPayload
 from app.settings import get_settings
 from app.tool_policy import BUILTIN_TOOL_IDENTITIES, evaluate_tool_policy
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
+from app.validation import SAFE_ID_PATTERN
 
 
 class _WorkerClock:
@@ -1038,15 +1039,13 @@ _BUILTIN_CAPABILITY_PARAMETERS = {
 
 
 def _declared_builtin_tool_identities(payload: QueueRunPayload) -> set[str]:
-    """Read only snapshot-validated run declarations, never caller input."""
+    """Read only server-built immutable manifest declarations."""
 
     declarations: set[str] = set()
-    sources: list[dict[str, Any]] = []
-    if isinstance(payload.release_decision, dict):
-        sources.append(payload.release_decision)
-    sources.extend(item for item in payload.skill_manifests if isinstance(item, dict))
-    for source in sources:
-        raw = source.get("builtin_tool_identities")
+    for manifest in payload.skill_manifests:
+        if not isinstance(manifest, dict) or manifest.get("source", {}).get("kind") != "builtin":
+            continue
+        raw = manifest.get("builtin_tool_identities")
         if not isinstance(raw, list):
             continue
         declarations.update(item for item in raw if isinstance(item, str) and item in BUILTIN_TOOL_IDENTITIES)
@@ -1063,7 +1062,17 @@ def _builtin_capability_subjects(
     active = str(skill.get("skill_status") or "disabled") == "active"
     distributed = skill_decision.usable
     subjects: list[dict[str, Any]] = []
-    for identity in sorted(_declared_builtin_tool_identities(payload) | {"Skill"}):
+    primary_skill_pinned = any(
+        isinstance(manifest, dict)
+        and str(manifest.get("skill_id") or "") == run_identity["skill_id"]
+        and isinstance(manifest.get("source"), dict)
+        and manifest["source"].get("kind") in {"builtin", "uploaded"}
+        for manifest in payload.skill_manifests
+    )
+    identities = _declared_builtin_tool_identities(payload)
+    if primary_skill_pinned:
+        identities.add("Skill")
+    for identity in sorted(identities):
         keys, required_keys = _BUILTIN_CAPABILITY_PARAMETERS[identity]
         subjects.append(
             {
@@ -1085,21 +1094,24 @@ def _builtin_capability_subjects(
     return subjects
 
 
-def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccessDecision) -> dict[str, Any]:
+def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccessDecision) -> dict[str, Any] | None:
     server_id = str(tool.get("server_id") or "")
-    tool_name = str(tool.get("name") or "")
-    allowed_parameter_keys = tool.get("allowed_parameter_keys")
-    if not isinstance(allowed_parameter_keys, list) or not all(
-        isinstance(item, str) and item for item in allowed_parameter_keys
+    tool_id = str(tool.get("tool_id") or "")
+    allowed_tools = tool.get("allowed_tools")
+    if (
+        not SAFE_ID_PATTERN.fullmatch(server_id)
+        or not SAFE_ID_PATTERN.fullmatch(tool_id)
+        or not isinstance(allowed_tools, list)
+        or len(allowed_tools) != 1
+        or not isinstance(allowed_tools[0], str)
+        or not SAFE_ID_PATTERN.fullmatch(allowed_tools[0])
     ):
-        # The registry has no general parameter-schema column.  Its current
-        # external MCP contract is query-only unless a trusted adapter adds an
-        # explicit per-tool parameter contract before this worker boundary.
-        allowed_parameter_keys = ["query"]
+        return None
+    tool_identifier = allowed_tools[0]
     subject: dict[str, Any] = {
-        "identity": f"mcp__{server_id}__{tool_name}",
+        "identity": f"mcp__{server_id}__{tool_identifier}",
         "mcp_server": server_id,
-        "mcp_tool": tool_name,
+        "mcp_tool": tool_identifier,
         "registered": True,
         "declared": True,
         "active": (
@@ -1113,17 +1125,27 @@ def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccess
         "parameters_authorized": True,
         "risk_level": str(tool.get("risk_level") or "low"),
         "write_capable": bool(tool.get("write_capable")),
-        "allowed_parameter_keys": allowed_parameter_keys,
+        "allowed_parameter_keys": ["query"],
+        "required_parameter_keys": ["query"],
     }
     endpoint = str(tool.get("endpoint") or "")
     parsed = urlsplit(endpoint)
     transport = str(tool.get("transport_type") or "").lower()
-    if parsed.scheme in {"http", "https"} and parsed.netloc and transport in {"http", "streamable_http", "sse"}:
+    auth_mode = str(tool.get("auth_mode") or "").lower()
+    if (
+        parsed.scheme in {"http", "https"}
+        and parsed.netloc
+        and not parsed.username
+        and not parsed.password
+        and transport in {"http", "streamable_http", "sse"}
+        and auth_mode == "none"
+    ):
         subject["mcp_server_config"] = {
             "type": "sse" if transport == "sse" else "http",
             "url": endpoint,
         }
-    return subject
+        return subject
+    return None
 
 
 def _canonical_authorized_mcp_scope(
@@ -1327,23 +1349,28 @@ async def _reauthorize_worker_capabilities(
         if not distribution_decision.usable:
             return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), tool_record)
 
+        mcp_subject = _mcp_capability_subject(tool, distribution_decision)
+        if mcp_subject is None:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                tool_id,
+                _denied_capability_decision("mcp_runtime_metadata_invalid", source=distribution_decision),
+            )
+            return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
+
         tool_gate = evaluate_tool_policy(
             tool={
-                "mcp_server": server_id,
-                "mcp_tool": str(tool.get("name") or ""),
-                "registered": True,
-                "declared": True,
-                "active": (
-                    str(tool.get("registry_status") or "") == "active"
-                    and str(tool.get("policy_status") or "") == "active"
-                    and str(tool.get("server_status") or "") == "active"
-                ),
-                "distributed": distribution_decision.usable,
-                "identity_authorized": True,
-                "object_authorized": True,
-                "parameters_authorized": True,
-                "risk_level": str(tool.get("risk_level") or "low"),
-                "write_capable": bool(tool.get("write_capable")),
+                "requested_identity": mcp_subject["identity"],
+                "declared_identities": [mcp_subject["identity"]],
+                "registered": mcp_subject["registered"],
+                "declared": mcp_subject["declared"],
+                "active": mcp_subject["active"],
+                "distributed": mcp_subject["distributed"],
+                "identity_authorized": mcp_subject["identity_authorized"],
+                "object_authorized": mcp_subject["object_authorized"],
+                "parameters_authorized": mcp_subject["parameters_authorized"],
+                "risk_level": mcp_subject["risk_level"],
+                "write_capable": mcp_subject["write_capable"],
             }
         )
         tool_policy_audits.append(
@@ -1368,9 +1395,9 @@ async def _reauthorize_worker_capabilities(
                 tuple(decisions),
                 denial,
                 tool_policy_audits=tuple(tool_policy_audits),
-            )
+        )
         allowed_entries.append(tool)
-        tool_policy_subjects.append(_mcp_capability_subject(tool, distribution_decision))
+        tool_policy_subjects.append(mcp_subject)
 
     authorized_payload = _payload_with_authorized_mcp_registration(
         payload,

@@ -44,6 +44,7 @@ from app.skills.lifecycle import is_user_runnable_status
 from app.skills.pinning import SkillVersionMaterializationError, build_skill_snapshot_governance
 from app.skills.release_policy import resolve_rollout_skill_decision
 from app.tool_policy import max_risk
+from app.validation import SAFE_ID_PATTERN
 from app.tool_permission_lifecycle import (
     TOOL_PERMISSION_EXPIRY_BATCH_LIMIT,
     TOOL_PERMISSION_REQUEST_TTL_SECONDS,
@@ -1208,6 +1209,10 @@ async def list_workbench_mcp_tools(conn: AsyncConnection, *, tenant_id: str, inc
           mcp_tools.server_id,
           mcp_tools.name,
           mcp_tools.description,
+          mcp_tools.transport_type,
+          mcp_tools.endpoint,
+          mcp_tools.auth_mode,
+          mcp_tools.allowed_tools,
           mcp_tools.status as registry_status,
           tool_policies.status as policy_status,
           mcp_tools.write_capable as registry_write_capable,
@@ -1254,6 +1259,10 @@ async def get_mcp_tool_registry_entry(
           mcp_tools.server_id,
           mcp_tools.name,
           mcp_tools.description,
+          mcp_tools.transport_type,
+          mcp_tools.endpoint,
+          mcp_tools.auth_mode,
+          mcp_tools.allowed_tools,
           mcp_tools.status as registry_status,
           mcp_servers.status as server_status,
           mcp_tools.write_capable as registry_write_capable,
@@ -1278,8 +1287,18 @@ async def get_mcp_tool_registry_entry(
     row = await cursor.fetchone()
     if row is None:
         return None
-    entry = _tool_policy_projection(dict(row), tenant_id=tenant_id)
-    entry["server_status"] = str(row.get("server_status") or "disabled")
+    record = dict(row)
+    entry = _tool_policy_projection(record, tenant_id=tenant_id)
+    entry["server_status"] = str(record.get("server_status") or "disabled")
+    entry["transport_type"] = str(record.get("transport_type") or "")
+    entry["endpoint"] = str(record.get("endpoint") or "")
+    entry["auth_mode"] = str(record.get("auth_mode") or "")
+    allowed_tools = record.get("allowed_tools")
+    entry["allowed_tools"] = (
+        [item for item in allowed_tools if isinstance(item, str) and SAFE_ID_PATTERN.fullmatch(item)]
+        if isinstance(allowed_tools, list)
+        else []
+    )
     return entry
 
 

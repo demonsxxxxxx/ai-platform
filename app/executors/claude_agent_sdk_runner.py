@@ -959,7 +959,7 @@ def _parameters_match_subject(subject: dict[str, Any], tool_name: str, tool_inpu
     elif tool_name == "Bash":
         if not isinstance(tool_input.get("command"), str) or not tool_input["command"].strip():
             return False
-    elif tool_name == "Skill":
+    if tool_name == "Skill":
         allowed_skill_names = subject.get("allowed_skill_names")
         requested = _extract_skill_names_from_tool_input(tool_input, set(allowed_skill_names or []))
         if not requested:

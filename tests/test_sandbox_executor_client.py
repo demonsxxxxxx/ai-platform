@@ -166,7 +166,7 @@ async def test_executor_client_posts_task_request(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_executor_client_uses_the_nested_outer_deadline_only_for_governed_permission_runs(monkeypatch):
+async def test_executor_client_uses_normal_deadline_without_permission_wait(monkeypatch):
     calls = []
 
     async def post_json(url, payload, timeout, headers=None):
@@ -185,12 +185,12 @@ async def test_executor_client_uses_the_nested_outer_deadline_only_for_governed_
         callback_token_id="cbt_run-a",
         callback_token="secret",
         callback_base_url="http://callback-base",
-        governed_permission_wait=True,
+        governed_permission_wait=False,
     )
 
     await SandboxExecutorClient(post_json=post_json).execute("http://executor.test", request)
 
-    assert calls == [tool_permission_budget(120.0).outer_executor_timeout_seconds]
+    assert calls == [tool_permission_budget(120.0).normal_outer_executor_timeout_seconds]
 
 
 @pytest.mark.asyncio

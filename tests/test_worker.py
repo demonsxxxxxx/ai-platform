@@ -484,6 +484,7 @@ def test_worker_propagates_exact_authorized_mcp_subject_without_permission_looku
         "write_capable": True,
         "transport_type": "streamable_http",
         "endpoint": "https://mcp.example.test/v1",
+        "auth_mode": "none",
         "allowed_tools": ["query"],
     }
     subject = worker_module._mcp_capability_subject(
@@ -507,9 +508,62 @@ def test_worker_propagates_exact_authorized_mcp_subject_without_permission_looku
         "type": "http",
         "url": "https://mcp.example.test/v1",
     }
+    assert worker_module._mcp_capability_subject(
+        {**tool, "endpoint": "https://token@example.test/v1"},
+        types.SimpleNamespace(usable=True),
+    ) is None
+    assert worker_module._mcp_capability_subject(
+        {**tool, "auth_mode": "api-key"},
+        types.SimpleNamespace(usable=True),
+    ) is None
     source = (Path(__file__).parents[1] / "app" / "worker.py").read_text(encoding="utf-8")
     assert "get_exact_tool_permission_decision(" not in source
     assert "consume_tool_permission_decision(" not in source
+
+
+@pytest.mark.asyncio
+async def test_registry_entry_returns_tenant_scoped_external_mcp_runtime_metadata(monkeypatch):
+    monkeypatch.undo()
+    class Cursor:
+        async def fetchone(self):
+            return {
+                "tool_id": "corp-search",
+                "server_id": "corp:search",
+                "name": "中文展示名",
+                "description": "search",
+                "transport_type": "streamable_http",
+                "endpoint": "https://mcp.example.test/v1",
+                "auth_mode": "none",
+                "allowed_tools": ["query"],
+                "registry_status": "active",
+                "server_status": "active",
+                "registry_write_capable": False,
+                "registry_risk_level": "low",
+                "registry_visible_to_user": True,
+                "policy_status": "active",
+                "policy_write_capable": False,
+                "policy_risk_level": "low",
+                "policy_visible_to_user": True,
+            }
+
+    class Connection:
+        async def execute(self, query, params):
+            assert params == ("tenant-a", "corp-search")
+            assert "mcp_tools.endpoint" in query
+            assert "mcp_tools.auth_mode" in query
+            assert "mcp_tools.allowed_tools" in query
+            return Cursor()
+
+    entry = await repository_module.get_mcp_tool_registry_entry(
+        Connection(), tenant_id="tenant-a", tool_id="corp-search"
+    )
+
+    assert entry is not None
+    assert entry["allowed_tools"] == ["query"]
+    assert entry["transport_type"] == "streamable_http"
+    assert entry["endpoint"] == "https://mcp.example.test/v1"
+    assert entry["auth_mode"] == "none"
+    assert entry["name"] == "中文展示名"
 
 
 def locked_run_from_payload(payload):
@@ -6149,419 +6203,6 @@ async def test_worker_blocks_disabled_mcp_tool_before_dispatch(monkeypatch):
     assert denied_event[3]["visible_to_user"] is True
 
 
-@pytest.mark.asyncio
-async def test_worker_blocks_high_risk_mcp_tool_without_permission_decision(monkeypatch):
-    calls = []
-
-    class RagflowAdapterMustNotRun:
-        async def submit_run(self, payload, event_sink=None):
-            calls.append(("adapter", payload.run_id))
-            raise AssertionError("high-risk MCP tool must not dispatch without permission")
-
-    class Registry:
-        def get(self, executor_type):
-            return RagflowAdapterMustNotRun()
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        calls.append(("running", tenant_id, run_id))
-        return True
-
-    async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
-        calls.append(("policy", tenant_id, tool_id))
-        return {"id": tool_id, "status": "active", "write_capable": True, "risk_level": "high"}
-
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("decision_lookup", kwargs["tool_id"]))
-        return None
-
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
-        calls.append(("fail", error_code, error_message))
-        return ToolPermissionTerminalizationProgress(completed=True, status="failed", did_transition=True)
-
-    async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
-        calls.append(("event", event_type, stage, payload or {}))
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs["action"], kwargs["payload_json"]))
-        return "audit-a"
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
-    monkeypatch.setattr(
-        "app.worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
-
-    outcome = await process_run_payload(
-        base_payload(skill_id="ragflow-knowledge-search", executor_type="ragflow"),
-        registry=Registry(),
-        worker_id="worker-ragflow",
-    )
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert ("decision_lookup", "ragflow-knowledge-search") in calls
-    assert not any(item[0] == "adapter" for item in calls)
-    assert any(item[0] == "fail" and item[1] == "capability_not_authorized" for item in calls)
-    denied_event = next(item for item in calls if item[0] == "event" and item[1] == "capability_not_authorized")
-    assert denied_event[2] == "authorization"
-    assert denied_event[3]["policy"] == "capability_distribution"
-    assert denied_event[3]["reason"] == "tool_permission_required"
-    denied_audit = next(item for item in calls if item[0] == "audit")
-    assert denied_audit[1] == "mcp_tool_policy_denied"
-    assert denied_audit[2]["reason"] == "tool_permission_required"
-    assert denied_audit[2]["risk_level"] == "high"
-    assert denied_audit[2]["write_capable"] is True
-
-
-@pytest.mark.asyncio
-async def test_worker_allows_high_risk_mcp_tool_with_permission_decision(monkeypatch):
-    calls = []
-    expected_input_sha256 = hashlib.sha256(
-        json.dumps({"mode": "file"}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-    class RagflowAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            calls.append(("adapter", payload.run_id))
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="ragflow-adapter/1",
-                executor_type="ragflow",
-                executor_version="ragflow-retrieval-http",
-                capabilities={"tools": True},
-                result={"message": "answer"},
-            )
-
-    class Registry:
-        def get(self, executor_type):
-            return RagflowAdapter()
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
-        return {"id": tool_id, "status": "active", "write_capable": True, "risk_level": "high"}
-
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("decision_lookup", kwargs["tool_id"]))
-        assert kwargs["tool_call_id"].startswith("mcp_")
-        if kwargs.get("request_payload_json", {}).get("input_sha256") != expected_input_sha256:
-            return None
-        return {"id": "tpr_allow", "decision": "allow_for_run"}
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs["event_type"]))
-        return "evt-a"
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs["action"], kwargs["payload_json"]))
-        return "audit-a"
-
-    async def complete_run(conn, **kwargs):
-        calls.append(("complete", kwargs["result_json"]["message"]))
-        return True
-
-    async def upsert_run_skill_snapshot(conn, **kwargs):
-        calls.append(("snapshot", kwargs["skill_id"], kwargs["used"]))
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
-    monkeypatch.setattr(
-        "app.worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
-
-    outcome = await process_run_payload(
-        base_payload(
-            skill_id="ragflow-knowledge-search",
-            executor_type="ragflow",
-            skill_version="hash-ragflow",
-            skill_manifests=[primary_manifest("ragflow-knowledge-search", "hash-ragflow")],
-        ),
-        registry=Registry(),
-        worker_id="worker-ragflow",
-    )
-
-    assert outcome.status == "succeeded"
-    assert ("decision_lookup", "ragflow-knowledge-search") in calls
-    assert ("adapter", "run-a") in calls
-    allowed_audit = next(item for item in calls if item[0] == "audit" and item[1] == "mcp_tool_policy_allowed")
-    assert allowed_audit[2]["decision"] == "allow_for_run"
-    assert allowed_audit[2]["permission_request_id"] == "tpr_allow"
-    assert allowed_audit[2]["auto_allowed"] is False
-
-
-@pytest.mark.asyncio
-async def test_worker_mcp_tool_permission_uses_exact_decision_lookup(monkeypatch):
-    calls = []
-    expected_input_sha256 = hashlib.sha256(
-        json.dumps({"mode": "file"}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-    class RagflowAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            calls.append(("adapter", payload.run_id))
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="ragflow-adapter/1",
-                executor_type="ragflow",
-                executor_version="ragflow-retrieval-http",
-                capabilities={"tools": True},
-                result={"message": "answer"},
-            )
-
-    class Registry:
-        def get(self, executor_type):
-            return RagflowAdapter()
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
-        return {"id": tool_id, "status": "active", "write_capable": True, "risk_level": "high"}
-
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("exact_decision_lookup", kwargs))
-        assert kwargs["tool_id"] == "ragflow-knowledge-search"
-        assert kwargs["tool_call_id"].startswith("mcp_")
-        assert kwargs["request_payload_json"]["input_sha256"] == expected_input_sha256
-        return {"id": "tpr_allow", "decision": "allow_for_run"}
-
-    async def get_latest_tool_permission_decision(conn, **kwargs):
-        raise AssertionError("MCP tool permission must use exact decision lookup")
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs["event_type"]))
-        return "evt-a"
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs["action"], kwargs["payload_json"]))
-        return "audit-a"
-
-    async def complete_run(conn, **kwargs):
-        calls.append(("complete", kwargs["result_json"]["message"]))
-        return True
-
-    async def upsert_run_skill_snapshot(conn, **kwargs):
-        calls.append(("snapshot", kwargs["skill_id"], kwargs["used"]))
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
-    monkeypatch.setattr(
-        "app.worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
-
-    outcome = await process_run_payload(
-        base_payload(
-            skill_id="ragflow-knowledge-search",
-            executor_type="ragflow",
-            skill_version="hash-ragflow",
-            skill_manifests=[primary_manifest("ragflow-knowledge-search", "hash-ragflow")],
-        ),
-        registry=Registry(),
-        worker_id="worker-ragflow",
-    )
-
-    assert outcome.status == "succeeded"
-    assert any(item[0] == "exact_decision_lookup" for item in calls)
-    assert ("adapter", "run-a") in calls
-
-
-@pytest.mark.asyncio
-async def test_worker_consumes_allow_once_mcp_decision_before_dispatch(monkeypatch):
-    calls = []
-
-    class RagflowAdapter:
-        async def submit_run(self, payload, event_sink=None):
-            calls.append(("adapter", payload.run_id))
-            return ExecutorResult(
-                status="succeeded",
-                adapter_version="ragflow-adapter/1",
-                executor_type="ragflow",
-                executor_version="ragflow-retrieval-http",
-                capabilities={"tools": True},
-                result={"message": "answer"},
-            )
-
-    class Registry:
-        def get(self, executor_type):
-            return RagflowAdapter()
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
-        return {"id": tool_id, "status": "active", "write_capable": True, "risk_level": "high"}
-
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("decision_lookup", kwargs["tool_id"]))
-        return {"id": "tpr-once", "decision": "allow_once"}
-
-    async def consume_tool_permission_decision(conn, **kwargs):
-        calls.append(("consume", kwargs))
-        return {"id": kwargs["request_id"], "decision": "allow_once", "status": "consumed"}
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs["event_type"]))
-        return "evt-a"
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs["action"], kwargs["payload_json"]))
-        return "audit-a"
-
-    async def complete_run(conn, **kwargs):
-        calls.append(("complete", kwargs["result_json"]["message"]))
-
-    async def upsert_run_skill_snapshot(conn, **kwargs):
-        calls.append(("snapshot", kwargs["skill_id"], kwargs["used"]))
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
-    monkeypatch.setattr(
-        "app.worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.worker.repositories.consume_tool_permission_decision",
-        consume_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
-    monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
-    monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
-
-    outcome = await process_run_payload(
-        base_payload(
-            skill_id="ragflow-knowledge-search",
-            executor_type="ragflow",
-            skill_version="hash-ragflow",
-            skill_manifests=[primary_manifest("ragflow-knowledge-search", "hash-ragflow")],
-        ),
-        registry=Registry(),
-        worker_id="worker-ragflow",
-    )
-
-    assert outcome.status == "succeeded"
-    consume_calls = [item for item in calls if item[0] == "consume"]
-    assert consume_calls, "allow_once MCP decision must be consumed before adapter dispatch"
-    consume_call = consume_calls[0]
-    adapter_call = next(item for item in calls if item[0] == "adapter")
-    assert calls.index(consume_call) < calls.index(adapter_call)
-    assert consume_call[1] == {
-        "tenant_id": "tenant-a",
-        "user_id": "user-a",
-        "run_id": "run-a",
-        "request_id": "tpr-once",
-    }
-    allowed_audit = next(item for item in calls if item[0] == "audit" and item[1] == "mcp_tool_policy_allowed")
-    assert allowed_audit[2]["decision"] == "allow_once"
-    assert allowed_audit[2]["permission_request_id"] == "tpr-once"
-
-
-@pytest.mark.asyncio
-async def test_worker_fails_closed_when_allow_once_mcp_decision_cannot_be_consumed(monkeypatch):
-    calls = []
-
-    class RagflowAdapterMustNotRun:
-        async def submit_run(self, payload, event_sink=None):
-            calls.append(("adapter", payload.run_id))
-            raise AssertionError("expired or already-consumed allow_once must not reach adapter dispatch")
-
-    class Registry:
-        def get(self, executor_type):
-            return RagflowAdapterMustNotRun()
-
-    async def mark_run_running(conn, *, tenant_id, run_id):
-        return True
-
-    async def ensure_mcp_tool_active(conn, *, tenant_id, tool_id):
-        return {"id": tool_id, "status": "active", "write_capable": True, "risk_level": "high"}
-
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("decision_lookup", kwargs["tool_id"]))
-        return {"id": "tpr-once", "decision": "allow_once"}
-
-    async def consume_tool_permission_decision(conn, **kwargs):
-        calls.append(("consume", kwargs))
-        return None
-
-    async def fail_run(conn, *, tenant_id, run_id, error_code, error_message, result_json=None):
-        calls.append(("fail", error_code, error_message))
-
-    async def append_event(conn, *, tenant_id, run_id, event_type, stage, message, payload=None):
-        calls.append(("event", event_type, stage, payload or {}))
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs["action"], kwargs["payload_json"]))
-        return "audit-a"
-
-    monkeypatch.setattr("app.worker.transaction", fake_transaction)
-    monkeypatch.setattr("app.worker.repositories.mark_run_running", mark_run_running)
-    monkeypatch.setattr("app.worker.repositories.ensure_mcp_tool_active", ensure_mcp_tool_active, raising=False)
-    monkeypatch.setattr(
-        "app.worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.worker.repositories.consume_tool_permission_decision",
-        consume_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
-    monkeypatch.setattr("app.worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
-
-    outcome = await process_run_payload(
-        base_payload(skill_id="ragflow-knowledge-search", executor_type="ragflow"),
-        registry=Registry(),
-        worker_id="worker-ragflow",
-    )
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert not any(item[0] == "adapter" for item in calls)
-    assert any(item[0] == "consume" and item[1]["request_id"] == "tpr-once" for item in calls)
-    assert any(item[0] == "fail" and item[1] == "capability_not_authorized" for item in calls)
-    denied_event = next(item for item in calls if item[0] == "event" and item[1] == "capability_not_authorized")
-    assert denied_event[2] == "authorization"
-    assert denied_event[3]["reason"] == "tool_permission_consumed_or_expired"
-    denied_audit = next(
-        item for item in calls if item[0] == "audit" and item[1] == "capability_distribution.denied"
-    )
-    assert denied_audit[2]["decision_reason"] == "tool_permission_consumed_or_expired"
-
-
 def _task6_distribution(
     capability_kind,
     capability_id,
@@ -6587,8 +6228,14 @@ def _task6_tool(tool_id, server_id, *, server_status="active", write_capable=Fal
     return {
         "tool_id": tool_id,
         "server_id": server_id,
+        "allowed_tools": ["query"],
         "effective_status": "active",
+        "registry_status": "active",
+        "policy_status": "active",
         "server_status": server_status,
+        "transport_type": "streamable_http",
+        "endpoint": "https://mcp.example.test/v1",
+        "auth_mode": "none",
         "visible_to_user": True,
         "write_capable": write_capable,
         "risk_level": risk_level,
@@ -6625,9 +6272,6 @@ def _install_task6_worker_fakes(
             )
         },
         "tools": {},
-        "permission_decisions": {},
-        "consume_result": {"status": "consumed"},
-        "consume_results": None,
     }
     persisted_input = dict(locked_input or {"mode": "file"})
     locked_run = {
@@ -6670,8 +6314,17 @@ def _install_task6_worker_fakes(
                 adapter_version="capture/1",
                 executor_type="capture",
                 executor_version="capture",
-                capabilities={"artifacts": False, "streaming": False, "tools": True},
+                capabilities={"artifacts": True, "streaming": False, "tools": True},
                 result={"message": "done"},
+                artifacts=[
+                    ArtifactManifest(
+                        artifact_type="reviewed_docx",
+                        label="Reviewed Word",
+                        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",
+                        size_bytes=1024,
+                    )
+                ],
             )
 
     class CaptureRegistry:
@@ -6701,16 +6354,6 @@ def _install_task6_worker_fakes(
         entry = state["tools"].get(tool_id)
         return dict(entry) if entry is not None else None
 
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("permission_lookup", kwargs))
-        return state["permission_decisions"].get(kwargs["tool_id"])
-
-    async def consume_tool_permission_decision(conn, **kwargs):
-        calls.append(("permission_consume", kwargs))
-        consume_results = state["consume_results"]
-        result = consume_results.pop(0) if isinstance(consume_results, list) else state["consume_result"]
-        return dict(result) if isinstance(result, dict) else result
-
     async def append_event(conn, **kwargs):
         calls.append(("event", kwargs))
         return "event-task6"
@@ -6729,6 +6372,9 @@ def _install_task6_worker_fakes(
 
     async def upsert_run_skill_snapshot(conn, **kwargs):
         calls.append(("skill_snapshot", kwargs))
+
+    async def create_artifact(conn, **kwargs):
+        calls.append(("artifact", kwargs))
 
     async def create_sandbox_lease(conn, **kwargs):
         calls.append(("sandbox_create", kwargs))
@@ -6752,22 +6398,13 @@ def _install_task6_worker_fakes(
         get_mcp_tool_registry_entry,
         raising=False,
     )
-    monkeypatch.setattr(
-        "app.worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.worker.repositories.consume_tool_permission_decision",
-        consume_tool_permission_decision,
-        raising=False,
-    )
     monkeypatch.setattr("app.worker.repositories.append_event", append_event)
     monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
     monkeypatch.setattr("app.worker.repositories.fail_run", fail_run)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
     monkeypatch.setattr("app.worker.repositories.upsert_run_skill_snapshot", upsert_run_skill_snapshot)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.create_sandbox_lease", create_sandbox_lease)
     monkeypatch.setattr("app.worker.repositories.release_sandbox_lease", release_sandbox_lease)
 
@@ -6982,73 +6619,6 @@ async def test_worker_registered_tools_use_only_current_allowed_mcp_entries(monk
     assert registered_input["mcp_tool_ids"] == ["tool-global"]
     assert registered_input["multi_agent_steps"][0]["mcp_tool_ids"] == ["tool-step"]
     assert "mcpToolIds" not in registered_input
-
-
-@pytest.mark.asyncio
-async def test_worker_direct_ragflow_and_explicit_selector_share_one_allow_once_pipeline(monkeypatch):
-    raw, registry, state, calls = _install_task6_worker_fakes(
-        monkeypatch,
-        locked_input={"mode": "file", "mcp_tool_ids": ["tenant-search"]},
-    )
-    state["skill"].update(executor_type="ragflow", backing_mcp_tool_id="tenant-search")
-    state["locked_run"]["input_json"]["executor_type"] = "ragflow"
-    state["tools"]["tenant-search"] = _task6_tool(
-        "tenant-search",
-        "tenant-search-server",
-        write_capable=True,
-        risk_level="high",
-    )
-    state["distributions"][("mcp_server", "tenant-search-server")] = _task6_distribution(
-        "mcp_server",
-        "tenant-search-server",
-        department_ids=["qa"],
-        allowed_roles=["qa_operator"],
-    )
-    state["permission_decisions"]["tenant-search"] = {"id": "grant-once", "decision": "allow_once"}
-
-    outcome = await process_run_payload(raw, registry=registry)
-
-    assert outcome.status == "succeeded"
-    assert [call for call in calls if call[0] == "tool_lookup"] == [
-        ("tool_lookup", "tenant-a", "tenant-search")
-    ]
-    assert len([call for call in calls if call[0] == "permission_lookup"]) == 1
-    assert [call[1]["request_id"] for call in calls if call[0] == "permission_consume"] == ["grant-once"]
-    policy_audits = [
-        call[1]
-        for call in calls
-        if call[0] == "audit" and call[1]["action"] == "mcp_tool_policy_allowed"
-    ]
-    assert len(policy_audits) == 1
-    assert policy_audits[0]["target_id"] == "tenant-search"
-    registered_input = next(call[1] for call in calls if call[0] == "adapter")
-    assert registered_input["mcp_tool_ids"] == ["tenant-search"]
-
-
-@pytest.mark.asyncio
-async def test_worker_direct_ragflow_rechecks_permission_policy_after_enqueue(monkeypatch):
-    raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch, locked_input={"mode": "file"})
-    state["skill"].update(executor_type="ragflow", backing_mcp_tool_id="tenant-search")
-    state["locked_run"]["input_json"]["executor_type"] = "ragflow"
-    state["tools"]["tenant-search"] = _task6_tool(
-        "tenant-search",
-        "tenant-search-server",
-        write_capable=True,
-        risk_level="high",
-    )
-    state["distributions"][("mcp_server", "tenant-search-server")] = _task6_distribution(
-        "mcp_server",
-        "tenant-search-server",
-    )
-
-    outcome = await process_run_payload(raw, registry=registry)
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert len([call for call in calls if call[0] == "tool_lookup"]) == 1
-    assert len([call for call in calls if call[0] == "permission_lookup"]) == 1
-    assert not any(call[0] == "permission_consume" for call in calls)
-    _task6_assert_no_executor_calls(calls)
 
 
 @pytest.mark.asyncio
@@ -7333,7 +6903,7 @@ async def test_worker_malformed_distribution_scope_becomes_terminal_audited_deni
 
 
 @pytest.mark.asyncio
-async def test_worker_capability_distribution_keeps_mcp_risk_write_policy_after_allow(monkeypatch):
+async def test_worker_capability_distribution_audits_synchronous_mcp_risk_write_policy(monkeypatch):
     raw, registry, state, calls = _install_task6_worker_fakes(
         monkeypatch,
         locked_input={"mode": "file", "mcp_tool_ids": ["tool-write"]},
@@ -7351,16 +6921,12 @@ async def test_worker_capability_distribution_keeps_mcp_risk_write_policy_after_
 
     outcome = await process_run_payload(raw, registry=registry)
 
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert any(call[0] == "permission_lookup" and call[1]["tool_id"] == "tool-write" for call in calls)
-    _task6_assert_no_executor_calls(calls)
-    denied_event = next(
-        call[1]
-        for call in calls
-        if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
-    )
-    assert denied_event["payload"]["reason"] == "tool_permission_required"
+    assert outcome.status == "succeeded"
+    policy_audit = next(call[1] for call in calls if call[0] == "audit")
+    assert policy_audit["action"] == "mcp_tool_policy_allowed"
+    assert policy_audit["target_id"] == "tool-write"
+    assert policy_audit["payload_json"]["risk_level"] == "high"
+    assert policy_audit["payload_json"]["write_capable"] is True
 
 
 @pytest.mark.parametrize(
@@ -7413,8 +6979,6 @@ async def test_worker_locked_snapshot_invalid_never_falls_back_to_queue_mcp_inpu
             "skill_lookup",
             "distribution",
             "tool_lookup",
-            "permission_lookup",
-            "permission_consume",
             "registry_get",
             "sandbox_create",
             "adapter",
@@ -7478,189 +7042,3 @@ async def test_worker_invalid_locked_child_snapshot_reconciles_parent_after_comm
     assert next(index for index, call in enumerate(calls) if call[0] == "fail") < next(
         index for index, call in enumerate(calls) if call[0] == "reconcile"
     )
-
-
-@pytest.mark.asyncio
-async def test_worker_allow_once_is_not_consumed_when_later_mcp_distribution_denies(monkeypatch):
-    raw, registry, state, calls = _install_task6_worker_fakes(
-        monkeypatch,
-        locked_input={"mode": "file", "mcp_tool_ids": ["tool-once", "tool-denied"]},
-    )
-    state["tools"].update(
-        {
-            "tool-once": _task6_tool(
-                "tool-once",
-                "server-once",
-                write_capable=True,
-                risk_level="high",
-            ),
-            "tool-denied": _task6_tool("tool-denied", "server-denied"),
-        }
-    )
-    state["distributions"].update(
-        {
-            ("mcp_server", "server-once"): _task6_distribution("mcp_server", "server-once"),
-            ("mcp_server", "server-denied"): _task6_distribution(
-                "mcp_server",
-                "server-denied",
-                visible_to_user=False,
-            ),
-        }
-    )
-    state["permission_decisions"]["tool-once"] = {"id": "grant-once", "decision": "allow_once"}
-
-    outcome = await process_run_payload(raw, registry=registry)
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert any(call[0] == "permission_lookup" and call[1]["tool_id"] == "tool-once" for call in calls)
-    assert not any(call[0] == "permission_consume" for call in calls)
-    _task6_assert_no_executor_calls(calls)
-
-
-@pytest.mark.asyncio
-async def test_worker_allow_once_batch_failure_rolls_back_before_failed_outcome(monkeypatch):
-    raw, registry, state, calls = _install_task6_worker_fakes(
-        monkeypatch,
-        locked_input={"mode": "file", "mcp_tool_ids": ["tool-first", "tool-second"]},
-    )
-    for suffix in ("first", "second"):
-        state["tools"][f"tool-{suffix}"] = _task6_tool(
-            f"tool-{suffix}",
-            f"server-{suffix}",
-            write_capable=True,
-            risk_level="high",
-        )
-        state["distributions"][("mcp_server", f"server-{suffix}")] = _task6_distribution(
-            "mcp_server",
-            f"server-{suffix}",
-        )
-        state["permission_decisions"][f"tool-{suffix}"] = {
-            "id": f"grant-{suffix}",
-            "decision": "allow_once",
-        }
-    state["consume_results"] = [{"status": "consumed"}, None]
-    transaction_count = 0
-
-    @asynccontextmanager
-    async def recording_transaction():
-        nonlocal transaction_count
-        transaction_count += 1
-        transaction_id = transaction_count
-        calls.append(("tx_enter", transaction_id))
-        try:
-            yield object()
-        except Exception:
-            calls.append(("tx_rollback", transaction_id))
-            raise
-        else:
-            calls.append(("tx_commit", transaction_id))
-
-    monkeypatch.setattr("app.worker.transaction", recording_transaction)
-
-    outcome = await process_run_payload(raw, registry=registry)
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert [call[1]["request_id"] for call in calls if call[0] == "permission_consume"] == [
-        "grant-first",
-        "grant-second",
-    ]
-    assert ("tx_rollback", 1) in calls
-    assert ("tx_commit", 1) not in calls
-    assert ("tx_enter", 2) in calls
-    assert calls.index(("tx_rollback", 1)) < next(index for index, call in enumerate(calls) if call[0] == "fail")
-    _task6_assert_no_executor_calls(calls)
-
-
-@pytest.mark.asyncio
-async def test_worker_allow_once_failure_replays_admin_bypass_audits_in_recovery(monkeypatch):
-    private_marker = "private-bypass-payload"
-    raw, registry, state, calls = _install_task6_worker_fakes(
-        monkeypatch,
-        locked_input={
-            "mode": "file",
-            "mcp_tool_ids": ["tool-first", "tool-second"],
-            "private_payload": private_marker,
-        },
-        principal_roles=["admin"],
-        principal_department_id="platform",
-    )
-    state["skill"]["private_payload"] = private_marker
-    state["distributions"][("skill", "qa-file-reviewer")].update(
-        visible_to_user=False,
-        metadata_json={"credential": private_marker},
-    )
-    for suffix in ("first", "second"):
-        tool_id = f"tool-{suffix}"
-        server_id = f"server-{suffix}"
-        state["tools"][tool_id] = {
-            **_task6_tool(tool_id, server_id, write_capable=True, risk_level="high"),
-            "private_payload": private_marker,
-        }
-        state["distributions"][("mcp_server", server_id)] = {
-            **_task6_distribution("mcp_server", server_id, visible_to_user=False),
-            "metadata_json": {"credential": private_marker},
-        }
-        state["permission_decisions"][tool_id] = {
-            "id": f"grant-{suffix}",
-            "decision": "allow_once",
-            "private_payload": private_marker,
-        }
-    state["consume_results"] = [{"status": "consumed"}, None]
-    persisted_audits = []
-    transaction_count = 0
-
-    class PendingTransaction:
-        def __init__(self, transaction_id):
-            self.transaction_id = transaction_id
-            self.audits = []
-
-    @asynccontextmanager
-    async def recording_transaction():
-        nonlocal transaction_count
-        transaction_count += 1
-        conn = PendingTransaction(transaction_count)
-        try:
-            yield conn
-        except Exception:
-            calls.append(("tx_rollback", conn.transaction_id))
-            raise
-        else:
-            persisted_audits.extend(conn.audits)
-            calls.append(("tx_commit", conn.transaction_id))
-
-    async def append_audit_log(conn, **kwargs):
-        conn.audits.append(kwargs)
-        return "audit-task6"
-
-    monkeypatch.setattr("app.worker.transaction", recording_transaction)
-    monkeypatch.setattr("app.worker.repositories.append_audit_log", append_audit_log)
-
-    outcome = await process_run_payload(raw, registry=registry)
-
-    assert outcome.status == "failed"
-    assert outcome.error_code == "capability_not_authorized"
-    assert ("tx_rollback", 1) in calls
-    assert ("tx_commit", 2) in calls
-    assert [audit["action"] for audit in persisted_audits] == [
-        "capability_distribution.admin_bypass",
-        "capability_distribution.admin_bypass",
-        "capability_distribution.admin_bypass",
-        "mcp_tool_policy_allowed",
-        "mcp_tool_policy_allowed",
-        "capability_distribution.denied",
-    ]
-    assert [(audit["target_type"], audit["target_id"]) for audit in persisted_audits[:3]] == [
-        ("skill", "qa-file-reviewer"),
-        ("mcp_tool", "tool-first"),
-        ("mcp_tool", "tool-second"),
-    ]
-    assert [audit["target_id"] for audit in persisted_audits[3:5]] == [
-        "tool-first",
-        "tool-second",
-    ]
-    assert persisted_audits[-1]["target_id"] == "tool-second"
-    assert persisted_audits[-1]["payload_json"]["decision_reason"] == "tool_permission_consumed_or_expired"
-    assert private_marker not in json.dumps(persisted_audits, ensure_ascii=False, sort_keys=True)
-    _task6_assert_no_executor_calls(calls)
