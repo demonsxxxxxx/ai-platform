@@ -33,7 +33,6 @@ import { isAiAdminUser } from "../capabilityAdmin";
 
 export interface SessionActions {
   onDeleteSession: (id: string) => void;
-  onShareSession: (id: string) => void;
   onSelectSession: (id: string) => void;
 }
 
@@ -336,9 +335,6 @@ export function SessionListContent({
                                 }
                                 onDelete={() =>
                                   sessionActions.onDeleteSession(session.id)
-                                }
-                                onShare={() =>
-                                  sessionActions.onShareSession(session.id)
                                 }
                                 onSessionUpdate={onUpdateSession}
                               />

@@ -341,7 +341,6 @@ export const ChatInput = memo(function ChatInput({
       tools: toolsAvailable,
       models: !!availableModels?.length && !!onSelectModel,
       files: uploadCategories.length > 0,
-      context: true,
     }),
     [
       availableModels?.length,
@@ -404,37 +403,6 @@ export const ChatInput = memo(function ChatInput({
     setCursorPosition(0);
     requestAnimationFrame(scheduleTextareaResize);
   }, [closeSlashMenu, scheduleTextareaResize]);
-
-  const upsertContextUnavailableChip = useCallback(() => {
-    dispatchComposerSelection({
-      type: "upsert",
-      selection: {
-        id: "unavailable:context-selector",
-        kind: "context",
-        label: t("composerCommand.contextSelector.chip", "/context"),
-        state: "unavailable",
-        source: "context-selector",
-        description: t(
-          "composerCommand.contextSelector.description",
-          "Context selection is visible in the composer, but your workspace cannot use saved context yet.",
-        ),
-      },
-    });
-  }, [t]);
-
-  const markContextUnavailableCommand = useCallback(() => {
-    upsertContextUnavailableChip();
-    setInput("");
-    setCursorPosition(0);
-    setActivePanel(null);
-    setCommandSearchSeed(null);
-    closeSlashMenu();
-    requestAnimationFrame(scheduleTextareaResize);
-  }, [
-    closeSlashMenu,
-    scheduleTextareaResize,
-    upsertContextUnavailableChip,
-  ]);
 
   const openCommandPanel = useCallback(
     (nextValue: string): boolean => {
@@ -515,10 +483,6 @@ export const ChatInput = memo(function ChatInput({
         requestAnimationFrame(scheduleTextareaResize);
         return;
       }
-      if (item.panel === "context") {
-        markContextUnavailableCommand();
-        return;
-      }
       setInput(nextInput);
       setCursorPosition(nextInput.length);
       setActivePanel(item.panel);
@@ -538,7 +502,6 @@ export const ChatInput = memo(function ChatInput({
       closeSlashMenu,
       executeAvailableFileCommand,
       input,
-      markContextUnavailableCommand,
       scheduleTextareaResize,
       upsertUnavailableCommandChip,
     ],
@@ -562,10 +525,6 @@ export const ChatInput = memo(function ChatInput({
             panel: draft.panel,
             query: draft.selectorQuery,
           });
-          if (draft.panel === "context") {
-            markContextUnavailableCommand();
-            return true;
-          }
         }
         return true;
       }
@@ -595,7 +554,6 @@ export const ChatInput = memo(function ChatInput({
       closeSlashMenu,
       executeAvailableFileCommand,
       handleSlashCommandSelect,
-      markContextUnavailableCommand,
       scheduleTextareaResize,
       slashCommandItems,
       slashMenuHighlight,
@@ -616,14 +574,10 @@ export const ChatInput = memo(function ChatInput({
         openFileCommandRef.current?.();
         return;
       }
-      if (panel === "context") {
-        markContextUnavailableCommand();
-        return;
-      }
       setActivePanel(panel);
       closeSlashMenu();
     },
-    [closeSlashMenu, markContextUnavailableCommand],
+    [closeSlashMenu],
   );
 
   const handleSelectTaskSkill = useCallback(
