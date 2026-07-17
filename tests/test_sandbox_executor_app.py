@@ -3,14 +3,16 @@ import functools
 import gc
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.executors.claude_agent_sdk_runner import build_skill_prompt
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.contracts import ExecutorTaskRequest
-from app.runtime.sandbox.executor_app import _default_callback_sender, create_executor_app
+from app.runtime.sandbox.executor_app import _default_callback_sender, _default_executor_runner, create_executor_app
 from app.tool_permission_lifecycle import tool_permission_budget
 
 
@@ -80,6 +82,49 @@ def create_test_client(tmp_path, **kwargs) -> TestClient:
             **kwargs,
         )
     )
+
+
+def write_minimal_docx(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "[Content_Types].xml",
+            """<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">
+  <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>
+  <Default Extension=\"xml\" ContentType=\"application/xml\"/>
+  <Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>
+</Types>""",
+        )
+        archive.writestr(
+            "_rels/.rels",
+            """<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">
+  <Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/>
+</Relationships>""",
+        )
+        archive.writestr(
+            "word/document.xml",
+            """<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">
+  <w:body><w:p><w:r><w:t>translated</w:t></w:r></w:p></w:body>
+</w:document>""",
+        )
+
+
+def selected_baoyu_skill_policy() -> list[dict[str, object]]:
+    return [
+        {
+            "identity": "Skill",
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "identity_authorized": True,
+            "object_authorized": True,
+            "parameters_authorized": True,
+            "allowed_skill_names": ["baoyu-translate"],
+        }
+    ]
 
 
 def test_executor_health_returns_ready(tmp_path):
@@ -325,6 +370,244 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
         for event in callback.get("events", [])
     )
     assert not any("tool-permission" in str(callback) for callback in callbacks)
+
+
+def test_executor_runs_selected_authorized_baoyu_docx_skill_without_sdk_discretion(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    workspace = Path(tmp_path)
+    write_minimal_docx(workspace / "source.docx")
+    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        """import shutil
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+output = Path(sys.argv[2])
+output.mkdir(parents=True, exist_ok=True)
+shutil.copyfile(source, output / \"translated.docx\")
+(output / \"target-language.txt\").write_text(
+    sys.argv[sys.argv.index(\"--target-language\") + 1], encoding=\"utf-8\"
+)
+""",
+        encoding="utf-8",
+    )
+
+    async def sdk_must_not_run(**_kwargs):
+        raise AssertionError("selected file Skill must not be left to SDK discretion")
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
+
+    payload = task_payload()
+    payload["prompt"] = build_skill_prompt(
+        skill_id="baoyu-translate",
+        user_message="translate this document to English",
+        file_names=["source.docx"],
+    )
+    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+
+    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert body["sdk_used"] is False
+    assert body["executor_mode"] == "platform_controlled_runner"
+    assert body["used_skills"] == ["baoyu-translate"]
+    assert body["used_skills_source"] == "platform_controlled_runner"
+    assert (workspace / "output" / "translated.docx").is_file()
+    assert '--target-language "English" --original-filename "source.docx"' in payload["prompt"]
+    assert (workspace / "output" / "target-language.txt").read_text(encoding="utf-8") == "English"
+
+
+def test_executor_runs_real_staged_baoyu_entrypoint_and_produces_translated_docx(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    workspace = Path(tmp_path)
+    write_minimal_docx(workspace / "source.docx")
+    source_script = Path(__file__).parents[1] / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    staged_script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    staged_script.parent.mkdir(parents=True)
+    staged_script.write_bytes(source_script.read_bytes())
+
+    async def sdk_must_not_run(**_kwargs):
+        raise AssertionError("the real staged file Skill must not be left to SDK discretion")
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
+
+    payload = task_payload()
+    payload["prompt"] = build_skill_prompt(
+        skill_id="baoyu-translate",
+        user_message="translate this document to English",
+        file_names=["source.docx"],
+    )
+    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+
+    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+    output_docx = workspace / "output" / "source_translated.docx"
+    assert output_docx.is_file()
+    with zipfile.ZipFile(output_docx) as archive:
+        assert "word/document.xml" in archive.namelist()
+
+
+def test_executor_fails_closed_when_selected_file_skill_runner_fails(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    workspace = Path(tmp_path)
+    write_minimal_docx(workspace / "source.docx")
+    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("raise SystemExit(7)\n", encoding="utf-8")
+
+    async def sdk_must_not_run(**_kwargs):
+        raise AssertionError("failed controlled Skill must not fall back to SDK discretion")
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
+
+    payload = task_payload()
+    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+
+    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "controlled_skill_execution_failed"
+    assert body["sdk_used"] is False
+    assert body["used_skills"] == []
+    assert not (workspace / "output" / "translated.docx").exists()
+
+
+def test_executor_fails_closed_when_selected_file_skill_runner_is_not_staged(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    workspace = Path(tmp_path)
+    write_minimal_docx(workspace / "source.docx")
+
+    async def sdk_must_not_run(**_kwargs):
+        raise AssertionError("missing staged Skill runner must not fall back to SDK discretion")
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", sdk_must_not_run)
+
+    payload = task_payload()
+    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+
+    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["error_code"] == "controlled_skill_runner_missing"
+    assert body["sdk_used"] is False
+    assert body["used_skills"] == []
+
+
+@pytest.mark.asyncio
+async def test_selected_file_skill_cancellation_terminates_the_controlled_process(tmp_path):
+    workspace = Path(tmp_path)
+    write_minimal_docx(workspace / "source.docx")
+    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        """import sys
+import time
+from pathlib import Path
+
+Path(\"runner-started\").write_text(\"started\", encoding=\"utf-8\")
+time.sleep(10)
+output = Path(sys.argv[2])
+output.mkdir(parents=True, exist_ok=True)
+(output / \"translated.docx\").write_bytes(b\"late artifact\")
+""",
+        encoding="utf-8",
+    )
+    payload = task_payload()
+    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    payload["config"]["tool_policy_subjects"] = selected_baoyu_skill_policy()
+    request = ExecutorTaskRequest.model_validate(payload)
+
+    async def emit_event(_event):
+        return None
+
+    task = asyncio.create_task(_default_executor_runner(request, workspace, emit_event))
+    for _ in range(50):
+        if (workspace / "runner-started").is_file():
+            break
+        await asyncio.sleep(0.01)
+    assert (workspace / "runner-started").is_file()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.1)
+    assert not (workspace / "output" / "translated.docx").exists()
+
+
+def test_executor_does_not_run_selected_file_skill_without_matching_skill_authorization(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    workspace = Path(tmp_path)
+    write_minimal_docx(workspace / "source.docx")
+    script = workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("raise AssertionError('unauthorized script executed')\n", encoding="utf-8")
+    sdk_calls = []
+
+    async def fake_sdk(**kwargs):
+        sdk_calls.append(kwargs)
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "SDK handled denied Skill without executing it",
+                "session_id": "sdk-session-a",
+                "usage": {},
+                "error": None,
+                "used_skills": [],
+                "used_skills_source": "",
+            },
+        )()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_sdk)
+
+    payload = task_payload()
+    payload["config"]["skill_ids"] = ["baoyu-translate"]
+    denied_policy = selected_baoyu_skill_policy()
+    denied_policy[0]["allowed_skill_names"] = ["qa-file-reviewer"]
+    payload["config"]["tool_policy_subjects"] = denied_policy
+    client = create_test_client(tmp_path, callback_sender=lambda url, payload, token: {"accepted": True})
+
+    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "accepted"
+    assert response.json()["sdk_used"] is True
+    assert len(sdk_calls) == 1
+    assert not (workspace / "output" / "translated.docx").exists()
 
 
 def test_executor_execute_fails_when_claude_sdk_disabled(tmp_path, monkeypatch):

@@ -7,6 +7,7 @@ import inspect
 import json
 import math
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -20,6 +21,7 @@ from app.db import transaction
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
+    _translation_target_language,
     run_claude_agent_sdk,
 )
 from app.runtime.kernel_contracts import AgentEvent
@@ -43,6 +45,9 @@ ExecutorRunner = Callable[
     [ExecutorTaskRequest, Path, ExecutorEventEmitter],
     Awaitable[dict[str, Any]] | dict[str, Any],
 ]
+
+_CONTROLLED_FILE_SKILLS = {"baoyu-translate", "qa-file-reviewer"}
+_CONTROLLED_RUNNER_TIMEOUT_SECONDS = 900.0
 
 
 async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
@@ -187,6 +192,200 @@ def _task_tool_policy_subjects(request: ExecutorTaskRequest) -> list[dict[str, A
     return [dict(item) for item in value if isinstance(item, dict)]
 
 
+def _selected_authorized_file_skill_id(request: ExecutorTaskRequest) -> str | None:
+    """Return the selected file Skill only when its brokered policy authorizes it."""
+
+    selected_skill_ids = _task_skill_ids(request)
+    selected_skill_id = selected_skill_ids[0] if selected_skill_ids else ""
+    if selected_skill_id not in _CONTROLLED_FILE_SKILLS:
+        return None
+    for subject in _task_tool_policy_subjects(request):
+        if str(subject.get("identity") or "") != "Skill":
+            continue
+        if not all(
+            subject.get(field) is True
+            for field in (
+                "registered",
+                "declared",
+                "active",
+                "distributed",
+                "identity_authorized",
+                "object_authorized",
+                "parameters_authorized",
+            )
+        ):
+            continue
+        allowed_skill_names = _safe_id_list(subject.get("allowed_skill_names"))
+        if selected_skill_id in allowed_skill_names:
+            return selected_skill_id
+    return None
+
+
+def _resolved_workspace_file(workspace_root: Path, candidate: Path) -> Path | None:
+    try:
+        workspace = workspace_root.resolve(strict=True)
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(workspace)
+    except (OSError, ValueError):
+        return None
+    if not resolved.is_file() or candidate.is_symlink():
+        return None
+    return resolved
+
+
+def _user_message_from_skill_prompt(prompt: str) -> str:
+    _, marker, remainder = str(prompt or "").partition("User request: ")
+    if not marker:
+        return ""
+    return remainder.partition("\nWorkspace files:\n")[0]
+
+
+def _controlled_file_skill_command(
+    skill_id: str,
+    workspace_root: Path,
+    *,
+    user_message: str,
+) -> tuple[list[str] | None, str | None]:
+    workspace = workspace_root.resolve(strict=False)
+    input_path = next(
+        (
+            resolved
+            for candidate in sorted(workspace.iterdir())
+            if candidate.suffix.lower() == ".docx"
+            if (resolved := _resolved_workspace_file(workspace, candidate)) is not None
+        ),
+        None,
+    )
+    if input_path is None:
+        return None, "controlled_skill_input_docx_missing"
+    output_dir = workspace / "output"
+    if output_dir.exists() and output_dir.is_symlink():
+        return None, "controlled_skill_output_path_invalid"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.resolve(strict=True).relative_to(workspace.resolve(strict=True))
+    except (OSError, ValueError):
+        return None, "controlled_skill_output_path_invalid"
+    script_name = "run_translation.py" if skill_id == "baoyu-translate" else "run_qa_review.py"
+    script = _resolved_workspace_file(
+        workspace,
+        workspace / ".claude" / "skills" / skill_id / "scripts" / script_name,
+    )
+    if script is None:
+        return None, "controlled_skill_runner_missing"
+    command = [sys.executable, str(script), str(input_path), str(output_dir)]
+    if skill_id == "baoyu-translate":
+        command.extend(["--target-language", _translation_target_language(user_message)])
+    else:
+        command.append("--with-comments")
+    command.extend(["--original-filename", input_path.name])
+    return command, None
+
+
+async def _stop_controlled_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5.0)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+
+
+async def _run_selected_authorized_file_skill(
+    request: ExecutorTaskRequest,
+    workspace_root: Path,
+    emit_event: ExecutorEventEmitter,
+) -> dict[str, Any] | None:
+    skill_id = _selected_authorized_file_skill_id(request)
+    if skill_id is None:
+        return None
+    command, command_error = _controlled_file_skill_command(
+        skill_id,
+        workspace_root,
+        user_message=_user_message_from_skill_prompt(request.prompt),
+    )
+    if command is None:
+        return {
+            "status": "failed",
+            "message": "Selected file Skill cannot be prepared in the sandbox workspace",
+            "error_code": command_error or "controlled_skill_runner_unavailable",
+            "error_message": "Selected file Skill cannot be prepared in the sandbox workspace",
+            "sdk_used": False,
+            "executor_mode": "platform_controlled_runner",
+            "used_skills": [],
+            "used_skills_source": "none",
+        }
+    await emit_event(
+        AgentEvent(
+            type="tool_call_started",
+            message=f"Controlled file Skill started: {skill_id}",
+            payload={
+                "tool_name": "Skill",
+                "skill_name": skill_id,
+                "source": "platform_controlled_runner",
+            },
+            admin_only=True,
+        )
+    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=str(workspace_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError:
+        return {
+            "status": "failed",
+            "message": "Selected file Skill failed to start",
+            "error_code": "controlled_skill_runner_start_failed",
+            "error_message": "Selected file Skill failed to start",
+            "sdk_used": False,
+            "executor_mode": "platform_controlled_runner",
+            "used_skills": [],
+            "used_skills_source": "none",
+        }
+    try:
+        stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=_CONTROLLED_RUNNER_TIMEOUT_SECONDS)
+    except asyncio.CancelledError:
+        await _stop_controlled_process(process)
+        raise
+    except TimeoutError:
+        await _stop_controlled_process(process)
+        return {
+            "status": "failed",
+            "message": "Selected file Skill exceeded its execution deadline",
+            "error_code": "controlled_skill_execution_timeout",
+            "error_message": "Selected file Skill exceeded its execution deadline",
+            "sdk_used": False,
+            "executor_mode": "platform_controlled_runner",
+            "used_skills": [],
+            "used_skills_source": "none",
+        }
+    if process.returncode != 0:
+        return {
+            "status": "failed",
+            "message": "Selected file Skill failed",
+            "error_code": "controlled_skill_execution_failed",
+            "error_message": "Selected file Skill failed",
+            "sdk_used": False,
+            "executor_mode": "platform_controlled_runner",
+            "used_skills": [],
+            "used_skills_source": "none",
+        }
+    return {
+        "status": "completed",
+        "message": stdout.decode("utf-8", errors="replace").strip()
+        or "Controlled file Skill completed.",
+        "sdk_used": False,
+        "executor_mode": "platform_controlled_runner",
+        "used_skills": [skill_id],
+        "used_skills_source": "platform_controlled_runner",
+    }
+
+
 def _configured_executor_auth_token(explicit_value: str | None) -> str:
     return str(explicit_value or os.getenv("AI_PLATFORM_EXECUTOR_AUTH_TOKEN") or "").strip()
 
@@ -271,6 +470,13 @@ async def _default_executor_runner(
     *,
     callback_sender: CallbackSender = _default_callback_sender,
 ) -> dict[str, Any]:
+    controlled_result = await _run_selected_authorized_file_skill(
+        request,
+        workspace_root,
+        emit_event,
+    )
+    if controlled_result is not None:
+        return controlled_result
     if getattr(get_settings(), "claude_agent_sdk_enabled", False) is not True:
         return {
             "status": "failed",
