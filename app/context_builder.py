@@ -575,11 +575,13 @@ async def record_initial_context_snapshot(
                 + included_message_ids
             )
         )[-8:]
+        included_message_id_set = set(included_message_ids)
         current_message_ids = {message_id for message_id in message_ids or [] if message_id}
         prior_messages = [
             dict(row)
             for row in session_messages
             if isinstance(row, dict)
+            and str(row.get("id") or "") in included_message_id_set
             and str(row.get("id") or "") not in current_message_ids
             and str(row.get("run_id") or "") != run_id
         ]
