@@ -16,7 +16,6 @@ interface SessionItemProps {
   isActive: boolean;
   onSelect: () => void;
   onDelete: () => void;
-  onShare?: () => void;
   onSessionUpdate: (session: BackendSession) => void;
 }
 
@@ -25,7 +24,6 @@ export function SessionItem({
   isActive,
   onSelect,
   onDelete,
-  onShare,
   onSessionUpdate,
 }: SessionItemProps) {
   const { t } = useTranslation();
@@ -210,7 +208,6 @@ export function SessionItem({
         onClose={() => setIsMenuOpen(false)}
         onRename={handleStartEdit}
         onDelete={onDelete}
-        onShare={onShare}
         anchorEl={menuAnchor}
       />
     </>

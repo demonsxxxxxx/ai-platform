@@ -57,7 +57,7 @@ test("model projections flow from app content into chat input", () => {
   assert.match(chatView, /onSelectModel,/);
 });
 
-test("chat input opens model selector and keeps context fail-closed", () => {
+test("chat input opens the model selector without exposing a composer context selector", () => {
   const input = read("src/components/chat/ChatInput.tsx");
   const selectors = read("src/components/chat/ChatInputSelectors.tsx");
 
@@ -65,35 +65,21 @@ test("chat input opens model selector and keeps context fail-closed", () => {
   assert.match(input, /currentModelId/);
   assert.match(input, /onSelectModel/);
   assert.match(input, /models:\s*!!availableModels\?\.length && !!onSelectModel/);
-  assert.match(input, /context:\s*true/);
   assert.match(input, /dispatchComposerSelection\(\{ type: "clear-kind", kind: "model" \}\)/);
   assert.doesNotMatch(input, /id:\s*`model:\$\{currentModelId\}`/);
-  assert.match(input, /source:\s*"context-selector"/);
   assert.match(input, /handleSelectModelChip/);
 
   assert.match(selectors, /ComposerModelPanel/);
-  assert.match(selectors, /ComposerUnavailablePanel/);
   assert.match(selectors, /activePanel === "model"/);
-  assert.match(selectors, /activePanel === "context"/);
-  assert.match(selectors, /surface="context-selector"/);
+  assert.doesNotMatch(selectors, /ComposerUnavailablePanel|context-selector/);
 });
 
-test("context command converts to an unavailable chip without leaving command text behind", () => {
+test("composer source contains no context command or unavailable context chip flow", () => {
   const input = read("src/components/chat/ChatInput.tsx");
+  const commands = read("src/components/chat/chatInputCommands.ts");
 
-  assert.match(input, /markContextUnavailableCommand/);
-  assert.match(
-    input,
-    /if \(item\.panel === "context"\) \{\s*markContextUnavailableCommand\(\);\s*return;/,
-  );
-  assert.match(
-    input,
-    /if \(draft\.panel === "context"\) \{\s*markContextUnavailableCommand\(\);\s*return true;/,
-  );
-  assert.match(
-    input,
-    /if \(panel === "context"\) \{\s*markContextUnavailableCommand\(\);\s*return;/,
-  );
+  assert.doesNotMatch(input, /markContextUnavailableCommand|context-selector/);
+  assert.doesNotMatch(commands, /labelKey:\s*"composerCommand\.context/);
   assert.doesNotMatch(input, /handleComposerCommandShortcut/);
   assert.doesNotMatch(input, /<ComposerCommandHintBar/);
 });
@@ -109,16 +95,14 @@ test("removing the model chip is local-only and does not silently switch models"
   );
 });
 
-test("composer model and context labels are localized", () => {
+test("composer model labels remain localized without requiring context selector labels", () => {
   const en = read("src/i18n/locales/en.json");
   const zh = read("src/i18n/locales/zh.json");
 
   assert.match(en, /"modelSelector"/);
   assert.match(en, /"unavailable"/);
-  assert.match(en, /"contextSelector"/);
   assert.match(zh, /"modelSelector"/);
   assert.match(zh, /"unavailable"/);
-  assert.match(zh, /"contextSelector"/);
 });
 
 test("composer model selector uses restrained workbench overlay styling", () => {

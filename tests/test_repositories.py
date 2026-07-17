@@ -3828,6 +3828,65 @@ async def test_create_context_snapshot_persists_scope_and_context_contract():
     assert "ai-platform.context-snapshot.v1" in params
     assert any("\"msg-a\"" in str(item) for item in params)
     assert any("\"mem-a\"" in str(item) for item in params)
+    assert "eligible_members" in sql
+    assert "jsonb_array_elements_text" in sql
+    assert "eligible_message_count = jsonb_array_length(message_ids)" in sql
+    assert "eligible_file_count = jsonb_array_length(file_ids)" in sql
+    assert "eligible_artifact_count = jsonb_array_length(artifact_ids)" in sql
+    assert "eligible_memory_record_count = jsonb_array_length(memory_record_ids)" in sql
+    assert "runs.workspace_id = %s" not in sql
+    assert "runs.session_id = %s" not in sql
+    assert "workspace-a" not in params
+    assert "session-a" not in params
+    assert "message_run.id = scoped_run.run_id" not in sql
+    assert "file_run.id = scoped_run.run_id" not in sql
+    assert "artifact_run.id = scoped_run.run_id" not in sql
+    assert "join runs message_run" in sql
+    assert "join runs file_run" in sql
+    assert "messages.run_id is null" not in sql
+    assert "files.run_id is null" not in sql
+    assert "artifacts.expires_at > statement_timestamp()" in sql
+    assert "memory_records.expires_at > statement_timestamp()" in sql
+
+
+@pytest.mark.asyncio
+async def test_create_context_snapshot_returns_scope_derived_by_the_atomic_statement():
+    conn = SingleRowConnection(
+        {
+            "id": "ctx-from-statement",
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-canonical",
+            "user_id": "user-a",
+            "session_id": "session-canonical",
+            "run_id": "run-a",
+            "trace_id": "trace-canonical",
+        }
+    )
+
+    snapshot = await create_context_snapshot(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-untrusted",
+        user_id="user-a",
+        session_id="session-untrusted",
+        run_id="run-a",
+        trace_id="trace-untrusted",
+        context_kind="executor",
+        included_message_ids=[],
+        included_file_ids=[],
+        included_artifact_ids=[],
+        included_memory_record_ids=[],
+        redaction_summary_json={},
+        payload_json={},
+    )
+
+    assert snapshot["id"].startswith("ctx_")
+    assert snapshot["workspace_id"] == "workspace-canonical"
+    assert snapshot["session_id"] == "session-canonical"
+    assert snapshot["trace_id"] == "trace-canonical"
+    assert "workspace-untrusted" not in conn.params
+    assert "session-untrusted" not in conn.params
+    assert "trace-untrusted" not in conn.params
 
 
 @pytest.mark.asyncio
@@ -3879,7 +3938,7 @@ async def test_create_context_snapshot_sanitizes_payload_and_summary_before_inse
 
 
 @pytest.mark.asyncio
-async def test_create_context_snapshot_rejects_run_scope_mismatch_before_insert_returns():
+async def test_create_context_snapshot_rejects_unverified_members_without_insert_returning():
     class EmptyCursor:
         async def fetchone(self):
             return None
@@ -3894,7 +3953,7 @@ async def test_create_context_snapshot_rejects_run_scope_mismatch_before_insert_
 
     conn = SnapshotConnection()
 
-    with pytest.raises(RepositoryNotFoundError, match="run_not_found"):
+    with pytest.raises(RepositoryConflictError, match="context_snapshot_material_invalid"):
         await create_context_snapshot(
             conn,
             tenant_id="tenant-a",
@@ -3917,13 +3976,53 @@ async def test_create_context_snapshot_rejects_run_scope_mismatch_before_insert_
     assert "from runs" in sql
     assert "join sessions" in sql
     assert "runs.tenant_id = %s" in sql
-    assert "runs.workspace_id = %s" in sql
     assert "runs.user_id = %s" in sql
-    assert "runs.session_id = %s" in sql
     assert "runs.id = %s" in sql
     assert "sessions.id = runs.session_id" in sql
+    assert "messages.session_id = scoped_run.session_id" in sql
+    assert "file_run.session_id = scoped_run.session_id" in sql
+    assert "artifact_run.session_id = scoped_run.session_id" in sql
+    assert "memory_records.session_id = scoped_run.session_id" in sql
+    assert "memory_records.status = 'active'" in sql
+    assert "memory_records.deleted_at is null" in sql
+    assert "artifacts.expires_at is null or artifacts.expires_at > statement_timestamp()" in sql
     assert "returning id" in sql
     assert "run-cross-scope" in params
+
+
+@pytest.mark.asyncio
+async def test_create_context_snapshot_rejects_duplicate_or_oversized_members_before_sql():
+    class NoQueryConnection:
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("invalid context snapshot members must not execute SQL")
+
+    common = {
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "run_id": "run-a",
+        "trace_id": "trace-a",
+        "context_kind": "executor",
+        "included_file_ids": [],
+        "included_artifact_ids": [],
+        "included_memory_record_ids": [],
+        "redaction_summary_json": {},
+        "payload_json": {},
+    }
+
+    with pytest.raises(RepositoryConflictError, match="context_snapshot_material_invalid"):
+        await create_context_snapshot(
+            NoQueryConnection(),
+            included_message_ids=["msg-a", "msg-a"],
+            **common,
+        )
+    with pytest.raises(RepositoryConflictError, match="context_snapshot_material_invalid"):
+        await create_context_snapshot(
+            NoQueryConnection(),
+            included_message_ids=[f"msg-{index}" for index in range(129)],
+            **common,
+        )
 
 
 @pytest.mark.asyncio

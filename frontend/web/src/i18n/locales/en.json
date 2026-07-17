@@ -2837,9 +2837,9 @@
     "unavailableShort": "Unavailable",
     "workspaceContext": "Workspace context",
     "contextPanel": {
-      "run": "Run context",
+      "run": "Current session inputs",
       "selectedSkills": "Selected Skills",
-      "selectedTools": "MCP tools",
+      "selectedTools": "Selected MCP tools",
       "files": "Files",
       "permissions": "Permissions",
       "noSkills": "No Skill chip selected.",
