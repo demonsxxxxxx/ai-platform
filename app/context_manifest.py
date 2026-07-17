@@ -9,6 +9,8 @@ from app.control_plane_contracts import sanitize_public_payload
 CONTEXT_MANIFEST_SCHEMA_VERSION = "ai-platform.context-manifest.v1"
 EXECUTOR_CONTEXT_PACK_SCHEMA_VERSION = "ai-platform.executor-context-pack.v1"
 DEFAULT_CONTEXT_MANIFEST_VERSION = "v1"
+DEFAULT_MAX_INLINE_HISTORY_BYTES = 8192
+DEFAULT_MAX_CURRENT_MESSAGE_BYTES = 16384
 CONTEXT_RETRIEVAL_TOOLS = (
     "read_session_messages",
     "read_context_file",
@@ -85,6 +87,26 @@ def _safe_text(value: object, *, limit: int | None = None) -> str:
 
 def _safe_id(value: object) -> str:
     return str(value or "").strip()
+
+
+def utf8_token_estimate(value: object) -> int:
+    """Conservatively estimate prompt tokens from UTF-8 bytes.
+
+    A byte-per-token bound is deliberately pessimistic, but it is stable for
+    whitespace-free CJK text and emoji where word-counting is unsafe.
+    """
+
+    return len(str(value or "").encode("utf-8"))
+
+
+def truncate_utf8_text(value: object, *, max_bytes: int) -> str:
+    """Return a UTF-8-safe prefix constrained by an independent byte cap."""
+
+    text = str(value or "")
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max(0, int(max_bytes)):
+        return text
+    return encoded[: max(0, int(max_bytes))].decode("utf-8", errors="ignore")
 
 
 def _sanitize_manifest_value(value: Any) -> Any:
@@ -164,7 +186,7 @@ def _display_name_from_row(row: dict[str, Any]) -> str:
 
 
 def _message_token_count(value: str) -> int:
-    return len(value.split())
+    return utf8_token_estimate(value)
 
 
 def _can_inline_file_preview(content_type: str) -> bool:
@@ -186,6 +208,8 @@ class ContextPlanner:
         max_inline_file_bytes: int = 8192,
         recent_message_limit: int = 8,
         token_budget: int = 1200,
+        max_inline_message_bytes: int | None = None,
+        max_inline_history_bytes: int = DEFAULT_MAX_INLINE_HISTORY_BYTES,
         context_manifest_version: str = DEFAULT_CONTEXT_MANIFEST_VERSION,
     ) -> None:
         self.max_inline_message_chars = max(0, int(max_inline_message_chars))
@@ -193,6 +217,13 @@ class ContextPlanner:
         self.max_inline_file_bytes = max(0, int(max_inline_file_bytes))
         self.recent_message_limit = max(0, int(recent_message_limit))
         self.token_budget = max(1, int(token_budget))
+        self.max_inline_message_bytes = max(
+            0,
+            int(max_inline_message_bytes)
+            if max_inline_message_bytes is not None
+            else self.max_inline_message_chars * 4,
+        )
+        self.max_inline_history_bytes = max(0, int(max_inline_history_bytes))
         self.context_manifest_version = context_manifest_version or DEFAULT_CONTEXT_MANIFEST_VERSION
 
     def plan(
@@ -214,7 +245,7 @@ class ContextPlanner:
         source_run_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Return the bounded manifest that is safe to include as a prompt index."""
-        budget = _InlineBudget(self.token_budget)
+        budget = _InlineBudget(self.token_budget, self.max_inline_history_bytes)
         message_refs = self._message_refs(list(recent_messages or []), budget=budget)
         file_refs = self._file_refs(list(files or []), budget=budget)
         artifact_refs = self._artifact_refs(list(artifacts or []))
@@ -240,7 +271,13 @@ class ContextPlanner:
                 "agent_id": _safe_id(agent_id),
                 "skill_id": _safe_id(skill_id),
             },
-            "current_message": _safe_text(current_message, limit=self.max_inline_message_chars * 2),
+            "current_message": truncate_utf8_text(
+                _safe_text(current_message, limit=self.max_inline_message_chars * 2),
+                max_bytes=min(
+                    DEFAULT_MAX_CURRENT_MESSAGE_BYTES,
+                    max(self.max_inline_message_bytes * 2, self.max_inline_message_bytes),
+                ),
+            ),
             "recent_messages": message_refs,
             "context_chips": chip_refs,
             "files": file_refs,
@@ -251,6 +288,8 @@ class ContextPlanner:
                 "max_prompt_tokens": self.token_budget,
                 "recent_message_limit": self.recent_message_limit,
                 "max_inline_message_chars": self.max_inline_message_chars,
+                "max_inline_message_bytes": self.max_inline_message_bytes,
+                "max_inline_history_bytes": self.max_inline_history_bytes,
                 "max_inline_file_bytes": self.max_inline_file_bytes,
                 "inline_tokens_used": budget.used_tokens,
                 "inline_budget_exhausted": budget.exhausted,
@@ -318,9 +357,16 @@ class ContextPlanner:
             candidate_tokens = _message_token_count(content)
             inline_content = None
             omitted_for_budget = False
-            if content and len(content) <= self.max_inline_message_chars:
-                if budget.try_consume(candidate_tokens):
-                    inline_content = content
+            if (
+                content
+                and len(content) <= self.max_inline_message_chars
+                and utf8_token_estimate(content) <= self.max_inline_message_bytes
+            ):
+                if budget.try_consume(content):
+                    inline_content = truncate_utf8_text(
+                        content,
+                        max_bytes=self.max_inline_message_bytes,
+                    )
                 else:
                     omitted_for_budget = True
             result.append(
@@ -352,13 +398,16 @@ class ContextPlanner:
                 continue
             size_bytes = int(row.get("size_bytes") or 0)
             content_type = _safe_text(row.get("content_type"), limit=128)
-            preview = _safe_text(row.get("text_preview"), limit=self.max_inline_file_preview_chars)
+            preview = truncate_utf8_text(
+                _safe_text(row.get("text_preview"), limit=self.max_inline_file_preview_chars),
+                max_bytes=min(self.max_inline_file_bytes, self.max_inline_file_preview_chars * 4),
+            )
             inline_preview = (
                 preview
                 if preview
                 and size_bytes <= self.max_inline_file_bytes
                 and _can_inline_file_preview(content_type)
-                and budget.try_consume(_message_token_count(preview))
+                and budget.try_consume(preview)
                 else None
             )
             result.append(
@@ -416,25 +465,35 @@ class ContextPlanner:
             return "Content omitted from manifest; use scoped retrieval."
         if _message_token_count(content) > self.token_budget:
             return "Content omitted from manifest; use scoped retrieval."
-        return content[: self.max_inline_message_chars].rstrip()
+        return truncate_utf8_text(
+            content[: self.max_inline_message_chars].rstrip(),
+            max_bytes=self.max_inline_message_bytes,
+        )
 
 
 class _InlineBudget:
-    def __init__(self, max_tokens: int) -> None:
+    def __init__(self, max_tokens: int, max_bytes: int) -> None:
         self.max_tokens = max(1, int(max_tokens))
+        self.max_bytes = max(0, int(max_bytes))
         self.used_tokens = 0
+        self.used_bytes = 0
         self.exhausted = False
 
-    def try_consume(self, tokens: int) -> bool:
-        normalized = max(0, int(tokens))
+    def try_consume(self, value: str) -> bool:
+        normalized = _message_token_count(value)
+        byte_count = utf8_token_estimate(value)
         if normalized == 0:
             return True
         if self.exhausted:
             return False
-        if self.used_tokens + normalized > self.max_tokens:
+        if (
+            self.used_tokens + normalized > self.max_tokens
+            or self.used_bytes + byte_count > self.max_bytes
+        ):
             self.exhausted = True
             return False
         self.used_tokens += normalized
-        if self.used_tokens >= self.max_tokens:
+        self.used_bytes += byte_count
+        if self.used_tokens >= self.max_tokens or self.used_bytes >= self.max_bytes:
             self.exhausted = True
         return True

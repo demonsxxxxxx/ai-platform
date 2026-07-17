@@ -20,6 +20,10 @@ def test_b1_b5_context_runtime_readiness_verifies_bounded_context_runtime_contra
     assert set(readiness["checks"]) == set(REQUIRED_CHECKS)
     assert all(item["passed"] is True for item in readiness["checks"].values())
     assert readiness["checks"]["sdk_runner_wires_scoped_retrieval_tools"]["evidence"]["private_material_seeded"] is True
+    session_evidence = readiness["checks"]["session_context_authority_design_recorded"]["evidence"]
+    assert session_evidence["run_scoped_id_stable"] is True
+    assert session_evidence["different_runs_isolated"] is True
+    assert session_evidence["in_process_transcript_state_absent"] is True
     assert readiness["non_expansion_invariants"] == {
         "does_not_touch_211": True,
         "does_not_close_b1_or_b5_gate": True,

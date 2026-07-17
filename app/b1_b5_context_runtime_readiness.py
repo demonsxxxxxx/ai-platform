@@ -12,7 +12,7 @@ from app.control_plane_contracts import sanitize_public_payload
 from app.context_manifest import ContextPlanner
 from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied, InMemoryContextRetrievalRepository
 from app.executors.claude_agent_sdk_runner import ScopedContextRetrievalIdentity, build_skill_prompt, run_claude_agent_sdk
-from app.session_continuity import InMemorySessionContinuityStore, SessionContinuity
+from app.session_continuity import sdk_session_id_for_run
 
 
 SCHEMA_VERSION = "ai-platform.b1-b5-context-runtime-readiness.v1"
@@ -25,7 +25,7 @@ REQUIRED_CHECKS = (
     "sdk_runner_wires_scoped_retrieval_tools",
     "stage_context_file_byte_cap_enforced",
     "public_projection_redacts_private_context_material",
-    "session_continuity_persistence_design_recorded",
+    "session_context_authority_design_recorded",
 )
 
 PRIVATE_MARKERS = (
@@ -130,9 +130,10 @@ def build_b1_b5_context_runtime_readiness(
                 "private_input_rejected": not private_probe_present,
             },
         ),
-        "session_continuity_persistence_design_recorded": _check(
-            session_probe["resume_key_stable"] is True
-            and session_probe["fork_isolated"] is True
+        "session_context_authority_design_recorded": _check(
+            session_probe["run_scoped_id_stable"] is True
+            and session_probe["different_runs_isolated"] is True
+            and session_probe["in_process_transcript_state_absent"] is True
             and design_probe["recorded"] is True,
             {**session_evidence, **design_evidence},
         ),
@@ -359,6 +360,7 @@ async def _sdk_retrieval_probe() -> dict[str, Any]:
                     "read_context_file",
                     "read_run_artifact",
                     "stage_context_file_to_workspace",
+                    "stage_run_artifact_to_workspace",
                     "search_memory",
                 ],
                 "allowed_tools_include_retrieval": "stage_context_file_to_workspace" in captured.get("allowed_tools", []),
@@ -431,57 +433,31 @@ async def _stage_byte_cap_probe() -> dict[str, Any]:
 
 
 async def _session_continuity_probe() -> dict[str, Any]:
-    continuity = SessionContinuity(InMemorySessionContinuityStore())
-    base = await continuity.resolve(
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        session_id="session-a",
-        agent_id="general-agent",
-        skill_id="general-chat",
-        model_key="deepseek-v4-flash",
-    )
-    again = await continuity.resolve(
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        session_id="session-a",
-        agent_id="general-agent",
-        skill_id="general-chat",
-        model_key="deepseek-v4-flash",
-    )
-    fork = await continuity.resolve(
-        tenant_id="tenant-a",
-        workspace_id="workspace-a",
-        user_id="user-a",
-        session_id="session-a",
-        agent_id="general-agent",
-        skill_id="general-chat",
-        model_key="deepseek-v4-flash",
-        fork_reason="parallel_exploration",
-    )
+    base = sdk_session_id_for_run("run-context-a")
+    again = sdk_session_id_for_run("run-context-a")
+    other_run = sdk_session_id_for_run("run-context-b")
     return {
-        "resume_key_stable": base.sdk_session_id == again.sdk_session_id,
-        "fork_isolated": fork.sdk_session_id != base.sdk_session_id and fork.lock_key != base.lock_key,
-        "in_process_store_only": True,
+        "run_scoped_id_stable": base == again,
+        "different_runs_isolated": other_run != base,
+        "in_process_transcript_state_absent": True,
     }
 
 
 def _session_continuity_design_probe(repo_root: Path) -> dict[str, Any]:
-    path = repo_root / "docs" / "operations" / "b1-b5-context-runtime-follow-up.md"
+    path = repo_root / "docs" / "superpowers" / "specs" / "2026-07-18-issue-487-context-v1.md"
     if not path.exists():
-        return {"recorded": False, "path": "docs/operations/b1-b5-context-runtime-follow-up.md"}
+        return {"recorded": False, "path": "docs/superpowers/specs/2026-07-18-issue-487-context-v1.md"}
     text = path.read_text(encoding="utf-8").lower()
     required_terms = (
-        "sdk session resume key",
-        "fork isolation",
-        "multi-worker lock",
-        "restart recovery",
-        "db/redis",
+        "database-backed",
+        "context pack",
+        "distinct sdk session id",
+        "in-process transcript",
+        "worker no longer maintains",
     )
     return {
         "recorded": all(term in text for term in required_terms),
-        "path": "docs/operations/b1-b5-context-runtime-follow-up.md",
+        "path": "docs/superpowers/specs/2026-07-18-issue-487-context-v1.md",
         "required_terms_present": {
             term: term in text for term in required_terms
         },

@@ -76,7 +76,7 @@ async def test_record_initial_context_snapshot_persists_context_manifest_for_exe
         "skill_id": "general-chat",
     }
     assert manifest["current_message"] == "continue from prior context"
-    assert manifest["recent_messages"] == [{"message_id": "msg-a", "requires_retrieval": True}]
+    assert manifest["recent_messages"] == []
     assert manifest["files"] == [{"file_id": "file-a", "requires_retrieval": True}]
     assert manifest["budget"]["max_prompt_tokens"] > 0
     assert context_ref["context_manifest"]["schema_version"] == "ai-platform.context-manifest.v1"
@@ -843,14 +843,60 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
     assert [item["message_id"] for item in manifest["recent_messages"]] == [
         "msg-prior-user",
         "msg-prior-assistant",
-        "msg-current",
     ]
+    assert [item["inline_content"] for item in manifest["recent_messages"]] == [
+        "translate it",
+        "done",
+    ]
+    assert all(item["run_id"] == "run-prior" for item in manifest["recent_messages"])
     assert manifest["artifacts"] == [{"artifact_id": "art-prior", "requires_retrieval": True}]
     assert manifest["files"] == [
         {"file_id": "file-prior", "requires_retrieval": True},
         {"file_id": "file-current", "requires_retrieval": True},
     ]
     assert manifest["source_runs"] == [{"run_id": "run-prior"}]
+
+
+@pytest.mark.asyncio
+async def test_session_history_manifest_membership_is_clamped_after_eight_message_snapshot_limit(monkeypatch):
+    captured = {}
+
+    async def fake_list_messages(_conn, **_kwargs):
+        return [
+            {"id": f"msg-prior-{index}", "run_id": "run-prior", "role": "user", "content": f"prior-{index}"}
+            for index in range(1, 9)
+        ] + [{"id": "msg-current", "run_id": "run-current", "role": "user", "content": "current"}]
+
+    async def fake_empty(*_args, **_kwargs):
+        return []
+
+    async def fake_policy(*_args, **_kwargs):
+        return {"source": "default", "memory_enabled": True, "long_term_memory_enabled": False, "retention_days": 90}
+
+    async def fake_create(_conn, **kwargs):
+        captured.update(kwargs)
+        return {"id": "ctx-current"}
+
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", fake_list_messages)
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", fake_empty)
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_artifacts", fake_empty)
+    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", fake_policy)
+    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create)
+    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_empty)
+    monkeypatch.setattr("app.context_builder.repositories.append_event", fake_empty)
+
+    await record_initial_context_snapshot(
+        object(), tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a",
+        run_id="run-current", trace_id="trace-current", agent_id="general-agent", skill_id="general-chat",
+        input_payload={"message": "current"}, message_ids=["msg-current"], file_ids=[],
+        source="chat_stream", include_session_history=True,
+    )
+
+    included = captured["included_message_ids"]
+    manifest_ids = [row["message_id"] for row in captured["payload_json"]["context_manifest"]["recent_messages"]]
+    assert included == [*(f"msg-prior-{index}" for index in range(2, 9)), "msg-current"]
+    assert manifest_ids == [f"msg-prior-{index}" for index in range(2, 9)]
+    assert set(manifest_ids) < set(included)
 
 
 @pytest.mark.asyncio

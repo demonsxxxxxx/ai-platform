@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from app import repositories
+from app.context_manifest import truncate_utf8_text, utf8_token_estimate
 from app.control_plane_contracts import sanitize_public_payload
 from app.path_safety import ensure_creatable_inside
 
@@ -15,7 +16,7 @@ class ContextRetrievalDenied(PermissionError):
 
 
 def _token_count(value: str) -> int:
-    return len(str(value or "").split())
+    return utf8_token_estimate(value)
 
 
 def _bounded_text(value: object, *, max_bytes: int | None = None, max_tokens: int | None = None) -> tuple[str, bool]:
@@ -24,14 +25,12 @@ def _bounded_text(value: object, *, max_bytes: int | None = None, max_tokens: in
     text = sanitized if isinstance(sanitized, str) else ""
     truncated = False
     if max_bytes is not None:
-        encoded = text.encode("utf-8")
-        if len(encoded) > max_bytes:
-            text = encoded[: max(0, int(max_bytes))].decode("utf-8", errors="ignore")
+        if utf8_token_estimate(text) > max_bytes:
+            text = truncate_utf8_text(text, max_bytes=max(0, int(max_bytes)))
             truncated = True
     if max_tokens is not None:
-        words = text.split()
-        if len(words) > max_tokens:
-            text = " ".join(words[: max(0, int(max_tokens))])
+        if _token_count(text) > max_tokens:
+            text = truncate_utf8_text(text, max_bytes=max(0, int(max_tokens)))
             truncated = True
     return text, truncated
 

@@ -154,7 +154,7 @@ def test_executor_context_pack_from_manifest_contains_only_index_and_retrieval_r
 
 
 def test_context_planner_token_budget_limits_inline_context_material():
-    planner = ContextPlanner(max_inline_message_chars=200, recent_message_limit=8, token_budget=6)
+    planner = ContextPlanner(max_inline_message_chars=200, recent_message_limit=8, token_budget=18)
 
     manifest = planner.plan(
         tenant_id="tenant-a",
@@ -184,13 +184,44 @@ def test_context_planner_token_budget_limits_inline_context_material():
     )
 
     assert manifest["recent_messages"][0]["inline_content"] == "one two three four"
-    assert manifest["recent_messages"][0]["approx_tokens"] == 4
+    assert manifest["recent_messages"][0]["approx_tokens"] == 18
     assert manifest["recent_messages"][1]["inline_content"] is None
     assert manifest["recent_messages"][1]["summary"] == "Content omitted from manifest; use scoped retrieval."
-    assert manifest["recent_messages"][1]["approx_tokens"] == 3
+    assert manifest["recent_messages"][1]["approx_tokens"] == 14
     assert manifest["files"][0]["inline_preview"] is None
     assert manifest["files"][0]["requires_retrieval"] is True
-    assert manifest["budget"]["inline_tokens_used"] == 4
+    assert manifest["budget"]["inline_tokens_used"] == 18
+    assert manifest["budget"]["inline_budget_exhausted"] is True
+
+
+def test_context_planner_uses_one_conservative_utf8_budget_for_cjk_and_emoji():
+    planner = ContextPlanner(
+        max_inline_message_chars=20,
+        max_inline_message_bytes=12,
+        max_inline_history_bytes=12,
+        recent_message_limit=8,
+        token_budget=12,
+    )
+
+    manifest = planner.plan(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        current_message="继续",
+        recent_messages=[
+            {"id": "msg-cjk", "role": "user", "content": "你好世界"},
+            {"id": "msg-emoji", "role": "assistant", "content": "🧪"},
+        ],
+    )
+
+    assert manifest["recent_messages"][0]["inline_content"] == "你好世界"
+    assert manifest["recent_messages"][0]["approx_tokens"] == 12
+    assert manifest["recent_messages"][1]["inline_content"] is None
+    assert manifest["budget"]["inline_tokens_used"] == 12
     assert manifest["budget"]["inline_budget_exhausted"] is True
 
 

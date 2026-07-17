@@ -3079,7 +3079,7 @@ async def test_general_chat_propagates_worker_cancel_from_sdk_stream(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_worker_passes_session_continuity_resume_key_to_sdk_runner(monkeypatch, tmp_path):
+async def test_worker_passes_distinct_run_scoped_sdk_session_ids_to_sandbox(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills", name="qa-file-reviewer")
     async def no_files(payload, workspace):
@@ -3103,22 +3103,15 @@ async def test_worker_passes_session_continuity_resume_key_to_sdk_runner(monkeyp
         input={"message": "continue"},
         run_id="run_2",
     )
-    fork_payload = sandbox_writing_payload(
-        agent_id="qa-word-review",
-        skill_id="qa-file-reviewer",
-        file_ids=[],
-        input={"message": "explore", "context_fork_reason": "parallel_exploration"},
-        run_id="run_3",
-    )
-
     await adapter.submit_run(base_payload)
     await adapter.submit_run(second_payload)
-    await adapter.submit_run(fork_payload)
+    restarted_adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    await restarted_adapter.submit_run(base_payload)
 
     captured_session_ids = [request.sdk_session_id for request in runtime_requests]
     assert captured_session_ids[0]
-    assert captured_session_ids[0] == captured_session_ids[1]
-    assert captured_session_ids[2] != captured_session_ids[0]
+    assert captured_session_ids[0] != captured_session_ids[1]
+    assert captured_session_ids[2] == captured_session_ids[0]
 
 
 def test_context_tool_subjects_are_manifest_scoped_and_reserved_input_is_rebuilt():

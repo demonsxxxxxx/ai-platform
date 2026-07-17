@@ -39,7 +39,7 @@ from app.runtime.sandbox.contracts import ContextRetrievalScope, SandboxRuntimeR
 from app.runtime.sandbox.runtime import SandboxRuntime
 from app.runtime.event_bridge import agent_event_to_executor_event
 from app.settings import get_settings
-from app.session_continuity import SessionContinuity
+from app.session_continuity import sdk_session_id_for_run
 from app.skills.pinning import MAX_SKILL_SNAPSHOT_FILE_BYTES, MAX_SKILL_SNAPSHOT_TOTAL_BYTES
 from app.skills.registry import BuiltinSkill, BuiltinSkillRegistry, skill_content_hash
 from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
@@ -204,7 +204,6 @@ class ClaudeAgentWorkerAdapter:
         # Primary execution is Claude Agent SDK with platform-owned staged Skills.
         # runtime211 is not a dependency of ai-platform execution.
         self._delegate = delegate
-        self._session_continuity = SessionContinuity()
 
     async def submit_run(self, payload: RunPayload, event_sink: ExecutorEventSink | None = None) -> ExecutorResult:
         decision = decide_execution_boundary(
@@ -840,18 +839,6 @@ class ClaudeAgentWorkerAdapter:
         settings = get_settings()
         context_pack = self._executor_context_pack(payload)
         context_manifest = _context_manifest_from_pack(context_pack)
-        continuity = await self._session_continuity.resolve(
-            tenant_id=payload.tenant_id,
-            workspace_id=payload.workspace_id,
-            user_id=payload.user_id,
-            session_id=payload.session_id,
-            agent_id=payload.agent_id,
-            skill_id=payload.skill_id,
-            model_key=payload.model_value or payload.model_id or getattr(settings, "claude_agent_model", "") or "default-model",
-            fork_reason=str(payload.input.get("context_fork_reason") or "")
-            if payload.input.get("context_fork_reason")
-            else None,
-        )
         request = SandboxRuntimeRequest(
             tenant_id=payload.tenant_id,
             workspace_id=payload.workspace_id,
@@ -875,7 +862,7 @@ class ClaudeAgentWorkerAdapter:
             callback_token_id=f"cbt_{payload.run_id}",
             context_manifest=dict(context_manifest or {}),
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
-            sdk_session_id=continuity.sdk_session_id,
+            sdk_session_id=sdk_session_id_for_run(payload.run_id),
             governed_permission_wait=False,
         )
         runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
@@ -885,8 +872,7 @@ class ClaudeAgentWorkerAdapter:
             async def runtime_event_sink(agent_event):
                 await event_sink(**agent_event_to_executor_event(agent_event))
 
-        async with self._session_continuity.sdk_session_lock(continuity.lock_key):
-            runtime_result = await runtime.submit(request, event_sink=runtime_event_sink)
+        runtime_result = await runtime.submit(request, event_sink=runtime_event_sink)
         return self._executor_result_from_sandbox_runtime(payload, prepared, runtime_result)
 
     def _sandbox_provider_required_result(
@@ -1397,40 +1383,24 @@ class ClaudeAgentWorkerAdapter:
                 )
 
         try:
-            continuity = await self._session_continuity.resolve(
-                tenant_id=payload.tenant_id,
-                workspace_id=payload.workspace_id,
-                user_id=payload.user_id,
-                session_id=payload.session_id,
-                agent_id=payload.agent_id,
-                skill_id=payload.skill_id,
-                model_key=payload.model_value or payload.model_id or "default-model",
-                fork_reason=str(payload.input.get("context_fork_reason") or "")
-                if payload.input.get("context_fork_reason")
-                else None,
-            )
-            async with self._session_continuity.sdk_session_lock(continuity.lock_key):
-                sdk_kwargs = {
-                    "prompt": prompt,
-                    "cwd": workspace,
-                    "skill_id": payload.skill_id,
-                    "session_id": continuity.sdk_session_id,
-                    "model_id": payload.model_value or payload.model_id or None,
-                    "skills": staged_skill_names,
-                    "on_text": on_text,
-                    "on_skill_use": on_skill_use,
-                    "tool_policy_subjects": _runtime_tool_policy_subjects(
-                        payload,
-                        _context_manifest_from_pack(context_pack),
-                    ),
-                }
-                if context_retrieval is not None and context_retrieval_identity is not None:
-                    sdk_kwargs["context_retrieval"] = context_retrieval
-                    sdk_kwargs["context_retrieval_identity"] = context_retrieval_identity
-                sdk_result = await run_claude_agent_sdk(
-                    **sdk_kwargs,
-                )
-                return sdk_result
+            sdk_kwargs = {
+                "prompt": prompt,
+                "cwd": workspace,
+                "skill_id": payload.skill_id,
+                "session_id": sdk_session_id_for_run(payload.run_id),
+                "model_id": payload.model_value or payload.model_id or None,
+                "skills": staged_skill_names,
+                "on_text": on_text,
+                "on_skill_use": on_skill_use,
+                "tool_policy_subjects": _runtime_tool_policy_subjects(
+                    payload,
+                    _context_manifest_from_pack(context_pack),
+                ),
+            }
+            if context_retrieval is not None and context_retrieval_identity is not None:
+                sdk_kwargs["context_retrieval"] = context_retrieval
+                sdk_kwargs["context_retrieval_identity"] = context_retrieval_identity
+            return await run_claude_agent_sdk(**sdk_kwargs)
         except ClaudeAgentSdkNotAvailable as exc:
             return type("SdkUnavailable", (), {
                 "used_sdk": False,

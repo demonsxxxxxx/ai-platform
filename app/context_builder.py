@@ -490,10 +490,6 @@ def _manifest_context_chips(input_payload: dict[str, Any]) -> list[str]:
     return []
 
 
-def _manifest_message_refs(message_ids: list[str]) -> list[dict[str, Any]]:
-    return [{"id": message_id, "requires_retrieval": True} for message_id in message_ids if message_id]
-
-
 def _manifest_file_refs(file_ids: list[str]) -> list[dict[str, Any]]:
     return [{"id": file_id, "requires_retrieval": True} for file_id in file_ids if file_id]
 
@@ -512,7 +508,7 @@ def _build_initial_context_manifest(
     agent_id: str,
     skill_id: str,
     input_payload: dict[str, Any],
-    message_ids: list[str],
+    prior_messages: list[dict[str, Any]],
     file_ids: list[str],
     artifact_ids: list[str],
     memory_record_ids: list[str],
@@ -527,7 +523,7 @@ def _build_initial_context_manifest(
         agent_id=agent_id,
         skill_id=skill_id,
         current_message=_manifest_current_message(input_payload),
-        recent_messages=_manifest_message_refs(message_ids),
+        recent_messages=prior_messages,
         context_chips=_manifest_context_chips(input_payload),
         files=_manifest_file_refs(file_ids),
         artifacts=_manifest_artifact_refs(artifact_ids),
@@ -555,6 +551,7 @@ async def record_initial_context_snapshot(
     include_session_history: bool = False,
 ) -> dict[str, Any]:
     included_message_ids = list(message_ids or [])
+    prior_messages: list[dict[str, Any]] = []
     included_file_ids = list(file_ids or [])
     included_artifact_ids: list[str] = []
     source_run_ids: list[str] = []
@@ -578,6 +575,16 @@ async def record_initial_context_snapshot(
                 + included_message_ids
             )
         )[-8:]
+        included_message_id_set = set(included_message_ids)
+        current_message_ids = {message_id for message_id in message_ids or [] if message_id}
+        prior_messages = [
+            dict(row)
+            for row in session_messages
+            if isinstance(row, dict)
+            and str(row.get("id") or "") in included_message_id_set
+            and str(row.get("id") or "") not in current_message_ids
+            and str(row.get("run_id") or "") != run_id
+        ]
         session_files = await repositories.list_session_context_files(
             conn,
             tenant_id=tenant_id,
@@ -682,7 +689,7 @@ async def record_initial_context_snapshot(
         agent_id=agent_id,
         skill_id=skill_id,
         input_payload=input_payload,
-        message_ids=included_message_ids,
+        prior_messages=prior_messages,
         file_ids=included_file_ids,
         artifact_ids=included_artifact_ids,
         memory_record_ids=[],
