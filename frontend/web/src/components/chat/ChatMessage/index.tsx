@@ -1,7 +1,7 @@
 import { clsx } from "clsx";
 import { useEffect, useRef, useState, memo } from "react";
 import toast from "react-hot-toast";
-import { Copy, GitBranch, Info, Sparkles } from "lucide-react";
+import { Copy, Info, Sparkles } from "lucide-react";
 import type {
   Message,
   MessagePart,
@@ -17,7 +17,6 @@ import { MessagePartRenderer } from "./MessagePartRenderer";
 import { RevealArtifactsSummary } from "./RevealArtifactsSummary";
 import { FeedbackButtons } from "./FeedbackButtons";
 import { AssistantAvatar } from "./AssistantAvatar";
-import { ShareButton } from "./ShareButton";
 import { CollapsiblePill } from "../../common/CollapsiblePill";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
 import { useAuth } from "../../../hooks/useAuth";
@@ -244,7 +243,6 @@ export const ChatMessage = memo(function ChatMessage({
   activePreview,
   latestAutoPreview,
   onOpenPreview,
-  onForkMessage,
   showFeedbackAndShareActions = true,
 }: ChatMessageProps) {
   const { t } = useTranslation();
@@ -426,19 +424,6 @@ export const ChatMessage = memo(function ChatMessage({
             >
               <Copy size={16} />
             </button>
-            {sessionId && onForkMessage && (
-              <button
-                onClick={() => void onForkMessage(message.id)}
-                className={clsx(
-                  "p-1.5 rounded-md transition-colors",
-                  !isLastMessage && "opacity-0 group-hover:opacity-100",
-                  "text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)] hover:text-[var(--theme-text)]",
-                )}
-                title={t("chat.message.fork")}
-              >
-                <GitBranch size={16} />
-              </button>
-            )}
             {/* Token usage statistics button */}
             {(message.tokenUsage || message.duration) && (
               <TokenDetailsButton
@@ -457,14 +442,6 @@ export const ChatMessage = memo(function ChatMessage({
                     sessionId={sessionId}
                     runId={message.runId || runId!}
                     currentFeedback={message.feedback}
-                    isLastMessage={isLastMessage}
-                  />
-                )}
-                {/* Share button */}
-                {sessionId && (
-                  <ShareButton
-                    sessionId={sessionId}
-                    runId={message.runId || runId}
                     isLastMessage={isLastMessage}
                   />
                 )}

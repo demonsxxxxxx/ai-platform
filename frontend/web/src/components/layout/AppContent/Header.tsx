@@ -3,7 +3,6 @@ import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { createPortal } from "react-dom";
 import {
-  Share2,
   MoreHorizontal,
   MessageSquarePlus,
   Bell,
@@ -15,14 +14,10 @@ import {
 } from "lucide-react";
 import { ModelSelector } from "../../agent/ModelSelector";
 import { UserMenu } from "../UserMenu";
-import { ShareDialog } from "../../share/ShareDialog";
-import { useAuth } from "../../../hooks/useAuth";
 import { useTheme } from "../../../contexts/ThemeContext";
 import { useSettingsContext } from "../../../contexts/SettingsContext";
 import { notificationPublicApi } from "../../../services/api/notificationPublic";
-import { useSessionTitle } from "../../../hooks/useSessionTitle";
 import { NotificationDialog } from "../../notification/NotificationDialog";
-import { Permission } from "../../../types";
 import type { TabType } from "./types";
 
 interface HeaderProps {
@@ -54,7 +49,6 @@ export function Header({
   availableModels,
   currentModelId,
   onSelectModel,
-  sessionId,
   currentRunId,
   onOpenRunPlayback,
   onToggleOutline,
@@ -62,10 +56,8 @@ export function Header({
 }: HeaderProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { user } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { pinnedModelIds, togglePinnedModel } = useSettingsContext();
-  const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [notifDialogOpen, setNotifDialogOpen] = useState(false);
   const [activeNotifCount, setActiveNotifCount] = useState(0);
@@ -111,13 +103,6 @@ export function Header({
     };
   }, [mobileMenuOpen]);
 
-  const hasSharePermission = user?.permissions?.includes(
-    Permission.SESSION_SHARE,
-  );
-  const showShareButton = !!sessionId && hasSharePermission;
-  const sessionTitle = useSessionTitle(sessionId, {
-    enabled: showShareButton,
-  });
   const showRunPlaybackButton =
     activeTab === "chat" && !!currentRunId && !!onOpenRunPlayback;
 
@@ -256,20 +241,6 @@ export function Header({
                         <span className="truncate">{t("sidebar.newChat")}</span>
                       </button>
                     )}
-                    {showShareButton && (
-                      <button
-                        onClick={() => {
-                          setShareDialogOpen(true);
-                          setMobileMenuOpen(false);
-                        }}
-                        className="flex w-full items-center gap-3 px-3 py-2.5 text-left text-sm transition-colors text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-primary-light)]"
-                      >
-                        <span className="flex items-center justify-center w-5 shrink-0">
-                          <Share2 size={16} strokeWidth={1.8} />
-                        </span>
-                        <span className="truncate">{t("share.title")}</span>
-                      </button>
-                    )}
                     <button
                       onClick={() => {
                         setNotifDialogOpen(true);
@@ -323,15 +294,6 @@ export function Header({
           <UserMenu />
         </div>
       </header>
-
-      {sessionId && (
-        <ShareDialog
-          isOpen={shareDialogOpen}
-          onClose={() => setShareDialogOpen(false)}
-          sessionId={sessionId}
-          sessionName={sessionTitle || t("sidebar.newChat")}
-        />
-      )}
 
       <NotificationDialog
         isOpen={notifDialogOpen}

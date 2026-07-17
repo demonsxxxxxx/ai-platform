@@ -25,7 +25,6 @@ import {
   type UnreadBySession,
 } from "../sidebar/unreadCounts";
 import { SearchDialog } from "./SearchDialog";
-import { ShareDialog } from "../share/ShareDialog";
 import {
   SessionListContent,
   SidebarRail,
@@ -84,10 +83,6 @@ export const SessionSidebar = forwardRef<
   const [unreadBySession, setUnreadBySession] = useState<UnreadBySession>(
     () => new Map(),
   );
-  const [shareDialogSessionId, setShareDialogSessionId] = useState<
-    string | null
-  >(null);
-  const [shareDialogSessionName, setShareDialogSessionName] = useState("");
   const [isRecentChatsOpen, setIsRecentChatsOpen] = useState(false);
 
   const [isMobile, setIsMobile] = useState(
@@ -152,21 +147,6 @@ export const SessionSidebar = forwardRef<
   const [recentChatsAnchor, setRecentChatsAnchor] = useState<
     "desktop" | "mobile"
   >("desktop");
-
-  const handleShareSession = useCallback(
-    (sessionId: string) => {
-      const s = sessionList.sessions.find((item) => item.id === sessionId);
-      const title =
-        s?.name ||
-        ((s?.metadata as Record<string, unknown> | undefined)?.title as
-          | string
-          | undefined) ||
-        "";
-      setShareDialogSessionId(sessionId);
-      setShareDialogSessionName(title || t("sidebar.newChat"));
-    },
-    [sessionList, t],
-  );
 
   // ─── Delete confirmation ────────────────────────────────────────
 
@@ -262,13 +242,9 @@ export const SessionSidebar = forwardRef<
     () => ({
       onDeleteSession: (id) =>
         setDeleteConfirm({ isOpen: true, sessionId: id }),
-      onShareSession: handleShareSession,
       onSelectSession: selectAndClose,
     }),
-    [
-      handleShareSession,
-      selectAndClose,
-    ],
+    [selectAndClose],
   );
 
   // ─── JSX ────────────────────────────────────────────────────────
@@ -442,13 +418,6 @@ export const SessionSidebar = forwardRef<
         onConfirm={confirmDeleteSession}
         onCancel={() => setDeleteConfirm({ isOpen: false, sessionId: null })}
         variant="danger"
-      />
-
-      <ShareDialog
-        isOpen={shareDialogSessionId !== null}
-        onClose={() => setShareDialogSessionId(null)}
-        sessionId={shareDialogSessionId ?? ""}
-        sessionName={shareDialogSessionName || t("sidebar.newChat")}
       />
 
       <RecentChatsDialog

@@ -18,10 +18,8 @@ const root = process.cwd();
 const allAvailable = {
   skills: true,
   tools: true,
-  agents: true,
   models: true,
   files: true,
-  context: true,
 };
 
 test("slash command parser maps command words to governed panels", () => {
@@ -46,13 +44,6 @@ test("slash command parser maps command words to governed panels", () => {
     query: "fetch",
     unavailable: false,
   });
-  assert.deepEqual(parseComposerCommand("/agent code", allAvailable), {
-    trigger: "/",
-    command: "agent",
-    panel: "agent",
-    query: "code",
-    unavailable: false,
-  });
   assert.deepEqual(parseComposerCommand("/model gpt", allAvailable), {
     trigger: "/",
     command: "model",
@@ -74,13 +65,17 @@ test("slash command parser maps command words to governed panels", () => {
     query: "",
     unavailable: false,
   });
+});
+
+test("context is not a supported composer command", () => {
   assert.deepEqual(parseComposerCommand("/context memory", allAvailable), {
     trigger: "/",
-    command: "context",
-    panel: "context",
-    query: "memory",
+    command: "menu",
+    panel: "command-menu",
+    query: "context memory",
     unavailable: false,
   });
+  assert.deepEqual(resolveSlashCommandMenu("/context", allAvailable), []);
 });
 
 test("dollar command is Skills-first and never maps to tools", () => {
@@ -203,10 +198,8 @@ test("slash command menu exposes the Phase 1B command groups", () => {
     [
       { command: "skill", panel: "skills", unavailable: false },
       { command: "mcp", panel: "tools", unavailable: false },
-      { command: "agent", panel: "agent", unavailable: false },
       { command: "model", panel: "model", unavailable: false },
       { command: "file", panel: "file", unavailable: false },
-      { command: "context", panel: "context", unavailable: false },
     ],
   );
   assert.deepEqual(
@@ -300,7 +293,7 @@ test("chat input renders composer chips and expanded command groups", () => {
   assert.match(chatInput, /resolveSlashCommandMenu/);
   assert.match(chatInput, /command-menu/);
   assert.match(featureMenu, /featureMenu\.model/);
-  assert.match(featureMenu, /featureMenu\.context/);
+  assert.doesNotMatch(featureMenu, /featureMenu\.context/);
   assert.match(featureMenu, /featureMenu\.fileReference/);
 });
 
