@@ -2689,6 +2689,15 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
                 executor_version="capture/1",
                 capabilities={},
                 result={"message": "done"},
+                artifacts=[
+                    ArtifactManifest(
+                        artifact_type="reviewed_docx",
+                        label="Reviewed Word",
+                        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        storage_key="tenants/tenant-a/runs/run-a/artifacts/reviewed.docx",
+                        size_bytes=1,
+                    )
+                ],
             )
 
     async def mark_run_running(conn, *, tenant_id, run_id):
@@ -2716,11 +2725,22 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
             "payload_json": {
                 "schema_version": "ai-platform.context-snapshot.v1",
                 "source": "chat_stream",
+                "execution_tier": "sdk_only_writing",
                 "context_manifest": {
                     "schema_version": "ai-platform.context-manifest.v1",
                     "context_manifest_version": "v1",
                     "generated_at": "2026-07-02T01:02:03Z",
-                    "recent_messages": [{"message_id": "msg-a", "requires_retrieval": True}],
+                    "scope": {
+                        "tenant_id": kwargs["tenant_id"],
+                        "workspace_id": kwargs["workspace_id"],
+                        "user_id": kwargs["user_id"],
+                        "session_id": kwargs["session_id"],
+                        "run_id": kwargs["run_id"],
+                        "agent_id": "qa-word-review",
+                        "skill_id": "qa-file-reviewer",
+                    },
+                    "current_message": "review the scoped file",
+                    "recent_messages": [],
                     "files": [
                         {
                             "file_id": "file-a",
@@ -2738,6 +2758,9 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
         raise AssertionError("verified queue snapshots must be reconstructed from DB scope")
 
     async def complete_run(conn, **kwargs):
+        return True
+
+    async def create_artifact(conn, **kwargs):
         return None
 
     monkeypatch.setattr("app.worker.transaction", fake_transaction)
@@ -2746,7 +2769,7 @@ async def test_worker_uses_private_context_manifest_from_scoped_db_snapshot(monk
     monkeypatch.setattr("app.worker.repositories.get_context_snapshot_for_worker", get_context_snapshot_for_worker)
     monkeypatch.setattr("app.worker.record_initial_context_snapshot", fail_record_context)
     monkeypatch.setattr("app.worker.repositories.complete_run", complete_run)
-    monkeypatch.setattr("app.worker.repositories.create_artifact", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.worker.repositories.create_artifact", create_artifact)
     monkeypatch.setattr("app.worker.repositories.append_message", fake_append_message)
 
     outcome = await process_run_payload(
