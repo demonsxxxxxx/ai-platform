@@ -1,6 +1,5 @@
 import { useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { useTranslation } from "react-i18next";
 import { toast } from "react-hot-toast";
 import { Bell, X } from "lucide-react";
 import { useWebSocket } from "../../../hooks/useWebSocket";
@@ -12,6 +11,7 @@ import {
 } from "./taskNotificationGuards";
 import { buildTaskNotificationCopy } from "./taskNotificationContent";
 import { isMobileDevice } from "../../../utils/mobile";
+import i18n from "../../../i18n";
 
 interface UseWebSocketNotificationsOptions {
   sessionId: string | null;
@@ -19,8 +19,6 @@ interface UseWebSocketNotificationsOptions {
   onSessionUnread?: (
     sessionId: string,
     unreadCount: number,
-    projectId?: string | null,
-    isFavorite?: boolean,
   ) => void;
 }
 
@@ -29,7 +27,7 @@ export function useWebSocketNotifications({
   enabled = true,
   onSessionUnread,
 }: UseWebSocketNotificationsOptions) {
-  const { t } = useTranslation();
+  const t = i18n.getFixedT("zh");
   const navigate = useNavigate();
   const { notify, isSupported, permission } = useBrowserNotification();
   const onSessionUnreadRef = useRef(onSessionUnread);
@@ -45,8 +43,6 @@ export function useWebSocketNotifications({
         status: string;
         message?: string;
         unread_count?: number;
-        project_id?: string | null;
-        is_favorite?: boolean;
       };
     }) => {
       const {
@@ -55,8 +51,6 @@ export function useWebSocketNotifications({
         status,
         message,
         unread_count,
-        project_id,
-        is_favorite,
       } = notification.data;
 
       // 通知侧边栏更新 unread_count（仅非当前 session）
@@ -64,8 +58,6 @@ export function useWebSocketNotifications({
         onSessionUnreadRef.current?.(
           session_id,
           unread_count,
-          project_id,
-          is_favorite,
         );
       }
 
@@ -79,7 +71,7 @@ export function useWebSocketNotifications({
 
       if (!shouldSurface) {
         sessionApi.markRead(session_id).catch(() => {});
-        onSessionUnreadRef.current?.(session_id, 0, project_id, is_favorite);
+        onSessionUnreadRef.current?.(session_id, 0);
         return;
       }
 
@@ -152,7 +144,7 @@ export function useWebSocketNotifications({
                 toast.remove();
               }}
               className="absolute top-1.5 right-1.5 z-10 rounded-full p-0.5 text-stone-400 opacity-0 transition-opacity hover:text-stone-600 group-hover:opacity-100 dark:text-stone-500 dark:hover:text-stone-300"
-              aria-label="Dismiss notification"
+              aria-label={t("common.close")}
             >
               <X size={12} />
             </button>

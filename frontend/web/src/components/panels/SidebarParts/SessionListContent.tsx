@@ -15,7 +15,7 @@ import { LoadingSpinner } from "../../common/LoadingSpinner";
 import type { BackendSession } from "../../../services/api";
 import {
   formatUnreadCount,
-  getUnreadCountForUncategorized,
+  getUnreadCount,
   type UnreadBySession,
 } from "../../sidebar/unreadCounts";
 import { groupSessionsByTime } from "../sessionHelpers";
@@ -48,12 +48,12 @@ interface SessionListContentProps {
   onNewSession: () => void;
   onOpenSearch: () => void;
   onSetScrollEl: (el: HTMLDivElement | null) => void;
-  uncategorizedSessions: BackendSession[];
-  isUncategorizedLoading: boolean;
-  hasMoreUncategorized: boolean;
-  isLoadingMoreUncategorized: boolean;
+  sessions: BackendSession[];
+  isLoading: boolean;
+  hasMore: boolean;
+  isLoadingMore: boolean;
   loadMoreRef: React.RefCallback<HTMLElement>;
-  onUpdateUncategorizedSession: (s: BackendSession) => void;
+  onUpdateSession: (s: BackendSession) => void;
   currentSessionId: string | null;
   unreadBySession: UnreadBySession;
   sessionActions: SessionActions;
@@ -67,12 +67,12 @@ export function SessionListContent({
   onNewSession,
   onOpenSearch,
   onSetScrollEl,
-  uncategorizedSessions,
-  isUncategorizedLoading,
-  hasMoreUncategorized,
-  isLoadingMoreUncategorized,
+  sessions,
+  isLoading,
+  hasMore,
+  isLoadingMore,
   loadMoreRef,
-  onUpdateUncategorizedSession,
+  onUpdateSession,
   currentSessionId,
   unreadBySession,
   sessionActions,
@@ -90,11 +90,11 @@ export function SessionListContent({
     ? t("nav.skillManagement")
     : t("skills.available.title");
 
-  const chatsUnreadCount = getUnreadCountForUncategorized({
-    loadedSessions: uncategorizedSessions,
+  const chatsUnreadCount = getUnreadCount({
+    loadedSessions: sessions,
     unreadBySession,
   });
-  const groupedUncategorized = groupSessionsByTime(uncategorizedSessions, t);
+  const groupedSessions = groupSessionsByTime(sessions, t);
   const taskNavItems: Array<{
     key: WorkbenchNavItem;
     icon: React.ComponentType<{ size?: number }>;
@@ -268,7 +268,7 @@ export function SessionListContent({
         className="flex-1 overflow-y-auto border-t border-[var(--theme-border)]/70 px-2 pt-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         <div className="flex flex-col gap-px">
-          {groupedUncategorized.length > 0 || isUncategorizedLoading ? (
+          {groupedSessions.length > 0 || isLoading ? (
             <>
               <div
                 onClick={onToggleChatsCollapsed}
@@ -294,7 +294,7 @@ export function SessionListContent({
 
               {!isChatsCollapsed && (
                 <>
-                  {isUncategorizedLoading ? (
+                  {isLoading ? (
                     <div className="space-y-px px-0">
                       {Array.from({ length: 5 }).map((_, i) => (
                         <div
@@ -318,7 +318,7 @@ export function SessionListContent({
                       ))}
                     </div>
                   ) : (
-                    groupedUncategorized.map((group) => (
+                    groupedSessions.map((group) => (
                       <div key={group.label}>
                         <div className="flex h-7 select-none items-center px-[9px] text-[13px] font-medium text-[var(--theme-text-tertiary)]">
                           {group.label}
@@ -340,20 +340,16 @@ export function SessionListContent({
                                 onShare={() =>
                                   sessionActions.onShareSession(session.id)
                                 }
-                                onSessionUpdate={onUpdateUncategorizedSession}
-                                onDragStartTouch={
-                                  undefined
-                                }
-                                isDraggingTouch={false}
+                                onSessionUpdate={onUpdateSession}
                               />
                             ))}
                         </div>
                       </div>
                     ))
                   )}
-                  {hasMoreUncategorized && (
+                  {hasMore && (
                     <div ref={loadMoreRef} className="flex justify-center py-2">
-                      {isLoadingMoreUncategorized && (
+                      {isLoadingMore && (
                         <div className="flex items-center gap-2 text-[var(--theme-text-tertiary)]">
                           <LoadingSpinner size="xs" />
                           <span className="text-xs">{t("common.loading")}</span>

@@ -142,6 +142,8 @@ interface ChatViewProps {
     attachments?: MessageAttachment[],
     selectedSkill?: SelectedSkillRequest | null,
   ) => Promise<SubmissionOutcome>;
+  canRetryPendingSubmission: boolean;
+  onRetryPendingSubmission: () => Promise<void>;
   onStopGeneration: () => void;
   attachments: MessageAttachment[];
   onAttachmentsChange: React.Dispatch<
@@ -196,6 +198,8 @@ export function ChatView({
   onRespondApproval,
   approvalLoading,
   onSendMessage,
+  canRetryPendingSubmission,
+  onRetryPendingSubmission,
   onStopGeneration,
   attachments,
   onAttachmentsChange,
@@ -694,6 +698,19 @@ export function ChatView({
         </button>
       )}
 
+      {canRetryPendingSubmission && (
+        <div className="mx-auto mb-2 flex max-w-4xl px-2">
+          <button
+            type="button"
+            onClick={() => void onRetryPendingSubmission()}
+            className="rounded-md border border-[var(--theme-border)] px-3 py-1.5 text-sm text-[var(--theme-text-secondary)] hover:bg-[var(--theme-bg-sidebar)]"
+          >
+            {t("chat.runTerminal.statusUnavailable", {
+              defaultValue: t("chat.requestFailed"),
+            })}
+          </button>
+        </div>
+      )}
       <ChatInput
         {...chatInputProps}
         className="mx-auto max-w-4xl px-2"

@@ -8,8 +8,6 @@ export interface TaskCompleteNotification {
     status: "completed" | "failed";
     message?: string;
     unread_count?: number;
-    project_id?: string | null;
-    is_favorite?: boolean;
   };
 }
 

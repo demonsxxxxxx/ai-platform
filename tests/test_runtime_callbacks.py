@@ -167,93 +167,20 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
     assert recorded[0].callback_token_id == "cbt_run-a"
 
 
-def test_runtime_tool_permission_callback_accepts_valid_request(monkeypatch):
-    patch_callback_settings(monkeypatch, callback_settings("secret"))
-    calls = []
-
-    class FakeTransaction:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return None
-
-    async def fake_get_run_identity(conn, *, run_id, for_update=False):
-        calls.append(("identity", run_id, for_update))
-        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
-
-    async def fake_get_run(conn, *, tenant_id, run_id, for_update=False):
-        calls.append(("run", tenant_id, run_id, for_update))
-        return {
-            "id": run_id,
-            "tenant_id": tenant_id,
-            "workspace_id": "workspace-a",
-            "user_id": "user-a",
-            "session_id": "session-a",
-            "agent_id": "general-agent",
-            "skill_id": "general-chat",
-            "trace_id": "trace-run-a",
-        }
-
-    async def fake_broker(conn, **kwargs):
-        calls.append(("broker", kwargs))
-        return {
-            "allowed": False,
-            "reason": "tool_permission_required",
-            "risk_level": "high",
-            "write_capable": True,
-            "decision": "ask",
-            "permission_request_id": "tpr-sdk",
-        }
-
+def test_runtime_tool_permission_callback_is_retired_without_resolver_access(monkeypatch):
     import app.routes.runtime_callbacks as runtime_callbacks
 
-    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run", fake_get_run)
-    monkeypatch.setattr(runtime_callbacks, "broker_claude_sdk_tool_permission", fake_broker, raising=False)
+    def fail_resolver(*args, **kwargs):
+        raise AssertionError("retired callback must never enter a permission resolver")
+
+    monkeypatch.setattr(runtime_callbacks, "resolve_claude_sdk_tool_permission", fail_resolver, raising=False)
     client = TestClient(create_app())
+    response = client.post("/api/ai/runtime/callbacks/tool-permission", json={"tool_name": "Bash"})
 
-    response = client.post(
-        "/api/ai/runtime/callbacks/tool-permission",
-        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-        json={
-            "session_id": "session-a",
-            "run_id": "run-a",
-            "callback_token_id": "cbt_run-a",
-            "tool_name": "Bash",
-            "tool_input": {"command": "python write_business_system.py"},
-            "tool_call_id": "tool-a",
-            "action": "execute",
-            "risk_level": "high",
-            "write_capable": True,
-            "reason": "needs shell",
-        },
-    )
+    assert response.status_code == 410
+    assert response.json()["detail"] == "tool_permission_runtime_approval_removed"
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "allowed": False,
-        "reason": "tool_permission_required",
-        "risk_level": "high",
-        "write_capable": True,
-        "decision": "ask",
-        "permission_request_id": "tpr-sdk",
-    }
-    assert calls[0] == ("identity", "run-a", True)
-    assert calls[1] == ("run", "tenant-a", "run-a", True)
-    broker_call = calls[2][1]
-    assert broker_call["tenant_id"] == "tenant-a"
-    assert broker_call["workspace_id"] == "workspace-a"
-    assert broker_call["user_id"] == "user-a"
-    assert broker_call["session_id"] == "session-a"
-    assert broker_call["run_id"] == "run-a"
-    assert broker_call["agent_id"] == "general-agent"
-    assert broker_call["skill_id"] == "general-chat"
-    assert broker_call["request"]["tool_input"] == {"command": "python write_business_system.py"}
-
-
-def test_executor_callback_persists_callback_status_event(monkeypatch):
+def test_executor_callback_rejects_terminal_status_before_persisting_public_events(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))
     calls = []
 
@@ -285,14 +212,9 @@ def test_executor_callback_persists_callback_status_event(monkeypatch):
         json=callback_payload(status="completed", progress=100),
     )
 
-    assert response.status_code == 200
-    assert response.json() == {"accepted": True, "event_count": 2}
-    assert calls[0] == ("identity", "run-a", True)
-    assert calls[1][0:3] == ("executor_callback", "executor", "Executor callback: completed")
-    assert calls[1][3]["callback_status"] == "completed"
-    assert calls[1][3]["callback_token_id"] == "cbt_run-a"
-    assert calls[1][3]["progress"] == 100
-    assert calls[2][0:3] == ("run_completed", "runtime", "Executor completed")
+    assert response.status_code == 409
+    assert response.json() == {"detail": "executor_terminal_callback_not_allowed"}
+    assert calls == []
 
 
 def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeypatch):
@@ -331,8 +253,8 @@ def test_executor_callback_does_not_stop_runtime_container_from_callback(monkeyp
         json=callback_payload(status="completed", progress=100),
     )
 
-    assert response.status_code == 200
-    assert response.json() == {"accepted": True, "event_count": 2}
+    assert response.status_code == 409
+    assert response.json() == {"detail": "executor_terminal_callback_not_allowed"}
     assert calls == []
 
 
@@ -404,8 +326,8 @@ def test_executor_callback_rejects_late_callback_for_terminal_run(monkeypatch):
     )
 
     assert response.status_code == 409
-    assert response.json() == {"detail": "run_already_terminal"}
-    assert calls == [("identity", "run-a", True)]
+    assert response.json() == {"detail": "executor_terminal_callback_not_allowed"}
+    assert calls == []
 
 
 def test_executor_callback_persists_typed_events_with_standard_stages(monkeypatch):

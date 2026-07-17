@@ -1,9 +1,11 @@
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.control_plane_contracts import RUN_PAYLOAD_SCHEMA_VERSION
 from app.skills.release_policy import validate_release_decision_lock, validate_release_decision_payload
+from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 
 from app.validation import assert_safe_id, assert_safe_principal_user_id
 
@@ -444,7 +446,7 @@ class ToolPermissionDecisionRequest(BaseModel):
     decision: Literal["allow_once", "deny", "allow_for_run"]
     reason: str = Field(default="", max_length=2000)
     decision_payload: dict[str, Any] = Field(default_factory=dict)
-    expires_in_seconds: int = Field(default=900, ge=30, le=86400)
+    expires_in_seconds: int = Field(default=int(TOOL_PERMISSION_REQUEST_TTL_SECONDS), ge=30, le=86400)
 
 
 class AdminToolPolicyUpdateRequest(BaseModel):
@@ -590,6 +592,40 @@ class AuthContextBootstrapRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     nonce: str = Field(min_length=43, max_length=512, pattern=r"^[A-Za-z0-9_-]+$")
+    protocol_version: Literal[1, 2] = 1
+    browser_incarnation: str | None = Field(
+        default=None,
+        min_length=43,
+        max_length=43,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    generation: int | None = Field(default=None, ge=1, le=(2**53) - 1)
+    rotation_ticket: str | None = Field(
+        default=None,
+        min_length=43,
+        max_length=43,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    recovery_only: bool = False
+
+    @model_validator(mode="after")
+    def validate_protocol_fields(self):
+        """Keep V1 wire compatibility while requiring the complete V2 identity."""
+
+        if self.protocol_version == 1:
+            if any(
+                value is not None
+                for value in (
+                    self.browser_incarnation,
+                    self.generation,
+                    self.rotation_ticket,
+                )
+            ) or self.recovery_only:
+                raise ValueError("V1 bootstrap cannot carry V2 identity fields")
+            return self
+        if self.browser_incarnation is None or self.generation is None:
+            raise ValueError("V2 bootstrap requires incarnation and generation")
+        return self
 
 
 class OAuthCallbackRequest(BaseModel):
@@ -701,6 +737,7 @@ class ChatStreamRequest(BaseModel):
     disabled_mcp_tools: list[str] = Field(default_factory=list)
     user_timezone: str | None = None
     confirmed_capability_id: str | None = None
+    submission_id: UUID | None = None
 
     @field_validator("workspace_id")
     @classmethod
@@ -726,11 +763,23 @@ class ChatStreamRequest(BaseModel):
 class ChatStreamResponse(BaseModel):
     session_id: str | None = None
     run_id: str | None = None
-    status: Literal["queued", "needs_confirmation"]
+    status: Literal["queued", "accepted_pending_enqueue", "needs_confirmation"]
+    submission_id: str | None = None
+    submission_disposition: Literal["rejected_before_persist"] | None = None
     queue_position: int | None = None
     queue_insight: dict[str, Any] | None = None
     intent_decision: IntentDecisionResponse | None = None
     suggestions: list[CapabilitySuggestionResponse] = Field(default_factory=list)
+
+
+class ChatSubmissionResponse(BaseModel):
+    """Principal-scoped durable resolution of one keyed chat submission."""
+
+    submission_id: str
+    state: Literal["queued", "accepted_pending_enqueue", "needs_confirmation", "rejected_before_persist"]
+    submission_disposition: Literal["rejected_before_persist"] | None = None
+    rejection_code: str | None = None
+    outcome: ChatStreamResponse | None = None
 
 
 class AdminRunSummaryResponse(BaseModel):

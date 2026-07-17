@@ -1,5 +1,5 @@
 /**
- * Session item component with inline title editing and drag support
+ * Session item component with inline title editing.
  */
 
 import { useState, useRef, useEffect, useCallback } from "react";
@@ -18,14 +18,6 @@ interface SessionItemProps {
   onDelete: () => void;
   onShare?: () => void;
   onSessionUpdate: (session: BackendSession) => void;
-  onDragStart?: (session: BackendSession) => void;
-  onDragEnd?: () => void;
-  onDragStartTouch?: (
-    sessionId: string,
-    clientX: number,
-    clientY: number,
-  ) => void;
-  isDraggingTouch?: boolean;
 }
 
 export function SessionItem({
@@ -35,10 +27,6 @@ export function SessionItem({
   onDelete,
   onShare,
   onSessionUpdate,
-  onDragStart,
-  onDragEnd,
-  onDragStartTouch,
-  isDraggingTouch = false,
 }: SessionItemProps) {
   const { t } = useTranslation();
   const [isEditing, setIsEditing] = useState(false);
@@ -46,15 +34,11 @@ export function SessionItem({
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
   const [isTouched, setIsTouched] = useState(false);
   const touchShowTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
-  const wasDraggingRef = useRef(false);
 
   // Get session title from various sources
   const getSessionTitle = useCallback(
@@ -135,76 +119,19 @@ export function SessionItem({
   };
 
   // Touch: show menu button, auto-hide after 3s
-  const handleItemTouchStart = (e: React.TouchEvent) => {
+  const handleItemTouchStart = () => {
     if (isEditing) return;
-    const touch = e.touches[0];
-    touchStartRef.current = { x: touch.clientX, y: touch.clientY };
-
     if (touchShowTimerRef.current) clearTimeout(touchShowTimerRef.current);
     setIsTouched(true);
     touchShowTimerRef.current = setTimeout(() => setIsTouched(false), 3000);
-
-    // Long press (400ms) to start drag
-    longPressTimerRef.current = setTimeout(() => {
-      setIsDragging(true);
-      wasDraggingRef.current = true;
-      onDragStartTouch?.(session.id, touch.clientX, touch.clientY);
-    }, 400);
-  };
-
-  const handleItemTouchMove = (e: React.TouchEvent) => {
-    // Cancel long press if moved too much before drag starts
-    if (longPressTimerRef.current && touchStartRef.current) {
-      const touch = e.touches[0];
-      const dx = touch.clientX - touchStartRef.current.x;
-      const dy = touch.clientY - touchStartRef.current.y;
-      if (Math.sqrt(dx * dx + dy * dy) > 10) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
-    }
-  };
-
-  const handleItemTouchEnd = () => {
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-    if (isDragging) {
-      setIsDragging(false);
-      setTimeout(() => {
-        wasDraggingRef.current = false;
-      }, 100);
-    }
-  };
-
-  // Prevent context menu during drag
-  const handleContextMenu = (e: React.MouseEvent | React.TouchEvent) => {
-    if (isDragging) {
-      e.preventDefault();
-    }
   };
 
   // Cleanup timers
   useEffect(() => {
     return () => {
       if (touchShowTimerRef.current) clearTimeout(touchShowTimerRef.current);
-      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
     };
   }, []);
-
-  // Drag handlers (desktop)
-  const handleDragStart = (e: React.DragEvent) => {
-    e.dataTransfer.setData("text/plain", session.id);
-    e.dataTransfer.effectAllowed = "move";
-    setIsDragging(true);
-    onDragStart?.(session);
-  };
-
-  const handleDragEnd = () => {
-    setIsDragging(false);
-    onDragEnd?.();
-  };
 
   // Get display title
   const displayTitle = getSessionTitle(session);
@@ -212,18 +139,8 @@ export function SessionItem({
   return (
     <>
       <div
-        draggable
-        onDragStart={handleDragStart}
-        onDragEnd={handleDragEnd}
         onTouchStart={handleItemTouchStart}
-        onTouchMove={handleItemTouchMove}
-        onTouchEnd={handleItemTouchEnd}
-        onContextMenu={handleContextMenu}
         onClick={() => {
-          if (wasDraggingRef.current) {
-            wasDraggingRef.current = false;
-            return;
-          }
           if (shouldBlockSessionSelection(window.location.pathname)) {
             return;
           }
@@ -231,12 +148,11 @@ export function SessionItem({
             onSelect();
           }
         }}
-        style={isDragging ? { touchAction: "none" } : undefined}
         className={`group relative flex cursor-pointer items-center gap-3 h-10 rounded-lg px-[9px] transition-colors ${
           isActive
             ? "bg-[var(--theme-sidebar-panel-muted)]"
             : "hover:bg-[var(--theme-sidebar-panel-muted)]"
-        } ${isDragging || isDraggingTouch ? "opacity-50 scale-95" : ""}`}
+        }`}
       >
         {/* Title - editable or display */}
         <div className="min-w-0 flex-1">

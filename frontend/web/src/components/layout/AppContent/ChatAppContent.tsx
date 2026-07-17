@@ -12,7 +12,6 @@ import { useAuth } from "../../../hooks/useAuth";
 import { useTools } from "../../../hooks/useTools";
 import { useSkills } from "../../../hooks/useSkills";
 import { useSelectedSkillTask } from "../../../hooks/useSelectedSkillTask";
-import { useProjectManager } from "../../../hooks/useProjectManager";
 import { useSessionConfig } from "../../../hooks/useSessionConfig";
 import {
   Permission,
@@ -127,8 +126,6 @@ export function ChatAppContent({
     enableSkillsSetting: enableSkillsProjection.value ?? enableSkills,
   });
 
-  const projectManager = useProjectManager();
-
   const sessionConfigRef = useRef({
     disabledSkills: [] as string[],
     disabledMcpTools: [] as string[],
@@ -144,10 +141,11 @@ export function ChatAppContent({
     connectionStatus,
     newlyCreatedSession,
     sendMessage,
+    canRetryPendingSubmission,
+    retryPendingSubmission,
     stopGeneration,
     clearMessages,
     loadHistory,
-    currentProjectId,
   } = useAgent({
     onApprovalRequired: (approval) => {
       addApproval({
@@ -344,13 +342,8 @@ export function ChatAppContent({
   useWebSocketNotifications({
     sessionId,
     enabled: isAuthenticated,
-    onSessionUnread: (sid, count, projectId, isFavorite) => {
-      sidebarRef.current?.updateSessionUnread(
-        sid,
-        count,
-        projectId,
-        isFavorite,
-      );
+    onSessionUnread: (sid, count) => {
+      sidebarRef.current?.updateSessionUnread(sid, count);
     },
   });
 
@@ -519,8 +512,6 @@ export function ChatAppContent({
     <AppShell
       activeTab="chat"
       setMobileSidebarOpen={setMobileSidebarOpen}
-      currentProjectId={currentProjectId}
-      projectManager={projectManager}
       onNewSession={handleNewSessionWithReset}
       availableModels={filteredModels}
       currentModelId={currentModelId}
@@ -606,6 +597,8 @@ export function ChatAppContent({
           onRespondApproval={respondToApproval}
           approvalLoading={approvalLoading}
           onSendMessage={sendMessage}
+          canRetryPendingSubmission={canRetryPendingSubmission}
+          onRetryPendingSubmission={retryPendingSubmission}
           onStopGeneration={stopGeneration}
           attachments={pageDragAttachments}
           onAttachmentsChange={setPageDragAttachments}

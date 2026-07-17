@@ -47,18 +47,16 @@ def _exact_tool_permission_domain() -> dict[str, Any]:
         "gate_slice": "B5b exact tool permission",
         "status": "local_contract_recorded",
         "implemented_controls": [
-            "tool_permission_request_scoped_to_tenant_user_run",
-            "tool_permission_public_projection_hides_raw_payloads",
-            "exact_tool_permission_decision_lookup_source_tests",
-            "allow_once_replay_denial_source_tests",
+            "run_scoped_authorized_capability_subject",
+            "immediate_allow_deny_policy_audit",
+            "historical_permission_evidence_read_only",
             "disabled_or_unregistered_tool_denial_source_tests",
             "risk_write_fail_closed_policy_evaluation",
         ],
         "source_tests": [
+            "tests/test_zero_click_tool_policy.py",
             "tests/test_tool_permission_routes.py",
-            "tests/test_admin_tool_policies.py",
-            "tests/test_worker.py::test_worker_consumes_allow_once_mcp_decision_before_dispatch",
-            "tests/test_worker.py::test_worker_fails_closed_when_allow_once_mcp_decision_cannot_be_consumed",
+            "tests/test_worker.py::test_worker_blocks_disabled_mcp_tool_before_dispatch",
         ],
         "policy_evidence": {
             "schema_version": tool_policy["schema_version"],
@@ -68,14 +66,14 @@ def _exact_tool_permission_domain() -> dict[str, Any]:
             "open_gaps": tool_policy["open_gaps"],
         },
         "open_gaps": [
-            "shell_network_filesystem_mcp_runtime_replay_denial_smoke",
-            "ordinary_user_tool_permission_card_visual_acceptance",
+            "shell_network_filesystem_mcp_runtime_denial_smoke",
+            "historical_permission_projection_visual_acceptance",
             "legacy_frontend_route_policy_enforcement_or_ai_platform_remap",
         ],
         "evidence_policy": (
-            "Local source tests prove exact decision lookup and allow_once "
-            "consume semantics. Runtime B5b closure still requires shell, "
-            "network, filesystem, and MCP replay-denial evidence for a named run."
+            "Local source tests prove synchronous exact capability evaluation and "
+            "historical permission evidence is read-only. Runtime B5b closure still "
+            "requires shell, network, filesystem, and MCP denial evidence for a named run."
         ),
     }
 
@@ -89,7 +87,7 @@ def build_b5_file_tool_readiness() -> dict[str, Any]:
     open_gaps = [
         "file_upload_namespace_retention_runtime_smoke",
         "artifact_preview_download_unauthorized_denial_211_smoke",
-        "exact_tool_permission_runtime_replay_denial_smoke",
+        "exact_tool_policy_runtime_denial_smoke",
         "projection_redaction_runtime_acceptance",
         "b5_issue_review_and_closure_evidence",
     ]
@@ -112,14 +110,14 @@ def build_b5_file_tool_readiness() -> dict[str, Any]:
             "production_claim_allowed": False,
             "department_rollout_allowed": False,
             "ordinary_user_high_risk_tools_allowed": False,
-            "runtime_tool_replay_denial_claimed": False,
+            "runtime_tool_policy_denial_claimed": False,
             "file_artifact_runtime_workflow_claimed": False,
         },
         "evidence_policy": (
             "B5 local readiness records source contracts and focused tests only. "
             "B5 cannot be 211 verified or gate closable until a reviewed runtime "
             "workflow proves upload, governed run, artifact access, unauthorized "
-            "denial, exact tool decision replay denial, projection redaction, "
+            "denial, exact tool policy denial, projection redaction, "
             "issue review, merge, and residual caveats."
         ),
     }

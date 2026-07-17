@@ -1,6 +1,6 @@
 /** Cookie-session fetch wrapper with caller-owned identity recovery. */
 
-import i18n from "i18next";
+import i18n from "../../i18n";
 import { projectSafeBackendError } from "../../utils/backendErrors";
 
 // ============================================
@@ -17,6 +17,7 @@ export class ApiRequestError extends Error {
     message: string,
     readonly status: number,
     readonly code?: string,
+    readonly submissionDisposition?: "rejected_before_persist",
   ) {
     super(message);
     this.name = "ApiRequestError";
@@ -39,9 +40,22 @@ export async function apiRequestErrorFromResponse(
   const projection = projectSafeBackendError(
     detail,
     status,
-    i18n.t.bind(i18n),
+    i18n.getFixedT("zh"),
   );
-  return new ApiRequestError(projection.message, status, projection.code);
+  const submissionDisposition =
+    detail !== null &&
+    typeof detail === "object" &&
+    !Array.isArray(detail) &&
+    (detail as { submission_disposition?: unknown }).submission_disposition ===
+      "rejected_before_persist"
+      ? "rejected_before_persist"
+      : undefined;
+  return new ApiRequestError(
+    projection.message,
+    status,
+    projection.code,
+    submissionDisposition,
+  );
 }
 
 /**
@@ -55,7 +69,7 @@ export async function cookieSessionFetch(
   options: RequestInit = {},
 ): Promise<Response> {
   const headers = new Headers(options.headers);
-  headers.set("Accept-Language", i18n.language || "en");
+  headers.set("Accept-Language", "zh-CN");
   headers.delete("Authorization");
   return fetch(input, {
     ...options,
@@ -84,7 +98,7 @@ export async function authFetch<T>(
   if (!(restOptions.body instanceof FormData)) {
     finalHeaders.set("Content-Type", "application/json");
   }
-  finalHeaders.set("Accept-Language", i18n.language || "en");
+  finalHeaders.set("Accept-Language", "zh-CN");
   finalHeaders.delete("Authorization");
   // Retained only as a source-compatible option for public auth endpoints.
   // Cookie-session transport behavior is identical either way.

@@ -2,15 +2,19 @@ import asyncio
 import base64
 import binascii
 from dataclasses import dataclass
-import hashlib
 import json
 from pathlib import Path
+import posixpath
+import re
 import shutil
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Awaitable, Callable
+import zipfile
+from xml.etree import ElementTree
 
 from app import repositories
+from app.capabilities import required_artifact_types_for_skill
 from app.control_plane_contracts import artifact_lineage_contract, standard_trace_id
 from app.context_builder import executor_context_pack_from_snapshot
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
@@ -45,6 +49,20 @@ from app.tool_policy import evaluate_tool_policy
 NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
 _CONTROLLED_RUNNER_SKILLS = {"qa-file-reviewer", "baoyu-translate"}
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"accepted", "completed", "succeeded"}
+_TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
+_REQUIRED_DOCX_MAX_ENTRY_COUNT = 128
+_REQUIRED_DOCX_MAX_COMPRESSED_BYTES = 16 * 1024 * 1024
+_REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024
+_REQUIRED_DOCX_MAX_COMPRESSION_RATIO = 100
+_OPC_CONTENT_TYPES_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/content-types"
+_OPC_RELATIONSHIPS_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships"
+_OPC_OFFICE_DOCUMENT_RELATIONSHIP = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+)
+_WORDPROCESSINGML_NAMESPACE = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_WORD_MAIN_DOCUMENT_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+)
 
 
 @dataclass(frozen=True)
@@ -60,226 +78,14 @@ class PreparedSdkRun:
     prompt: str
 
 
-def _claude_sdk_tool_id(tool_name: str) -> str:
-    safe_name = "".join(char if char.isalnum() or char in "_.:-" else "_" for char in str(tool_name or "unknown"))
-    safe_name = safe_name or "unknown"
-    return f"claude-sdk:{safe_name[:96]}"
+async def resolve_claude_sdk_tool_permission(**_legacy_request: Any) -> dict[str, Any]:
+    """Fail-closed compatibility shim for retired callback integrations.
 
+    No route or runner invokes this function.  It intentionally performs no
+    repository lookup, request creation, polling, grant consumption or replay.
+    """
 
-def _claude_sdk_tool_request_payload(request: dict[str, Any]) -> dict[str, Any]:
-    tool_input = request.get("tool_input")
-    command = ""
-    if isinstance(tool_input, dict):
-        command = str(tool_input.get("command") or "")
-        input_keys = sorted(str(key) for key in tool_input)
-    else:
-        input_keys = []
-    return {
-        "source": "claude_agent_sdk_hook",
-        "tool_name": str(request.get("tool_name") or ""),
-        "tool_input_keys": input_keys,
-        "command_length": len(command),
-        "command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest() if command else "",
-    }
-
-
-async def broker_claude_sdk_tool_permission(
-    conn,
-    *,
-    tenant_id: str,
-    workspace_id: str,
-    user_id: str,
-    session_id: str,
-    run_id: str,
-    agent_id: str,
-    skill_id: str,
-    trace_id: str,
-    request: dict[str, Any],
-) -> dict[str, Any]:
-    """Apply platform tool policy to a Claude Agent SDK tool-permission callback."""
-
-    tool_name = str(request.get("tool_name") or "")
-    tool_id = _claude_sdk_tool_id(tool_name)
-    tool_call_id = str(request.get("tool_call_id") or "")
-    action = str(request.get("action") or "execute")
-    requested_risk_level = str(request.get("risk_level") or "high")
-    requested_write_capable = bool(request.get("write_capable", True))
-    reason = str(request.get("reason") or "Claude SDK tool permission required")
-    request_payload = _claude_sdk_tool_request_payload(request)
-    tool = {
-        "id": tool_id,
-        "risk_level": requested_risk_level,
-        "write_capable": requested_write_capable,
-    }
-
-    permission_decision = await repositories.get_exact_tool_permission_decision(
-        conn,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        run_id=run_id,
-        tool_id=tool_id,
-        action=action,
-        tool_call_id=tool_call_id,
-        request_payload_json=request_payload,
-    )
-    if tool_id == "claude-sdk:Bash" and permission_decision is not None:
-        decision = str(permission_decision.get("decision") or "")
-        decision_tool_call_id = str(permission_decision.get("tool_call_id") or "")
-        decision_payload = permission_decision.get("request_payload_json")
-        if not isinstance(decision_payload, dict):
-            decision_payload = {}
-        decision_command_hash = str(decision_payload.get("command_sha256") or "")
-        request_command_hash = str(request_payload.get("command_sha256") or "")
-        if decision == "allow_once" and (not tool_call_id or decision_tool_call_id != tool_call_id):
-            permission_decision = None
-        elif decision == "allow_for_run" and (not request_command_hash or decision_command_hash != request_command_hash):
-            permission_decision = None
-        elif decision == "deny" and (not tool_call_id or decision_tool_call_id != tool_call_id):
-            permission_decision = None
-
-    tool_gate = evaluate_tool_policy(
-        tool=tool,
-        permission_decision=permission_decision,
-        requested_risk_level=requested_risk_level,
-        requested_write_capable=requested_write_capable,
-    )
-    if tool_gate.allowed:
-        if tool_gate.decision == "allow_once":
-            consumed_decision = await repositories.consume_tool_permission_decision(
-                conn,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                run_id=run_id,
-                request_id=tool_gate.permission_request_id,
-            )
-            if consumed_decision is None:
-                await repositories.append_audit_log(
-                    conn,
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    action="claude_sdk_tool_policy_denied",
-                    target_type="tool",
-                    target_id=tool_id,
-                    trace_id=trace_id,
-                    payload_json={
-                        "run_id": run_id,
-                        "session_id": session_id,
-                        "agent_id": agent_id,
-                        "skill_id": skill_id,
-                        "tool_call_id": tool_call_id,
-                        "reason": "tool_permission_consumed_or_expired",
-                        "risk_level": tool_gate.risk_level,
-                        "write_capable": tool_gate.write_capable,
-                        "decision": tool_gate.decision,
-                        "permission_request_id": tool_gate.permission_request_id,
-                    },
-                )
-                return {
-                    "allowed": False,
-                    "reason": "tool_permission_consumed_or_expired",
-                    "risk_level": tool_gate.risk_level,
-                    "write_capable": tool_gate.write_capable,
-                    "decision": tool_gate.decision,
-                    "permission_request_id": tool_gate.permission_request_id,
-                }
-        await repositories.append_audit_log(
-            conn,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            action="claude_sdk_tool_policy_allowed",
-            target_type="tool",
-            target_id=tool_id,
-            trace_id=trace_id,
-            payload_json={
-                "run_id": run_id,
-                "session_id": session_id,
-                "agent_id": agent_id,
-                "skill_id": skill_id,
-                "tool_call_id": tool_call_id,
-                "reason": tool_gate.reason,
-                "risk_level": tool_gate.risk_level,
-                "write_capable": tool_gate.write_capable,
-                "decision": tool_gate.decision,
-                "permission_request_id": tool_gate.permission_request_id,
-            },
-        )
-        return {
-            "allowed": True,
-            "reason": tool_gate.reason,
-            "risk_level": tool_gate.risk_level,
-            "write_capable": tool_gate.write_capable,
-            "decision": tool_gate.decision,
-            "permission_request_id": tool_gate.permission_request_id,
-        }
-
-    permission_request_id = tool_gate.permission_request_id
-    if tool_gate.reason == "tool_permission_required":
-        row = await repositories.create_tool_permission_request(
-            conn,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            session_id=session_id,
-            run_id=run_id,
-            trace_id=trace_id,
-            tool_id=tool_id,
-            tool_call_id=tool_call_id,
-            action=action,
-            risk_level=tool_gate.risk_level,
-            write_capable=tool_gate.write_capable,
-            reason=reason,
-            request_payload_json=request_payload,
-        )
-        permission_request_id = str(row["id"])
-        await repositories.append_event(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            trace_id=trace_id,
-            event_type="tool_permission_requested",
-            stage="tool_policy",
-            message="工具调用需要权限决策",
-            payload={
-                "visible_to_user": True,
-                "permission_request_id": permission_request_id,
-                "tool_id": tool_id,
-                "tool_call_id": tool_call_id,
-                "action": action,
-                "risk_level": tool_gate.risk_level,
-                "write_capable": tool_gate.write_capable,
-                "reason": reason,
-                "status": "pending",
-            },
-        )
-    await repositories.append_audit_log(
-        conn,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        action="claude_sdk_tool_policy_denied",
-        target_type="tool",
-        target_id=tool_id,
-        trace_id=trace_id,
-        payload_json={
-            "run_id": run_id,
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "skill_id": skill_id,
-            "tool_call_id": tool_call_id,
-            "reason": tool_gate.reason,
-            "risk_level": tool_gate.risk_level,
-            "write_capable": tool_gate.write_capable,
-            "decision": tool_gate.decision,
-            "permission_request_id": permission_request_id,
-        },
-    )
-    return {
-        "allowed": False,
-        "reason": tool_gate.reason,
-        "risk_level": tool_gate.risk_level,
-        "write_capable": tool_gate.write_capable,
-        "decision": tool_gate.decision,
-        "permission_request_id": permission_request_id,
-    }
+    return {"allowed": False, "reason": "tool_permission_runtime_approval_removed"}
 
 
 def _execution_tier(payload: RunPayload) -> str:
@@ -298,6 +104,11 @@ def _ordinary_run_requires_sandbox(payload: RunPayload) -> bool:
         execution_mode=str(payload.input.get("execution_mode") or ""),
         execution_tier=_execution_tier(payload),
     ).requires_real_sandbox
+
+
+def _required_artifact_types(payload: RunPayload) -> tuple[str, ...]:
+    """Resolve the capability-owned artifact contract for this selected Skill."""
+    return required_artifact_types_for_skill(payload.skill_id)
 
 
 def _sandbox_workspace(settings: object, payload: RunPayload) -> Path:
@@ -1049,8 +860,10 @@ class ClaudeAgentWorkerAdapter:
             agent_id=payload.agent_id,
             skill_ids=_runtime_request_skill_ids(payload, prepared),
             mcp_tool_ids=_string_list(payload.input.get("mcp_tool_ids")),
+            tool_policy_subjects=_runtime_tool_policy_subjects(payload),
             input_message=prepared.prompt,
             file_ids=payload.file_ids,
+            materialized_file_names=prepared.file_names,
             sandbox_mode=_payload_sandbox_mode(payload),
             browser_enabled=bool(payload.input.get("browser_enabled")),
             model=payload.model_value or payload.model_id or getattr(settings, "claude_agent_model", ""),
@@ -1062,6 +875,7 @@ class ClaudeAgentWorkerAdapter:
             context_manifest=dict(context_manifest or {}),
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             sdk_session_id=continuity.sdk_session_id,
+            governed_permission_wait=False,
         )
         runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
         runtime_event_sink = None
@@ -1162,6 +976,7 @@ class ClaudeAgentWorkerAdapter:
             "skill_manifests": skill_manifests,
             "sandbox_provider": sandbox_provider,
             "sandbox_runtime_used": True,
+            "required_artifact_types": list(_required_artifact_types(payload)),
             "sandbox_timings": sandbox_timings,
         }
         if runtime_status not in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
@@ -1307,6 +1122,7 @@ class ClaudeAgentWorkerAdapter:
                     "used_skills_source": used_skills_source,
                     "inferred_used_skills": inferred_used_skill_names,
                     "skill_manifests": skill_manifests,
+                    "required_artifact_types": list(_required_artifact_types(payload)),
                 },
             )
         controlled_result = await self._try_controlled_runner(
@@ -1499,6 +1315,7 @@ class ClaudeAgentWorkerAdapter:
                 "used_skills_source": "platform_controlled_runner",
                 "controlled_runner_used": True,
                 "controlled_runner_reason": "empty_bash_tool_input_loop",
+                "required_artifact_types": list(_required_artifact_types(payload)),
             },
             artifacts=artifacts,
             executor_payload={
@@ -1516,6 +1333,7 @@ class ClaudeAgentWorkerAdapter:
                 "skill_manifests": skill_manifests,
                 "controlled_runner_used": True,
                 "controlled_runner_reason": "empty_bash_tool_input_loop",
+                "required_artifact_types": list(_required_artifact_types(payload)),
             },
         )
 
@@ -1551,6 +1369,7 @@ class ClaudeAgentWorkerAdapter:
             context_pack=context_pack,
         )
         context_retrieval, context_retrieval_identity = self._context_retrieval_for_payload(payload, context_pack)
+
         async def on_text(delta: str) -> None:
             if event_sink:
                 await event_sink(
@@ -1576,22 +1395,6 @@ class ClaudeAgentWorkerAdapter:
                     },
                 )
 
-        async def on_tool_permission(request: dict[str, Any]) -> dict[str, Any]:
-            trace_id = payload.trace_id or standard_trace_id(payload.run_id)
-            async with transaction() as conn:
-                return await broker_claude_sdk_tool_permission(
-                    conn,
-                    tenant_id=payload.tenant_id,
-                    workspace_id=payload.workspace_id,
-                    user_id=payload.user_id,
-                    session_id=payload.session_id,
-                    run_id=payload.run_id,
-                    trace_id=trace_id,
-                    agent_id=payload.agent_id,
-                    skill_id=payload.skill_id,
-                    request=request,
-                )
-
         try:
             continuity = await self._session_continuity.resolve(
                 tenant_id=payload.tenant_id,
@@ -1615,14 +1418,15 @@ class ClaudeAgentWorkerAdapter:
                     "skills": staged_skill_names,
                     "on_text": on_text,
                     "on_skill_use": on_skill_use,
-                    "on_tool_permission": on_tool_permission,
+                    "tool_policy_subjects": _runtime_tool_policy_subjects(payload),
                 }
                 if context_retrieval is not None and context_retrieval_identity is not None:
                     sdk_kwargs["context_retrieval"] = context_retrieval
                     sdk_kwargs["context_retrieval_identity"] = context_retrieval_identity
-                return await run_claude_agent_sdk(
+                sdk_result = await run_claude_agent_sdk(
                     **sdk_kwargs,
                 )
+                return sdk_result
         except ClaudeAgentSdkNotAvailable as exc:
             return type("SdkUnavailable", (), {
                 "used_sdk": False,
@@ -1684,6 +1488,8 @@ class ClaudeAgentWorkerAdapter:
         for index, path in enumerate(candidates, start=1):
             content_type = _artifact_content_type(path.name)
             artifact_type = _artifact_type(path.name, payload.skill_id)
+            if artifact_type in {"reviewed_docx", "translated_docx"} and not _is_usable_docx(path):
+                continue
             storage_key = (
                 f"tenants/{payload.tenant_id}/workspaces/{payload.workspace_id}/"
                 f"sessions/{payload.session_id}/runs/{payload.run_id}/artifacts/{index}/{path.name}"
@@ -1761,6 +1567,13 @@ def _file_skill_steps(input_payload: dict[str, object]) -> list[dict[str, object
         },
         {"step_key": "verify", "role": "verify", "depends_on": ["execute"], "skill_ids": [], "mcp_tool_ids": []},
     ]
+
+
+def _runtime_tool_policy_subjects(payload: RunPayload) -> list[dict[str, Any]]:
+    value = payload.input.get("_runtime_tool_policy_subjects")
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _string_list(value: object) -> list[str]:
@@ -2082,6 +1895,165 @@ def _artifact_type(filename: str, skill_id: str | None = None) -> str:
     if lower.endswith(".txt") or lower.endswith(".md"):
         return "report_txt"
     return "runtime_file"
+
+
+def _is_usable_docx(path: Path) -> bool:
+    """Accept a required DOCX only when its bounded OPC package is usable."""
+
+    try:
+        if not 0 < path.stat().st_size <= _REQUIRED_DOCX_MAX_COMPRESSED_BYTES:
+            return False
+        with zipfile.ZipFile(path) as archive:
+            entries = archive.infolist()
+            if not _docx_archive_entries_are_bounded(entries):
+                return False
+            content_types = archive.read("[Content_Types].xml")
+            relationships = archive.read("_rels/.rels")
+            document = archive.read("word/document.xml")
+    except (KeyError, OSError, ValueError, zipfile.BadZipFile):
+        return False
+    try:
+        content_types_root = ElementTree.fromstring(content_types)
+        relationships_root = ElementTree.fromstring(relationships)
+        document_root = ElementTree.fromstring(document)
+    except ElementTree.ParseError:
+        return False
+    if (
+        content_types_root.tag != f"{{{_OPC_CONTENT_TYPES_NAMESPACE}}}Types"
+        or relationships_root.tag != f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationships"
+        or document_root.tag != f"{{{_WORDPROCESSINGML_NAMESPACE}}}document"
+    ):
+        return False
+    has_document_override = any(
+        item.tag == f"{{{_OPC_CONTENT_TYPES_NAMESPACE}}}Override"
+        and item.attrib.get("PartName") == "/word/document.xml"
+        and item.attrib.get("ContentType") == _WORD_MAIN_DOCUMENT_CONTENT_TYPE
+        for item in content_types_root
+    )
+    relationship_ids: set[str] = set()
+    root_office_document_relationships = []
+    for item in relationships_root:
+        if item.tag != f"{{{_OPC_RELATIONSHIPS_NAMESPACE}}}Relationship":
+            return False
+        relationship_id = str(item.attrib.get("Id") or "")
+        if not _is_valid_opc_relationship_id(relationship_id) or relationship_id in relationship_ids:
+            return False
+        relationship_ids.add(relationship_id)
+        if str(item.attrib.get("Type") or "") == _OPC_OFFICE_DOCUMENT_RELATIONSHIP:
+            root_office_document_relationships.append(item)
+    has_main_document_relationship = (
+        len(root_office_document_relationships) == 1
+        and str(root_office_document_relationships[0].attrib.get("TargetMode") or "").lower() != "external"
+        and _resolve_root_relationship_target(str(root_office_document_relationships[0].attrib.get("Target") or ""))
+        == "word/document.xml"
+    )
+    body = next((item for item in document_root if item.tag == f"{{{_WORDPROCESSINGML_NAMESPACE}}}body"), None)
+    return has_document_override and has_main_document_relationship and body is not None and any(True for _ in body)
+
+
+def _is_valid_opc_relationship_id(value: str) -> bool:
+    """Return whether an OPC relationship Id is a non-colon XML NCName.
+
+    OPC relationship identifiers are XML ``xsd:ID`` values.  XML allows
+    Unicode letters and combining marks, but a colon would make the value a
+    QName rather than the required NCName.  This small predicate keeps the
+    package parser dependency-free while accepting the XML name classes that
+    legitimate non-ASCII producers use.
+    """
+
+    if not value or ":" in value or not _is_xml_ncname_start(value[0]):
+        return False
+    return all(_is_xml_ncname_char(character) for character in value[1:])
+
+
+def _is_xml_ncname_start(character: str) -> bool:
+    """Implement XML 1.0 ``NameStartChar`` ranges excluding the QName colon."""
+
+    codepoint = ord(character)
+    return (
+        character == "_"
+        or "A" <= character <= "Z"
+        or "a" <= character <= "z"
+        or 0xC0 <= codepoint <= 0xD6
+        or 0xD8 <= codepoint <= 0xF6
+        or 0xF8 <= codepoint <= 0x2FF
+        or 0x370 <= codepoint <= 0x37D
+        or 0x37F <= codepoint <= 0x1FFF
+        or 0x200C <= codepoint <= 0x200D
+        or 0x2070 <= codepoint <= 0x218F
+        or 0x2C00 <= codepoint <= 0x2FEF
+        or 0x3001 <= codepoint <= 0xD7FF
+        or 0xF900 <= codepoint <= 0xFDCF
+        or 0xFDF0 <= codepoint <= 0xFFFD
+        or 0x10000 <= codepoint <= 0xEFFFF
+    )
+
+
+def _is_xml_ncname_char(character: str) -> bool:
+    """Implement XML 1.0 ``NameChar`` ranges for a non-colon NCName."""
+
+    codepoint = ord(character)
+    return (
+        _is_xml_ncname_start(character)
+        or character in {"-", "."}
+        or "0" <= character <= "9"
+        or codepoint == 0xB7
+        or 0x300 <= codepoint <= 0x36F
+        or 0x203F <= codepoint <= 0x2040
+    )
+
+
+def _docx_archive_entries_are_bounded(entries: list[zipfile.ZipInfo]) -> bool:
+    """Reject malformed, path-traversing, or expansion-prone OPC archive metadata before reads."""
+
+    if not entries or len(entries) > _REQUIRED_DOCX_MAX_ENTRY_COUNT:
+        return False
+    compressed_total = 0
+    uncompressed_total = 0
+    seen_package_parts: set[str] = set()
+    for entry in entries:
+        filename = str(entry.filename or "")
+        package_path = filename[:-1] if entry.is_dir() and filename.endswith("/") else filename
+        if (
+            not package_path
+            or "\x00" in filename
+            or "\\" in filename
+            or filename.startswith("/")
+            or any(part in {"", ".", ".."} for part in package_path.split("/"))
+            or bool(entry.flag_bits & 0x1)
+        ):
+            return False
+        normalized_part = package_path.casefold()
+        if normalized_part in seen_package_parts:
+            return False
+        seen_package_parts.add(normalized_part)
+        compressed_size = int(entry.compress_size)
+        uncompressed_size = int(entry.file_size)
+        if compressed_size < 0 or uncompressed_size < 0:
+            return False
+        compressed_total += compressed_size
+        uncompressed_total += uncompressed_size
+        if (
+            compressed_total > _REQUIRED_DOCX_MAX_COMPRESSED_BYTES
+            or uncompressed_total > _REQUIRED_DOCX_MAX_UNCOMPRESSED_BYTES
+            or (
+                compressed_size > 0
+                and uncompressed_size > compressed_size * _REQUIRED_DOCX_MAX_COMPRESSION_RATIO
+            )
+        ):
+            return False
+    return True
+
+
+def _resolve_root_relationship_target(target: str) -> str | None:
+    """Resolve a root OPC relationship only when it stays within the package root."""
+
+    if not target or "\\" in target or target.startswith("/"):
+        return None
+    normalized = posixpath.normpath(target)
+    if normalized.startswith("../") or normalized in {".", ".."}:
+        return None
+    return normalized
 
 
 def _artifact_label(filename: str, artifact_type: str) -> str:

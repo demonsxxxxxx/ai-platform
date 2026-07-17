@@ -67,10 +67,7 @@ test("settings panel places admin runtime capacity beside system health", () => 
   );
   assert.match(
     settingsPanelSource,
-    /<SystemHealthSection\s*\/>\s*<AdminRuntimeCapacitySection\s*\/>\s*<AdminToolPermissionInboxSection\s*\/>/,
+    /<SystemHealthSection\s*\/>\s*<AdminRuntimeCapacitySection\s*\/>/,
   );
-  assert.match(
-    settingsPanelSource,
-    /import\s+\{\s*AdminToolPermissionInboxSection\s*\}\s+from\s+"\.\/AdminToolPermissionInboxSection";/,
-  );
+  assert.doesNotMatch(settingsPanelSource, /AdminToolPermissionInboxSection/);
 });

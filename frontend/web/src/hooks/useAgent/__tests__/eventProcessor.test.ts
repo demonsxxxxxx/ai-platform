@@ -363,6 +363,108 @@ test("updates a tool permission confirmation part from decided run events", () =
   );
 });
 
+test("closes the exact permission card from a terminalized run event", () => {
+  const parts: MessagePart[] = [
+    {
+      type: "tool_permission",
+      event_id: "evt-permission-requested",
+      run_id: "run-a",
+      permission_request_id: "tpr-terminal",
+      tool_id: "Bash",
+      tool_call_id: "call-terminal",
+      risk_level: "high",
+      write_capable: true,
+      status: "pending",
+    } as never,
+  ];
+
+  const result = processMessageEvent(
+    "run_event",
+    {
+      event_id: "evt-permission-cancelled",
+      run_id: "run-a",
+      sequence: 10,
+      event_type: "tool_permission_terminalized",
+      stage: "tool_policy",
+      payload: {
+        permission_request_id: "tpr-terminal",
+        tool_id: "Bash",
+        tool_call_id: "call-terminal",
+        action: "execute",
+        risk_level: "high",
+        write_capable: true,
+        status: "cancelled",
+        reason: "run_cancel_requested",
+        decision_endpoint: "/api/ai/runs/run-a/tool-permissions/tpr-terminal/decision",
+        decision_options: ["allow_once", "allow_for_run", "deny"],
+      },
+    } as never,
+    parts,
+    "",
+    [],
+    0,
+    [],
+    false,
+    "message-1",
+  );
+
+  const part = result.parts[0] as MessagePart & {
+    type: "tool_permission";
+    status: string;
+    permission_request_id: string;
+  };
+  assert.equal(part.type, "tool_permission");
+  assert.equal(part.permission_request_id, "tpr-terminal");
+  assert.equal(part.status, "cancelled");
+  assert.doesNotMatch(JSON.stringify(part), /decision_endpoint|decision_options/);
+});
+
+test("does not reopen a terminalized permission card from a stale decision replay", () => {
+  const parts: MessagePart[] = [
+    {
+      type: "tool_permission",
+      event_id: "evt-permission-expired",
+      run_id: "run-a",
+      permission_request_id: "tpr-terminal-replay",
+      tool_id: "Bash",
+      tool_call_id: "call-terminal-replay",
+      risk_level: "high",
+      write_capable: true,
+      status: "expired",
+      sequence: 10,
+    } as never,
+  ];
+
+  const result = processMessageEvent(
+    "run_event",
+    {
+      event_id: "evt-permission-decided-stale",
+      run_id: "run-a",
+      sequence: 9,
+      event_type: "tool_permission_decided",
+      stage: "tool_policy",
+      payload: {
+        permission_request_id: "tpr-terminal-replay",
+        tool_id: "Bash",
+        tool_call_id: "call-terminal-replay",
+        decision: "allow_once",
+      },
+    } as never,
+    parts,
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  const part = result.parts[0] as MessagePart & { type: "tool_permission"; status: string; sequence: number };
+  assert.equal(part.type, "tool_permission");
+  assert.equal(part.status, "expired");
+  assert.equal(part.sequence, 10);
+});
+
 test("preserves pending tool risk fields when legacy decision events omit them", () => {
   const parts: MessagePart[] = [
     {

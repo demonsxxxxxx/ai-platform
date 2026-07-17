@@ -8,11 +8,13 @@ from datetime import datetime
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
 from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied
 from app.control_plane_contracts import sanitize_public_payload
 from app.public_context_keys import safe_public_context_pack_version
 from app.settings import get_settings
+from app.tool_policy import evaluate_tool_policy
 
 _SDK_ENV_ALLOWLIST = {
     "PATH",
@@ -49,6 +51,26 @@ _SDK_INTERNAL_CONTEXT_TOOLS = (
     "stage_context_file_to_workspace",
     "search_memory",
 )
+_BUILTIN_PARAMETER_KEYS = {
+    "Read": ("file_path",),
+    "Glob": ("pattern", "path"),
+    "LS": ("path",),
+    "Bash": ("command",),
+    "Write": ("file_path", "content"),
+    "Edit": ("file_path", "old_string", "new_string", "replace_all"),
+    "NotebookEdit": ("notebook_path", "new_source", "cell_id", "cell_type", "edit_mode"),
+    "Agent": ("agent", "prompt", "description"),
+    "WebFetch": ("url", "prompt"),
+    "WebSearch": ("query",),
+    "Skill": ("skill",),
+}
+_BUILTIN_REQUIRED_PARAMETER_KEYS = {
+    "Bash": ("command",),
+    "Write": ("file_path", "content"),
+    "Skill": ("skill",),
+}
+
+
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
 _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS = 1800.0
 _SHELL_UNSAFE_CHARS = set("$`;&|<>{}[]*?!\n\r")
@@ -66,6 +88,19 @@ _TRANSLATION_TARGET_ALIASES = {
     "zh": "Chinese",
 }
 _ALLOWED_TRANSLATION_TARGETS = frozenset(_TRANSLATION_TARGET_ALIASES.values())
+
+
+def _sdk_run_timeout_seconds(
+    settings: object,
+    *,
+    sandbox_brokered: bool,
+    full_access: bool,
+) -> float:
+    """Return the bounded SDK execution time without an approval wait extension."""
+    timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0))
+    if full_access:
+        timeout_seconds = max(timeout_seconds, _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS)
+    return timeout_seconds
 
 
 @dataclass(frozen=True)
@@ -869,6 +904,104 @@ def _build_context_retrieval_mcp_server(
     )
 
 
+def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
+    """Keep only exact, complete capability subjects authorized by the worker."""
+
+    if not isinstance(value, list):
+        return {}
+    subjects: dict[str, dict[str, Any]] = {}
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        identity = str(raw.get("identity") or "")
+        validation = evaluate_tool_policy(
+            tool={
+                "requested_identity": identity,
+                "declared_identities": [identity],
+                "registered": raw.get("registered"),
+                "declared": raw.get("declared"),
+                "active": raw.get("active"),
+                "distributed": raw.get("distributed"),
+                "identity_authorized": raw.get("identity_authorized"),
+                "object_authorized": raw.get("object_authorized"),
+                "parameters_authorized": raw.get("parameters_authorized"),
+                "risk_level": raw.get("risk_level"),
+                "write_capable": raw.get("write_capable"),
+            }
+        )
+        if not validation.allowed or validation.canonical_identity != identity or identity in subjects:
+            continue
+        subject = dict(raw)
+        subject["identity"] = identity
+        subjects[identity] = subject
+    return subjects
+
+
+def _authorized_parameter_keys(subject: dict[str, Any], tool_name: str) -> set[str]:
+    configured = subject.get("allowed_parameter_keys")
+    if isinstance(configured, list) and all(isinstance(item, str) and item for item in configured):
+        return set(configured)
+    return set(_BUILTIN_PARAMETER_KEYS.get(tool_name, ()))
+
+
+def _parameters_match_subject(subject: dict[str, Any], tool_name: str, tool_input: object) -> bool:
+    if not isinstance(tool_input, dict):
+        return False
+    allowed_keys = _authorized_parameter_keys(subject, tool_name)
+    if not allowed_keys or not set(tool_input).issubset(allowed_keys):
+        return False
+    required = subject.get("required_parameter_keys", list(_BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ())))
+    if isinstance(required, list):
+        if not all(isinstance(key, str) and key for key in required):
+            return False
+        if any(key not in tool_input or tool_input[key] in (None, "") for key in required):
+            return False
+    elif tool_name == "Bash":
+        if not isinstance(tool_input.get("command"), str) or not tool_input["command"].strip():
+            return False
+    if tool_name == "Skill":
+        allowed_skill_names = subject.get("allowed_skill_names")
+        requested = _extract_skill_names_from_tool_input(tool_input, set(allowed_skill_names or []))
+        if not requested:
+            return False
+    expected_objects = subject.get("object_constraints")
+    if isinstance(expected_objects, dict):
+        if any(tool_input.get(key) != value for key, value in expected_objects.items()):
+            return False
+    return True
+
+
+def _mcp_server_options(subjects: dict[str, dict[str, Any]]) -> dict[str, dict[str, str]]:
+    servers: dict[str, dict[str, str]] = {}
+    for identity, subject in subjects.items():
+        if not identity.startswith("mcp__"):
+            continue
+        config = subject.get("mcp_server_config")
+        if not isinstance(config, dict):
+            continue
+        server_id = str(subject.get("mcp_server") or "")
+        transport = str(config.get("type") or "").lower()
+        endpoint = str(config.get("url") or "")
+        parsed = urlsplit(endpoint)
+        if (
+            not server_id
+            or transport not in {"http", "sse"}
+            or parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            continue
+        candidate = {"type": transport, "url": endpoint}
+        existing = servers.get(server_id)
+        if existing is not None and existing != candidate:
+            return {}
+        servers[server_id] = candidate
+    return servers
+
+
 async def run_claude_agent_sdk(
     *,
     prompt: str,
@@ -882,7 +1015,7 @@ async def run_claude_agent_sdk(
     query_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
-    on_tool_permission: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
+    tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
 ) -> ClaudeAgentSdkRunResult:
     settings = get_settings()
@@ -906,9 +1039,9 @@ async def run_claude_agent_sdk(
     PermissionResultAllow = _sdk_permission_type(sdk, "PermissionResultAllow")
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
     configured_skills = skills if skills is not None else (_split_csv(settings.claude_agent_sdk_skills) or [skill_id])
-    allowed_skill_names = set(configured_skills)
     used_skill_names: list[str] = []
     sandbox_brokered = execution_policy == "sandbox_brokered"
+    authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
     full_access = _full_access_requested(settings) and not sandbox_brokered
     permission_mode = (
         "dontAsk"
@@ -918,14 +1051,22 @@ async def run_claude_agent_sdk(
             full_access=full_access,
         )
     )
-    allowed_tools = (
-        ["Read", "Glob", "LS"]
-        if sandbox_brokered
-        else _safe_allowed_tools(
+    if sandbox_brokered:
+        skill_subject = authorized_subjects.get("Skill")
+        subject_skill_names = skill_subject.get("allowed_skill_names") if skill_subject else []
+        allowed_skill_names = {
+            name
+            for name in subject_skill_names
+            if isinstance(name, str) and name in set(configured_skills)
+        }
+        configured_skills = [name for name in configured_skills if name in allowed_skill_names]
+        allowed_tools = list(authorized_subjects)
+    else:
+        allowed_skill_names = set(configured_skills)
+        allowed_tools = _safe_allowed_tools(
             getattr(settings, "claude_agent_allowed_tools", "Read,Glob,LS"),
             full_access=full_access,
         )
-    )
     context_retrieval_server = _build_context_retrieval_mcp_server(
         sdk,
         retrieval=context_retrieval,
@@ -933,7 +1074,7 @@ async def run_claude_agent_sdk(
         workspace_root=cwd,
     )
     internal_context_tools = set(_SDK_INTERNAL_CONTEXT_TOOLS) if context_retrieval_server is not None else set()
-    if context_retrieval_server is not None:
+    if context_retrieval_server is not None and not sandbox_brokered:
         for tool_name in _SDK_INTERNAL_CONTEXT_TOOLS:
             if tool_name not in allowed_tools:
                 allowed_tools.append(tool_name)
@@ -945,9 +1086,12 @@ async def run_claude_agent_sdk(
             full_access=full_access,
         )
     )
-    timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0))
-    if full_access:
-        timeout_seconds = max(timeout_seconds, _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS)
+    mcp_servers = _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
+    timeout_seconds = _sdk_run_timeout_seconds(
+        settings,
+        sandbox_brokered=sandbox_brokered,
+        full_access=full_access,
+    )
 
     async def record_used_skill(skill_name: str, metadata: dict[str, Any]) -> None:
         if allowed_skill_names and skill_name not in allowed_skill_names:
@@ -958,166 +1102,115 @@ async def run_claude_agent_sdk(
         if on_skill_use:
             await on_skill_use(skill_name, metadata)
 
-    async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
+    declared_tool_identities = (
+        set(authorized_subjects)
+        if sandbox_brokered
+        else {
+            (f"mcp__ai-platform-context__{tool_name}" if tool_name in internal_context_tools else tool_name)
+            for tool_name in allowed_tools
+        }
+    )
+    if not sandbox_brokered and allowed_skill_names:
+        declared_tool_identities.add("Skill")
+
+    def adapter_identity(tool_name: object) -> str:
+        value = str(tool_name or "")
+        contextual_identity = f"mcp__ai-platform-context__{value}"
+        if contextual_identity in declared_tool_identities:
+            return contextual_identity
+        return value
+
+    def policy_for_tool(tool_name: object, tool_input: object):
+        identity = adapter_identity(tool_name)
+        selected_skills = (
+            _extract_skill_names_from_tool_input(tool_input, allowed_skill_names)
+            if str(tool_name or "") == "Skill" and isinstance(tool_input, dict)
+            else []
+        )
+        subject = authorized_subjects.get(identity)
         if sandbox_brokered:
-            if tool_name in _SDK_LOCAL_READ_ONLY_TOOLS or tool_name in internal_context_tools:
-                return PermissionResultAllow()
-            if tool_name.lower() == "skill":
-                selected = (
-                    _extract_skill_names_from_tool_input(tool_input, allowed_skill_names)
-                    if allowed_skill_names
-                    else []
-                )
-                if selected:
-                    return PermissionResultAllow()
-            return PermissionResultDeny(message="Tool use requires the platform sandbox permission broker")
-        if full_access and tool_name in _sdk_tools_for_mode(full_access=True):
-            return PermissionResultAllow()
-        if tool_name == "Bash" and isinstance(tool_input, dict):
-            command = str(tool_input.get("command") or "")
-            permitted_command = _canonical_permitted_bash_command(command, cwd)
-            if permitted_command:
-                return PermissionResultAllow(updated_input={**tool_input, "command": permitted_command})
-        return PermissionResultDeny(message="Tool use is not permitted by ai-platform runner policy")
+            parameters_authorized = bool(subject) and _parameters_match_subject(subject, str(tool_name or ""), tool_input)
+            registered = bool(subject) and (
+                not identity.startswith("mcp__") or str(subject.get("mcp_server") or "") in mcp_servers
+            )
+            return evaluate_tool_policy(
+                tool={
+                    "requested_identity": identity,
+                    "declared_identities": sorted(declared_tool_identities),
+                    "registered": subject.get("registered") is True and registered if subject else False,
+                    "declared": subject.get("declared") if subject else False,
+                    "active": subject.get("active") if subject else False,
+                    "distributed": subject.get("distributed") if subject else False,
+                    "identity_authorized": subject.get("identity_authorized") if subject else False,
+                    "object_authorized": subject.get("object_authorized") if subject else False,
+                    "parameters_authorized": parameters_authorized,
+                    "risk_level": subject.get("risk_level") if subject else "low",
+                    "write_capable": subject.get("write_capable") if subject else False,
+                }
+            )
+        parameters_authorized = isinstance(tool_input, dict)
+        if str(tool_name or "") == "Bash":
+            parameters_authorized = parameters_authorized and isinstance(tool_input.get("command"), str) and bool(tool_input["command"].strip())
+        if str(tool_name or "") == "Skill":
+            parameters_authorized = bool(selected_skills)
+        declared = identity in declared_tool_identities
+        return evaluate_tool_policy(
+            tool={
+                "requested_identity": identity,
+                "declared_identities": sorted(declared_tool_identities),
+                "registered": declared,
+                "declared": declared,
+                "active": declared,
+                "distributed": declared,
+                "identity_authorized": True,
+                "object_authorized": True,
+                "parameters_authorized": parameters_authorized,
+                "risk_level": "low" if str(tool_name or "") in _SDK_LOCAL_READ_ONLY_TOOLS else "high",
+                "write_capable": str(tool_name or "") not in _SDK_LOCAL_READ_ONLY_TOOLS,
+            }
+        )
+
+    async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
+        decision = policy_for_tool(tool_name, tool_input)
+        if not decision.allowed:
+            return PermissionResultDeny(message=decision.reason)
+        if tool_name == "Bash" and not sandbox_brokered:
+            permitted_command = _canonical_permitted_bash_command(str(tool_input.get("command") or ""), cwd)
+            if not permitted_command:
+                return PermissionResultDeny(message="tool_parameters_not_authorized")
+            return PermissionResultAllow(updated_input={**tool_input, "command": permitted_command})
+        return PermissionResultAllow()
 
     async def enforce_side_effect_tool_policy(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
-        reason = "Tool use is not permitted by ai-platform runner policy"
         if not isinstance(hook_input, dict):
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            }
-        tool_name = str(hook_input.get("tool_name") or "")
-        if sandbox_brokered and (
-            tool_name in _SDK_LOCAL_READ_ONLY_TOOLS or tool_name in internal_context_tools
-        ):
-            return {}
-        brokered_tool = sandbox_brokered and bool(tool_name)
-        if tool_name != "Bash" and not brokered_tool:
-            return {}
-        tool_input = hook_input.get("tool_input")
-        if not isinstance(tool_input, dict):
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            }
-        if sandbox_brokered and tool_name.lower() == "skill":
-            selected_skills = (
-                _extract_skill_names_from_tool_input(tool_input, allowed_skill_names)
-                if allowed_skill_names
-                else []
-            )
-            if not selected_skills:
-                return {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": "Skill is not permitted by the pinned run allowlist",
-                    }
-                }
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": "Skill is permitted by the pinned run allowlist",
-                }
-            }
-        permitted = (
-            _canonical_permitted_bash_command_with_kind(str(tool_input.get("command") or ""), cwd)
-            if tool_name == "Bash"
-            else None
-        )
-        if permitted and not sandbox_brokered:
-            permitted_command, command_kind = permitted
-            if command_kind == "qa_review_runner":
-                await record_used_skill(
-                    "qa-file-reviewer",
-                    {
-                        "source": "claude_agent_sdk_hook",
-                        "hook_event_name": "PreToolUse",
-                        "tool_name": "Bash",
-                        "tool_use_id": str(hook_input.get("tool_use_id") or tool_use_id or ""),
-                    },
-                )
-            elif command_kind == "baoyu_translate_runner":
-                await record_used_skill(
-                    "baoyu-translate",
-                    {
-                        "source": "claude_agent_sdk_hook",
-                        "hook_event_name": "PreToolUse",
-                        "tool_name": "Bash",
-                        "tool_use_id": str(hook_input.get("tool_use_id") or tool_use_id or ""),
-                    },
-                )
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": (
-                        "ai-platform allowlisted QA review runner command"
-                        if command_kind == "qa_review_runner"
-                        else "ai-platform allowlisted Baoyu translate runner command"
-                        if command_kind == "baoyu_translate_runner"
-                        else "ai-platform allowlisted QA review preflight command"
-                    ),
-                    "updatedInput": {**tool_input, "command": permitted_command},
-                }
-            }
-        if full_access:
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": "ai-platform full access permits Bash",
-                }
-            }
-        if on_tool_permission is not None:
-            try:
-                permission = await on_tool_permission(
-                    {
-                        "tool_name": tool_name,
-                        "tool_call_id": str(hook_input.get("tool_use_id") or tool_use_id or ""),
-                        "tool_input_keys": sorted(str(key) for key in tool_input),
-                        "risk_level": "high",
-                        "write_capable": True,
-                        "action": "execute",
-                        "reason": f"Claude SDK requested {tool_name} through the platform sandbox permission broker",
-                        "tool_input": tool_input,
-                    }
-                )
-            except Exception:
-                permission = {"allowed": False, "reason": "tool_permission_broker_failed"}
-            if not isinstance(permission, dict):
-                permission = {"allowed": False, "reason": "tool_permission_malformed_response"}
-            elif not isinstance(permission.get("allowed"), bool):
-                permission = {"allowed": False, "reason": "tool_permission_malformed_response"}
-            permission_allowed = permission.get("allowed") is True
-            permission_reason = str(permission.get("reason") or reason)
-            output = {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow" if permission_allowed else "deny",
-                "permissionDecisionReason": permission_reason,
-            }
-            permission_request_id = str(permission.get("permission_request_id") or "")
-            if permission_request_id:
-                output["permission_request_id"] = permission_request_id
-            if permission_allowed and permitted:
-                output["updatedInput"] = {**tool_input, "command": permitted[0]}
-            return {"hookSpecificOutput": output}
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
+            decision = evaluate_tool_policy(tool={})
+        else:
+            tool_name = str(hook_input.get("tool_name") or "")
+            tool_input = hook_input.get("tool_input")
+            decision = policy_for_tool(tool_name, tool_input)
+        output: dict[str, object] = {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision.outcome,
+            "permissionDecisionReason": decision.reason,
         }
-
+        if decision.allowed and isinstance(hook_input, dict) and str(hook_input.get("tool_name") or "") == "Bash" and not sandbox_brokered:
+            tool_input = hook_input.get("tool_input")
+            if not isinstance(tool_input, dict):
+                output["permissionDecision"] = "deny"
+                output["permissionDecisionReason"] = "tool_parameters_not_authorized"
+            else:
+                permitted = _canonical_permitted_bash_command_with_kind(str(tool_input.get("command") or ""), cwd)
+                if permitted is None:
+                    output["permissionDecision"] = "deny"
+                    output["permissionDecisionReason"] = "tool_parameters_not_authorized"
+                else:
+                    permitted_command, command_kind = permitted
+                    output["updatedInput"] = {**tool_input, "command": permitted_command}
+                    if command_kind == "qa_review_runner":
+                        await record_used_skill("qa-file-reviewer", {"source": "claude_agent_sdk_hook", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": str(hook_input.get("tool_use_id") or tool_use_id or "")})
+                    elif command_kind == "baoyu_translate_runner":
+                        await record_used_skill("baoyu-translate", {"source": "claude_agent_sdk_hook", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": str(hook_input.get("tool_use_id") or tool_use_id or "")})
+        return {"hookSpecificOutput": output}
     async def record_skill_tool_use(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
         if not isinstance(hook_input, dict):
             return {}
@@ -1156,15 +1249,21 @@ async def run_claude_agent_sdk(
             hooks["PostToolUse"] = [skill_hook]
             hooks["PostToolUseFailure"] = [skill_hook]
 
+    if (
+        context_retrieval_server is not None
+        and any(identity.startswith("mcp__ai-platform-context__") for identity in declared_tool_identities)
+    ):
+        mcp_servers["ai-platform-context"] = context_retrieval_server
+    sdk_tools = (
+        [identity for identity in allowed_tools if not identity.startswith("mcp__")]
+        if sandbox_brokered
+        else _sdk_tools_for_mode(full_access=full_access)
+    )
     options = ClaudeAgentOptions(
         cwd=str(cwd),
         model=model_id or settings.claude_agent_model or settings.anthropic_model or None,
-        tools=(
-            [*_SDK_LOCAL_READ_ONLY_TOOLS, *_SDK_BROKERED_BUILTIN_TOOLS]
-            if sandbox_brokered
-            else _sdk_tools_for_mode(full_access=full_access)
-        ),
-        mcp_servers={"ai-platform-context": context_retrieval_server} if context_retrieval_server is not None else {},
+        tools=sdk_tools,
+        mcp_servers=mcp_servers,
         permission_mode=permission_mode,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,

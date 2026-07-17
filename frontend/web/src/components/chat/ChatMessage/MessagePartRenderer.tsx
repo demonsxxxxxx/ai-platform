@@ -457,7 +457,7 @@ function ArtifactCardItem({
   );
 }
 
-/** Render recorded permission history; governance actions live in the admin inbox. */
+/** Render recorded permission history only; no model-tool action is available. */
 export function ToolPermissionCardItem({
   part,
 }: {

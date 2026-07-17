@@ -69,10 +69,10 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         "frontend_projection",
     }
     assert "admin_tool_policy_inventory" in domains["tool_permission"]["implemented"]
-    assert "user_tool_permission_request_decision" in domains["tool_permission"]["implemented"]
+    assert "zero_click_model_tool_policy" in domains["tool_permission"]["implemented"]
     assert "audit_visible_legacy_frontend_route_policy_mapping" in domains["tool_permission"]["implemented"]
-    assert "tool_allow_deny_ask_policy_taxonomy_evidence" in domains["tool_permission"]["implemented"]
-    assert "exact_tool_permission_decision_lookup_source_tests" in domains["tool_permission"]["implemented"]
+    assert "allow_deny_tool_policy_taxonomy_evidence" in domains["tool_permission"]["implemented"]
+    assert "synchronous_capability_subject_source_tests" in domains["tool_permission"]["implemented"]
     assert "admin_policy_change_history_projection" in domains["tool_permission"]["implemented"]
     assert "admin_policy_bulk_review_dashboard_contract" in domains["tool_permission"]["implemented"]
     assert "admin_policy_bulk_review_runtime_acceptance_source_route_tests" in domains["tool_permission"]["implemented"]
@@ -83,9 +83,9 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
     assert "admin_policy_bulk_review_211_acceptance" in domains["tool_permission"]["gaps"]
     assert "admin_policy_bulk_review_and_change_history_view" not in domains["tool_permission"]["gaps"]
     assert "admin_policy_bulk_review_and_change_history_view" not in readiness["open_gaps"]
-    assert "tool_allow_deny_ask_policy_taxonomy_for_all_mcp_tools" not in domains["tool_permission"]["gaps"]
+    assert "allow_deny_policy_taxonomy_for_all_mcp_tools" not in domains["tool_permission"]["gaps"]
     tool_evidence = domains["tool_permission"]["evidence"]["tool_policy_taxonomy"]
-    assert tool_evidence["schema_version"] == "ai-platform.tool-policy-readiness.v1"
+    assert tool_evidence["schema_version"] == "ai-platform.tool-policy-readiness.v2"
     assert tool_evidence["status"] == "partial_blocked"
     assert tool_evidence["registry_contract"] == {
         "registry_source": "platform_registered_mcp_tools_only",
@@ -93,16 +93,12 @@ def test_governance_readiness_records_g6_domains_and_open_gaps_without_secrets()
         "unregistered_tool_behavior": "deny",
         "tenant_policy_scope": "same_tenant_registered_tools_only",
     }
-    assert "admin_policy_change_history_projection" in tool_evidence["implemented_controls"]
-    assert "exact_tool_permission_decision_lookup_source_tests" in tool_evidence["implemented_controls"]
+    assert "single_allow_deny_runtime_tool_policy" in tool_evidence["implemented_controls"]
     assert "platform_registered_mcp_only_policy" in tool_evidence["implemented_controls"]
     assert "ordinary_user_custom_mcp_disabled" in tool_evidence["implemented_controls"]
-    assert "admin_policy_bulk_review_dashboard_contract" in tool_evidence["implemented_controls"]
-    assert "admin_policy_bulk_review_runtime_acceptance_source_route_tests" in tool_evidence["implemented_controls"]
     assert tool_evidence["summary"] == {
         "taxonomy_cases": 6,
-        "auto_allow_cases": 1,
-        "ask_cases": 3,
+        "immediate_allow_cases": 4,
         "deny_cases": 2,
     }
     bulk_review_evidence = domains["tool_permission"]["evidence"]["admin_policy_bulk_review_dashboard"]

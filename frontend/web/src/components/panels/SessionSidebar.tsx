@@ -17,7 +17,7 @@ import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import { sessionApi, type BackendSession } from "../../services/api";
 import { useAuth } from "../../hooks/useAuth";
-import { useProjectSessionList } from "../../hooks/useSession";
+import { useSessionList } from "../../hooks/useSession";
 import { ConfirmDialog } from "../common/ConfirmDialog";
 import { RecentChatsDialog } from "../sidebar/RecentChatsDialog";
 import {
@@ -55,8 +55,6 @@ export interface SessionSidebarHandle {
   updateSessionUnread: (
     sessionId: string,
     unreadCount: number,
-    projectId?: string | null,
-    isFavorite?: boolean,
   ) => void;
 }
 
@@ -124,29 +122,22 @@ export const SessionSidebar = forwardRef<
 
   // ─── Hooks ──────────────────────────────────────────────────────
 
-  const uncategorizedList = useProjectSessionList("all", scrollEl);
+  const sessionList = useSessionList(scrollEl);
 
   const handleSessionUnread = useCallback(
-    (
-      sid: string,
-      count: number,
-      projectId?: string | null,
-      isFavorite?: boolean,
-    ) => {
+    (sid: string, count: number) => {
       setUnreadBySession((prev) =>
         mergeUnreadUpdate(prev, {
           sessionId: sid,
           unreadCount: count,
-          projectId,
-          isFavorite,
         }),
       );
-      const session = uncategorizedList.sessions.find((s) => s.id === sid);
+      const session = sessionList.sessions.find((s) => s.id === sid);
       if (session) {
-        uncategorizedList.updateSession({ ...session, unread_count: count });
+        sessionList.updateSession({ ...session, unread_count: count });
       }
     },
-    [uncategorizedList],
+    [sessionList],
   );
 
   useImperativeHandle(
@@ -164,7 +155,7 @@ export const SessionSidebar = forwardRef<
 
   const handleShareSession = useCallback(
     (sessionId: string) => {
-      const s = uncategorizedList.sessions.find((item) => item.id === sessionId);
+      const s = sessionList.sessions.find((item) => item.id === sessionId);
       const title =
         s?.name ||
         ((s?.metadata as Record<string, unknown> | undefined)?.title as
@@ -174,7 +165,7 @@ export const SessionSidebar = forwardRef<
       setShareDialogSessionId(sessionId);
       setShareDialogSessionName(title || t("sidebar.newChat"));
     },
-    [uncategorizedList, t],
+    [sessionList, t],
   );
 
   // ─── Delete confirmation ────────────────────────────────────────
@@ -189,7 +180,7 @@ export const SessionSidebar = forwardRef<
     if (!sessionId) return;
     try {
       await sessionApi.delete(sessionId);
-      uncategorizedList.removeSession(sessionId);
+      sessionList.removeSession(sessionId);
       if (currentSessionId === sessionId) onNewSession();
       toast.success(t("sidebar.sessionDeleted"));
     } catch (err) {
@@ -204,7 +195,7 @@ export const SessionSidebar = forwardRef<
 
   useEffect(() => {
     if (!currentSessionId) return;
-    uncategorizedList.softRefresh();
+    sessionList.softRefresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSessionId]);
 
@@ -216,11 +207,11 @@ export const SessionSidebar = forwardRef<
         newSession.name ?? "",
       ].join(":");
       if (lastAppliedNewSessionKeyRef.current === sessionKey) return;
-      uncategorizedList.prependSession(newSession);
-      uncategorizedList.updateSession(newSession);
+      sessionList.prependSession(newSession);
+      sessionList.updateSession(newSession);
       lastAppliedNewSessionKeyRef.current = sessionKey;
     }
-  }, [newSession, uncategorizedList]);
+  }, [newSession, sessionList]);
 
   // ─── Keyboard shortcuts ──────────────────────────────────────────
 
@@ -258,22 +249,11 @@ export const SessionSidebar = forwardRef<
 
   const selectAndClose = useCallback(
     (sessionId: string) => {
-      const uncategorizedSession = uncategorizedList.sessions.find(
-        (session) => session.id === sessionId,
-      );
-      handleSessionUnread(
-        sessionId,
-        0,
-        (uncategorizedSession?.metadata?.project_id as
-          | string
-          | null
-          | undefined) ?? null,
-        undefined,
-      );
+      handleSessionUnread(sessionId, 0);
       onSelectSession(sessionId);
       onMobileClose?.();
     },
-    [uncategorizedList, handleSessionUnread, onSelectSession, onMobileClose],
+    [handleSessionUnread, onSelectSession, onMobileClose],
   );
 
   // ─── Aggregated action objects for SessionListContent ────────────
@@ -326,12 +306,12 @@ export const SessionSidebar = forwardRef<
             onNewSession={onNewSession}
             onOpenSearch={() => setIsSearchOpen(true)}
             onSetScrollEl={setScrollEl}
-            uncategorizedSessions={uncategorizedList.sessions}
-            isUncategorizedLoading={uncategorizedList.isLoading}
-            hasMoreUncategorized={uncategorizedList.hasMore}
-            isLoadingMoreUncategorized={uncategorizedList.isLoadingMore}
-            loadMoreRef={uncategorizedList.loadMoreRef}
-            onUpdateUncategorizedSession={uncategorizedList.updateSession}
+            sessions={sessionList.sessions}
+            isLoading={sessionList.isLoading}
+            hasMore={sessionList.hasMore}
+            isLoadingMore={sessionList.isLoadingMore}
+            loadMoreRef={sessionList.loadMoreRef}
+            onUpdateSession={sessionList.updateSession}
             currentSessionId={currentSessionId}
             unreadBySession={unreadBySession}
             sessionActions={sessionActions}
@@ -365,12 +345,12 @@ export const SessionSidebar = forwardRef<
               onNewSession={onNewSession}
               onOpenSearch={() => setIsSearchOpen(true)}
               onSetScrollEl={setScrollEl}
-              uncategorizedSessions={uncategorizedList.sessions}
-              isUncategorizedLoading={uncategorizedList.isLoading}
-              hasMoreUncategorized={uncategorizedList.hasMore}
-              isLoadingMoreUncategorized={uncategorizedList.isLoadingMore}
-              loadMoreRef={uncategorizedList.loadMoreRef}
-              onUpdateUncategorizedSession={uncategorizedList.updateSession}
+              sessions={sessionList.sessions}
+              isLoading={sessionList.isLoading}
+              hasMore={sessionList.hasMore}
+              isLoadingMore={sessionList.isLoadingMore}
+              loadMoreRef={sessionList.loadMoreRef}
+              onUpdateSession={sessionList.updateSession}
               currentSessionId={currentSessionId}
               unreadBySession={unreadBySession}
               sessionActions={sessionActions}

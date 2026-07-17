@@ -6,6 +6,7 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.runtime.kernel_contracts import AgentEvent
+from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS
 from app.validation import assert_safe_id, assert_safe_principal_user_id
 
 
@@ -142,8 +143,10 @@ class SandboxRuntimeRequest(BaseModel):
     agent_id: str
     skill_ids: list[str] = Field(default_factory=list)
     mcp_tool_ids: list[str] = Field(default_factory=list)
+    tool_policy_subjects: list[dict[str, Any]] = Field(default_factory=list)
     input_message: str
     file_ids: list[str] = Field(default_factory=list)
+    materialized_file_names: list[str] = Field(default_factory=list)
     sandbox_mode: SandboxMode
     browser_enabled: bool = False
     model: str
@@ -157,6 +160,7 @@ class SandboxRuntimeRequest(BaseModel):
     context_manifest: dict[str, Any] = Field(default_factory=dict)
     context_retrieval_scope: ContextRetrievalScope | None = None
     sdk_session_id: str | None = None
+    governed_permission_wait: bool = False
 
     @field_validator("tenant_id", "workspace_id", "session_id", "run_id", "agent_id", "callback_token_id")
     @classmethod
@@ -310,6 +314,7 @@ class ExecutorTaskRequest(BaseModel):
     callback_base_url: str
     sdk_session_id: str | None = None
     permission_mode: Literal["default", "plan", "acceptEdits", "bypassPermissions"] = "default"
+    governed_permission_wait: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("session_id", "run_id", "callback_token_id")
@@ -364,6 +369,7 @@ class ExecutorToolPermissionRequest(BaseModel):
     risk_level: str = "high"
     write_capable: bool = True
     reason: str = "Claude SDK tool permission required"
+    permission_wait_seconds: float | None = Field(default=None, ge=0, le=TOOL_PERMISSION_REQUEST_TTL_SECONDS)
 
     @field_validator("session_id", "run_id", "callback_token_id")
     @classmethod

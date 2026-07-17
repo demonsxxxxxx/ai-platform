@@ -27,6 +27,51 @@ interface PrincipalResponseWire {
   source: string;
 }
 
+export type AuthContextBootstrapRequest =
+  | { nonce: string; protocol_version?: 1 }
+  | {
+      nonce: string;
+      protocol_version: 2;
+      browser_incarnation: string;
+      generation: number;
+      rotation_ticket?: string;
+      recovery_only?: true;
+    };
+
+export type AuthContextBootstrapResponse =
+  | { status: "ready"; protocol_version?: 1 | 2; generation?: number }
+  | {
+      status: "rebootstrap_required";
+      protocol_version: 2;
+      generation: number;
+      rotation_ticket: string;
+    };
+
+export type AuthContextBootstrapResult = AuthContextBootstrapResponse | void;
+
+export type BootstrapAuthContext = {
+  bivarianceHack(
+    request: string | AuthContextBootstrapRequest,
+    signal?: AbortSignal,
+  ): Promise<AuthContextBootstrapResult>;
+}["bivarianceHack"];
+
+async function bootstrapAuthContext(
+  request: string | AuthContextBootstrapRequest,
+  signal?: AbortSignal,
+): Promise<AuthContextBootstrapResult> {
+  const payload: AuthContextBootstrapRequest =
+    typeof request === "string" ? { nonce: request } : request;
+  return authFetch<AuthContextBootstrapResponse>(`${API_BASE}/api/ai/auth/bootstrap`, {
+    method: "POST",
+    skipAuth: true,
+    credentials: "include",
+    body: JSON.stringify(payload),
+    headers: { "Content-Type": "application/json" },
+    signal,
+  });
+}
+
 function mapPrincipalToUser(principal: PrincipalResponseWire): User {
   return {
     id: principal.user_id,
@@ -57,16 +102,7 @@ export const authApi = {
   /**
    * Establish the stable HttpOnly browser auth context before any mutation.
    */
-  async bootstrapAuthContext(nonce: string, signal?: AbortSignal): Promise<void> {
-    await authFetch<{ status: string }>(`${API_BASE}/api/ai/auth/bootstrap`, {
-      method: "POST",
-      skipAuth: true,
-      credentials: "include",
-      body: JSON.stringify({ nonce }),
-      headers: { "Content-Type": "application/json" },
-      signal,
-    });
-  },
+  bootstrapAuthContext: bootstrapAuthContext as BootstrapAuthContext,
 
   /**
    * 用户登录
@@ -154,7 +190,7 @@ export const authApi = {
       method: "POST",
       credentials: "include",
       headers: {
-        "Accept-Language": i18n.language || "en",
+        "Accept-Language": "zh-CN",
       },
       signal,
     });
@@ -171,7 +207,7 @@ export const authApi = {
     const projection = projectSafeBackendError(
       detail,
       response.status,
-      i18n.t.bind(i18n),
+      i18n.getFixedT("zh"),
     );
     throw new ApiRequestError(
       projection.message,

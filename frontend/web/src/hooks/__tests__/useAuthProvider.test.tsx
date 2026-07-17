@@ -1436,3 +1436,169 @@ test("AuthPage projects unknown transport diagnostics to existing localized gene
     await mounted.cleanup();
   }
 });
+
+test("AuthPage renders actionable localized copy when secure browser auth coordination is unavailable", async () => {
+  const { BrowserAuthCoordinatorError } = await import("../browserAuthCoordinator.ts");
+  let bootstrapCalls = 0;
+  const mounted = await mountAuthPageHarness((api) => {
+    api.getCurrentUser = async () => authUser("admin-a", "tenant-a");
+    api.bootstrapAuthContext = async () => {
+      bootstrapCalls += 1;
+      if (bootstrapCalls > 1) {
+        throw new BrowserAuthCoordinatorError(
+          "auth_context_coordination_unavailable",
+        );
+      }
+    };
+    api.login = async () => undefined;
+  });
+  try {
+    const inputs = findElements(mounted.container, "input");
+    const usernameInput = inputs[0];
+    const passwordInput = inputs[1];
+    const form = findElements(mounted.container, "form")[0];
+    assert.ok(usernameInput && passwordInput && form);
+
+    await mounted.React.act(async () => {
+      usernameInput.value = "admin-b";
+      reactProps(usernameInput).onChange?.({ target: usernameInput } as never);
+      passwordInput.value = "safe-test";
+      reactProps(passwordInput).onChange?.({ target: passwordInput } as never);
+      await Promise.resolve();
+    });
+    await mounted.React.act(async () => {
+      reactProps(form).onSubmit?.({ preventDefault() {} } as never);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.equal(mounted.errorToasts.length, 1);
+    assert.match(String(mounted.errorToasts[0]), /浏览器|站点数据|联系管理员/);
+    assert.match(String(mounted.errorToasts[0]), /站点地址.*HTTPS/);
+    assert.deepEqual(mounted.successToasts, []);
+    assert.deepEqual(mounted.successfulRedirects, []);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("reversed stale cookie arrival repairs and retries exactly one idempotent principal GET", async () => {
+  let cookieJar = "current-generation";
+  let bootstrapCalls = 0;
+  let principalCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.bootstrapAuthContext = async () => {
+      bootstrapCalls += 1;
+      // The first post-reversal bootstrap is the ordinary ensure. The second
+      // is the typed stale repair; model delayed Set-Cookie only there.
+      if (bootstrapCalls === 3) cookieJar = "current-generation";
+    };
+    api.getCurrentUser = async () => {
+      principalCalls += 1;
+      if (principalCalls === 1) return authUser("initial-user", "tenant-a");
+      if (cookieJar === "old-generation") {
+        throw new ApiRequestError("stale auth context", 409, "auth_context_stale");
+      }
+      return authUser("repaired-user", "tenant-b");
+    };
+  });
+  try {
+    await mounted.flush();
+    // A late old Set-Cookie physically wins in the jar after the initial
+    // principal was projected; it has no server authority in the V2 protocol.
+    cookieJar = "old-generation";
+    let outcome: Awaited<ReturnType<typeof mounted.auth.refreshUser>>;
+    await mounted.React.act(async () => {
+      outcome = await mounted.auth.refreshUser();
+      await Promise.resolve();
+    });
+
+    assert.equal(outcome!.status, "completed");
+    assert.equal(mounted.auth.user?.id, "repaired-user");
+    assert.equal(principalCalls, 3);
+    assert.equal(bootstrapCalls, 3);
+    assert.equal(cookieJar, "current-generation");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("typed stale mutation failure never replays login POST", async () => {
+  let loginCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.getCurrentUser = async () => authUser("initial-user", "tenant-a");
+    api.login = async () => {
+      loginCalls += 1;
+      throw new ApiRequestError("stale auth context", 409, "auth_context_stale");
+    };
+  });
+  try {
+    await mounted.flush();
+    await mounted.React.act(async () => {
+      await assert.rejects(
+        () => mounted.auth.login({ username: "test-user", password: "test-password" }),
+        (error: unknown) => error instanceof ApiRequestError && error.code === "auth_context_stale",
+      );
+      await Promise.resolve();
+    });
+    assert.equal(loginCalls, 1);
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("login issues one context bootstrap before one business login mutation", async () => {
+  const calls: string[] = [];
+  let currentUserCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.bootstrapAuthContext = async () => {
+      calls.push("bootstrap");
+    };
+    api.login = async () => {
+      calls.push("login");
+    };
+    api.getCurrentUser = async () => {
+      currentUserCalls += 1;
+      return currentUserCalls === 1
+        ? authUser("initial-user", "tenant-a")
+        : authUser("login-user", "tenant-b");
+    };
+  });
+  try {
+    await mounted.flush();
+    calls.length = 0;
+    await mounted.React.act(async () => {
+      await mounted.auth.login({ username: "test-user", password: "test-password" });
+    });
+
+    assert.deepEqual(calls, ["bootstrap", "login"]);
+    assert.equal(calls.filter((call) => call === "login").length, 1);
+    assert.equal(mounted.auth.user?.id, "login-user");
+  } finally {
+    await mounted.cleanup();
+  }
+});
+
+test("a fail-closed browser context recovery never reaches the login mutation", async () => {
+  const { BrowserAuthCoordinatorError } = await import("../browserAuthCoordinator.ts");
+  let loginCalls = 0;
+  const mounted = await mountAuthHarness((api) => {
+    api.bootstrapAuthContext = async () => {
+      throw new BrowserAuthCoordinatorError("auth_context_coordination_unavailable");
+    };
+    api.login = async () => {
+      loginCalls += 1;
+    };
+  });
+  try {
+    await mounted.React.act(async () => {
+      await assert.rejects(
+        () => mounted.auth.login({ username: "test-user", password: "test-password" }),
+        (error: unknown) => error instanceof BrowserAuthCoordinatorError,
+      );
+    });
+    assert.equal(loginCalls, 0);
+  } finally {
+    await mounted.cleanup();
+  }
+});

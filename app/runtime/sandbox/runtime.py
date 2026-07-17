@@ -250,7 +250,9 @@ class SandboxRuntime:
                 "resource_limits": request.resource_limits,
                 "skill_ids": request.skill_ids,
                 "mcp_tool_ids": request.mcp_tool_ids,
+                "tool_policy_subjects": request.tool_policy_subjects,
                 "input_files": request.file_ids,
+                "materialized_file_names": request.materialized_file_names,
             }
             if request.context_manifest:
                 task_config["context_manifest"] = dict(request.context_manifest)
@@ -267,6 +269,7 @@ class SandboxRuntime:
                 callback_base_url=trusted_callback_target.base_url,
                 sdk_session_id=request.sdk_session_id,
                 permission_mode="default",
+                governed_permission_wait=request.governed_permission_wait,
                 config=task_config,
             )
             dispatch_started_at = time.monotonic()

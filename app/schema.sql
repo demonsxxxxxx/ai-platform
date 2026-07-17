@@ -347,7 +347,12 @@ create table if not exists runs (
   created_at timestamptz not null default now(),
   copied_from_run_id text references runs(id),
   cancel_requested_at timestamptz,
-  cancel_requested_by text
+  cancel_requested_by text,
+  permission_terminalization_target text,
+  permission_terminalization_reason text not null default '',
+  permission_terminalization_result_json jsonb not null default '{}'::jsonb,
+  permission_terminalization_error_code text,
+  permission_terminalization_error_message text
 );
 
 create index if not exists idx_runs_tenant_created on runs(tenant_id, created_at desc);
@@ -363,6 +368,11 @@ alter table runs add column if not exists auth_source text;
 alter table runs add column if not exists copied_from_run_id text references runs(id);
 alter table runs add column if not exists cancel_requested_at timestamptz;
 alter table runs add column if not exists cancel_requested_by text;
+alter table runs add column if not exists permission_terminalization_target text;
+alter table runs add column if not exists permission_terminalization_reason text not null default '';
+alter table runs add column if not exists permission_terminalization_result_json jsonb not null default '{}'::jsonb;
+alter table runs add column if not exists permission_terminalization_error_code text;
+alter table runs add column if not exists permission_terminalization_error_message text;
 alter table runs add column if not exists latency_ms integer;
 alter table runs add column if not exists input_token_count integer not null default 0;
 alter table runs add column if not exists output_token_count integer not null default 0;
@@ -374,6 +384,37 @@ create unique index if not exists idx_runs_context_scope
   on runs(tenant_id, workspace_id, user_id, session_id, id);
 create unique index if not exists idx_sessions_run_scope
   on sessions(tenant_id, workspace_id, user_id, id, agent_id);
+
+-- A durable, principal-scoped record for one client chat mutation.  It is
+-- deliberately separate from runs/messages: a rejected request has no run,
+-- and a response can be lost after the run transaction commits.
+create table if not exists chat_submissions (
+  tenant_id text not null references tenants(id),
+  user_id text not null references users(id),
+  submission_id uuid not null,
+  workspace_id text,
+  request_fingerprint_sha256 text not null,
+  state text not null,
+  submission_disposition text,
+  rejection_code text,
+  -- This optional pointer must not impose a global schema rule on uploads or
+  -- other pre-session rows; the submission resolver validates it by scope.
+  session_id text,
+  run_id text references runs(id),
+  outcome_json jsonb not null default '{}'::jsonb,
+  queue_position integer,
+  queue_admission_ordinal bigint,
+  queue_message_id text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  primary key (tenant_id, user_id, submission_id)
+);
+
+create index if not exists idx_chat_submissions_scope_updated
+  on chat_submissions(tenant_id, user_id, updated_at desc);
+create index if not exists idx_chat_submissions_run
+  on chat_submissions(tenant_id, run_id)
+  where run_id is not null;
 
 do $$
 begin
@@ -854,6 +895,10 @@ create index if not exists idx_run_tool_permission_requests_run
   on run_tool_permission_requests(tenant_id, run_id, created_at desc);
 create index if not exists idx_run_tool_permission_requests_inbox
   on run_tool_permission_requests(tenant_id, user_id, status, created_at desc);
+alter table run_tool_permission_requests add column if not exists expires_at timestamptz;
+create index if not exists idx_run_tool_permission_requests_pending_expiry
+  on run_tool_permission_requests(tenant_id, expires_at asc, created_at asc, id)
+  where status = 'pending';
 
 create table if not exists sandbox_leases (
   id text primary key,

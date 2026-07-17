@@ -7,16 +7,18 @@ import {
   buildRunCancelUrl,
   buildSessionListUrl,
   buildSessionRunsUrl,
+  buildChatSubmissionUrl,
+  buildChatSubmissionRetryAdmissionUrl,
   buildSubmitChatUrl,
   buildSubmitChatBody,
   isChatStreamNeedsConfirmation,
   resolveChatSessionAgentId,
 } from "../session.ts";
 
-test("fails closed instead of sending unsupported project or favorite filters", () => {
+test("builds the active session list URL with pagination", () => {
   assert.equal(
-    buildSessionListUrl({ project_id: "project-1", favorites_only: true }),
-    "/api/sessions",
+    buildSessionListUrl({ status: "active", limit: 20, skip: 40 }),
+    "/api/sessions?status=active&limit=20&skip=40",
   );
 });
 
@@ -58,6 +60,33 @@ test("includes user_timezone in the submit chat body when available", () => {
       disabled_mcp_tools: undefined,
       user_timezone: "Asia/Shanghai",
     },
+  );
+});
+
+test("carries an opaque submission id and resolves its exact status route", () => {
+  assert.deepEqual(
+    buildSubmitChatBody({
+      message: "hello",
+      submissionId: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    }),
+    {
+      message: "hello",
+      session_id: undefined,
+      agent_options: undefined,
+      attachments: undefined,
+      disabled_skills: undefined,
+      enabled_skills: undefined,
+      disabled_mcp_tools: undefined,
+      submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    },
+  );
+  assert.equal(
+    buildChatSubmissionUrl("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"),
+    "/api/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+  );
+  assert.equal(
+    buildChatSubmissionRetryAdmissionUrl("7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"),
+    "/api/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4/retry-admission",
   );
 });
 

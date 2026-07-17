@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
 
 TOOL_PERMISSION_CARD_SCHEMA_VERSION = "ai-platform.tool-permission-card.v1"
-TOOL_PERMISSION_DECISION_OPTIONS = ["allow_once", "allow_for_run", "deny"]
 TOOL_PERMISSION_PRIVATE_PAYLOAD_KEYS = {
     "".join(ch for ch in key if ch.isalnum()).lower()
     for key in {
@@ -45,7 +45,9 @@ def _redact_tool_permission_private_payload(value: Any) -> Any:
     return value
 
 
-def permission_response(row: dict[str, Any], *, decision_endpoint: str | None = None) -> dict[str, Any]:
+def permission_response(row: dict[str, Any]) -> dict[str, Any]:
+    """Return an owner-visible permission record without governance controls."""
+
     run_id = str(row["run_id"])
     request_id = str(row["id"])
     return {
@@ -64,8 +66,6 @@ def permission_response(row: dict[str, Any], *, decision_endpoint: str | None = 
         "status": str(row.get("status") or "pending"),
         "decision": row.get("decision"),
         "reason": sanitize_public_text(row.get("reason")),
-        "decision_endpoint": decision_endpoint or tool_permission_decision_endpoint(run_id, request_id),
-        "decision_options": list(TOOL_PERMISSION_DECISION_OPTIONS),
         "created_at": row.get("created_at"),
         "decided_at": row.get("decided_at"),
         "expires_at": row.get("expires_at"),
@@ -91,18 +91,29 @@ def inbox_permission_response(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def inbox_allowed_decisions(row: dict[str, Any]) -> list[str]:
-    """Expose run-scoped approval only when its exact replay fingerprint exists."""
-    decisions = ["allow_once"]
-    payload = row.get("request_payload_json")
-    payload = payload if isinstance(payload, dict) else {}
-    has_replay_fingerprint = any(
-        isinstance(payload.get(key), str) and bool(payload[key].strip())
-        for key in ("command_sha256", "input_sha256")
-    )
-    if has_replay_fingerprint:
-        decisions.append("allow_for_run")
-    decisions.append("deny")
-    return decisions
+    """Historical records intentionally expose no runtime decision controls."""
+
+    _ = row
+    return []
+
+
+def _permission_request_expired(value: object) -> bool:
+    """Fail closed for an invalid persisted expiry and close elapsed cards truthfully."""
+
+    if value is None:
+        return True
+    if isinstance(value, datetime):
+        expires_at = value
+    elif isinstance(value, str):
+        try:
+            expires_at = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+    else:
+        return True
+    if expires_at.tzinfo is None:
+        return True
+    return expires_at <= datetime.now(timezone.utc)
 
 
 def tool_permission_public_event_payload(
@@ -146,8 +157,6 @@ def tool_permission_card_from_payload(
         "reason": _public_text(sanitized.get("reason")),
         "status": status,
         "decision": decision,
-        "decision_endpoint": tool_permission_decision_endpoint(run_id, request_id),
-        "decision_options": list(TOOL_PERMISSION_DECISION_OPTIONS),
     }
     if sanitized.get("created_at") is not None:
         card["created_at"] = sanitized.get("created_at")
@@ -156,10 +165,6 @@ def tool_permission_card_from_payload(
     if sanitized.get("expires_at") is not None:
         card["expires_at"] = sanitized.get("expires_at")
     return card
-
-
-def tool_permission_decision_endpoint(run_id: str, request_id: str) -> str:
-    return f"/api/ai/runs/{run_id}/tool-permissions/{request_id}/decision"
 
 
 def _public_text(value: object) -> str:

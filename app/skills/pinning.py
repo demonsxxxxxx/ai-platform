@@ -8,12 +8,19 @@ from typing import Any
 from app.skills.dependencies import skill_dependency_ids, with_skill_dependencies
 from app.skills.lifecycle import is_admin_materializable_status
 from app.skills.registry import BuiltinSkill, iter_skill_files
+from app.tool_policy import BUILTIN_TOOL_IDENTITIES
 
 MAX_SKILL_SNAPSHOT_FILE_BYTES = 8 * 1024 * 1024
 MAX_SKILL_SNAPSHOT_TOTAL_BYTES = 16 * 1024 * 1024
 SKILL_PINNED_SNAPSHOT_GOVERNANCE_SCHEMA_VERSION = (
     "ai-platform.skill-pinned-snapshot-governance.v1"
 )
+_SERVER_BUILTIN_TOOL_DECLARATIONS = {
+    "baoyu-translate": ("Bash", "Write"),
+    "ctd-32s73-stability-template-fill": ("Bash", "Write"),
+    "minimax-docx": ("Bash", "Write"),
+    "qa-file-reviewer": ("Bash", "Write"),
+}
 
 
 class SkillVersionMaterializationError(ValueError):
@@ -31,6 +38,15 @@ def _requested_skill_ids(skill_id: str, input_payload: dict[str, Any]) -> list[s
     if skill_id:
         requested.insert(0, skill_id)
     return list(dict.fromkeys(requested))
+
+
+def _server_declared_builtin_tool_identities(skill_id: object, source: object) -> list[str]:
+    """Return the repository-owned builtin tool declaration for a pinned Skill."""
+
+    if not isinstance(source, dict) or source.get("kind") != "builtin":
+        return []
+    declared = _SERVER_BUILTIN_TOOL_DECLARATIONS.get(str(skill_id) or "", ())
+    return [identity for identity in declared if identity in BUILTIN_TOOL_IDENTITIES]
 
 
 def _snapshot_files(path: Path) -> list[dict[str, Any]]:
@@ -184,6 +200,7 @@ def build_skill_manifest_pins(
                 "source": skill.source,
                 "files": _snapshot_files(skill.path),
                 "dependency_ids": skill_dependency_ids(skill.name, selected_set),
+                "builtin_tool_identities": _server_declared_builtin_tool_identities(skill.name, skill.source),
                 "allowed": True,
                 "staged": False,
                 "used": False,
@@ -223,6 +240,10 @@ def _build_skill_version_manifest_pin(
         "source": manifest_source,
         "files": files,
         "dependency_ids": _string_list(skill_version.get("dependency_ids")),
+        "builtin_tool_identities": _server_declared_builtin_tool_identities(
+            skill_version.get("skill_id"),
+            manifest_source,
+        ),
         "allowed": True,
         "staged": False,
         "used": False,

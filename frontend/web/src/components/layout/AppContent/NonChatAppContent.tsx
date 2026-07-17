@@ -44,8 +44,6 @@ export function NonChatAppContent({
     <AppShell
       activeTab={activeTab}
       setMobileSidebarOpen={setMobileSidebarOpen}
-      currentProjectId={null}
-      projectManager={{ projects: [] }}
       onNewSession={handleNewSession}
       sidebar={
         <SessionSidebar

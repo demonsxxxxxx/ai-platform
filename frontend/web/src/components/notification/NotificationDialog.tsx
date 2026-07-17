@@ -13,6 +13,11 @@ import {
 import { notificationPublicApi } from "../../services/api/notificationPublic";
 import type { Notification, NotificationType } from "../../types/notification";
 import { formatDateTimeShort } from "../../utils/datetime";
+import {
+  CHINESE_NOTIFICATION_CONTENT_FALLBACK,
+  CHINESE_NOTIFICATION_TITLE_FALLBACK,
+  resolveChineseNotificationText,
+} from "./notificationChineseCopy";
 
 const TYPE_CONFIG: Record<
   NotificationType,
@@ -51,7 +56,7 @@ export function NotificationDialog({
   onClose,
   onDismissed,
 }: NotificationDialogProps) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [dismissingId, setDismissingId] = useState<string | null>(null);
 
@@ -86,9 +91,6 @@ export function NotificationDialog({
   };
 
   if (!isOpen) return null;
-
-  const lang = (i18n.language?.split("-")[0] ||
-    "en") as keyof Notification["title_i18n"];
 
   return createPortal(
     <div
@@ -163,8 +165,14 @@ export function NotificationDialog({
             </div>
           ) : (
             notifications.map((n) => {
-              const title = n.title_i18n[lang] || n.title_i18n.en;
-              const content = n.content_i18n[lang] || n.content_i18n.en;
+              const title = resolveChineseNotificationText(
+                n.title_i18n,
+                CHINESE_NOTIFICATION_TITLE_FALLBACK,
+              );
+              const content = resolveChineseNotificationText(
+                n.content_i18n,
+                CHINESE_NOTIFICATION_CONTENT_FALLBACK,
+              );
               const config = TYPE_CONFIG[n.type] || TYPE_CONFIG.info;
               const Icon = config.icon;
               const schedule =

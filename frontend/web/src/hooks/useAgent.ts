@@ -3,7 +3,14 @@
  * Provides agent communication, message management, and SSE streaming
  */
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import {
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+} from "react";
 import toast from "react-hot-toast";
 import i18n from "../i18n";
 import { uuid } from "../utils/uuid";
@@ -66,6 +73,7 @@ import {
 import { createOptimisticMessagesForSend } from "./useAgent/optimisticMessages";
 import { translateBackendError } from "../utils/backendErrors";
 import { dispatchSessionTitleUpdated } from "../utils/sessionTitleEvents";
+import { ApiRequestError } from "../services/api/fetch";
 import {
   SELECTED_SKILL_RECOVERABLE_CODES,
   type SelectedSkillRecoverableCode,
@@ -74,11 +82,20 @@ import {
 function getSelectedSkillRecoverableCode(
   error: unknown,
 ): SelectedSkillRecoverableCode | null {
-  if (!(error instanceof Error)) return null;
+  if (!(error instanceof ApiRequestError)) return null;
   return (
     SELECTED_SKILL_RECOVERABLE_CODES.find(
-      (code) => error.message.trim() === code,
+      (code) => error.code === code,
     ) ?? null
+  );
+}
+
+function isProvenPrePersistenceChatRejection(error: unknown): boolean {
+  return (
+    error instanceof ApiRequestError &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.submissionDisposition === "rejected_before_persist"
   );
 }
 
@@ -92,6 +109,26 @@ function formatConfirmationMessage(suggestions: CapabilitySuggestion[]): string 
     return `${index + 1}. ${item.label}${reason}`;
   });
   return ["需要确认处理方式后再继续。", "", ...items].join("\n");
+}
+
+function projectOwnedConfirmationMessages(
+  messages: Message[],
+  suggestions: CapabilitySuggestion[],
+  assistantMessageId: string,
+): Message[] | null {
+  const confirmationMessage = formatConfirmationMessage(suggestions);
+  const project = (message: Message): Message => ({
+    ...message,
+    content: confirmationMessage,
+    isStreaming: false,
+    parts: [{ type: "text", content: confirmationMessage }],
+  });
+  if (!messages.some((message) => message.id === assistantMessageId)) {
+    return null;
+  }
+  return messages.map((message) =>
+    message.id === assistantMessageId ? project(message) : message,
+  );
 }
 
 function maxAcceptedRunEventSequence(
@@ -150,11 +187,218 @@ interface ReconcileOwner {
 
 type TerminalHydrationOwner = ReconcileOwner;
 
+type AuthScope = readonly [tenantId: string, userId: string];
+
+interface SubmissionUncertainty {
+  sessionId: string | null;
+  submissionId: string;
+  owner: AuthScope;
+  previousMessages?: Message[];
+}
+
+interface PersistedSubmissionReference {
+  version: 1;
+  owner: AuthScope;
+  submissionId: string;
+}
+
+interface ConfirmationRecovery {
+  owner: AuthScope;
+  submissionId: string;
+  suggestions: CapabilitySuggestion[];
+}
+
+const LEGACY_CHAT_SUBMISSION_STORAGE_KEY =
+  "ai_platform_chat_submission_references_v1";
+const CHAT_SUBMISSION_STORAGE_PREFIX = "ai_platform_chat_submission_reference_v1:";
+const MAX_PERSISTED_OWNER_ID_LENGTH = 128;
+const CANONICAL_SUBMISSION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function isPersistedOwnerId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= MAX_PERSISTED_OWNER_ID_LENGTH &&
+    value.trim().length === value.length
+  );
+}
+
+function parsePersistedSubmissionReference(
+  value: unknown,
+): PersistedSubmissionReference | null {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    (value as { version?: unknown }).version !== 1 ||
+    !Array.isArray((value as { owner?: unknown }).owner) ||
+    (value as { owner: unknown[] }).owner.length !== 2 ||
+    !isPersistedOwnerId((value as { owner: unknown[] }).owner[0]) ||
+    !isPersistedOwnerId((value as { owner: unknown[] }).owner[1]) ||
+    typeof (value as { submissionId?: unknown }).submissionId !== "string" ||
+    !CANONICAL_SUBMISSION_ID_PATTERN.test(
+      (value as { submissionId: string }).submissionId,
+    )
+  ) {
+    return null;
+  }
+  return {
+    version: 1,
+    owner: [
+      (value as { owner: string[] }).owner[0],
+      (value as { owner: string[] }).owner[1],
+    ],
+    submissionId: (value as { submissionId: string }).submissionId,
+  };
+}
+
+function submissionReferenceStorageKey(reference: PersistedSubmissionReference): string {
+  return `${CHAT_SUBMISSION_STORAGE_PREFIX}${encodeURIComponent(reference.owner[0])}:${encodeURIComponent(reference.owner[1])}:${encodeURIComponent(reference.submissionId)}`;
+}
+
+function submissionReferenceIdentity(reference: PersistedSubmissionReference): string {
+  return `${reference.owner[0]}\u0000${reference.owner[1]}\u0000${reference.submissionId}`;
+}
+
+function parseSubmissionReferenceJson(raw: string | null): PersistedSubmissionReference | null {
+  if (!raw) return null;
+  try {
+    return parsePersistedSubmissionReference(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function quarantinePersistedSubmissionReference(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // A storage failure still leaves sends fail-closed at their verified write.
+  }
+}
+
+function readPersistedSubmissionReferences(): PersistedSubmissionReference[] {
+  try {
+    const references = new Map<string, PersistedSubmissionReference>();
+    const legacyRaw = localStorage.getItem(LEGACY_CHAT_SUBMISSION_STORAGE_KEY);
+    let legacy: unknown = null;
+    if (legacyRaw !== null) {
+      try {
+        legacy = JSON.parse(legacyRaw);
+      } catch {
+        quarantinePersistedSubmissionReference(LEGACY_CHAT_SUBMISSION_STORAGE_KEY);
+      }
+    }
+    if (Array.isArray(legacy)) {
+      const retained: PersistedSubmissionReference[] = [];
+      for (const item of legacy) {
+        const parsed = parsePersistedSubmissionReference(item);
+        if (!parsed) continue;
+        retained.push(parsed);
+        references.set(submissionReferenceIdentity(parsed), parsed);
+      }
+      if (retained.length !== legacy.length) {
+        try {
+          if (retained.length === 0) {
+            localStorage.removeItem(LEGACY_CHAT_SUBMISSION_STORAGE_KEY);
+          } else {
+            localStorage.setItem(
+              LEGACY_CHAT_SUBMISSION_STORAGE_KEY,
+              JSON.stringify(retained),
+            );
+          }
+        } catch {
+          // A failed quarantine cannot authorize a later chat POST.
+        }
+      }
+    } else if (legacyRaw !== null) {
+      quarantinePersistedSubmissionReference(LEGACY_CHAT_SUBMISSION_STORAGE_KEY);
+    }
+    const independentKeys: string[] = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key?.startsWith(CHAT_SUBMISSION_STORAGE_PREFIX)) {
+        independentKeys.push(key);
+      }
+    }
+    for (const key of independentKeys) {
+      const raw = localStorage.getItem(key);
+      const parsed = parseSubmissionReferenceJson(raw);
+      if (
+        !parsed ||
+        submissionReferenceStorageKey(parsed) !== key
+      ) {
+        quarantinePersistedSubmissionReference(key);
+        continue;
+      }
+      references.set(submissionReferenceIdentity(parsed), parsed);
+    }
+    return [...references.values()].sort((left, right) =>
+      submissionReferenceIdentity(left).localeCompare(submissionReferenceIdentity(right)),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function persistSubmissionReference(reference: PersistedSubmissionReference): boolean {
+  try {
+    const key = submissionReferenceStorageKey(reference);
+    const encoded = JSON.stringify(reference);
+    localStorage.setItem(key, encoded);
+    const confirmed = localStorage.getItem(key);
+    const parsed = confirmed ? parsePersistedSubmissionReference(JSON.parse(confirmed)) : null;
+    return (
+      parsed !== null &&
+      authScopesEqual(parsed.owner, reference.owner) &&
+      parsed.submissionId === reference.submissionId
+    );
+  } catch {
+    // A private-mode quota failure cannot make an unknown mutation safe to retry.
+    return false;
+  }
+}
+
+function removePersistedSubmissionReference(owner: AuthScope, submissionId: string): void {
+  try {
+    const reference: PersistedSubmissionReference = { version: 1, owner, submissionId };
+    localStorage.removeItem(submissionReferenceStorageKey(reference));
+    const legacyRaw = localStorage.getItem(LEGACY_CHAT_SUBMISSION_STORAGE_KEY);
+    const legacy = legacyRaw ? JSON.parse(legacyRaw) : [];
+    if (!Array.isArray(legacy)) return;
+    const retained = legacy.filter((item) => {
+      const parsed = parsePersistedSubmissionReference(item);
+      return !(
+        parsed !== null &&
+        authScopesEqual(parsed.owner, owner) &&
+        parsed.submissionId === submissionId
+      );
+    });
+    if (retained.length === 0) {
+      localStorage.removeItem(LEGACY_CHAT_SUBMISSION_STORAGE_KEY);
+    } else {
+      localStorage.setItem(LEGACY_CHAT_SUBMISSION_STORAGE_KEY, JSON.stringify(retained));
+    }
+  } catch {
+    // A failed cleanup keeps the reference fenced; it must not authorize replay.
+  }
+}
+
+function authScopesEqual(left: AuthScope | null, right: AuthScope | null): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left[0] === right[0] &&
+      left[1] === right[1])
+  );
+}
+
 /** A terminal result must not leave the composer blocked on a stalled history read. */
 const TERMINAL_HISTORY_HYDRATION_TIMEOUT_MS = 10_000;
 
 export function useAgent(options?: UseAgentOptions): UseAgentReturn {
-  const { hasAnyPermission } = useAuth();
+  const { hasAnyPermission, isAuthenticated, user } = useAuth();
   const canReadFeedback = hasAnyPermission([
     Permission.FEEDBACK_READ,
     Permission.FEEDBACK_WRITE,
@@ -166,7 +410,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionAgentId, setSessionAgentId] = useState(DEFAULT_CHAT_AGENT_ID);
-  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
@@ -178,8 +421,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
   // Refs for connection management
   const abortControllerRef = useRef<AbortController | null>(null);
-  const pendingProjectIdRef = useRef<string | null>(null);
-  const autoExpandProjectIdRef = useRef<string | null>(null);
   const isConnectingRef = useRef(false);
   const isLoadingHistoryRef = useRef(false);
   const isSendingRef = useRef(false);
@@ -220,6 +461,15 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   // Session changes invalidate both pending submit responses and their SSE stream.
   const sessionGenerationRef = useRef(0);
   const submissionTokenRef = useRef(0);
+  const authScopeRef = useRef<AuthScope | null>(null);
+  const authScopeGenerationRef = useRef(0);
+  const submissionUncertaintyRef = useRef<SubmissionUncertainty | null>(null);
+  const submissionResolverOwnerRef = useRef<string | null>(null);
+  const [pendingSubmissionId, setPendingSubmissionId] = useState<string | null>(null);
+  // Resolver-only confirmation has no transcript owner. Keep it separate
+  // until a later user action rather than inventing an assistant turn.
+  const [confirmationRecovery, setConfirmationRecovery] =
+    useState<ConfirmationRecovery | null>(null);
 
   // Stream version to invalidate stale SSE events after clearMessages
   const streamVersionRef = useRef(0);
@@ -633,7 +883,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         runId: null,
         sequence: null,
       };
-      pendingProjectIdRef.current = null;
       isLoadingHistoryRef.current = false;
       isSendingRef.current = false;
       isConnectingRef.current = false;
@@ -729,9 +978,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           const loadedAgentId = sessionData.agent_id || DEFAULT_CHAT_AGENT_ID;
           sessionAgentIdRef.current = loadedAgentId;
           setSessionAgentId(loadedAgentId);
-          setCurrentProjectId(
-            (sessionData.metadata?.project_id as string) || null,
-          );
 
           // 从 metadata 提取配置信息
           const sessionConfig = {
@@ -884,6 +1130,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             reconstructedMessages = prepared.messages;
             streamingMessageId = prepared.streamingMessageId;
           }
+          messagesRef.current = reconstructedMessages;
           setMessages(reconstructedMessages);
 
           const historyMessageId = historyCurrentRunId
@@ -927,6 +1174,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
                     historyCurrentRunId,
                     historyMessageId || historyCurrentRunId,
                   );
+                  messagesRef.current = reconstructedMessages;
                   setMessages(reconstructedMessages);
                   exactAssistant = reconstructedMessages.find(
                     (message) =>
@@ -1025,6 +1273,15 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       if (!isMountedRef.current) return { status: "failed" };
       if (!content.trim()) return { status: "failed" };
 
+      if (submissionUncertaintyRef.current !== null) {
+        const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
+          defaultValue: i18n.t("chat.requestFailed"),
+        });
+        setError(statusUnavailable);
+        toast.error(statusUnavailable);
+        return { status: "failed" };
+      }
+
       if (isSendingRef.current) {
         console.log(
           "[sendMessage] Already sending, ignoring duplicate request",
@@ -1069,6 +1326,31 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       lastHistoryTimestampRef.current = null;
 
       const previousMessages = messagesRef.current;
+      const submissionOwner = authScopeRef.current;
+      if (submissionOwner === null) {
+        finishCurrentSubmission();
+        return { status: "failed" };
+      }
+      const submissionId = uuid();
+      const persistedSubmission = {
+        version: 1,
+        owner: submissionOwner,
+        submissionId,
+      } as const;
+      if (!persistSubmissionReference(persistedSubmission)) {
+        // A durable key is the only recovery authority for an unknown POST.
+        // Do not send if the browser cannot prove that it retained the key.
+        const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
+          defaultValue: i18n.t("chat.requestFailed"),
+        });
+        setError(statusUnavailable);
+        toast.error(statusUnavailable);
+        finishCurrentSubmission();
+        return { status: "failed" };
+      }
+      if (confirmationRecovery !== null) {
+        setConfirmationRecovery(null);
+      }
       const {
         messages: optimisticMessages,
         userMessageId,
@@ -1080,10 +1362,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           attachments,
         });
 
+      messagesRef.current = optimisticMessages;
       setMessages(optimisticMessages);
       setIsLoading(true);
       setError(null);
       let finalAssistantMessageId = assistantMessageId;
+      let admissionAccepted = false;
 
       try {
         // 用户发送消息时标记当前 session 为已读
@@ -1106,10 +1390,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           requestSessionId ?? undefined,
           fullAgentOptions,
           attachments,
-          pendingProjectIdRef.current ?? undefined,
           disabledSkills,
           disabledMcpTools,
           selectedSkill,
+          submissionId,
           requestAgentId,
         );
 
@@ -1117,28 +1401,70 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return { status: "failed" };
         }
 
+        // An old backend silently ignores the optional key. A concrete legacy
+        // response can still drive its existing session/run lifecycle, but it
+        // never enables submission resolver/retry recovery; transport loss
+        // remains fail-closed because the persisted key cannot resolve.
+        const protocolEchoed = submitData.submission_id === submissionId;
+
         if (isChatStreamNeedsConfirmation(submitData)) {
-          pendingProjectIdRef.current = null;
-          const confirmationMessage = formatConfirmationMessage(
+          const confirmationMessages = projectOwnedConfirmationMessages(
+            messagesRef.current,
             submitData.suggestions,
+            assistantMessageId,
           );
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMessageId
-                ? {
-                    ...m,
-                    content: confirmationMessage,
-                    isStreaming: false,
-                    parts: [{ type: "text", content: confirmationMessage }],
-                  }
-                : m,
-            ),
-          );
+          if (confirmationMessages) {
+            messagesRef.current = confirmationMessages;
+            setMessages(confirmationMessages);
+            setConfirmationRecovery(null);
+          } else {
+            setConfirmationRecovery({
+              owner: submissionOwner,
+              submissionId,
+              suggestions: submitData.suggestions,
+            });
+          }
+          submissionUncertaintyRef.current = null;
+          setPendingSubmissionId(null);
+          setError(null);
+          removePersistedSubmissionReference(submissionOwner, submissionId);
           setConnectionStatus("disconnected");
           setIsInitializingSandbox(false);
           setIsLoading(false);
           finishCurrentSubmission();
           return { status: "accepted" };
+        }
+
+        if (submitData.status === "accepted_pending_enqueue") {
+          if (!protocolEchoed) {
+            throw new Error("chat_submission_protocol_unavailable");
+          }
+          const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
+            defaultValue: i18n.t("chat.requestFailed"),
+          });
+          const pendingMessages = optimisticMessages.filter(
+            (message) => message.id !== assistantMessageId,
+          );
+          messagesRef.current = pendingMessages;
+          setMessages(pendingMessages);
+          if (!requestSessionId && submitData.session_id) {
+            sessionIdRef.current = submitData.session_id;
+            setSessionId(submitData.session_id);
+          }
+          submissionUncertaintyRef.current = {
+            sessionId: submitData.session_id || requestSessionId,
+            submissionId,
+            owner: submissionOwner,
+            previousMessages,
+          };
+          setPendingSubmissionId(submissionId);
+          setError(statusUnavailable);
+          toast.error(statusUnavailable);
+          setConnectionStatus("disconnected");
+          setIsInitializingSandbox(false);
+          setIsLoading(false);
+          finishCurrentSubmission();
+          return { status: "failed" };
         }
 
         const newSessionId = submitData.session_id;
@@ -1147,12 +1473,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           submitData,
           requestAgentId,
         );
-        const projectId = pendingProjectIdRef.current;
         sessionAgentIdRef.current = routedAgentId;
         setSessionAgentId(routedAgentId);
-
-        // Clear pending project ID after use
-        pendingProjectIdRef.current = null;
 
         // Handle queued status — show toast and wait via SSE
         if (submitData.status === "queued") {
@@ -1175,10 +1497,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             disabled_skills: disabledSkills,
             disabled_mcp_tools: disabledMcpTools,
           };
-          if (projectId) {
-            conversationConfig.project_id = projectId;
-          }
-
           const newSession: BackendSession = {
             id: newSessionId,
             agent_id: routedAgentId,
@@ -1188,7 +1506,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
             metadata: conversationConfig,
           };
           setNewlyCreatedSession(newSession);
-          setCurrentProjectId(projectId);
 
           sessionApi
             .generateTitle(newSessionId, content, i18n.language)
@@ -1273,6 +1590,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         if (!streamSessionId || !streamRunId) {
           throw new Error("Missing session_id or run_id");
         }
+        admissionAccepted = true;
+        removePersistedSubmissionReference(submissionOwner, submissionId);
+        setPendingSubmissionId(null);
 
         isReconnectFromHistoryRef.current = false;
         const ctx = createSSEContext();
@@ -1315,39 +1635,73 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           return { status: "failed" };
         }
         toast.dismiss("chat-queue");
-        if (err instanceof Error && err.name === "AbortError") {
-          setIsLoading(false);
-          finishCurrentSubmission();
-          return { status: "failed" };
-        }
-        const recoverableCode = selectedSkill
-          ? getSelectedSkillRecoverableCode(err)
-          : null;
-        if (recoverableCode) {
+        const prePersistenceRejection =
+          !admissionAccepted && isProvenPrePersistenceChatRejection(err);
+        if (prePersistenceRejection) {
+          removePersistedSubmissionReference(submissionOwner, submissionId);
+          setPendingSubmissionId(null);
+          messagesRef.current = previousMessages;
           setMessages(previousMessages);
-          setConnectionStatus("disconnected");
-          setIsInitializingSandbox(false);
-          setIsLoading(false);
-          finishCurrentSubmission();
-          return { status: "recoverable_error", code: recoverableCode };
+          const recoverableCode = selectedSkill
+            ? getSelectedSkillRecoverableCode(err)
+            : null;
+          if (recoverableCode) {
+            setConnectionStatus("disconnected");
+            setIsInitializingSandbox(false);
+            setIsLoading(false);
+            finishCurrentSubmission();
+            return { status: "recoverable_error", code: recoverableCode };
+          }
+          const errorMessage =
+            err instanceof Error
+              ? translateBackendError(err.message, i18n.t.bind(i18n))
+              : i18n.t("chat.unknownError");
+          setError(errorMessage);
+          toast.error(
+            i18n.t("chat.sendNotAcceptedRetry", {
+              defaultValue: "消息未发送，请重试。",
+            }),
+          );
+        } else if (!admissionAccepted) {
+          const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
+            defaultValue: i18n.t("chat.requestFailed"),
+          });
+          const uncertainMessages = optimisticMessages.filter(
+            (message) => message.id !== assistantMessageId,
+          );
+          // The request may have committed before its response was lost. Keep
+          // its user turn without projecting an invented assistant result, and
+          // block another mutation until history/status reconciliation.
+          messagesRef.current = uncertainMessages;
+          setMessages(uncertainMessages);
+          submissionUncertaintyRef.current = {
+            sessionId: requestSessionId,
+            submissionId,
+            owner: submissionOwner,
+            previousMessages,
+          };
+          setPendingSubmissionId(submissionId);
+          setError(statusUnavailable);
+          toast.error(statusUnavailable);
+        } else {
+          const errorMessage =
+            err instanceof Error
+              ? translateBackendError(err.message, i18n.t.bind(i18n))
+              : i18n.t("chat.unknownError");
+          setError(errorMessage);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === finalAssistantMessageId
+                ? {
+                    ...m,
+                    content: i18n.t("chat.errorPrefix", { error: errorMessage }),
+                    isStreaming: false,
+                    parts: clearAllLoadingStates(m.parts || []),
+                  }
+                : m,
+            ),
+          );
         }
-        const errorMessage =
-          err instanceof Error
-            ? translateBackendError(err.message, i18n.t.bind(i18n))
-            : i18n.t("chat.unknownError");
-        setError(errorMessage);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === finalAssistantMessageId
-              ? {
-                  ...m,
-                  content: i18n.t("chat.errorPrefix", { error: errorMessage }),
-                  isStreaming: false,
-                  parts: clearAllLoadingStates(m.parts || []),
-                }
-              : m,
-          ),
-        );
         setConnectionStatus("disconnected");
         setIsInitializingSandbox(false);
         setIsLoading(false);
@@ -1362,6 +1716,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       finalizeRunStatusUnavailable,
       reconcileCurrentRun,
       clearReconcileOwners,
+      confirmationRecovery,
     ],
   );
 
@@ -1403,7 +1758,6 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     sessionGenerationRef.current += 1;
     submissionTokenRef.current += 1;
     streamVersionRef.current += 1;
-    pendingProjectIdRef.current = null;
     isLoadingHistoryRef.current = false;
     isSendingRef.current = false;
     isConnectingRef.current = false;
@@ -1411,12 +1765,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     statusRetryCountRef.current = 0;
     clearReconcileOwners();
     setMessages([]);
+    setConfirmationRecovery(null);
     setSessionId(null);
     sessionAgentIdRef.current = DEFAULT_CHAT_AGENT_ID;
     setSessionAgentId(DEFAULT_CHAT_AGENT_ID);
     setError(null);
     setCurrentRunId(null);
-    setCurrentProjectId(null);
     setNewlyCreatedSession(null);
     setIsLoading(false);
     setIsLoadingHistory(false);
@@ -1431,6 +1785,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     };
     lastHistoryTimestampRef.current = null;
     streamingMessageIdRef.current = null;
+    isReconnectFromHistoryRef.current = false;
+    messagesRef.current = [];
     sessionIdRef.current = null;
     currentRunIdRef.current = null;
     activeSubagentStackRef.current = [];
@@ -1439,7 +1795,289 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       abortControllerRef.current = null;
     }
     clearReconnectTimeout(reconnectTimeoutRef);
+    toast.dismiss("chat-queue");
   }, [clearReconcileOwners]);
+
+  const authScopeAuthenticated = isAuthenticated && Boolean(user);
+  const authScopeTenantId = user?.tenant_id ?? "";
+  const authScopeUserId = user?.id ?? "";
+  const authScope = useMemo<AuthScope | null>(
+    () =>
+      authScopeAuthenticated
+        ? [authScopeTenantId, authScopeUserId]
+        : null,
+    [authScopeAuthenticated, authScopeTenantId, authScopeUserId],
+  );
+
+  const installPersistedSubmissionFence = useCallback(
+    (owner: AuthScope): PersistedSubmissionReference | null => {
+      const persisted = readPersistedSubmissionReferences().find((candidate) =>
+        authScopesEqual(candidate.owner, owner),
+      );
+      if (!persisted) {
+        submissionUncertaintyRef.current = null;
+        setPendingSubmissionId(null);
+        return null;
+      }
+      const current = submissionUncertaintyRef.current;
+      submissionUncertaintyRef.current = {
+        sessionId:
+          current &&
+          authScopesEqual(current.owner, owner) &&
+          current.submissionId === persisted.submissionId
+            ? current.sessionId
+            : null,
+        submissionId: persisted.submissionId,
+        owner,
+        previousMessages:
+          current &&
+          authScopesEqual(current.owner, owner) &&
+          current.submissionId === persisted.submissionId
+            ? current.previousMessages
+            : undefined,
+      };
+      setPendingSubmissionId(persisted.submissionId);
+      return persisted;
+    },
+    [],
+  );
+
+  const advancePersistedSubmissionFence = useCallback(
+    (owner: AuthScope, submissionId: string): PersistedSubmissionReference | null => {
+      removePersistedSubmissionReference(owner, submissionId);
+      return installPersistedSubmissionFence(owner);
+    },
+    [installPersistedSubmissionFence],
+  );
+
+  useLayoutEffect(() => {
+    const previousAuthScope = authScopeRef.current;
+    if (authScopesEqual(previousAuthScope, authScope)) {
+      return;
+    }
+    // An A→B→A transition must be distinguishable from the original A. Every
+    // resolver and retry captures this epoch before it crosses an await.
+    authScopeGenerationRef.current += 1;
+    submissionResolverOwnerRef.current = null;
+    authScopeRef.current = authScope;
+
+    // The first authenticated hydration has no prior chat owner. Every later
+    // identity replacement or logout must invalidate the same fences as an
+    // explicit new-chat action before it can publish stale session state.
+    if (previousAuthScope !== null || authScope === null) {
+      clearMessages();
+    }
+    if (authScope === null) {
+      submissionUncertaintyRef.current = null;
+      setPendingSubmissionId(null);
+      return;
+    }
+    // Read and install durable uncertainty in the layout phase. The composer
+    // sees this synchronous ref fence before any passive resolver GET starts.
+    if (installPersistedSubmissionFence(authScope)) {
+      setError(
+        i18n.t("chat.runTerminal.statusUnavailable", {
+          defaultValue: i18n.t("chat.requestFailed"),
+        }),
+      );
+    }
+  }, [authScope, clearMessages, installPersistedSubmissionFence]);
+
+  const resolvePersistedSubmission = useCallback(
+    async (owner: AuthScope, submissionId: string) => {
+      const pending = submissionUncertaintyRef.current;
+      if (
+        !pending ||
+        pending.submissionId !== submissionId ||
+        !authScopesEqual(pending.owner, owner) ||
+        !authScopesEqual(authScopeRef.current, owner)
+      ) {
+        return;
+      }
+      const authScopeGeneration = authScopeGenerationRef.current;
+      const resolverSessionGeneration = sessionGenerationRef.current;
+      const isCurrentResolution = (expectedSessionGeneration = resolverSessionGeneration) =>
+        isMountedRef.current &&
+        authScopeGenerationRef.current === authScopeGeneration &&
+        sessionGenerationRef.current === expectedSessionGeneration &&
+        authScopesEqual(authScopeRef.current, owner) &&
+        submissionUncertaintyRef.current?.submissionId === submissionId &&
+        authScopesEqual(submissionUncertaintyRef.current?.owner ?? null, owner);
+      const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
+        defaultValue: i18n.t("chat.requestFailed"),
+      });
+      try {
+        const resolution = await sessionApi.getChatSubmission(submissionId);
+        if (!isCurrentResolution()) return;
+        const outcome = resolution.outcome;
+        if (resolution.state === "rejected_before_persist") {
+          const previous = pending.previousMessages || [];
+          messagesRef.current = previous;
+          setMessages(previous);
+          setError(null);
+          advancePersistedSubmissionFence(owner, submissionId);
+          return;
+        }
+        if (
+          resolution.state === "queued" &&
+          outcome?.session_id &&
+          outcome.run_id
+        ) {
+          submissionUncertaintyRef.current = {
+            sessionId: outcome.session_id,
+            submissionId,
+            owner,
+            previousMessages: pending.previousMessages,
+          };
+          setPendingSubmissionId(submissionId);
+          const historyPromise = loadHistory(outcome.session_id, outcome.run_id);
+          const historySessionGeneration = sessionGenerationRef.current;
+          const restored = await historyPromise;
+          if (
+            restored !== null &&
+            isCurrentResolution(historySessionGeneration)
+          ) {
+            setError(null);
+            advancePersistedSubmissionFence(owner, submissionId);
+          }
+          return;
+        }
+        if (resolution.state === "needs_confirmation") {
+          if (!outcome || !isChatStreamNeedsConfirmation(outcome)) {
+            setError(statusUnavailable);
+            return;
+          }
+          setConfirmationRecovery({
+            owner,
+            submissionId,
+            suggestions: outcome.suggestions,
+          });
+          setError(null);
+          advancePersistedSubmissionFence(owner, submissionId);
+          return;
+        }
+        submissionUncertaintyRef.current = {
+          sessionId: outcome?.session_id || null,
+          submissionId,
+          owner,
+        };
+        setPendingSubmissionId(submissionId);
+        setError(statusUnavailable);
+      } catch {
+        // Missing/old-backend resolver results are unknown, never proof that
+        // the original POST did not persist.
+        if (isCurrentResolution()) {
+          submissionUncertaintyRef.current = {
+            sessionId: submissionUncertaintyRef.current?.sessionId || null,
+            submissionId,
+            owner,
+            previousMessages: submissionUncertaintyRef.current?.previousMessages,
+          };
+          setPendingSubmissionId(submissionId);
+          setError(statusUnavailable);
+        }
+      }
+    },
+    [advancePersistedSubmissionFence, loadHistory],
+  );
+
+  const retryPendingSubmission = useCallback(async (): Promise<void> => {
+    const pending = submissionUncertaintyRef.current;
+    if (!pending || !authScopesEqual(authScopeRef.current, pending.owner)) return;
+    const authScopeGeneration = authScopeGenerationRef.current;
+    const retrySessionGeneration = sessionGenerationRef.current;
+    const isCurrentRetry = (expectedSessionGeneration = retrySessionGeneration) =>
+      isMountedRef.current &&
+      authScopeGenerationRef.current === authScopeGeneration &&
+      sessionGenerationRef.current === expectedSessionGeneration &&
+      authScopesEqual(authScopeRef.current, pending.owner) &&
+      submissionUncertaintyRef.current?.submissionId === pending.submissionId &&
+      authScopesEqual(submissionUncertaintyRef.current?.owner ?? null, pending.owner);
+    const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
+      defaultValue: i18n.t("chat.requestFailed"),
+    });
+    try {
+      const resolution = await sessionApi.retryChatSubmissionAdmission(
+        pending.submissionId,
+      );
+      if (!isCurrentRetry()) return;
+      if (resolution.state === "rejected_before_persist") {
+        const previous = pending.previousMessages || [];
+        messagesRef.current = previous;
+        setMessages(previous);
+        setError(null);
+        advancePersistedSubmissionFence(pending.owner, pending.submissionId);
+        return;
+      }
+      if (
+        resolution.state === "queued" &&
+        resolution.outcome?.session_id &&
+        resolution.outcome.run_id
+      ) {
+        const historyPromise = loadHistory(
+          resolution.outcome.session_id,
+          resolution.outcome.run_id,
+        );
+        const historySessionGeneration = sessionGenerationRef.current;
+        const restored = await historyPromise;
+        if (
+          restored !== null &&
+          isCurrentRetry(historySessionGeneration)
+        ) {
+          setError(null);
+          advancePersistedSubmissionFence(pending.owner, pending.submissionId);
+        }
+        return;
+      }
+      if (resolution.state === "needs_confirmation") {
+        const outcome = resolution.outcome;
+        if (!outcome || !isChatStreamNeedsConfirmation(outcome)) {
+          setError(statusUnavailable);
+          return;
+        }
+        setConfirmationRecovery({
+          owner: pending.owner,
+          submissionId: pending.submissionId,
+          suggestions: outcome.suggestions,
+        });
+        setError(null);
+        advancePersistedSubmissionFence(pending.owner, pending.submissionId);
+        return;
+      }
+      setError(statusUnavailable);
+    } catch {
+      if (isCurrentRetry()) {
+        setError(statusUnavailable);
+      }
+    }
+  }, [advancePersistedSubmissionFence, loadHistory]);
+
+  useEffect(() => {
+    const pending = submissionUncertaintyRef.current;
+    if (
+      authScope === null ||
+      pending === null ||
+      pendingSubmissionId !== pending.submissionId ||
+      !authScopesEqual(pending.owner, authScope)
+    ) {
+      return;
+    }
+    const ownerKey = JSON.stringify([
+      authScopeGenerationRef.current,
+      pending.owner[0],
+      pending.owner[1],
+      pending.submissionId,
+    ]);
+    if (submissionResolverOwnerRef.current === ownerKey) {
+      return;
+    }
+    submissionResolverOwnerRef.current = ownerKey;
+    void resolvePersistedSubmission(pending.owner, pending.submissionId).finally(() => {
+      if (submissionResolverOwnerRef.current === ownerKey) {
+        submissionResolverOwnerRef.current = null;
+      }
+    });
+  }, [authScope, pendingSubmissionId, resolvePersistedSubmission]);
 
   // Reconnect function
   const handleReconnectSSE = reconcileCurrentRun;
@@ -1503,25 +2141,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     isInitializingSandbox,
     sandboxError,
     sendMessage,
+    canRetryPendingSubmission: pendingSubmissionId !== null,
+    retryPendingSubmission,
     stopGeneration,
     clearMessages,
     loadHistory,
     reconnectSSE: handleReconnectSSE,
-    setPendingProjectId: (id: string | null) => {
-      pendingProjectIdRef.current = id;
-      autoExpandProjectIdRef.current = id;
-    },
-    autoExpandProjectId: autoExpandProjectIdRef.current,
-    clearAutoExpandProjectId: (id?: string | null) => {
-      if (
-        id === undefined ||
-        id === null ||
-        autoExpandProjectIdRef.current === id
-      ) {
-        autoExpandProjectIdRef.current = null;
-      }
-    },
-    currentProjectId,
   };
 }
 

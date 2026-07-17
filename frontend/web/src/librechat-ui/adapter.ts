@@ -10,7 +10,6 @@ export interface SessionSummary {
   id: string;
   title: string;
   updatedAt?: string | null;
-  projectId?: string | null;
   unreadCount?: number;
 }
 

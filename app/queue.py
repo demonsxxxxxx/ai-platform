@@ -33,6 +33,8 @@ local queued_meta_key = KEYS[2]
 local queued_run_index_key = KEYS[3]
 local queued_order_key = KEYS[4]
 local queued_sequence_key = KEYS[5]
+local processing_meta_key = KEYS[6]
+local retry_meta_key = KEYS[7]
 
 local raw = ARGV[1]
 local message_id = ARGV[2]
@@ -46,17 +48,47 @@ if raw_index then
   if ok_index and type(decoded_index) == "table" then
     for _, indexed_message_id in ipairs(decoded_index) do
       local candidate = tostring(indexed_message_id or "")
-      if candidate ~= "" and candidate ~= message_id then
+      if candidate ~= "" then
         table.insert(message_ids, candidate)
       end
     end
   else
     local candidate = tostring(raw_index or "")
-    if candidate ~= "" and candidate ~= message_id then
+    if candidate ~= "" then
       table.insert(message_ids, candidate)
     end
   end
 end
+
+for _, indexed_message_id in ipairs(message_ids) do
+  if indexed_message_id == message_id then
+    local raw_metadata = redis.call("hget", queued_meta_key, message_id)
+    local rank = redis.call("zrank", queued_order_key, message_id)
+    if raw_metadata and rank then
+      local ok_existing, existing = pcall(cjson.decode, raw_metadata)
+      local sequence = rank + 1
+      if ok_existing and type(existing) == "table" then
+        sequence = tonumber(existing["sequence"] or sequence) or sequence
+      end
+      return cjson.encode({
+        status = "already_enqueued",
+        position = rank + 1,
+        sequence = sequence,
+      })
+    end
+  end
+end
+
+if redis.call("hget", processing_meta_key, message_id) or redis.call("hget", retry_meta_key, message_id) then
+  return cjson.encode({status = "already_leased", position = 0, sequence = 0})
+end
+local retained_message_ids = {}
+for _, indexed_message_id in ipairs(message_ids) do
+  if indexed_message_id ~= message_id then
+    table.insert(retained_message_ids, indexed_message_id)
+  end
+end
+message_ids = retained_message_ids
 table.insert(message_ids, message_id)
 
 local sequence = redis.call("incr", queued_sequence_key)
@@ -516,18 +548,28 @@ async def enqueue_run_with_metadata(payload: dict[str, Any]) -> QueueAdmissionMe
         result = _decode_redis_script_result(
             await redis.eval(
                 ENQUEUE_WITH_METADATA_SCRIPT,
-                5,
+                7,
                 keys.queued,
                 keys.queued_meta,
                 keys.queued_run_index,
                 keys.queued_order,
                 keys.queued_sequence,
+                keys.processing_meta,
+                keys.retry_meta,
                 raw,
                 message_id,
                 queued_run_index_field(tenant_id=validated.tenant_id, run_id=validated.run_id),
                 json.dumps(metadata, ensure_ascii=False),
             )
         )
+        status = str(result.get("status") or "")
+        if status == "already_leased":
+            return QueueAdmissionMetadata(
+                queue_position=0,
+                queue_admission_ordinal=0,
+                message_id=message_id,
+                source="redis_existing_lease",
+            )
         return QueueAdmissionMetadata(
             queue_position=int(result.get("position") or 1),
             queue_admission_ordinal=int(result.get("sequence") or result.get("position") or 1),

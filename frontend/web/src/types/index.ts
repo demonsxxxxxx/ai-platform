@@ -224,16 +224,3 @@ export interface Project {
   created_at: string;
   updated_at: string;
 }
-
-export interface ProjectCreate {
-  name: string;
-  type?: "custom";
-  icon?: string;
-  sort_order?: number;
-}
-
-export interface ProjectUpdate {
-  name?: string;
-  icon?: string;
-  sort_order?: number;
-}

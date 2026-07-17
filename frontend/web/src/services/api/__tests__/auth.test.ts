@@ -168,6 +168,61 @@ test("subject-changing auth transports forward their operation abort signal", as
   }
 });
 
+test("V2 bootstrap transport preserves the discriminated incarnation and generation response", async () => {
+  const stubs = installAuthApiBrowserStubs({
+    status: "ready",
+    protocol_version: 2,
+    generation: 7,
+  });
+  try {
+    const response = await authApi.bootstrapAuthContext({
+      nonce: "N".repeat(43),
+      protocol_version: 2,
+      browser_incarnation: "I".repeat(43),
+      generation: 7,
+    });
+    assert.deepEqual(response, {
+      status: "ready",
+      protocol_version: 2,
+      generation: 7,
+    });
+    assert.deepEqual(JSON.parse(String(stubs.fetchInit[0].body)), {
+      nonce: "N".repeat(43),
+      protocol_version: 2,
+      browser_incarnation: "I".repeat(43),
+      generation: 7,
+    });
+  } finally {
+    stubs.restore();
+  }
+});
+
+test("V2 login-context recovery serializes only its explicit recovery discriminator", async () => {
+  const stubs = installAuthApiBrowserStubs({
+    status: "ready",
+    protocol_version: 2,
+    generation: 7,
+  });
+  try {
+    await authApi.bootstrapAuthContext({
+      nonce: "N".repeat(43),
+      protocol_version: 2,
+      browser_incarnation: "I".repeat(43),
+      generation: 7,
+      recovery_only: true,
+    });
+    assert.deepEqual(JSON.parse(String(stubs.fetchInit[0].body)), {
+      nonce: "N".repeat(43),
+      protocol_version: 2,
+      browser_incarnation: "I".repeat(43),
+      generation: 7,
+      recovery_only: true,
+    });
+  } finally {
+    stubs.restore();
+  }
+});
+
 test("login transport leaves cache, marker, and identity events to the auth owner", async () => {
   const stubs = installAuthApiBrowserStubs();
   let clearCount = 0;
@@ -380,7 +435,7 @@ test("OAuth callback delegates server session authority and never reads fragment
   assert.match(useAuthSource, /await ensureBrowserAuthContext\(owner\.abortController\.signal\)/);
   assert.match(
     useAuthSource,
-    /await authApi\.handleOAuthCallback\([\s\S]*signal: owner\.abortController\.signal/,
+    /await authApi\.handleOAuthCallback\([\s\S]*owner\.abortController\.signal/,
   );
   assert.doesNotMatch(useAuthSource, /completeOAuthSession/);
   assert.match(callbackSource, /searchParams\.get\("code"\)/);

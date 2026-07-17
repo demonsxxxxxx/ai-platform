@@ -9,12 +9,12 @@ import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import { Turnstile } from "react-turnstile";
 import { useAuth } from "../../hooks/useAuth";
+import { BrowserAuthCoordinatorError } from "../../hooks/browserAuthCoordinator";
 import { ApiRequestError } from "../../services/api/fetch";
 import { useTheme } from "../../contexts/ThemeContext";
 import { Loading, LoadingSpinner } from "../common/LoadingSpinner";
 import { ContactAdminDialog } from "../common/ContactAdminDialog";
 import { ThemeToggle } from "../common/ThemeToggle";
-import { LanguageToggle } from "../common/LanguageToggle";
 import { authApi } from "../../services/api";
 import { APP_HOME_URL, APP_NAME } from "../../constants";
 import {
@@ -259,7 +259,9 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
     } catch (err) {
       if (!mountedRef.current) return;
       const errorMessage =
-        err instanceof ApiRequestError
+        err instanceof BrowserAuthCoordinatorError
+          ? t("auth.browserCoordinationUnavailable")
+          : err instanceof ApiRequestError
           ? err.message
           : t("auth.operationFailed");
 
@@ -337,7 +339,6 @@ export function AuthPage({ onSuccess, initialMode }: AuthPageProps) {
             </span>
           </a>
           <div className="flex items-center gap-1.5">
-            <LanguageToggle />
             <ThemeToggle />
           </div>
         </div>

@@ -156,6 +156,7 @@
   "auth": {
     "account": "账号",
     "backToLogin": "返回登录",
+    "browserCoordinationUnavailable": "当前浏览器或站点地址无法安全协调登录。请改用受信任的公司 HTTPS 地址，或联系管理员。",
     "checkInboxStep": "检查您的收件箱（也请检查垃圾邮件文件夹）",
     "checkYourEmail": "检查您的邮箱",
     "clickVerifyLinkStep": "点击邮件中的验证链接",
@@ -257,8 +258,6 @@
     "authMissing": "未提供认证信息",
     "avatarTooLarge": "头像文件大小不能超过 2MB",
     "cannotChangeOwnRolePermissions": "不能修改自己所属角色的权限",
-    "cannotCreateFavoritesProject": "不能创建收藏项目",
-    "cannotDeleteFavoritesProject": "不能删除收藏项目",
     "channelInstanceDisabled": "渠道实例已禁用",
     "channelInstanceNotFound": "渠道实例不存在",
     "deleteFailed": "删除失败",
@@ -266,7 +265,6 @@
     "emailTooManyRequests": "该邮箱请求过于频繁，请稍后再试",
     "emailVerificationRequired": "请先验证邮箱后再登录",
     "emptyFile": "文件为空",
-    "favoriteUpdateFailed": "收藏状态更新失败",
     "fileNotFound": "文件不存在",
     "fileReadFailed": "读取文件失败",
     "fileTooLarge": "文件大小超过 {{max}}MB 限制",
@@ -298,7 +296,6 @@
     "modelFallbackSelf": "模型不能将自身作为备用模型",
     "modelsRequired": "模型列表不能为空",
     "moveFailed": "移动失败",
-    "moveFavoriteSyncFailed": "移动后收藏状态同步失败",
     "noSkillsFoundInRepository": "仓库中未找到技能",
     "notificationNotFound": "通知不存在",
     "oauthFailed": "OAuth 认证失败",
@@ -416,9 +413,21 @@
         "message": "管理员未批准此操作；系统将保持拒绝状态。",
         "title": "操作未获授权"
       },
+      "expired": {
+        "message": "该工具权限在作出决策前已过期。",
+        "title": "工具权限已过期"
+      },
+      "invalidated": {
+        "message": "运行已结束，因此未使用此工具权限。",
+        "title": "工具权限已关闭"
+      },
       "pending": {
         "message": "该操作需要管理员处理后才能继续。",
         "title": "正在等待管理员处理"
+      },
+      "cancelled": {
+        "message": "运行已取消，因此未使用此工具权限。",
+        "title": "工具权限已取消"
       },
       "readOnly": "只读操作",
       "recordedDecision": "已记录决策：{{decision}}",
@@ -430,6 +439,10 @@
         "medium": "中"
       },
       "submitting": "提交中…",
+      "terminalFailed": {
+        "message": "运行无法继续，因此该工具权限已终结。",
+        "title": "工具权限已终结"
+      },
       "writeCapable": "可写操作"
     },
     "message": {
@@ -513,6 +526,7 @@
     "queued": "排队中 (第 {{position}} 位)...",
     "rateLimited": "请求过于频繁，请稍后再试",
     "requestFailed": "加载会话失败",
+    "sendNotAcceptedRetry": "消息未发送，请重试。",
     "runTerminal": {
       "failed": "任务未能完成。请稍后重试；如问题持续，请联系管理员。",
       "resultUnavailable": "任务终态已确认，但结果暂时无法加载。请刷新会话。",
@@ -1993,33 +2007,17 @@
     "send": "发送消息"
   },
   "sidebar": {
-    "addToFavorites": "添加到收藏",
     "chats": "对话",
-    "clickToEditIcon": "点击编辑图标",
     "collapseSidebar": "收起侧边栏",
     "deleteConfirm": "确定要删除这个会话吗？此操作无法撤销。",
     "deleteFailed": "删除会话失败",
-    "deleteProject": "删除项目",
-    "deleteProjectAndSessions": "删除项目及所有对话",
-    "deleteProjectAndSessionsHint": "包含项目下所有会话",
-    "deleteProjectConfirm": "确定删除此项目？对话将移至未分类。",
-    "deleteProjectDesc": "确定要删除「{{name}}」吗？",
-    "deleteProjectKeepSessions": "仅删除项目，保留对话",
-    "deleteProjectKeepSessionsHint": "会话将移至未分类",
-    "deleteProjectTitle": "删除项目",
     "deleteSession": "删除会话",
     "expandSidebar": "展开侧边栏",
-    "favoriteToggleFailed": "收藏状态更新失败",
-    "favorites": "收藏",
     "governance": "治理",
-    "iconUpdateFailed": "更新图标失败",
     "moreOptions": "更多选项",
-    "moveToProject": "移动到项目",
-    "moveToProjectHint": "选择目标项目整理对话",
     "navigate": "导航",
     "newChat": "新建对话",
     "newChatShortcut": "Ctrl+Shift+O",
-    "newProject": "新建项目",
     "noMatchingSessions": "没有找到匹配的会话",
     "noMessages": "暂无消息",
     "noSearchResults": "没有找到匹配的会话",
@@ -2027,18 +2025,7 @@
     "older": "更早",
     "open": "打开",
     "previous7Days": "过去7天",
-    "projectCreateFailed": "创建项目失败",
-    "projectCreated": "项目已创建",
-    "projectDeleteFailed": "删除项目失败",
-    "projectDeleted": "项目已删除",
-    "projectHint": "创建后可将对话拖入项目进行整理",
-    "projectName": "项目名称",
-    "projectOptions": "项目选项",
-    "projectRenameFailed": "重命名项目失败",
-    "projectRenamed": "项目已重命名",
-    "projects": "项目",
     "recentChats": "最近聊天",
-    "removeFromFavorites": "取消收藏",
     "rename": "重命名",
     "renameFailed": "重命名会话失败",
     "renamed": "会话已重命名",
@@ -2047,14 +2034,10 @@
     "searchResultCount": "{{count}} 个结果",
     "searchSessions": "搜索会话",
     "sessionDeleted": "会话已删除",
-    "sessionMoveFailed": "移动会话失败",
-    "sessionMoved": "会话已移动",
     "sessionOptions": "操作",
-    "sessionRemoved": "会话已从文件夹移除",
     "share": "分享",
     "tasks": "任务",
     "today": "今天",
-    "uncategorized": "未分类",
     "yesterday": "昨天"
   },
   "sidebarView": "侧边栏",
@@ -2683,6 +2666,13 @@
       "loading": {
         "title": "正在加载投影",
         "description": "正在确认该页面的后端工作台合同。"
+      },
+      "empty": {
+        "safeReadTitle": "安全投影",
+        "safeReadDescription": "该页面已连接，仅读取受治理的前端数据。",
+        "noRowsTitle": "未返回可展示的数据",
+        "nextActionTitle": "下一步操作",
+        "nextActionDescription": "如需创建或修改记录，请使用受管理员治理的流程。"
       },
       "forbidden": {
         "title": "投影受权限治理",
