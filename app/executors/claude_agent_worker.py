@@ -2,8 +2,6 @@ import asyncio
 import base64
 import binascii
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-import hashlib
 import json
 from pathlib import Path
 import posixpath
@@ -47,7 +45,6 @@ from app.skills.dependencies import skill_dependency_ids, with_skill_dependencie
 from app.skills.stager import SkillStager
 from app.storage import ObjectStorage
 from app.tool_policy import evaluate_tool_policy
-from app.tool_permission_lifecycle import tool_permission_budget
 
 NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
 _CONTROLLED_RUNNER_SKILLS = {"qa-file-reviewer", "baoyu-translate"}
@@ -68,13 +65,6 @@ _WORD_MAIN_DOCUMENT_CONTENT_TYPE = (
 )
 
 
-class _PermissionDeadlineElapsed(RuntimeError):
-    """Abort the current database transaction before deadline-late authority commits."""
-
-    def __init__(self, permission_request_id: str | None = None) -> None:
-        self.permission_request_id = permission_request_id or ""
-
-
 @dataclass(frozen=True)
 class PreparedSdkRun:
     """Resolved SDK staging inputs that can run locally or via SandboxRuntime."""
@@ -88,422 +78,14 @@ class PreparedSdkRun:
     prompt: str
 
 
-def _claude_sdk_tool_id(tool_name: str) -> str:
-    safe_name = "".join(char if char.isalnum() or char in "_.:-" else "_" for char in str(tool_name or "unknown"))
-    safe_name = safe_name or "unknown"
-    return f"claude-sdk:{safe_name[:96]}"
+async def resolve_claude_sdk_tool_permission(**_legacy_request: Any) -> dict[str, Any]:
+    """Fail-closed compatibility shim for retired callback integrations.
 
+    No route or runner invokes this function.  It intentionally performs no
+    repository lookup, request creation, polling, grant consumption or replay.
+    """
 
-def _claude_sdk_tool_request_payload(request: dict[str, Any]) -> dict[str, Any]:
-    tool_input = request.get("tool_input")
-    command = ""
-    if isinstance(tool_input, dict):
-        command = str(tool_input.get("command") or "")
-        input_keys = sorted(str(key) for key in tool_input)
-    else:
-        input_keys = []
-    return {
-        "source": "claude_agent_sdk_hook",
-        "tool_name": str(request.get("tool_name") or ""),
-        "tool_input_keys": input_keys,
-        "command_length": len(command),
-        "command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest() if command else "",
-    }
-
-
-async def broker_claude_sdk_tool_permission(
-    conn,
-    *,
-    tenant_id: str,
-    workspace_id: str,
-    user_id: str,
-    session_id: str,
-    run_id: str,
-    agent_id: str,
-    skill_id: str,
-    trace_id: str,
-    request: dict[str, Any],
-    expires_in_seconds: float = tool_permission_budget().request_ttl_seconds,
-    absolute_expires_at: datetime | None = None,
-    permission_deadline_monotonic: float | None = None,
-    monotonic: Callable[[], float] | None = None,
-) -> dict[str, Any]:
-    """Apply platform tool policy to a Claude Agent SDK tool-permission callback."""
-
-    monotonic = monotonic or asyncio.get_running_loop().time
-
-    def deadline_exhausted() -> bool:
-        return permission_deadline_monotonic is not None and monotonic() >= permission_deadline_monotonic
-
-    def deadline_failure(permission_request_id: str | None = None) -> dict[str, Any]:
-        if permission_deadline_monotonic is not None:
-            raise _PermissionDeadlineElapsed(permission_request_id)
-        return {
-            "allowed": False,
-            "reason": "tool_permission_wait_timed_out",
-            "permission_request_id": permission_request_id or "",
-        }
-
-    tool_name = str(request.get("tool_name") or "")
-    tool_id = _claude_sdk_tool_id(tool_name)
-    tool_call_id = str(request.get("tool_call_id") or "")
-    action = str(request.get("action") or "execute")
-    requested_risk_level = str(request.get("risk_level") or "high")
-    requested_write_capable = bool(request.get("write_capable", True))
-    reason = str(request.get("reason") or "Claude SDK tool permission required")
-    request_payload = _claude_sdk_tool_request_payload(request)
-    tool = {
-        "id": tool_id,
-        "risk_level": requested_risk_level,
-        "write_capable": requested_write_capable,
-    }
-
-    permission_decision = await repositories.get_exact_tool_permission_decision(
-        conn,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        run_id=run_id,
-        tool_id=tool_id,
-        action=action,
-        tool_call_id=tool_call_id,
-        request_payload_json=request_payload,
-    )
-    # The repository locks and evaluates the persisted deadline with its
-    # current wall clock.  This local absolute deadline closes the gap after an
-    # awaited control-plane boundary before any decision-derived side effect.
-    if deadline_exhausted():
-        return deadline_failure(
-            str(permission_decision.get("id") or "") if permission_decision is not None else None
-        )
-    if tool_id == "claude-sdk:Bash" and permission_decision is not None:
-        decision = str(permission_decision.get("decision") or "")
-        decision_tool_call_id = str(permission_decision.get("tool_call_id") or "")
-        decision_payload = permission_decision.get("request_payload_json")
-        if not isinstance(decision_payload, dict):
-            decision_payload = {}
-        decision_command_hash = str(decision_payload.get("command_sha256") or "")
-        request_command_hash = str(request_payload.get("command_sha256") or "")
-        if decision == "allow_once" and (not tool_call_id or decision_tool_call_id != tool_call_id):
-            permission_decision = None
-        elif decision == "allow_for_run" and (not request_command_hash or decision_command_hash != request_command_hash):
-            permission_decision = None
-        elif decision == "deny" and (not tool_call_id or decision_tool_call_id != tool_call_id):
-            permission_decision = None
-
-    tool_gate = evaluate_tool_policy(
-        tool=tool,
-        permission_decision=permission_decision,
-        requested_risk_level=requested_risk_level,
-        requested_write_capable=requested_write_capable,
-    )
-    if tool_gate.allowed:
-        if deadline_exhausted():
-            return deadline_failure(tool_gate.permission_request_id)
-        if tool_gate.decision == "allow_once":
-            consumed_decision = await repositories.consume_tool_permission_decision(
-                conn,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                run_id=run_id,
-                request_id=tool_gate.permission_request_id,
-            )
-            if deadline_exhausted():
-                return deadline_failure(tool_gate.permission_request_id)
-            if consumed_decision is None:
-                if deadline_exhausted():
-                    return deadline_failure(tool_gate.permission_request_id)
-                await repositories.append_audit_log(
-                    conn,
-                    tenant_id=tenant_id,
-                    user_id=user_id,
-                    action="claude_sdk_tool_policy_denied",
-                    target_type="tool",
-                    target_id=tool_id,
-                    trace_id=trace_id,
-                    payload_json={
-                        "run_id": run_id,
-                        "session_id": session_id,
-                        "agent_id": agent_id,
-                        "skill_id": skill_id,
-                        "tool_call_id": tool_call_id,
-                        "reason": "tool_permission_consumed_or_expired",
-                        "risk_level": tool_gate.risk_level,
-                        "write_capable": tool_gate.write_capable,
-                        "decision": tool_gate.decision,
-                        "permission_request_id": tool_gate.permission_request_id,
-                    },
-                )
-                return {
-                    "allowed": False,
-                    "reason": "tool_permission_consumed_or_expired",
-                    "risk_level": tool_gate.risk_level,
-                    "write_capable": tool_gate.write_capable,
-                    "decision": tool_gate.decision,
-                    "permission_request_id": tool_gate.permission_request_id,
-                }
-        if deadline_exhausted():
-            return deadline_failure(tool_gate.permission_request_id)
-        await repositories.append_audit_log(
-            conn,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            action="claude_sdk_tool_policy_allowed",
-            target_type="tool",
-            target_id=tool_id,
-            trace_id=trace_id,
-            payload_json={
-                "run_id": run_id,
-                "session_id": session_id,
-                "agent_id": agent_id,
-                "skill_id": skill_id,
-                "tool_call_id": tool_call_id,
-                "reason": tool_gate.reason,
-                "risk_level": tool_gate.risk_level,
-                "write_capable": tool_gate.write_capable,
-                "decision": tool_gate.decision,
-                "permission_request_id": tool_gate.permission_request_id,
-            },
-        )
-        if deadline_exhausted():
-            return deadline_failure(tool_gate.permission_request_id)
-        return {
-            "allowed": True,
-            "reason": tool_gate.reason,
-            "risk_level": tool_gate.risk_level,
-            "write_capable": tool_gate.write_capable,
-            "decision": tool_gate.decision,
-            "permission_request_id": tool_gate.permission_request_id,
-        }
-
-    permission_request_id = tool_gate.permission_request_id
-    if tool_gate.reason == "tool_permission_required":
-        if deadline_exhausted():
-            return deadline_failure(permission_request_id)
-        row = await repositories.create_tool_permission_request(
-            conn,
-            tenant_id=tenant_id,
-            workspace_id=workspace_id,
-            user_id=user_id,
-            session_id=session_id,
-            run_id=run_id,
-            trace_id=trace_id,
-            tool_id=tool_id,
-            tool_call_id=tool_call_id,
-            action=action,
-            risk_level=tool_gate.risk_level,
-            write_capable=tool_gate.write_capable,
-            reason=reason,
-            request_payload_json=request_payload,
-            expires_in_seconds=max(float(expires_in_seconds), 0.0),
-            absolute_expires_at=absolute_expires_at,
-        )
-        permission_request_id = str(row["id"])
-        if deadline_exhausted():
-            return deadline_failure(permission_request_id)
-        await repositories.append_event(
-            conn,
-            tenant_id=tenant_id,
-            run_id=run_id,
-            trace_id=trace_id,
-            event_type="tool_permission_requested",
-            stage="tool_policy",
-            message="工具调用需要权限决策",
-            payload={
-                "visible_to_user": True,
-                "permission_request_id": permission_request_id,
-                "tool_id": tool_id,
-                "tool_call_id": tool_call_id,
-                "action": action,
-                "risk_level": tool_gate.risk_level,
-                "write_capable": tool_gate.write_capable,
-                "reason": reason,
-                "status": "pending",
-            },
-        )
-    if deadline_exhausted():
-        return deadline_failure(permission_request_id)
-    await repositories.append_audit_log(
-        conn,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        action="claude_sdk_tool_policy_denied",
-        target_type="tool",
-        target_id=tool_id,
-        trace_id=trace_id,
-        payload_json={
-            "run_id": run_id,
-            "session_id": session_id,
-            "agent_id": agent_id,
-            "skill_id": skill_id,
-            "tool_call_id": tool_call_id,
-            "reason": tool_gate.reason,
-            "risk_level": tool_gate.risk_level,
-            "write_capable": tool_gate.write_capable,
-            "decision": tool_gate.decision,
-            "permission_request_id": permission_request_id,
-        },
-    )
-    if deadline_exhausted():
-        return deadline_failure(permission_request_id)
-    return {
-        "allowed": False,
-        "reason": tool_gate.reason,
-        "risk_level": tool_gate.risk_level,
-        "write_capable": tool_gate.write_capable,
-        "decision": tool_gate.decision,
-        "permission_request_id": permission_request_id,
-    }
-
-
-async def resolve_claude_sdk_tool_permission(
-    *,
-    tenant_id: str,
-    workspace_id: str,
-    user_id: str,
-    session_id: str,
-    run_id: str,
-    agent_id: str,
-    skill_id: str,
-    trace_id: str,
-    request: dict[str, Any],
-    wait_timeout_seconds: float = tool_permission_budget().permission_wait_seconds,
-    poll_interval_seconds: float = _TOOL_PERMISSION_POLL_INTERVAL_SECONDS,
-    monotonic: Callable[[], float] | None = None,
-    sleep: Callable[[float], Awaitable[None]] | None = None,
-) -> dict[str, Any]:
-    """Wait for the exact tenant/run-scoped decision instead of letting a pending gate succeed."""
-    monotonic = monotonic or asyncio.get_running_loop().time
-    sleep = sleep or asyncio.sleep
-    allowed_wait_seconds = tool_permission_budget().aggregate_permission_wait_seconds
-    bounded_wait_timeout_seconds = max(min(float(wait_timeout_seconds), allowed_wait_seconds), 0.0)
-    deadline = monotonic() + bounded_wait_timeout_seconds
-    absolute_expires_at = datetime.now(timezone.utc) + timedelta(seconds=bounded_wait_timeout_seconds)
-
-    async def terminalize_timeout(request_id: str) -> dict[str, Any]:
-        async with transaction() as conn:
-            terminalized = await repositories.terminalize_pending_tool_permission_requests(
-                conn,
-                tenant_id=tenant_id,
-                run_id=run_id,
-                request_id=request_id,
-                terminal_status="expired",
-                terminal_reason="permission_wait_exhausted",
-            )
-        return {
-            "allowed": False,
-            "reason": "tool_permission_wait_timed_out",
-            "permission_request_id": request_id,
-            "expired": bool(terminalized),
-        }
-
-    try:
-        async with transaction() as conn:
-            outcome = await broker_claude_sdk_tool_permission(
-                conn,
-                tenant_id=tenant_id,
-                workspace_id=workspace_id,
-                user_id=user_id,
-                session_id=session_id,
-                run_id=run_id,
-                agent_id=agent_id,
-                skill_id=skill_id,
-                trace_id=trace_id,
-                request=request,
-                expires_in_seconds=max(deadline - monotonic(), 0.0),
-                absolute_expires_at=absolute_expires_at,
-                permission_deadline_monotonic=deadline,
-                monotonic=monotonic,
-            )
-            # The broker normally raises this signal itself before a
-            # decision-derived mutation. Recheck at the resolver boundary as
-            # well so an awaited broker implementation cannot hand a deadline-
-            # late allow result back to a transaction that then commits.
-            if monotonic() >= deadline:
-                raise _PermissionDeadlineElapsed(str(outcome.get("permission_request_id") or ""))
-    except _PermissionDeadlineElapsed as exc:
-        return await terminalize_timeout(exc.permission_request_id) if exc.permission_request_id else {
-            "allowed": False,
-            "reason": "tool_permission_wait_timed_out",
-        }
-    if outcome.get("reason") == "tool_permission_wait_timed_out":
-        request_id = str(outcome.get("permission_request_id") or "")
-        return await terminalize_timeout(request_id) if request_id else outcome
-    if outcome.get("reason") != "tool_permission_required":
-        return outcome
-
-    request_id = str(outcome.get("permission_request_id") or "")
-    if not request_id:
-        return {"allowed": False, "reason": "tool_permission_request_missing"}
-
-    async def poll_once() -> dict[str, Any]:
-        """Run one decision poll in a transaction; deadline signals must escape it."""
-
-        async with transaction() as conn:
-            expired = await repositories.expire_tool_permission_request(
-                conn,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                run_id=run_id,
-                request_id=request_id,
-            )
-            if expired is not None:
-                return {"state": "expired"}
-            pending = await repositories.get_tool_permission_request(
-                conn,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                run_id=run_id,
-                request_id=request_id,
-            )
-            if pending is None:
-                return {"state": "missing"}
-            pending_status = str(pending.get("status") or "")
-            if pending_status == "decided":
-                if monotonic() >= deadline:
-                    raise _PermissionDeadlineElapsed(request_id)
-                decision_outcome = await broker_claude_sdk_tool_permission(
-                    conn,
-                    tenant_id=tenant_id,
-                    workspace_id=workspace_id,
-                    user_id=user_id,
-                    session_id=session_id,
-                    run_id=run_id,
-                    agent_id=agent_id,
-                    skill_id=skill_id,
-                    trace_id=trace_id,
-                    request=request,
-                    expires_in_seconds=max(deadline - monotonic(), 0.0),
-                    absolute_expires_at=absolute_expires_at,
-                    permission_deadline_monotonic=deadline,
-                    monotonic=monotonic,
-                )
-                if monotonic() >= deadline:
-                    raise _PermissionDeadlineElapsed(
-                        str(decision_outcome.get("permission_request_id") or request_id)
-                    )
-                return decision_outcome
-            return {"state": pending_status or "unavailable"}
-
-    while True:
-        try:
-            poll_outcome = await poll_once()
-        except _PermissionDeadlineElapsed as exc:
-            return await terminalize_timeout(exc.permission_request_id or request_id)
-        if poll_outcome.get("state") == "expired":
-            return {"allowed": False, "reason": "tool_permission_expired", "permission_request_id": request_id}
-        if poll_outcome.get("state") == "missing":
-            return {"allowed": False, "reason": "tool_permission_request_missing", "permission_request_id": request_id}
-        if poll_outcome.get("state") == "pending":
-            pass
-        elif "allowed" in poll_outcome:
-            return poll_outcome
-        else:
-            return {"allowed": False, "reason": f"tool_permission_{poll_outcome.get('state')}", "permission_request_id": request_id}
-        if monotonic() >= deadline:
-            break
-        await sleep(max(float(poll_interval_seconds), 0.01))
-
-    return await terminalize_timeout(request_id)
+    return {"allowed": False, "reason": "tool_permission_runtime_approval_removed"}
 
 
 def _execution_tier(payload: RunPayload) -> str:
@@ -1278,6 +860,7 @@ class ClaudeAgentWorkerAdapter:
             agent_id=payload.agent_id,
             skill_ids=_runtime_request_skill_ids(payload, prepared),
             mcp_tool_ids=_string_list(payload.input.get("mcp_tool_ids")),
+            tool_policy_subjects=_runtime_tool_policy_subjects(payload),
             input_message=prepared.prompt,
             file_ids=payload.file_ids,
             sandbox_mode=_payload_sandbox_mode(payload),
@@ -1291,7 +874,7 @@ class ClaudeAgentWorkerAdapter:
             context_manifest=dict(context_manifest or {}),
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             sdk_session_id=continuity.sdk_session_id,
-            governed_permission_wait=True,
+            governed_permission_wait=False,
         )
         runtime = sandbox_runtime or SandboxRuntime(workspace_root=settings.sandbox_workspace_root)
         runtime_event_sink = None
@@ -1785,7 +1368,6 @@ class ClaudeAgentWorkerAdapter:
             context_pack=context_pack,
         )
         context_retrieval, context_retrieval_identity = self._context_retrieval_for_payload(payload, context_pack)
-        permission_denials: list[dict[str, Any]] = []
 
         async def on_text(delta: str) -> None:
             if event_sink:
@@ -1812,23 +1394,6 @@ class ClaudeAgentWorkerAdapter:
                     },
                 )
 
-        async def on_tool_permission(request: dict[str, Any]) -> dict[str, Any]:
-            trace_id = payload.trace_id or standard_trace_id(payload.run_id)
-            outcome = await resolve_claude_sdk_tool_permission(
-                tenant_id=payload.tenant_id,
-                workspace_id=payload.workspace_id,
-                user_id=payload.user_id,
-                session_id=payload.session_id,
-                run_id=payload.run_id,
-                trace_id=trace_id,
-                agent_id=payload.agent_id,
-                skill_id=payload.skill_id,
-                request=request,
-            )
-            if outcome.get("allowed") is not True:
-                permission_denials.append(outcome)
-            return outcome
-
         try:
             continuity = await self._session_continuity.resolve(
                 tenant_id=payload.tenant_id,
@@ -1852,7 +1417,7 @@ class ClaudeAgentWorkerAdapter:
                     "skills": staged_skill_names,
                     "on_text": on_text,
                     "on_skill_use": on_skill_use,
-                    "on_tool_permission": on_tool_permission,
+                    "tool_policy_subjects": _runtime_tool_policy_subjects(payload),
                 }
                 if context_retrieval is not None and context_retrieval_identity is not None:
                     sdk_kwargs["context_retrieval"] = context_retrieval
@@ -1860,15 +1425,6 @@ class ClaudeAgentWorkerAdapter:
                 sdk_result = await run_claude_agent_sdk(
                     **sdk_kwargs,
                 )
-                if permission_denials:
-                    denial = permission_denials[-1]
-                    return type("SdkPermissionDenied", (), {
-                        "used_sdk": True,
-                        "message": "工具权限未获准，任务未完成",
-                        "session_id": getattr(sdk_result, "session_id", None),
-                        "usage": getattr(sdk_result, "usage", {}) or {},
-                        "error": str(denial.get("reason") or "tool_permission_denied"),
-                    })()
                 return sdk_result
         except ClaudeAgentSdkNotAvailable as exc:
             return type("SdkUnavailable", (), {
@@ -2010,6 +1566,13 @@ def _file_skill_steps(input_payload: dict[str, object]) -> list[dict[str, object
         },
         {"step_key": "verify", "role": "verify", "depends_on": ["execute"], "skill_ids": [], "mcp_tool_ids": []},
     ]
+
+
+def _runtime_tool_policy_subjects(payload: RunPayload) -> list[dict[str, Any]]:
+    value = payload.input.get("_runtime_tool_policy_subjects")
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _string_list(value: object) -> list[str]:

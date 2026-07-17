@@ -6,7 +6,6 @@ from typing import Any
 from app.control_plane_contracts import sanitize_public_payload, sanitize_public_text, standard_trace_id
 
 TOOL_PERMISSION_CARD_SCHEMA_VERSION = "ai-platform.tool-permission-card.v1"
-TOOL_PERMISSION_DECISION_OPTIONS = ["allow_once", "allow_for_run", "deny"]
 TOOL_PERMISSION_PRIVATE_PAYLOAD_KEYS = {
     "".join(ch for ch in key if ch.isalnum()).lower()
     for key in {
@@ -92,27 +91,10 @@ def inbox_permission_response(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def inbox_allowed_decisions(row: dict[str, Any]) -> list[str]:
-    """Expose approval only for a currently executable, unexpired pending request."""
+    """Historical records intentionally expose no runtime decision controls."""
 
-    if str(row.get("status") or "") != "pending":
-        return []
-    if str(row.get("run_status") or "") != "running":
-        return []
-    if row.get("cancel_requested_at") is not None or row.get("permission_terminalization_target") is not None:
-        return []
-    if _permission_request_expired(row.get("expires_at")):
-        return []
-    decisions = ["allow_once"]
-    payload = row.get("request_payload_json")
-    payload = payload if isinstance(payload, dict) else {}
-    has_replay_fingerprint = any(
-        isinstance(payload.get(key), str) and bool(payload[key].strip())
-        for key in ("command_sha256", "input_sha256")
-    )
-    if has_replay_fingerprint:
-        decisions.append("allow_for_run")
-    decisions.append("deny")
-    return decisions
+    _ = row
+    return []
 
 
 def _permission_request_expired(value: object) -> bool:
@@ -143,10 +125,6 @@ def tool_permission_public_event_payload(
     card = tool_permission_card_from_payload(run_id=run_id, event_type=event_type, payload=payload)
     if card is None:
         return sanitize_tool_permission_payload(payload)
-    # Ordinary-user playback is historical only. Governance actions belong to
-    # the tenant-admin inbox, so do not project raw decision controls here.
-    card.pop("decision_endpoint", None)
-    card.pop("decision_options", None)
     return {
         "visible_to_user": bool(payload.get("visible_to_user", True)),
         "tool_permission_card": card,
@@ -179,8 +157,6 @@ def tool_permission_card_from_payload(
         "reason": _public_text(sanitized.get("reason")),
         "status": status,
         "decision": decision,
-        "decision_endpoint": tool_permission_decision_endpoint(run_id, request_id),
-        "decision_options": list(TOOL_PERMISSION_DECISION_OPTIONS),
     }
     if sanitized.get("created_at") is not None:
         card["created_at"] = sanitized.get("created_at")
@@ -189,10 +165,6 @@ def tool_permission_card_from_payload(
     if sanitized.get("expires_at") is not None:
         card["expires_at"] = sanitized.get("expires_at")
     return card
-
-
-def tool_permission_decision_endpoint(run_id: str, request_id: str) -> str:
-    return f"/api/ai/runs/{run_id}/tool-permissions/{request_id}/decision"
 
 
 def _public_text(value: object) -> str:

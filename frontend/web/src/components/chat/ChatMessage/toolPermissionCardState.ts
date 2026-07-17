@@ -6,17 +6,17 @@ export interface OrdinaryUserToolPermissionPresentation {
 }
 
 /**
- * Convert governed tool access into a non-interactive product state.
- * The returned keys intentionally retain the recorded decision without exposing
- * an approval control to ordinary chat users.
+ * Render retained permission evidence without exposing a runtime control.
  */
 export function getOrdinaryUserToolPermissionPresentation(
   part: ToolPermissionPart,
 ): OrdinaryUserToolPermissionPresentation {
   if (part.status === "pending") {
+    // Upgrade/replay may expose historical pending evidence briefly.  It is
+    // never an actionable wait state after the zero-click policy cutover.
     return {
-      titleKey: "chat.toolPermission.pending.title",
-      messageKey: "chat.toolPermission.pending.message",
+      titleKey: "chat.toolPermission.invalidated.title",
+      messageKey: "chat.toolPermission.invalidated.message",
     };
   }
   if (part.status === "expired") {

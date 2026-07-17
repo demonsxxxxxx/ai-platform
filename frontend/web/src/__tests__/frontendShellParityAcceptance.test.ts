@@ -30,7 +30,7 @@ test("frontend shell parity components are registered", () => {
   }
 });
 
-test("the routed settings projection exposes the governed inbox through its existing RBAC gate", () => {
+test("the routed settings projection exposes no runtime tool approval inbox", () => {
   const tabs = readFileSync(
     join(root, "src/components/layout/AppContent/TabContent.tsx"),
     "utf8",
@@ -39,16 +39,9 @@ test("the routed settings projection exposes the governed inbox through its exis
     join(root, "src/components/workbench/WorkbenchProjectionPages.tsx"),
     "utf8",
   );
-  const inbox = readFileSync(
-    join(root, "src/components/panels/AdminToolPermissionInboxSection.tsx"),
-    "utf8",
-  );
-
   assert.match(tabs, /settings:\s*WorkbenchSettingsProjectionPanel/);
-  assert.match(settings, /import \{ AdminToolPermissionInboxSection \}/);
-  assert.match(settings, /<AdminToolPermissionInboxSection\s*\/>/);
-  assert.match(inbox, /user\?\.is_admin === true && hasPermission\(Permission\.SETTINGS_MANAGE\)/);
-  assert.match(inbox, /if \(!subjectKey\) return null/);
+  assert.doesNotMatch(settings, /AdminToolPermissionInboxSection/);
+  assert.equal(existsSync(join(root, "src/components/panels/AdminToolPermissionInboxSection.tsx")), false);
 });
 
 test("app routes expose PRD phase 1B and 1C surfaces", () => {

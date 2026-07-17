@@ -6,6 +6,7 @@ import re
 import time as _time
 from dataclasses import dataclass, replace
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
@@ -41,6 +42,7 @@ from app.models import QueueRunPayload
 from app.settings import get_settings
 from app.tool_policy import evaluate_tool_policy
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
+from app.validation import SAFE_ID_PATTERN
 
 
 class _WorkerClock:
@@ -62,12 +64,6 @@ class WorkerOutcome:
 
 class WorkerRunCancelled(asyncio.CancelledError):
     """Raised inside the worker when a running run observes a platform cancel request."""
-
-
-class _WorkerAllowOnceConsumptionFailed(Exception):
-    def __init__(self, denial: "_WorkerCapabilityDecision") -> None:
-        super().__init__(denial.decision.decision_reason)
-        self.denial = denial
 
 
 class _WorkerSuccessCommitBlocked(Exception):
@@ -97,13 +93,6 @@ class _WorkerCapabilityDecision:
 
 
 @dataclass(frozen=True)
-class _WorkerAllowOnceGrant:
-    tool_id: str
-    request_id: str
-    distribution_decision: CapabilityAccessDecision
-
-
-@dataclass(frozen=True)
 class _WorkerToolPolicyAudit:
     tool_id: str
     allowed: bool
@@ -111,8 +100,6 @@ class _WorkerToolPolicyAudit:
     risk_level: str
     write_capable: bool
     decision: str
-    permission_request_id: str
-    auto_allowed: bool
 
 
 @dataclass(frozen=True)
@@ -121,7 +108,6 @@ class _WorkerCapabilityAuthorization:
     principal: AuthPrincipal
     decisions: tuple[_WorkerCapabilityDecision, ...]
     denial: _WorkerCapabilityDecision | None = None
-    allow_once_grants: tuple[_WorkerAllowOnceGrant, ...] = ()
     tool_policy_audits: tuple[_WorkerToolPolicyAudit, ...] = ()
 
 
@@ -850,7 +836,7 @@ def _attach_payload_snapshot_governance(
             manifest["skill_version"] = payload_version
         if payload_hash:
             manifest["content_hash"] = payload_hash
-        for field in ("source", "files", "dependency_ids", "mcp_tool_ids"):
+        for field in ("source", "files", "dependency_ids", "mcp_tool_ids", "builtin_tool_identities"):
             payload_value = payload_manifest.get(field)
             if isinstance(payload_value, (dict, list)):
                 manifest[field] = payload_value
@@ -1037,6 +1023,130 @@ def _mcp_tool_lifecycle_status(tool: dict[str, Any]) -> str:
     return "disabled"
 
 
+_BUILTIN_CAPABILITY_PARAMETERS = {
+    "Read": (["file_path"], []),
+    "Glob": (["pattern", "path"], []),
+    "LS": (["path"], []),
+    "Bash": (["command"], ["command"]),
+    "Write": (["file_path", "content"], ["file_path", "content"]),
+    "Edit": (["file_path", "old_string", "new_string", "replace_all"], ["file_path", "old_string", "new_string"]),
+    "NotebookEdit": (["notebook_path", "new_source", "cell_id", "cell_type", "edit_mode"], ["notebook_path", "new_source"]),
+    "Agent": (["agent", "prompt", "description"], ["agent"]),
+    "WebFetch": (["url", "prompt"], ["url"]),
+    "WebSearch": (["query"], ["query"]),
+    "Skill": (["skill"], ["skill"]),
+}
+
+
+def _declared_builtin_tool_identities(payload: QueueRunPayload) -> set[str]:
+    """Read only server-built immutable manifest declarations."""
+
+    declarations: set[str] = set()
+    for manifest in payload.skill_manifests:
+        if not isinstance(manifest, dict) or manifest.get("source", {}).get("kind") != "builtin":
+            continue
+        declarations.update(repositories.canonical_builtin_tool_identities(manifest))
+    return declarations
+
+
+def _builtin_capability_subjects(
+    *,
+    payload: QueueRunPayload,
+    run_identity: dict[str, str],
+    skill: dict[str, Any],
+    skill_decision: CapabilityAccessDecision,
+) -> list[dict[str, Any]]:
+    active = str(skill.get("skill_status") or "disabled") == "active"
+    distributed = skill_decision.usable
+    subjects: list[dict[str, Any]] = []
+    primary_skill_pinned = any(
+        isinstance(manifest, dict)
+        and str(manifest.get("skill_id") or "") == run_identity["skill_id"]
+        and isinstance(manifest.get("source"), dict)
+        and manifest["source"].get("kind") in {"builtin", "uploaded"}
+        for manifest in payload.skill_manifests
+    )
+    identities = _declared_builtin_tool_identities(payload)
+    if primary_skill_pinned:
+        identities.add("Skill")
+    for identity in sorted(identities):
+        keys, required_keys = _BUILTIN_CAPABILITY_PARAMETERS[identity]
+        subjects.append(
+            {
+                "identity": identity,
+                "registered": bool(skill),
+                "declared": True,
+                "active": active,
+                "distributed": distributed,
+                "identity_authorized": True,
+                "object_authorized": True,
+                "parameters_authorized": True,
+                "risk_level": "low" if identity in {"Read", "Glob", "LS", "Skill"} else "high",
+                "write_capable": identity not in {"Read", "Glob", "LS", "Skill"},
+                "allowed_parameter_keys": keys,
+                "required_parameter_keys": required_keys,
+                "allowed_skill_names": [run_identity["skill_id"]] if identity == "Skill" else [],
+            }
+        )
+    return subjects
+
+
+def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccessDecision) -> dict[str, Any] | None:
+    server_id = str(tool.get("server_id") or "")
+    tool_id = str(tool.get("tool_id") or "")
+    allowed_tools = tool.get("allowed_tools")
+    if (
+        not SAFE_ID_PATTERN.fullmatch(server_id)
+        or not SAFE_ID_PATTERN.fullmatch(tool_id)
+        or not isinstance(allowed_tools, list)
+        or len(allowed_tools) != 1
+        or not isinstance(allowed_tools[0], str)
+        or not SAFE_ID_PATTERN.fullmatch(allowed_tools[0])
+    ):
+        return None
+    tool_identifier = allowed_tools[0]
+    subject: dict[str, Any] = {
+        "identity": f"mcp__{server_id}__{tool_identifier}",
+        "mcp_server": server_id,
+        "mcp_tool": tool_identifier,
+        "registered": True,
+        "declared": True,
+        "active": (
+            str(tool.get("registry_status") or "") == "active"
+            and str(tool.get("policy_status") or "") == "active"
+            and str(tool.get("server_status") or "") == "active"
+        ),
+        "distributed": distribution.usable,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "risk_level": str(tool.get("risk_level") or "low"),
+        "write_capable": bool(tool.get("write_capable")),
+        "allowed_parameter_keys": ["query"],
+        "required_parameter_keys": ["query"],
+    }
+    endpoint = str(tool.get("endpoint") or "")
+    parsed = urlsplit(endpoint)
+    transport = str(tool.get("transport_type") or "").lower()
+    auth_mode = str(tool.get("auth_mode") or "").lower()
+    if (
+        parsed.scheme in {"http", "https"}
+        and parsed.netloc
+        and not parsed.username
+        and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
+        and transport in {"http", "streamable_http", "sse"}
+        and auth_mode == "none"
+    ):
+        subject["mcp_server_config"] = {
+            "type": "sse" if transport == "sse" else "http",
+            "url": endpoint,
+        }
+        return subject
+    return None
+
+
 def _canonical_authorized_mcp_scope(
     container: dict[str, Any],
     *,
@@ -1063,6 +1173,7 @@ def _payload_with_authorized_mcp_registration(
     payload: QueueRunPayload,
     *,
     allowed_entries: list[dict[str, Any]],
+    tool_policy_subjects: list[dict[str, Any]],
 ) -> QueueRunPayload:
     allowed_tool_ids = {
         str(entry.get("tool_id") or "").strip()
@@ -1078,6 +1189,7 @@ def _payload_with_authorized_mcp_registration(
             else step
             for step in steps
         ]
+    rebuilt_input["_runtime_tool_policy_subjects"] = tool_policy_subjects
     return payload.model_copy(update={"input": rebuilt_input})
 
 
@@ -1178,10 +1290,13 @@ async def _reauthorize_worker_capabilities(
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
 
     allowed_entries: list[dict[str, Any]] = []
-    allow_once_grants: list[_WorkerAllowOnceGrant] = []
-    allow_once_identities: set[tuple[str, str]] = set()
+    tool_policy_subjects = _builtin_capability_subjects(
+        payload=payload,
+        run_identity=run_identity,
+        skill=skill,
+        skill_decision=skill_decision,
+    )
     tool_policy_audits: list[_WorkerToolPolicyAudit] = []
-    request_payload = _mcp_tool_request_payload(payload)
     for tool_id in requested_tool_ids:
         tool = await repositories.get_mcp_tool_registry_entry(
             conn,
@@ -1233,18 +1348,30 @@ async def _reauthorize_worker_capabilities(
         if not distribution_decision.usable:
             return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), tool_record)
 
-        tool_gate = evaluate_tool_policy(tool=tool)
-        if not tool_gate.allowed and tool_gate.reason == "tool_permission_required":
-            permission_decision = await repositories.get_exact_tool_permission_decision(
-                conn,
-                tenant_id=run_identity["tenant_id"],
-                user_id=run_identity["user_id"],
-                run_id=run_identity["run_id"],
-                tool_id=tool_id,
-                tool_call_id=_mcp_tool_call_id(payload, request_payload, tool_id=tool_id),
-                request_payload_json=request_payload,
+        mcp_subject = _mcp_capability_subject(tool, distribution_decision)
+        if mcp_subject is None:
+            denial = _worker_capability_record(
+                "mcp_tool",
+                tool_id,
+                _denied_capability_decision("mcp_runtime_metadata_invalid", source=distribution_decision),
             )
-            tool_gate = evaluate_tool_policy(tool=tool, permission_decision=permission_decision)
+            return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
+
+        tool_gate = evaluate_tool_policy(
+            tool={
+                "requested_identity": mcp_subject["identity"],
+                "declared_identities": [mcp_subject["identity"]],
+                "registered": mcp_subject["registered"],
+                "declared": mcp_subject["declared"],
+                "active": mcp_subject["active"],
+                "distributed": mcp_subject["distributed"],
+                "identity_authorized": mcp_subject["identity_authorized"],
+                "object_authorized": mcp_subject["object_authorized"],
+                "parameters_authorized": mcp_subject["parameters_authorized"],
+                "risk_level": mcp_subject["risk_level"],
+                "write_capable": mcp_subject["write_capable"],
+            }
+        )
         tool_policy_audits.append(
             _WorkerToolPolicyAudit(
                 tool_id=tool_id,
@@ -1252,9 +1379,7 @@ async def _reauthorize_worker_capabilities(
                 reason=tool_gate.reason,
                 risk_level=tool_gate.risk_level,
                 write_capable=tool_gate.write_capable,
-                decision=tool_gate.decision,
-                permission_request_id=tool_gate.permission_request_id,
-                auto_allowed=tool_gate.auto_allowed,
+                decision=tool_gate.outcome,
             )
         )
         if not tool_gate.allowed:
@@ -1269,59 +1394,21 @@ async def _reauthorize_worker_capabilities(
                 tuple(decisions),
                 denial,
                 tool_policy_audits=tuple(tool_policy_audits),
-            )
-        if tool_gate.decision == "allow_once":
-            grant_identity = (tool_id, tool_gate.permission_request_id)
-            if grant_identity not in allow_once_identities:
-                allow_once_identities.add(grant_identity)
-                allow_once_grants.append(
-                    _WorkerAllowOnceGrant(
-                        tool_id=tool_id,
-                        request_id=tool_gate.permission_request_id,
-                        distribution_decision=distribution_decision,
-                    )
-                )
+        )
         allowed_entries.append(tool)
+        tool_policy_subjects.append(mcp_subject)
 
     authorized_payload = _payload_with_authorized_mcp_registration(
         payload,
         allowed_entries=allowed_entries,
+        tool_policy_subjects=tool_policy_subjects,
     )
     return _WorkerCapabilityAuthorization(
         authorized_payload,
         principal,
         tuple(decisions),
-        allow_once_grants=tuple(allow_once_grants),
         tool_policy_audits=tuple(tool_policy_audits),
     )
-
-
-async def _consume_worker_allow_once_grants(
-    conn,
-    *,
-    authorization: _WorkerCapabilityAuthorization,
-    run_identity: dict[str, str],
-) -> None:
-    for grant in authorization.allow_once_grants:
-        consumed = await repositories.consume_tool_permission_decision(
-            conn,
-            tenant_id=run_identity["tenant_id"],
-            user_id=run_identity["user_id"],
-            run_id=run_identity["run_id"],
-            request_id=grant.request_id,
-        )
-        if consumed is not None:
-            continue
-        raise _WorkerAllowOnceConsumptionFailed(
-            _worker_capability_record(
-                "mcp_tool",
-                grant.tool_id,
-                _denied_capability_decision(
-                    "tool_permission_consumed_or_expired",
-                    source=grant.distribution_decision,
-                ),
-            )
-        )
 
 
 def _worker_capability_audit_payload(
@@ -1414,9 +1501,7 @@ async def _append_worker_tool_policy_audits(
                 "reason": audit.reason,
                 "risk_level": audit.risk_level,
                 "write_capable": audit.write_capable,
-                "decision": audit.decision,
-                "permission_request_id": audit.permission_request_id,
-                "auto_allowed": audit.auto_allowed,
+                "outcome": audit.decision,
             },
         )
 
@@ -2063,11 +2148,6 @@ async def process_run_payload(
                     reconciled_parent,
                 )
                 return terminal_after_transaction.outcome
-            await _consume_worker_allow_once_grants(
-                conn,
-                authorization=capability_authorization,
-                run_identity=run_identity,
-            )
             try:
                 adapter = adapter_registry.get(payload.executor_type)
             except KeyError as exc:
@@ -2118,33 +2198,6 @@ async def process_run_payload(
                     trace_id=trace_id,
                     worker_id=worker_id,
                 )
-    except _WorkerAllowOnceConsumptionFailed as exc:
-        if capability_authorization is None:
-            raise
-        failed_authorization = _WorkerCapabilityAuthorization(
-            payload=capability_authorization.payload,
-            principal=capability_authorization.principal,
-            decisions=capability_authorization.decisions,
-            denial=exc.denial,
-            allow_once_grants=capability_authorization.allow_once_grants,
-            tool_policy_audits=capability_authorization.tool_policy_audits,
-        )
-        async with transaction() as conn:
-            await _append_worker_admin_bypass_audits(conn, audits=admin_bypass_audits)
-            await _append_worker_tool_policy_audits(
-                conn,
-                authorization=failed_authorization,
-                run_identity=run_identity,
-                trace_id=trace_id,
-            )
-            terminal_after_transaction = await _fail_worker_capability_authorization(
-                conn,
-                payload=failed_authorization.payload,
-                authorization=failed_authorization,
-                run_identity=run_identity,
-                trace_id=trace_id,
-            )
-        return terminal_after_transaction.outcome
     finally:
         if terminal_after_transaction is not None:
             await _finalize_multi_agent_parent_after_child_commit(

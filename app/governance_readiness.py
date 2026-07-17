@@ -4,6 +4,7 @@ from pathlib import Path
 from app.b1_memory_context_readiness import build_b1_memory_context_readiness
 from app.office_context_readiness import build_office_context_readiness
 from app.skills.release_readiness import build_skill_release_readiness
+from app.tool_policy_bulk_review_readiness import build_tool_policy_bulk_review_readiness
 from app.tool_policy_readiness import build_tool_policy_readiness
 
 
@@ -153,7 +154,7 @@ def build_governance_readiness(
     )
     skill_release_dashboard = skill_release_readiness["admin_skill_release_dashboard"]
     tool_policy_readiness = build_tool_policy_readiness()
-    bulk_review_evidence = tool_policy_readiness["evidence"]["admin_policy_bulk_review_dashboard"]
+    bulk_review_evidence = build_tool_policy_bulk_review_readiness()
     office_context_readiness = build_office_context_readiness(repo_root=repo_root)
     b1_memory_context_readiness = build_b1_memory_context_readiness(repo_root=repo_root)
     frontend_projection_evidence = (
@@ -200,14 +201,14 @@ def build_governance_readiness(
             implemented=[
                 "admin_tool_policy_inventory",
                 "tenant_scoped_tool_policy_update_audit",
-                "user_tool_permission_request_decision",
+                "zero_click_model_tool_policy",
                 "risk_write_fail_closed_policy_evaluation",
                 "public_tool_permission_card_projection",
                 "audit_visible_legacy_frontend_route_policy_mapping",
-                "tool_allow_deny_ask_policy_taxonomy_evidence",
+                "allow_deny_tool_policy_taxonomy_evidence",
                 "platform_registered_mcp_only_policy",
                 "ordinary_user_custom_mcp_disabled",
-                "exact_tool_permission_decision_lookup_source_tests",
+                "synchronous_capability_subject_source_tests",
                 "admin_policy_change_history_projection",
                 "admin_policy_bulk_review_dashboard_contract",
                 "admin_policy_bulk_review_runtime_acceptance_source_route_tests",
@@ -218,8 +219,8 @@ def build_governance_readiness(
             ],
             next_checks=[
                 "enforce or remap every legacy frontend MCP/model/env/channel/admin route to ai-platform projections",
-                "add ordinary-user confirmation-card acceptance against migrated frontend",
-                "keep risky or write-capable tools blocked without a current decision",
+                "keep historical permission records read-only and redacted",
+                "keep risky or write-capable tools denied unless their exact capability subject is declared, active, and distributed",
             ],
             evidence={
                 "tool_policy_taxonomy": {

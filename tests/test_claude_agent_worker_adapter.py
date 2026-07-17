@@ -14,11 +14,12 @@ import pytest
 
 import app.skills.dependencies as dependency_policy
 import app.executors.claude_agent_worker as claude_agent_worker
+import app.executors.claude_agent_sdk_runner as sdk_runner
+import app.worker as worker_module
 from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
 from app.executors.claude_agent_worker import (
     ClaudeAgentWorkerAdapter,
     PreparedSdkRun,
-    resolve_claude_sdk_tool_permission,
 )
 from app.executors.claude_agent_worker import _allowed_skill_names
 from app.executors.claude_agent_worker import _inferred_used_skill_names
@@ -26,7 +27,6 @@ from app.executors.claude_agent_worker import _ordinary_run_requires_sandbox
 from app.executors.claude_agent_worker import _required_artifact_types
 from app.executors.claude_agent_sdk_runner import _sdk_run_timeout_seconds
 from app.storage import StoredObject
-from app.tool_permission_lifecycle import TOOL_PERMISSION_REQUEST_TTL_SECONDS, tool_permission_budget
 from app.executors.claude_agent_sdk_runner import build_sdk_env, build_skill_prompt, run_claude_agent_sdk
 from app.executors.registry import AdapterRegistry
 from app.runtime.sandbox.container_provider import (
@@ -38,6 +38,156 @@ from app.runtime.kernel_contracts import AgentEvent
 from app.skills.pinning import build_skill_manifest_pins
 from app.skills.registry import BuiltinSkillRegistry
 from app.worker import WorkerRunCancelled
+
+
+@pytest.mark.asyncio
+async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_subjects(monkeypatch, tmp_path):
+    captured = {}
+
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class AssistantMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = {}
+        model_usage = {}
+        result = "ok"
+        is_error = False
+        errors = []
+        stop_reason = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class HookMatcher:
+        def __init__(self, matcher=None, hooks=None, timeout=None):
+            self.matcher = matcher
+            self.hooks = hooks or []
+            self.timeout = timeout
+
+    class PermissionResultAllow:
+        def __init__(self, behavior="allow", **kwargs):
+            self.behavior = behavior
+            self.kwargs = kwargs
+
+    class PermissionResultDeny:
+        def __init__(self, behavior="deny", message="", **kwargs):
+            self.behavior = behavior
+            self.message = message
+
+    async def query(prompt, options):
+        yield AssistantMessage([TextBlock("ok")])
+        yield ResultMessage()
+
+    settings = types.SimpleNamespace(
+        claude_agent_sdk_enabled=True,
+        anthropic_base_url="",
+        anthropic_auth_token="",
+        anthropic_model="",
+        openai_api_key="",
+        claude_agent_model="model-a",
+        claude_agent_sdk_skills="",
+        claude_agent_sdk_timeout_seconds=5,
+        claude_agent_sdk_max_turns=12,
+        claude_agent_sdk_max_thinking_tokens=1024,
+        claude_agent_sdk_effort="high",
+        claude_agent_permission_mode="dontAsk",
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        types.SimpleNamespace(
+            AssistantMessage=AssistantMessage,
+            ClaudeAgentOptions=ClaudeAgentOptions,
+            HookMatcher=HookMatcher,
+            PermissionResultAllow=PermissionResultAllow,
+            PermissionResultDeny=PermissionResultDeny,
+            ResultMessage=ResultMessage,
+            TextBlock=TextBlock,
+            query=query,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: settings)
+    write_skill(tmp_path / "skills", name="qa-file-reviewer", description="Review Word documents.")
+    write_skill(tmp_path / "skills", name="minimax-docx", description="Manipulate Word documents.")
+    pinned_manifests = _registry_pins(tmp_path / "skills", skill_id="qa-file-reviewer")
+    builtin_subjects = worker_module._builtin_capability_subjects(
+        payload=types.SimpleNamespace(skill_manifests=pinned_manifests),
+        run_identity={"skill_id": "qa-file-reviewer"},
+        skill={"skill_status": "active"},
+        skill_decision=types.SimpleNamespace(usable=True),
+    )
+    external_subject = worker_module._mcp_capability_subject(
+        {
+            "tool_id": "corp-search",
+            "server_id": "corp:search",
+            "allowed_tools": ["query"],
+            "registry_status": "active",
+            "policy_status": "active",
+            "server_status": "active",
+            "risk_level": "high",
+            "write_capable": True,
+            "transport_type": "http",
+            "endpoint": "https://mcp.example.test/v1",
+            "auth_mode": "none",
+        },
+        types.SimpleNamespace(usable=True),
+    )
+    assert external_subject is not None
+    subjects_by_identity = {subject["identity"]: subject for subject in builtin_subjects}
+    subjects = [subjects_by_identity[identity] for identity in ("Bash", "Write", "Skill")] + [external_subject]
+
+    result = await run_claude_agent_sdk(
+        prompt="hello",
+        cwd=tmp_path,
+        skill_id="qa-file-reviewer",
+        skills=["qa-file-reviewer"],
+        tool_policy_subjects=subjects,
+        execution_policy="sandbox_brokered",
+    )
+
+    assert result.error is None
+    assert captured["permission_mode"] == "dontAsk"
+    assert captured["tools"] == ["Bash", "Write", "Skill"]
+    assert captured["allowed_tools"] == ["Bash", "Write", "Skill", "mcp__corp:search__query"]
+    assert captured["mcp_servers"] == {
+        "corp:search": {"type": "http", "url": "https://mcp.example.test/v1"}
+    }
+    assert "on_tool_permission" not in captured
+
+    can_use = captured["can_use_tool"]
+    assert (await can_use("Bash", {"command": "echo safe"})).behavior == "allow"
+    assert (await can_use("Write", {"file_path": "out.txt", "content": "safe"})).behavior == "allow"
+    assert (await can_use("Skill", {"skill": "qa-file-reviewer"})).behavior == "allow"
+    assert (await can_use("Skill", {"skill": "unknown-skill"})).behavior == "deny"
+    assert (await can_use("mcp__corp:search__query", {"query": "safe"})).behavior == "allow"
+    assert (await can_use("mcp__corp:search__query_extra", {"query": "safe"})).behavior == "deny"
+    assert (await can_use("mcp__corp:search__query", {"query": "safe", "scope": "other"})).behavior == "deny"
+    for endpoint in (
+        "https://mcp.example.test/v1?api_key=redacted",
+        "https://mcp.example.test/v1?token=redacted",
+        "https://mcp.example.test/v1#fragment",
+    ):
+        assert sdk_runner._mcp_server_options(
+            {
+                "mcp__corp:search__query": {
+                    "mcp_server": "corp:search",
+                    "mcp_server_config": {"type": "http", "url": endpoint},
+                }
+            }
+        ) == {}
+
+    hook = captured["hooks"]["PreToolUse"][0].hooks[0]
+    allowed = await hook({"tool_name": "Bash", "tool_input": {"command": "echo safe"}})
+    denied = await hook({"tool_name": "Bash", "tool_input": {"command": "echo safe", "cwd": "other"}})
+    assert allowed["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 class FakeDelegate:
@@ -145,452 +295,6 @@ class FakeSdkNativeSkillUse:
 
 
 RELEASE_DECISION_SCHEMA_VERSION = "ai-platform.skill-release-decision.v1"
-
-
-@asynccontextmanager
-async def fake_transaction():
-    yield object()
-
-
-async def expired_permission_request(*args, **kwargs):
-    return {"status": "expired"}
-
-
-@pytest.mark.asyncio
-async def test_tool_permission_waits_for_admin_decision_before_allowing_execution(monkeypatch):
-    calls = []
-
-    async def fake_broker(conn, **kwargs):
-        calls.append(kwargs["request"]["tool_call_id"])
-        if len(calls) == 1:
-            return {
-                "allowed": False,
-                "reason": "tool_permission_required",
-                "permission_request_id": "tpr-pending",
-            }
-        return {
-            "allowed": True,
-            "reason": "tool_permission_decided",
-            "permission_request_id": "tpr-pending",
-        }
-
-    async def fake_expire(conn, **kwargs):
-        return None
-
-    async def fake_get_request(conn, **kwargs):
-        assert kwargs["tenant_id"] == "default"
-        assert kwargs["run_id"] == "run_1"
-        assert kwargs["request_id"] == "tpr-pending"
-        return {"status": "decided"}
-
-    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
-    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
-    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
-    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
-
-    result = await resolve_claude_sdk_tool_permission(
-        tenant_id="default",
-        workspace_id="default",
-        user_id="user-a",
-        session_id="ses_1",
-        run_id="run_1",
-        agent_id="qa-word-review",
-        skill_id="qa-file-reviewer",
-        trace_id="trace-run-1",
-        request={"tool_call_id": "call-1"},
-        wait_timeout_seconds=0.1,
-        poll_interval_seconds=0.01,
-    )
-
-    assert result["allowed"] is True
-    assert calls == ["call-1", "call-1"]
-
-
-@pytest.mark.asyncio
-async def test_tool_permission_wait_accepts_a_decision_after_the_former_outer_timeout_without_sleep(monkeypatch):
-    calls = []
-    clock = {"value": 0.0}
-
-    async def fake_broker(conn, **kwargs):
-        calls.append(("broker", kwargs["request"]["tool_call_id"]))
-        return (
-            {
-                "allowed": False,
-                "reason": "tool_permission_required",
-                "permission_request_id": "tpr-delayed",
-            }
-            if len(calls) == 1
-            else {
-                "allowed": True,
-                "reason": "tool_permission_decided",
-                "permission_request_id": "tpr-delayed",
-            }
-        )
-
-    async def fake_expire(conn, **kwargs):
-        return None
-
-    async def fake_get_request(conn, **kwargs):
-        return {"status": "decided" if clock["value"] > 130 else "pending"}
-
-    async def advance_clock(delay):
-        clock["value"] += delay
-
-    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
-    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
-    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
-    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
-
-    result = await resolve_claude_sdk_tool_permission(
-        tenant_id="default",
-        workspace_id="default",
-        user_id="user-a",
-        session_id="ses_1",
-        run_id="run_1",
-        agent_id="qa-word-review",
-        skill_id="qa-file-reviewer",
-        trace_id="trace-run-1",
-        request={"tool_call_id": "call-delayed"},
-        wait_timeout_seconds=tool_permission_budget().permission_wait_seconds,
-        poll_interval_seconds=131.0,
-        monotonic=lambda: clock["value"],
-        sleep=advance_clock,
-    )
-
-    assert result["allowed"] is True
-    assert clock["value"] == 131.0
-    assert calls == [("broker", "call-delayed"), ("broker", "call-delayed")]
-
-
-@pytest.mark.asyncio
-async def test_tool_permission_wait_fails_closed_when_cancelled(monkeypatch):
-    async def fake_broker(conn, **kwargs):
-        return {"allowed": False, "reason": "tool_permission_required", "permission_request_id": "tpr-cancelled"}
-
-    async def fake_expire(conn, **kwargs):
-        return None
-
-    async def fake_get_request(conn, **kwargs):
-        return {"status": "cancelled"}
-
-    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
-    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
-    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
-    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
-
-    result = await resolve_claude_sdk_tool_permission(
-        tenant_id="default",
-        workspace_id="default",
-        user_id="user-a",
-        session_id="ses_1",
-        run_id="run_1",
-        agent_id="qa-word-review",
-        skill_id="qa-file-reviewer",
-        trace_id="trace-run-1",
-        request={"tool_call_id": "call-cancelled"},
-    )
-
-    assert result == {
-        "allowed": False,
-        "reason": "tool_permission_cancelled",
-        "permission_request_id": "tpr-cancelled",
-    }
-
-
-@pytest.mark.asyncio
-async def test_tool_permission_wait_fails_closed_when_expired(monkeypatch):
-    async def fake_broker(conn, **kwargs):
-        return {"allowed": False, "reason": "tool_permission_required", "permission_request_id": "tpr-expired"}
-
-    async def fake_expire(conn, **kwargs):
-        return {"id": "tpr-expired", "status": "expired"}
-
-    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
-    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
-    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
-
-    result = await resolve_claude_sdk_tool_permission(
-        tenant_id="default",
-        workspace_id="default",
-        user_id="user-a",
-        session_id="ses_1",
-        run_id="run_1",
-        agent_id="qa-word-review",
-        skill_id="qa-file-reviewer",
-        trace_id="trace-run-1",
-        request={"tool_call_id": "call-expired"},
-    )
-
-    assert result == {
-        "allowed": False,
-        "reason": "tool_permission_expired",
-        "permission_request_id": "tpr-expired",
-    }
-
-
-@pytest.mark.asyncio
-async def test_tool_permission_wait_fails_closed_at_its_deadline(monkeypatch):
-    clock = {"value": 0.0}
-
-    async def fake_broker(conn, **kwargs):
-        return {"allowed": False, "reason": "tool_permission_required", "permission_request_id": "tpr-timeout"}
-
-    async def fake_expire(conn, **kwargs):
-        return None
-
-    async def fake_get_request(conn, **kwargs):
-        return {"status": "pending"}
-
-    async def fake_terminalize(conn, **kwargs):
-        return []
-
-    async def advance_clock(delay):
-        clock["value"] += delay
-
-    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
-    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
-    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
-    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
-    monkeypatch.setattr(
-        claude_agent_worker.repositories,
-        "terminalize_pending_tool_permission_requests",
-        fake_terminalize,
-    )
-
-    result = await resolve_claude_sdk_tool_permission(
-        tenant_id="default",
-        workspace_id="default",
-        user_id="user-a",
-        session_id="ses_1",
-        run_id="run_1",
-        agent_id="qa-word-review",
-        skill_id="qa-file-reviewer",
-        trace_id="trace-run-1",
-        request={"tool_call_id": "call-timeout"},
-        wait_timeout_seconds=5.0,
-        poll_interval_seconds=5.0,
-        monotonic=lambda: clock["value"],
-        sleep=advance_clock,
-    )
-
-    assert result == {
-        "allowed": False,
-        "reason": "tool_permission_wait_timed_out",
-        "permission_request_id": "tpr-timeout",
-        "expired": False,
-    }
-
-
-@pytest.mark.asyncio
-async def test_tool_permission_wait_persists_its_remaining_budget_and_terminalizes_exact_request(monkeypatch):
-    """The local monotonic deadline and persisted request lifetime are one authority."""
-    clock = {"value": 10.0}
-    broker_expiries = []
-    terminalized = []
-
-    async def fake_broker(conn, **kwargs):
-        broker_expiries.append(kwargs["expires_in_seconds"])
-        return {
-            "allowed": False,
-            "reason": "tool_permission_required",
-            "permission_request_id": "tpr-budget",
-        }
-
-    async def fake_expire(conn, **kwargs):
-        return None
-
-    async def fake_get_request(conn, **kwargs):
-        return {"status": "pending"}
-
-    async def fake_terminalize(conn, **kwargs):
-        terminalized.append(kwargs)
-        return [{"id": "tpr-budget", "status": "expired"}]
-
-    async def advance_clock(delay):
-        clock["value"] += delay
-
-    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
-    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
-    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
-    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
-    monkeypatch.setattr(
-        claude_agent_worker.repositories,
-        "terminalize_pending_tool_permission_requests",
-        fake_terminalize,
-    )
-
-    result = await resolve_claude_sdk_tool_permission(
-        tenant_id="default",
-        workspace_id="default",
-        user_id="user-a",
-        session_id="ses_1",
-        run_id="run_1",
-        agent_id="qa-word-review",
-        skill_id="qa-file-reviewer",
-        trace_id="trace-run-1",
-        request={"tool_call_id": "call-budget"},
-        wait_timeout_seconds=5.0,
-        poll_interval_seconds=5.0,
-        monotonic=lambda: clock["value"],
-        sleep=advance_clock,
-    )
-
-    assert broker_expiries == [5.0]
-    assert result == {
-        "allowed": False,
-        "reason": "tool_permission_wait_timed_out",
-        "permission_request_id": "tpr-budget",
-        "expired": True,
-    }
-    assert terminalized == [
-        {
-            "tenant_id": "default",
-            "run_id": "run_1",
-            "request_id": "tpr-budget",
-            "terminal_status": "expired",
-            "terminal_reason": "permission_wait_exhausted",
-        }
-    ]
-
-
-@pytest.mark.asyncio
-async def test_tool_permission_decision_arriving_after_the_absolute_deadline_never_allows_or_audits(monkeypatch):
-    """An awaited broker result may not revive a request after its shared deadline."""
-
-    clock = {"value": 0.0}
-    terminalized = []
-    broker_calls = []
-
-    async def fake_broker(conn, **kwargs):
-        broker_calls.append(kwargs)
-        if len(broker_calls) == 1:
-            return {
-                "allowed": False,
-                "reason": "tool_permission_required",
-                "permission_request_id": "tpr-late",
-            }
-        clock["value"] = 5.0
-        return {
-            "allowed": True,
-            "reason": "tool_permission_allowed",
-            "permission_request_id": "tpr-late",
-        }
-
-    async def fake_expire(conn, **kwargs):
-        return None
-
-    async def fake_get_request(conn, **kwargs):
-        return {"status": "decided"}
-
-    async def fake_terminalize(conn, **kwargs):
-        terminalized.append(kwargs)
-        return [{"id": "tpr-late", "status": "expired"}]
-
-    monkeypatch.setattr(claude_agent_worker, "transaction", fake_transaction)
-    monkeypatch.setattr(claude_agent_worker, "broker_claude_sdk_tool_permission", fake_broker)
-    monkeypatch.setattr(claude_agent_worker.repositories, "expire_tool_permission_request", fake_expire)
-    monkeypatch.setattr(claude_agent_worker.repositories, "get_tool_permission_request", fake_get_request)
-    monkeypatch.setattr(
-        claude_agent_worker.repositories,
-        "terminalize_pending_tool_permission_requests",
-        fake_terminalize,
-    )
-
-    result = await resolve_claude_sdk_tool_permission(
-        tenant_id="default",
-        workspace_id="default",
-        user_id="user-a",
-        session_id="ses_1",
-        run_id="run_1",
-        agent_id="qa-word-review",
-        skill_id="qa-file-reviewer",
-        trace_id="trace-run-1",
-        request={"tool_call_id": "call-late"},
-        wait_timeout_seconds=5.0,
-        monotonic=lambda: clock["value"],
-    )
-
-    assert result == {
-        "allowed": False,
-        "reason": "tool_permission_wait_timed_out",
-        "permission_request_id": "tpr-late",
-        "expired": True,
-    }
-    assert terminalized == [
-        {
-            "tenant_id": "default",
-            "run_id": "run_1",
-            "request_id": "tpr-late",
-            "terminal_status": "expired",
-            "terminal_reason": "permission_wait_exhausted",
-        }
-    ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("crossing_await", ["consume", "allowed_audit"])
-async def test_deadline_late_authority_rolls_back_before_separate_timeout_terminalization(monkeypatch, crossing_await):
-    """A deadline crossing inside broker work aborts that transaction, never its authority writes."""
-
-    clock = {"value": 0.0}
-    committed: list[str] = []
-    terminalized: list[dict] = []
-    transaction_results: list[str] = []
-
-    @asynccontextmanager
-    async def recording_transaction():
-        staged: list[str] = []
-        try:
-            yield staged
-        except claude_agent_worker._PermissionDeadlineElapsed:
-            transaction_results.append("rollback")
-            raise
-        else:
-            transaction_results.append("commit")
-            committed.extend(staged)
-
-    async def get_exact(conn, **_kwargs):
-        command_hash = hashlib.sha256(b"").hexdigest()
-        return {
-            "id": "tpr-deadline",
-            "decision": "allow_once",
-            "tool_call_id": "call-deadline",
-            "request_payload_json": {"command_sha256": command_hash},
-        }
-
-    async def consume(conn, **_kwargs):
-        conn.append("consume")
-        if crossing_await == "consume":
-            clock["value"] = 1.0
-        return {"id": "tpr-deadline", "status": "consumed"}
-
-    async def audit(conn, **kwargs):
-        conn.append("allowed_audit")
-        if kwargs["action"] == "claude_sdk_tool_policy_allowed":
-            clock["value"] = 1.0
-
-    async def terminalize(conn, **kwargs):
-        conn.append("terminalized")
-        terminalized.append(kwargs)
-        return [{"id": "tpr-deadline", "status": "expired"}]
-
-    monkeypatch.setattr(claude_agent_worker, "transaction", recording_transaction)
-    monkeypatch.setattr(claude_agent_worker.repositories, "get_exact_tool_permission_decision", get_exact)
-    monkeypatch.setattr(claude_agent_worker.repositories, "consume_tool_permission_decision", consume)
-    monkeypatch.setattr(claude_agent_worker.repositories, "append_audit_log", audit)
-    monkeypatch.setattr(claude_agent_worker.repositories, "terminalize_pending_tool_permission_requests", terminalize)
-
-    result = await resolve_claude_sdk_tool_permission(
-        tenant_id="default", workspace_id="default", user_id="user-a", session_id="ses_1",
-        run_id="run_1", agent_id="qa-word-review", skill_id="qa-file-reviewer", trace_id="trace-run-1",
-        request={"tool_name": "Bash", "tool_call_id": "call-deadline", "write_capable": True},
-        wait_timeout_seconds=1.0, monotonic=lambda: clock["value"],
-    )
-
-    assert result["reason"] == "tool_permission_wait_timed_out"
-    assert transaction_results == ["rollback", "commit"]
-    assert committed == ["terminalized"]
-    assert terminalized[0]["request_id"] == "tpr-deadline"
 
 
 def _snapshot_hash(files):
@@ -1411,130 +1115,6 @@ def test_file_skill_artifact_contract_is_owned_by_the_selected_capability():
     assert _required_artifact_types(payload(skill_id="qa-file-reviewer")) == ("reviewed_docx",)
     assert _required_artifact_types(payload(skill_id="baoyu-translate")) == ("translated_docx",)
     assert _required_artifact_types(payload(skill_id="general-chat", file_ids=[])) == ()
-
-
-def test_sandbox_brokered_sdk_timeout_covers_the_shared_permission_transport_deadline():
-    settings = types.SimpleNamespace(claude_agent_sdk_timeout_seconds=5.0)
-    budget = tool_permission_budget(5.0)
-
-    assert TOOL_PERMISSION_REQUEST_TTL_SECONDS == budget.request_ttl_seconds == 900.0
-    assert budget.aggregate_permission_wait_seconds == budget.permission_wait_seconds
-    assert budget.permission_callback_timeout_seconds > budget.permission_wait_seconds
-    assert budget.sandbox_sdk_timeout_seconds > 5.0 + budget.permission_wait_seconds
-    assert budget.outer_executor_timeout_seconds > budget.sandbox_sdk_timeout_seconds
-    assert budget.non_permission_callback_timeout_seconds < budget.permission_wait_seconds
-    assert (
-        _sdk_run_timeout_seconds(settings, sandbox_brokered=True, full_access=False)
-        == budget.sandbox_sdk_timeout_seconds
-    )
-    assert _sdk_run_timeout_seconds(settings, sandbox_brokered=False, full_access=False) == 5.0
-
-
-def test_sandbox_brokered_budget_preserves_pre_permission_work_and_one_full_wait():
-    budget = tool_permission_budget(130.0)
-
-    assert budget.sandbox_sdk_timeout_seconds > 130.0 + budget.aggregate_permission_wait_seconds
-    assert budget.outer_executor_timeout_seconds > budget.sandbox_sdk_timeout_seconds
-
-
-@pytest.mark.asyncio
-async def test_sandbox_sdk_starts_at_the_normal_deadline_then_extends_only_for_a_governed_callback(monkeypatch, tmp_path):
-    captured = {"timeouts": [], "rescheduled": [], "permission_requests": []}
-
-    class ResultMessage:
-        session_id = "sdk-session"
-        usage = {}
-        model_usage = {}
-        result = "ok"
-        is_error = False
-        errors = []
-        stop_reason = None
-
-    class ClaudeAgentOptions:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-            self.hooks = kwargs["hooks"]
-
-    class HookMatcher:
-        def __init__(self, matcher=None, hooks=None, timeout=None):
-            self.matcher = matcher
-            self.hooks = hooks or []
-            self.timeout = timeout
-
-    class ObservedTimeout:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return False
-
-        def reschedule(self, deadline):
-            captured["rescheduled"].append(deadline)
-
-    async def query(prompt, options):
-        hook = options.hooks["PreToolUse"][0].hooks[0]
-        captured["hook_result"] = await hook(
-            {
-                "hook_event_name": "PreToolUse",
-                "tool_name": "Write",
-                "tool_input": {"file_path": "output.txt", "content": "governed"},
-                "tool_use_id": "tool-governed",
-            },
-            "tool-governed",
-            {},
-        )
-        yield ResultMessage()
-
-    current_settings = type(
-        "S",
-        (),
-        {
-            "claude_agent_sdk_enabled": True,
-            "anthropic_base_url": "",
-            "anthropic_auth_token": "",
-            "anthropic_model": "",
-            "openai_api_key": "",
-            "claude_agent_model": "deepseek-v4-flash",
-            "claude_agent_sdk_skills": "",
-            "claude_agent_sdk_timeout_seconds": 130.0,
-            "claude_agent_sdk_max_turns": 12,
-        },
-    )()
-    fake_sdk = types.SimpleNamespace(
-        AssistantMessage=type("AssistantMessage", (), {}),
-        ClaudeAgentOptions=ClaudeAgentOptions,
-        HookMatcher=HookMatcher,
-        ResultMessage=ResultMessage,
-        TextBlock=type("TextBlock", (), {}),
-        query=query,
-    )
-
-    async def on_tool_permission(request):
-        captured["permission_requests"].append(request)
-        return {"allowed": True, "reason": "tool_permission_decided"}
-
-    def timeout(seconds):
-        captured["timeouts"].append(seconds)
-        return ObservedTimeout()
-
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.asyncio.timeout", timeout)
-
-    result = await run_claude_agent_sdk(
-        prompt="hello",
-        cwd=tmp_path,
-        skill_id="general-chat",
-        execution_policy="sandbox_brokered",
-        on_tool_permission=on_tool_permission,
-    )
-
-    budget = tool_permission_budget(130.0)
-    assert result.error is None
-    assert captured["timeouts"] == [budget.normal_execution_timeout_seconds]
-    assert len(captured["rescheduled"]) == 1
-    assert captured["permission_requests"][0]["permission_wait_seconds"] == budget.aggregate_permission_wait_seconds
-    assert captured["hook_result"]["hookSpecificOutput"]["permissionDecision"] == "allow"
 
 
 @pytest.mark.asyncio
@@ -4781,276 +4361,6 @@ async def test_sdk_runner_pre_tool_hook_gates_bash_before_permission_rules(monke
 
 
 @pytest.mark.asyncio
-async def test_sdk_runner_pre_tool_hook_routes_unsafe_bash_to_platform_permission_callback(monkeypatch, tmp_path):
-    captured = {}
-    permission_calls = []
-    permission_results = [
-        {
-            "allowed": False,
-            "reason": "tool_permission_required",
-            "risk_level": "high",
-            "write_capable": True,
-            "permission_request_id": "tpr-deny",
-        },
-        {
-            "allowed": True,
-            "reason": "tool_permission_allowed",
-            "risk_level": "high",
-            "write_capable": True,
-            "decision": "allow_for_run",
-            "permission_request_id": "tpr-allow",
-        },
-    ]
-
-    class TextBlock:
-        def __init__(self, text):
-            self.text = text
-
-    class AssistantMessage:
-        def __init__(self, content):
-            self.content = content
-
-    class ResultMessage:
-        session_id = "sdk-session"
-        usage = {}
-        model_usage = {}
-        result = "ok"
-        is_error = False
-        errors = []
-        stop_reason = None
-
-    class HookMatcher:
-        def __init__(self, matcher=None, hooks=None, timeout=None):
-            self.matcher = matcher
-            self.hooks = hooks or []
-            self.timeout = timeout
-
-    class ClaudeAgentOptions:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-            captured.update(kwargs)
-
-    async def query(prompt, options):
-        yield AssistantMessage([TextBlock("ok")])
-        yield ResultMessage()
-
-    async def on_tool_permission(request):
-        permission_calls.append(request)
-        return permission_results[len(permission_calls) - 1]
-
-    current_settings = type(
-        "S",
-        (),
-        {
-            "claude_agent_sdk_enabled": True,
-            "anthropic_base_url": "",
-            "anthropic_auth_token": "",
-            "anthropic_model": "",
-            "openai_api_key": "",
-            "claude_agent_model": "deepseek-v4-flash",
-            "claude_agent_sdk_skills": "",
-            "claude_agent_sdk_timeout_seconds": 5,
-            "claude_agent_sdk_max_turns": 12,
-        },
-    )()
-    fake_sdk = types.SimpleNamespace(
-        AssistantMessage=AssistantMessage,
-        ClaudeAgentOptions=ClaudeAgentOptions,
-        HookMatcher=HookMatcher,
-        ResultMessage=ResultMessage,
-        TextBlock=TextBlock,
-        query=query,
-    )
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
-
-    await run_claude_agent_sdk(
-        prompt="hello",
-        cwd=tmp_path,
-        skill_id="general-chat",
-        skills=[],
-        on_tool_permission=on_tool_permission,
-    )
-
-    pre_tool_hook = captured["hooks"]["PreToolUse"][0].hooks[0]
-    denied = await pre_tool_hook(
-        {
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Bash",
-            "tool_input": {"command": "python write_business_system.py --id 123"},
-            "tool_use_id": "tool-write-deny",
-        },
-        "tool-write-deny",
-        {},
-    )
-    allowed = await pre_tool_hook(
-        {
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Bash",
-            "tool_input": {"command": "python write_business_system.py --id 456"},
-            "tool_use_id": "tool-write-allow",
-        },
-        "tool-write-allow",
-        {},
-    )
-
-    assert permission_calls[0]["tool_name"] == "Bash"
-    assert permission_calls[0]["tool_call_id"] == "tool-write-deny"
-    assert permission_calls[0]["risk_level"] == "high"
-    assert permission_calls[0]["write_capable"] is True
-    assert "command" in permission_calls[0]["tool_input_keys"]
-    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert denied["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_required"
-    assert denied["hookSpecificOutput"]["permission_request_id"] == "tpr-deny"
-    assert permission_calls[1]["tool_call_id"] == "tool-write-allow"
-    assert allowed["hookSpecificOutput"]["permissionDecision"] == "allow"
-    assert allowed["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_allowed"
-    assert allowed["hookSpecificOutput"]["permission_request_id"] == "tpr-allow"
-
-
-@pytest.mark.asyncio
-async def test_claude_worker_sdk_permission_hook_creates_request_event_and_audit(monkeypatch, tmp_path):
-    current_settings = settings(tmp_path, sdk_enabled=True)
-    calls = []
-
-    async def fake_run_claude_agent_sdk(
-        *,
-        prompt,
-        cwd,
-        skill_id,
-        skills,
-        model_id=None,
-        session_id=None,
-        on_text,
-        on_skill_use,
-        on_tool_permission,
-    ):
-        gate = await on_tool_permission(
-            {
-                "tool_name": "Bash",
-                "tool_input": {"command": "python write_business_system.py --id 123"},
-                "tool_call_id": "tool-write",
-                "risk_level": "high",
-                "write_capable": True,
-                "reason": "Claude SDK requested Bash",
-            }
-        )
-        calls.append(("gate", gate))
-        return types.SimpleNamespace(
-            used_sdk=True,
-            message="allowed",
-            session_id="sdk-session",
-            usage={},
-            error=None if gate["allowed"] else gate["reason"],
-            used_skills=[],
-            used_skills_source="",
-        )
-
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("decision_lookup", kwargs))
-        return None
-
-    async def create_tool_permission_request(conn, **kwargs):
-        calls.append(("request", kwargs))
-        return {
-            "id": "tpr-sdk",
-            "tenant_id": kwargs["tenant_id"],
-            "workspace_id": kwargs["workspace_id"],
-            "user_id": kwargs["user_id"],
-            "session_id": kwargs["session_id"],
-            "run_id": kwargs["run_id"],
-            "trace_id": kwargs["trace_id"],
-            "tool_id": kwargs["tool_id"],
-            "tool_call_id": kwargs["tool_call_id"],
-            "action": kwargs["action"],
-            "risk_level": kwargs["risk_level"],
-            "write_capable": kwargs["write_capable"],
-            "status": "pending",
-            "reason": kwargs["reason"],
-            "request_payload_json": kwargs["request_payload_json"],
-        }
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs))
-        return "evt-sdk"
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "audit-sdk"
-
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
-    workspace = tmp_path / "workspaces" / "default" / "run_1"
-    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.create_tool_permission_request",
-        create_tool_permission_request,
-        raising=False,
-    )
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.expire_tool_permission_request",
-        expired_permission_request,
-    )
-
-    result = await adapter._try_run_sdk(
-        payload(trace_id="trace-sdk"),
-        workspace=workspace,
-        file_names=[],
-        prompt="hello",
-        staged_skill_names=[],
-    )
-
-    assert result.error == "tool_permission_expired"
-    command = "python write_business_system.py --id 123"
-    lookup_call = next(item[1] for item in calls if item[0] == "decision_lookup")
-    assert lookup_call["tenant_id"] == "default"
-    assert lookup_call["user_id"] == "user-a"
-    assert lookup_call["run_id"] == "run_1"
-    assert lookup_call["tool_id"] == "claude-sdk:Bash"
-    assert lookup_call["action"] == "execute"
-    assert lookup_call["tool_call_id"] == "tool-write"
-    assert lookup_call["request_payload_json"]["command_sha256"] == hashlib.sha256(command.encode("utf-8")).hexdigest()
-    request_call = next(item[1] for item in calls if item[0] == "request")
-    assert request_call["tool_id"] == "claude-sdk:Bash"
-    assert request_call["tool_call_id"] == "tool-write"
-    assert request_call["risk_level"] == "high"
-    assert request_call["write_capable"] is True
-    assert request_call["request_payload_json"] == {
-        "source": "claude_agent_sdk_hook",
-        "tool_name": "Bash",
-        "tool_input_keys": ["command"],
-        "command_length": len(command),
-        "command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest(),
-    }
-    event_call = next(item[1] for item in calls if item[0] == "event")
-    assert event_call["event_type"] == "tool_permission_requested"
-    assert event_call["payload"] == {
-        "visible_to_user": True,
-        "permission_request_id": "tpr-sdk",
-        "tool_id": "claude-sdk:Bash",
-        "tool_call_id": "tool-write",
-        "action": "execute",
-        "risk_level": "high",
-        "write_capable": True,
-        "reason": "Claude SDK requested Bash",
-        "status": "pending",
-    }
-    audit_call = next(item[1] for item in calls if item[0] == "audit")
-    assert audit_call["action"] == "claude_sdk_tool_policy_denied"
-    assert audit_call["payload_json"]["reason"] == "tool_permission_required"
-    assert calls[-1][0] == "gate"
-    assert calls[-1][1]["permission_request_id"] == "tpr-sdk"
-
-
-@pytest.mark.asyncio
 async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     captured = {}
@@ -5065,7 +4375,7 @@ async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_p
         session_id=None,
         on_text,
         on_skill_use,
-        on_tool_permission,
+        tool_policy_subjects,
     ):
         captured["model_id"] = model_id
         return FakeQueryResult()
@@ -5089,755 +4399,6 @@ async def test_claude_worker_uses_runtime_model_value_for_sdk(monkeypatch, tmp_p
 
     assert result.error is None
     assert captured["model_id"] == "deepseek-v4-pro"
-
-
-@pytest.mark.asyncio
-async def test_claude_worker_sdk_permission_hook_allows_existing_decision(monkeypatch, tmp_path):
-    current_settings = settings(tmp_path, sdk_enabled=True)
-    calls = []
-
-    async def fake_run_claude_agent_sdk(
-        *,
-        prompt,
-        cwd,
-        skill_id,
-        skills,
-        model_id=None,
-        session_id=None,
-        on_text,
-        on_skill_use,
-        on_tool_permission,
-    ):
-        gate = await on_tool_permission(
-            {
-                "tool_name": "Bash",
-                "tool_input": {"command": "python write_business_system.py --id 456"},
-                "tool_call_id": "tool-write",
-                "risk_level": "high",
-                "write_capable": True,
-                "reason": "Claude SDK requested Bash",
-            }
-        )
-        calls.append(("gate", gate))
-        return types.SimpleNamespace(
-            used_sdk=True,
-            message="allowed",
-            session_id="sdk-session",
-            usage={},
-            error=None if gate["allowed"] else gate["reason"],
-            used_skills=[],
-            used_skills_source="",
-        )
-
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("decision_lookup", kwargs))
-        command_hash = hashlib.sha256("python write_business_system.py --id 456".encode("utf-8")).hexdigest()
-        return {
-            "id": "tpr-allow",
-            "decision": "allow_for_run",
-            "tool_call_id": "tool-write",
-            "request_payload_json": {"command_sha256": command_hash},
-        }
-
-    async def create_tool_permission_request(conn, **kwargs):
-        raise AssertionError("existing allow decision must not create another request")
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "audit-sdk"
-
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
-    workspace = tmp_path / "workspaces" / "default" / "run_1"
-    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.create_tool_permission_request",
-        create_tool_permission_request,
-        raising=False,
-    )
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
-
-    result = await adapter._try_run_sdk(
-        payload(trace_id="trace-sdk"),
-        workspace=workspace,
-        file_names=[],
-        prompt="hello",
-        staged_skill_names=[],
-    )
-
-    assert result.error is None
-    assert calls[-1] == (
-        "gate",
-        {
-            "allowed": True,
-            "reason": "tool_permission_allowed",
-            "risk_level": "high",
-            "write_capable": True,
-            "decision": "allow_for_run",
-            "permission_request_id": "tpr-allow",
-        },
-    )
-    audit_call = next(item[1] for item in calls if item[0] == "audit")
-    assert audit_call["action"] == "claude_sdk_tool_policy_allowed"
-    assert audit_call["payload_json"]["permission_request_id"] == "tpr-allow"
-
-
-@pytest.mark.asyncio
-async def test_claude_worker_sdk_permission_hook_uses_exact_decision_lookup(monkeypatch, tmp_path):
-    current_settings = settings(tmp_path, sdk_enabled=True)
-    calls = []
-
-    async def fake_run_claude_agent_sdk(
-        *,
-        prompt,
-        cwd,
-        skill_id,
-        skills,
-        model_id=None,
-        session_id=None,
-        on_text,
-        on_skill_use,
-        on_tool_permission,
-    ):
-        gate = await on_tool_permission(
-            {
-                "tool_name": "Bash",
-                "tool_input": {"command": "python write_business_system.py --id 456"},
-                "tool_call_id": "tool-write",
-                "risk_level": "high",
-                "write_capable": True,
-                "reason": "Claude SDK requested Bash",
-            }
-        )
-        calls.append(("gate", gate))
-        return types.SimpleNamespace(
-            used_sdk=True,
-            message="allowed",
-            session_id="sdk-session",
-            usage={},
-            error=None if gate["allowed"] else gate["reason"],
-            used_skills=[],
-            used_skills_source="",
-        )
-
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("exact_decision_lookup", kwargs))
-        command_hash = hashlib.sha256("python write_business_system.py --id 456".encode("utf-8")).hexdigest()
-        assert kwargs["tool_call_id"] == "tool-write"
-        assert kwargs["request_payload_json"]["command_sha256"] == command_hash
-        return {
-            "id": "tpr-allow",
-            "decision": "allow_for_run",
-            "tool_call_id": "tool-write",
-            "request_payload_json": {"command_sha256": command_hash},
-        }
-
-    async def get_latest_tool_permission_decision(conn, **kwargs):
-        raise AssertionError("Claude SDK tool permission must use exact decision lookup")
-
-    async def create_tool_permission_request(conn, **kwargs):
-        raise AssertionError("exact allow decision must not create another request")
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "audit-sdk"
-
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
-    workspace = tmp_path / "workspaces" / "default" / "run_1"
-    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_latest_tool_permission_decision",
-        get_latest_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.create_tool_permission_request",
-        create_tool_permission_request,
-        raising=False,
-    )
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
-
-    result = await adapter._try_run_sdk(
-        payload(trace_id="trace-sdk"),
-        workspace=workspace,
-        file_names=[],
-        prompt="hello",
-        staged_skill_names=[],
-    )
-
-    assert result.error is None
-    assert any(item[0] == "exact_decision_lookup" for item in calls)
-    assert calls[-1][0] == "gate"
-    assert calls[-1][1]["allowed"] is True
-
-
-@pytest.mark.asyncio
-async def test_claude_worker_sdk_permission_hook_consumes_allow_once_decision(monkeypatch, tmp_path):
-    current_settings = settings(tmp_path, sdk_enabled=True)
-    calls = []
-    command = "python write_business_system.py --id 456"
-
-    async def fake_run_claude_agent_sdk(
-        *,
-        prompt,
-        cwd,
-        skill_id,
-        skills,
-        model_id=None,
-        session_id=None,
-        on_text,
-        on_skill_use,
-        on_tool_permission,
-    ):
-        gate = await on_tool_permission(
-            {
-                "tool_name": "Bash",
-                "tool_input": {"command": command},
-                "tool_call_id": "tool-write",
-                "risk_level": "high",
-                "write_capable": True,
-                "reason": "Claude SDK requested Bash",
-            }
-        )
-        calls.append(("gate", gate))
-        return types.SimpleNamespace(
-            used_sdk=True,
-            message="allowed",
-            session_id="sdk-session",
-            usage={},
-            error=None if gate["allowed"] else gate["reason"],
-            used_skills=[],
-            used_skills_source="",
-        )
-
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("decision_lookup", kwargs))
-        return {
-            "id": "tpr-once",
-            "decision": "allow_once",
-            "tool_call_id": "tool-write",
-            "request_payload_json": {},
-        }
-
-    async def consume_tool_permission_decision(conn, **kwargs):
-        calls.append(("consume", kwargs))
-        return {"id": kwargs["request_id"], "decision": "allow_once", "status": "consumed"}
-
-    async def create_tool_permission_request(conn, **kwargs):
-        raise AssertionError("existing allow_once decision must not create another request")
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "audit-sdk"
-
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
-    workspace = tmp_path / "workspaces" / "default" / "run_1"
-    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.consume_tool_permission_decision",
-        consume_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.create_tool_permission_request",
-        create_tool_permission_request,
-        raising=False,
-    )
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
-
-    result = await adapter._try_run_sdk(
-        payload(trace_id="trace-sdk"),
-        workspace=workspace,
-        file_names=[],
-        prompt="hello",
-        staged_skill_names=[],
-    )
-
-    assert result.error is None
-    consume_calls = [item for item in calls if item[0] == "consume"]
-    assert consume_calls, "allow_once Claude SDK decision must be consumed before returning allow"
-    consume_call = consume_calls[0]
-    gate_call = next(item for item in calls if item[0] == "gate")
-    assert calls.index(consume_call) < calls.index(gate_call)
-    assert consume_call[1] == {
-        "tenant_id": "default",
-        "user_id": "user-a",
-        "run_id": "run_1",
-        "request_id": "tpr-once",
-    }
-    assert gate_call[1] == {
-        "allowed": True,
-        "reason": "tool_permission_allowed",
-        "risk_level": "high",
-        "write_capable": True,
-        "decision": "allow_once",
-        "permission_request_id": "tpr-once",
-    }
-    audit_call = next(item[1] for item in calls if item[0] == "audit")
-    assert audit_call["action"] == "claude_sdk_tool_policy_allowed"
-    assert audit_call["payload_json"]["decision"] == "allow_once"
-    assert audit_call["payload_json"]["permission_request_id"] == "tpr-once"
-
-
-@pytest.mark.asyncio
-async def test_claude_worker_sdk_permission_hook_fails_closed_when_allow_once_consumption_fails(
-    monkeypatch,
-    tmp_path,
-):
-    current_settings = settings(tmp_path, sdk_enabled=True)
-    calls = []
-    command = "python write_business_system.py --id 456"
-
-    async def fake_run_claude_agent_sdk(
-        *,
-        prompt,
-        cwd,
-        skill_id,
-        skills,
-        model_id=None,
-        session_id=None,
-        on_text,
-        on_skill_use,
-        on_tool_permission,
-    ):
-        gate = await on_tool_permission(
-            {
-                "tool_name": "Bash",
-                "tool_input": {"command": command},
-                "tool_call_id": "tool-write",
-                "risk_level": "high",
-                "write_capable": True,
-                "reason": "Claude SDK requested Bash",
-            }
-        )
-        calls.append(("gate", gate))
-        return types.SimpleNamespace(
-            used_sdk=True,
-            message="",
-            session_id="sdk-session",
-            usage={},
-            error=None if gate["allowed"] else gate["reason"],
-            used_skills=[],
-            used_skills_source="",
-        )
-
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("decision_lookup", kwargs))
-        return {
-            "id": "tpr-once",
-            "decision": "allow_once",
-            "tool_call_id": "tool-write",
-            "request_payload_json": {},
-        }
-
-    async def consume_tool_permission_decision(conn, **kwargs):
-        calls.append(("consume", kwargs))
-        return None
-
-    async def create_tool_permission_request(conn, **kwargs):
-        raise AssertionError("consumed allow_once decision must not create another request")
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "audit-sdk"
-
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
-    workspace = tmp_path / "workspaces" / "default" / "run_1"
-    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.consume_tool_permission_decision",
-        consume_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.create_tool_permission_request",
-        create_tool_permission_request,
-        raising=False,
-    )
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
-
-    result = await adapter._try_run_sdk(
-        payload(trace_id="trace-sdk"),
-        workspace=workspace,
-        file_names=[],
-        prompt="hello",
-        staged_skill_names=[],
-    )
-
-    assert result.error == "tool_permission_consumed_or_expired"
-    gate_call = next(item for item in calls if item[0] == "gate")
-    assert gate_call[1] == {
-        "allowed": False,
-        "reason": "tool_permission_consumed_or_expired",
-        "risk_level": "high",
-        "write_capable": True,
-        "decision": "allow_once",
-        "permission_request_id": "tpr-once",
-    }
-    denied_audit = next(item[1] for item in calls if item[0] == "audit")
-    assert denied_audit["action"] == "claude_sdk_tool_policy_denied"
-    assert denied_audit["payload_json"]["reason"] == "tool_permission_consumed_or_expired"
-    assert denied_audit["payload_json"]["permission_request_id"] == "tpr-once"
-
-
-@pytest.mark.asyncio
-async def test_claude_worker_sdk_permission_hook_allows_run_decision_for_same_bash_command(monkeypatch, tmp_path):
-    current_settings = settings(tmp_path, sdk_enabled=True)
-    calls = []
-    command = "python write_business_system.py --id 789"
-    command_hash = hashlib.sha256(command.encode("utf-8")).hexdigest()
-
-    async def fake_run_claude_agent_sdk(
-        *,
-        prompt,
-        cwd,
-        skill_id,
-        skills,
-        model_id=None,
-        session_id=None,
-        on_text,
-        on_skill_use,
-        on_tool_permission,
-    ):
-        gate = await on_tool_permission(
-            {
-                "tool_name": "Bash",
-                "tool_input": {"command": command},
-                "tool_call_id": "tool-current",
-                "risk_level": "high",
-                "write_capable": True,
-                "reason": "Claude SDK requested Bash",
-            }
-        )
-        calls.append(("gate", gate))
-        return types.SimpleNamespace(
-            used_sdk=True,
-            message="allowed",
-            session_id="sdk-session",
-            usage={},
-            error=None if gate["allowed"] else gate["reason"],
-            used_skills=[],
-            used_skills_source="",
-        )
-
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("decision_lookup", kwargs))
-        if kwargs.get("request_payload_json", {}).get("command_sha256") != command_hash:
-            return None
-        return {
-            "id": "tpr-run",
-            "decision": "allow_for_run",
-            "tool_call_id": "tool-original",
-            "request_payload_json": {"command_sha256": command_hash},
-        }
-
-    async def create_tool_permission_request(conn, **kwargs):
-        raise AssertionError("same-command allow_for_run must not create another request")
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "audit-sdk"
-
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
-    workspace = tmp_path / "workspaces" / "default" / "run_1"
-    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.create_tool_permission_request",
-        create_tool_permission_request,
-        raising=False,
-    )
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
-
-    result = await adapter._try_run_sdk(
-        payload(trace_id="trace-sdk"),
-        workspace=workspace,
-        file_names=[],
-        prompt="hello",
-        staged_skill_names=[],
-    )
-
-    assert result.error is None
-    assert calls[-1] == (
-        "gate",
-        {
-            "allowed": True,
-            "reason": "tool_permission_allowed",
-            "risk_level": "high",
-            "write_capable": True,
-            "decision": "allow_for_run",
-            "permission_request_id": "tpr-run",
-        },
-    )
-    audit_call = next(item[1] for item in calls if item[0] == "audit")
-    assert audit_call["payload_json"]["permission_request_id"] == "tpr-run"
-
-
-@pytest.mark.asyncio
-async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_decision_for_other_command(monkeypatch, tmp_path):
-    current_settings = settings(tmp_path, sdk_enabled=True)
-    calls = []
-
-    async def fake_run_claude_agent_sdk(
-        *,
-        prompt,
-        cwd,
-        skill_id,
-        skills,
-        model_id=None,
-        session_id=None,
-        on_text,
-        on_skill_use,
-        on_tool_permission,
-    ):
-        gate = await on_tool_permission(
-            {
-                "tool_name": "Bash",
-                "tool_input": {"command": "python write_business_system.py --id 789"},
-                "tool_call_id": "tool-current",
-                "risk_level": "high",
-                "write_capable": True,
-                "reason": "Claude SDK requested Bash",
-            }
-        )
-        calls.append(("gate", gate))
-        return types.SimpleNamespace(
-            used_sdk=True,
-            message="",
-            session_id="sdk-session",
-            usage={},
-            error=gate["reason"],
-            used_skills=[],
-            used_skills_source="",
-        )
-
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("decision_lookup", kwargs))
-        other_command_hash = hashlib.sha256("python write_business_system.py --id 456".encode("utf-8")).hexdigest()
-        return {
-            "id": "tpr-other",
-            "decision": "allow_for_run",
-            "tool_call_id": "tool-other",
-            "request_payload_json": {"command_sha256": other_command_hash},
-        }
-
-    async def create_tool_permission_request(conn, **kwargs):
-        calls.append(("request", kwargs))
-        return {
-            "id": "tpr-current",
-            "tenant_id": kwargs["tenant_id"],
-            "workspace_id": kwargs["workspace_id"],
-            "user_id": kwargs["user_id"],
-            "session_id": kwargs["session_id"],
-            "run_id": kwargs["run_id"],
-            "trace_id": kwargs["trace_id"],
-            "tool_id": kwargs["tool_id"],
-            "tool_call_id": kwargs["tool_call_id"],
-            "action": kwargs["action"],
-            "risk_level": kwargs["risk_level"],
-            "write_capable": kwargs["write_capable"],
-            "status": "pending",
-            "reason": kwargs["reason"],
-            "request_payload_json": kwargs["request_payload_json"],
-        }
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs))
-        return "evt-sdk"
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "audit-sdk"
-
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
-    workspace = tmp_path / "workspaces" / "default" / "run_1"
-    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.create_tool_permission_request",
-        create_tool_permission_request,
-        raising=False,
-    )
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.expire_tool_permission_request",
-        expired_permission_request,
-    )
-
-    result = await adapter._try_run_sdk(
-        payload(trace_id="trace-sdk"),
-        workspace=workspace,
-        file_names=[],
-        prompt="hello",
-        staged_skill_names=[],
-    )
-
-    assert result.error == "tool_permission_expired"
-    request_call = next(item[1] for item in calls if item[0] == "request")
-    assert request_call["tool_call_id"] == "tool-current"
-    assert calls[-1][0] == "gate"
-    assert calls[-1][1]["allowed"] is False
-    assert calls[-1][1]["permission_request_id"] == "tpr-current"
-
-
-@pytest.mark.asyncio
-async def test_claude_worker_sdk_permission_hook_does_not_reuse_bash_deny_for_other_tool_call(
-    monkeypatch,
-    tmp_path,
-):
-    current_settings = settings(tmp_path, sdk_enabled=True)
-    calls = []
-    command = "python write_business_system.py --id 999"
-
-    async def fake_run_claude_agent_sdk(
-        *,
-        prompt,
-        cwd,
-        skill_id,
-        skills,
-        model_id=None,
-        session_id=None,
-        on_text,
-        on_skill_use,
-        on_tool_permission,
-    ):
-        gate = await on_tool_permission(
-            {
-                "tool_name": "Bash",
-                "tool_input": {"command": command},
-                "tool_call_id": "tool-current",
-                "risk_level": "high",
-                "write_capable": True,
-                "reason": "Claude SDK requested Bash",
-            }
-        )
-        calls.append(("gate", gate))
-        return types.SimpleNamespace(
-            used_sdk=True,
-            message="",
-            session_id="sdk-session",
-            usage={},
-            error=gate["reason"],
-            used_skills=[],
-            used_skills_source="",
-        )
-
-    async def get_exact_tool_permission_decision(conn, **kwargs):
-        calls.append(("decision_lookup", kwargs))
-        return {
-            "id": "tpr-denied-other",
-            "decision": "deny",
-            "tool_call_id": "tool-other",
-            "request_payload_json": {"command_sha256": hashlib.sha256(command.encode("utf-8")).hexdigest()},
-        }
-
-    async def create_tool_permission_request(conn, **kwargs):
-        calls.append(("request", kwargs))
-        return {
-            "id": "tpr-current",
-            "tenant_id": kwargs["tenant_id"],
-            "workspace_id": kwargs["workspace_id"],
-            "user_id": kwargs["user_id"],
-            "session_id": kwargs["session_id"],
-            "run_id": kwargs["run_id"],
-            "trace_id": kwargs["trace_id"],
-            "tool_id": kwargs["tool_id"],
-            "tool_call_id": kwargs["tool_call_id"],
-            "action": kwargs["action"],
-            "risk_level": kwargs["risk_level"],
-            "write_capable": kwargs["write_capable"],
-            "status": "pending",
-            "reason": kwargs["reason"],
-            "request_payload_json": kwargs["request_payload_json"],
-        }
-
-    async def append_event(conn, **kwargs):
-        calls.append(("event", kwargs))
-        return "evt-sdk"
-
-    async def append_audit_log(conn, **kwargs):
-        calls.append(("audit", kwargs))
-        return "audit-sdk"
-
-    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
-    workspace = tmp_path / "workspaces" / "default" / "run_1"
-    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
-    monkeypatch.setattr("app.executors.claude_agent_worker.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    monkeypatch.setattr("app.executors.claude_agent_worker.transaction", fake_transaction)
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.get_exact_tool_permission_decision",
-        get_exact_tool_permission_decision,
-        raising=False,
-    )
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.create_tool_permission_request",
-        create_tool_permission_request,
-        raising=False,
-    )
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_event", append_event)
-    monkeypatch.setattr("app.executors.claude_agent_worker.repositories.append_audit_log", append_audit_log)
-    monkeypatch.setattr(
-        "app.executors.claude_agent_worker.repositories.expire_tool_permission_request",
-        expired_permission_request,
-    )
-
-    result = await adapter._try_run_sdk(
-        payload(trace_id="trace-sdk"),
-        workspace=workspace,
-        file_names=[],
-        prompt="hello",
-        staged_skill_names=[],
-    )
-
-    assert result.error == "tool_permission_expired"
-    request_call = next(item[1] for item in calls if item[0] == "request")
-    assert request_call["tool_call_id"] == "tool-current"
-    assert calls[-1][0] == "gate"
-    assert calls[-1][1] == {
-        "allowed": False,
-        "reason": "tool_permission_expired",
-        "permission_request_id": "tpr-current",
-    }
 
 
 @pytest.mark.asyncio
@@ -6423,359 +4984,6 @@ async def test_sdk_runner_preserves_skill_use_when_timeout_fires_after_hook(monk
     assert result.received_structured_terminal is False
     assert result.used_skills == ["qa-file-reviewer"]
     assert result.used_skills_source == "executor_hook"
-
-
-@pytest.mark.asyncio
-async def test_sdk_runner_honors_explicit_full_access_tool_policy_override(monkeypatch, tmp_path):
-    captured = {}
-    permission_calls = []
-
-    class TextBlock:
-        def __init__(self, text):
-            self.text = text
-
-    class AssistantMessage:
-        def __init__(self, content):
-            self.content = content
-
-    class ResultMessage:
-        session_id = "sdk-session"
-        usage = {}
-        model_usage = {}
-        result = "ok"
-        is_error = False
-        errors = []
-        stop_reason = None
-
-    class ClaudeAgentOptions:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-            captured.update(kwargs)
-
-    class HookMatcher:
-        def __init__(self, matcher=None, hooks=None, timeout=None):
-            self.matcher = matcher
-            self.hooks = hooks or []
-            self.timeout = timeout
-
-    class PermissionResultAllow:
-        def __init__(self, behavior="allow", updated_input=None, updated_permissions=None):
-            self.behavior = behavior
-            self.updated_input = updated_input
-            self.updated_permissions = updated_permissions
-
-    async def query(prompt, options):
-        yield AssistantMessage([TextBlock("ok")])
-        yield ResultMessage()
-
-    async def on_tool_permission(request):
-        permission_calls.append(request)
-        return {
-            "allowed": False,
-            "reason": "tool_permission_required",
-            "risk_level": "high",
-            "write_capable": True,
-            "permission_request_id": "unexpected",
-        }
-
-    current_settings = type(
-        "S",
-        (),
-        {
-            "claude_agent_sdk_enabled": True,
-            "anthropic_base_url": "",
-            "anthropic_auth_token": "",
-            "anthropic_model": "",
-            "openai_api_key": "",
-            "claude_agent_model": "deepseek-v4-flash",
-            "claude_agent_sdk_skills": "",
-            "claude_agent_sdk_timeout_seconds": 5,
-            "claude_agent_sdk_max_turns": 12,
-            "claude_agent_permission_mode": "bypassPermissions",
-            "claude_agent_allowed_tools": "Read,Write,Bash",
-            "claude_agent_disallowed_tools": "Edit",
-        },
-    )()
-    fake_sdk = types.SimpleNamespace(
-        AssistantMessage=AssistantMessage,
-        ClaudeAgentOptions=ClaudeAgentOptions,
-        HookMatcher=HookMatcher,
-        PermissionResultAllow=PermissionResultAllow,
-        ResultMessage=ResultMessage,
-        TextBlock=TextBlock,
-        query=query,
-    )
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
-
-    result = await run_claude_agent_sdk(
-        prompt="hello",
-        cwd=tmp_path,
-        skill_id="general-chat",
-        skills=["qa-file-reviewer"],
-        on_tool_permission=on_tool_permission,
-    )
-
-    assert result.message == "ok"
-    assert captured["permission_mode"] == "dontAsk"
-    assert captured["tools"] == ["Read", "Glob", "LS", "Bash", "Agent"]
-    assert captured["allowed_tools"] == ["Read", "Glob", "LS", "Bash", "Agent"]
-    assert captured["disallowed_tools"] == []
-    assert callable(captured["can_use_tool"])
-    can_use_tool = captured["can_use_tool"]
-    allowed = await can_use_tool("Bash", {"command": "python custom_translate.py"}, None)
-    assert allowed.behavior == "allow"
-    agent_allowed = await can_use_tool("Agent", {"agent": "reference-fact-extraction"}, None)
-    assert agent_allowed.behavior == "allow"
-    pre_tool_hook = captured["hooks"]["PreToolUse"][0].hooks[0]
-    pre_tool_result = await pre_tool_hook(
-        {
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Bash",
-            "tool_input": {"command": "python custom_translate.py"},
-            "tool_use_id": "tool-full-access",
-        },
-        "tool-full-access",
-        {},
-    )
-    assert pre_tool_result["hookSpecificOutput"]["permissionDecision"] == "allow"
-    assert "full access" in pre_tool_result["hookSpecificOutput"]["permissionDecisionReason"]
-    assert permission_calls == []
-
-
-@pytest.mark.asyncio
-async def test_sandbox_brokered_policy_preserves_governed_tools_and_brokers_other_tools(monkeypatch, tmp_path):
-    captured = {}
-    permission_calls = []
-    used_skill_events = []
-    decisions = {}
-    side_effect_tools = ["Bash", "Write", "Edit", "NotebookEdit", "Agent", "WebFetch", "WebSearch"]
-
-    class TextBlock:
-        def __init__(self, text):
-            self.text = text
-
-    class AssistantMessage:
-        def __init__(self, content):
-            self.content = content
-
-    class ResultMessage:
-        session_id = "sdk-session"
-        usage = {}
-        model_usage = {}
-        result = "ok"
-        is_error = False
-        errors = []
-        stop_reason = None
-
-    class ClaudeAgentOptions:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    class HookMatcher:
-        def __init__(self, matcher=None, hooks=None, timeout=None):
-            self.matcher = matcher
-            self.hooks = hooks or []
-            self.timeout = timeout
-
-    class PermissionResultDeny:
-        def __init__(self, behavior="deny", message="", interrupt=False):
-            self.behavior = behavior
-            self.message = message
-            self.interrupt = interrupt
-
-    async def query(prompt, options):
-        broker_hook = captured["hooks"]["PreToolUse"][0].hooks[0]
-        for tool_name in [*side_effect_tools, "mcp__knowledge__search"]:
-            tool_input = (
-                {"command": "python .claude/skills/qa-file-reviewer/scripts/run_qa_review.py inputs/a.docx"}
-                if tool_name == "Bash"
-                else {"value": "x"}
-            )
-            decisions[tool_name] = await broker_hook(
-                {
-                    "hook_event_name": "PreToolUse",
-                    "tool_name": tool_name,
-                    "tool_input": tool_input,
-                    "tool_use_id": f"tool-{tool_name}",
-                },
-                f"tool-{tool_name}",
-                {},
-            )
-        yield AssistantMessage([TextBlock("ok")])
-        yield ResultMessage()
-
-    async def on_tool_permission(request):
-        permission_calls.append(request)
-        if request["tool_name"] == "WebFetch":
-            raise TimeoutError("callback timed out")
-        if request["tool_name"] == "WebSearch":
-            return {"allowed": "false", "reason": "malformed truthy scalar"}
-        return {
-            "allowed": request["tool_name"] in {"Bash", "mcp__knowledge__search"},
-            "reason": f"broker_{request['tool_name']}",
-        }
-
-    async def on_skill_use(skill_name, metadata):
-        used_skill_events.append((skill_name, metadata["tool_use_id"]))
-
-    current_settings = type(
-        "S",
-        (),
-        {
-            "claude_agent_sdk_enabled": True,
-            "anthropic_base_url": "",
-            "anthropic_auth_token": "",
-            "anthropic_model": "",
-            "openai_api_key": "",
-            "claude_agent_model": "deepseek-v4-flash",
-            "claude_agent_sdk_skills": "",
-            "claude_agent_sdk_timeout_seconds": 5,
-            "claude_agent_sdk_max_turns": 12,
-            "claude_agent_permission_mode": "bypassPermissions",
-            "claude_agent_allowed_tools": "Read,Write,Bash",
-            "claude_agent_disallowed_tools": "Edit",
-        },
-    )()
-    fake_sdk = types.SimpleNamespace(
-        AssistantMessage=AssistantMessage,
-        ClaudeAgentOptions=ClaudeAgentOptions,
-        HookMatcher=HookMatcher,
-        PermissionResultDeny=PermissionResultDeny,
-        ResultMessage=ResultMessage,
-        TextBlock=TextBlock,
-        query=query,
-    )
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
-    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
-    monkeypatch.setattr(
-        "app.executors.claude_agent_sdk_runner._build_context_retrieval_mcp_server",
-        lambda *args, **kwargs: object(),
-    )
-
-    result = await run_claude_agent_sdk(
-        prompt="hello",
-        cwd=tmp_path,
-        skill_id="general-chat",
-        skills=["qa-file-reviewer"],
-        on_skill_use=on_skill_use,
-        on_tool_permission=on_tool_permission,
-        execution_policy="sandbox_brokered",
-    )
-
-    assert result.error is None
-    assert result.message == "ok"
-    assert captured["permission_mode"] == "dontAsk"
-    internal_context_tools = [
-        "read_session_messages",
-        "read_context_file",
-        "read_run_artifact",
-        "stage_context_file_to_workspace",
-        "search_memory",
-    ]
-    assert captured["allowed_tools"] == ["Read", "Glob", "LS", *internal_context_tools]
-    assert captured["disallowed_tools"] == []
-    assert captured["tools"] == ["Read", "Glob", "LS", *side_effect_tools]
-    pre_tool_matchers = captured["hooks"]["PreToolUse"]
-    assert len(pre_tool_matchers) == 1
-    assert pre_tool_matchers[0].matcher is None
-    assert set(captured["hooks"]) == {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
-    assert len(captured["hooks"]["PostToolUse"]) == 1
-    assert captured["hooks"]["PostToolUse"][0].matcher == "Skill"
-    broker_hook = pre_tool_matchers[0].hooks[0]
-    brokered_tools = [*side_effect_tools, "mcp__knowledge__search"]
-
-    assert [request["tool_name"] for request in permission_calls] == brokered_tools
-    mcp_request = permission_calls[-1]
-    assert mcp_request["tool_name"] == "mcp__knowledge__search"
-    assert mcp_request["tool_call_id"] == "tool-mcp__knowledge__search"
-    assert mcp_request["tool_input"] == {"value": "x"}
-    assert sum(1 for request in permission_calls if request["tool_call_id"] == mcp_request["tool_call_id"]) == 1
-    assert decisions["Bash"]["hookSpecificOutput"]["permissionDecision"] == "allow"
-    assert decisions["mcp__knowledge__search"]["hookSpecificOutput"]["permissionDecision"] == "allow"
-    assert decisions["Write"]["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert decisions["WebFetch"]["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_broker_timed_out"
-    assert decisions["WebSearch"]["hookSpecificOutput"]["permissionDecisionReason"] == "tool_permission_malformed_response"
-
-    permission_count_before_governed_tools = len(permission_calls)
-    allowed_skill = await broker_hook(
-        {
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Skill",
-            "tool_input": {"skill": "qa-file-reviewer"},
-            "tool_use_id": "tool-Skill-allow",
-        },
-        "tool-Skill-allow",
-        {},
-    )
-    unknown_skill = await broker_hook(
-        {
-            "hook_event_name": "PreToolUse",
-            "tool_name": "Skill",
-            "tool_input": {"skill": "unknown-skill"},
-            "tool_use_id": "tool-Skill-unknown",
-        },
-        "tool-Skill-unknown",
-        {},
-    )
-    internal_context_read = await broker_hook(
-        {
-            "hook_event_name": "PreToolUse",
-            "tool_name": "read_context_file",
-            "tool_input": {"file_id": "file-a"},
-            "tool_use_id": "tool-context-read",
-        },
-        "tool-context-read",
-        {},
-    )
-    assert allowed_skill["hookSpecificOutput"]["permissionDecision"] == "allow"
-    assert unknown_skill["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert internal_context_read == {}
-    assert used_skill_events == []
-    assert len(permission_calls) == permission_count_before_governed_tools
-    post_skill_hook = captured["hooks"]["PostToolUse"][0].hooks[0]
-    await post_skill_hook(
-        {
-            "hook_event_name": "PostToolUse",
-            "tool_name": "Skill",
-            "tool_input": {"skill": "qa-file-reviewer"},
-            "tool_use_id": "tool-Skill-allow",
-        },
-        "tool-Skill-allow",
-        {},
-    )
-    assert used_skill_events == [("qa-file-reviewer", "tool-Skill-allow")]
-    denied = await captured["can_use_tool"]("Bash", {"command": "echo local"}, None)
-    assert denied.behavior == "deny"
-    context_allowed = await captured["can_use_tool"]("read_context_file", {"file_id": "file-a"}, None)
-    assert context_allowed.behavior == "allow"
-    pinned_skill_allowed = await captured["can_use_tool"](
-        "Skill", {"skill": "qa-file-reviewer"}, None
-    )
-    assert pinned_skill_allowed.behavior == "allow"
-    unknown_skill_denied = await captured["can_use_tool"]("Skill", {"skill": "unknown-skill"}, None)
-    assert unknown_skill_denied.behavior == "deny"
-
-    captured.clear()
-    await run_claude_agent_sdk(
-        prompt="hello",
-        cwd=tmp_path,
-        skill_id="general-chat",
-        skills=[],
-        execution_policy="sandbox_brokered",
-    )
-    missing_broker_hook = captured["hooks"]["PreToolUse"][0].hooks[0]
-    missing_broker = await missing_broker_hook(
-        {
-            "hook_event_name": "PreToolUse",
-            "tool_name": "mcp__knowledge__search",
-            "tool_input": {"value": "x"},
-            "tool_use_id": "tool-mcp-missing",
-        },
-        "tool-mcp-missing",
-        {},
-    )
-    assert missing_broker["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 @pytest.mark.asyncio

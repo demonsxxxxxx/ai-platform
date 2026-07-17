@@ -93,10 +93,9 @@ class SandboxExecutorClient:
 
 
 def _default_timeout_seconds(request: ExecutorTaskRequest | None = None) -> float:
-    """Keep normal executor requests at their old limit unless governance can wait."""
+    """Use the normal bounded executor timeout; runtime approval never extends it."""
 
     settings = get_settings()
     sdk_timeout = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0) or 120.0)
-    if request is not None and request.governed_permission_wait:
-        return tool_permission_budget(sdk_timeout).outer_executor_timeout_seconds
+    _ = request
     return tool_permission_budget(sdk_timeout).normal_outer_executor_timeout_seconds
