@@ -920,14 +920,13 @@ async def list_lambchat_agents(conn: AsyncConnection, *, tenant_id: str) -> list
           on previous_skill_versions.skill_id = skills.id
          and previous_skill_versions.version = skill_release_policies.previous_version
         where agents.tenant_id = %s
-          and agents.id in ('general-agent', 'baoyu-translate', 'qa-word-review', 'sop-assistant')
+          and agents.id in ('general-agent', 'baoyu-translate', 'qa-word-review')
           and agents.status = 'active'
           and skills.status = 'active'
         order by case agents.id
           when 'general-agent' then 1
           when 'baoyu-translate' then 2
           when 'qa-word-review' then 3
-          when 'sop-assistant' then 4
           else 99
         end, agents.id asc
         """,

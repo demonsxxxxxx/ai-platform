@@ -145,31 +145,6 @@ class SingleRowConnection:
 
 
 @pytest.mark.asyncio
-async def test_list_lambchat_agents_includes_canonical_sop_assistant_after_public_agents():
-    class AgentCursor:
-        async def fetchall(self):
-            return [{"id": "general-agent"}, {"id": "sop-assistant"}]
-
-    class AgentConnection:
-        def __init__(self):
-            self.sql = ""
-            self.params = None
-
-        async def execute(self, sql, params):
-            self.sql = " ".join(sql.split())
-            self.params = params
-            return AgentCursor()
-
-    conn = AgentConnection()
-    rows = await repositories.list_lambchat_agents(conn, tenant_id="tenant-a")
-
-    assert rows == [{"id": "general-agent"}, {"id": "sop-assistant"}]
-    assert "'sop-assistant'" in conn.sql
-    assert "when 'sop-assistant' then 4" in conn.sql
-    assert conn.params == ("tenant-a",)
-
-
-@pytest.mark.asyncio
 async def test_session_action_repositories_bind_tenant_and_active_terminal_state():
     conn = RecordingConnection()
 
