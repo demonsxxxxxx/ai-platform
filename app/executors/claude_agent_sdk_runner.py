@@ -52,6 +52,7 @@ _SDK_INTERNAL_CONTEXT_TOOLS = (
     "stage_run_artifact_to_workspace",
     "search_memory",
 )
+_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX = "mcp__ai-platform-context__"
 _SDK_INTERNAL_CONTEXT_PARAMETER_KEYS = {
     "read_session_messages": ("limit", "offset", "max_tokens"),
     "read_context_file": ("file_id", "max_bytes"),
@@ -986,31 +987,40 @@ def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
     return subjects
 
 
-def _internal_context_policy_subjects(*, enabled: bool) -> dict[str, dict[str, Any]]:
-    """Declare scoped platform context tools without borrowing external authority."""
+def internal_context_tool_policy_subjects(tool_names: object) -> list[dict[str, Any]]:
+    """Build exact broker subjects for explicitly selected scoped context tools."""
 
-    if not enabled:
-        return {}
-    subjects: dict[str, dict[str, Any]] = {}
+    if not isinstance(tool_names, list | tuple | set | frozenset):
+        return []
+    selected = {
+        str(tool_name)
+        for tool_name in tool_names
+        if isinstance(tool_name, str) and tool_name in _SDK_INTERNAL_CONTEXT_TOOLS
+    }
+    subjects: list[dict[str, Any]] = []
     for tool_name in _SDK_INTERNAL_CONTEXT_TOOLS:
-        identity = f"mcp__ai-platform-context__{tool_name}"
-        subjects[identity] = {
-            "identity": identity,
-            "mcp_server": "ai-platform-context",
-            "registered": True,
-            "declared": True,
-            "active": True,
-            "distributed": True,
-            "identity_authorized": True,
-            "object_authorized": True,
-            "parameters_authorized": True,
-            "risk_level": "medium" if tool_name.startswith("stage_") else "low",
-            "write_capable": tool_name.startswith("stage_"),
-            "allowed_parameter_keys": list(_SDK_INTERNAL_CONTEXT_PARAMETER_KEYS[tool_name]),
-            "required_parameter_keys": list(
-                _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS.get(tool_name, ())
-            ),
-        }
+        if tool_name not in selected:
+            continue
+        identity = f"{_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX}{tool_name}"
+        subjects.append(
+            {
+                "identity": identity,
+                "mcp_server": "ai-platform-context",
+                "registered": True,
+                "declared": True,
+                "active": True,
+                "distributed": True,
+                "identity_authorized": True,
+                "object_authorized": True,
+                "parameters_authorized": True,
+                "risk_level": "medium" if tool_name.startswith("stage_") else "low",
+                "write_capable": tool_name.startswith("stage_"),
+                "allowed_parameter_keys": list(_SDK_INTERNAL_CONTEXT_PARAMETER_KEYS[tool_name]),
+                "required_parameter_keys": list(
+                    _SDK_INTERNAL_CONTEXT_REQUIRED_PARAMETER_KEYS.get(tool_name, ())
+                ),
+            }
+        )
     return subjects
 
 
@@ -1119,6 +1129,15 @@ async def run_claude_agent_sdk(
     used_skill_names: list[str] = []
     sandbox_brokered = execution_policy == "sandbox_brokered"
     authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
+    requested_internal_context_tools: list[str] = []
+    if sandbox_brokered:
+        for identity in list(authorized_subjects):
+            if not identity.startswith(_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX):
+                continue
+            tool_name = identity.removeprefix(_SDK_INTERNAL_CONTEXT_IDENTITY_PREFIX)
+            if tool_name in _SDK_INTERNAL_CONTEXT_TOOLS:
+                requested_internal_context_tools.append(tool_name)
+            authorized_subjects.pop(identity, None)
     full_access = _full_access_requested(settings) and not sandbox_brokered
     permission_mode = (
         "dontAsk"
@@ -1151,8 +1170,13 @@ async def run_claude_agent_sdk(
         workspace_root=cwd,
     )
     internal_context_tools = set(_SDK_INTERNAL_CONTEXT_TOOLS) if context_retrieval_server is not None else set()
-    internal_context_subjects = _internal_context_policy_subjects(
-        enabled=context_retrieval_server is not None
+    internal_context_subjects = (
+        {
+            str(subject["identity"]): subject
+            for subject in internal_context_tool_policy_subjects(requested_internal_context_tools)
+        }
+        if context_retrieval_server is not None
+        else {}
     )
     if sandbox_brokered:
         for identity in internal_context_subjects:
@@ -1171,7 +1195,7 @@ async def run_claude_agent_sdk(
         )
     )
     mcp_servers = _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
-    if context_retrieval_server is not None:
+    if context_retrieval_server is not None and (not sandbox_brokered or internal_context_subjects):
         mcp_servers["ai-platform-context"] = context_retrieval_server
     timeout_seconds = _sdk_run_timeout_seconds(
         settings,

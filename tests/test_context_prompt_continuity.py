@@ -5,7 +5,11 @@ import types
 import pytest
 
 from app.context_retrieval import ContextRetrieval, InMemoryContextRetrievalRepository
-from app.executors.claude_agent_sdk_runner import build_skill_prompt, run_claude_agent_sdk
+from app.executors.claude_agent_sdk_runner import (
+    build_skill_prompt,
+    internal_context_tool_policy_subjects,
+    run_claude_agent_sdk,
+)
 from app.executors.claude_agent_sdk_runner import ScopedContextRetrievalIdentity
 
 
@@ -283,14 +287,28 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     assert "artifact bytes" not in artifact_stage_result["content"][0]["text"]
     assert (tmp_path / "context" / "artifact-a" / "translated.docx").read_text(encoding="utf-8") == "artifact bytes"
 
-    captured.clear()
-    sandbox_result = await run_claude_agent_sdk(
-        prompt="follow up on the prior artifact",
-        cwd=tmp_path,
-        skill_id="general-chat",
-        skills=["general-chat"],
-        context_retrieval=retrieval,
-        context_retrieval_identity=ScopedContextRetrievalIdentity(
+    skill_subject = {
+        "identity": "Skill",
+        "registered": True,
+        "declared": True,
+        "active": True,
+        "distributed": True,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "risk_level": "low",
+        "write_capable": False,
+        "allowed_skill_names": ["general-chat"],
+        "allowed_parameter_keys": ["skill"],
+        "required_parameter_keys": ["skill"],
+    }
+    sandbox_kwargs = {
+        "prompt": "follow up on the prior artifact",
+        "cwd": tmp_path,
+        "skill_id": "general-chat",
+        "skills": ["general-chat"],
+        "context_retrieval": retrieval,
+        "context_retrieval_identity": ScopedContextRetrievalIdentity(
             tenant_id="tenant-a",
             workspace_id="workspace-a",
             user_id="user-a",
@@ -298,24 +316,30 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
             run_id="run-a",
             agent_id="general-agent",
         ),
+        "execution_policy": "sandbox_brokered",
+    }
+
+    captured.clear()
+    denied_sandbox_result = await run_claude_agent_sdk(
+        **sandbox_kwargs,
+        tool_policy_subjects=[skill_subject],
+    )
+    assert denied_sandbox_result.message == "ok"
+    assert "ai-platform-context" not in captured["mcp_servers"]
+    assert not any(
+        identity.startswith("mcp__ai-platform-context__")
+        for identity in captured["allowed_tools"]
+    )
+
+    captured.clear()
+    sandbox_result = await run_claude_agent_sdk(
+        **sandbox_kwargs,
         tool_policy_subjects=[
-            {
-                "identity": "Skill",
-                "registered": True,
-                "declared": True,
-                "active": True,
-                "distributed": True,
-                "identity_authorized": True,
-                "object_authorized": True,
-                "parameters_authorized": True,
-                "risk_level": "low",
-                "write_capable": False,
-                "allowed_skill_names": ["general-chat"],
-                "allowed_parameter_keys": ["skill"],
-                "required_parameter_keys": ["skill"],
-            }
+            skill_subject,
+            *internal_context_tool_policy_subjects(
+                ["read_session_messages", "read_run_artifact"]
+            ),
         ],
-        execution_policy="sandbox_brokered",
     )
 
     assert sandbox_result.message == "ok"
