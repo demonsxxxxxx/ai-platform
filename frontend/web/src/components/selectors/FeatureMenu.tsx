@@ -32,6 +32,7 @@ export type FeaturePanel =
   | "skills"
   | "model"
   | "file"
+  // Kept as an unreachable legacy panel member until shared selector types are retired.
   | "context"
   | "thinking"
   | null;
@@ -310,12 +311,6 @@ export const FeatureMenu = memo(function FeatureMenu({
                     }}
                   />
                 )}
-                <MenuItem
-                  icon={<Layers size={18} />}
-                  label={t("featureMenu.context", "Context")}
-                  active={activePanel === "context"}
-                  onClick={() => onOpen("context")}
-                />
                 {hasThinkingOption && (
                   <MenuItem
                     icon={<Brain size={18} />}

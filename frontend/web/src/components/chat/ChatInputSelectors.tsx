@@ -1,9 +1,7 @@
-import { useTranslation } from "react-i18next";
 import { ToolSelector } from "../selectors/ToolSelector";
 import { SkillSelector } from "../selectors/SkillSelector";
 import { AgentOptionButton } from "./AgentOptionButton";
 import { ComposerModelPanel } from "./ComposerModelPanel";
-import { ComposerUnavailablePanel } from "./ComposerUnavailablePanel";
 import type { FeaturePanel } from "../selectors/FeatureMenu";
 import type { ModelOption } from "../../services/api/modelPublic";
 import type {
@@ -66,8 +64,6 @@ export function ChatInputSelectors({
   agentOptionValues = {},
   onToggleAgentOption,
 }: ChatInputSelectorsProps) {
-  const { t } = useTranslation();
-
   return (
     <LibreChatSelectorLayer>
       {onToggleTool && onToggleCategory && onToggleAll && (
@@ -122,15 +118,6 @@ export function ChatInputSelectors({
           />
         </LibreChatSelectorModal>
       )}
-      <LibreChatSelectorModal panel="context">
-        <ComposerUnavailablePanel
-          isOpen={activePanel === "context"}
-          onOpenChange={(open) => onActivePanelChange(open ? "context" : null)}
-          surface="context-selector"
-          title={t("composerCommand.contextSelector.title")}
-          description={t("composerCommand.contextSelector.description")}
-        />
-      </LibreChatSelectorModal>
       {agentOptions &&
         onToggleAgentOption &&
         Object.keys(agentOptions).length > 0 &&
