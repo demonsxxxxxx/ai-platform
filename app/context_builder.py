@@ -516,7 +516,7 @@ def _build_initial_context_manifest(
     file_ids: list[str],
     artifact_ids: list[str],
     memory_record_ids: list[str],
-    source_run_id: str | None,
+    source_run_ids: list[str],
 ) -> dict[str, Any]:
     return ContextPlanner().plan(
         tenant_id=tenant_id,
@@ -532,7 +532,7 @@ def _build_initial_context_manifest(
         files=_manifest_file_refs(file_ids),
         artifacts=_manifest_artifact_refs(artifact_ids),
         memory_records=[{"id": memory_id, "status": "active"} for memory_id in memory_record_ids if memory_id],
-        source_run_ids=[source_run_id] if source_run_id else [],
+        source_run_ids=source_run_ids,
     )
 
 
@@ -552,10 +552,60 @@ async def record_initial_context_snapshot(
     file_ids: list[str] | None = None,
     source: str,
     source_run_id: str | None = None,
+    include_session_history: bool = False,
 ) -> dict[str, Any]:
     included_message_ids = list(message_ids or [])
     included_file_ids = list(file_ids or [])
     included_artifact_ids: list[str] = []
+    source_run_ids: list[str] = []
+    source_artifacts: list[dict[str, Any]] = []
+    if include_session_history:
+        session_messages = await repositories.list_session_context_messages(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            limit=8,
+        )
+        included_message_ids = list(
+            dict.fromkeys(
+                [
+                    str(row.get("id") or "")
+                    for row in session_messages
+                    if isinstance(row, dict) and row.get("id")
+                ]
+                + included_message_ids
+            )
+        )[-8:]
+        session_files = await repositories.list_session_context_files(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            limit=8,
+        )
+        included_file_ids = list(
+            dict.fromkeys(
+                [
+                    str(row.get("id") or "")
+                    for row in session_files
+                    if isinstance(row, dict) and row.get("id")
+                ]
+                + included_file_ids
+            )
+        )[-8:]
+        session_artifacts = await repositories.list_session_context_artifacts(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            exclude_run_id=run_id,
+            limit=8,
+        )
+        source_artifacts.extend(row for row in session_artifacts if isinstance(row, dict))
     if source_run_id:
         authorized_source_run = await repositories.get_authorized_run(
             conn,
@@ -570,34 +620,41 @@ async def record_initial_context_snapshot(
             and authorized_source_run.get("workspace_id") == workspace_id
             and authorized_source_run.get("session_id") == session_id
         ):
-            source_artifacts = await repositories.list_run_artifacts(
+            explicit_source_artifacts = await repositories.list_run_artifacts(
                 conn,
                 tenant_id=tenant_id,
                 run_id=source_run_id,
             )
-            included_artifact_ids = [
-                str(artifact["id"])
-                for artifact in source_artifacts
-                if isinstance(artifact, dict) and artifact.get("id")
-            ]
-            latest_artifact_version = next(
-                (
-                    version
-                    for version in reversed(
-                        [
-                            _public_artifact_version_from_manifest(artifact)
-                            for artifact in source_artifacts
-                            if isinstance(artifact, dict)
-                        ]
-                    )
-                    if version is not None
-                ),
-                None,
+            source_artifacts.extend(
+                artifact for artifact in explicit_source_artifacts if isinstance(artifact, dict)
             )
-        else:
-            latest_artifact_version = None
-    else:
-        latest_artifact_version = None
+    included_artifact_ids = list(
+        dict.fromkeys(
+            str(artifact.get("id") or "")
+            for artifact in source_artifacts
+            if artifact.get("id")
+        )
+    )
+    source_run_ids = list(
+        dict.fromkeys(
+            [
+                str(artifact.get("run_id") or "")
+                for artifact in source_artifacts
+                if artifact.get("run_id")
+            ]
+            + ([source_run_id] if source_run_id and included_artifact_ids else [])
+        )
+    )
+    latest_artifact_version = next(
+        (
+            version
+            for version in reversed(
+                [_public_artifact_version_from_manifest(artifact) for artifact in source_artifacts]
+            )
+            if version is not None
+        ),
+        None,
+    )
     memory_policy = await repositories.get_effective_memory_policy(
         conn,
         tenant_id=tenant_id,
@@ -629,7 +686,7 @@ async def record_initial_context_snapshot(
         file_ids=included_file_ids,
         artifact_ids=included_artifact_ids,
         memory_record_ids=[],
-        source_run_id=source_run_id if included_artifact_ids else None,
+        source_run_ids=source_run_ids,
     )
     memory_policy_summary = {
         "memory_policy_source": str(memory_policy.get("source") or "default"),

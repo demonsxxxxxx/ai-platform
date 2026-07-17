@@ -54,6 +54,23 @@ test("translates fail-closed public governance contract codes", () => {
   );
 });
 
+test("projects stable Skill package failures to actionable Skill copy", () => {
+  const expected = new Map([
+    ["skill_package_invalid_zip", "backendErrors.skillPackageInvalidZip"],
+    ["skill_package_skill_md_required", "backendErrors.skillPackageSkillMdRequired"],
+    ["skill_package_multiple_skills_not_supported", "backendErrors.skillPackageMultipleSkills"],
+    ["skill_package_description_required", "backendErrors.skillPackageDescriptionRequired"],
+    ["skill_package_too_large", "backendErrors.skillPackageTooLarge"],
+  ]);
+
+  for (const [code, key] of expected) {
+    assert.deepEqual(projectSafeBackendError(code, 400, t), {
+      code,
+      message: `translated:${key}`,
+    });
+  }
+});
+
 test("all shipped locales include fail-closed governance error copy", () => {
   const requiredKeys = [
     "skillFileWriteNotBacked",
@@ -61,6 +78,14 @@ test("all shipped locales include fail-closed governance error copy", () => {
     "skillImportNotBacked",
     "marketplaceDirectWriteNotBacked",
     "mcpLifecycleNotBacked",
+    "skillPackageInvalidZip",
+    "skillPackageSkillMdRequired",
+    "skillPackageMultipleSkills",
+    "skillPackageDescriptionRequired",
+    "skillPackageTooLarge",
+    "skillPackageUnsafe",
+    "skillPackageInvalidText",
+    "skillPackageNameMismatch",
   ];
 
   for (const locale of ["en", "zh", "ja", "ko", "ru"]) {

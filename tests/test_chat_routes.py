@@ -923,7 +923,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
         return 3
 
     async def fake_record_context(conn, **kwargs):
-        calls.append(("context", kwargs["source"], kwargs["message_ids"], kwargs["file_ids"], kwargs["input_payload"]))
+        calls.append(("context", kwargs["source"], kwargs["message_ids"], kwargs["file_ids"], kwargs["input_payload"], kwargs.get("include_session_history")))
         return {
             "schema_version": "ai-platform.context-snapshot.v1",
             "context_snapshot_id": "ctx_chat_3",
@@ -1015,7 +1015,7 @@ async def test_chat_stream_capability_distribution_creates_run_with_auth_snapsho
     assert "track" not in serialized_governance
     assert "rollout" not in serialized_governance
     assert ("message", "user", "review this document", "run_3") in calls
-    assert ("context", "chat_stream", ["msg_3"], ["file_1"], {"message": "review this document"}) in calls
+    assert ("context", "chat_stream", ["msg_3"], ["file_1"], {"message": "review this document"}, True) in calls
     assert queue_payload["context_snapshot_id"] == "ctx_chat_3"
     assert queue_payload["context_snapshot"]["source"] == "chat_stream"
     assert queue_payload["context_snapshot"]["message_count"] == 1

@@ -1112,6 +1112,7 @@ async def chat_stream(
                 message_ids=[message_id] if message_id else [],
                 file_ids=resolved_file_ids,
                 source="chat_stream",
+                include_session_history=True,
             )
             for event in intent_event_specs(decision_payload):
                 await repositories.append_event(

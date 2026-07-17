@@ -471,6 +471,52 @@ class ContextRetrieval:
             max_bytes=byte_cap,
         )
 
+    async def stage_run_artifact_to_workspace(
+        self,
+        *,
+        tenant_id: str,
+        workspace_id: str,
+        user_id: str,
+        session_id: str,
+        run_id: str,
+        artifact_id: str,
+        workspace_root: str,
+        max_bytes: int = 16777216,
+    ) -> dict[str, Any]:
+        """Stage an artifact explicitly authorized by the current run snapshot."""
+
+        row = await self._get_artifact_row(
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+            artifact_id=artifact_id,
+        )
+        name = self._safe_name(row)
+        artifact_segment = self._safe_id_segment(artifact_id)
+        byte_cap = max(1, int(max_bytes))
+        declared_size = self._declared_size_bytes(row)
+        if declared_size is None and not isinstance(self._repository, InMemoryContextRetrievalRepository):
+            raise ContextRetrievalDenied("context_artifact_size_required")
+        if declared_size is not None and declared_size > byte_cap:
+            raise ContextRetrievalDenied("context_artifact_too_large")
+        raw_bytes = self._raw_content_bytes(row)
+        if len(raw_bytes) > byte_cap:
+            raise ContextRetrievalDenied("context_artifact_too_large")
+        target_dir = Path(workspace_root) / "context" / artifact_segment
+        target_path = target_dir / name
+        ensure_creatable_inside(workspace_root, target_path, "context_artifact_workspace_escape")
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(raw_bytes)
+        return self._envelope(
+            "context_retrieval.stage_run_artifact_to_workspace",
+            artifact_id=artifact_id,
+            workspace_path=f"context/{artifact_segment}/{name}",
+            bytes_staged=len(raw_bytes),
+            max_bytes=byte_cap,
+        )
+
     async def search_memory(
         self,
         *,
