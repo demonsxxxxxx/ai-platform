@@ -37,6 +37,7 @@ def test_skill_prompt_lists_context_manifest_and_requires_retrieval_tools_withou
     assert "storage_key" not in prompt
     assert "tenants/private" not in prompt
     assert "private_payload" not in prompt
+    assert "Authorized file ref IDs (use these exact IDs in retrieval tools): file-a" in prompt
 
 
 @pytest.mark.asyncio

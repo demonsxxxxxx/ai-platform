@@ -3664,7 +3664,10 @@ async def get_run(conn: AsyncConnection, *, tenant_id: str, run_id: str, for_upd
 
 
 async def get_run_identity(conn: AsyncConnection, *, run_id: str, for_update: bool = False) -> dict[str, Any] | None:
-    sql = "select id, tenant_id, session_id, status from runs where id = %s"
+    sql = (
+        "select id, tenant_id, workspace_id, user_id, session_id, agent_id, status "
+        "from runs where id = %s"
+    )
     if for_update:
         sql = f"{sql} for update"
     cursor = await conn.execute(

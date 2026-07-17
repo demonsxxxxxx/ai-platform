@@ -17,7 +17,7 @@ from app import repositories
 from app.capabilities import required_artifact_types_for_skill
 from app.control_plane_contracts import artifact_lineage_contract, standard_trace_id
 from app.context_builder import executor_context_pack_from_snapshot
-from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
+from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, available_context_retrieval_tools
 from app.context_retrieval import ContextRetrieval, TransactionalContextRetrievalRepository
 from app.db import transaction
 from app.execution_boundary import decide_execution_boundary
@@ -1574,28 +1574,7 @@ def _file_skill_steps(input_payload: dict[str, object]) -> list[dict[str, object
 
 
 def _context_retrieval_tool_names(context_manifest: dict[str, Any] | None) -> list[str]:
-    if not context_manifest or context_manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
-        return []
-    raw_advertised = context_manifest.get("available_retrieval_tools")
-    if not isinstance(raw_advertised, list):
-        return []
-    advertised = {
-        str(tool_name)
-        for tool_name in raw_advertised
-        if isinstance(tool_name, str)
-    }
-    selected: list[str] = []
-    for refs_key, tool_names in (
-        ("recent_messages", ("read_session_messages",)),
-        ("files", ("read_context_file", "stage_context_file_to_workspace")),
-        ("artifacts", ("read_run_artifact", "stage_run_artifact_to_workspace")),
-        ("memory_records", ("search_memory",)),
-    ):
-        refs = context_manifest.get(refs_key)
-        if not isinstance(refs, list) or not refs:
-            continue
-        selected.extend(tool_name for tool_name in tool_names if tool_name in advertised)
-    return selected
+    return available_context_retrieval_tools(context_manifest)
 
 
 def _runtime_tool_policy_subjects(

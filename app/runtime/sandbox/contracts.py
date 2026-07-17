@@ -16,6 +16,7 @@ CallbackStatus = Literal["running", "completed", "failed", "cancelled"]
 EXECUTOR_AUTH_HEADER = "X-AI-Platform-Executor-Credential"
 EXECUTOR_CALLBACK_PATH = "/api/ai/runtime/callbacks/executor"
 EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH = "/api/ai/runtime/callbacks/tool-permission"
+EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH = "/api/ai/runtime/callbacks/context-retrieval"
 _TRUSTED_CALLBACK_HOSTS = {
     "localhost",
     "127.0.0.1",
@@ -40,6 +41,7 @@ class TrustedCallbackTarget:
     base_url: str
     callback_url: str
     tool_permission_url: str
+    context_retrieval_url: str
     host: str
 
 
@@ -107,6 +109,7 @@ def build_trusted_callback_target(
         base_url=normalized_base_url,
         callback_url=f"{normalized_base_url}{EXECUTOR_CALLBACK_PATH}",
         tool_permission_url=f"{normalized_base_url}{EXECUTOR_TOOL_PERMISSION_CALLBACK_PATH}",
+        context_retrieval_url=f"{normalized_base_url}{EXECUTOR_CONTEXT_RETRIEVAL_CALLBACK_PATH}",
         host=host,
     )
 
@@ -351,6 +354,30 @@ class ExecutorCallbackEvent(BaseModel):
     @classmethod
     def validate_optional_sdk_session_id(cls, value: str | None):
         return assert_safe_id(value, "sdk_session_id") if value else value
+
+
+class ExecutorContextRetrievalRequest(BaseModel):
+    """One snapshot-scoped retrieval request from an ephemeral executor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    run_id: str
+    callback_token_id: str
+    action: Literal[
+        "read_session_messages",
+        "read_context_file",
+        "read_run_artifact",
+        "stage_context_file_to_workspace",
+        "stage_run_artifact_to_workspace",
+        "search_memory",
+    ]
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("session_id", "run_id", "callback_token_id")
+    @classmethod
+    def validate_ids(cls, value: str, info):
+        return assert_safe_id(value, info.field_name)
 
 
 class ExecutorToolPermissionRequest(BaseModel):
