@@ -118,6 +118,12 @@ def confirm_capability(capability_id: str) -> IntentDecision:
     raise ValueError(f"unknown_capability:{capability_id}")
 
 
+def fallback_to_general_chat() -> IntentDecision:
+    """Return the non-confirmed, safe default when an implicit route is unavailable."""
+
+    return _selected("general_chat", "general_chat", 0.74, "已使用通用对话处理")
+
+
 def route_intent(
     message: str,
     files: list[FileSummary],

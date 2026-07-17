@@ -26,6 +26,7 @@ from app.queue import QueueAdmissionMetadata
 
 
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
+_ORIGINAL_LIST_PRINCIPAL_LAMBCHAT_AGENTS = repository_module.list_principal_lambchat_agents
 
 
 @asynccontextmanager
@@ -67,6 +68,21 @@ def allow_existing_chat_route_tests_through_enqueue_authorization(monkeypatch):
         )
 
     monkeypatch.setattr(repository_module, "authorize_run_capabilities", allow, raising=False)
+
+    async def discoverable_agents(conn, **_kwargs):
+        return [
+            {"id": "general-agent", "default_skill_id": "general-chat"},
+            {"id": "baoyu-translate", "default_skill_id": "baoyu-translate"},
+            {"id": "qa-word-review", "default_skill_id": "qa-file-reviewer"},
+            {"id": "sop-assistant", "default_skill_id": "ragflow-knowledge-search"},
+        ]
+
+    monkeypatch.setattr(
+        repository_module,
+        "list_principal_lambchat_agents",
+        discoverable_agents,
+        raising=False,
+    )
 
     async def insert_creation_snapshots(*_args, **_kwargs):
         return None
@@ -2985,6 +3001,160 @@ async def test_chat_stream_filters_confirmation_suggestions_through_principal_pr
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_falls_back_to_general_chat_when_implicit_knowledge_intent_is_not_discoverable(monkeypatch):
+    """An unavailable implicit route must not expose or execute its capability."""
+
+    calls = []
+
+    async def principal_agents(conn, **kwargs):
+        calls.append(("projection", kwargs))
+        return [{"id": "general-agent", "default_skill_id": "general-chat"}]
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        calls.append(("resolve", agent_id, skill_id))
+        assert (agent_id, skill_id) == ("general-agent", "general-chat")
+        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
+
+    async def fake_create_session(conn, **kwargs):
+        return "ses_implicit_fallback"
+
+    async def fake_create_run(conn, **kwargs):
+        calls.append(("run", kwargs["agent_id"], kwargs["skill_id"]))
+        return "run_implicit_fallback"
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def fake_enqueue_run(payload):
+        calls.append(("queue", payload["agent_id"], payload["skill_id"]))
+        return 1
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.list_principal_lambchat_agents", principal_agents)
+    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
+    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+
+    response = await chat_stream(
+        ChatStreamRequest(message="这个权限申请要怎么做？"),
+        principal=principal(),
+    )
+
+    assert response.status == "queued"
+    assert response.intent_decision is not None
+    assert response.intent_decision.selected_capability == "general_chat"
+    assert response.intent_decision.reason == "已使用通用对话处理"
+    assert "ragflow-knowledge-search" not in response.intent_decision.model_dump_json()
+    assert ("resolve", "general-agent", "general-chat") in calls
+    assert ("run", "general-agent", "general-chat") in calls
+    assert ("queue", "general-agent", "general-chat") in calls
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_keeps_implicit_knowledge_intent_when_rag_is_discoverable(monkeypatch):
+    """Discoverable RAG remains the selected implicit knowledge capability."""
+
+    calls = []
+
+    async def principal_agents(conn, **kwargs):
+        calls.append(("projection", kwargs))
+        return [
+            {"id": "sop-assistant", "default_skill_id": "ragflow-knowledge-search"},
+            {"id": "general-agent", "default_skill_id": "general-chat"},
+        ]
+
+    async def fake_resolve_agent_skill(conn, *, tenant_id, agent_id, skill_id):
+        calls.append(("resolve", agent_id, skill_id))
+        assert (agent_id, skill_id) == ("sop-assistant", "ragflow-knowledge-search")
+        return {"executor_type": "claude-agent-worker", "skill_version": "0.1.0", "input_modes": ["chat"]}
+
+    async def fake_create_session(conn, **kwargs):
+        return "ses_implicit_rag"
+
+    async def fake_create_run(conn, **kwargs):
+        return "run_implicit_rag"
+
+    async def noop(*args, **kwargs):
+        return None
+
+    async def fake_enqueue_run(payload):
+        return 1
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.list_principal_lambchat_agents", principal_agents)
+    monkeypatch.setattr("app.routes.chat.repositories.resolve_agent_skill", fake_resolve_agent_skill)
+    monkeypatch.setattr("app.routes.chat.repositories.ensure_user", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.create_session", fake_create_session)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fake_create_run)
+    monkeypatch.setattr("app.routes.chat.repositories.append_message", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.bind_files_to_run", noop)
+    monkeypatch.setattr("app.routes.chat.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.chat.enqueue_run", fake_enqueue_run)
+
+    response = await chat_stream(
+        ChatStreamRequest(message="这个权限申请要怎么做？"),
+        principal=principal(),
+    )
+
+    assert response.status == "queued"
+    assert response.intent_decision is not None
+    assert response.intent_decision.selected_capability == "knowledge_answer"
+    assert any(call[0] == "projection" for call in calls)
+    assert ("resolve", "sop-assistant", "ragflow-knowledge-search") in calls
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_fails_closed_when_implicit_knowledge_intent_has_no_safe_fallback(monkeypatch):
+    """A missing general-chat capability must not silently reroute a denied intent."""
+
+    calls = []
+
+    async def principal_agents(conn, **kwargs):
+        calls.append(("projection", kwargs))
+        return []
+
+    async def deny(conn, **kwargs):
+        calls.append(("authorize", kwargs["agent_id"], kwargs["skill_id"]))
+        raise repository_module.RepositoryAuthorizationError("capability_not_authorized")
+
+    async def fail_create_run(*args, **kwargs):
+        raise AssertionError("denied implicit routing must not create a run")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.chat.repositories.list_principal_lambchat_agents", principal_agents)
+    monkeypatch.setattr("app.routes.chat.repositories.authorize_run_capabilities", deny)
+    monkeypatch.setattr("app.routes.chat.repositories.create_run", fail_create_run)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(
+            ChatStreamRequest(message="这个权限申请要怎么做？"),
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "capability_not_authorized"
+    assert calls == [
+        (
+            "projection",
+            {
+                "tenant_id": "tenant-a",
+                "actor_user_id": "user-a",
+                "department_id": "",
+                "roles": [],
+                "is_admin": False,
+                "permissions": [],
+            },
+        ),
+        ("authorize", "sop-assistant", "ragflow-knowledge-search"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_chat_stream_never_suggests_archived_default_skill_from_principal_projection(monkeypatch):
     async def fake_list_agents(conn, *, tenant_id):
         assert tenant_id == "tenant-a"
@@ -3032,6 +3202,11 @@ async def test_chat_stream_never_suggests_archived_default_skill_from_principal_
         return "audit"
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        repository_module,
+        "list_principal_lambchat_agents",
+        _ORIGINAL_LIST_PRINCIPAL_LAMBCHAT_AGENTS,
+    )
     monkeypatch.setattr(repository_module, "list_lambchat_agents", fake_list_agents)
     monkeypatch.setattr(repository_module, "list_capability_distribution_rows", fake_list_distributions)
     monkeypatch.setattr(repository_module, "append_audit_log", fake_append_audit)

@@ -6,7 +6,7 @@ from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.context_builder import record_initial_context_snapshot
 from app.db import transaction
-from app.intent_router import FileSummary, route_intent
+from app.intent_router import FileSummary, fallback_to_general_chat, route_intent
 from app.model_catalog import resolve_model_selection
 from app.models import (
     CapabilitySuggestionResponse,
@@ -879,7 +879,10 @@ async def chat_stream(
                     or request.confirmed_capability_id,
                 )
                 decision_payload = decision.as_payload()
-                if decision.status == "needs_confirmation":
+                is_implicit_selection = (
+                    continuation_capability is None and request.confirmed_capability_id is None
+                )
+                if decision.status == "needs_confirmation" or is_implicit_selection:
                     agent_rows = await repositories.list_principal_lambchat_agents(
                         conn,
                         tenant_id=principal.tenant_id,
@@ -893,34 +896,43 @@ async def chat_stream(
                         capability_id_from_skill(row.get("default_skill_id"), row.get("id"))
                         for row in agent_rows
                     }
-                    decision_payload["suggestions"] = [
-                        item
-                        for item in decision_payload["suggestions"]
-                        if isinstance(item, dict) and item.get("capability_id") in authorized_capability_ids
-                    ]
-                    suggestions = [
-                        CapabilitySuggestionResponse.model_validate(item)
-                        for item in decision_payload["suggestions"]
-                    ]
-                    confirmation_response = ChatStreamResponse(
-                        session_id=request.session_id,
-                        run_id=None,
-                        status="needs_confirmation",
-                        submission_id=submission_id,
-                        intent_decision=_intent_response(decision_payload, principal),
-                        suggestions=suggestions,
-                    )
-                    if submission_id is not None:
-                        await repositories.finalize_chat_submission(
-                            conn,
-                            tenant_id=principal.tenant_id,
-                            user_id=principal.user_id,
+                    if (
+                        is_implicit_selection
+                        and decision.status == "selected"
+                        and decision.selected_capability not in authorized_capability_ids
+                        and "general_chat" in authorized_capability_ids
+                    ):
+                        decision = fallback_to_general_chat()
+                        decision_payload = decision.as_payload()
+                    if decision.status == "needs_confirmation":
+                        decision_payload["suggestions"] = [
+                            item
+                            for item in decision_payload["suggestions"]
+                            if isinstance(item, dict) and item.get("capability_id") in authorized_capability_ids
+                        ]
+                        suggestions = [
+                            CapabilitySuggestionResponse.model_validate(item)
+                            for item in decision_payload["suggestions"]
+                        ]
+                        confirmation_response = ChatStreamResponse(
+                            session_id=request.session_id,
+                            run_id=None,
+                            status="needs_confirmation",
                             submission_id=submission_id,
-                            state="needs_confirmation",
-                            workspace_id=effective_workspace_id,
-                            outcome_json=confirmation_response.model_dump(mode="json"),
+                            intent_decision=_intent_response(decision_payload, principal),
+                            suggestions=suggestions,
                         )
-                    return confirmation_response
+                        if submission_id is not None:
+                            await repositories.finalize_chat_submission(
+                                conn,
+                                tenant_id=principal.tenant_id,
+                                user_id=principal.user_id,
+                                submission_id=submission_id,
+                                state="needs_confirmation",
+                                workspace_id=effective_workspace_id,
+                                outcome_json=confirmation_response.model_dump(mode="json"),
+                            )
+                        return confirmation_response
                 resolved_agent_id = str(decision.agent_id)
                 resolved_skill_id = str(decision.skill_id)
             else:
