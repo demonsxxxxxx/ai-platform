@@ -56,6 +56,14 @@ _CONTROLLED_FILE_SKILL_CAPABILITIES = {
 }
 _CONTROLLED_RUNNER_TIMEOUT_SECONDS = 900.0
 _CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS = 5.0
+_EXECUTOR_CLEANUP_TIMEOUT_SECONDS = 5.0
+
+
+class _ExecutorCleanupError(RuntimeError):
+    def __init__(self, error_code: str, error_message: str) -> None:
+        super().__init__(error_message)
+        self.error_code = error_code
+        self.error_message = error_message
 
 
 async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
@@ -146,12 +154,53 @@ def _is_async_callable(value: object) -> bool:
     return False
 
 
+def _observe_detached_task(task: asyncio.Future[Any]) -> None:
+    def consume_result(completed_task: asyncio.Future[Any]) -> None:
+        try:
+            completed_task.result()
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    task.add_done_callback(consume_result)
+
+
+async def _await_task_completion(
+    task: asyncio.Future[Any],
+    *,
+    timeout_seconds: float,
+    timeout_message: str,
+) -> Any:
+    done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+    if task not in done:
+        _observe_detached_task(task)
+        raise TimeoutError(timeout_message)
+    return task.result()
+
+
 async def _cancel_and_await(task: asyncio.Future[Any]) -> None:
     task.cancel()
     try:
-        await task
-    except (asyncio.CancelledError, Exception):
-        pass
+        await _await_task_completion(
+            task,
+            timeout_seconds=_EXECUTOR_CLEANUP_TIMEOUT_SECONDS,
+            timeout_message="Executor cleanup exceeded its deadline",
+        )
+    except asyncio.CancelledError:
+        if task.cancelled():
+            return
+        raise
+    except _ExecutorCleanupError:
+        raise
+    except TimeoutError as exc:
+        raise _ExecutorCleanupError(
+            "executor_cleanup_timeout",
+            "Executor cleanup exceeded its deadline",
+        ) from exc
+    except Exception as exc:
+        raise _ExecutorCleanupError(
+            "executor_cleanup_failed",
+            "Executor cleanup failed",
+        ) from exc
 
 
 async def _await_with_deadline(
@@ -164,6 +213,8 @@ async def _await_with_deadline(
     try:
         done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
     except asyncio.CancelledError:
+        if on_timeout is not None:
+            on_timeout()
         await _cancel_and_await(task)
         raise
     if task in done:
@@ -443,9 +494,19 @@ def _close_windows_process_job(process: asyncio.subprocess.Process) -> None:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel32.CloseHandle.restype = wintypes.BOOL
-        kernel32.CloseHandle(job)
+        if not kernel32.CloseHandle(job):
+            raise OSError(ctypes.get_last_error(), "CloseHandle failed for controlled process job")
     finally:
         setattr(process, "_controlled_job_handle", None)
+
+
+async def _wait_for_controlled_process_exit(process: asyncio.subprocess.Process) -> None:
+    wait_task = asyncio.ensure_future(process.wait())
+    await _await_task_completion(
+        wait_task,
+        timeout_seconds=_CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS,
+        timeout_message="Controlled process cleanup exceeded its deadline",
+    )
 
 
 async def _stop_controlled_process(process: asyncio.subprocess.Process) -> None:
@@ -467,16 +528,38 @@ async def _stop_controlled_process(process: asyncio.subprocess.Process) -> None:
         except ProcessLookupError:
             return
     try:
-        await asyncio.wait_for(process.wait(), timeout=_CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS)
+        await _wait_for_controlled_process_exit(process)
     except TimeoutError:
         if os.name == "nt":
-            process.kill()
+            try:
+                process.kill()
+            except ProcessLookupError:
+                return
         else:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 return
-        await process.wait()
+        await _wait_for_controlled_process_exit(process)
+
+
+async def _cleanup_controlled_process(process: asyncio.subprocess.Process) -> None:
+    try:
+        await _stop_controlled_process(process)
+    except asyncio.CancelledError:
+        raise
+    except _ExecutorCleanupError:
+        raise
+    except TimeoutError as exc:
+        raise _ExecutorCleanupError(
+            "executor_cleanup_timeout",
+            "Executor cleanup exceeded its deadline",
+        ) from exc
+    except Exception as exc:
+        raise _ExecutorCleanupError(
+            "executor_cleanup_failed",
+            "Executor cleanup failed",
+        ) from exc
 
 
 async def _run_selected_authorized_file_skill(
@@ -550,7 +633,7 @@ async def _run_selected_authorized_file_skill(
     if os.name == "nt":
         job = _assign_windows_process_job(process)
         if job is None:
-            await _stop_controlled_process(process)
+            await _cleanup_controlled_process(process)
             return {
                 "status": "failed",
                 "message": "Selected file Skill process group is unavailable",
@@ -565,10 +648,10 @@ async def _run_selected_authorized_file_skill(
     try:
         stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=_CONTROLLED_RUNNER_TIMEOUT_SECONDS)
     except asyncio.CancelledError:
-        await _stop_controlled_process(process)
+        await _cleanup_controlled_process(process)
         raise
     except TimeoutError:
-        await _stop_controlled_process(process)
+        await _cleanup_controlled_process(process)
         return {
             "status": "failed",
             "message": "Selected file Skill exceeded its execution deadline",
@@ -580,7 +663,7 @@ async def _run_selected_authorized_file_skill(
             "used_skills_source": "none",
         }
     if process.returncode != 0:
-        await _stop_controlled_process(process)
+        await _cleanup_controlled_process(process)
         return {
             "status": "failed",
             "message": "Selected file Skill failed",
@@ -591,7 +674,7 @@ async def _run_selected_authorized_file_skill(
             "used_skills": [],
             "used_skills_source": "none",
         }
-    await _stop_controlled_process(process)
+    await _cleanup_controlled_process(process)
     return {
         "status": "completed",
         "message": stdout.decode("utf-8", errors="replace").strip()
@@ -942,6 +1025,12 @@ def create_executor_app(
                         else:
                             raw_runner_result = await raw_runner_result
                     runner_result = raw_runner_result if isinstance(raw_runner_result, dict) else {}
+                except _ExecutorCleanupError as exc:
+                    runner_result = {
+                        "status": "failed",
+                        "error_code": exc.error_code,
+                        "error_message": exc.error_message,
+                    }
                 except Exception as exc:
                     runner_result = {
                         "status": "failed",

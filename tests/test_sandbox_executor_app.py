@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from app.executors.claude_agent_sdk_runner import build_skill_prompt
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.contracts import ExecutorTaskRequest
+from app.runtime.sandbox import executor_app
 from app.runtime.sandbox.executor_app import _default_callback_sender, _default_executor_runner, create_executor_app
 from app.tool_permission_lifecycle import tool_permission_budget
 
@@ -1078,7 +1079,7 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
         await asyncio.wait_for(runner_finished.wait(), timeout=0.5)
         result = await asyncio.wait_for(endpoint_task, timeout=0.5)
         assert result["status"] == "failed"
-        assert result["error_code"] == "executor_deadline_exceeded"
+        assert result["error_code"] == "executor_cleanup_failed"
         await asyncio.sleep(0)
         gc.collect()
         await asyncio.sleep(0)
@@ -1100,6 +1101,103 @@ async def test_executor_deadline_waits_for_runner_cleanup_before_terminal_respon
         if runner_cancelled.is_set() and not runner_finished.is_set():
             await asyncio.wait_for(runner_finished.wait(), timeout=0.5)
         loop.set_exception_handler(previous_exception_handler)
+
+
+@pytest.mark.asyncio
+async def test_executor_deadline_reports_cleanup_timeout_without_waiting_forever(tmp_path, monkeypatch):
+    runner_cancelled = asyncio.Event()
+    runner_finished = asyncio.Event()
+    release_runner = asyncio.Event()
+    payload = task_payload()
+    payload["config"]["resource_limits"] = {"max_seconds": 0.01}
+
+    async def executor_runner(request, workspace_root, emit_event):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            runner_cancelled.set()
+            try:
+                await release_runner.wait()
+            finally:
+                runner_finished.set()
+            return {"status": "completed"}
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app._EXECUTOR_CLEANUP_TIMEOUT_SECONDS", 0.02)
+    app = create_executor_app(
+        workspace_root=tmp_path,
+        callback_sender=lambda url, payload, token: {"accepted": True},
+        executor_runner=executor_runner,
+        executor_auth_token=EXECUTOR_AUTH_TOKEN,
+        expected_session_id="session-a",
+        expected_run_id="run-a",
+        trusted_callback_base_url=TRUSTED_CALLBACK_BASE_URL,
+    )
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/v1/tasks/execute")
+    request = ExecutorTaskRequest.model_validate(payload)
+    endpoint_task = asyncio.create_task(endpoint(request, executor_credential=EXECUTOR_AUTH_TOKEN))
+
+    try:
+        await asyncio.wait_for(runner_cancelled.wait(), timeout=0.15)
+        done, _ = await asyncio.wait({endpoint_task}, timeout=0.15)
+        assert endpoint_task in done
+        result = endpoint_task.result()
+        assert result["status"] == "failed"
+        assert result["error_code"] == "executor_cleanup_timeout"
+        assert "requested_max_seconds" not in result
+    finally:
+        release_runner.set()
+        if not endpoint_task.done():
+            await asyncio.wait({endpoint_task}, timeout=0.5)
+        await asyncio.wait_for(runner_finished.wait(), timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_stop_controlled_process_bounds_post_kill_wait(monkeypatch):
+    release_waiters = asyncio.Event()
+    signals = []
+
+    class StuckProcess:
+        pid = 4242
+        returncode = None
+
+        async def wait(self):
+            await release_waiters.wait()
+
+        def send_signal(self, signal_value):
+            signals.append(("graceful", signal_value))
+
+        def terminate(self):
+            signals.append(("terminate", None))
+
+        def kill(self):
+            signals.append(("kill", None))
+
+    if executor_app.os.name == "nt":
+        interrupt = getattr(executor_app.signal, "CTRL_BREAK_EVENT", None)
+        expected_signals = [
+            ("graceful", interrupt) if interrupt is not None else ("terminate", None),
+            ("kill", None),
+        ]
+    else:
+        monkeypatch.setattr(
+            executor_app.os,
+            "killpg",
+            lambda pid, signal_value: signals.append((pid, signal_value)),
+        )
+        expected_signals = [
+            (StuckProcess.pid, executor_app.signal.SIGTERM),
+            (StuckProcess.pid, executor_app.signal.SIGKILL),
+        ]
+    monkeypatch.setattr("app.runtime.sandbox.executor_app._CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS", 0.01)
+    process = StuckProcess()
+
+    try:
+        with pytest.raises(TimeoutError, match="Controlled process"):
+            await executor_app._stop_controlled_process(process)
+        assert signals == expected_signals
+    finally:
+        release_waiters.set()
+        await asyncio.sleep(0)
 
 
 def test_executor_execute_allows_runner_with_larger_fractional_deadline(tmp_path):
@@ -1299,7 +1397,7 @@ async def test_executor_execute_preserves_caller_cancellation(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_executor_execute_preserves_caller_cancellation_when_runner_cleanup_fails(tmp_path):
+async def test_executor_execute_reports_cleanup_failure_when_caller_cancellation_cleanup_fails(tmp_path):
     runner_started = asyncio.Event()
 
     async def executor_runner(request, workspace_root, emit_event):
@@ -1325,8 +1423,10 @@ async def test_executor_execute_preserves_caller_cancellation_when_runner_cleanu
     await asyncio.wait_for(runner_started.wait(), timeout=0.2)
     execute_task.cancel()
 
-    with pytest.raises(asyncio.CancelledError):
-        await execute_task
+    result = await execute_task
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "executor_cleanup_failed"
 
 
 def test_executor_execute_fails_closed_for_sync_runner_with_positive_deadline(tmp_path):
