@@ -840,6 +840,62 @@ def test_create_share_context_snapshot_binds_source_run_and_target_session(monke
     assert body["run_id"] == "run-source"
 
 
+def test_create_share_context_snapshot_maps_member_failure_without_creating_event(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": run_id,
+            "workspace_id": "workspace-a",
+            "session_id": "session-source",
+            "trace_id": "trace-source",
+        }
+
+    async def fake_get_authorized_context_target_session(conn, *, tenant_id, workspace_id, user_id, session_id):
+        return {"id": session_id, "workspace_id": workspace_id, "user_id": user_id, "status": "active"}
+
+    async def fake_get_latest_authorized_executor_context_snapshot(conn, *, tenant_id, user_id, run_id):
+        return {
+            "id": "ctx-source",
+            "included_message_ids": ["msg-source"],
+            "included_file_ids": [],
+            "included_artifact_ids": [],
+            "payload_json": {},
+        }
+
+    async def fake_create_context_snapshot(conn, **kwargs):
+        calls.append(("snapshot", kwargs))
+        raise RepositoryConflictError("context_snapshot_material_invalid")
+
+    async def fail_append_event(*_args, **_kwargs):
+        raise AssertionError("invalid share snapshot members must not create an event")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr(
+        "app.routes.context.repositories.get_authorized_context_target_session",
+        fake_get_authorized_context_target_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.context.repositories.get_latest_authorized_executor_context_snapshot",
+        fake_get_latest_authorized_executor_context_snapshot,
+    )
+    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.routes.context.repositories.append_event", fail_append_event)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-source/context/share-snapshots",
+        headers=headers(),
+        json={"share_kind": "fork", "target_session_id": "session-target"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "context_snapshot_material_invalid"}
+    assert [call[0] for call in calls] == ["snapshot"]
+
+
 def test_create_share_context_snapshot_rejects_wrong_target_session_before_writing(monkeypatch):
     calls = []
 

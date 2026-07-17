@@ -3841,6 +3841,12 @@ async def test_create_context_snapshot_persists_scope_and_context_contract():
     assert "message_run.id = scoped_run.run_id" not in sql
     assert "file_run.id = scoped_run.run_id" not in sql
     assert "artifact_run.id = scoped_run.run_id" not in sql
+    assert "join runs message_run" in sql
+    assert "join runs file_run" in sql
+    assert "messages.run_id is null" not in sql
+    assert "files.run_id is null" not in sql
+    assert "artifacts.expires_at > statement_timestamp()" in sql
+    assert "memory_records.expires_at > statement_timestamp()" in sql
 
 
 @pytest.mark.asyncio
@@ -3979,7 +3985,7 @@ async def test_create_context_snapshot_rejects_unverified_members_without_insert
     assert "memory_records.session_id = scoped_run.session_id" in sql
     assert "memory_records.status = 'active'" in sql
     assert "memory_records.deleted_at is null" in sql
-    assert "artifacts.expires_at is null or artifacts.expires_at > now()" in sql
+    assert "artifacts.expires_at is null or artifacts.expires_at > statement_timestamp()" in sql
     assert "returning id" in sql
     assert "run-cross-scope" in params
 

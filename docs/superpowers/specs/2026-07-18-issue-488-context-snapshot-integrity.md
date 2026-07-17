@@ -37,3 +37,13 @@ or event is committed for mixed batches. Focused repository tests inspect the
 single statement and generic failure behavior; route tests prove the generic
 mapping and absence of event creation. Verification is limited to focused tests,
 `compileall`, and `git diff --check`.
+
+## Review repairs
+
+Creation eligibility deliberately matches retrieval's source-run requirement:
+messages and files without a source `run_id` are rejected, while prior-run
+members remain valid only when that source run has the exact canonical scope.
+Eligibility uses `statement_timestamp()` for artifact and memory expiry so an
+open transaction cannot keep already-expired material eligible. Both manual and
+share snapshot routes map a member failure to the same generic response before
+an event can be appended.

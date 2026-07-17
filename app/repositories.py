@@ -3840,21 +3840,17 @@ async def create_context_snapshot(
               join messages on messages.id = requested.id
               join sessions message_session on message_session.id = messages.session_id
                 and message_session.tenant_id = messages.tenant_id
-              left join runs message_run on message_run.id = messages.run_id
+              join runs message_run on message_run.id = messages.run_id
                 and message_run.tenant_id = messages.tenant_id
               where messages.tenant_id = scoped_run.tenant_id
                 and messages.session_id = scoped_run.session_id
                 and message_session.workspace_id = scoped_run.workspace_id
                 and message_session.user_id = scoped_run.user_id
                 and message_session.agent_id = scoped_run.agent_id
-                and (
-                  messages.run_id is null or (
-                    message_run.workspace_id = scoped_run.workspace_id
-                    and message_run.user_id = scoped_run.user_id
-                    and message_run.session_id = scoped_run.session_id
-                    and message_run.agent_id = scoped_run.agent_id
-                  )
-                )
+                and message_run.workspace_id = scoped_run.workspace_id
+                and message_run.user_id = scoped_run.user_id
+                and message_run.session_id = scoped_run.session_id
+                and message_run.agent_id = scoped_run.agent_id
             ) as eligible_message_count,
             (
               select count(*)
@@ -3862,7 +3858,7 @@ async def create_context_snapshot(
               join files on files.id = requested.id
               join sessions file_session on file_session.id = files.session_id
                 and file_session.tenant_id = files.tenant_id
-              left join runs file_run on file_run.id = files.run_id
+              join runs file_run on file_run.id = files.run_id
                 and file_run.tenant_id = files.tenant_id
               where files.tenant_id = scoped_run.tenant_id
                 and files.workspace_id = scoped_run.workspace_id
@@ -3871,14 +3867,10 @@ async def create_context_snapshot(
                 and file_session.user_id = scoped_run.user_id
                 and file_session.workspace_id = scoped_run.workspace_id
                 and file_session.agent_id = scoped_run.agent_id
-                and (
-                  files.run_id is null or (
-                    file_run.workspace_id = scoped_run.workspace_id
-                    and file_run.user_id = scoped_run.user_id
-                    and file_run.session_id = scoped_run.session_id
-                    and file_run.agent_id = scoped_run.agent_id
-                  )
-                )
+                and file_run.workspace_id = scoped_run.workspace_id
+                and file_run.user_id = scoped_run.user_id
+                and file_run.session_id = scoped_run.session_id
+                and file_run.agent_id = scoped_run.agent_id
             ) as eligible_file_count,
             (
               select count(*)
@@ -3891,7 +3883,7 @@ async def create_context_snapshot(
                 and artifact_run.user_id = scoped_run.user_id
                 and artifact_run.session_id = scoped_run.session_id
                 and artifact_run.agent_id = scoped_run.agent_id
-                and (artifacts.expires_at is null or artifacts.expires_at > now())
+                and (artifacts.expires_at is null or artifacts.expires_at > statement_timestamp())
             ) as eligible_artifact_count,
             (
               select count(*)
@@ -3904,7 +3896,7 @@ async def create_context_snapshot(
                 and memory_records.agent_id = scoped_run.agent_id
                 and memory_records.status = 'active'
                 and memory_records.deleted_at is null
-                and (memory_records.expires_at is null or memory_records.expires_at > now())
+                and (memory_records.expires_at is null or memory_records.expires_at > statement_timestamp())
             ) as eligible_memory_record_count
           from scoped_run
           cross join requested_members
