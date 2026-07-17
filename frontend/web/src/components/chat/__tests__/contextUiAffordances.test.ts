@@ -33,6 +33,19 @@ test("chat actions omit unconsumed share and fork controls while preserving feed
   assert.match(message, /showFeedbackAndShareActions &&/);
 });
 
+test("sidebar session actions omit the reachable Share path", () => {
+  const list = read("src/components/panels/SidebarParts/SessionListContent.tsx");
+  const item = read("src/components/sidebar/SessionItem.tsx");
+  const menu = read("src/components/sidebar/SessionMenu.tsx");
+  const sidebar = read("src/components/panels/SessionSidebar.tsx");
+
+  for (const source of [list, item, menu, sidebar]) {
+    assert.doesNotMatch(source, /onShare|ShareDialog|Share2|sidebar\.share/);
+  }
+  assert.match(menu, /onRename/);
+  assert.match(menu, /onDelete/);
+});
+
 test("session configuration and run-used provenance keep separate labels", () => {
   const en = JSON.parse(read("src/i18n/locales/en.json"));
   const zh = JSON.parse(read("src/i18n/locales/zh.json"));

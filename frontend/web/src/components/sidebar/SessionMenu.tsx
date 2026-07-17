@@ -8,7 +8,6 @@ import {
   Edit2,
   Trash2,
   X,
-  Share2,
 } from "lucide-react";
 import type { BackendSession } from "../../services/api/session";
 import { useSwipeToClose } from "../../hooks/useSwipeToClose";
@@ -19,7 +18,6 @@ interface SessionMenuProps {
   onClose: () => void;
   onRename: () => void;
   onDelete: () => void;
-  onShare?: () => void;
   anchorEl: HTMLElement | null;
 }
 
@@ -29,7 +27,6 @@ export function SessionMenu({
   onClose,
   onRename,
   onDelete,
-  onShare,
   anchorEl,
 }: SessionMenuProps) {
   const { t } = useTranslation();
@@ -95,20 +92,6 @@ export function SessionMenu({
         <Edit2 size={16} className="shrink-0" />
         <span>{t("sidebar.rename")}</span>
       </button>
-
-      {/* Share */}
-      {onShare && (
-        <button
-          onClick={() => {
-            onShare();
-            onClose();
-          }}
-          className="flex w-full items-center gap-3 px-3 py-2.5 text-sm text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)] hover:bg-[var(--theme-primary-light)] transition-colors"
-        >
-          <Share2 size={16} className="shrink-0" />
-          <span>{t("sidebar.share")}</span>
-        </button>
-      )}
 
       {/* Divider */}
       <div
