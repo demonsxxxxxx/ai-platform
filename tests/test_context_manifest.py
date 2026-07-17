@@ -99,6 +99,7 @@ def test_context_planner_builds_bounded_manifest_without_large_file_or_private_p
         "read_context_file",
         "read_run_artifact",
         "stage_context_file_to_workspace",
+        "stage_run_artifact_to_workspace",
         "search_memory",
     }
     assert manifest["budget"]["max_prompt_tokens"] == 320

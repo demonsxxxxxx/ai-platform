@@ -274,6 +274,111 @@ async def test_stage_context_file_to_workspace_returns_safe_workspace_ref_withou
 
 
 @pytest.mark.asyncio
+async def test_stage_context_file_to_workspace_accepts_snapshot_authorized_prior_run_file(tmp_path):
+    class SnapshotAuthorizedRepository:
+        async def get_file(self, **kwargs):
+            assert kwargs["run_id"] == "run-current"
+            assert kwargs["file_id"] == "file-prior"
+            return {
+                "file_id": "file-prior",
+                "run_id": "run-prior",
+                "original_name": "source.docx",
+                "size_bytes": 5,
+                "content": b"docx!",
+            }
+
+        def read_storage_bytes(self, row):
+            return row["content"]
+
+    retrieval = ContextRetrieval(SnapshotAuthorizedRepository())
+
+    result = await retrieval.stage_context_file_to_workspace(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-current",
+        file_id="file-prior",
+        workspace_root=str(tmp_path),
+    )
+
+    assert result["workspace_path"] == "context/file-prior/source.docx"
+    assert (tmp_path / "context" / "file-prior" / "source.docx").read_bytes() == b"docx!"
+
+
+@pytest.mark.asyncio
+async def test_stage_run_artifact_to_workspace_uses_snapshot_authorized_repository_scope(tmp_path):
+    class SnapshotAuthorizedRepository:
+        async def get_artifact(self, **kwargs):
+            assert kwargs == {
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-current",
+                "artifact_id": "artifact-prior",
+            }
+            return {
+                "artifact_id": "artifact-prior",
+                "run_id": "run-prior",
+                "label": "translated.docx",
+                "artifact_type": "translated_docx",
+                "size_bytes": 5,
+                "content": b"docx!",
+            }
+
+        def read_storage_bytes(self, row):
+            return row["content"]
+
+    retrieval = ContextRetrieval(SnapshotAuthorizedRepository())
+
+    result = await retrieval.stage_run_artifact_to_workspace(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-current",
+        artifact_id="artifact-prior",
+        workspace_root=str(tmp_path),
+    )
+
+    assert result["workspace_path"] == "context/artifact-prior/translated.docx"
+    assert result["artifact_id"] == "artifact-prior"
+    assert "storage_key" not in str(result)
+    assert (tmp_path / "context" / "artifact-prior" / "translated.docx").read_bytes() == b"docx!"
+
+
+@pytest.mark.asyncio
+async def test_stage_run_artifact_to_workspace_rejects_cross_scope_and_oversize_without_writing(tmp_path):
+    retrieval = _retrieval()
+
+    with pytest.raises(ContextRetrievalDenied, match="context_scope_denied"):
+        await retrieval.stage_run_artifact_to_workspace(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            artifact_id="artifact-cross",
+            workspace_root=str(tmp_path),
+        )
+
+    with pytest.raises(ContextRetrievalDenied, match="context_artifact_too_large"):
+        await retrieval.stage_run_artifact_to_workspace(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            artifact_id="artifact-a",
+            workspace_root=str(tmp_path),
+            max_bytes=4,
+        )
+
+    assert not (tmp_path / "context").exists()
+
+
+@pytest.mark.asyncio
 async def test_stage_context_file_to_workspace_rejects_file_over_byte_cap_without_writing(tmp_path):
     retrieval = _retrieval()
 

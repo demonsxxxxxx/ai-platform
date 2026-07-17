@@ -208,6 +208,19 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
                     "storage_key": "tenants/tenant-a/private/source.txt",
                 }
             ],
+            artifacts=[
+                {
+                    "tenant_id": "tenant-a",
+                    "workspace_id": "workspace-a",
+                    "user_id": "user-a",
+                    "session_id": "session-a",
+                    "run_id": "run-a",
+                    "artifact_id": "artifact-a",
+                    "artifact_type": "translated_docx",
+                    "label": "translated.docx",
+                    "content": "artifact bytes",
+                }
+            ],
         )
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
@@ -236,11 +249,13 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
         "read_context_file",
         "read_run_artifact",
         "stage_context_file_to_workspace",
+        "stage_run_artifact_to_workspace",
         "search_memory",
     ]
     assert "read_session_messages" in captured["allowed_tools"]
     assert "read_context_file" in captured["allowed_tools"]
     assert "stage_context_file_to_workspace" in captured["allowed_tools"]
+    assert "stage_run_artifact_to_workspace" in captured["allowed_tools"]
     message_tool = server["tools"][0]
     tool_result = await message_tool.handler({"tenant_id": "tenant-b", "limit": 5, "offset": 0, "max_tokens": 20})
     assert "scoped private message" in tool_result["content"][0]["text"]
@@ -262,3 +277,8 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
         "reason": "context_file_too_large",
     }
     assert too_large_payload["redaction"] == {"object_locator_refs_removed": True}
+    artifact_stage_tool = server["tools"][4]
+    artifact_stage_result = await artifact_stage_tool.handler({"artifact_id": "artifact-a"})
+    assert "context/artifact-a/translated.docx" in artifact_stage_result["content"][0]["text"]
+    assert "artifact bytes" not in artifact_stage_result["content"][0]["text"]
+    assert (tmp_path / "context" / "artifact-a" / "translated.docx").read_text(encoding="utf-8") == "artifact bytes"

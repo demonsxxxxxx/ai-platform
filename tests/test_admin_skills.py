@@ -45,14 +45,20 @@ def skill_admin_headers():
     }
 
 
-def skill_package_zip(*, name: str = "qa-file-reviewer", description: str = "Review Word documents.") -> bytes:
+def skill_package_zip(
+    *,
+    name: str = "qa-file-reviewer",
+    description: str = "Review Word documents.",
+    root: str = "",
+) -> bytes:
     buffer = io.BytesIO()
+    prefix = f"{root.strip('/')}/" if root.strip("/") else ""
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr(
-            "SKILL.md",
+            f"{prefix}SKILL.md",
             f"---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n",
         )
-        archive.writestr("references/guide.md", "review guide")
+        archive.writestr(f"{prefix}references/guide.md", "review guide")
     return buffer.getvalue()
 
 
@@ -1138,6 +1144,47 @@ def test_admin_preview_skill_package_uses_global_catalog_existence(monkeypatch):
             }
         ],
     }
+
+
+def test_admin_preview_skill_package_accepts_one_wrapped_skill_directory(monkeypatch):
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_list_skill_ids(conn):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.admin_skills.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.admin_skills.repositories.list_skill_ids", fake_list_skill_ids)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/admin/skills/upload/preview",
+        files={
+            "file": (
+                "qa-rag-skill.zip",
+                skill_package_zip(
+                    name="qa-rag-skill",
+                    description="Answer questions from a bounded knowledge source.",
+                    root="qa-rag-skill",
+                ),
+                "application/zip",
+            )
+        },
+        headers=skill_admin_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["skills"] == [
+        {
+            "name": "qa-rag-skill",
+            "description": "Answer questions from a bounded knowledge source.",
+            "file_count": 2,
+            "files": ["SKILL.md", "references/guide.md"],
+            "already_exists": False,
+        }
+    ]
 
 
 def test_admin_upload_existing_catalog_skill_without_tenant_policy_publishes_to_tenant(monkeypatch):

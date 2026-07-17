@@ -12,6 +12,21 @@ const BACKEND_ERROR_KEYS: Record<string, string> = {
   skill_file_delete_contract_not_backed:
     "backendErrors.skillFileDeleteNotBacked",
   skill_import_contract_not_backed: "backendErrors.skillImportNotBacked",
+  skill_package_empty: "backendErrors.skillPackageInvalidZip",
+  skill_package_invalid_zip: "backendErrors.skillPackageInvalidZip",
+  skill_package_skill_md_required:
+    "backendErrors.skillPackageSkillMdRequired",
+  skill_package_multiple_skills_not_supported:
+    "backendErrors.skillPackageMultipleSkills",
+  skill_package_description_required:
+    "backendErrors.skillPackageDescriptionRequired",
+  skill_package_too_large: "backendErrors.skillPackageTooLarge",
+  skill_package_file_too_large: "backendErrors.skillPackageTooLarge",
+  skill_package_path_escape: "backendErrors.skillPackageUnsafe",
+  skill_package_mixed_root: "backendErrors.skillPackageUnsafe",
+  skill_package_duplicate_path: "backendErrors.skillPackageUnsafe",
+  skill_package_invalid_utf8: "backendErrors.skillPackageInvalidText",
+  skill_package_name_mismatch: "backendErrors.skillPackageNameMismatch",
   marketplace_direct_write_contract_not_backed:
     "backendErrors.marketplaceDirectWriteNotBacked",
   mcp_lifecycle_contract_not_backed:

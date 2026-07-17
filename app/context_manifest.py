@@ -14,6 +14,7 @@ CONTEXT_RETRIEVAL_TOOLS = (
     "read_context_file",
     "read_run_artifact",
     "stage_context_file_to_workspace",
+    "stage_run_artifact_to_workspace",
     "search_memory",
 )
 _PRIVATE_KEY_MARKERS = (
@@ -111,7 +112,10 @@ def public_context_manifest_projection(manifest: dict[str, Any]) -> dict[str, An
         "retrieval": {
             "available": bool(available_tools),
             "tool_count": len(available_tools),
-            "workspace_staging_available": "stage_context_file_to_workspace" in available_tools,
+            "workspace_staging_available": any(
+                tool in available_tools
+                for tool in ("stage_context_file_to_workspace", "stage_run_artifact_to_workspace")
+            ),
         },
         "redaction": {
             "private_payloads_removed": True,

@@ -53,6 +53,39 @@ def _content_hash(files: list[tuple[str, bytes]]) -> str:
     return digest.hexdigest()
 
 
+def _normalized_package_files(files: list[tuple[str, bytes]]) -> list[tuple[str, bytes]]:
+    """Accept either a package root or one conventional wrapped Skill directory."""
+
+    paths = [PurePosixPath(relative_path) for relative_path, _ in files]
+    skill_paths = [path for path in paths if path.name.lower() == "skill.md"]
+    if len(skill_paths) > 1:
+        raise ValueError("skill_package_multiple_skills_not_supported")
+    if any(path.as_posix() == "SKILL.md" for path in skill_paths):
+        return files
+
+    skill_roots = {
+        path.parent
+        for path in skill_paths
+        if path.parent != PurePosixPath(".")
+    }
+    if not skill_roots:
+        return files
+
+    root = next(iter(skill_roots))
+    normalized: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    for path, (_, data) in zip(paths, files, strict=True):
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise ValueError("skill_package_mixed_root") from exc
+        if not relative or relative in seen:
+            raise ValueError("skill_package_duplicate_path")
+        seen.add(relative)
+        normalized.append((relative, data))
+    return normalized
+
+
 def _matching_relative_paths(relative_paths: list[str], file_names: set[str]) -> list[str]:
     return sorted(path for path in relative_paths if PurePosixPath(path).name.lower() in file_names)
 
@@ -187,6 +220,7 @@ def parse_skill_package_zip(content: bytes, *, expected_skill_id: str | None = N
                 raise ValueError("skill_package_too_large")
             files.append((relative_path, data))
 
+    files = _normalized_package_files(files)
     by_path = {relative_path: data for relative_path, data in files}
     skill_md = by_path.get("SKILL.md")
     if skill_md is None:

@@ -49,6 +49,7 @@ _SDK_INTERNAL_CONTEXT_TOOLS = (
     "read_context_file",
     "read_run_artifact",
     "stage_context_file_to_workspace",
+    "stage_run_artifact_to_workspace",
     "search_memory",
 )
 _BUILTIN_PARAMETER_KEYS = {
@@ -542,6 +543,7 @@ def _context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
                     "read_context_file",
                     "read_run_artifact",
                     "stage_context_file_to_workspace",
+                    "stage_run_artifact_to_workspace",
                     "search_memory",
                 }
             ]
@@ -812,7 +814,7 @@ def _build_context_retrieval_mcp_server(
 
     @sdk_tool(
         "read_run_artifact",
-        "Read a run artifact for the current ai-platform run scope only.",
+        "Read an artifact explicitly authorized by the current ai-platform run snapshot.",
         {
             "artifact_id": str,
             "max_bytes": int,
@@ -866,6 +868,38 @@ def _build_context_retrieval_mcp_server(
         )
 
     @sdk_tool(
+        "stage_run_artifact_to_workspace",
+        "Stage a current-snapshot-authorized run artifact into the workspace and return a workspace-relative path.",
+        {
+            "artifact_id": str,
+            "max_bytes": int,
+        },
+    )
+    async def stage_run_artifact_to_workspace(args):
+        tool_args = args if isinstance(args, dict) else {}
+        artifact_id = str(tool_args.get("artifact_id") or "")
+        if not artifact_id:
+            return _context_retrieval_tool_error("artifact_id_required")
+        return await _run(
+            lambda _inner: retrieval.stage_run_artifact_to_workspace(
+                tenant_id=identity.tenant_id,
+                workspace_id=identity.workspace_id,
+                user_id=identity.user_id,
+                session_id=identity.session_id,
+                run_id=identity.run_id,
+                artifact_id=artifact_id,
+                workspace_root=str(workspace_root),
+                max_bytes=_safe_positive_int(
+                    tool_args.get("max_bytes"),
+                    default=16777216,
+                    maximum=16777216,
+                ),
+            ),
+            tool_args,
+            audit_action="context_retrieval.stage_run_artifact_to_workspace",
+        )
+
+    @sdk_tool(
         "search_memory",
         "Search active session-scoped memory records for the current ai-platform agent scope only.",
         {
@@ -899,6 +933,7 @@ def _build_context_retrieval_mcp_server(
             read_context_file,
             read_run_artifact,
             stage_context_file_to_workspace,
+            stage_run_artifact_to_workspace,
             search_memory,
         ],
     )
