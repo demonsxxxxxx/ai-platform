@@ -360,22 +360,27 @@ async def create_run_context_snapshot(
             memory_policy_source="not_recorded",
             long_term_memory_read=False,
         )
-        snapshot = await repositories.create_context_snapshot(
-            conn,
-            tenant_id=principal.tenant_id,
-            workspace_id=str(run["workspace_id"]),
-            user_id=principal.user_id,
-            session_id=str(run["session_id"]),
-            run_id=run_id,
-            trace_id=trace_id,
-            context_kind=request.context_kind,
-            included_message_ids=request.included_message_ids,
-            included_file_ids=request.included_file_ids,
-            included_artifact_ids=request.included_artifact_ids,
-            included_memory_record_ids=request.included_memory_record_ids,
-            redaction_summary_json=redaction_summary,
-            payload_json=payload,
-        )
+        try:
+            snapshot = await repositories.create_context_snapshot(
+                conn,
+                tenant_id=principal.tenant_id,
+                workspace_id=str(run["workspace_id"]),
+                user_id=principal.user_id,
+                session_id=str(run["session_id"]),
+                run_id=run_id,
+                trace_id=trace_id,
+                context_kind=request.context_kind,
+                included_message_ids=request.included_message_ids,
+                included_file_ids=request.included_file_ids,
+                included_artifact_ids=request.included_artifact_ids,
+                included_memory_record_ids=request.included_memory_record_ids,
+                redaction_summary_json=redaction_summary,
+                payload_json=payload,
+            )
+        except RepositoryConflictError as exc:
+            if str(exc) != "context_snapshot_material_invalid":
+                raise
+            raise HTTPException(status_code=409, detail="context_snapshot_material_invalid") from exc
         await repositories.append_event(
             conn,
             tenant_id=principal.tenant_id,

@@ -5,7 +5,7 @@ from urllib.parse import quote
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from app.repositories import RepositoryNotFoundError
+from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.routes.context import (
     MEMORY_PREVIEW_URL_DECODE_DEPTH,
     _memory_delete_response,
@@ -212,6 +212,37 @@ def test_create_context_snapshot_records_snapshot_and_event(monkeypatch):
     assert calls[0][1]["included_artifact_ids"] == ["art-a"]
     assert calls[0][1]["included_memory_record_ids"] == ["mem-a"]
     assert calls[1][1]["event_type"] == "context_snapshot_created"
+
+
+def test_create_context_snapshot_maps_member_failure_without_creating_event(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-a", "trace_id": "trace-a"}
+
+    async def fake_create_context_snapshot(conn, **kwargs):
+        calls.append(("snapshot", kwargs))
+        raise RepositoryConflictError("context_snapshot_material_invalid")
+
+    async def fail_append_event(*_args, **_kwargs):
+        raise AssertionError("invalid context snapshot members must not create an event")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fake_create_context_snapshot)
+    monkeypatch.setattr("app.routes.context.repositories.append_event", fail_append_event)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-a/context/snapshots",
+        headers=headers(),
+        json={"included_message_ids": ["msg-unverified"]},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "context_snapshot_material_invalid"}
+    assert [call[0] for call in calls] == ["snapshot"]
 
 
 def test_context_snapshot_response_omits_raw_material_ids_from_public_projection(monkeypatch):

@@ -62,6 +62,7 @@ RETRYABLE_RUN_STATUSES = {"failed", "dead-letter", "dead_letter", "dead-lettered
 MEMORY_RETENTION_CLEANUP_CURSOR_KEY = "memory_retention_cleanup"
 TOOL_PERMISSION_TERMINALIZATION_BATCH_LIMIT = TOOL_PERMISSION_EXPIRY_BATCH_LIMIT
 TOOL_PERMISSION_TERMINALIZATION_MAINTENANCE_LIMIT = TOOL_PERMISSION_EXPIRY_BATCH_LIMIT
+CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT = 128
 
 
 def new_id(prefix: str) -> str:
@@ -3792,7 +3793,20 @@ async def create_context_snapshot(
     redaction_summary_json: dict[str, Any],
     payload_json: dict[str, Any],
 ) -> dict[str, Any]:
+    """Atomically authorize and persist one run-scoped context snapshot."""
     snapshot_id = new_id("ctx")
+    included_message_ids = _normalize_context_snapshot_member_ids(included_message_ids)
+    included_file_ids = _normalize_context_snapshot_member_ids(included_file_ids)
+    included_artifact_ids = _normalize_context_snapshot_member_ids(included_artifact_ids)
+    included_memory_record_ids = _normalize_context_snapshot_member_ids(included_memory_record_ids)
+    if (
+        len(included_message_ids)
+        + len(included_file_ids)
+        + len(included_artifact_ids)
+        + len(included_memory_record_ids)
+        > CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT
+    ):
+        raise RepositoryConflictError("context_snapshot_material_invalid")
     redaction_summary_json = sanitize_public_payload(redaction_summary_json)
     if not isinstance(redaction_summary_json, dict):
         redaction_summary_json = {}
@@ -3802,7 +3816,8 @@ async def create_context_snapshot(
     cursor = await conn.execute(
         """
         with scoped_run as (
-          select runs.id
+          select runs.tenant_id, runs.workspace_id, runs.user_id, runs.session_id,
+                 runs.id as run_id, runs.agent_id, runs.trace_id
           from runs
           join sessions on sessions.id = runs.session_id
             and sessions.tenant_id = runs.tenant_id
@@ -3810,18 +3825,102 @@ async def create_context_snapshot(
             and sessions.user_id = runs.user_id
             and sessions.agent_id = runs.agent_id
           where runs.tenant_id = %s
-            and runs.workspace_id = %s
             and runs.user_id = %s
-            and runs.session_id = %s
             and runs.id = %s
+        ), requested_members as (
+          select %s::jsonb as message_ids,
+                 %s::jsonb as file_ids,
+                 %s::jsonb as artifact_ids,
+                 %s::jsonb as memory_record_ids
+        ), eligible_members as (
+          select scoped_run.*, requested_members.*,
+            (
+              select count(*)
+              from jsonb_array_elements_text(requested_members.message_ids) requested(id)
+              join messages on messages.id = requested.id
+              join sessions message_session on message_session.id = messages.session_id
+                and message_session.tenant_id = messages.tenant_id
+              left join runs message_run on message_run.id = messages.run_id
+                and message_run.tenant_id = messages.tenant_id
+              where messages.tenant_id = scoped_run.tenant_id
+                and messages.session_id = scoped_run.session_id
+                and message_session.workspace_id = scoped_run.workspace_id
+                and message_session.user_id = scoped_run.user_id
+                and message_session.agent_id = scoped_run.agent_id
+                and (
+                  messages.run_id is null or (
+                    message_run.workspace_id = scoped_run.workspace_id
+                    and message_run.user_id = scoped_run.user_id
+                    and message_run.session_id = scoped_run.session_id
+                    and message_run.agent_id = scoped_run.agent_id
+                  )
+                )
+            ) as eligible_message_count,
+            (
+              select count(*)
+              from jsonb_array_elements_text(requested_members.file_ids) requested(id)
+              join files on files.id = requested.id
+              join sessions file_session on file_session.id = files.session_id
+                and file_session.tenant_id = files.tenant_id
+              left join runs file_run on file_run.id = files.run_id
+                and file_run.tenant_id = files.tenant_id
+              where files.tenant_id = scoped_run.tenant_id
+                and files.workspace_id = scoped_run.workspace_id
+                and files.user_id = scoped_run.user_id
+                and files.session_id = scoped_run.session_id
+                and file_session.user_id = scoped_run.user_id
+                and file_session.workspace_id = scoped_run.workspace_id
+                and file_session.agent_id = scoped_run.agent_id
+                and (
+                  files.run_id is null or (
+                    file_run.workspace_id = scoped_run.workspace_id
+                    and file_run.user_id = scoped_run.user_id
+                    and file_run.session_id = scoped_run.session_id
+                    and file_run.agent_id = scoped_run.agent_id
+                  )
+                )
+            ) as eligible_file_count,
+            (
+              select count(*)
+              from jsonb_array_elements_text(requested_members.artifact_ids) requested(id)
+              join artifacts on artifacts.id = requested.id
+                and artifacts.tenant_id = scoped_run.tenant_id
+              join runs artifact_run on artifact_run.id = artifacts.run_id
+                and artifact_run.tenant_id = artifacts.tenant_id
+              where artifact_run.workspace_id = scoped_run.workspace_id
+                and artifact_run.user_id = scoped_run.user_id
+                and artifact_run.session_id = scoped_run.session_id
+                and artifact_run.agent_id = scoped_run.agent_id
+                and (artifacts.expires_at is null or artifacts.expires_at > now())
+            ) as eligible_artifact_count,
+            (
+              select count(*)
+              from jsonb_array_elements_text(requested_members.memory_record_ids) requested(id)
+              join memory_records on memory_records.id = requested.id
+              where memory_records.tenant_id = scoped_run.tenant_id
+                and memory_records.workspace_id = scoped_run.workspace_id
+                and memory_records.user_id = scoped_run.user_id
+                and memory_records.session_id = scoped_run.session_id
+                and memory_records.agent_id = scoped_run.agent_id
+                and memory_records.status = 'active'
+                and memory_records.deleted_at is null
+                and (memory_records.expires_at is null or memory_records.expires_at > now())
+            ) as eligible_memory_record_count
+          from scoped_run
+          cross join requested_members
         )
         insert into run_context_snapshots(
           id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
           schema_version, context_kind, included_message_ids, included_file_ids,
           included_artifact_ids, included_memory_record_ids, redaction_summary_json, payload_json
         )
-        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb, %s::jsonb
-        from scoped_run
+        select %s, tenant_id, workspace_id, user_id, session_id, run_id, coalesce(trace_id, ''),
+               %s, %s, message_ids, file_ids, artifact_ids, memory_record_ids, %s::jsonb, %s::jsonb
+        from eligible_members
+        where eligible_message_count = jsonb_array_length(message_ids)
+          and eligible_file_count = jsonb_array_length(file_ids)
+          and eligible_artifact_count = jsonb_array_length(artifact_ids)
+          and eligible_memory_record_count = jsonb_array_length(memory_record_ids)
         returning id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
                   schema_version, context_kind, included_message_ids, included_file_ids,
                   included_artifact_ids, included_memory_record_ids, redaction_summary_json,
@@ -3829,38 +3928,30 @@ async def create_context_snapshot(
         """,
         (
             tenant_id,
-            workspace_id,
             user_id,
-            session_id,
             run_id,
-            snapshot_id,
-            tenant_id,
-            workspace_id,
-            user_id,
-            session_id,
-            run_id,
-            trace_id,
-            "ai-platform.context-snapshot.v1",
-            context_kind,
             json.dumps(included_message_ids, ensure_ascii=False),
             json.dumps(included_file_ids, ensure_ascii=False),
             json.dumps(included_artifact_ids, ensure_ascii=False),
             json.dumps(included_memory_record_ids, ensure_ascii=False),
+            snapshot_id,
+            "ai-platform.context-snapshot.v1",
+            context_kind,
             dumps_json(redaction_summary_json),
             dumps_json(payload_json),
         ),
     )
     row = await cursor.fetchone()
     if row is None:
-        raise RepositoryNotFoundError("run_not_found")
+        raise RepositoryConflictError("context_snapshot_material_invalid")
     return {
         "id": snapshot_id,
-        "tenant_id": tenant_id,
-        "workspace_id": workspace_id,
-        "user_id": user_id,
-        "session_id": session_id,
-        "run_id": run_id,
-        "trace_id": trace_id,
+        "tenant_id": str(row.get("tenant_id") or tenant_id),
+        "workspace_id": str(row.get("workspace_id") or workspace_id),
+        "user_id": str(row.get("user_id") or user_id),
+        "session_id": str(row.get("session_id") or session_id),
+        "run_id": str(row.get("run_id") or run_id),
+        "trace_id": str(row.get("trace_id") or trace_id),
         "schema_version": "ai-platform.context-snapshot.v1",
         "context_kind": context_kind,
         "included_message_ids": included_message_ids,
@@ -3870,6 +3961,23 @@ async def create_context_snapshot(
         "redaction_summary_json": redaction_summary_json,
         "payload_json": payload_json,
     }
+
+
+def _normalize_context_snapshot_member_ids(member_ids: list[str]) -> list[str]:
+    """Reject malformed or duplicate snapshot members before the atomic SQL seam."""
+    if not isinstance(member_ids, list) or len(member_ids) > CONTEXT_SNAPSHOT_MEMBER_BATCH_LIMIT:
+        raise RepositoryConflictError("context_snapshot_material_invalid")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for member_id in member_ids:
+        if not isinstance(member_id, str):
+            raise RepositoryConflictError("context_snapshot_material_invalid")
+        normalized_id = member_id.strip()
+        if not SAFE_ID_PATTERN.fullmatch(normalized_id) or normalized_id in seen:
+            raise RepositoryConflictError("context_snapshot_material_invalid")
+        seen.add(normalized_id)
+        normalized.append(normalized_id)
+    return normalized
 
 
 async def update_run_context_snapshot_ref(
