@@ -252,6 +252,7 @@ class SandboxRuntime:
                 "mcp_tool_ids": request.mcp_tool_ids,
                 "tool_policy_subjects": request.tool_policy_subjects,
                 "input_files": request.file_ids,
+                "materialized_file_names": request.materialized_file_names,
             }
             if request.context_manifest:
                 task_config["context_manifest"] = dict(request.context_manifest)

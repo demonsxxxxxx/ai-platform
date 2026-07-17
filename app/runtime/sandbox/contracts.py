@@ -146,6 +146,7 @@ class SandboxRuntimeRequest(BaseModel):
     tool_policy_subjects: list[dict[str, Any]] = Field(default_factory=list)
     input_message: str
     file_ids: list[str] = Field(default_factory=list)
+    materialized_file_names: list[str] = Field(default_factory=list)
     sandbox_mode: SandboxMode
     browser_enabled: bool = False
     model: str

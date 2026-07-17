@@ -7,6 +7,9 @@ import inspect
 import json
 import math
 import os
+import signal
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -20,6 +23,7 @@ from app.db import transaction
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
+    _translation_target_language,
     run_claude_agent_sdk,
 )
 from app.runtime.kernel_contracts import AgentEvent
@@ -43,6 +47,23 @@ ExecutorRunner = Callable[
     [ExecutorTaskRequest, Path, ExecutorEventEmitter],
     Awaitable[dict[str, Any]] | dict[str, Any],
 ]
+
+_CONTROLLED_FILE_SKILLS = {"baoyu-translate", "qa-file-reviewer"}
+_CONTROLLED_FILE_SKILL_CAPABILITIES = {
+    # These exactly mirror the server-owned builtin declarations in skills.pinning.
+    "baoyu-translate": frozenset({"Bash", "Write"}),
+    "qa-file-reviewer": frozenset({"Bash", "Write"}),
+}
+_CONTROLLED_RUNNER_TIMEOUT_SECONDS = 900.0
+_CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS = 5.0
+_EXECUTOR_CLEANUP_TIMEOUT_SECONDS = 5.0
+
+
+class _ExecutorCleanupError(RuntimeError):
+    def __init__(self, error_code: str, error_message: str) -> None:
+        super().__init__(error_message)
+        self.error_code = error_code
+        self.error_message = error_message
 
 
 async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
@@ -133,30 +154,74 @@ def _is_async_callable(value: object) -> bool:
     return False
 
 
-def _cancel_without_waiting(task: asyncio.Future[Any]) -> None:
-    task.cancel()
-
-    def consume_exception(done_task: asyncio.Future[Any]) -> None:
-        if done_task.cancelled():
-            return
+def _observe_detached_task(task: asyncio.Future[Any]) -> None:
+    def consume_result(completed_task: asyncio.Future[Any]) -> None:
         try:
-            done_task.exception()
-        except asyncio.CancelledError:
+            completed_task.result()
+        except (asyncio.CancelledError, Exception):
             pass
 
-    task.add_done_callback(consume_exception)
+    task.add_done_callback(consume_result)
 
 
-async def _await_with_deadline(awaitable: Awaitable[Any], *, timeout_seconds: float) -> tuple[Any, bool]:
+async def _await_task_completion(
+    task: asyncio.Future[Any],
+    *,
+    timeout_seconds: float,
+    timeout_message: str,
+) -> Any:
+    done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+    if task not in done:
+        _observe_detached_task(task)
+        raise TimeoutError(timeout_message)
+    return task.result()
+
+
+async def _cancel_and_await(task: asyncio.Future[Any]) -> None:
+    task.cancel()
+    try:
+        await _await_task_completion(
+            task,
+            timeout_seconds=_EXECUTOR_CLEANUP_TIMEOUT_SECONDS,
+            timeout_message="Executor cleanup exceeded its deadline",
+        )
+    except asyncio.CancelledError:
+        if task.cancelled():
+            return
+        raise
+    except _ExecutorCleanupError:
+        raise
+    except TimeoutError as exc:
+        raise _ExecutorCleanupError(
+            "executor_cleanup_timeout",
+            "Executor cleanup exceeded its deadline",
+        ) from exc
+    except Exception as exc:
+        raise _ExecutorCleanupError(
+            "executor_cleanup_failed",
+            "Executor cleanup failed",
+        ) from exc
+
+
+async def _await_with_deadline(
+    awaitable: Awaitable[Any],
+    *,
+    timeout_seconds: float,
+    on_timeout: Callable[[], None] | None = None,
+) -> tuple[Any, bool]:
     task = asyncio.ensure_future(awaitable)
     try:
         done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
     except asyncio.CancelledError:
-        _cancel_without_waiting(task)
+        if on_timeout is not None:
+            on_timeout()
+        await _cancel_and_await(task)
         raise
     if task in done:
         return task.result(), False
-    _cancel_without_waiting(task)
+    if on_timeout is not None:
+        on_timeout()
+    await _cancel_and_await(task)
     return None, True
 
 
@@ -185,6 +250,440 @@ def _task_tool_policy_subjects(request: ExecutorTaskRequest) -> list[dict[str, A
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, dict)]
+
+
+def _authorized_capability_subject(subject: dict[str, Any]) -> bool:
+    return all(
+        subject.get(field) is True
+        for field in (
+            "registered",
+            "declared",
+            "active",
+            "distributed",
+            "identity_authorized",
+            "object_authorized",
+            "parameters_authorized",
+        )
+    )
+
+
+def _selected_authorized_file_skill_id(request: ExecutorTaskRequest) -> tuple[str | None, str | None]:
+    """Return a controlled Skill only with its canonical builtin execution identities."""
+
+    selected_skill_ids = _task_skill_ids(request)
+    selected_skill_id = selected_skill_ids[0] if selected_skill_ids else ""
+    if selected_skill_id not in _CONTROLLED_FILE_SKILLS:
+        return None, None
+    subjects = _task_tool_policy_subjects(request)
+    skill_authorized = any(
+        str(subject.get("identity") or "") == "Skill"
+        and _authorized_capability_subject(subject)
+        and selected_skill_id in _safe_id_list(subject.get("allowed_skill_names"))
+        for subject in subjects
+    )
+    if not skill_authorized:
+        return None, "controlled_skill_authorization_incomplete"
+    required_identities = _CONTROLLED_FILE_SKILL_CAPABILITIES[selected_skill_id]
+    authorized_identities = {
+        str(subject.get("identity") or "")
+        for subject in subjects
+        if _authorized_capability_subject(subject)
+    }
+    if not required_identities.issubset(authorized_identities):
+        return None, "controlled_skill_authorization_incomplete"
+    return selected_skill_id, None
+
+
+def _resolved_workspace_file(workspace_root: Path, candidate: Path) -> Path | None:
+    try:
+        workspace = workspace_root.resolve(strict=True)
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(workspace)
+    except (OSError, ValueError):
+        return None
+    if not resolved.is_file() or candidate.is_symlink():
+        return None
+    return resolved
+
+
+def _user_message_from_skill_prompt(prompt: str) -> str:
+    _, marker, remainder = str(prompt or "").partition("User request: ")
+    if not marker:
+        return ""
+    return remainder.partition("\nWorkspace files:\n")[0]
+
+
+def _safe_materialized_basename(value: object) -> str | None:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        return None
+    candidate = Path(value)
+    if candidate.is_absolute() or candidate.name != value or any(separator in value for separator in ("/", "\\")):
+        return None
+    return value
+
+
+def _ordered_materialized_docx(request: ExecutorTaskRequest, workspace_root: Path) -> tuple[Path | None, str | None]:
+    file_names = request.config.get("materialized_file_names")
+    if not isinstance(file_names, list) or not file_names:
+        return None, "controlled_skill_input_order_missing"
+    for raw_name in file_names:
+        name = _safe_materialized_basename(raw_name)
+        if name is None:
+            return None, "controlled_skill_input_name_invalid"
+        materialized = _resolved_workspace_file(workspace_root, workspace_root / name)
+        if materialized is None:
+            return None, "controlled_skill_input_file_invalid"
+        if materialized.suffix.lower() == ".docx":
+            return materialized, None
+    return None, "controlled_skill_input_docx_missing"
+
+
+def _controlled_file_skill_command(
+    request: ExecutorTaskRequest,
+    skill_id: str,
+    workspace_root: Path,
+    *,
+    user_message: str,
+) -> tuple[list[str] | None, str | None]:
+    workspace = workspace_root.resolve(strict=False)
+    input_path, input_error = _ordered_materialized_docx(request, workspace)
+    if input_path is None:
+        return None, input_error or "controlled_skill_input_docx_missing"
+    output_dir = workspace / "output"
+    if output_dir.exists() and output_dir.is_symlink():
+        return None, "controlled_skill_output_path_invalid"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.resolve(strict=True).relative_to(workspace.resolve(strict=True))
+    except (OSError, ValueError):
+        return None, "controlled_skill_output_path_invalid"
+    script_name = "run_translation.py" if skill_id == "baoyu-translate" else "run_qa_review.py"
+    script = _resolved_workspace_file(
+        workspace,
+        workspace / ".claude" / "skills" / skill_id / "scripts" / script_name,
+    )
+    if script is None:
+        return None, "controlled_skill_runner_missing"
+    command = [sys.executable, str(script), str(input_path), str(output_dir)]
+    if skill_id == "baoyu-translate":
+        command.extend(["--target-language", _translation_target_language(user_message)])
+    else:
+        command.append("--with-comments")
+    command.extend(["--original-filename", input_path.name])
+    return command, None
+
+
+def _controlled_runner_environment(workspace_root: Path) -> dict[str, str]:
+    workspace = workspace_root.resolve(strict=True)
+    home = workspace / ".home"
+    temp = workspace / ".tmp"
+    home.mkdir(parents=True, exist_ok=True)
+    temp.mkdir(parents=True, exist_ok=True)
+    environment = {
+        "HOME": str(home),
+        "PATH": os.defpath,
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+        "TMP": str(temp),
+        "TEMP": str(temp),
+        "TMPDIR": str(temp),
+    }
+    if os.name == "nt":
+        for name in ("SystemRoot", "WINDIR", "COMSPEC"):
+            value = os.environ.get(name)
+            if value:
+                environment[name] = value
+    else:
+        environment["LANG"] = "C.UTF-8"
+    return environment
+
+
+def _controlled_runner_process_kwargs() -> dict[str, object]:
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        return {"creationflags": creationflags} if creationflags else {}
+    return {"start_new_session": True}
+
+
+def _assign_windows_process_job(process: asyncio.subprocess.Process) -> object | None:
+    """Attach the controlled process tree to a kill-on-close Windows job object."""
+
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        transport = getattr(process, "_transport", None)
+        popen = transport.get_extra_info("subprocess") if transport is not None else None
+        process_handle = getattr(popen, "_handle", None)
+        if not process_handle:
+            return None
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint64) for name in (
+                "ReadOperationCount",
+                "WriteOperationCount",
+                "OtherOperationCount",
+                "ReadTransferCount",
+                "WriteTransferCount",
+                "OtherTransferCount",
+            )]
+
+        class BasicLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", wintypes.DWORD),
+                ("SchedulingClass", wintypes.DWORD),
+            ]
+
+        class ExtendedLimitInformation(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", BasicLimitInformation),
+                ("IoInfo", IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            wintypes.INT,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        limits = ExtendedLimitInformation()
+        limits.BasicLimitInformation.LimitFlags = 0x00002000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            kernel32.CloseHandle(job)
+            return None
+        if not kernel32.AssignProcessToJobObject(job, wintypes.HANDLE(process_handle)):
+            kernel32.CloseHandle(job)
+            return None
+        return job
+    except (AttributeError, OSError):
+        return None
+
+
+def _close_windows_process_job(process: asyncio.subprocess.Process) -> None:
+    job = getattr(process, "_controlled_job_handle", None)
+    if not job:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        if not kernel32.CloseHandle(job):
+            raise OSError(ctypes.get_last_error(), "CloseHandle failed for controlled process job")
+    finally:
+        setattr(process, "_controlled_job_handle", None)
+
+
+async def _wait_for_controlled_process_exit(process: asyncio.subprocess.Process) -> None:
+    wait_task = asyncio.ensure_future(process.wait())
+    await _await_task_completion(
+        wait_task,
+        timeout_seconds=_CONTROLLED_RUNNER_TERMINATION_GRACE_SECONDS,
+        timeout_message="Controlled process cleanup exceeded its deadline",
+    )
+
+
+async def _stop_controlled_process(process: asyncio.subprocess.Process) -> None:
+    if os.name == "nt":
+        if getattr(process, "_controlled_job_handle", None):
+            _close_windows_process_job(process)
+        elif process.returncode is None:
+            interrupt = getattr(signal, "CTRL_BREAK_EVENT", None)
+            try:
+                if interrupt is not None:
+                    process.send_signal(interrupt)
+                else:
+                    process.terminate()
+            except ProcessLookupError:
+                return
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+    try:
+        await _wait_for_controlled_process_exit(process)
+    except TimeoutError:
+        if os.name == "nt":
+            try:
+                process.kill()
+            except ProcessLookupError:
+                return
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+        await _wait_for_controlled_process_exit(process)
+
+
+async def _cleanup_controlled_process(process: asyncio.subprocess.Process) -> None:
+    try:
+        await _stop_controlled_process(process)
+    except asyncio.CancelledError:
+        raise
+    except _ExecutorCleanupError:
+        raise
+    except TimeoutError as exc:
+        raise _ExecutorCleanupError(
+            "executor_cleanup_timeout",
+            "Executor cleanup exceeded its deadline",
+        ) from exc
+    except Exception as exc:
+        raise _ExecutorCleanupError(
+            "executor_cleanup_failed",
+            "Executor cleanup failed",
+        ) from exc
+
+
+async def _run_selected_authorized_file_skill(
+    request: ExecutorTaskRequest,
+    workspace_root: Path,
+    emit_event: ExecutorEventEmitter,
+) -> dict[str, Any] | None:
+    skill_id, authorization_error = _selected_authorized_file_skill_id(request)
+    if authorization_error:
+        return {
+            "status": "failed",
+            "message": "Selected file Skill is not authorized for controlled execution",
+            "error_code": authorization_error,
+            "error_message": "Selected file Skill is not authorized for controlled execution",
+            "sdk_used": False,
+            "executor_mode": "platform_controlled_runner",
+            "used_skills": [],
+            "used_skills_source": "none",
+        }
+    if skill_id is None:
+        return None
+    command, command_error = _controlled_file_skill_command(
+        request,
+        skill_id,
+        workspace_root,
+        user_message=_user_message_from_skill_prompt(request.prompt),
+    )
+    if command is None:
+        return {
+            "status": "failed",
+            "message": "Selected file Skill cannot be prepared in the sandbox workspace",
+            "error_code": command_error or "controlled_skill_runner_unavailable",
+            "error_message": "Selected file Skill cannot be prepared in the sandbox workspace",
+            "sdk_used": False,
+            "executor_mode": "platform_controlled_runner",
+            "used_skills": [],
+            "used_skills_source": "none",
+        }
+    await emit_event(
+        AgentEvent(
+            type="tool_call_started",
+            message=f"Controlled file Skill started: {skill_id}",
+            payload={
+                "tool_name": "Skill",
+                "skill_name": skill_id,
+                "source": "platform_controlled_runner",
+            },
+            admin_only=True,
+        )
+    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=str(workspace_root),
+            env=_controlled_runner_environment(workspace_root),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            **_controlled_runner_process_kwargs(),
+        )
+    except OSError:
+        return {
+            "status": "failed",
+            "message": "Selected file Skill failed to start",
+            "error_code": "controlled_skill_runner_start_failed",
+            "error_message": "Selected file Skill failed to start",
+            "sdk_used": False,
+            "executor_mode": "platform_controlled_runner",
+            "used_skills": [],
+            "used_skills_source": "none",
+        }
+    if os.name == "nt":
+        job = _assign_windows_process_job(process)
+        if job is None:
+            await _cleanup_controlled_process(process)
+            return {
+                "status": "failed",
+                "message": "Selected file Skill process group is unavailable",
+                "error_code": "controlled_skill_process_group_unavailable",
+                "error_message": "Selected file Skill process group is unavailable",
+                "sdk_used": False,
+                "executor_mode": "platform_controlled_runner",
+                "used_skills": [],
+                "used_skills_source": "none",
+            }
+        setattr(process, "_controlled_job_handle", job)
+    try:
+        stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=_CONTROLLED_RUNNER_TIMEOUT_SECONDS)
+    except asyncio.CancelledError:
+        await _cleanup_controlled_process(process)
+        raise
+    except TimeoutError:
+        await _cleanup_controlled_process(process)
+        return {
+            "status": "failed",
+            "message": "Selected file Skill exceeded its execution deadline",
+            "error_code": "controlled_skill_execution_timeout",
+            "error_message": "Selected file Skill exceeded its execution deadline",
+            "sdk_used": False,
+            "executor_mode": "platform_controlled_runner",
+            "used_skills": [],
+            "used_skills_source": "none",
+        }
+    if process.returncode != 0:
+        await _cleanup_controlled_process(process)
+        return {
+            "status": "failed",
+            "message": "Selected file Skill failed",
+            "error_code": "controlled_skill_execution_failed",
+            "error_message": "Selected file Skill failed",
+            "sdk_used": False,
+            "executor_mode": "platform_controlled_runner",
+            "used_skills": [],
+            "used_skills_source": "none",
+        }
+    await _cleanup_controlled_process(process)
+    return {
+        "status": "completed",
+        "message": stdout.decode("utf-8", errors="replace").strip()
+        or "Controlled file Skill completed.",
+        "sdk_used": False,
+        "executor_mode": "platform_controlled_runner",
+        "used_skills": [skill_id],
+        "used_skills_source": "platform_controlled_runner",
+    }
 
 
 def _configured_executor_auth_token(explicit_value: str | None) -> str:
@@ -271,6 +770,13 @@ async def _default_executor_runner(
     *,
     callback_sender: CallbackSender = _default_callback_sender,
 ) -> dict[str, Any]:
+    controlled_result = await _run_selected_authorized_file_skill(
+        request,
+        workspace_root,
+        emit_event,
+    )
+    if controlled_result is not None:
+        return controlled_result
     if getattr(get_settings(), "claude_agent_sdk_enabled", False) is not True:
         return {
             "status": "failed",
@@ -514,10 +1020,17 @@ def create_executor_app(
                             raw_runner_result, timed_out = await _await_with_deadline(
                                 raw_runner_result,
                                 timeout_seconds=max_seconds,
+                                on_timeout=lambda: runner_events_open.update(value=False),
                             )
                         else:
                             raw_runner_result = await raw_runner_result
                     runner_result = raw_runner_result if isinstance(raw_runner_result, dict) else {}
+                except _ExecutorCleanupError as exc:
+                    runner_result = {
+                        "status": "failed",
+                        "error_code": exc.error_code,
+                        "error_message": exc.error_message,
+                    }
                 except Exception as exc:
                     runner_result = {
                         "status": "failed",
