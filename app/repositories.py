@@ -41,7 +41,11 @@ from app.memory_redaction import normalize_memory_redaction_mode, redact_memory_
 from app.projection_redaction import sanitize_user_control_input, strip_server_owned_control_metadata
 from app.skills.dependencies import PUBLIC_WORKBENCH_SKILL_IDS, is_workbench_skill_public
 from app.skills.lifecycle import is_user_runnable_status
-from app.skills.pinning import SkillVersionMaterializationError, build_skill_snapshot_governance
+from app.skills.pinning import (
+    SkillVersionMaterializationError,
+    _server_declared_builtin_tool_identities,
+    build_skill_snapshot_governance,
+)
 from app.skills.release_policy import resolve_rollout_skill_decision
 from app.tool_policy import max_risk
 from app.validation import SAFE_ID_PATTERN
@@ -2433,6 +2437,7 @@ async def validate_replay_skill_manifests(
     )
     primary_found = False
     for manifest in skill_manifests:
+        canonical_builtin_tool_identities(manifest)
         manifest_skill_id = str(manifest.get("skill_id") or "")
         version = str(manifest.get("version") or manifest.get("skill_version") or "")
         content_hash = str(manifest.get("content_hash") or "")
@@ -6041,6 +6046,25 @@ def pin_primary_skill_mcp_tool_ids(
     return pinned
 
 
+def canonical_builtin_tool_identities(skill_manifest: dict[str, Any]) -> list[str]:
+    """Return the exact server-owned builtin capability declaration for a pin."""
+
+    source = skill_manifest.get("source")
+    declared = _server_declared_builtin_tool_identities(skill_manifest.get("skill_id"), source)
+    raw = skill_manifest.get("builtin_tool_identities")
+    if raw is None and not declared:
+        return []
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+    requested = set(raw)
+    if any(identity not in declared for identity in requested):
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+    canonical = [identity for identity in declared if identity in requested]
+    if canonical != declared:
+        raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+    return canonical
+
+
 def run_skill_snapshot_source_json(
     skill_manifest: dict[str, Any],
     *,
@@ -6062,6 +6086,7 @@ def run_skill_snapshot_source_json(
         raise RepositoryConflictError("run_skill_snapshot_identity_mismatch") from exc
     projected["snapshot_governance"] = _without_snapshot_private_material(governance)
     projected["release_decision_sha256"] = _release_decision_sha256(release_decision)
+    projected["builtin_tool_identities"] = canonical_builtin_tool_identities(skill_manifest)
     raw_mcp_tool_ids = skill_manifest.get("mcp_tool_ids")
     if raw_mcp_tool_ids is None:
         raw_mcp_tool_ids = []

@@ -40,7 +40,7 @@ from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.settings import get_settings
-from app.tool_policy import BUILTIN_TOOL_IDENTITIES, evaluate_tool_policy
+from app.tool_policy import evaluate_tool_policy
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 from app.validation import SAFE_ID_PATTERN
 
@@ -836,7 +836,7 @@ def _attach_payload_snapshot_governance(
             manifest["skill_version"] = payload_version
         if payload_hash:
             manifest["content_hash"] = payload_hash
-        for field in ("source", "files", "dependency_ids", "mcp_tool_ids"):
+        for field in ("source", "files", "dependency_ids", "mcp_tool_ids", "builtin_tool_identities"):
             payload_value = payload_manifest.get(field)
             if isinstance(payload_value, (dict, list)):
                 manifest[field] = payload_value
@@ -1045,10 +1045,7 @@ def _declared_builtin_tool_identities(payload: QueueRunPayload) -> set[str]:
     for manifest in payload.skill_manifests:
         if not isinstance(manifest, dict) or manifest.get("source", {}).get("kind") != "builtin":
             continue
-        raw = manifest.get("builtin_tool_identities")
-        if not isinstance(raw, list):
-            continue
-        declarations.update(item for item in raw if isinstance(item, str) and item in BUILTIN_TOOL_IDENTITIES)
+        declarations.update(repositories.canonical_builtin_tool_identities(manifest))
     return declarations
 
 
@@ -1137,6 +1134,8 @@ def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccess
         and parsed.netloc
         and not parsed.username
         and not parsed.password
+        and not parsed.query
+        and not parsed.fragment
         and transport in {"http", "streamable_http", "sse"}
         and auth_mode == "none"
     ):

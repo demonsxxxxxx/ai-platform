@@ -75,6 +75,7 @@ def primary_manifest(skill_id: str, version: str) -> dict:
         "source": {"kind": "builtin", "asset_dir": skill_id},
         "files": [{"relative_path": "SKILL.md", "content_base64": "c2tpbGw=", "size_bytes": 5}],
         "dependency_ids": [],
+        "builtin_tool_identities": ["Bash", "Write"] if skill_id == "qa-file-reviewer" else [],
         "mcp_tool_ids": [skill_id] if skill_id == "ragflow-knowledge-search" else [],
         "snapshot_governance": snapshot_governance(version),
         "allowed": True,
@@ -514,6 +515,18 @@ def test_worker_propagates_exact_authorized_mcp_subject_without_permission_looku
     ) is None
     assert worker_module._mcp_capability_subject(
         {**tool, "auth_mode": "api-key"},
+        types.SimpleNamespace(usable=True),
+    ) is None
+    assert worker_module._mcp_capability_subject(
+        {**tool, "endpoint": "https://mcp.example.test/v1?api_key=redacted"},
+        types.SimpleNamespace(usable=True),
+    ) is None
+    assert worker_module._mcp_capability_subject(
+        {**tool, "endpoint": "https://mcp.example.test/v1?token=redacted"},
+        types.SimpleNamespace(usable=True),
+    ) is None
+    assert worker_module._mcp_capability_subject(
+        {**tool, "endpoint": "https://mcp.example.test/v1#fragment"},
         types.SimpleNamespace(usable=True),
     ) is None
     source = (Path(__file__).parents[1] / "app" / "worker.py").read_text(encoding="utf-8")
@@ -6500,6 +6513,47 @@ async def test_worker_immutable_skill_snapshot_mismatch_blocks_before_stage_or_a
         if call[0] == "event" and call[1]["event_type"] == "capability_not_authorized"
     )
     assert denied_event["payload"]["reason"] == "skill_snapshot_identity_mismatch"
+
+
+@pytest.mark.parametrize(
+    "projection",
+    [
+        None,
+        ["Bash", "Write", "Agent"],
+        ["Bash"],
+    ],
+)
+@pytest.mark.asyncio
+async def test_worker_rejects_unlocked_builtin_identity_queue_projection_before_adapter(monkeypatch, projection):
+    raw, registry, state, calls = _install_task6_worker_fakes(monkeypatch)
+    locked_manifest = state["locked_run"]["input_json"]["skill_manifests"][0]
+    expected_source = repository_module.run_skill_snapshot_source_json(
+        locked_manifest,
+        release_decision=state["locked_run"]["input_json"]["release_decision"],
+    )
+    if projection is None:
+        locked_manifest.pop("builtin_tool_identities")
+    else:
+        locked_manifest["builtin_tool_identities"] = projection
+
+    async def validate_snapshot(_conn, *, skill_manifests, release_decision, **_kwargs):
+        actual_source = repository_module.run_skill_snapshot_source_json(
+            skill_manifests[0],
+            release_decision=release_decision,
+        )
+        if actual_source != expected_source:
+            raise RepositoryConflictError("run_skill_snapshot_identity_mismatch")
+
+    monkeypatch.setattr(
+        "app.worker.repositories.validate_run_skill_snapshots_for_dispatch",
+        validate_snapshot,
+    )
+
+    outcome = await process_run_payload(raw, registry=registry)
+
+    assert outcome.status == "failed"
+    assert outcome.error_code == "capability_not_authorized"
+    _task6_assert_no_executor_calls(calls)
 
 
 @pytest.mark.asyncio

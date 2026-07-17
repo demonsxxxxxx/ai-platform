@@ -983,7 +983,16 @@ def _mcp_server_options(subjects: dict[str, dict[str, Any]]) -> dict[str, dict[s
         transport = str(config.get("type") or "").lower()
         endpoint = str(config.get("url") or "")
         parsed = urlsplit(endpoint)
-        if not server_id or transport not in {"http", "sse"} or parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        if (
+            not server_id
+            or transport not in {"http", "sse"}
+            or parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
             continue
         candidate = {"type": transport, "url": endpoint}
         existing = servers.get(server_id)

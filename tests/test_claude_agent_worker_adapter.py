@@ -14,6 +14,7 @@ import pytest
 
 import app.skills.dependencies as dependency_policy
 import app.executors.claude_agent_worker as claude_agent_worker
+import app.executors.claude_agent_sdk_runner as sdk_runner
 import app.worker as worker_module
 from app.executors.base import ArtifactManifest, ExecutorResult, RunPayload
 from app.executors.claude_agent_worker import (
@@ -168,6 +169,19 @@ async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_sub
     assert (await can_use("mcp__corp:search__query", {"query": "safe"})).behavior == "allow"
     assert (await can_use("mcp__corp:search__query_extra", {"query": "safe"})).behavior == "deny"
     assert (await can_use("mcp__corp:search__query", {"query": "safe", "scope": "other"})).behavior == "deny"
+    for endpoint in (
+        "https://mcp.example.test/v1?api_key=redacted",
+        "https://mcp.example.test/v1?token=redacted",
+        "https://mcp.example.test/v1#fragment",
+    ):
+        assert sdk_runner._mcp_server_options(
+            {
+                "mcp__corp:search__query": {
+                    "mcp_server": "corp:search",
+                    "mcp_server_config": {"type": "http", "url": endpoint},
+                }
+            }
+        ) == {}
 
     hook = captured["hooks"]["PreToolUse"][0].hooks[0]
     allowed = await hook({"tool_name": "Bash", "tool_input": {"command": "echo safe"}})
