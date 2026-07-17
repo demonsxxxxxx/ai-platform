@@ -233,6 +233,10 @@ def test_agent_rules_keep_main_session_authority_separate_from_subagents():
     compact_workflow_text = " ".join(workflow_text.split())
 
     assert "Standing phrases such as `主线程全部授权`, `主线程有权限操作`, or `执行`" in agents_text
+    assert "Controller mandatory read:" in agents_text
+    assert "before inventory, dispatch, repository, or runtime action" in compact_agents_text
+    assert "the overwrite-style `Current` checkpoint" in compact_agents_text
+    assert "active issue/PR contracts" in compact_agents_text
     assert (
         "do not grant sub-agents write, GitHub write, Docker, deployment, or remote runtime authority"
         in compact_agents_text
@@ -502,6 +506,61 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
                 "stale `observed_at`",
                 "mismatching live `origin/main`, PR head, or runtime subject",
                 "refresh before review, merge, deploy, or cleanup",
+            ),
+        ),
+        (
+            "Controller Startup, Activation, And Liveness",
+            (
+                "Pending-successor first-turn prohibitions expire only through explicit activation",
+                "Current checkpoint records `pending` | `active` | `retired`",
+                "exact active controller",
+            ),
+        ),
+        (
+            "Controller Startup, Activation, And Liveness",
+            (
+                "After activation",
+                "bootstrap no-scheduling/read-only language cannot suppress normal bounded delegation",
+            ),
+        ),
+        (
+            "Controller Startup, Activation, And Liveness",
+            (
+                "Actionable independent source/test/review blockers",
+                "saved-project-bound owner",
+                "concrete lower-cost/direct-only reason",
+                "cannot go idle with an unowned actionable gate",
+            ),
+        ),
+        (
+            "Controller Startup, Activation, And Liveness",
+            (
+                "Credentials/browser and Ready/merge/deploy/release remain controller-only",
+                "does not authorize the controller to absorb broad source/log search, implementation, routine matrices, or independent review",
+            ),
+        ),
+        (
+            "Controller Startup, Activation, And Liveness",
+            (
+                "Each active lane/current-state entry includes task/thread id, owner, project binding status",
+                "actual worktree",
+                "branch/base/head",
+                "scope/write lease",
+                "next event",
+                "evidence ceiling",
+                "exit condition",
+                "Generic in-progress text is invalid",
+            ),
+        ),
+        (
+            "Controller Startup, Activation, And Liveness",
+            (
+                "Before a controller turn ends",
+                "stop condition",
+                "real external wait with owner/event",
+                "authority blocker",
+                "correctly owned next action",
+                "otherwise dispatch or continue",
             ),
         ),
         (

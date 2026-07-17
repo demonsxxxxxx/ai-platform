@@ -116,6 +116,27 @@ open, or close ordinary-user platform-level multi-run product exposure.
 - A stale `observed_at` or mismatching live `origin/main`, PR head, or runtime
   subject must refresh before review, merge, deploy, or cleanup.
 
+## Controller Startup, Activation, And Liveness
+
+- Pending-successor first-turn prohibitions expire only through explicit
+  activation. The Current checkpoint records `pending` | `active` | `retired`
+  and the exact active controller.
+- After activation, bootstrap no-scheduling/read-only language cannot suppress
+  normal bounded delegation.
+- Actionable independent source/test/review blockers must get a
+  saved-project-bound owner or a concrete lower-cost/direct-only reason; the
+  controller cannot go idle with an unowned actionable gate.
+- Credentials/browser and Ready/merge/deploy/release remain controller-only, but
+  that does not authorize the controller to absorb broad source/log search,
+  implementation, routine matrices, or independent review.
+- Each active lane/current-state entry includes task/thread id, owner, project
+  binding status, actual worktree, branch/base/head, scope/write lease, next
+  event, evidence ceiling, and exit condition. Generic in-progress text is
+  invalid.
+- Before a controller turn ends, the liveness check must prove a stop condition,
+  real external wait with owner/event, authority blocker, or correctly owned
+  next action; otherwise dispatch or continue.
+
 ## Windows Worktree Provisioning
 
 - New ai-platform task worktrees default under `C:/aiwt` with short stable
