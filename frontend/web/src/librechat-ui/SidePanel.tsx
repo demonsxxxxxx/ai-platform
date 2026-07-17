@@ -1,13 +1,5 @@
-import {
-  Activity,
-  FileText,
-  History,
-  Package,
-  Server,
-  ShieldCheck,
-} from "lucide-react";
+import { Activity, FileText, Package, Server, ShieldCheck } from "lucide-react";
 import type { ComponentType, ReactNode } from "react";
-import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type {
   MessageAttachment,
@@ -26,8 +18,6 @@ export interface LibreChatSidePanelProps {
   attachments?: MessageAttachment[];
   approvals?: PendingApproval[];
 }
-
-type LibreChatSideTab = "context" | "artifacts" | "run" | "permissions";
 
 interface ContextSectionProps {
   section: "run" | "skills" | "mcp" | "files" | "permissions";
@@ -125,9 +115,6 @@ export function LibreChatSidePanel({
   approvals = [],
 }: LibreChatSidePanelProps) {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<LibreChatSideTab>("context");
-  const tabClassName =
-    "flex h-9 items-center justify-center rounded-md text-[var(--theme-text-secondary)] transition-colors data-[active=true]:bg-[var(--theme-bg-sidebar)] data-[active=true]:text-[var(--theme-text)]";
   const selectedSkillNames = skills
     .filter((skill) => skill.enabled)
     .map((skill) => skill.name);
@@ -148,70 +135,17 @@ export function LibreChatSidePanel({
       data-librechat-side-panel
       className="flex h-full min-h-0 flex-col gap-3 bg-[var(--theme-workbench-canvas)] p-3"
     >
-      <div className={`${workbenchSurface.secondaryPanel} p-2`}>
-        <div
-          className="grid grid-cols-4 gap-1"
-          role="tablist"
-          aria-label={t("workbench.runSurfaces", "Run surfaces")}
-        >
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "context"}
-            data-librechat-side-tab="context"
-            data-active={activeTab === "context" ? "true" : "false"}
-            className={tabClassName}
-            onClick={() => setActiveTab("context")}
-            title={t("workbench.contextLabel")}
-          >
-            <History size={15} />
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "artifacts"}
-            data-librechat-side-tab="artifacts"
-            data-active={activeTab === "artifacts" ? "true" : "false"}
-            className={tabClassName}
-            onClick={() => setActiveTab("artifacts")}
-            title={t("workbench.artifacts")}
-          >
-            <FileText size={15} />
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "run"}
-            data-librechat-side-tab="run"
-            data-active={activeTab === "run" ? "true" : "false"}
-            className={tabClassName}
-            onClick={() => setActiveTab("run")}
-            title={t("workbench.runState")}
-          >
-            <Activity size={15} />
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === "permissions"}
-            data-librechat-side-tab="permissions"
-            data-active={activeTab === "permissions" ? "true" : "false"}
-            className={tabClassName}
-            onClick={() => setActiveTab("permissions")}
-            title={t("workbench.permissions")}
-          >
-            <ShieldCheck size={15} />
-          </button>
-        </div>
-      </div>
-
       <section
         data-librechat-context-overview
+        aria-labelledby="librechat-context-overview-label"
         className={`${workbenchSurface.secondaryPanel} min-h-0 flex-1 overflow-y-auto p-3`}
       >
-        <p className={workbenchSurface.label}>
+        <h2
+          id="librechat-context-overview-label"
+          className={workbenchSurface.label}
+        >
           {t("workbench.workspaceContext", "Workspace context")}
-        </p>
+        </h2>
         <div className="mt-3 space-y-3">
           <ContextSection
             section="run"
