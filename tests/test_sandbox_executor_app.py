@@ -414,7 +414,7 @@ shutil.copyfile(source, output / \"translated.docx\")
     payload = task_payload()
     payload["prompt"] = build_skill_prompt(
         skill_id="baoyu-translate",
-        user_message="translate this document to English",
+        user_message="请将此文档翻译为中文",
         file_names=["source.docx"],
     )
     payload["config"]["skill_ids"] = ["baoyu-translate"]
@@ -432,8 +432,8 @@ shutil.copyfile(source, output / \"translated.docx\")
     assert body["used_skills"] == ["baoyu-translate"]
     assert body["used_skills_source"] == "platform_controlled_runner"
     assert (workspace / "output" / "translated.docx").is_file()
-    assert '--target-language "English" --original-filename "source.docx"' in payload["prompt"]
-    assert (workspace / "output" / "target-language.txt").read_text(encoding="utf-8") == "English"
+    assert "Controlled fast path" not in payload["prompt"]
+    assert (workspace / "output" / "target-language.txt").read_text(encoding="utf-8") == "Chinese"
 
 
 def test_executor_fails_closed_for_skill_only_authorization(tmp_path, monkeypatch):

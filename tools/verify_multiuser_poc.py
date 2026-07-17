@@ -2405,19 +2405,26 @@ def _sum_nested_int(results: list[dict[str, Any]], key: str, nested_key: str) ->
     return total
 
 
-def _tool_permission_probe_decision_count(results: list[dict[str, Any]]) -> int:
-    total = 0
+def _zero_click_write_probe_counts(results: list[dict[str, Any]]) -> tuple[int, int, int]:
+    """Return observed compatibility-write probes, 410 confirmations, and unexpected statuses."""
+
+    probe_count = 0
+    gone_count = 0
+    unexpected_count = 0
     for item in results:
         probe = item.get("tool_permission_probe")
         if not isinstance(probe, dict):
             continue
-        if probe.get("request_id") and probe.get("decision_status") in {200, 201}:
-            total += 1
-    return total
-
-
-def _tool_permission_probe_negative_count(results: list[dict[str, Any]], key: str) -> int:
-    return _sum_nested_int(results, "tool_permission_probe", key)
+        request_status = probe.get("request_status")
+        decision_status = probe.get("decision_status")
+        if type(request_status) is not int or type(decision_status) is not int:
+            continue
+        probe_count += 1
+        if request_status == 410 and decision_status == 410:
+            gone_count += 1
+        else:
+            unexpected_count += 1
+    return probe_count, gone_count, unexpected_count
 
 
 def _any_nested_true(results: list[dict[str, Any]], key: str, nested_key: str) -> bool:
@@ -2634,6 +2641,7 @@ def build_foundation_runtime_concurrency_evidence(
     scenario_counts = _scenario_counts(results)
     concurrency_summary = _foundation_runtime_concurrency_summary(results)
     terminal_run_failures = _foundation_runtime_terminal_run_failures(results)
+    zero_click_probe_count, zero_click_410_count, zero_click_unexpected_status_count = _zero_click_write_probe_counts(results)
     evidence = {
         "schema_version": FOUNDATION_RUNTIME_CONCURRENCY_SCHEMA,
         "artifact_kind": "foundation_runtime_concurrency",
@@ -2680,21 +2688,9 @@ def build_foundation_runtime_concurrency_evidence(
             },
             "tool_permission": {
                 "status": "passed",
-                "decision_sample_count": _sum_nested_int(results, "tool_permission", "decision_sample_count")
-                + _tool_permission_probe_decision_count(results),
-                "negative_reuse_probe_count": _sum_nested_int(results, "tool_permission", "negative_reuse_probe_count")
-                + _tool_permission_probe_negative_count(results, "negative_reuse_probe_count"),
-                "negative_reuse_denied_count": _sum_nested_int(results, "tool_permission", "negative_reuse_denied_count")
-                + _tool_permission_probe_negative_count(results, "negative_reuse_denied_count"),
-                "negative_reuse_unexpected_successes": _sum_nested_int(
-                    results,
-                    "tool_permission",
-                    "negative_reuse_unexpected_successes",
-                )
-                + _tool_permission_probe_negative_count(results, "negative_reuse_unexpected_successes"),
-                "allow_once_reuse_violations": _sum_nested_int(results, "tool_permission", "allow_once_reuse_violations"),
-                "wrong_decision_reuse_violations": _sum_nested_int(results, "tool_permission", "wrong_decision_reuse_violations"),
-                "tool_call_id_mismatch_violations": _sum_nested_int(results, "tool_permission", "tool_call_id_mismatch_violations"),
+                "zero_click_write_probe_count": zero_click_probe_count,
+                "zero_click_write_410_count": zero_click_410_count,
+                "zero_click_write_unexpected_status_count": zero_click_unexpected_status_count,
             },
             "skill_snapshots": skill_snapshots,
             "run_playback": {

@@ -96,13 +96,9 @@ def complete_evidence(**overrides):
             },
             "tool_permission": {
                 "status": "passed",
-                "decision_sample_count": 12,
-                "negative_reuse_probe_count": 48,
-                "negative_reuse_denied_count": 48,
-                "negative_reuse_unexpected_successes": 0,
-                "allow_once_reuse_violations": 0,
-                "wrong_decision_reuse_violations": 0,
-                "tool_call_id_mismatch_violations": 0,
+                "zero_click_write_probe_count": 12,
+                "zero_click_write_410_count": 12,
+                "zero_click_write_unexpected_status_count": 0,
             },
             "skill_snapshots": {
                 "status": "passed",
@@ -169,7 +165,7 @@ def test_foundation_runtime_concurrency_accepts_complete_12_case_evidence():
     assert readiness["checks"]["memory_context"]["missing_context_pack_version_count"] == 0
     assert readiness["checks"]["memory_context"]["unsafe_context_pack_version_count"] == 0
     assert readiness["checks"]["artifact_acl"]["cross_tenant_statuses"] == [404, 404]
-    assert readiness["checks"]["tool_permission"]["allow_once_reuse_violations"] == 0
+    assert readiness["checks"]["tool_permission"]["zero_click_write_410_count"] == 12
     assert readiness["checks"]["skill_snapshots"]["run_skill_snapshot_count"] == 12
 
 
@@ -185,7 +181,7 @@ def test_foundation_runtime_concurrency_rejects_legacy_context_count_only_eviden
     assert "memory_context_pack_version_samples_insufficient" in readiness["failures"]
 
 
-def test_committed_legacy_concurrency_readiness_matches_current_validator():
+def test_committed_legacy_concurrency_evidence_is_rejected_without_zero_click_probe():
     evidence_path = LEGACY_CONCURRENCY_EVIDENCE_DIR / "foundation-runtime-concurrency-evidence-211-20260614-013347.json"
     readiness_path = LEGACY_CONCURRENCY_EVIDENCE_DIR / "foundation-runtime-concurrency-readiness-211-20260614-013347.json"
     evidence = read_json_fixture(evidence_path)
@@ -193,9 +189,11 @@ def test_committed_legacy_concurrency_readiness_matches_current_validator():
 
     current_readiness = build_foundation_runtime_concurrency_readiness(evidence)
 
-    assert committed_readiness["verified"] == current_readiness["verified"]
-    assert committed_readiness["status"] == current_readiness["status"]
-    assert committed_readiness["failures"] == current_readiness["failures"]
+    assert committed_readiness["verified"] is False
+    assert current_readiness["verified"] is False
+    assert current_readiness["status"] == "blocked_foundation_runtime_concurrency_evidence"
+    assert "tool_permission_zero_click_probe_missing" in current_readiness["failures"]
+    assert "tool_permission_zero_click_410_missing" in current_readiness["failures"]
 
 
 def test_foundation_runtime_concurrency_rejects_missing_or_unsafe_context_pack_versions():
@@ -265,19 +263,16 @@ def test_foundation_runtime_concurrency_rejects_post_run_sandbox_probe_as_execut
     assert "sandbox_lease_probe_source_missing" in readiness["failures"]
 
 
-def test_foundation_runtime_concurrency_rejects_missing_tool_permission_negative_probe():
+def test_foundation_runtime_concurrency_rejects_missing_zero_click_tool_permission_probe():
     weak = complete_evidence()
-    for key in (
-        "negative_reuse_probe_count",
-        "negative_reuse_denied_count",
-        "negative_reuse_unexpected_successes",
-    ):
+    for key in ("zero_click_write_probe_count", "zero_click_write_410_count"):
         weak["checks"]["tool_permission"].pop(key)
 
     readiness = build_foundation_runtime_concurrency_readiness(weak)
 
     assert readiness["status"] == "blocked_foundation_runtime_concurrency_evidence"
-    assert "tool_permission_negative_reuse_probe_missing" in readiness["failures"]
+    assert "tool_permission_zero_click_probe_missing" in readiness["failures"]
+    assert "tool_permission_zero_click_410_missing" in readiness["failures"]
 
 
 def test_foundation_runtime_concurrency_rejects_terminal_run_failures_explicitly():
@@ -352,7 +347,7 @@ def test_foundation_runtime_concurrency_rejects_weak_or_leaky_evidence():
     weak["summary"]["tenant_count"] = 1
     weak["scenario_counts"]["retry"] = 0
     weak["checks"]["artifact_acl"]["cross_tenant_statuses"] = [200]
-    weak["checks"]["tool_permission"]["allow_once_reuse_violations"] = 1
+    weak["checks"]["tool_permission"]["zero_click_write_unexpected_status_count"] = 1
     weak["checks"]["skill_snapshots"]["global_mutable_skill_lookup_used"] = True
     weak["checks"]["memory_context"]["long_term_cross_session_memory_read"] = True
 
@@ -363,7 +358,7 @@ def test_foundation_runtime_concurrency_rejects_weak_or_leaky_evidence():
     assert "minimum_tenants_not_met" in readiness["failures"]
     assert "scenario_retry_missing" in readiness["failures"]
     assert "artifact_acl_cross_tenant_not_denied" in readiness["failures"]
-    assert "tool_permission_allow_once_reused" in readiness["failures"]
+    assert "tool_permission_zero_click_write_unexpected_status" in readiness["failures"]
     assert "skill_snapshots_used_global_mutable_lookup" in readiness["failures"]
     assert "long_term_cross_session_memory_not_fail_closed" in readiness["failures"]
 

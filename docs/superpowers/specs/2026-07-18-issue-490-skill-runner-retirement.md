@@ -15,6 +15,11 @@ canonicalizer, permission allowance, hook, and usage audit.  Keeping these
 two halves permits a parallel cross-host implementation and weakens the
 single SandboxRuntime boundary.
 
+The SDK runner retains only a pure, shared target-language parser because the
+authoritative SandboxRuntime command builder imports it. It neither exposes
+`Bash` nor constructs a command, starts a subprocess, or audits a local Skill
+execution.
+
 ## Scope
 
 1. Delete the worker-local controlled-runner retry, empty-Bash-loop detection,

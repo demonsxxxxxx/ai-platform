@@ -41,7 +41,6 @@ _CANCEL_EFFECT_STATUSES = {"cancel_requested", "cancelled", "canceled"}
 _CONCURRENCY_PROBE_SOURCES = {"client_case_timestamps"}
 _QUEUE_PROBE_SOURCES = {"redis_metadata", "admin_runtime_queue"}
 _SANDBOX_LEASE_PROBE_SOURCES = {"runtime_run_detail"}
-_MINIMUM_TOOL_PERMISSION_NEGATIVE_REUSE_PROBES_PER_RUN = 4
 _REVISION_REF_RE = re.compile(r"^[0-9a-f]{40}(?:[-A-Za-z0-9_.:]*)?$")
 _TERMINAL_FAILURE_LIMIT = 20
 
@@ -294,25 +293,14 @@ def _validate_evidence(evidence: dict[str, Any] | None) -> tuple[list[str], dict
         failures.append("artifact_preview_cross_tenant_not_denied")
 
     tool_permission = checks["tool_permission"]
-    if _safe_int(tool_permission.get("decision_sample_count")) <= 0:
-        failures.append("tool_permission_decision_samples_missing")
-    negative_probe_count = _safe_int(tool_permission.get("negative_reuse_probe_count"))
-    negative_denied_count = _safe_int(tool_permission.get("negative_reuse_denied_count"))
-    minimum_negative_reuse_probe_count = (
-        summary["run_count"] * _MINIMUM_TOOL_PERMISSION_NEGATIVE_REUSE_PROBES_PER_RUN
-    )
-    if negative_probe_count < minimum_negative_reuse_probe_count:
-        failures.append("tool_permission_negative_reuse_probe_missing")
-    if negative_denied_count < negative_probe_count:
-        failures.append("tool_permission_negative_reuse_not_denied")
-    if _safe_int(tool_permission.get("negative_reuse_unexpected_successes")) > 0:
-        failures.append("tool_permission_negative_reuse_unexpected_success")
-    if _safe_int(tool_permission.get("allow_once_reuse_violations")) > 0:
-        failures.append("tool_permission_allow_once_reused")
-    if _safe_int(tool_permission.get("wrong_decision_reuse_violations")) > 0:
-        failures.append("tool_permission_wrong_decision_reused")
-    if _safe_int(tool_permission.get("tool_call_id_mismatch_violations")) > 0:
-        failures.append("tool_permission_tool_call_id_mismatch")
+    zero_click_probe_count = _safe_int(tool_permission.get("zero_click_write_probe_count"))
+    zero_click_410_count = _safe_int(tool_permission.get("zero_click_write_410_count"))
+    if zero_click_probe_count < summary["run_count"]:
+        failures.append("tool_permission_zero_click_probe_missing")
+    if zero_click_410_count < summary["run_count"]:
+        failures.append("tool_permission_zero_click_410_missing")
+    if _safe_int(tool_permission.get("zero_click_write_unexpected_status_count")) > 0:
+        failures.append("tool_permission_zero_click_write_unexpected_status")
 
     skill_snapshots = checks["skill_snapshots"]
     if _safe_int(skill_snapshots.get("run_skill_snapshot_count")) < summary["run_count"]:

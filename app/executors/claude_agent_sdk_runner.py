@@ -93,6 +93,14 @@ _BUILTIN_REQUIRED_PARAMETER_KEYS = {
 
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
 _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS = 1800.0
+_TRANSLATION_TARGET_ALIASES = {
+    "english": "English",
+    "英文": "English",
+    "en": "English",
+    "chinese": "Chinese",
+    "中文": "Chinese",
+    "zh": "Chinese",
+}
 _MAX_CURRENT_PROMPT_BYTES = 16384
 _MAX_FILE_LIST_PROMPT_BYTES = 4096
 _MAX_CONTEXT_SUMMARY_PROMPT_BYTES = 2048
@@ -251,6 +259,16 @@ def build_sdk_env(*, cwd: Path | None = None) -> dict[str, str]:
     if settings.openai_api_key and not env.get("ANTHROPIC_AUTH_TOKEN"):
         env["ANTHROPIC_AUTH_TOKEN"] = settings.openai_api_key
     return env
+
+
+def _translation_target_language(user_message: str) -> str:
+    """Map the supported user target-language spelling to the sandbox argument."""
+
+    lowered = user_message.casefold()
+    for token, target in _TRANSLATION_TARGET_ALIASES.items():
+        if token.casefold() in lowered:
+            return target
+    return "English"
 
 
 def _context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
