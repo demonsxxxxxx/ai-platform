@@ -477,14 +477,10 @@ def complete_foundation_runtime_results(*, context_projection: bool = True):
                     "cross_tenant_queue_leak": False,
                     "admission_limit_violation": False,
                 },
-                "tool_permission": {
-                    "decision_sample_count": 1,
-                    "negative_reuse_probe_count": 4,
-                    "negative_reuse_denied_count": 4,
-                    "negative_reuse_unexpected_successes": 0,
-                    "allow_once_reuse_violations": 0,
-                    "wrong_decision_reuse_violations": 0,
-                    "tool_call_id_mismatch_violations": 0,
+                "tool_permission_probe": {
+                    "request_status": 410,
+                    "decision_status": 410,
+                    "no_side_effect": True,
                 },
                 "skill_snapshot": {
                     "run_skill_snapshot_count": 1,
@@ -548,9 +544,9 @@ def test_foundation_runtime_evidence_from_results_includes_context_pack_projecti
     assert evidence["checks"]["queue_admission"]["queue_probe_sample_count"] == 12
     assert evidence["checks"]["queue_admission"]["queue_probe_source"] == "redis_metadata"
     assert evidence["checks"]["artifact_acl"]["cross_tenant_statuses"] == [404] * 12
-    assert evidence["checks"]["tool_permission"]["decision_sample_count"] == 12
-    assert evidence["checks"]["tool_permission"]["negative_reuse_probe_count"] == 48
-    assert evidence["checks"]["tool_permission"]["negative_reuse_denied_count"] == 48
+    assert evidence["checks"]["tool_permission"]["zero_click_write_probe_count"] == 12
+    assert evidence["checks"]["tool_permission"]["zero_click_write_410_count"] == 12
+    assert evidence["checks"]["tool_permission"]["zero_click_write_unexpected_status_count"] == 0
     assert evidence["checks"]["skill_snapshots"]["run_skill_snapshot_count"] == 12
     assert evidence["checks"]["skill_snapshots"]["snapshot_binding_sample_count"] == 12
     assert evidence["checks"]["sandbox_workspace"]["sandbox_lease_sample_count"] == 12
@@ -1546,23 +1542,14 @@ def test_attach_run_detail_probe_results_ignores_post_run_sandbox_probe_leases(m
     assert "sandbox_lease_samples_missing" in readiness["failures"]
 
 
-def test_foundation_runtime_evidence_counts_tool_probe_and_skill_snapshot_samples():
+def test_foundation_runtime_evidence_counts_zero_click_probe_and_skill_snapshot_samples():
     module = load_verify_multiuser_poc()
     results = complete_foundation_runtime_results()
     for item in results:
         item["tool_permission_probe"] = {
-            "request_status": 200,
-            "decision_status": 200,
-            "request_id": f"perm-{item['run_id']}",
-            "negative_reuse_probe_count": 4,
-            "negative_reuse_denied_count": 4,
-            "negative_reuse_unexpected_successes": 0,
-        }
-        item["tool_permission"] = {
-            "decision_sample_count": 0,
-            "allow_once_reuse_violations": 0,
-            "wrong_decision_reuse_violations": 0,
-            "tool_call_id_mismatch_violations": 0,
+            "request_status": 410,
+            "decision_status": 410,
+            "no_side_effect": True,
         }
 
     evidence = module.build_foundation_runtime_concurrency_evidence(
@@ -1571,16 +1558,16 @@ def test_foundation_runtime_evidence_counts_tool_probe_and_skill_snapshot_sample
         runtime_subject_commit_sha="ac9a86bbea14a28748867cade8d80b2f9ff420ec",
     )
 
-    assert evidence["checks"]["tool_permission"]["decision_sample_count"] == 12
-    assert evidence["checks"]["tool_permission"]["negative_reuse_probe_count"] == 48
-    assert evidence["checks"]["tool_permission"]["negative_reuse_denied_count"] == 48
+    assert evidence["checks"]["tool_permission"]["zero_click_write_probe_count"] == 12
+    assert evidence["checks"]["tool_permission"]["zero_click_write_410_count"] == 12
+    assert evidence["checks"]["tool_permission"]["zero_click_write_unexpected_status_count"] == 0
     assert evidence["checks"]["skill_snapshots"]["run_skill_snapshot_count"] == 12
     readiness = build_foundation_runtime_concurrency_readiness(evidence)
-    assert "tool_permission_decision_samples_missing" not in readiness["failures"]
+    assert "tool_permission_zero_click_probe_missing" not in readiness["failures"]
     assert "skill_snapshots_missing_for_runs" not in readiness["failures"]
 
 
-def test_attach_tool_permission_probe_results_uses_request_and_decision_routes(monkeypatch):
+def test_attach_tool_permission_probe_results_expects_no_side_effect_410_writes(monkeypatch):
     module = load_verify_multiuser_poc()
     account = module.Account(label="tenant-a-user-1", username="a1", password="pw", tenant_id="tenant-a")
     same_tenant_other_user = module.Account(label="tenant-a-user-2", username="a2", password="pw", tenant_id="tenant-a")
@@ -1593,13 +1580,9 @@ def test_attach_tool_permission_probe_results_uses_request_and_decision_routes(m
     def fake_json_request(method, url, payload=None, headers=None, timeout=30.0):
         calls.append((method, url, payload, headers))
         if url.endswith("/api/ai/runs/run-a/tool-permissions/request"):
-            return 200, {"permission_request": {"request_id": "perm-a"}}
-        if url.endswith("/api/ai/runs/run-a/tool-permissions/perm-a/decision") and len(calls) == 2:
-            return 200, {"permission_request": {"request_id": "perm-a", "status": "decided"}}
-        if url.endswith("/api/ai/runs/run-a/tool-permissions/perm-a/decision"):
-            return 409, {"detail": "tool_permission_request_not_pending"}
-        if url.endswith("/api/ai/runs/run-a-reuse-wrong-run/tool-permissions/perm-a/decision"):
-            return 404, {"detail": "run_not_found"}
+            return 410, {"detail": "tool_permission_runtime_write_retired"}
+        if url.endswith("/api/ai/runs/run-a/tool-permissions/compatibility-probe/decision"):
+            return 410, {"detail": "tool_permission_runtime_write_retired"}
         raise AssertionError(url)
 
     monkeypatch.setattr(module, "json_request", fake_json_request)
@@ -1611,21 +1594,16 @@ def test_attach_tool_permission_probe_results_uses_request_and_decision_routes(m
     )
 
     assert results[0]["tool_permission_probe"] == {
-        "request_status": 200,
-        "decision_status": 200,
-        "request_id": "perm-a",
-        "negative_reuse_probe_count": 4,
-        "negative_reuse_denied_count": 4,
-        "negative_reuse_unexpected_successes": 0,
+        "request_status": 410,
+        "decision_status": 410,
+        "no_side_effect": True,
     }
-    assert [call[0] for call in calls] == ["POST", "POST", "POST", "POST", "POST", "POST"]
-    assert [call[1] for call in calls[2:]] == [
-        "http://api.test/api/ai/runs/run-a/tool-permissions/perm-a/decision",
-        "http://api.test/api/ai/runs/run-a-reuse-wrong-run/tool-permissions/perm-a/decision",
-        "http://api.test/api/ai/runs/run-a/tool-permissions/perm-a/decision",
-        "http://api.test/api/ai/runs/run-a/tool-permissions/perm-a/decision",
+    assert [call[0] for call in calls] == ["POST", "POST"]
+    assert [call[1] for call in calls] == [
+        "http://api.test/api/ai/runs/run-a/tool-permissions/request",
+        "http://api.test/api/ai/runs/run-a/tool-permissions/compatibility-probe/decision",
     ]
-    assert [call[3]["X-AI-User-ID"] for call in calls[2:]] == ["a1", "a1", "a2", "b1"]
+    assert [call[3]["X-AI-User-ID"] for call in calls] == ["a1", "a1"]
 
 
 def test_foundation_runtime_cli_evidence_mode_runs_live_probe_attachments(monkeypatch, tmp_path, capsys):

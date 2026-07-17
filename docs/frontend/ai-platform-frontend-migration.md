@@ -100,7 +100,6 @@ Required public/user contracts:
 - `/api/sessions/*`
 - `/api/upload/*`
 - `GET /api/ai/runs/{run_id}/playback`
-- `POST /api/ai/runs/{run_id}/tool-permissions/{request_id}/decision`
 - `GET /api/ai/artifacts/{artifact_id}/download`
 - `GET /api/ai/artifacts/{artifact_id}/preview`
 - `/api/ai/memory/*`
@@ -114,6 +113,18 @@ Required admin/operator contracts must stay admin-only and same-tenant:
   projections.
 - Admin memory policy/inventory/retention cleanup projections.
 - Admin tool policy projections.
+
+Zero-click compatibility boundary:
+
+- Runtime tool-permission writes, including
+  `POST /api/ai/runs/{run_id}/tool-permissions/request` and
+  `POST /api/ai/runs/{run_id}/tool-permissions/{request_id}/decision`, were
+  deprecated on `2026-07-17`. They return no-side-effect `410 Gone` and are not
+  browser contracts.
+- Historical redacted reads, including `GET /api/ai/tool-permissions/inbox`,
+  and safe terminalization of pre-existing records remain available. Physical
+  removal is no earlier than `2026-08-17` after consumer inventory and no-call
+  evidence.
 
 Projection boundary:
 

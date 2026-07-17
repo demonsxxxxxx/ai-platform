@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import shlex
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -33,7 +32,7 @@ _SDK_ENV_ALLOWLIST = {
     "LC_ALL",
 }
 
-_SDK_BASE_AVAILABLE_TOOLS = ["Read", "Glob", "LS", "Bash"]
+_SDK_BASE_AVAILABLE_TOOLS = ["Read", "Glob", "LS"]
 # Claude Agent SDK invokes custom subagents through the built-in Agent tool.
 _SDK_SUBAGENT_TOOLS = ["Agent"]
 _SDK_AVAILABLE_TOOLS = [*_SDK_BASE_AVAILABLE_TOOLS, *_SDK_SUBAGENT_TOOLS]
@@ -94,12 +93,6 @@ _BUILTIN_REQUIRED_PARAMETER_KEYS = {
 
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
 _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS = 1800.0
-_SHELL_UNSAFE_CHARS = set("$`;&|<>{}[]*?!\n\r")
-_QA_REVIEW_PREFLIGHT_LS_FLAGS = {"-l", "-la", "-al"}
-_QA_REVIEW_PREFLIGHT_LS_PATHS = (
-    ".claude/skills/minimax-docx/docx_engine.py",
-    ".claude/skills/qa-file-reviewer/scripts/run_qa_review.py",
-)
 _TRANSLATION_TARGET_ALIASES = {
     "english": "English",
     "英文": "English",
@@ -108,7 +101,6 @@ _TRANSLATION_TARGET_ALIASES = {
     "中文": "Chinese",
     "zh": "Chinese",
 }
-_ALLOWED_TRANSLATION_TARGETS = frozenset(_TRANSLATION_TARGET_ALIASES.values())
 _MAX_CURRENT_PROMPT_BYTES = 16384
 _MAX_FILE_LIST_PROMPT_BYTES = 4096
 _MAX_CONTEXT_SUMMARY_PROMPT_BYTES = 2048
@@ -162,219 +154,6 @@ class ScopedContextRetrievalIdentity:
 
 def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
-
-
-def _path_inside(base: Path, value: str) -> bool:
-    if not value:
-        return False
-    candidate = Path(value)
-    if not candidate.is_absolute():
-        candidate = base / candidate
-    try:
-        candidate.resolve(strict=False).relative_to(base.resolve(strict=False))
-    except ValueError:
-        return False
-    return True
-
-
-def _path_equals(base: Path, value: str, expected: Path) -> bool:
-    if not value:
-        return False
-    candidate = Path(value)
-    if not candidate.is_absolute():
-        candidate = base / candidate
-    return candidate.resolve(strict=False) == expected.resolve(strict=False)
-
-
-def _canonical_inside_path(base: Path, value: str) -> Path | None:
-    if not value:
-        return None
-    candidate = Path(value)
-    if not candidate.is_absolute():
-        candidate = base / candidate
-    try:
-        resolved = candidate.resolve(strict=False)
-        resolved.relative_to(base.resolve(strict=False))
-    except ValueError:
-        return None
-    return resolved
-
-
-def _contains_shell_expansion(value: str) -> bool:
-    return any(char in value for char in _SHELL_UNSAFE_CHARS)
-
-
-def _shell_segments(command: str) -> list[list[str]]:
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return []
-    if not tokens:
-        return []
-    segments: list[list[str]] = [[]]
-    for token in tokens:
-        if token == "&&":
-            if not segments[-1]:
-                return []
-            segments.append([])
-            continue
-        if token in {";", "|", "||", "&", ">", ">>", "<", "2>", "2>>"}:
-            return []
-        segments[-1].append(token)
-    if not segments[-1]:
-        return []
-    return segments
-
-
-def _canonical_output_mkdir(segment: list[str], cwd: Path) -> list[str] | None:
-    if len(segment) != 3 or segment[0] != "mkdir" or segment[1] != "-p":
-        return None
-    if _contains_shell_expansion(segment[2]) or not _path_equals(cwd, segment[2], cwd / "output"):
-        return None
-    return ["mkdir", "-p", str((cwd / "output").resolve(strict=False))]
-
-
-def _canonical_qa_review_runner(segment: list[str], cwd: Path) -> list[str] | None:
-    if segment and segment[-1] == "2>&1":
-        segment = segment[:-1]
-    if len(segment) != 7:
-        return None
-    if segment[0] not in {"python", "python3"}:
-        return None
-    expected_script = cwd / ".claude" / "skills" / "qa-file-reviewer" / "scripts" / "run_qa_review.py"
-    if any(_contains_shell_expansion(value) for value in segment):
-        return None
-    if not _path_equals(cwd, segment[1], expected_script):
-        return None
-    input_path = _canonical_inside_path(cwd, segment[2])
-    if input_path is None or input_path.suffix.lower() != ".docx":
-        return None
-    if not _path_equals(cwd, segment[3], cwd / "output"):
-        return None
-    if segment[4] != "--with-comments" or segment[5] != "--original-filename":
-        return None
-    original_name = segment[6]
-    if "/" in original_name or "\\" in original_name or Path(original_name).name != original_name:
-        return None
-    return [
-        segment[0],
-        str(expected_script.resolve(strict=False)),
-        str(input_path),
-        str((cwd / "output").resolve(strict=False)),
-        "--with-comments",
-        "--original-filename",
-        original_name,
-    ]
-
-
-def _canonical_baoyu_translate_runner(segment: list[str], cwd: Path) -> list[str] | None:
-    if segment and segment[-1] == "2>&1":
-        segment = segment[:-1]
-    if len(segment) != 8:
-        return None
-    if segment[0] not in {"python", "python3"}:
-        return None
-    expected_script = cwd / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py"
-    if any(_contains_shell_expansion(value) for value in segment):
-        return None
-    if not _path_equals(cwd, segment[1], expected_script):
-        return None
-    input_path = _canonical_inside_path(cwd, segment[2])
-    if input_path is None or input_path.suffix.lower() != ".docx":
-        return None
-    if not _path_equals(cwd, segment[3], cwd / "output"):
-        return None
-    if segment[4] != "--target-language" or segment[5] not in _ALLOWED_TRANSLATION_TARGETS:
-        return None
-    if segment[6] != "--original-filename":
-        return None
-    original_name = segment[7]
-    if "/" in original_name or "\\" in original_name or Path(original_name).name != original_name:
-        return None
-    return [
-        segment[0],
-        str(expected_script.resolve(strict=False)),
-        str(input_path),
-        str((cwd / "output").resolve(strict=False)),
-        "--target-language",
-        segment[5],
-        "--original-filename",
-        original_name,
-    ]
-
-
-def _canonical_qa_review_preflight_ls(segment: list[str], cwd: Path) -> list[str] | None:
-    if not segment or segment[0] != "ls":
-        return None
-    remaining = segment[1:]
-    flags: list[str] = []
-    if remaining and remaining[0].startswith("-"):
-        if remaining[0] not in _QA_REVIEW_PREFLIGHT_LS_FLAGS:
-            return None
-        flags = [remaining[0]]
-        remaining = remaining[1:]
-    if not remaining:
-        return None
-    expected_paths = [cwd / relative_path for relative_path in _QA_REVIEW_PREFLIGHT_LS_PATHS]
-    canonical_paths: list[str] = []
-    for value in remaining:
-        if _contains_shell_expansion(value):
-            return None
-        matched_path = None
-        for expected in expected_paths:
-            if _path_equals(cwd, value, expected):
-                matched_path = str(expected.resolve(strict=False))
-                break
-        if matched_path is None:
-            return None
-        if matched_path not in canonical_paths:
-            canonical_paths.append(matched_path)
-    return ["ls", *flags, *canonical_paths]
-
-
-def _canonical_permitted_bash_command_with_kind(command: str, cwd: Path) -> tuple[str, str] | None:
-    segments = _shell_segments(command)
-    canonical_segments: list[list[str]] = []
-    command_kind = ""
-    if len(segments) == 1:
-        mkdir = _canonical_output_mkdir(segments[0], cwd)
-        runner = _canonical_qa_review_runner(segments[0], cwd)
-        translate_runner = _canonical_baoyu_translate_runner(segments[0], cwd)
-        preflight_ls = _canonical_qa_review_preflight_ls(segments[0], cwd)
-        if mkdir:
-            canonical_segments = [mkdir]
-            command_kind = "qa_review_preflight"
-        elif runner:
-            canonical_segments = [runner]
-            command_kind = "qa_review_runner"
-        elif translate_runner:
-            canonical_segments = [translate_runner]
-            command_kind = "baoyu_translate_runner"
-        elif preflight_ls:
-            canonical_segments = [preflight_ls]
-            command_kind = "qa_review_preflight"
-    elif len(segments) == 2:
-        mkdir = _canonical_output_mkdir(segments[0], cwd)
-        runner = _canonical_qa_review_runner(segments[1], cwd)
-        translate_runner = _canonical_baoyu_translate_runner(segments[1], cwd)
-        if mkdir and runner:
-            canonical_segments = [mkdir, runner]
-            command_kind = "qa_review_runner"
-        elif mkdir and translate_runner:
-            canonical_segments = [mkdir, translate_runner]
-            command_kind = "baoyu_translate_runner"
-    if not canonical_segments:
-        return None
-    return " && ".join(shlex.join(segment) for segment in canonical_segments), command_kind
-
-
-def _canonical_permitted_bash_command(command: str, cwd: Path) -> str | None:
-    result = _canonical_permitted_bash_command_with_kind(command, cwd)
-    return result[0] if result else None
-
-
-def _is_permitted_bash_command(command: str, cwd: Path) -> bool:
-    return _canonical_permitted_bash_command(command, cwd) is not None
 
 
 def _scrub_project_setting_files(cwd: Path) -> None:
@@ -482,47 +261,14 @@ def build_sdk_env(*, cwd: Path | None = None) -> dict[str, str]:
     return env
 
 
-def _quote_bash_arg(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`") + '"'
-
-
 def _translation_target_language(user_message: str) -> str:
+    """Map the supported user target-language spelling to the sandbox argument."""
+
     lowered = user_message.casefold()
     for token, target in _TRANSLATION_TARGET_ALIASES.items():
         if token.casefold() in lowered:
             return target
     return "English"
-
-
-def _controlled_fast_path_instruction(*, skill_id: str, user_message: str, file_names: list[str]) -> str:
-    docx_name = next((name for name in file_names if str(name).lower().endswith(".docx")), "")
-    if not docx_name:
-        return ""
-    quoted_name = _quote_bash_arg(str(docx_name))
-    if skill_id == "baoyu-translate":
-        target_language = _quote_bash_arg(_translation_target_language(user_message))
-        command = (
-            "mkdir -p output && python .claude/skills/baoyu-translate/scripts/run_translation.py "
-            f"{quoted_name} output --target-language {target_language} --original-filename {quoted_name}"
-        )
-        return (
-            "\n\nControlled fast path for this file task:\n"
-            f"- Run this exact command before reading staged skill files:\n  {command}\n"
-            "- Do not list or read staged skill files before running this command.\n"
-            "- Use relative filenames from the current working directory and save artifacts under output/."
-        )
-    if skill_id != "qa-file-reviewer":
-        return ""
-    command = (
-        "mkdir -p output && python .claude/skills/qa-file-reviewer/scripts/run_qa_review.py "
-        f"{quoted_name} output --with-comments --original-filename {quoted_name}"
-    )
-    return (
-        "\n\nControlled fast path for this file task:\n"
-        f"- Run this exact command before reading staged skill files:\n  {command}\n"
-        "- Do not list or read staged skill files before running this command.\n"
-        "- Use relative filenames from the current working directory and save artifacts under output/."
-    )
 
 
 def _context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
@@ -684,7 +430,6 @@ def build_skill_prompt(
         "If a staged Skill matches the task, use that Skill's instructions. "
         "Return a concise execution summary and ensure generated artifacts are saved in the workspace output directory."
         f"{_context_pack_prompt_section(context_pack)}"
-        f"{_controlled_fast_path_instruction(skill_id=skill_id, user_message=user_message, file_names=file_names)}"
     )
 
 
@@ -1398,11 +1143,6 @@ async def run_claude_agent_sdk(
         decision = policy_for_tool(tool_name, tool_input)
         if not decision.allowed:
             return PermissionResultDeny(message=decision.reason)
-        if tool_name == "Bash" and not sandbox_brokered:
-            permitted_command = _canonical_permitted_bash_command(str(tool_input.get("command") or ""), cwd)
-            if not permitted_command:
-                return PermissionResultDeny(message="tool_parameters_not_authorized")
-            return PermissionResultAllow(updated_input={**tool_input, "command": permitted_command})
         return PermissionResultAllow()
 
     async def enforce_side_effect_tool_policy(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
@@ -1417,23 +1157,6 @@ async def run_claude_agent_sdk(
             "permissionDecision": decision.outcome,
             "permissionDecisionReason": decision.reason,
         }
-        if decision.allowed and isinstance(hook_input, dict) and str(hook_input.get("tool_name") or "") == "Bash" and not sandbox_brokered:
-            tool_input = hook_input.get("tool_input")
-            if not isinstance(tool_input, dict):
-                output["permissionDecision"] = "deny"
-                output["permissionDecisionReason"] = "tool_parameters_not_authorized"
-            else:
-                permitted = _canonical_permitted_bash_command_with_kind(str(tool_input.get("command") or ""), cwd)
-                if permitted is None:
-                    output["permissionDecision"] = "deny"
-                    output["permissionDecisionReason"] = "tool_parameters_not_authorized"
-                else:
-                    permitted_command, command_kind = permitted
-                    output["updatedInput"] = {**tool_input, "command": permitted_command}
-                    if command_kind == "qa_review_runner":
-                        await record_used_skill("qa-file-reviewer", {"source": "claude_agent_sdk_hook", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": str(hook_input.get("tool_use_id") or tool_use_id or "")})
-                    elif command_kind == "baoyu_translate_runner":
-                        await record_used_skill("baoyu-translate", {"source": "claude_agent_sdk_hook", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": str(hook_input.get("tool_use_id") or tool_use_id or "")})
         return {"hookSpecificOutput": output}
     async def record_skill_tool_use(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
         if not isinstance(hook_input, dict):
@@ -1463,7 +1186,7 @@ async def run_claude_agent_sdk(
         hooks = {
             "PreToolUse": [
                 HookMatcher(
-                    matcher=None if sandbox_brokered else "Bash",
+                    matcher=None,
                     hooks=[enforce_side_effect_tool_policy],
                 )
             ],
