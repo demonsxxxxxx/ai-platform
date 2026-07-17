@@ -145,16 +145,19 @@ Those follow-up routes require platform admin and then return
 `/api/ai/admin/tool-policies/*`; ordinary users do not gain MCP server CRUD,
 credential lifecycle, or write-tool bypass authority from this public route set.
 
-## Tool Permission Approval Inbox
+## Retired Runtime Tool-Permission Writes
 
-Backed current-user approval inbox routes:
+Runtime tool policy is zero-click: it synchronously allows or denies an
+already-authorized tool subject and never creates an approval request. The
+following compatibility writes were deprecated on `2026-07-17` and return
+`410 Gone` without mutating a request, decision, audit, or event:
 
-- `GET /api/ai/tool-permissions/inbox`
+- `POST /api/ai/runs/{run_id}/tool-permissions/request`
+- `POST /api/ai/runs/{run_id}/tool-permissions/{request_id}/decision`
 - `POST /api/ai/tool-permissions/inbox/{request_id}/decision`
 
-The inbox is a durable projection of `run_tool_permission_requests` for the
-authenticated tenant/user. `status=pending`, `status=decided`, and `status=all`
-filter the current user's requests across runs without granting access to other
-users, other tenants, or raw executor payloads. Inbox decisions reuse the same
-exact run/request decision writer, event, audit, expiry, and replay-denial
-semantics as `/api/ai/runs/{run_id}/tool-permissions/{request_id}/decision`.
+`GET /api/ai/tool-permissions/inbox` remains a redacted historical read;
+pre-existing rows may still terminalize safely. The write routes remain only
+for compatibility. Their earliest physical removal is `2026-08-17`, and
+requires a consumer inventory plus recorded no-call evidence; frontend code
+must not call or depend on them.

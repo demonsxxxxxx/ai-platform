@@ -1580,7 +1580,7 @@ def test_foundation_runtime_evidence_counts_tool_probe_and_skill_snapshot_sample
     assert "skill_snapshots_missing_for_runs" not in readiness["failures"]
 
 
-def test_attach_tool_permission_probe_results_uses_request_and_decision_routes(monkeypatch):
+def test_attach_tool_permission_probe_results_expects_no_side_effect_410_writes(monkeypatch):
     module = load_verify_multiuser_poc()
     account = module.Account(label="tenant-a-user-1", username="a1", password="pw", tenant_id="tenant-a")
     same_tenant_other_user = module.Account(label="tenant-a-user-2", username="a2", password="pw", tenant_id="tenant-a")
@@ -1593,13 +1593,9 @@ def test_attach_tool_permission_probe_results_uses_request_and_decision_routes(m
     def fake_json_request(method, url, payload=None, headers=None, timeout=30.0):
         calls.append((method, url, payload, headers))
         if url.endswith("/api/ai/runs/run-a/tool-permissions/request"):
-            return 200, {"permission_request": {"request_id": "perm-a"}}
-        if url.endswith("/api/ai/runs/run-a/tool-permissions/perm-a/decision") and len(calls) == 2:
-            return 200, {"permission_request": {"request_id": "perm-a", "status": "decided"}}
-        if url.endswith("/api/ai/runs/run-a/tool-permissions/perm-a/decision"):
-            return 409, {"detail": "tool_permission_request_not_pending"}
-        if url.endswith("/api/ai/runs/run-a-reuse-wrong-run/tool-permissions/perm-a/decision"):
-            return 404, {"detail": "run_not_found"}
+            return 410, {"detail": "tool_permission_runtime_write_retired"}
+        if url.endswith("/api/ai/runs/run-a/tool-permissions/compatibility-probe/decision"):
+            return 410, {"detail": "tool_permission_runtime_write_retired"}
         raise AssertionError(url)
 
     monkeypatch.setattr(module, "json_request", fake_json_request)
@@ -1611,21 +1607,16 @@ def test_attach_tool_permission_probe_results_uses_request_and_decision_routes(m
     )
 
     assert results[0]["tool_permission_probe"] == {
-        "request_status": 200,
-        "decision_status": 200,
-        "request_id": "perm-a",
-        "negative_reuse_probe_count": 4,
-        "negative_reuse_denied_count": 4,
-        "negative_reuse_unexpected_successes": 0,
+        "request_status": 410,
+        "decision_status": 410,
+        "no_side_effect": True,
     }
-    assert [call[0] for call in calls] == ["POST", "POST", "POST", "POST", "POST", "POST"]
-    assert [call[1] for call in calls[2:]] == [
-        "http://api.test/api/ai/runs/run-a/tool-permissions/perm-a/decision",
-        "http://api.test/api/ai/runs/run-a-reuse-wrong-run/tool-permissions/perm-a/decision",
-        "http://api.test/api/ai/runs/run-a/tool-permissions/perm-a/decision",
-        "http://api.test/api/ai/runs/run-a/tool-permissions/perm-a/decision",
+    assert [call[0] for call in calls] == ["POST", "POST"]
+    assert [call[1] for call in calls] == [
+        "http://api.test/api/ai/runs/run-a/tool-permissions/request",
+        "http://api.test/api/ai/runs/run-a/tool-permissions/compatibility-probe/decision",
     ]
-    assert [call[3]["X-AI-User-ID"] for call in calls[2:]] == ["a1", "a1", "a2", "b1"]
+    assert [call[3]["X-AI-User-ID"] for call in calls] == ["a1", "a1"]
 
 
 def test_foundation_runtime_cli_evidence_mode_runs_live_probe_attachments(monkeypatch, tmp_path, capsys):

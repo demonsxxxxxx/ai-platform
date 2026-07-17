@@ -58,7 +58,6 @@ CANCEL_EFFECT_STATUSES = {"cancel_requested", "cancelled", "canceled"}
 QUEUE_PROBE_SOURCES = {"redis_metadata", "admin_runtime_queue"}
 SANDBOX_LEASE_PROBE_SOURCE = "runtime_run_detail"
 SYNTHETIC_SANDBOX_LEASE_PROBE_SOURCE = "post_run_sandbox_lease_probe"
-DENIED_OR_CONFLICT_HTTP_STATUSES = {401, 403, 404, 409}
 FORBIDDEN_PUBLIC_TERMS = (
     "authorization",
     "bearer ",
@@ -2270,49 +2269,6 @@ def attach_run_detail_probe_results(
         }
 
 
-def _permission_request_id(payload: Any) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    candidates = [payload]
-    permission_request = payload.get("permission_request")
-    if isinstance(permission_request, dict):
-        candidates.append(permission_request)
-    for candidate in candidates:
-        for key in ("request_id", "permission_request_id", "id"):
-            value = candidate.get(key)
-            if value:
-                return str(value)
-    return ""
-
-
-def _tool_permission_negative_reuse_targets(
-    account: Account,
-    accounts: list[Account],
-    run_id: str,
-) -> list[tuple[Account, str, str]]:
-    same_tenant_other_user = next(
-        (
-            candidate
-            for candidate in accounts
-            if candidate.tenant_id == account.tenant_id and candidate.label != account.label
-        ),
-        None,
-    )
-    cross_tenant_user = next(
-        (candidate for candidate in accounts if candidate.tenant_id != account.tenant_id),
-        None,
-    )
-    targets: list[tuple[Account, str, str]] = [
-        (account, run_id, "same_request_repeat"),
-        (account, f"{run_id}-reuse-wrong-run", "wrong_run"),
-    ]
-    if same_tenant_other_user is not None:
-        targets.append((same_tenant_other_user, run_id, "same_tenant_other_user"))
-    if cross_tenant_user is not None:
-        targets.append((cross_tenant_user, run_id, "cross_tenant_other_user"))
-    return targets
-
-
 def attach_tool_permission_probe_results(
     api_url: str,
     results: list[dict[str, Any]],
@@ -2321,6 +2277,8 @@ def attach_tool_permission_probe_results(
     auth_mode: str = "login",
     trusted_header_role: str = "user",
 ) -> None:
+    """Verify retired permission writes remain compatibility-only and side-effect free."""
+
     by_label = _account_by_label(accounts)
     for item in results:
         account = by_label.get(str(item.get("account") or ""))
@@ -2334,77 +2292,24 @@ def attach_tool_permission_probe_results(
             auth_mode=auth_mode,
             trusted_header_role=trusted_header_role,
         )
-        request_status, request_payload = json_request(
+        request_status, _request_payload = json_request(
             "POST",
             f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/tool-permissions/request",
-            {
-                "tool_id": DEFAULT_FIXTURE_TOOL_ID,
-                "tool_call_id": f"frc_tool_{run_id}",
-                "action": "execute",
-                "risk_level": "low",
-                "write_capable": False,
-                "reason": "foundation_runtime_permission_probe",
-                "request_payload": {"probe": "foundation_runtime"},
-            },
+            {"tool_id": DEFAULT_FIXTURE_TOOL_ID},
             headers=headers,
             timeout=30,
         )
-        request_id = _permission_request_id(request_payload)
-        decision_status = 0
-        negative_reuse_probe_count = 0
-        negative_reuse_denied_count = 0
-        negative_reuse_unexpected_successes = 0
-        if request_status in {200, 201} and request_id:
-            decision_status, _decision_payload = json_request(
-                "POST",
-                f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/tool-permissions/{request_id}/decision",
-                {
-                    "decision": "allow_once",
-                    "reason": "foundation_runtime_permission_probe",
-                    "decision_payload": {"probe": "foundation_runtime"},
-                    "expires_in_seconds": 900,
-                },
-                headers=headers,
-                timeout=30,
-            )
-            for target_account, target_run_id, target_scope in _tool_permission_negative_reuse_targets(
-                account,
-                accounts,
-                run_id,
-            ):
-                target_headers = headers if target_account == account else auth_headers(
-                    api_url,
-                    target_account,
-                    auth_mode=auth_mode,
-                    trusted_header_role=trusted_header_role,
-                )
-                negative_reuse_status, _negative_reuse_payload = json_request(
-                    "POST",
-                    f"{api_url.rstrip('/')}/api/ai/runs/{target_run_id}/tool-permissions/{request_id}/decision",
-                    {
-                        "decision": "allow_once",
-                        "reason": "foundation_runtime_permission_reuse_negative_probe",
-                        "decision_payload": {
-                            "probe": "foundation_runtime_reuse",
-                            "scope": target_scope,
-                        },
-                        "expires_in_seconds": 900,
-                    },
-                    headers=target_headers,
-                    timeout=30,
-                )
-                negative_reuse_probe_count += 1
-                if negative_reuse_status in DENIED_OR_CONFLICT_HTTP_STATUSES:
-                    negative_reuse_denied_count += 1
-                else:
-                    negative_reuse_unexpected_successes += 1
+        decision_status, _decision_payload = json_request(
+            "POST",
+            f"{api_url.rstrip('/')}/api/ai/runs/{run_id}/tool-permissions/compatibility-probe/decision",
+            {"decision": "allow_once"},
+            headers=headers,
+            timeout=30,
+        )
         item["tool_permission_probe"] = {
             "request_status": request_status,
             "decision_status": decision_status,
-            "request_id": request_id,
-            "negative_reuse_probe_count": negative_reuse_probe_count,
-            "negative_reuse_denied_count": negative_reuse_denied_count,
-            "negative_reuse_unexpected_successes": negative_reuse_unexpected_successes,
+            "no_side_effect": request_status == 410 and decision_status == 410,
         }
 
 

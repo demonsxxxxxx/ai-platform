@@ -1,14 +1,10 @@
-import asyncio
 import base64
 import binascii
 from dataclasses import dataclass
-import json
 from pathlib import Path
 import posixpath
 import re
 import shutil
-import subprocess
-import sys
 from typing import Any, Awaitable, Callable
 import zipfile
 from xml.etree import ElementTree
@@ -48,7 +44,6 @@ from app.storage import ObjectStorage
 from app.tool_policy import evaluate_tool_policy
 
 NATIVE_USED_SKILL_SOURCES = {"executor_hook", "executor_native"}
-_CONTROLLED_RUNNER_SKILLS = {"qa-file-reviewer", "baoyu-translate"}
 _SANDBOX_SUCCESS_TERMINAL_STATUSES = {"accepted", "completed", "succeeded"}
 _TOOL_PERMISSION_POLL_INTERVAL_SECONDS = 0.25
 _REQUIRED_DOCX_MAX_ENTRY_COUNT = 128
@@ -1112,18 +1107,6 @@ class ClaudeAgentWorkerAdapter:
                     "required_artifact_types": list(_required_artifact_types(payload)),
                 },
             )
-        controlled_result = await self._try_controlled_runner(
-            payload,
-            event_sink=event_sink,
-            workspace=prepared.workspace,
-            file_names=prepared.file_names,
-            staged_skill_names=prepared.staged_skill_names,
-            selected_skills=prepared.selected_skills,
-            pinned_manifests=prepared.pinned_manifests,
-            sdk_result=sdk_result,
-        )
-        if controlled_result is not None:
-            return controlled_result
         used_skill_names = _sdk_used_skill_names(sdk_result, prepared.staged_skill_names) if sdk_result else []
         used_skills_source = _sdk_used_skills_source(sdk_result, used_skill_names)
         inferred_used_skill_names = _inferred_used_skill_names(payload, prepared.staged_skill_names)
@@ -1161,166 +1144,6 @@ class ClaudeAgentWorkerAdapter:
                 "used_skills_source": used_skills_source,
                 "inferred_used_skills": inferred_used_skill_names,
                 "skill_manifests": skill_manifests,
-            },
-        )
-
-    async def _try_controlled_runner(
-        self,
-        payload: RunPayload,
-        event_sink: ExecutorEventSink | None,
-        *,
-        workspace: Path,
-        file_names: list[str],
-        staged_skill_names: list[str],
-        selected_skills: list[BuiltinSkill],
-        pinned_manifests: dict[str, dict[str, Any]],
-        sdk_result: Any,
-    ) -> ExecutorResult | None:
-        if payload.skill_id not in _CONTROLLED_RUNNER_SKILLS:
-            return None
-        if not _sdk_failure_is_empty_bash_tool_loop(sdk_result, workspace):
-            return None
-        docx_name = next((name for name in file_names if str(name).lower().endswith(".docx")), "")
-        if not docx_name:
-            return None
-        command = _controlled_runner_command(payload.skill_id, workspace=workspace, docx_name=docx_name)
-        if command is None:
-            return None
-        output_dir = workspace / "output"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        ensure_creatable_inside(workspace, output_dir, "workspace output must stay inside the run workspace")
-        if event_sink is not None:
-            await event_sink(
-                event_type="controlled_runner_started",
-                stage="executor",
-                message="Controlled deterministic Skill runner started",
-                payload={
-                    "skill_id": payload.skill_id,
-                    "source": "platform_controlled_runner",
-                    "sdk_failure_pattern": "empty_bash_tool_input_loop",
-                    "sdk_error": str(getattr(sdk_result, "error", "") or ""),
-                    "visible_to_user": False,
-                    "severity": "info",
-                },
-            )
-        try:
-            completed = await asyncio.to_thread(
-                subprocess.run,
-                command,
-                cwd=str(workspace),
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=900,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            if event_sink is not None:
-                await event_sink(
-                    event_type="controlled_runner_failed",
-                    stage="executor",
-                    message="Controlled deterministic Skill runner failed to launch",
-                    payload={
-                        "skill_id": payload.skill_id,
-                        "error_type": type(exc).__name__,
-                        "error_summary": str(exc)[:500],
-                        "visible_to_user": False,
-                        "severity": "error",
-                    },
-                )
-            return None
-        if completed.returncode != 0:
-            if event_sink is not None:
-                await event_sink(
-                    event_type="controlled_runner_failed",
-                    stage="executor",
-                    message="Controlled deterministic Skill runner failed",
-                    payload={
-                        "skill_id": payload.skill_id,
-                        "returncode": completed.returncode,
-                        "stderr_summary": completed.stderr.strip()[:500],
-                        "visible_to_user": False,
-                        "severity": "error",
-                    },
-                )
-            return None
-        artifacts = self._collect_workspace_artifacts(payload, workspace)
-        if not artifacts:
-            if event_sink is not None:
-                await event_sink(
-                    event_type="controlled_runner_failed",
-                    stage="executor",
-                    message="Controlled deterministic Skill runner produced no artifacts",
-                    payload={
-                        "skill_id": payload.skill_id,
-                        "returncode": completed.returncode,
-                        "visible_to_user": False,
-                        "severity": "error",
-                    },
-                )
-            return None
-        used_skill_names = [payload.skill_id] if payload.skill_id in set(staged_skill_names) else []
-        inferred_used_skill_names = _inferred_used_skill_names(payload, staged_skill_names)
-        skill_manifests = _skill_manifests(
-            selected_skills,
-            used_skill_names=used_skill_names,
-            pins=pinned_manifests,
-        )
-        sdk_error = str(getattr(sdk_result, "error", "") or "")
-        if event_sink is not None:
-            await event_sink(
-                event_type="controlled_runner_completed",
-                stage="executor",
-                message="Controlled deterministic Skill runner completed",
-                payload={
-                    "skill_id": payload.skill_id,
-                    "artifact_count": len(artifacts),
-                    "source": "platform_controlled_runner",
-                    "sdk_failure_pattern": "empty_bash_tool_input_loop",
-                    "visible_to_user": False,
-                    "severity": "info",
-                },
-            )
-        message = completed.stdout.strip() or "Controlled deterministic Skill runner completed."
-        return ExecutorResult(
-            status="succeeded",
-            adapter_version=self.adapter_version,
-            executor_type=self.executor_type,
-            executor_version=self.executor_version,
-            capabilities={**self.capabilities, "platform_skills": True},
-            result={
-                "message": message,
-                "artifact_count": len(artifacts),
-                "sdk_used": bool(getattr(sdk_result, "used_sdk", False)),
-                "sdk_session_id": getattr(sdk_result, "session_id", None),
-                "sdk_error": sdk_error or None,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
-                "allowed_skills": _allowed_skill_names(payload, staged_skill_names),
-                "staged_skills": staged_skill_names,
-                "used_skills": used_skill_names,
-                "used_skills_source": "platform_controlled_runner",
-                "controlled_runner_used": True,
-                "controlled_runner_reason": "empty_bash_tool_input_loop",
-                "required_artifact_types": list(_required_artifact_types(payload)),
-            },
-            artifacts=artifacts,
-            executor_payload={
-                "sdk_used": bool(getattr(sdk_result, "used_sdk", False)),
-                "sdk_session_id": getattr(sdk_result, "session_id", None),
-                "sdk_usage": getattr(sdk_result, "usage", {}) or {},
-                "sdk_error": sdk_error or None,
-                "delegate_used": False,
-                "worker_boundary": self.executor_type,
-                "allowed_skills": _allowed_skill_names(payload, staged_skill_names),
-                "staged_skills": staged_skill_names,
-                "used_skills": used_skill_names,
-                "used_skills_source": "platform_controlled_runner",
-                "inferred_used_skills": inferred_used_skill_names,
-                "skill_manifests": skill_manifests,
-                "controlled_runner_used": True,
-                "controlled_runner_reason": "empty_bash_tool_input_loop",
-                "required_artifact_types": list(_required_artifact_types(payload)),
             },
         )
 
@@ -2062,88 +1885,6 @@ def _artifact_label(filename: str, artifact_type: str) -> str:
     if artifact_type == "report_txt":
         return "详细报告"
     return filename
-
-
-def _controlled_runner_command(skill_id: str, *, workspace: Path, docx_name: str) -> list[str] | None:
-    input_path = (workspace / Path(docx_name).name).resolve(strict=False)
-    output_dir = (workspace / "output").resolve(strict=False)
-    try:
-        input_path.relative_to(workspace.resolve(strict=False))
-        output_dir.relative_to(workspace.resolve(strict=False))
-    except ValueError:
-        return None
-    if input_path.suffix.lower() != ".docx":
-        return None
-    if skill_id == "qa-file-reviewer":
-        script = (workspace / ".claude" / "skills" / "qa-file-reviewer" / "scripts" / "run_qa_review.py").resolve(
-            strict=False
-        )
-        return [
-            sys.executable,
-            str(script),
-            str(input_path),
-            str(output_dir),
-            "--with-comments",
-            "--original-filename",
-            input_path.name,
-        ]
-    if skill_id == "baoyu-translate":
-        script = (workspace / ".claude" / "skills" / "baoyu-translate" / "scripts" / "run_translation.py").resolve(
-            strict=False
-        )
-        return [
-            sys.executable,
-            str(script),
-            str(input_path),
-            str(output_dir),
-            "--target-language",
-            "English",
-            "--original-filename",
-            input_path.name,
-        ]
-    return None
-
-
-def _sdk_failure_is_empty_bash_tool_loop(sdk_result: Any, workspace: Path) -> bool:
-    error_text = str(getattr(sdk_result, "error", "") or "")
-    if "maximum number of turns" not in error_text.lower():
-        return False
-    empty_bash_tool_uses = 0
-    bash_tool_uses_with_command = 0
-    projects_root = workspace / ".claude-config" / "projects"
-    if not projects_root.is_dir():
-        return False
-    for transcript in projects_root.rglob("*.jsonl"):
-        try:
-            ensure_path_inside(workspace, transcript, "SDK transcript must stay inside the run workspace")
-        except ValueError:
-            continue
-        try:
-            lines = transcript.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            continue
-        for line in lines[-512:]:
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            message = record.get("message")
-            if not isinstance(message, dict):
-                continue
-            content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") != "tool_use" or block.get("name") != "Bash":
-                    continue
-                tool_input = block.get("input")
-                if tool_input == {}:
-                    empty_bash_tool_uses += 1
-                elif isinstance(tool_input, dict) and str(tool_input.get("command") or "").strip():
-                    bash_tool_uses_with_command += 1
-    return empty_bash_tool_uses >= 3 and bash_tool_uses_with_command == 0
 
 
 def _resume_completed_step_outputs(input_payload: dict[str, object]) -> dict[str, str]:

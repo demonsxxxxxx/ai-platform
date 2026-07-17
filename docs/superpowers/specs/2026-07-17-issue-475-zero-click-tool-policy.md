@@ -42,7 +42,10 @@ MCP name.
 - Existing `run_tool_permission_requests` rows remain readable/redacted and
   can terminalize safely.  Historical events remain parseable, but new runtime
   events contain no pending request, decision endpoint, or request id.
-- The removed endpoints and callback fail closed before any mutation.
+- Compatibility request/decision endpoints and callback fail closed before any
+  mutation with `410 Gone`. They were deprecated on `2026-07-17`; physical
+  removal is no earlier than `2026-08-17` and requires consumer inventory plus
+  no-call evidence. Historical reads and terminalization are retained.
 
 ## Verification plan
 
