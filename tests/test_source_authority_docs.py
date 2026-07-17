@@ -357,6 +357,15 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
             ),
         ),
         (
+            "Work Lanes, Preflight, And Evidence Ownership",
+            (
+                "Max active writes are one product line plus one independent governance lane",
+                "unless explicitly justified",
+                "sole product priority is ordinary-user Skill beta acceptance",
+                "#452/OpenSandbox/#449/#450/P2/research cannot preempt it",
+            ),
+        ),
+        (
             "Runtime, Deployment, And Review Boundaries",
             (
                 "Confirmed or inherited filesystem, network, or approval capability",
@@ -396,8 +405,13 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
                 "one implementation",
                 "complete independent review",
                 "consolidated Critical/Important repair batch",
-                "final re-review",
-                "Do not turn review into parallel, repetitive fix cycles",
+                "one delta re-review",
+                "Exactly one bounded secondary repair and delta-only confirmation",
+                "new directly caused, actually reachable Critical/Important",
+                "A second delta Critical/Important, scope expansion, or invariant change freezes the PR",
+                "follow-up, design, or user decision",
+                "Minor, metrics, architecture, or compatibility polish is deferred",
+                "release invariant",
             ),
         ),
         (
@@ -447,6 +461,159 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
             ),
         ),
         (
+            "Controller Current State And History",
+            (
+                "exactly one short, overwrite-style `Current` snapshot/checkpoint",
+                "<=120 lines",
+                "<=20 KiB",
+                "no `Prior` or stacked `Latest` snapshots",
+            ),
+        ),
+        (
+            "Controller Current State And History",
+            (
+                "fixed `Current` schema",
+                "epoch/thread",
+                "observed_at",
+                "origin/main",
+                "runtime subject",
+                "sole product line",
+                "owners/leases",
+                "fixed SHA",
+                "accepted/stale evidence",
+                "next gate",
+                "stop condition",
+                "forbidden actions",
+                "cleanup classifications",
+                "history pointer",
+            ),
+        ),
+        (
+            "Controller Current State And History",
+            (
+                "append-only history archive is audit-only",
+                "default recovery and scheduling must not read it in full",
+            ),
+        ),
+        (
+            "Controller Current State And History",
+            (
+                "stale `observed_at`",
+                "mismatching live `origin/main`, PR head, or runtime subject",
+                "refresh before review, merge, deploy, or cleanup",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "default under `C:/aiwt`",
+                "short stable issue+role names under 30 characters",
+                "never use Documents/Codex/date/long-title clones or a dirty Desktop fallback",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "Preflight an absent or owned target",
+                "short resolved path",
+                "`core.longpaths` readback",
+                "`origin/main`/base/`HEAD`",
+                "branch collision",
+                "disk",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "task's first command verifies exact cwd, `HEAD`, branch, and clean status",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "App-managed provisioning runs at most once",
+                "exact failure uses one authoritative short-path fallback",
+                "not multiple long fallbacks",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "Implementation, test, and review each use one short path",
+                "fixed-SHA test/review prefer detached git worktrees",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "UI cwd mismatch requires explicit `Set-Location` and fails closed before reading or editing",
+                "Provisioning failure is environment evidence, not product failure",
+            ),
+        ),
+        (
+            "Environment Faults And Validity",
+            (
+                "repair harness remains in-lane",
+                "fresh `basetemp` or equivalent short path",
+                "never record and bypass",
+            ),
+        ),
+        (
+            "Environment Faults And Validity",
+            (
+                "validity is affected",
+                "gate remains blocked",
+                "no skip, dirty root, mock, or config readback as pass",
+            ),
+        ),
+        (
+            "Environment Faults And Validity",
+            (
+                "Filechooser, umask, path-length, or basetemp",
+                "equivalent path only when product evidence remains valid",
+                "evidence ceiling is recorded",
+            ),
+        ),
+        (
+            "Event Reporting And Release Environment",
+            (
+                "Report only RED confirmed, fixed commit, independent test terminal, review terminal, CI terminal, and merge/deploy/browser terminal",
+                "one timeout report plus action",
+                "no repetitive status messages",
+            ),
+        ),
+        (
+            "Event Reporting And Release Environment",
+            (
+                "Do not duplicate owner routine matrices or ingest raw long logs",
+            ),
+        ),
+        (
+            "Event Reporting And Release Environment",
+            (
+                "materialized exact release checkout is immutable",
+                "no validation command that produces ignored or untracked files inside it",
+                "`compileall` runs before materialization or with bytecode and temp redirected outside the release",
+            ),
+        ),
+        (
+            "Event Reporting And Release Environment",
+            (
+                "tracked, untracked, and ignored cleanliness before and after deploy",
+                "writable verification uses a separate task-owned verifier or staging directory",
+            ),
+        ),
+        (
+            "Event Reporting And Release Environment",
+            (
+                "Preflight the SSH upload localPath allowlist",
+                "Generate or copy once in the allowed gitignored controller staging root",
+                "fix the hash, then upload",
+                "Allowlist denial is preflight environment evidence",
+                "not a reason for repeated copies/uploads or product-scope expansion",
+            ),
+        ),
+        (
             "Delegation Rules",
             (
                 "main-thread authorization is a direct-operation allowance",
@@ -473,6 +640,7 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
             "Persistent implementation tasks may only make source edits and run affected tests, commit, push, and open a Draft PR from that clean isolated worktree and explicit write envelope; an implementer cannot be the final reviewer. No subagent or ordinary persistent task may access browser/user credentials or gain broad remote mutation, cleanup, deployment, or final authority.",
             "Disposable agents are read-only context compressors. They may summarize large logs or test output and search peripheral material, but never perform remote writes, deployment, cleanup, credential access, or final release decisions.",
             "Evidence has a default owner: the implementer runs affected tests, compile, and git diff --check; CI owns standard regression; the reviewer owns code review plus a small number of high-risk attack or concurrency probes; the controller fills only uncovered final gates.",
+            "Max active writes are one product line plus one independent governance lane unless explicitly justified. The sole product priority is ordinary-user Skill beta acceptance; #452/OpenSandbox/#449/#450/P2/research cannot preempt it.",
         ),
         "Delegation Rules": (
             "Delegate only when the active user request, repository rules, and available delegation tool policy permit sub-agent work.",

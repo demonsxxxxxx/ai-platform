@@ -53,6 +53,9 @@ open, or close ordinary-user platform-level multi-run product exposure.
   and `git diff --check`; CI owns standard regression; the reviewer owns code
   review plus a small number of high-risk attack or concurrency probes; the
   controller fills only uncovered final gates.
+- Max active writes are one product line plus one independent governance lane
+  unless explicitly justified. The sole product priority is ordinary-user Skill
+  beta acceptance; #452/OpenSandbox/#449/#450/P2/research cannot preempt it.
 
 ## Runtime, Deployment, And Review Boundaries
 
@@ -71,8 +74,12 @@ open, or close ordinary-user platform-level multi-run product exposure.
   read-only evidence but may not share this authority.
 - The default review cadence is: invariant preflight; one implementation; one
   complete independent review; one consolidated Critical/Important repair
-  batch; and one final re-review. Do not turn review into parallel, repetitive
-  fix cycles unless a new material risk is recorded.
+  batch; and one delta re-review. Exactly one bounded secondary repair and delta-only
+  confirmation are permitted only for a new directly caused, actually reachable
+  Critical/Important finding. A second delta Critical/Important, scope expansion,
+  or invariant change freezes the PR and records a follow-up, design, or user
+  decision. Minor, metrics, architecture, or compatibility polish is deferred
+  unless it breaks the release invariant.
 
 ## Evidence Intake, Close Sweep, And Rotation
 
@@ -93,6 +100,62 @@ open, or close ordinary-user platform-level multi-run product exposure.
   objective and non-goals, `origin/main`, runtime subject, active owners and
   leases, accepted and stale evidence, risks, next gates, and cleanup
   classifications.
+
+## Controller Current State And History
+
+- Keep active truth in exactly one short, overwrite-style `Current`
+  snapshot/checkpoint, capped at <=120 lines and <=20 KiB, with no `Prior` or
+  stacked `Latest` snapshots.
+- The fixed `Current` schema is: epoch/thread; observed_at; origin/main; runtime
+  subject; sole product line; owners/leases; fixed SHA; accepted/stale evidence;
+  next gate; stop condition; forbidden actions; cleanup classifications; and
+  history pointer.
+- The append-only history archive is audit-only; default recovery and scheduling
+  must not read it in full.
+- A stale `observed_at` or mismatching live `origin/main`, PR head, or runtime
+  subject must refresh before review, merge, deploy, or cleanup.
+
+## Windows Worktree Provisioning
+
+- New ai-platform task worktrees default under `C:/aiwt` with short stable
+  issue+role names under 30 characters; never use Documents/Codex/date/long-title
+  clones or a dirty Desktop fallback.
+- Preflight an absent or owned target, short resolved path, `core.longpaths`
+  readback, `origin/main`/base/`HEAD`, branch collision, and disk.
+- The task's first command verifies exact cwd, `HEAD`, branch, and clean status.
+- App-managed provisioning runs at most once; exact failure uses one authoritative
+  short-path fallback, not multiple long fallbacks.
+- Implementation, test, and review each use one short path; fixed-SHA test/review
+  prefer detached git worktrees.
+- A UI cwd mismatch requires explicit `Set-Location` and fails closed before
+  reading or editing. Provisioning failure is environment evidence, not product
+  failure.
+
+## Environment Faults And Validity
+
+- The repair harness remains in-lane with a fresh `basetemp` or equivalent short
+  path; never record and bypass.
+- If validity is affected, the gate remains blocked: no skip, dirty root, mock,
+  or config readback as pass.
+- Filechooser, umask, path-length, or basetemp may use an equivalent path only
+  when product evidence remains valid and the evidence ceiling is recorded.
+
+## Event Reporting And Release Environment
+
+- Report only RED confirmed, fixed commit, independent test terminal, review
+  terminal, CI terminal, and merge/deploy/browser terminal; send one timeout
+  report plus action, with no repetitive status messages.
+- Do not duplicate owner routine matrices or ingest raw long logs.
+- A materialized exact release checkout is immutable: no validation command that
+  produces ignored or untracked files inside it. `compileall` runs before
+  materialization or with bytecode and temp redirected outside the release.
+- Check tracked, untracked, and ignored cleanliness before and after deploy;
+  writable verification uses a separate task-owned verifier or staging directory.
+- Preflight the SSH upload localPath allowlist before generating or uploading a
+  large artifact. Generate or copy once in the allowed gitignored controller
+  staging root, fix the hash, then upload. Allowlist denial is preflight
+  environment evidence, not a reason for repeated copies/uploads or
+  product-scope expansion.
 
 ## Delegation Rules
 
