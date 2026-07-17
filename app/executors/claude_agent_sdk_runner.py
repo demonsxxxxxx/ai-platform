@@ -548,6 +548,28 @@ def _context_pack_prompt_section(context_pack: dict[str, Any] | None) -> str:
             f"{message_count} message(s), {file_count} file(s), "
             f"{artifact_count} artifact(s), {memory_count} memory record(s)"
         )
+        for refs_key, id_key, label in (
+            ("recent_messages", "message_id", "message"),
+            ("files", "file_id", "file"),
+            ("artifacts", "artifact_id", "artifact"),
+            ("memory_records", "memory_record_id", "memory"),
+        ):
+            refs = manifest.get(refs_key)
+            if not isinstance(refs, list):
+                continue
+            ref_ids = [
+                str(ref.get(id_key) or "").strip()
+                for ref in refs[:8]
+                if isinstance(ref, dict)
+                and str(ref.get(id_key) or "").strip()
+                and sanitize_public_payload(str(ref.get(id_key) or "").strip())
+                == str(ref.get(id_key) or "").strip()
+            ]
+            if ref_ids:
+                metadata_lines.append(
+                    f"- Authorized {label} ref IDs (use these exact IDs in retrieval tools): "
+                    f"{', '.join(ref_ids)}"
+                )
         tools = manifest.get("available_retrieval_tools")
         if isinstance(tools, list):
             safe_tools = [
