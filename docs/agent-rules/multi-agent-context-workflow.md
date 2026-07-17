@@ -88,9 +88,10 @@ open, or close ordinary-user platform-level multi-run product exposure.
   lines/result, and artifact location; label stale or historical evidence as
   such instead of re-presenting it as current.
 - After every completed batch, run a close-sweep inventory covering task or
-  archive state, worktree classification, and process ownership. Do not bulk
-  clean up tasks, worktrees, containers, or artifacts without exact ownership
-  proof.
+  archive state, worktree classification, process ownership, and
+  `project_binding_status = bound | fallback_bound | blocked_project_binding`.
+  Do not bulk clean up tasks, worktrees, containers, or artifacts without exact
+  ownership proof.
 - Record a lessons ledger entry as: `incident -> root cause -> new guardrail ->
   enforcement point -> verification`. Repeated or high-impact lessons must
   become a policy rule or an automated check, rather than remaining a chat-only
@@ -130,6 +131,30 @@ open, or close ordinary-user platform-level multi-run product exposure.
 - A UI cwd mismatch requires explicit `Set-Location` and fails closed before
   reading or editing. Provisioning failure is environment evidence, not product
   failure.
+- Every persistent ai-platform controller, implementation, test, or review task
+  must be created with the saved ai-platform project target:
+  `project_id`/`project_path` exactly
+  `C:\Users\Xinlin.jiang\Desktop\AI-platform\ai-platform`. Projectless is
+  forbidden for ai-platform repository work.
+- The dispatch envelope records `project_id`, `project_path`, returned
+  thread/client id, UI/thread cwd, actual execution worktree, and base/head/branch.
+- Primary creation is a project-bound worktree. If app-managed worktree
+  provisioning fails, use a project-bound local task as temporary
+  `fallback_bound`; its first command must fail-closed `Set-Location` to the
+  precreated short `C:\aiwt` worktree and prove exact cwd/`HEAD`/clean. The dirty
+  saved-project root remains forbidden for repository reads, edits, or builds.
+- If tooling cannot project-bind a task that executes the existing short
+  worktree, classify `blocked_project_binding`; do not treat projectless as
+  equivalent. A bounded tooling follow-up may be recorded without expanding the
+  product lane.
+- After creation, the controller verifies binding from create request/result plus
+  thread readback before granting any lease. A cwd mismatch requires explicit
+  `actual_worktree` and first-command chdir proof.
+- Projectless UI/thread metadata for tasks that execute in the correct short
+  worktree is workflow evidence, not #428 product failure.
+- Projectless is permitted only for genuinely external/non-ai-platform
+  repositories. Project binding and Windows short-path provisioning are
+  simultaneous requirements, not alternatives.
 
 ## Environment Faults And Validity
 

@@ -433,6 +433,7 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
                 "task or archive state",
                 "worktree classification",
                 "process ownership",
+                "project_binding_status = bound | fallback_bound | blocked_project_binding",
                 "without exact ownership proof",
             ),
         ),
@@ -548,6 +549,66 @@ def test_multi_agent_workflow_enforces_issue_451_governance_contracts():
             (
                 "UI cwd mismatch requires explicit `Set-Location` and fails closed before reading or editing",
                 "Provisioning failure is environment evidence, not product failure",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "Every persistent ai-platform controller, implementation, test, or review task",
+                "saved ai-platform project target",
+                r"`project_id`/`project_path` exactly `C:\Users\Xinlin.jiang\Desktop\AI-platform\ai-platform`",
+                "Projectless is forbidden for ai-platform repository work",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "dispatch envelope records `project_id`, `project_path`, returned thread/client id",
+                "UI/thread cwd",
+                "actual execution worktree",
+                "base/head/branch",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "Primary creation is a project-bound worktree",
+                "app-managed worktree provisioning fails",
+                "project-bound local task as temporary `fallback_bound`",
+                r"first command must fail-closed `Set-Location` to the precreated short `C:\aiwt` worktree",
+                "exact cwd/`HEAD`/clean",
+                "dirty saved-project root remains forbidden for repository reads, edits, or builds",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "classify `blocked_project_binding`",
+                "do not treat projectless as equivalent",
+                "bounded tooling follow-up may be recorded",
+                "without expanding the product lane",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "After creation, the controller verifies binding from create request/result plus thread readback",
+                "actual_worktree",
+                "first-command chdir proof",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "Projectless UI/thread metadata",
+                "workflow evidence, not #428 product failure",
+            ),
+        ),
+        (
+            "Windows Worktree Provisioning",
+            (
+                "Projectless is permitted only for genuinely external/non-ai-platform repositories",
+                "Project binding and Windows short-path provisioning are simultaneous requirements, not alternatives",
             ),
         ),
         (
