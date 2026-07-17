@@ -1303,6 +1303,39 @@ async def test_agent_run_stages_platform_skills_before_sdk(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
+async def test_agent_run_threads_materialized_file_names_in_payload_order(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_skill(tmp_path / "skills", name="baoyu-translate", description="Translate Word documents.")
+    pins = _registry_pins(
+        tmp_path / "skills",
+        skill_id="baoyu-translate",
+        input_payload={"message": "translate"},
+    )
+
+    async def materialize_files(payload, workspace):
+        (workspace / "z.docx").write_bytes(b"z")
+        (workspace / "a.docx").write_bytes(b"a")
+        return ["z.docx", "a.docx"]
+
+    adapter = ClaudeAgentWorkerAdapter(delegate=FakeDelegate())
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", materialize_files)
+    runtime_requests = install_sandbox_runtime(monkeypatch)
+
+    result = await adapter.submit_run(
+        sandbox_writing_payload(
+            skill_id="baoyu-translate",
+            agent_id="baoyu-translate",
+            input={"message": "translate"},
+            skill_manifests=pins,
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert runtime_requests[0].materialized_file_names == ["z.docx", "a.docx"]
+
+
+@pytest.mark.asyncio
 async def test_agent_run_prefers_worker_context_pack_over_snapshot_reparse(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills")

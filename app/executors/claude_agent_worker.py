@@ -863,6 +863,7 @@ class ClaudeAgentWorkerAdapter:
             tool_policy_subjects=_runtime_tool_policy_subjects(payload),
             input_message=prepared.prompt,
             file_ids=payload.file_ids,
+            materialized_file_names=prepared.file_names,
             sandbox_mode=_payload_sandbox_mode(payload),
             browser_enabled=bool(payload.input.get("browser_enabled")),
             model=payload.model_value or payload.model_id or getattr(settings, "claude_agent_model", ""),

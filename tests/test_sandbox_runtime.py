@@ -73,7 +73,10 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         release_lease=lambda lease, reason: lease_calls.append(("release", lease, reason)),
     )
 
-    result = await runtime.submit(request(), event_sink=events.append)
+    result = await runtime.submit(
+        request(materialized_file_names=["z.docx", "a.docx"]),
+        event_sink=events.append,
+    )
 
     run_root = (
         tmp_path
@@ -113,6 +116,7 @@ async def test_runtime_submit_prepares_workspace_emits_event_and_dispatches_exec
         "mcp_tool_ids": ["knowledge.search"],
         "tool_policy_subjects": [],
         "input_files": ["file-a"],
+        "materialized_file_names": ["z.docx", "a.docx"],
     }
     assert [event.type for event in events] == ["runtime_container_started"]
     assert lease_calls[0][0] == "record"
