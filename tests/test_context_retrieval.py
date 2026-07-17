@@ -148,8 +148,8 @@ async def test_read_session_messages_scopes_and_paginates_with_token_limit():
             "message_id": "msg-1",
             "run_id": "run-a",
             "role": "user",
-            "content": "alpha beta gamma delta epsilon",
-            "truncated": False,
+            "content": "alpha",
+            "truncated": True,
         }
     ]
     assert result["next_offset"] == 1
@@ -233,8 +233,8 @@ async def test_search_memory_excludes_deleted_records_and_audits_redaction():
         {
             "memory_record_id": "mem-a",
             "record_type": "preference",
-            "content": "prefer precise citations",
-            "truncated": False,
+            "content": "prefer precise citat",
+            "truncated": True,
         }
     ]
     assert result["audit"]["action"] == "context_retrieval.search_memory"

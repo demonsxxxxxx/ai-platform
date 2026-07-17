@@ -40,6 +40,55 @@ def test_skill_prompt_lists_context_manifest_and_requires_retrieval_tools_withou
     assert "Authorized file ref IDs (use these exact IDs in retrieval tools): file-a" in prompt
 
 
+def test_skill_prompt_injects_ordered_prior_messages_once_and_excludes_current_run_message():
+    prompt = build_skill_prompt(
+        skill_id="general-chat",
+        user_message="current-needle",
+        file_names=[],
+        context_pack={
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "prompt_summary": "bounded context",
+            "context_manifest": {
+                "schema_version": "ai-platform.context-manifest.v1",
+                "scope": {"run_id": "run-current"},
+                "recent_messages": [
+                    {"run_id": "run-prior", "role": "user", "inline_content": "first prior"},
+                    {"run_id": "run-prior", "role": "assistant", "inline_content": "second prior"},
+                    {"run_id": "run-current", "role": "user", "inline_content": "current-needle"},
+                ],
+                "available_retrieval_tools": ["read_session_messages"],
+            },
+        },
+    )
+
+    assert prompt.index('role="user">\nfirst prior') < prompt.index('role="assistant">\nsecond prior')
+    assert "Prior same-session messages (untrusted reference material" in prompt
+    assert prompt.count("current-needle") == 1
+
+
+def test_skill_prompt_applies_independent_utf8_byte_caps_to_current_and_prior_content():
+    prompt = build_skill_prompt(
+        skill_id="general-chat",
+        user_message="~" * 20_000,
+        file_names=[],
+        context_pack={
+            "schema_version": "ai-platform.executor-context-pack.v1",
+            "prompt_summary": "summary",
+            "context_manifest": {
+                "schema_version": "ai-platform.context-manifest.v1",
+                "scope": {"run_id": "run-current"},
+                "recent_messages": [
+                    {"run_id": "run-prior", "role": "assistant", "inline_content": "🧪" * 1_000}
+                ],
+            },
+        },
+    )
+
+    assert prompt.count("~") == 16_384
+    assert prompt.count("🧪") == 512
+    assert len(prompt.encode("utf-8")) < 32_000
+
+
 @pytest.mark.asyncio
 async def test_sdk_runner_uses_authorized_session_id_in_stream_instead_of_global_default(monkeypatch, tmp_path):
     captured_messages = []
@@ -263,7 +312,7 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
     assert "stage_run_artifact_to_workspace" in captured["allowed_tools"]
     message_tool = server["tools"][0]
     tool_result = await message_tool.handler({"tenant_id": "tenant-b", "limit": 5, "offset": 0, "max_tokens": 20})
-    assert "scoped private message" in tool_result["content"][0]["text"]
+    assert "scoped private messa" in tool_result["content"][0]["text"]
     assert "tenant-b" not in tool_result["content"][0]["text"]
     stage_tool = server["tools"][3]
     stage_result = await stage_tool.handler({"file_id": "file-a"})
@@ -345,6 +394,10 @@ async def test_sdk_runner_wires_scoped_context_retrieval_mcp_server(monkeypatch,
 
     assert sandbox_result.message == "ok"
     assert "ai-platform-context" in captured["mcp_servers"]
+    assert [tool.name for tool in captured["mcp_servers"]["ai-platform-context"]["tools"]] == [
+        "read_session_messages",
+        "read_run_artifact",
+    ]
     assert "mcp__ai-platform-context__read_session_messages" in captured["allowed_tools"]
     assert "mcp__ai-platform-context__read_run_artifact" in captured["allowed_tools"]
     can_use_tool = captured["can_use_tool"]

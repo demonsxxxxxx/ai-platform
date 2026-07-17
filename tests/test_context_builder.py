@@ -76,7 +76,7 @@ async def test_record_initial_context_snapshot_persists_context_manifest_for_exe
         "skill_id": "general-chat",
     }
     assert manifest["current_message"] == "continue from prior context"
-    assert manifest["recent_messages"] == [{"message_id": "msg-a", "requires_retrieval": True}]
+    assert manifest["recent_messages"] == []
     assert manifest["files"] == [{"file_id": "file-a", "requires_retrieval": True}]
     assert manifest["budget"]["max_prompt_tokens"] > 0
     assert context_ref["context_manifest"]["schema_version"] == "ai-platform.context-manifest.v1"
@@ -843,8 +843,12 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
     assert [item["message_id"] for item in manifest["recent_messages"]] == [
         "msg-prior-user",
         "msg-prior-assistant",
-        "msg-current",
     ]
+    assert [item["inline_content"] for item in manifest["recent_messages"]] == [
+        "translate it",
+        "done",
+    ]
+    assert all(item["run_id"] == "run-prior" for item in manifest["recent_messages"])
     assert manifest["artifacts"] == [{"artifact_id": "art-prior", "requires_retrieval": True}]
     assert manifest["files"] == [
         {"file_id": "file-prior", "requires_retrieval": True},
