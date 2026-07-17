@@ -6,7 +6,7 @@ from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.context_builder import record_initial_context_snapshot
 from app.db import transaction
-from app.intent_router import FileSummary, route_intent
+from app.intent_router import FileSummary, fallback_to_general_chat, route_intent
 from app.model_catalog import resolve_model_selection
 from app.models import (
     CapabilitySuggestionResponse,
@@ -859,6 +859,7 @@ async def chat_stream(
                     return _chat_stream_response_from_submission(claimed_submission)
 
             explicit_payload = _explicit_intent_payload(requested_agent_id, requested_skill_id)
+            is_terminal_implicit_decision = False
             if explicit_payload is None:
                 continuation_capability = (
                     capability_id_from_skill(None, requested_agent_id)
@@ -879,6 +880,13 @@ async def chat_stream(
                     or request.confirmed_capability_id,
                 )
                 decision_payload = decision.as_payload()
+                is_terminal_implicit_decision = (
+                    continuation_session is None
+                    and request.selected_skill is None
+                    and request.skill_id is None
+                    and not decision.confirmed_by_user
+                    and decision.status == "selected"
+                )
                 if decision.status == "needs_confirmation":
                     agent_rows = await repositories.list_principal_lambchat_agents(
                         conn,
@@ -937,7 +945,35 @@ async def chat_stream(
                 "is_admin": is_ai_admin(principal),
                 "permissions": principal.permissions,
             }
-            if request.selected_skill is not None:
+            implicit_skill = None
+            if is_terminal_implicit_decision:
+                strict_implicit_authorization_kwargs = {
+                    **authorization_kwargs,
+                    "is_admin": False,
+                }
+                try:
+                    implicit_skill = await repositories.authorize_run_capabilities(
+                        conn,
+                        **strict_implicit_authorization_kwargs,
+                    )
+                except repositories.RepositoryAuthorizationError:
+                    if decision.selected_capability == "general_chat":
+                        raise
+                    decision = fallback_to_general_chat()
+                    decision_payload = decision.as_payload()
+                    resolved_agent_id = str(decision.agent_id)
+                    resolved_skill_id = str(decision.skill_id)
+                    implicit_skill = await repositories.authorize_run_capabilities(
+                        conn,
+                        **{
+                            **strict_implicit_authorization_kwargs,
+                            "agent_id": resolved_agent_id,
+                            "skill_id": resolved_skill_id,
+                        },
+                    )
+            if implicit_skill is not None:
+                skill = implicit_skill
+            elif request.selected_skill is not None:
                 skill = await repositories.authorize_selected_run_capabilities(
                     conn,
                     expected_version=request.selected_skill.expected_version,

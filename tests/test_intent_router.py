@@ -1,4 +1,4 @@
-from app.intent_router import FileSummary, route_intent
+from app.intent_router import FileSummary, fallback_to_general_chat, route_intent
 
 
 def test_docx_review_routes_to_document_review():
@@ -59,6 +59,18 @@ def test_plain_question_routes_to_general_chat():
     assert decision.selected_capability == "general_chat"
     assert decision.agent_id == "general-agent"
     assert decision.skill_id == "general-chat"
+
+
+def test_implicit_route_fallback_uses_non_confirmed_general_chat_decision():
+    decision = fallback_to_general_chat()
+
+    assert decision.status == "selected"
+    assert decision.intent == "general_chat"
+    assert decision.selected_capability == "general_chat"
+    assert decision.agent_id == "general-agent"
+    assert decision.skill_id == "general-chat"
+    assert decision.reason == "已使用通用对话处理"
+    assert decision.confirmed_by_user is False
 
 
 def test_ambiguous_docx_request_returns_suggestions_without_run_selection():
