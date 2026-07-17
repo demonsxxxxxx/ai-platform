@@ -40,6 +40,146 @@ from app.skills.registry import BuiltinSkillRegistry
 from app.worker import WorkerRunCancelled
 
 
+@pytest.mark.asyncio
+async def test_sandbox_sdk_options_and_hooks_use_exact_authorized_capability_subjects(monkeypatch, tmp_path):
+    captured = {}
+
+    class TextBlock:
+        def __init__(self, text):
+            self.text = text
+
+    class AssistantMessage:
+        def __init__(self, content):
+            self.content = content
+
+    class ResultMessage:
+        session_id = "sdk-session"
+        usage = {}
+        model_usage = {}
+        result = "ok"
+        is_error = False
+        errors = []
+        stop_reason = None
+
+    class ClaudeAgentOptions:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    class HookMatcher:
+        def __init__(self, matcher=None, hooks=None, timeout=None):
+            self.matcher = matcher
+            self.hooks = hooks or []
+            self.timeout = timeout
+
+    class PermissionResultAllow:
+        def __init__(self, behavior="allow", **kwargs):
+            self.behavior = behavior
+            self.kwargs = kwargs
+
+    class PermissionResultDeny:
+        def __init__(self, behavior="deny", message="", **kwargs):
+            self.behavior = behavior
+            self.message = message
+
+    async def query(prompt, options):
+        yield AssistantMessage([TextBlock("ok")])
+        yield ResultMessage()
+
+    settings = types.SimpleNamespace(
+        claude_agent_sdk_enabled=True,
+        anthropic_base_url="",
+        anthropic_auth_token="",
+        anthropic_model="",
+        openai_api_key="",
+        claude_agent_model="model-a",
+        claude_agent_sdk_skills="",
+        claude_agent_sdk_timeout_seconds=5,
+        claude_agent_sdk_max_turns=12,
+        claude_agent_sdk_max_thinking_tokens=1024,
+        claude_agent_sdk_effort="high",
+        claude_agent_permission_mode="dontAsk",
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "claude_agent_sdk",
+        types.SimpleNamespace(
+            AssistantMessage=AssistantMessage,
+            ClaudeAgentOptions=ClaudeAgentOptions,
+            HookMatcher=HookMatcher,
+            PermissionResultAllow=PermissionResultAllow,
+            PermissionResultDeny=PermissionResultDeny,
+            ResultMessage=ResultMessage,
+            TextBlock=TextBlock,
+            query=query,
+        ),
+    )
+    monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: settings)
+    subjects = [
+        {
+            "identity": identity,
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "identity_authorized": True,
+            "object_authorized": True,
+            "parameters_authorized": True,
+            "risk_level": "high",
+            "write_capable": identity != "Skill",
+            "allowed_parameter_keys": parameter_keys,
+            "required_parameter_keys": required_keys,
+            **extra,
+        }
+        for identity, parameter_keys, required_keys, extra in [
+            ("Bash", ["command"], ["command"], {}),
+            ("Write", ["file_path", "content"], ["file_path", "content"], {}),
+            ("Skill", ["skill"], ["skill"], {"allowed_skill_names": ["review-skill"]}),
+            (
+                "mcp__corp:search__query",
+                ["query"],
+                ["query"],
+                {
+                    "mcp_server": "corp:search",
+                    "mcp_tool": "query",
+                    "mcp_server_config": {"type": "http", "url": "https://mcp.example.test/v1"},
+                },
+            ),
+        ]
+    ]
+
+    result = await run_claude_agent_sdk(
+        prompt="hello",
+        cwd=tmp_path,
+        skill_id="review-skill",
+        skills=["review-skill"],
+        tool_policy_subjects=subjects,
+        execution_policy="sandbox_brokered",
+    )
+
+    assert result.error is None
+    assert captured["permission_mode"] == "dontAsk"
+    assert captured["tools"] == ["Bash", "Write", "Skill"]
+    assert captured["allowed_tools"] == ["Bash", "Write", "Skill", "mcp__corp:search__query"]
+    assert captured["mcp_servers"] == {
+        "corp:search": {"type": "http", "url": "https://mcp.example.test/v1"}
+    }
+    assert "on_tool_permission" not in captured
+
+    can_use = captured["can_use_tool"]
+    assert (await can_use("Bash", {"command": "echo safe"})).behavior == "allow"
+    assert (await can_use("Write", {"file_path": "out.txt", "content": "safe"})).behavior == "allow"
+    assert (await can_use("Skill", {"skill": "review-skill"})).behavior == "allow"
+    assert (await can_use("mcp__corp:search__query", {"query": "safe"})).behavior == "allow"
+    assert (await can_use("mcp__corp:search__query_extra", {"query": "safe"})).behavior == "deny"
+    assert (await can_use("mcp__corp:search__query", {"query": "safe", "scope": "other"})).behavior == "deny"
+
+    hook = captured["hooks"]["PreToolUse"][0].hooks[0]
+    allowed = await hook({"tool_name": "Bash", "tool_input": {"command": "echo safe"}})
+    denied = await hook({"tool_name": "Bash", "tool_input": {"command": "echo safe", "cwd": "other"}})
+    assert allowed["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 class FakeDelegate:
     async def submit_run(self, payload, event_sink=None):
         return ExecutorResult(

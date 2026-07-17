@@ -6,7 +6,7 @@ def test_tool_policy_readiness_truthfully_records_only_allow_and_deny_outcomes()
 
     assert readiness["schema_version"] == "ai-platform.tool-policy-readiness.v2"
     assert readiness["decision_options"] == []
-    assert readiness["summary"]["ask_cases"] == 0
+    assert "ask_cases" not in readiness["summary"]
     assert {case["classification"] for case in readiness["taxonomy_cases"]} == {"allow", "deny"}
     assert all(case["expected_reason"] != "tool_permission_required" for case in readiness["taxonomy_cases"])
 

@@ -46,7 +46,7 @@ def test_declared_active_read_and_write_capabilities_allow_without_approval_stat
     [
         ({"requested_identity": ""}, "tool_identity_malformed"),
         ({"requested_identity": "mcp__server"}, "tool_identity_malformed"),
-        ({"requested_identity": "mcp__server__tool__suffix", "declared_identities": ["mcp__server__tool"]}, "tool_identity_malformed"),
+        ({"requested_identity": "mcp__server__tool__suffix", "declared_identities": ["mcp__server__tool"]}, "tool_identity_undeclared"),
         ({"requested_identity": "mcp__server__search_extra", "declared_identities": ["mcp__server__search"]}, "tool_identity_undeclared"),
         ({"registered": False}, "tool_not_registered"),
         ({"declared": False}, "tool_identity_undeclared"),
@@ -81,6 +81,38 @@ def test_exact_prefixed_and_adapter_bare_identity_resolve_to_one_declaration():
 
     assert (prefixed.outcome, bare.outcome) == ("allow", "allow")
     assert prefixed.canonical_identity == bare.canonical_identity == "mcp__context__read_context_file"
+
+
+def test_mcp_identity_uses_authoritative_registry_id_grammar_without_prefix_authority():
+    maximum_length = "a" * 128
+    colon = evaluate_tool_policy(
+        tool=policy_tool(
+            requested_identity="mcp__corp:search__query",
+            declared_identities=["mcp__corp:search__query"],
+        )
+    )
+    boundary = evaluate_tool_policy(
+        tool=policy_tool(
+            requested_identity=f"mcp__{maximum_length}__tool",
+            declared_identities=[f"mcp__{maximum_length}__tool"],
+        )
+    )
+    lookalike = evaluate_tool_policy(
+        tool=policy_tool(
+            requested_identity="mcp__corp:search__query_extra",
+            declared_identities=["mcp__corp:search__query"],
+        )
+    )
+    malformed = evaluate_tool_policy(
+        tool=policy_tool(
+            requested_identity="mcp__corp/search__query",
+            declared_identities=["mcp__corp/search__query"],
+        )
+    )
+
+    assert (colon.outcome, boundary.outcome) == ("allow", "allow")
+    assert lookalike.reason == "tool_identity_undeclared"
+    assert malformed.reason == "tool_identity_malformed"
 
 
 def test_runtime_approval_write_routes_fail_closed_before_any_repository_mutation(monkeypatch):

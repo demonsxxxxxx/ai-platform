@@ -143,6 +143,7 @@ class SandboxRuntimeRequest(BaseModel):
     agent_id: str
     skill_ids: list[str] = Field(default_factory=list)
     mcp_tool_ids: list[str] = Field(default_factory=list)
+    tool_policy_subjects: list[dict[str, Any]] = Field(default_factory=list)
     input_message: str
     file_ids: list[str] = Field(default_factory=list)
     sandbox_mode: SandboxMode

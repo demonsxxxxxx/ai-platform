@@ -6,6 +6,7 @@ import re
 import time as _time
 from dataclasses import dataclass, replace
 from typing import Any
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
@@ -39,7 +40,7 @@ from app.executors.base import ExecutorResult, RunPayload
 from app.executors.registry import AdapterRegistry
 from app.models import QueueRunPayload
 from app.settings import get_settings
-from app.tool_policy import evaluate_tool_policy
+from app.tool_policy import BUILTIN_TOOL_IDENTITIES, evaluate_tool_policy
 from app.tool_permission_lifecycle import drain_run_tool_permission_terminalization, reconcile_terminalized_permission_run
 
 
@@ -1021,6 +1022,110 @@ def _mcp_tool_lifecycle_status(tool: dict[str, Any]) -> str:
     return "disabled"
 
 
+_BUILTIN_CAPABILITY_PARAMETERS = {
+    "Read": (["file_path"], []),
+    "Glob": (["pattern", "path"], []),
+    "LS": (["path"], []),
+    "Bash": (["command"], ["command"]),
+    "Write": (["file_path", "content"], ["file_path", "content"]),
+    "Edit": (["file_path", "old_string", "new_string", "replace_all"], ["file_path", "old_string", "new_string"]),
+    "NotebookEdit": (["notebook_path", "new_source", "cell_id", "cell_type", "edit_mode"], ["notebook_path", "new_source"]),
+    "Agent": (["agent", "prompt", "description"], ["agent"]),
+    "WebFetch": (["url", "prompt"], ["url"]),
+    "WebSearch": (["query"], ["query"]),
+    "Skill": (["skill"], ["skill"]),
+}
+
+
+def _declared_builtin_tool_identities(payload: QueueRunPayload) -> set[str]:
+    """Read only snapshot-validated run declarations, never caller input."""
+
+    declarations: set[str] = set()
+    sources: list[dict[str, Any]] = []
+    if isinstance(payload.release_decision, dict):
+        sources.append(payload.release_decision)
+    sources.extend(item for item in payload.skill_manifests if isinstance(item, dict))
+    for source in sources:
+        raw = source.get("builtin_tool_identities")
+        if not isinstance(raw, list):
+            continue
+        declarations.update(item for item in raw if isinstance(item, str) and item in BUILTIN_TOOL_IDENTITIES)
+    return declarations
+
+
+def _builtin_capability_subjects(
+    *,
+    payload: QueueRunPayload,
+    run_identity: dict[str, str],
+    skill: dict[str, Any],
+    skill_decision: CapabilityAccessDecision,
+) -> list[dict[str, Any]]:
+    active = str(skill.get("skill_status") or "disabled") == "active"
+    distributed = skill_decision.usable
+    subjects: list[dict[str, Any]] = []
+    for identity in sorted(_declared_builtin_tool_identities(payload) | {"Skill"}):
+        keys, required_keys = _BUILTIN_CAPABILITY_PARAMETERS[identity]
+        subjects.append(
+            {
+                "identity": identity,
+                "registered": bool(skill),
+                "declared": True,
+                "active": active,
+                "distributed": distributed,
+                "identity_authorized": True,
+                "object_authorized": True,
+                "parameters_authorized": True,
+                "risk_level": "low" if identity in {"Read", "Glob", "LS", "Skill"} else "high",
+                "write_capable": identity not in {"Read", "Glob", "LS", "Skill"},
+                "allowed_parameter_keys": keys,
+                "required_parameter_keys": required_keys,
+                "allowed_skill_names": [run_identity["skill_id"]] if identity == "Skill" else [],
+            }
+        )
+    return subjects
+
+
+def _mcp_capability_subject(tool: dict[str, Any], distribution: CapabilityAccessDecision) -> dict[str, Any]:
+    server_id = str(tool.get("server_id") or "")
+    tool_name = str(tool.get("name") or "")
+    allowed_parameter_keys = tool.get("allowed_parameter_keys")
+    if not isinstance(allowed_parameter_keys, list) or not all(
+        isinstance(item, str) and item for item in allowed_parameter_keys
+    ):
+        # The registry has no general parameter-schema column.  Its current
+        # external MCP contract is query-only unless a trusted adapter adds an
+        # explicit per-tool parameter contract before this worker boundary.
+        allowed_parameter_keys = ["query"]
+    subject: dict[str, Any] = {
+        "identity": f"mcp__{server_id}__{tool_name}",
+        "mcp_server": server_id,
+        "mcp_tool": tool_name,
+        "registered": True,
+        "declared": True,
+        "active": (
+            str(tool.get("registry_status") or "") == "active"
+            and str(tool.get("policy_status") or "") == "active"
+            and str(tool.get("server_status") or "") == "active"
+        ),
+        "distributed": distribution.usable,
+        "identity_authorized": True,
+        "object_authorized": True,
+        "parameters_authorized": True,
+        "risk_level": str(tool.get("risk_level") or "low"),
+        "write_capable": bool(tool.get("write_capable")),
+        "allowed_parameter_keys": allowed_parameter_keys,
+    }
+    endpoint = str(tool.get("endpoint") or "")
+    parsed = urlsplit(endpoint)
+    transport = str(tool.get("transport_type") or "").lower()
+    if parsed.scheme in {"http", "https"} and parsed.netloc and transport in {"http", "streamable_http", "sse"}:
+        subject["mcp_server_config"] = {
+            "type": "sse" if transport == "sse" else "http",
+            "url": endpoint,
+        }
+    return subject
+
+
 def _canonical_authorized_mcp_scope(
     container: dict[str, Any],
     *,
@@ -1047,6 +1152,7 @@ def _payload_with_authorized_mcp_registration(
     payload: QueueRunPayload,
     *,
     allowed_entries: list[dict[str, Any]],
+    tool_policy_subjects: list[dict[str, Any]],
 ) -> QueueRunPayload:
     allowed_tool_ids = {
         str(entry.get("tool_id") or "").strip()
@@ -1062,6 +1168,7 @@ def _payload_with_authorized_mcp_registration(
             else step
             for step in steps
         ]
+    rebuilt_input["_runtime_tool_policy_subjects"] = tool_policy_subjects
     return payload.model_copy(update={"input": rebuilt_input})
 
 
@@ -1162,6 +1269,12 @@ async def _reauthorize_worker_capabilities(
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
 
     allowed_entries: list[dict[str, Any]] = []
+    tool_policy_subjects = _builtin_capability_subjects(
+        payload=payload,
+        run_identity=run_identity,
+        skill=skill,
+        skill_decision=skill_decision,
+    )
     tool_policy_audits: list[_WorkerToolPolicyAudit] = []
     for tool_id in requested_tool_ids:
         tool = await repositories.get_mcp_tool_registry_entry(
@@ -1257,10 +1370,12 @@ async def _reauthorize_worker_capabilities(
                 tool_policy_audits=tuple(tool_policy_audits),
             )
         allowed_entries.append(tool)
+        tool_policy_subjects.append(_mcp_capability_subject(tool, distribution_decision))
 
     authorized_payload = _payload_with_authorized_mcp_registration(
         payload,
         allowed_entries=allowed_entries,
+        tool_policy_subjects=tool_policy_subjects,
     )
     return _WorkerCapabilityAuthorization(
         authorized_payload,

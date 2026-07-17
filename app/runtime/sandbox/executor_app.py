@@ -180,6 +180,13 @@ def _task_skill_ids(request: ExecutorTaskRequest) -> list[str]:
     return skill_ids or ["general-chat"]
 
 
+def _task_tool_policy_subjects(request: ExecutorTaskRequest) -> list[dict[str, Any]]:
+    value = request.config.get("tool_policy_subjects")
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
+
+
 def _configured_executor_auth_token(explicit_value: str | None) -> str:
     return str(explicit_value or os.getenv("AI_PLATFORM_EXECUTOR_AUTH_TOKEN") or "").strip()
 
@@ -319,6 +326,7 @@ async def _default_executor_runner(
             context_retrieval_identity=context_retrieval_identity,
             on_text=on_text,
             on_skill_use=on_skill_use,
+            tool_policy_subjects=_task_tool_policy_subjects(request),
             execution_policy="sandbox_brokered",
         )
     except ClaudeAgentSdkNotAvailable as exc:

@@ -87,8 +87,7 @@ def build_tool_policy_readiness() -> dict[str, Any]:
         "taxonomy_cases": taxonomy_cases,
         "summary": {
             "taxonomy_cases": len(taxonomy_cases),
-            "auto_allow_cases": sum(1 for item in taxonomy_cases if item["classification"] == "allow"),
-            "ask_cases": 0,
+            "immediate_allow_cases": sum(1 for item in taxonomy_cases if item["classification"] == "allow"),
             "deny_cases": sum(1 for item in taxonomy_cases if item["classification"] == "deny"),
         },
         "implemented_controls": [

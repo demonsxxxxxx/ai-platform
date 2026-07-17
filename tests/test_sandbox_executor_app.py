@@ -92,85 +92,6 @@ def test_executor_health_returns_ready(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_default_permission_callback_transport_outlives_the_control_plane_wait(monkeypatch):
-    observed = {}
-
-    class FakeResponse:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"allowed": True}
-
-    class FakeClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return False
-
-        async def post(self, url, *, json, headers):
-            observed.update({"url": url, "payload": json, "headers": headers})
-            return FakeResponse()
-
-    def build_client(*, timeout):
-        observed["timeout"] = timeout
-        return FakeClient()
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.httpx.AsyncClient", build_client)
-
-    result = await _default_callback_sender(
-        "https://control-plane.test/permission",
-        {"tool_name": "Bash", "tool_call_id": "call-a"},
-        "token-a",
-    )
-
-    assert result == {"allowed": True}
-    budget = tool_permission_budget(120.0)
-    assert observed["timeout"] == budget.permission_callback_timeout_seconds
-    assert observed["timeout"] > budget.permission_wait_seconds
-
-
-@pytest.mark.asyncio
-async def test_permission_callback_transport_uses_the_sdk_remaining_aggregate_wait(monkeypatch):
-    observed = {}
-
-    class FakeResponse:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"allowed": True}
-
-    class FakeClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return False
-
-        async def post(self, url, *, json, headers):
-            return FakeResponse()
-
-    def build_client(*, timeout):
-        observed["timeout"] = timeout
-        return FakeClient()
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.httpx.AsyncClient", build_client)
-    budget = tool_permission_budget(120.0)
-
-    await _default_callback_sender(
-        "https://control-plane.test/permission",
-        {"tool_name": "Bash", "tool_call_id": "call-a", "permission_wait_seconds": 130.0},
-        "token-a",
-    )
-
-    assert observed["timeout"] == 130.0 + (
-        budget.permission_callback_timeout_seconds - budget.permission_wait_seconds
-    )
-
-
-@pytest.mark.asyncio
 async def test_default_non_permission_callback_fails_fast(monkeypatch):
     observed = {}
 
@@ -344,19 +265,9 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
         calls["skill_id"] = kwargs["skill_id"]
         calls["model_id"] = kwargs["model_id"]
         calls["skills"] = kwargs["skills"]
+        calls["subjects"] = kwargs["tool_policy_subjects"]
+        assert "on_tool_permission" not in kwargs
         await kwargs["on_text"]("sdk partial")
-        permission = await kwargs["on_tool_permission"](
-            {
-                "tool_name": "Bash",
-                "tool_call_id": "tool-a",
-                "tool_input_keys": ["command"],
-                "risk_level": "high",
-                "write_capable": True,
-                "action": "execute",
-                "reason": "needs shell",
-            }
-        )
-        calls["permission"] = permission
         return type(
             "SdkResult",
             (),
@@ -378,33 +289,42 @@ def test_executor_execute_uses_claude_sdk_runner_when_enabled(tmp_path, monkeypa
     monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
     monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
 
+    payload = task_payload()
+    payload["config"]["tool_policy_subjects"] = [
+        {
+            "identity": "Bash",
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "identity_authorized": True,
+            "object_authorized": True,
+            "parameters_authorized": True,
+            "risk_level": "high",
+            "write_capable": True,
+            "allowed_parameter_keys": ["command"],
+            "required_parameter_keys": ["command"],
+        }
+    ]
     client = create_test_client(tmp_path, callback_sender=callback_sender)
 
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
+    response = client.post("/v1/tasks/execute", json=payload, headers=auth_headers())
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "failed"
-    assert body["error_code"] == "tool_permission_malformed_response"
+    assert body["status"] == "accepted"
     assert body["sdk_session_id"] == "sdk-session-a"
     assert calls["cwd"] == Path(tmp_path)
     assert calls["skill_id"] == "general-chat"
     assert calls["model_id"] == "deepseek-v4-flash"
     assert calls["skills"] == ["general-chat"]
-    assert calls["permission"]["allowed"] is False
+    assert calls["subjects"][0]["identity"] == "Bash"
     assert any(
         event["type"] == "assistant_delta"
         for callback in callbacks
         for event in callback.get("events", [])
     )
-    permission_event_types = [
-        event["type"]
-        for callback in callbacks
-        for event in callback.get("events", [])
-        if event.get("payload", {}).get("tool_call_id") == "tool-a"
-    ]
-    assert permission_event_types == ["tool_permission_denied"]
-    assert "tool_call_completed" not in permission_event_types
+    assert not any("tool-permission" in str(callback) for callback in callbacks)
 
 
 def test_executor_execute_fails_when_claude_sdk_disabled(tmp_path, monkeypatch):
@@ -497,168 +417,6 @@ def test_executor_execute_fails_closed_for_manifest_without_valid_scope(tmp_path
     body = response.json()
     assert body["status"] == "failed"
     assert body["error_code"] == "context_retrieval_scope_invalid"
-
-
-def test_executor_execute_uses_platform_tool_permission_broker(tmp_path, monkeypatch):
-    callbacks = []
-    calls = {}
-
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    async def fake_run_claude_agent_sdk(**kwargs):
-        calls["cwd"] = kwargs["cwd"]
-        calls["execution_policy"] = kwargs.get("execution_policy")
-        permission = await kwargs["on_tool_permission"](
-            {
-                "tool_name": "mcp__knowledge__search",
-                "tool_input": {"query": "approved knowledge"},
-                "tool_call_id": "tool-mcp-a",
-                "risk_level": "high",
-                "write_capable": True,
-                "action": "execute",
-                "reason": "needs governed MCP access",
-            }
-        )
-        calls["permission"] = permission
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "sdk final",
-                "session_id": "sdk-session-a",
-                "usage": {"input_tokens": 1, "output_tokens": 1},
-                "error": None if permission["allowed"] else permission["reason"],
-                "used_skills": [],
-                "used_skills_source": "",
-            },
-        )()
-
-    def callback_sender(url, payload, token):
-        callbacks.append((url, payload, token))
-        if url.endswith("/api/ai/runtime/callbacks/tool-permission"):
-            return {
-                "allowed": True,
-                "reason": "tool_permission_allowed",
-                "risk_level": "high",
-                "write_capable": True,
-                "decision": "allow_for_run",
-                "permission_request_id": "tpr-sdk",
-            }
-        return {"accepted": True}
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-
-    client = create_test_client(tmp_path, callback_sender=callback_sender)
-
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "accepted"
-    assert calls["cwd"] == Path(tmp_path)
-    assert calls["execution_policy"] == "sandbox_brokered"
-    assert calls["permission"] == {
-        "allowed": True,
-        "reason": "tool_permission_allowed",
-        "risk_level": "high",
-        "write_capable": True,
-        "decision": "allow_for_run",
-        "permission_request_id": "tpr-sdk",
-    }
-    broker_call = next(item for item in callbacks if item[0].endswith("/api/ai/runtime/callbacks/tool-permission"))
-    assert sum(1 for item in callbacks if item[0].endswith("/api/ai/runtime/callbacks/tool-permission")) == 1
-    assert broker_call[1]["run_id"] == "run-a"
-    assert broker_call[1]["callback_token_id"] == "cbt_run-a"
-    assert broker_call[1]["tool_name"] == "mcp__knowledge__search"
-    assert broker_call[1]["tool_input"] == {"query": "approved knowledge"}
-    assert broker_call[1]["tool_call_id"] == "tool-mcp-a"
-    permission_events = [
-        event
-        for _, callback_payload, _ in callbacks
-        for event in callback_payload.get("events", [])
-        if event.get("payload", {}).get("tool_call_id") == "tool-mcp-a"
-    ]
-    assert [event["type"] for event in permission_events] == ["tool_permission_authorized"]
-    assert permission_events[-1]["payload"]["allowed"] is True
-    assert permission_events[-1]["payload"]["reason"] == "tool_permission_allowed"
-    assert permission_events[-1]["payload"]["permission_request_id"] == "tpr-sdk"
-
-
-@pytest.mark.parametrize(
-    ("broker_mode", "expected_reason"),
-    [
-        ("timeout", "tool_permission_broker_failed"),
-        ("malformed", "tool_permission_malformed_response"),
-    ],
-)
-def test_executor_permission_broker_failures_emit_controlled_denial_event(
-    tmp_path,
-    monkeypatch,
-    broker_mode,
-    expected_reason,
-):
-    callbacks = []
-    calls = {}
-
-    class StubSettings:
-        claude_agent_sdk_enabled = True
-
-    async def fake_run_claude_agent_sdk(**kwargs):
-        permission = await kwargs["on_tool_permission"](
-            {
-                "tool_name": "mcp__knowledge__search",
-                "tool_input": {"query": "governed knowledge"},
-                "tool_call_id": "tool-mcp-denied",
-                "risk_level": "high",
-                "write_capable": True,
-                "action": "execute",
-                "reason": "needs governed MCP access",
-            }
-        )
-        calls["permission"] = permission
-        return type(
-            "SdkResult",
-            (),
-            {
-                "used_sdk": True,
-                "message": "",
-                "session_id": "sdk-session-a",
-                "usage": {},
-                "error": permission["reason"],
-                "used_skills": [],
-                "used_skills_source": "",
-            },
-        )()
-
-    def callback_sender(url, payload, token):
-        callbacks.append((url, payload, token))
-        if url.endswith("/api/ai/runtime/callbacks/tool-permission"):
-            if broker_mode == "timeout":
-                raise TimeoutError("permission callback timed out")
-            return {"allowed": "false", "reason": "truthy malformed value"}
-        return {"accepted": True}
-
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
-    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_run_claude_agent_sdk)
-    client = create_test_client(tmp_path, callback_sender=callback_sender)
-
-    response = client.post("/v1/tasks/execute", json=task_payload(), headers=auth_headers())
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "failed"
-    assert calls["permission"] == {"allowed": False, "reason": expected_reason}
-    permission_events = [
-        event
-        for _, callback_payload, _ in callbacks
-        for event in callback_payload.get("events", [])
-        if event.get("payload", {}).get("tool_call_id") == "tool-mcp-denied"
-    ]
-    assert [event["type"] for event in permission_events] == ["tool_permission_denied"]
-    assert permission_events[-1]["payload"]["allowed"] is False
-    assert permission_events[-1]["payload"]["reason"] == expected_reason
 
 
 def test_executor_execute_reports_platform_timeout_probe_as_nonterminal_observation(tmp_path):

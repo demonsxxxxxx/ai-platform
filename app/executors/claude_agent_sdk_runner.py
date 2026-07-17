@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from pathlib import PurePosixPath
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
 from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied
 from app.control_plane_contracts import sanitize_public_payload
@@ -50,6 +51,24 @@ _SDK_INTERNAL_CONTEXT_TOOLS = (
     "stage_context_file_to_workspace",
     "search_memory",
 )
+_BUILTIN_PARAMETER_KEYS = {
+    "Read": ("file_path",),
+    "Glob": ("pattern", "path"),
+    "LS": ("path",),
+    "Bash": ("command",),
+    "Write": ("file_path", "content"),
+    "Edit": ("file_path", "old_string", "new_string", "replace_all"),
+    "NotebookEdit": ("notebook_path", "new_source", "cell_id", "cell_type", "edit_mode"),
+    "Agent": ("agent", "prompt", "description"),
+    "WebFetch": ("url", "prompt"),
+    "WebSearch": ("query",),
+    "Skill": ("skill",),
+}
+_BUILTIN_REQUIRED_PARAMETER_KEYS = {
+    "Bash": ("command",),
+    "Write": ("file_path", "content"),
+    "Skill": ("skill",),
+}
 
 
 _SDK_PROJECT_SETTING_FILES = (".claude/settings.json", ".claude/settings.local.json")
@@ -885,6 +904,95 @@ def _build_context_retrieval_mcp_server(
     )
 
 
+def _canonical_tool_policy_subjects(value: object) -> dict[str, dict[str, Any]]:
+    """Keep only exact, complete capability subjects authorized by the worker."""
+
+    if not isinstance(value, list):
+        return {}
+    subjects: dict[str, dict[str, Any]] = {}
+    for raw in value:
+        if not isinstance(raw, dict):
+            continue
+        identity = str(raw.get("identity") or "")
+        validation = evaluate_tool_policy(
+            tool={
+                "requested_identity": identity,
+                "declared_identities": [identity],
+                "registered": raw.get("registered"),
+                "declared": raw.get("declared"),
+                "active": raw.get("active"),
+                "distributed": raw.get("distributed"),
+                "identity_authorized": raw.get("identity_authorized"),
+                "object_authorized": raw.get("object_authorized"),
+                "parameters_authorized": raw.get("parameters_authorized"),
+                "risk_level": raw.get("risk_level"),
+                "write_capable": raw.get("write_capable"),
+            }
+        )
+        if not validation.allowed or validation.canonical_identity != identity or identity in subjects:
+            continue
+        subject = dict(raw)
+        subject["identity"] = identity
+        subjects[identity] = subject
+    return subjects
+
+
+def _authorized_parameter_keys(subject: dict[str, Any], tool_name: str) -> set[str]:
+    configured = subject.get("allowed_parameter_keys")
+    if isinstance(configured, list) and all(isinstance(item, str) and item for item in configured):
+        return set(configured)
+    return set(_BUILTIN_PARAMETER_KEYS.get(tool_name, ()))
+
+
+def _parameters_match_subject(subject: dict[str, Any], tool_name: str, tool_input: object) -> bool:
+    if not isinstance(tool_input, dict):
+        return False
+    allowed_keys = _authorized_parameter_keys(subject, tool_name)
+    if not allowed_keys or not set(tool_input).issubset(allowed_keys):
+        return False
+    required = subject.get("required_parameter_keys", list(_BUILTIN_REQUIRED_PARAMETER_KEYS.get(tool_name, ())))
+    if isinstance(required, list):
+        if not all(isinstance(key, str) and key for key in required):
+            return False
+        if any(key not in tool_input or tool_input[key] in (None, "") for key in required):
+            return False
+    elif tool_name == "Bash":
+        if not isinstance(tool_input.get("command"), str) or not tool_input["command"].strip():
+            return False
+    elif tool_name == "Skill":
+        allowed_skill_names = subject.get("allowed_skill_names")
+        requested = _extract_skill_names_from_tool_input(tool_input, set(allowed_skill_names or []))
+        if not requested:
+            return False
+    expected_objects = subject.get("object_constraints")
+    if isinstance(expected_objects, dict):
+        if any(tool_input.get(key) != value for key, value in expected_objects.items()):
+            return False
+    return True
+
+
+def _mcp_server_options(subjects: dict[str, dict[str, Any]]) -> dict[str, dict[str, str]]:
+    servers: dict[str, dict[str, str]] = {}
+    for identity, subject in subjects.items():
+        if not identity.startswith("mcp__"):
+            continue
+        config = subject.get("mcp_server_config")
+        if not isinstance(config, dict):
+            continue
+        server_id = str(subject.get("mcp_server") or "")
+        transport = str(config.get("type") or "").lower()
+        endpoint = str(config.get("url") or "")
+        parsed = urlsplit(endpoint)
+        if not server_id or transport not in {"http", "sse"} or parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            continue
+        candidate = {"type": transport, "url": endpoint}
+        existing = servers.get(server_id)
+        if existing is not None and existing != candidate:
+            return {}
+        servers[server_id] = candidate
+    return servers
+
+
 async def run_claude_agent_sdk(
     *,
     prompt: str,
@@ -898,6 +1006,7 @@ async def run_claude_agent_sdk(
     query_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
+    tool_policy_subjects: list[dict[str, Any]] | None = None,
     execution_policy: str = "worker_local_legacy",
 ) -> ClaudeAgentSdkRunResult:
     settings = get_settings()
@@ -921,9 +1030,9 @@ async def run_claude_agent_sdk(
     PermissionResultAllow = _sdk_permission_type(sdk, "PermissionResultAllow")
     PermissionResultDeny = _sdk_permission_type(sdk, "PermissionResultDeny")
     configured_skills = skills if skills is not None else (_split_csv(settings.claude_agent_sdk_skills) or [skill_id])
-    allowed_skill_names = set(configured_skills)
     used_skill_names: list[str] = []
     sandbox_brokered = execution_policy == "sandbox_brokered"
+    authorized_subjects = _canonical_tool_policy_subjects(tool_policy_subjects)
     full_access = _full_access_requested(settings) and not sandbox_brokered
     permission_mode = (
         "dontAsk"
@@ -933,14 +1042,22 @@ async def run_claude_agent_sdk(
             full_access=full_access,
         )
     )
-    allowed_tools = (
-        ["Read", "Glob", "LS"]
-        if sandbox_brokered
-        else _safe_allowed_tools(
+    if sandbox_brokered:
+        skill_subject = authorized_subjects.get("Skill")
+        subject_skill_names = skill_subject.get("allowed_skill_names") if skill_subject else []
+        allowed_skill_names = {
+            name
+            for name in subject_skill_names
+            if isinstance(name, str) and name in set(configured_skills)
+        }
+        configured_skills = [name for name in configured_skills if name in allowed_skill_names]
+        allowed_tools = list(authorized_subjects)
+    else:
+        allowed_skill_names = set(configured_skills)
+        allowed_tools = _safe_allowed_tools(
             getattr(settings, "claude_agent_allowed_tools", "Read,Glob,LS"),
             full_access=full_access,
         )
-    )
     context_retrieval_server = _build_context_retrieval_mcp_server(
         sdk,
         retrieval=context_retrieval,
@@ -948,7 +1065,7 @@ async def run_claude_agent_sdk(
         workspace_root=cwd,
     )
     internal_context_tools = set(_SDK_INTERNAL_CONTEXT_TOOLS) if context_retrieval_server is not None else set()
-    if context_retrieval_server is not None:
+    if context_retrieval_server is not None and not sandbox_brokered:
         for tool_name in _SDK_INTERNAL_CONTEXT_TOOLS:
             if tool_name not in allowed_tools:
                 allowed_tools.append(tool_name)
@@ -960,6 +1077,7 @@ async def run_claude_agent_sdk(
             full_access=full_access,
         )
     )
+    mcp_servers = _mcp_server_options(authorized_subjects) if sandbox_brokered else {}
     timeout_seconds = _sdk_run_timeout_seconds(
         settings,
         sandbox_brokered=sandbox_brokered,
@@ -975,16 +1093,23 @@ async def run_claude_agent_sdk(
         if on_skill_use:
             await on_skill_use(skill_name, metadata)
 
-    declared_tool_identities = {
-        (f"mcp__ai-platform-context__{tool_name}" if tool_name in internal_context_tools else tool_name)
-        for tool_name in allowed_tools
-    }
-    if allowed_skill_names:
+    declared_tool_identities = (
+        set(authorized_subjects)
+        if sandbox_brokered
+        else {
+            (f"mcp__ai-platform-context__{tool_name}" if tool_name in internal_context_tools else tool_name)
+            for tool_name in allowed_tools
+        }
+    )
+    if not sandbox_brokered and allowed_skill_names:
         declared_tool_identities.add("Skill")
 
     def adapter_identity(tool_name: object) -> str:
         value = str(tool_name or "")
-        return f"mcp__ai-platform-context__{value}" if value in internal_context_tools else value
+        contextual_identity = f"mcp__ai-platform-context__{value}"
+        if contextual_identity in declared_tool_identities:
+            return contextual_identity
+        return value
 
     def policy_for_tool(tool_name: object, tool_input: object):
         identity = adapter_identity(tool_name)
@@ -993,6 +1118,27 @@ async def run_claude_agent_sdk(
             if str(tool_name or "") == "Skill" and isinstance(tool_input, dict)
             else []
         )
+        subject = authorized_subjects.get(identity)
+        if sandbox_brokered:
+            parameters_authorized = bool(subject) and _parameters_match_subject(subject, str(tool_name or ""), tool_input)
+            registered = bool(subject) and (
+                not identity.startswith("mcp__") or str(subject.get("mcp_server") or "") in mcp_servers
+            )
+            return evaluate_tool_policy(
+                tool={
+                    "requested_identity": identity,
+                    "declared_identities": sorted(declared_tool_identities),
+                    "registered": subject.get("registered") is True and registered if subject else False,
+                    "declared": subject.get("declared") if subject else False,
+                    "active": subject.get("active") if subject else False,
+                    "distributed": subject.get("distributed") if subject else False,
+                    "identity_authorized": subject.get("identity_authorized") if subject else False,
+                    "object_authorized": subject.get("object_authorized") if subject else False,
+                    "parameters_authorized": parameters_authorized,
+                    "risk_level": subject.get("risk_level") if subject else "low",
+                    "write_capable": subject.get("write_capable") if subject else False,
+                }
+            )
         parameters_authorized = isinstance(tool_input, dict)
         if str(tool_name or "") == "Bash":
             parameters_authorized = parameters_authorized and isinstance(tool_input.get("command"), str) and bool(tool_input["command"].strip())
@@ -1094,15 +1240,21 @@ async def run_claude_agent_sdk(
             hooks["PostToolUse"] = [skill_hook]
             hooks["PostToolUseFailure"] = [skill_hook]
 
+    if (
+        context_retrieval_server is not None
+        and any(identity.startswith("mcp__ai-platform-context__") for identity in declared_tool_identities)
+    ):
+        mcp_servers["ai-platform-context"] = context_retrieval_server
+    sdk_tools = (
+        [identity for identity in allowed_tools if not identity.startswith("mcp__")]
+        if sandbox_brokered
+        else _sdk_tools_for_mode(full_access=full_access)
+    )
     options = ClaudeAgentOptions(
         cwd=str(cwd),
         model=model_id or settings.claude_agent_model or settings.anthropic_model or None,
-        tools=(
-            [*_SDK_LOCAL_READ_ONLY_TOOLS, *_SDK_BROKERED_BUILTIN_TOOLS]
-            if sandbox_brokered
-            else _sdk_tools_for_mode(full_access=full_access)
-        ),
-        mcp_servers={"ai-platform-context": context_retrieval_server} if context_retrieval_server is not None else {},
+        tools=sdk_tools,
+        mcp_servers=mcp_servers,
         permission_mode=permission_mode,
         allowed_tools=allowed_tools,
         disallowed_tools=disallowed_tools,

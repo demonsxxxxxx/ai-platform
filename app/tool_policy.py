@@ -8,9 +8,9 @@ an invocation is either allowed now or denied now.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from typing import Any
 
+from app.validation import SAFE_ID_PATTERN
 
 RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 
@@ -31,11 +31,6 @@ BUILTIN_TOOL_IDENTITIES = frozenset(
         "Skill",
     }
 )
-_MCP_IDENTITY_RE = re.compile(
-    r"mcp__([A-Za-z0-9][A-Za-z0-9._-]{0,63})__([A-Za-z0-9][A-Za-z0-9._-]{0,95})\Z"
-)
-
-
 @dataclass(frozen=True)
 class ToolPolicyDecision:
     """One synchronous policy result; ``outcome`` is always allow or deny."""
@@ -68,11 +63,13 @@ def _canonical_identity(value: object) -> str:
         return ""
     if value in BUILTIN_TOOL_IDENTITIES:
         return value
-    match = _MCP_IDENTITY_RE.fullmatch(value)
-    if match is None:
+    if not value.startswith("mcp__"):
         return ""
-    server, tool = match.groups()
-    if "__" in server or "__" in tool:
+    parts = value[5:].split("__", 1)
+    if len(parts) != 2:
+        return ""
+    server, tool = parts
+    if not SAFE_ID_PATTERN.fullmatch(server) or not SAFE_ID_PATTERN.fullmatch(tool):
         return ""
     return value
 

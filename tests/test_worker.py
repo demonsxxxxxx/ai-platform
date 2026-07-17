@@ -4,9 +4,11 @@ from dataclasses import replace
 import hashlib
 import json
 import types
+from pathlib import Path
 
 import pytest
 
+import app.worker as worker_module
 from app import repositories as repository_module
 from app.executors.base import ArtifactManifest, ExecutorResult
 from app.executors.claude_agent_worker import ClaudeAgentWorkerAdapter
@@ -465,6 +467,49 @@ def base_payload(**overrides):
         if "release_decision" not in overrides:
             payload["release_decision"] = release_decision(locked_version)
     return payload
+
+
+def test_worker_propagates_exact_authorized_mcp_subject_without_permission_lookup_or_consume():
+    payload = QueueRunPayload.model_validate(
+        base_payload(input={"mode": "file", "mcp_tool_ids": ["corp-search"]})
+    )
+    tool = {
+        "tool_id": "corp-search",
+        "server_id": "corp:search",
+        "name": "query",
+        "registry_status": "active",
+        "policy_status": "active",
+        "server_status": "active",
+        "risk_level": "high",
+        "write_capable": True,
+        "transport_type": "streamable_http",
+        "endpoint": "https://mcp.example.test/v1",
+        "allowed_tools": ["query"],
+    }
+    subject = worker_module._mcp_capability_subject(
+        tool,
+        types.SimpleNamespace(usable=True),
+    )
+    authorized = worker_module._payload_with_authorized_mcp_registration(
+        payload,
+        allowed_entries=[tool],
+        tool_policy_subjects=[subject],
+    )
+
+    assert authorized.input["mcp_tool_ids"] == ["corp-search"]
+    assert authorized.input["_runtime_tool_policy_subjects"] == [
+        {
+            **subject,
+            "identity": "mcp__corp:search__query",
+        }
+    ]
+    assert subject["mcp_server_config"] == {
+        "type": "http",
+        "url": "https://mcp.example.test/v1",
+    }
+    source = (Path(__file__).parents[1] / "app" / "worker.py").read_text(encoding="utf-8")
+    assert "get_exact_tool_permission_decision(" not in source
+    assert "consume_tool_permission_decision(" not in source
 
 
 def locked_run_from_payload(payload):

@@ -1744,17 +1744,13 @@ def test_foundation_alpha_readiness_summarizes_mcp_tool_permission_runtime_contr
         "ordinary_user_custom_mcp": "not_allowed",
         "unregistered_tool_behavior": "deny",
         "tenant_policy_scope": "same_tenant_registered_tools_only",
-        "read_only_low_risk_auto_allow": True,
+        "read_only_low_risk_executes_immediately": True,
         "disabled_or_unregistered_deny": True,
-        "high_risk_or_write_requires_current_decision": True,
-        "exact_allow_decisions": ["allow_once", "allow_for_run"],
-        "deny_decision": "deny",
-        "allow_once_consumed_before_dispatch": True,
-        "allow_once_consume_failure_fails_closed": True,
-        "request_event_audit": {
-            "permission_request_event": "tool_permission_requested",
-            "permission_decision_event": "tool_permission_decided",
-            "decision_audit_action": "tool.permission.decision",
+        "declared_active_high_or_write_executes_immediately": True,
+        "outcomes": ["allow", "deny"],
+        "historical_permission_evidence": {
+            "projection": "read_only_redacted",
+            "legacy_pending": "terminalized_fail_closed",
             "worker_policy_audit_actions": [
                 "mcp_tool_policy_allowed",
                 "mcp_tool_policy_denied",
@@ -1764,12 +1760,8 @@ def test_foundation_alpha_readiness_summarizes_mcp_tool_permission_runtime_contr
         "covered_runtime_control_tests": [
             "tests/test_worker.py::test_worker_audits_read_only_ragflow_tool_call",
             "tests/test_worker.py::test_worker_blocks_disabled_mcp_tool_before_dispatch",
-            "tests/test_worker.py::test_worker_blocks_high_risk_mcp_tool_without_permission_decision",
-            "tests/test_worker.py::test_worker_allows_high_risk_mcp_tool_with_permission_decision",
-            "tests/test_worker.py::test_worker_consumes_allow_once_mcp_decision_before_dispatch",
-            "tests/test_worker.py::test_worker_fails_closed_when_allow_once_mcp_decision_cannot_be_consumed",
+            "tests/test_zero_click_tool_policy.py",
             "tests/test_tool_permission_routes.py",
-            "tests/test_admin_tool_policies.py",
         ],
     }
     assert controls["status"] != "211_verified"
@@ -4688,7 +4680,7 @@ def test_foundation_alpha_readiness_fails_closed_when_optional_readiness_depende
     assert g6_evidence["ordinary_user_policy"] == "fail_closed_until_projection_mapping_and_acceptance_pass"
     assert g6_evidence["open_gap_count"] == 1
     assert g6_evidence["dependency_error_class"] == "ModuleNotFoundError"
-    assert g6_evidence["tool_permission_decision_audit_required"] is True
+    assert g6_evidence["tool_policy_audit_required"] is True
     assert g6_evidence["memory_long_term_default_fail_closed"] is True
     assert g6_evidence["skill_snapshot_run_seen"] is True
     assert g6_evidence["governed_skill_runs"]["verified"] is True

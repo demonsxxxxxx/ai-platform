@@ -32,14 +32,14 @@ def test_b5_file_tool_readiness_exposes_file_and_tool_boundaries():
     tool_authority = readiness["domains"]["exact_tool_permission"]
     assert tool_authority["gate_slice"] == "B5b exact tool permission"
     assert tool_authority["status"] == "local_contract_recorded"
-    assert "exact_tool_permission_decision_lookup_source_tests" in tool_authority["implemented_controls"]
-    assert "allow_once_replay_denial_source_tests" in tool_authority["implemented_controls"]
-    assert "shell_network_filesystem_mcp_runtime_replay_denial_smoke" in tool_authority["open_gaps"]
+    assert "run_scoped_authorized_capability_subject" in tool_authority["implemented_controls"]
+    assert "immediate_allow_deny_policy_audit" in tool_authority["implemented_controls"]
+    assert "shell_network_filesystem_mcp_runtime_denial_smoke" in tool_authority["open_gaps"]
 
     assert readiness["open_gaps"] == [
         "file_upload_namespace_retention_runtime_smoke",
         "artifact_preview_download_unauthorized_denial_211_smoke",
-        "exact_tool_permission_runtime_replay_denial_smoke",
+        "exact_tool_policy_runtime_denial_smoke",
         "projection_redaction_runtime_acceptance",
         "b5_issue_review_and_closure_evidence",
     ]
@@ -54,7 +54,7 @@ def test_b5_file_tool_readiness_markdown_is_operator_readable():
     assert "## B5a File And Artifact Authority" in markdown
     assert "## B5b Exact Tool Permission" in markdown
     assert "file_upload_namespace_retention_runtime_smoke" in markdown
-    assert "exact_tool_permission_runtime_replay_denial_smoke" in markdown
+    assert "exact_tool_policy_runtime_denial_smoke" in markdown
     assert "does not create `211 verified`" in markdown
     assert "does not close B5/G6/G7/G9" in markdown
 

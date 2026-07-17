@@ -860,6 +860,7 @@ class ClaudeAgentWorkerAdapter:
             agent_id=payload.agent_id,
             skill_ids=_runtime_request_skill_ids(payload, prepared),
             mcp_tool_ids=_string_list(payload.input.get("mcp_tool_ids")),
+            tool_policy_subjects=_runtime_tool_policy_subjects(payload),
             input_message=prepared.prompt,
             file_ids=payload.file_ids,
             sandbox_mode=_payload_sandbox_mode(payload),
@@ -1416,6 +1417,7 @@ class ClaudeAgentWorkerAdapter:
                     "skills": staged_skill_names,
                     "on_text": on_text,
                     "on_skill_use": on_skill_use,
+                    "tool_policy_subjects": _runtime_tool_policy_subjects(payload),
                 }
                 if context_retrieval is not None and context_retrieval_identity is not None:
                     sdk_kwargs["context_retrieval"] = context_retrieval
@@ -1564,6 +1566,13 @@ def _file_skill_steps(input_payload: dict[str, object]) -> list[dict[str, object
         },
         {"step_key": "verify", "role": "verify", "depends_on": ["execute"], "skill_ids": [], "mcp_tool_ids": []},
     ]
+
+
+def _runtime_tool_policy_subjects(payload: RunPayload) -> list[dict[str, Any]]:
+    value = payload.input.get("_runtime_tool_policy_subjects")
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _string_list(value: object) -> list[str]:
