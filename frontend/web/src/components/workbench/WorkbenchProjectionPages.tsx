@@ -33,7 +33,6 @@ import type {
 import { Permission } from "../../types";
 import { WorkbenchStateSurface } from "./WorkbenchStateSurface";
 import { workbenchSurface } from "./workbenchSurface";
-import { AdminToolPermissionInboxSection } from "../panels/AdminToolPermissionInboxSection";
 import {
   CHINESE_NOTIFICATION_CONTENT_FALLBACK,
   CHINESE_NOTIFICATION_TITLE_FALLBACK,
@@ -795,7 +794,6 @@ export function WorkbenchSettingsProjectionPanel() {
         },
       ]}
     >
-      <AdminToolPermissionInboxSection />
       <div className="grid gap-3 xl:grid-cols-2">
         {groups.length === 0 ? (
           <EmptyProjection message={t("workbench.projections.settings.empty")} />

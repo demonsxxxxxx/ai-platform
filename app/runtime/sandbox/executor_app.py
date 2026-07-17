@@ -29,12 +29,10 @@ from app.runtime.sandbox.contracts import (
     ContextRetrievalScope,
     ExecutorCallbackEvent,
     ExecutorTaskRequest,
-    ExecutorToolPermissionRequest,
     build_trusted_callback_target,
 )
 from app.settings import get_settings
 from app.storage import ObjectStorage
-from app.tool_permission_lifecycle import callback_timeout_seconds, tool_permission_budget
 
 
 CallbackPayload = dict[str, Any]
@@ -49,7 +47,7 @@ ExecutorRunner = Callable[
 
 async def _default_callback_sender(url: str, payload: CallbackPayload, token: str) -> CallbackResult:
     headers = {"X-AI-Platform-Callback-Token": token}
-    async with httpx.AsyncClient(timeout=callback_timeout_seconds(payload)) as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
@@ -182,10 +180,6 @@ def _task_skill_ids(request: ExecutorTaskRequest) -> list[str]:
     return skill_ids or ["general-chat"]
 
 
-def _tool_permission_callback_url(request: ExecutorTaskRequest) -> str:
-    return f"{request.callback_base_url.rstrip('/')}/api/ai/runtime/callbacks/tool-permission"
-
-
 def _configured_executor_auth_token(explicit_value: str | None) -> str:
     return str(explicit_value or os.getenv("AI_PLATFORM_EXECUTOR_AUTH_TOKEN") or "").strip()
 
@@ -236,22 +230,6 @@ def _validate_executor_request_scope(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_callback_target")
     if request.callback_url != trusted_callback_target.callback_url:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid_callback_target")
-
-
-def _normalize_tool_permission_response(result: CallbackResult, *, default_reason: str) -> dict[str, Any]:
-    if not isinstance(result, dict):
-        return {"allowed": False, "reason": "tool_permission_malformed_response"}
-    allowed = result.get("allowed")
-    if not isinstance(allowed, bool):
-        return {"allowed": False, "reason": "tool_permission_malformed_response"}
-    return {
-        "allowed": allowed is True,
-        "reason": str(result.get("reason") or default_reason),
-        "risk_level": str(result.get("risk_level") or "high"),
-        "write_capable": bool(result.get("write_capable", True)),
-        "decision": str(result.get("decision") or ""),
-        "permission_request_id": str(result.get("permission_request_id") or ""),
-    }
 
 
 def _context_retrieval_for_request(
@@ -314,73 +292,6 @@ async def _default_executor_runner(
             return
         await emit_event(AgentEvent(type="assistant_delta", message=delta, payload={"delta": delta}))
 
-    permission_denials: list[dict[str, Any]] = []
-
-    async def on_tool_permission(permission_request: dict[str, Any]) -> dict[str, Any]:
-        tool_name = str(permission_request.get("tool_name") or "tool")
-        tool_call_id = str(permission_request.get("tool_call_id") or "")
-        reason = str(permission_request.get("reason") or "Tool use requires platform permission")
-        action = str(permission_request.get("action") or "execute")
-        risk_level = str(permission_request.get("risk_level") or "high")
-        write_capable = bool(permission_request.get("write_capable", True))
-        payload = {
-            "tool_name": tool_name,
-            "tool_call_id": tool_call_id,
-            "action": action,
-            "risk_level": risk_level,
-            "write_capable": write_capable,
-            "reason": reason,
-        }
-        async def emit_permission_outcome(outcome: dict[str, Any]) -> None:
-            await emit_event(
-                AgentEvent(
-                    type="tool_permission_authorized" if outcome.get("allowed") is True else "tool_permission_denied",
-                    message=f"{tool_name} permission {'allowed' if outcome.get('allowed') is True else 'denied'}",
-                    payload={
-                        **payload,
-                        "allowed": outcome.get("allowed") is True,
-                        "reason": str(outcome.get("reason") or "tool_permission_denied"),
-                        "permission_request_id": str(outcome.get("permission_request_id") or ""),
-                        "source": "sandbox_permission_broker",
-                    },
-                    admin_only=True,
-                )
-            )
-
-        broker_request = ExecutorToolPermissionRequest(
-            session_id=request.session_id,
-            run_id=request.run_id,
-            callback_token_id=request.callback_token_id,
-            sdk_session_id=request.sdk_session_id,
-            tool_name=tool_name,
-            tool_input=permission_request.get("tool_input")
-            if isinstance(permission_request.get("tool_input"), dict)
-            else {},
-            tool_call_id=tool_call_id,
-            action=action,
-            risk_level=risk_level,
-            write_capable=write_capable,
-            reason=reason,
-            permission_wait_seconds=permission_request.get("permission_wait_seconds"),
-        )
-        try:
-            broker_result = await _dispatch_callback(
-                callback_sender,
-                _tool_permission_callback_url(request),
-                broker_request.model_dump(),
-                request.callback_token,
-            )
-        except Exception:
-            outcome = {"allowed": False, "reason": "tool_permission_broker_failed"}
-            await emit_permission_outcome(outcome)
-            permission_denials.append(outcome)
-            return outcome
-        outcome = _normalize_tool_permission_response(broker_result, default_reason=reason)
-        await emit_permission_outcome(outcome)
-        if outcome.get("allowed") is not True:
-            permission_denials.append(outcome)
-        return outcome
-
     async def on_skill_use(skill_name: str, metadata: dict[str, Any]) -> None:
         await emit_event(
             AgentEvent(
@@ -408,7 +319,6 @@ async def _default_executor_runner(
             context_retrieval_identity=context_retrieval_identity,
             on_text=on_text,
             on_skill_use=on_skill_use,
-            on_tool_permission=on_tool_permission,
             execution_policy="sandbox_brokered",
         )
     except ClaudeAgentSdkNotAvailable as exc:
@@ -421,9 +331,8 @@ async def _default_executor_runner(
 
     used_sdk = bool(getattr(sdk_result, "used_sdk", False))
     error = getattr(sdk_result, "error", None)
-    permission_denial = permission_denials[-1] if permission_denials else None
     response = {
-        "status": "completed" if used_sdk and not error and permission_denial is None else "failed",
+        "status": "completed" if used_sdk and not error else "failed",
         "message": str(getattr(sdk_result, "message", "") or ""),
         "sdk_session_id": getattr(sdk_result, "session_id", None),
         "sdk_usage": getattr(sdk_result, "usage", {}) or {},
@@ -432,10 +341,7 @@ async def _default_executor_runner(
         "used_skills": list(getattr(sdk_result, "used_skills", []) or []),
         "used_skills_source": str(getattr(sdk_result, "used_skills_source", "") or ""),
     }
-    if permission_denial is not None:
-        response["error_code"] = str(permission_denial.get("reason") or "tool_permission_denied")
-        response["error_message"] = "Tool permission was not granted; execution did not complete."
-    elif error:
+    if error:
         response["error_code"] = str(error)
         response["error_message"] = str(error)
     elif not used_sdk:
@@ -531,14 +437,6 @@ def create_executor_app(
             if isinstance(resource_limits, dict)
             else None
         )
-        if max_seconds is not None and request.governed_permission_wait:
-            sdk_normal_timeout = float(
-                getattr(get_settings(), "claude_agent_sdk_timeout_seconds", 120.0) or 120.0
-            )
-            max_seconds = max(
-                max_seconds,
-                tool_permission_budget(sdk_normal_timeout).sandbox_sdk_timeout_seconds,
-            )
         invalid_max_seconds = max_seconds_present and max_seconds is None
         timed_out = max_seconds is not None and max_seconds <= 0
         executor_started_at = time.monotonic()

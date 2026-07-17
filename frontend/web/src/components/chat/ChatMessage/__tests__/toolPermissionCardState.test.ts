@@ -26,8 +26,8 @@ const pendingPart: ToolPermissionPart = {
 
 test("projects each ordinary-user permission history state without approval controls", () => {
   assert.deepEqual(getOrdinaryUserToolPermissionPresentation(pendingPart), {
-    titleKey: "chat.toolPermission.pending.title",
-    messageKey: "chat.toolPermission.pending.message",
+    titleKey: "chat.toolPermission.invalidated.title",
+    messageKey: "chat.toolPermission.invalidated.message",
   });
   assert.deepEqual(
     getOrdinaryUserToolPermissionPresentation({
@@ -144,8 +144,8 @@ test("renders every chat permission history card read-only even when legacy call
       /ragflow-knowledge-search|高风险|可写操作|允许一次|允许本次运行/,
     );
   }
-  assert.match(adminPendingMarkup, /正在等待管理员处理/);
-  assert.match(ordinaryPendingMarkup, /正在等待管理员处理/);
+  assert.match(adminPendingMarkup, /工具权限已关闭/);
+  assert.match(ordinaryPendingMarkup, /工具权限已关闭/);
   assert.match(ordinaryDeniedMarkup, /操作未获授权/);
   assert.match(adminAllowedMarkup, /本次运行已获授权/);
 });
@@ -164,5 +164,5 @@ test("the shared chat renderer fails closed while no authoritative admin is pres
 
   assert.doesNotMatch(markup, /<button\b/i);
   assert.doesNotMatch(markup, /ragflow-knowledge-search|高风险|可写操作/);
-  assert.match(markup, /正在等待管理员处理/);
+  assert.match(markup, /工具权限已关闭/);
 });

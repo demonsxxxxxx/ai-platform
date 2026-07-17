@@ -13,7 +13,7 @@ from app.context_retrieval import ContextRetrieval, ContextRetrievalDenied
 from app.control_plane_contracts import sanitize_public_payload
 from app.public_context_keys import safe_public_context_pack_version
 from app.settings import get_settings
-from app.tool_permission_lifecycle import ToolPermissionWaitLedger, tool_permission_budget
+from app.tool_policy import evaluate_tool_policy
 
 _SDK_ENV_ALLOWLIST = {
     "PATH",
@@ -77,10 +77,8 @@ def _sdk_run_timeout_seconds(
     sandbox_brokered: bool,
     full_access: bool,
 ) -> float:
-    """Keep brokered SDK execution alive long enough for a governed decision."""
+    """Return the bounded SDK execution time without an approval wait extension."""
     timeout_seconds = float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0))
-    if sandbox_brokered:
-        timeout_seconds = tool_permission_budget(timeout_seconds).sandbox_sdk_timeout_seconds
     if full_access:
         timeout_seconds = max(timeout_seconds, _SDK_FULL_ACCESS_MIN_TIMEOUT_SECONDS)
     return timeout_seconds
@@ -900,7 +898,6 @@ async def run_claude_agent_sdk(
     query_fn: Callable[..., Any] | None = None,
     on_text: Callable[[str], Awaitable[None]] | None = None,
     on_skill_use: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
-    on_tool_permission: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
     execution_policy: str = "worker_local_legacy",
 ) -> ClaudeAgentSdkRunResult:
     settings = get_settings()
@@ -968,21 +965,6 @@ async def run_claude_agent_sdk(
         sandbox_brokered=sandbox_brokered,
         full_access=full_access,
     )
-    permission_budget = tool_permission_budget(
-        float(getattr(settings, "claude_agent_sdk_timeout_seconds", 120.0) or 120.0)
-    )
-    initial_timeout_seconds = (
-        permission_budget.normal_execution_timeout_seconds if sandbox_brokered else timeout_seconds
-    )
-    event_loop = asyncio.get_running_loop()
-    permission_wait_ledger = (
-        ToolPermissionWaitLedger(permission_budget, monotonic=event_loop.time) if sandbox_brokered else None
-    )
-    permission_timeout_state: dict[str, object] = {
-        "activated": False,
-        "deadline": None,
-        "reschedule": None,
-    }
 
     async def record_used_skill(skill_name: str, metadata: dict[str, Any]) -> None:
         if allowed_skill_names and skill_name not in allowed_skill_names:
@@ -993,210 +975,87 @@ async def run_claude_agent_sdk(
         if on_skill_use:
             await on_skill_use(skill_name, metadata)
 
-    async def request_sandbox_permission(permission_request: dict[str, Any]) -> dict[str, Any]:
-        """Spend one shared wait slice and reserve post-decision execution before approval."""
+    declared_tool_identities = {
+        (f"mcp__ai-platform-context__{tool_name}" if tool_name in internal_context_tools else tool_name)
+        for tool_name in allowed_tools
+    }
+    if allowed_skill_names:
+        declared_tool_identities.add("Skill")
 
-        if on_tool_permission is None or permission_wait_ledger is None:
-            return {"allowed": False, "reason": "tool_permission_broker_unavailable"}
-        window = permission_wait_ledger.begin_callback()
-        if window is None:
-            return {"allowed": False, "reason": "tool_permission_wait_exhausted"}
-        deadline = permission_timeout_state.get("deadline")
-        reschedule = permission_timeout_state.get("reschedule")
-        if not isinstance(deadline, int | float) or not callable(reschedule):
-            permission_wait_ledger.finish_callback(window)
-            return {"allowed": False, "reason": "tool_permission_execution_window_exhausted"}
-        if permission_timeout_state["activated"] is not True:
-            reschedule(float(deadline))
-            permission_timeout_state["activated"] = True
-        callback_deadline = float(deadline) - permission_budget.post_authorization_execution_seconds
-        callback_timeout_seconds = min(window.transport_timeout_seconds, callback_deadline - event_loop.time())
-        if callback_timeout_seconds <= 0:
-            permission_wait_ledger.finish_callback(window)
-            return {"allowed": False, "reason": "tool_permission_execution_window_exhausted"}
-        try:
-            result = await asyncio.wait_for(
-                on_tool_permission(
-                    {
-                        **permission_request,
-                        "permission_wait_seconds": window.wait_timeout_seconds,
-                    }
-                ),
-                timeout=callback_timeout_seconds,
-            )
-        except asyncio.CancelledError:
-            raise
-        except TimeoutError:
-            return {"allowed": False, "reason": "tool_permission_broker_timed_out"}
-        finally:
-            permission_wait_ledger.finish_callback(window)
-        if result.get("allowed") is True and event_loop.time() >= callback_deadline:
-            return {"allowed": False, "reason": "tool_permission_execution_window_exhausted"}
-        return result
+    def adapter_identity(tool_name: object) -> str:
+        value = str(tool_name or "")
+        return f"mcp__ai-platform-context__{value}" if value in internal_context_tools else value
+
+    def policy_for_tool(tool_name: object, tool_input: object):
+        identity = adapter_identity(tool_name)
+        selected_skills = (
+            _extract_skill_names_from_tool_input(tool_input, allowed_skill_names)
+            if str(tool_name or "") == "Skill" and isinstance(tool_input, dict)
+            else []
+        )
+        parameters_authorized = isinstance(tool_input, dict)
+        if str(tool_name or "") == "Bash":
+            parameters_authorized = parameters_authorized and isinstance(tool_input.get("command"), str) and bool(tool_input["command"].strip())
+        if str(tool_name or "") == "Skill":
+            parameters_authorized = bool(selected_skills)
+        declared = identity in declared_tool_identities
+        return evaluate_tool_policy(
+            tool={
+                "requested_identity": identity,
+                "declared_identities": sorted(declared_tool_identities),
+                "registered": declared,
+                "declared": declared,
+                "active": declared,
+                "distributed": declared,
+                "identity_authorized": True,
+                "object_authorized": True,
+                "parameters_authorized": parameters_authorized,
+                "risk_level": "low" if str(tool_name or "") in _SDK_LOCAL_READ_ONLY_TOOLS else "high",
+                "write_capable": str(tool_name or "") not in _SDK_LOCAL_READ_ONLY_TOOLS,
+            }
+        )
 
     async def can_use_tool(tool_name: str, tool_input: dict[str, Any], _context=None):
-        if sandbox_brokered:
-            if tool_name in _SDK_LOCAL_READ_ONLY_TOOLS or tool_name in internal_context_tools:
-                return PermissionResultAllow()
-            if tool_name.lower() == "skill":
-                selected = (
-                    _extract_skill_names_from_tool_input(tool_input, allowed_skill_names)
-                    if allowed_skill_names
-                    else []
-                )
-                if selected:
-                    return PermissionResultAllow()
-            return PermissionResultDeny(message="Tool use requires the platform sandbox permission broker")
-        if full_access and tool_name in _sdk_tools_for_mode(full_access=True):
-            return PermissionResultAllow()
-        if tool_name == "Bash" and isinstance(tool_input, dict):
-            command = str(tool_input.get("command") or "")
-            permitted_command = _canonical_permitted_bash_command(command, cwd)
-            if permitted_command:
-                return PermissionResultAllow(updated_input={**tool_input, "command": permitted_command})
-        return PermissionResultDeny(message="Tool use is not permitted by ai-platform runner policy")
+        decision = policy_for_tool(tool_name, tool_input)
+        if not decision.allowed:
+            return PermissionResultDeny(message=decision.reason)
+        if tool_name == "Bash" and not sandbox_brokered:
+            permitted_command = _canonical_permitted_bash_command(str(tool_input.get("command") or ""), cwd)
+            if not permitted_command:
+                return PermissionResultDeny(message="tool_parameters_not_authorized")
+            return PermissionResultAllow(updated_input={**tool_input, "command": permitted_command})
+        return PermissionResultAllow()
 
     async def enforce_side_effect_tool_policy(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
-        reason = "Tool use is not permitted by ai-platform runner policy"
         if not isinstance(hook_input, dict):
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            }
-        tool_name = str(hook_input.get("tool_name") or "")
-        if sandbox_brokered and (
-            tool_name in _SDK_LOCAL_READ_ONLY_TOOLS or tool_name in internal_context_tools
-        ):
-            return {}
-        brokered_tool = sandbox_brokered and bool(tool_name)
-        if tool_name != "Bash" and not brokered_tool:
-            return {}
-        tool_input = hook_input.get("tool_input")
-        if not isinstance(tool_input, dict):
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
-                    "permissionDecisionReason": reason,
-                }
-            }
-        if sandbox_brokered and tool_name.lower() == "skill":
-            selected_skills = (
-                _extract_skill_names_from_tool_input(tool_input, allowed_skill_names)
-                if allowed_skill_names
-                else []
-            )
-            if not selected_skills:
-                return {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": "Skill is not permitted by the pinned run allowlist",
-                    }
-                }
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": "Skill is permitted by the pinned run allowlist",
-                }
-            }
-        permitted = (
-            _canonical_permitted_bash_command_with_kind(str(tool_input.get("command") or ""), cwd)
-            if tool_name == "Bash"
-            else None
-        )
-        if permitted and not sandbox_brokered:
-            permitted_command, command_kind = permitted
-            if command_kind == "qa_review_runner":
-                await record_used_skill(
-                    "qa-file-reviewer",
-                    {
-                        "source": "claude_agent_sdk_hook",
-                        "hook_event_name": "PreToolUse",
-                        "tool_name": "Bash",
-                        "tool_use_id": str(hook_input.get("tool_use_id") or tool_use_id or ""),
-                    },
-                )
-            elif command_kind == "baoyu_translate_runner":
-                await record_used_skill(
-                    "baoyu-translate",
-                    {
-                        "source": "claude_agent_sdk_hook",
-                        "hook_event_name": "PreToolUse",
-                        "tool_name": "Bash",
-                        "tool_use_id": str(hook_input.get("tool_use_id") or tool_use_id or ""),
-                    },
-                )
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": (
-                        "ai-platform allowlisted QA review runner command"
-                        if command_kind == "qa_review_runner"
-                        else "ai-platform allowlisted Baoyu translate runner command"
-                        if command_kind == "baoyu_translate_runner"
-                        else "ai-platform allowlisted QA review preflight command"
-                    ),
-                    "updatedInput": {**tool_input, "command": permitted_command},
-                }
-            }
-        if full_access:
-            return {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": "ai-platform full access permits Bash",
-                }
-            }
-        if on_tool_permission is not None:
-            try:
-                permission_request = {
-                    "tool_name": tool_name,
-                    "tool_call_id": str(hook_input.get("tool_use_id") or tool_use_id or ""),
-                    "tool_input_keys": sorted(str(key) for key in tool_input),
-                    "risk_level": "high",
-                    "write_capable": True,
-                    "action": "execute",
-                    "reason": f"Claude SDK requested {tool_name} through the platform sandbox permission broker",
-                    "tool_input": tool_input,
-                }
-                permission = (
-                    await request_sandbox_permission(permission_request)
-                    if sandbox_brokered
-                    else await on_tool_permission(permission_request)
-                )
-            except Exception:
-                permission = {"allowed": False, "reason": "tool_permission_broker_failed"}
-            if not isinstance(permission, dict):
-                permission = {"allowed": False, "reason": "tool_permission_malformed_response"}
-            elif not isinstance(permission.get("allowed"), bool):
-                permission = {"allowed": False, "reason": "tool_permission_malformed_response"}
-            permission_allowed = permission.get("allowed") is True
-            permission_reason = str(permission.get("reason") or reason)
-            output = {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow" if permission_allowed else "deny",
-                "permissionDecisionReason": permission_reason,
-            }
-            permission_request_id = str(permission.get("permission_request_id") or "")
-            if permission_request_id:
-                output["permission_request_id"] = permission_request_id
-            if permission_allowed and permitted:
-                output["updatedInput"] = {**tool_input, "command": permitted[0]}
-            return {"hookSpecificOutput": output}
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
+            decision = evaluate_tool_policy(tool={})
+        else:
+            tool_name = str(hook_input.get("tool_name") or "")
+            tool_input = hook_input.get("tool_input")
+            decision = policy_for_tool(tool_name, tool_input)
+        output: dict[str, object] = {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision.outcome,
+            "permissionDecisionReason": decision.reason,
         }
-
+        if decision.allowed and isinstance(hook_input, dict) and str(hook_input.get("tool_name") or "") == "Bash" and not sandbox_brokered:
+            tool_input = hook_input.get("tool_input")
+            if not isinstance(tool_input, dict):
+                output["permissionDecision"] = "deny"
+                output["permissionDecisionReason"] = "tool_parameters_not_authorized"
+            else:
+                permitted = _canonical_permitted_bash_command_with_kind(str(tool_input.get("command") or ""), cwd)
+                if permitted is None:
+                    output["permissionDecision"] = "deny"
+                    output["permissionDecisionReason"] = "tool_parameters_not_authorized"
+                else:
+                    permitted_command, command_kind = permitted
+                    output["updatedInput"] = {**tool_input, "command": permitted_command}
+                    if command_kind == "qa_review_runner":
+                        await record_used_skill("qa-file-reviewer", {"source": "claude_agent_sdk_hook", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": str(hook_input.get("tool_use_id") or tool_use_id or "")})
+                    elif command_kind == "baoyu_translate_runner":
+                        await record_used_skill("baoyu-translate", {"source": "claude_agent_sdk_hook", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": str(hook_input.get("tool_use_id") or tool_use_id or "")})
+        return {"hookSpecificOutput": output}
     async def record_skill_tool_use(hook_input, tool_use_id=None, _context=None) -> dict[str, object]:
         if not isinstance(hook_input, dict):
             return {}
@@ -1305,17 +1164,6 @@ async def run_claude_agent_sdk(
         )
 
     try:
-        if sandbox_brokered:
-            # Keep the initial no-permission window short.  The first governed
-            # callback alone extends it to the independently nested aggregate
-            # permission budget; using the normal SDK timeout here would cut a
-            # valid decision short as soon as the hook rescheduled.
-            permission_timeout_state["deadline"] = (
-                event_loop.time() + permission_budget.sandbox_sdk_timeout_seconds
-            )
-            async with asyncio.timeout(initial_timeout_seconds) as sandbox_timeout:
-                permission_timeout_state["reschedule"] = sandbox_timeout.reschedule
-                return await consume()
         return await asyncio.wait_for(consume(), timeout=timeout_seconds)
     except asyncio.CancelledError:
         raise

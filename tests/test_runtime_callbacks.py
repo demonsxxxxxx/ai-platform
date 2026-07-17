@@ -167,93 +167,18 @@ def test_executor_callback_accepts_valid_event_and_records_callback(monkeypatch)
     assert recorded[0].callback_token_id == "cbt_run-a"
 
 
-def test_runtime_tool_permission_callback_accepts_valid_request(monkeypatch):
-    patch_callback_settings(monkeypatch, callback_settings("secret"))
-    calls = []
-
-    class FakeTransaction:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return None
-
-    async def fake_get_run_identity(conn, *, run_id, for_update=False):
-        calls.append(("identity", run_id, for_update))
-        return {"tenant_id": "tenant-a", "id": run_id, "session_id": "session-a", "status": "running"}
-
-    async def fake_get_run(conn, *, tenant_id, run_id, for_update=False):
-        calls.append(("run", tenant_id, run_id, for_update))
-        return {
-            "id": run_id,
-            "tenant_id": tenant_id,
-            "workspace_id": "workspace-a",
-            "user_id": "user-a",
-            "session_id": "session-a",
-            "agent_id": "general-agent",
-            "skill_id": "general-chat",
-            "trace_id": "trace-run-a",
-        }
-
-    async def fake_resolve(**kwargs):
-        calls.append(("resolve", kwargs))
-        return {
-            "allowed": False,
-            "reason": "tool_permission_required",
-            "risk_level": "high",
-            "write_capable": True,
-            "decision": "ask",
-            "permission_request_id": "tpr-sdk",
-        }
-
+def test_runtime_tool_permission_callback_is_retired_without_resolver_access(monkeypatch):
     import app.routes.runtime_callbacks as runtime_callbacks
 
-    monkeypatch.setattr(runtime_callbacks, "transaction", lambda: FakeTransaction())
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run_identity", fake_get_run_identity)
-    monkeypatch.setattr(runtime_callbacks.repositories, "get_run", fake_get_run)
-    monkeypatch.setattr(runtime_callbacks, "resolve_claude_sdk_tool_permission", fake_resolve)
+    def fail_resolver(*args, **kwargs):
+        raise AssertionError("retired callback must never enter a permission resolver")
+
+    monkeypatch.setattr(runtime_callbacks, "resolve_claude_sdk_tool_permission", fail_resolver, raising=False)
     client = TestClient(create_app())
+    response = client.post("/api/ai/runtime/callbacks/tool-permission", json={"tool_name": "Bash"})
 
-    response = client.post(
-        "/api/ai/runtime/callbacks/tool-permission",
-        headers={"X-AI-Platform-Callback-Token": derived_callback_token("secret")},
-        json={
-            "session_id": "session-a",
-            "run_id": "run-a",
-            "callback_token_id": "cbt_run-a",
-            "tool_name": "Bash",
-            "tool_input": {"command": "python write_business_system.py"},
-            "tool_call_id": "tool-a",
-            "action": "execute",
-            "risk_level": "high",
-            "write_capable": True,
-            "reason": "needs shell",
-            "permission_wait_seconds": 130,
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "allowed": False,
-        "reason": "tool_permission_required",
-        "risk_level": "high",
-        "write_capable": True,
-        "decision": "ask",
-        "permission_request_id": "tpr-sdk",
-    }
-    assert calls[0] == ("identity", "run-a", True)
-    assert calls[1] == ("run", "tenant-a", "run-a", True)
-    resolve_call = calls[2][1]
-    assert resolve_call["tenant_id"] == "tenant-a"
-    assert resolve_call["workspace_id"] == "workspace-a"
-    assert resolve_call["user_id"] == "user-a"
-    assert resolve_call["session_id"] == "session-a"
-    assert resolve_call["run_id"] == "run-a"
-    assert resolve_call["wait_timeout_seconds"] == 130.0
-    assert resolve_call["agent_id"] == "general-agent"
-    assert resolve_call["skill_id"] == "general-chat"
-    assert resolve_call["request"]["tool_input"] == {"command": "python write_business_system.py"}
-
+    assert response.status_code == 410
+    assert response.json()["detail"] == "tool_permission_runtime_approval_removed"
 
 def test_executor_callback_rejects_terminal_status_before_persisting_public_events(monkeypatch):
     patch_callback_settings(monkeypatch, callback_settings("secret"))

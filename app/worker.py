@@ -64,12 +64,6 @@ class WorkerRunCancelled(asyncio.CancelledError):
     """Raised inside the worker when a running run observes a platform cancel request."""
 
 
-class _WorkerAllowOnceConsumptionFailed(Exception):
-    def __init__(self, denial: "_WorkerCapabilityDecision") -> None:
-        super().__init__(denial.decision.decision_reason)
-        self.denial = denial
-
-
 class _WorkerSuccessCommitBlocked(Exception):
     """Abort success-visible writes when the final run transition loses its guard."""
 
@@ -97,13 +91,6 @@ class _WorkerCapabilityDecision:
 
 
 @dataclass(frozen=True)
-class _WorkerAllowOnceGrant:
-    tool_id: str
-    request_id: str
-    distribution_decision: CapabilityAccessDecision
-
-
-@dataclass(frozen=True)
 class _WorkerToolPolicyAudit:
     tool_id: str
     allowed: bool
@@ -111,8 +98,6 @@ class _WorkerToolPolicyAudit:
     risk_level: str
     write_capable: bool
     decision: str
-    permission_request_id: str
-    auto_allowed: bool
 
 
 @dataclass(frozen=True)
@@ -121,7 +106,6 @@ class _WorkerCapabilityAuthorization:
     principal: AuthPrincipal
     decisions: tuple[_WorkerCapabilityDecision, ...]
     denial: _WorkerCapabilityDecision | None = None
-    allow_once_grants: tuple[_WorkerAllowOnceGrant, ...] = ()
     tool_policy_audits: tuple[_WorkerToolPolicyAudit, ...] = ()
 
 
@@ -1178,10 +1162,7 @@ async def _reauthorize_worker_capabilities(
         return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), denial)
 
     allowed_entries: list[dict[str, Any]] = []
-    allow_once_grants: list[_WorkerAllowOnceGrant] = []
-    allow_once_identities: set[tuple[str, str]] = set()
     tool_policy_audits: list[_WorkerToolPolicyAudit] = []
-    request_payload = _mcp_tool_request_payload(payload)
     for tool_id in requested_tool_ids:
         tool = await repositories.get_mcp_tool_registry_entry(
             conn,
@@ -1233,18 +1214,25 @@ async def _reauthorize_worker_capabilities(
         if not distribution_decision.usable:
             return _WorkerCapabilityAuthorization(payload, principal, tuple(decisions), tool_record)
 
-        tool_gate = evaluate_tool_policy(tool=tool)
-        if not tool_gate.allowed and tool_gate.reason == "tool_permission_required":
-            permission_decision = await repositories.get_exact_tool_permission_decision(
-                conn,
-                tenant_id=run_identity["tenant_id"],
-                user_id=run_identity["user_id"],
-                run_id=run_identity["run_id"],
-                tool_id=tool_id,
-                tool_call_id=_mcp_tool_call_id(payload, request_payload, tool_id=tool_id),
-                request_payload_json=request_payload,
-            )
-            tool_gate = evaluate_tool_policy(tool=tool, permission_decision=permission_decision)
+        tool_gate = evaluate_tool_policy(
+            tool={
+                "mcp_server": server_id,
+                "mcp_tool": str(tool.get("name") or ""),
+                "registered": True,
+                "declared": True,
+                "active": (
+                    str(tool.get("registry_status") or "") == "active"
+                    and str(tool.get("policy_status") or "") == "active"
+                    and str(tool.get("server_status") or "") == "active"
+                ),
+                "distributed": distribution_decision.usable,
+                "identity_authorized": True,
+                "object_authorized": True,
+                "parameters_authorized": True,
+                "risk_level": str(tool.get("risk_level") or "low"),
+                "write_capable": bool(tool.get("write_capable")),
+            }
+        )
         tool_policy_audits.append(
             _WorkerToolPolicyAudit(
                 tool_id=tool_id,
@@ -1252,9 +1240,7 @@ async def _reauthorize_worker_capabilities(
                 reason=tool_gate.reason,
                 risk_level=tool_gate.risk_level,
                 write_capable=tool_gate.write_capable,
-                decision=tool_gate.decision,
-                permission_request_id=tool_gate.permission_request_id,
-                auto_allowed=tool_gate.auto_allowed,
+                decision=tool_gate.outcome,
             )
         )
         if not tool_gate.allowed:
@@ -1270,17 +1256,6 @@ async def _reauthorize_worker_capabilities(
                 denial,
                 tool_policy_audits=tuple(tool_policy_audits),
             )
-        if tool_gate.decision == "allow_once":
-            grant_identity = (tool_id, tool_gate.permission_request_id)
-            if grant_identity not in allow_once_identities:
-                allow_once_identities.add(grant_identity)
-                allow_once_grants.append(
-                    _WorkerAllowOnceGrant(
-                        tool_id=tool_id,
-                        request_id=tool_gate.permission_request_id,
-                        distribution_decision=distribution_decision,
-                    )
-                )
         allowed_entries.append(tool)
 
     authorized_payload = _payload_with_authorized_mcp_registration(
@@ -1291,37 +1266,8 @@ async def _reauthorize_worker_capabilities(
         authorized_payload,
         principal,
         tuple(decisions),
-        allow_once_grants=tuple(allow_once_grants),
         tool_policy_audits=tuple(tool_policy_audits),
     )
-
-
-async def _consume_worker_allow_once_grants(
-    conn,
-    *,
-    authorization: _WorkerCapabilityAuthorization,
-    run_identity: dict[str, str],
-) -> None:
-    for grant in authorization.allow_once_grants:
-        consumed = await repositories.consume_tool_permission_decision(
-            conn,
-            tenant_id=run_identity["tenant_id"],
-            user_id=run_identity["user_id"],
-            run_id=run_identity["run_id"],
-            request_id=grant.request_id,
-        )
-        if consumed is not None:
-            continue
-        raise _WorkerAllowOnceConsumptionFailed(
-            _worker_capability_record(
-                "mcp_tool",
-                grant.tool_id,
-                _denied_capability_decision(
-                    "tool_permission_consumed_or_expired",
-                    source=grant.distribution_decision,
-                ),
-            )
-        )
 
 
 def _worker_capability_audit_payload(
@@ -1414,9 +1360,7 @@ async def _append_worker_tool_policy_audits(
                 "reason": audit.reason,
                 "risk_level": audit.risk_level,
                 "write_capable": audit.write_capable,
-                "decision": audit.decision,
-                "permission_request_id": audit.permission_request_id,
-                "auto_allowed": audit.auto_allowed,
+                "outcome": audit.decision,
             },
         )
 
@@ -2063,11 +2007,6 @@ async def process_run_payload(
                     reconciled_parent,
                 )
                 return terminal_after_transaction.outcome
-            await _consume_worker_allow_once_grants(
-                conn,
-                authorization=capability_authorization,
-                run_identity=run_identity,
-            )
             try:
                 adapter = adapter_registry.get(payload.executor_type)
             except KeyError as exc:
@@ -2118,33 +2057,6 @@ async def process_run_payload(
                     trace_id=trace_id,
                     worker_id=worker_id,
                 )
-    except _WorkerAllowOnceConsumptionFailed as exc:
-        if capability_authorization is None:
-            raise
-        failed_authorization = _WorkerCapabilityAuthorization(
-            payload=capability_authorization.payload,
-            principal=capability_authorization.principal,
-            decisions=capability_authorization.decisions,
-            denial=exc.denial,
-            allow_once_grants=capability_authorization.allow_once_grants,
-            tool_policy_audits=capability_authorization.tool_policy_audits,
-        )
-        async with transaction() as conn:
-            await _append_worker_admin_bypass_audits(conn, audits=admin_bypass_audits)
-            await _append_worker_tool_policy_audits(
-                conn,
-                authorization=failed_authorization,
-                run_identity=run_identity,
-                trace_id=trace_id,
-            )
-            terminal_after_transaction = await _fail_worker_capability_authorization(
-                conn,
-                payload=failed_authorization.payload,
-                authorization=failed_authorization,
-                run_identity=run_identity,
-                trace_id=trace_id,
-            )
-        return terminal_after_transaction.outcome
     finally:
         if terminal_after_transaction is not None:
             await _finalize_multi_agent_parent_after_child_commit(

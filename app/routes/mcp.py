@@ -812,7 +812,21 @@ async def discover_mcp_tools(
         )
         if not decision.visible:
             continue
-        if not evaluate_tool_policy(tool=row).allowed:
+        if not evaluate_tool_policy(
+            tool={
+                "mcp_server": safe_name,
+                "mcp_tool": str(row.get("name") or ""),
+                "registered": bool(str(row.get("tool_id") or "")),
+                "declared": True,
+                "active": str(row.get("effective_status") or "") == "active",
+                "distributed": decision.visible,
+                "identity_authorized": True,
+                "object_authorized": True,
+                "parameters_authorized": True,
+                "risk_level": str(row.get("risk_level") or "low"),
+                "write_capable": bool(row.get("write_capable")),
+            }
+        ).allowed:
             continue
         tools.append(
             {
