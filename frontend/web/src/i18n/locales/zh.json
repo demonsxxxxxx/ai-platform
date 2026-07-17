@@ -2845,9 +2845,9 @@
     "unavailableShort": "不可用",
     "workspaceContext": "工作区上下文",
     "contextPanel": {
-      "run": "运行上下文",
+      "run": "当前会话输入",
       "selectedSkills": "已选 Skills",
-      "selectedTools": "MCP 工具",
+      "selectedTools": "已选 MCP 工具",
       "files": "文件",
       "permissions": "权限",
       "noSkills": "尚未选择 Skill chip。",

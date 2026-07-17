@@ -6,6 +6,7 @@ export type ComposerCommandName =
   | "mcp"
   | "model"
   | "file"
+  // Kept as an unreachable legacy type member until SlashCommandMenu drops its icon key.
   | "context";
 
 export type ComposerCommandPanel =
@@ -20,7 +21,6 @@ export interface ComposerCommandAvailability {
   tools: boolean;
   models: boolean;
   files: boolean;
-  context: boolean;
 }
 
 export interface ParsedComposerCommand {
@@ -49,7 +49,6 @@ export interface CommandPanelAvailability {
   tools: boolean;
   models?: boolean;
   files?: boolean;
-  context?: boolean;
 }
 
 const commandPanelByName: Record<ComposerCommandName, ComposerCommandPanel> = {
@@ -62,25 +61,23 @@ const commandPanelByName: Record<ComposerCommandName, ComposerCommandPanel> = {
 };
 
 const commandAvailabilityKey: Record<
-  Exclude<ComposerCommandName, "menu">,
+  Exclude<ComposerCommandName, "menu" | "context">,
   keyof ComposerCommandAvailability
 > = {
   skill: "skills",
   mcp: "tools",
   model: "models",
   file: "files",
-  context: "context",
 };
 
 const panelCommandNames = new Set<ComposerCommandName>([
   "skill",
   "mcp",
   "model",
-  "context",
 ]);
 
 export interface SlashCommandMenuItem {
-  command: Exclude<ComposerCommandName, "menu">;
+  command: Exclude<ComposerCommandName, "menu" | "context">;
   panel: Exclude<ComposerCommandPanel, "command-menu">;
   query: string;
   unavailable: boolean;
@@ -115,12 +112,6 @@ const slashCommandItems: Array<
     labelKey: "composerCommand.file.label",
     descriptionKey: "composerCommand.file.description",
   },
-  {
-    command: "context",
-    panel: "context",
-    labelKey: "composerCommand.context.label",
-    descriptionKey: "composerCommand.context.description",
-  },
 ];
 
 /** Resolve a typed command prefix only when its target selector is available. */
@@ -143,13 +134,12 @@ function normalizeAvailability(
     tools: availability.tools,
     models: availability.models ?? false,
     files: availability.files ?? false,
-    context: availability.context ?? false,
   };
 }
 
 function isComposerCommandName(
   value: string,
-): value is Exclude<ComposerCommandName, "menu"> {
+): value is Exclude<ComposerCommandName, "menu" | "context"> {
   return value in commandAvailabilityKey;
 }
 
@@ -213,7 +203,7 @@ export function parseComposerCommand(
   }
 
   const [rawCommand = "", ...queryParts] = body.trimStart().split(/\s+/);
-  const command = rawCommand as Exclude<ComposerCommandName, "menu">;
+  const command = rawCommand as Exclude<ComposerCommandName, "menu" | "context">;
   const query = queryParts.join(" ");
 
   const availabilityKey = commandAvailabilityKey[command];
