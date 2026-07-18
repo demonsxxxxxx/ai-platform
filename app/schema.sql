@@ -801,6 +801,26 @@ create index if not exists idx_run_context_snapshots_run
 create unique index if not exists idx_run_context_snapshots_scope_binding
   on run_context_snapshots(tenant_id, workspace_id, user_id, session_id, run_id, id);
 
+-- A populated pre-#511 database can adopt a physical binding only when both
+-- legacy JSON mirrors already agree and name the exact scoped executor row.
+-- All other legacy rows deliberately remain null/display-only: timestamps and
+-- UUIDs are not a substitute authority.  This is safe to apply repeatedly and
+-- leaves old application versions able to write their nullable mirror fields.
+update runs
+set context_snapshot_id = runs.input_json->>'context_snapshot_id'
+from run_context_snapshots context_snapshot
+where runs.context_snapshot_id is null
+  and coalesce(runs.input_json->>'context_snapshot_id', '') <> ''
+  and runs.input_json->>'context_snapshot_id'
+      = runs.input_json->'context_snapshot'->>'context_snapshot_id'
+  and context_snapshot.id = runs.input_json->>'context_snapshot_id'
+  and context_snapshot.tenant_id = runs.tenant_id
+  and context_snapshot.workspace_id = runs.workspace_id
+  and context_snapshot.user_id = runs.user_id
+  and context_snapshot.session_id = runs.session_id
+  and context_snapshot.run_id = runs.id
+  and context_snapshot.context_kind = 'executor';
+
 do $$
 begin
   if exists (

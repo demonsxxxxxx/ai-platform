@@ -788,23 +788,15 @@ async def test_get_run_playback_includes_safe_context_provenance(monkeypatch):
     response = await get_run_playback("run-a", principal=principal())
 
     assert response["context_ref"] == {
-        "source": "stored_context_snapshot",
-        "referenced_materials": {
-            "message_count": 1,
-            "file_count": 2,
-            "artifact_count": 4,
-            "memory_record_count": 3,
-        },
-        "used_context_summary": {
-            "source": "stored_context_snapshot",
-            "input_keys": ["attachments", "message"],
-            "memory_policy_source": "not_recorded",
-            "long_term_memory_read": False,
-        },
-        "latest_artifact_version": "v7",
-        "execution_tier": "document_worker",
-        "context_pack_version": "v3",
-        "context_pack_generated_at": "2026-06-12T01:23:45Z",
+        "context_window": {
+            "status": "degraded",
+            "selection_version": "session-context-v1",
+            "history_candidate_count": 0,
+            "history_inline_count": 0,
+            "history_trimmed_count": 0,
+            "legacy_history_excluded": False,
+            "selected_file_names": [],
+        }
     }
     serialized = json.dumps(response["context_ref"], ensure_ascii=False)
     for private_fragment in [
@@ -827,7 +819,7 @@ async def test_get_run_playback_includes_safe_context_provenance(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_run_playback_prefers_latest_context_snapshot_projection(monkeypatch):
+async def test_get_run_playback_does_not_project_an_unbound_latest_context_snapshot(monkeypatch):
     async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
         return {
             "id": run_id,
@@ -920,8 +912,7 @@ async def test_get_run_playback_prefers_latest_context_snapshot_projection(monke
 
     response = await get_run_playback("run-a", principal=principal())
 
-    assert response["context_ref"]["referenced_materials"]["memory_record_count"] == 1
-    assert response["context_ref"]["used_context_summary"]["source"] == "manual_context_snapshot"
+    assert response["context_ref"]["context_window"]["status"] == "degraded"
     serialized = json.dumps(response["context_ref"], ensure_ascii=False)
     assert "ctx-latest" not in serialized
     assert "mem-private" not in serialized

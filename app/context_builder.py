@@ -490,8 +490,25 @@ def _manifest_context_chips(input_payload: dict[str, Any]) -> list[str]:
     return []
 
 
-def _manifest_file_refs(file_ids: list[str]) -> list[dict[str, Any]]:
-    return [{"id": file_id, "requires_retrieval": True} for file_id in file_ids if file_id]
+def _manifest_file_refs(file_ids: list[str], rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Keep only authorized file basenames alongside private retrieval identities."""
+
+    names_by_id = {
+        str(row.get("id") or ""): str(row.get("original_name") or "")
+        for row in rows or []
+        if isinstance(row, dict) and row.get("id") and row.get("original_name")
+    }
+    return [
+        {
+            "id": file_id,
+            "original_name": names_by_id[file_id],
+            "requires_retrieval": True,
+        }
+        if file_id in names_by_id
+        else {"id": file_id, "requires_retrieval": True}
+        for file_id in file_ids
+        if file_id
+    ]
 
 
 def _manifest_artifact_refs(artifact_ids: list[str]) -> list[dict[str, Any]]:
@@ -514,6 +531,7 @@ def _build_initial_context_manifest(
     memory_record_ids: list[str],
     source_run_ids: list[str],
     legacy_history_excluded: bool,
+    authorized_file_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return ContextPlanner().plan(
         tenant_id=tenant_id,
@@ -526,7 +544,7 @@ def _build_initial_context_manifest(
         current_message=_manifest_current_message(input_payload),
         recent_messages=prior_messages,
         context_chips=_manifest_context_chips(input_payload),
-        files=_manifest_file_refs(file_ids),
+        files=_manifest_file_refs(file_ids, authorized_file_rows),
         artifacts=_manifest_artifact_refs(artifact_ids),
         memory_records=[{"id": memory_id, "status": "active"} for memory_id in memory_record_ids if memory_id],
         source_run_ids=source_run_ids,
@@ -675,6 +693,16 @@ async def record_initial_context_snapshot(
         ),
         None,
     )
+    authorized_file_rows: list[dict[str, Any]] = []
+    if hasattr(conn, "execute"):
+        authorized_file_rows = await repositories.list_authorized_context_file_rows(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            file_ids=included_file_ids,
+        )
     memory_policy = await repositories.get_effective_memory_policy(
         conn,
         tenant_id=tenant_id,
@@ -708,6 +736,7 @@ async def record_initial_context_snapshot(
         memory_record_ids=[],
         source_run_ids=source_run_ids,
         legacy_history_excluded=legacy_history_excluded,
+        authorized_file_rows=authorized_file_rows,
     )
     memory_policy_summary = {
         "memory_policy_source": str(memory_policy.get("source") or "default"),

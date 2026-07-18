@@ -826,6 +826,36 @@ async def list_session_context_files(
     return list(await cursor.fetchall())
 
 
+async def list_authorized_context_file_rows(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    file_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Return only scoped file display metadata for an already-authorized context set."""
+
+    normalized_ids = [str(file_id) for file_id in file_ids if isinstance(file_id, str) and file_id]
+    if not normalized_ids:
+        return []
+    cursor = await conn.execute(
+        """
+        select id, original_name
+        from files
+        where tenant_id = %s
+          and workspace_id = %s
+          and user_id = %s
+          and session_id = %s
+          and id = any(%s::text[])
+        order by id asc
+        """,
+        (tenant_id, workspace_id, user_id, session_id, normalized_ids),
+    )
+    return list(await cursor.fetchall())
+
+
 async def list_session_context_artifacts(
     conn: AsyncConnection,
     *,
@@ -4210,25 +4240,30 @@ async def get_latest_authorized_executor_context_snapshot(
     user_id: str,
     run_id: str,
 ) -> dict[str, Any] | None:
-    """Load the latest executor context snapshot, excluding share/fork derivative rows."""
+    """Compatibility lookup that still returns only the physical run binding."""
     cursor = await conn.execute(
         """
-        select run_context_snapshots.id, run_context_snapshots.tenant_id,
-               run_context_snapshots.workspace_id, run_context_snapshots.user_id,
-               run_context_snapshots.session_id, run_context_snapshots.run_id,
-               run_context_snapshots.trace_id, run_context_snapshots.schema_version,
-               run_context_snapshots.context_kind, run_context_snapshots.included_message_ids,
-               run_context_snapshots.included_file_ids, run_context_snapshots.included_artifact_ids,
-               run_context_snapshots.included_memory_record_ids,
-               run_context_snapshots.redaction_summary_json, run_context_snapshots.payload_json,
-               run_context_snapshots.created_at
-        from run_context_snapshots
-        where tenant_id = %s
-          and user_id = %s
-          and run_id = %s
-          and context_kind = 'executor'
-        order by created_at desc
-        limit 1
+        select context_snapshot.id, context_snapshot.tenant_id, context_snapshot.workspace_id,
+               context_snapshot.user_id, context_snapshot.session_id, context_snapshot.run_id,
+               context_snapshot.trace_id, context_snapshot.schema_version, context_snapshot.context_kind,
+               context_snapshot.included_message_ids, context_snapshot.included_file_ids,
+               context_snapshot.included_artifact_ids, context_snapshot.included_memory_record_ids,
+               context_snapshot.redaction_summary_json, context_snapshot.payload_json,
+               context_snapshot.created_at
+        from runs
+        join run_context_snapshots context_snapshot
+          on context_snapshot.id = runs.context_snapshot_id
+          and context_snapshot.tenant_id = runs.tenant_id
+          and context_snapshot.workspace_id = runs.workspace_id
+          and context_snapshot.user_id = runs.user_id
+          and context_snapshot.session_id = runs.session_id
+          and context_snapshot.run_id = runs.id
+          and context_snapshot.context_kind = 'executor'
+        where runs.tenant_id = %s
+          and runs.user_id = %s
+          and runs.id = %s
+          and runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id
+          and runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id
         """,
         (tenant_id, user_id, run_id),
     )
@@ -8005,9 +8040,6 @@ async def create_multi_agent_dispatch_child_run(
         skill_manifests=skill_manifests,
         release_decision=release_decision_payload,
     )
-    # This legacy child path has no pre-enqueue ContextBuilder seam.  Do not
-    # mint a new generation and let the worker regenerate authority later.
-    raise RepositoryConflictError("context_snapshot_required_before_enqueue")
     skill = await authorize_replay_run_capabilities(
         conn,
         tenant_id=tenant_id,
@@ -10514,6 +10546,54 @@ async def fail_run(
         run_id=run_id,
     )
     return _terminalization_progress_for_requested_status(progress, requested_status="failed")
+
+
+async def mark_run_enqueue_failed(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    user_id: str | None,
+    run_id: str,
+    trace_id: str | None = None,
+) -> ToolPermissionTerminalizationProgress:
+    """Compensate one post-commit enqueue failure with a non-queued durable outcome."""
+
+    error_code = "queue_enqueue_failed"
+    error_message = "Queue admission failed; retry this run."
+    progress = await fail_run(
+        conn,
+        tenant_id=tenant_id,
+        run_id=run_id,
+        error_code=error_code,
+        error_message=error_message,
+        result_json={"message": error_message, "retryable": True},
+    )
+    if progress.did_transition:
+        await append_event(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            trace_id=trace_id,
+            event_type="queue_enqueue_failed",
+            stage="queue",
+            message="Queue admission failed; the run was marked failed.",
+            payload={
+                "visible_to_user": False,
+                "error_code": error_code,
+                "retryable": True,
+            },
+        )
+        await append_audit_log(
+            conn,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            action="run.queue.enqueue_failed",
+            target_type="run",
+            target_id=run_id,
+            trace_id=trace_id or standard_trace_id(run_id),
+            payload_json={"error_code": error_code, "retryable": True},
+        )
+    return progress
 
 
 async def cancel_run(

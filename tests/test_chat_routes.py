@@ -325,7 +325,7 @@ def _durable_run_row(*, status: str = "queued") -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_retry_admission_keeps_committed_submission_pending_when_redis_fails(monkeypatch):
+async def test_retry_admission_marks_committed_submission_enqueue_failed_when_redis_fails(monkeypatch):
     submission = _pending_submission_row()
     finalized: list[dict[str, object]] = []
 
@@ -341,22 +341,37 @@ async def test_retry_admission_keeps_committed_submission_pending_when_redis_fai
     async def finalize(*_args, **kwargs):
         finalized.append(kwargs)
 
+    async def mark_enqueue_failed(*_args, **kwargs):
+        assert kwargs["run_id"] == "run-durable"
+        return repository_module.ToolPermissionTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
     monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", fail_enqueue)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
+    monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", mark_enqueue_failed, raising=False)
 
-    response = await _admit_chat_submission(
-        principal=principal(),
-        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        await _admit_chat_submission(
+            principal=principal(),
+            submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        )
 
-    assert response.state == "accepted_pending_enqueue"
-    assert response.outcome is not None
-    assert response.outcome.status == "accepted_pending_enqueue"
-    assert finalized == []
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "queue_enqueue_failed"
+    assert finalized == [{
+        "tenant_id": "tenant-a",
+        "user_id": "user-a",
+        "submission_id": "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        "state": "enqueue_failed",
+        "rejection_code": "queue_enqueue_failed",
+    }]
 
 
 @pytest.mark.asyncio

@@ -4702,7 +4702,7 @@ async def test_list_context_share_snapshots_for_target_session_filters_public_pa
 
 
 @pytest.mark.asyncio
-async def test_get_latest_authorized_executor_context_snapshot_excludes_share_fork_rows():
+async def test_executor_context_compatibility_lookup_uses_physical_run_binding():
     class ExecutorSnapshotCursor:
         async def fetchone(self):
             return {"id": "ctx-executor", "context_kind": "executor"}
@@ -4727,12 +4727,13 @@ async def test_get_latest_authorized_executor_context_snapshot_excludes_share_fo
     )
 
     assert row["id"] == "ctx-executor"
-    assert "from run_context_snapshots" in conn.sql
-    assert "tenant_id = %s" in conn.sql
-    assert "user_id = %s" in conn.sql
-    assert "run_id = %s" in conn.sql
-    assert "context_kind = 'executor'" in conn.sql
-    assert "limit 1" in conn.sql
+    assert "from runs" in conn.sql
+    assert "context_snapshot.id = runs.context_snapshot_id" in conn.sql
+    assert "runs.tenant_id = %s" in conn.sql
+    assert "runs.user_id = %s" in conn.sql
+    assert "runs.id = %s" in conn.sql
+    assert "context_snapshot.context_kind = 'executor'" in conn.sql
+    assert "order by" not in conn.sql
     assert conn.params == ("tenant-a", "user-a", "run-source")
 
 

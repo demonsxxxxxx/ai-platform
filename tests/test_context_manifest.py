@@ -185,13 +185,13 @@ def test_context_planner_token_budget_limits_inline_context_material():
 
     assert manifest["recent_messages"][0]["inline_content"] is None
     assert manifest["recent_messages"][0]["approx_tokens"] == 18
-    assert manifest["recent_messages"][1]["inline_content"] == "five six seven"
+    assert manifest["recent_messages"][1]["inline_content"] is None
     assert manifest["recent_messages"][1]["approx_tokens"] == 14
     assert manifest["files"][0]["inline_preview"] is None
     assert manifest["files"][0]["requires_retrieval"] is True
-    assert manifest["budget"]["inline_tokens_used"] == 14
-    assert manifest["budget"]["inline_budget_exhausted"] is False
-    assert manifest["selection"]["history_trimmed_count"] == 1
+    assert manifest["budget"]["inline_tokens_used"] == 12
+    assert manifest["budget"]["inline_budget_exhausted"] is True
+    assert manifest["selection"]["history_trimmed_count"] == 2
     assert manifest["selection"]["selection_order"] == "newest_first"
     assert manifest["selection"]["render_order"] == "chronological"
 
@@ -223,9 +223,36 @@ def test_context_planner_uses_one_conservative_utf8_budget_for_cjk_and_emoji():
     assert manifest["recent_messages"][0]["inline_content"] is None
     assert manifest["recent_messages"][0]["approx_tokens"] == 12
     assert manifest["recent_messages"][1]["inline_content"] == "🧪"
-    assert manifest["budget"]["inline_tokens_used"] == 4
-    assert manifest["budget"]["inline_budget_exhausted"] is False
+    assert manifest["budget"]["inline_tokens_used"] == 10
+    assert manifest["budget"]["inline_budget_exhausted"] is True
     assert manifest["selection"]["history_trimmed_count"] == 1
+
+
+def test_context_planner_reports_count_cap_omissions_but_renders_selected_history_chronologically():
+    planner = ContextPlanner(recent_message_limit=2, token_budget=200)
+
+    manifest = planner.plan(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        current_message="now",
+        recent_messages=[
+            {"id": "msg-1", "session_generation": 1, "content": "old"},
+            {"id": "msg-2", "session_generation": 2, "content": "older"},
+            {"id": "msg-3", "session_generation": 3, "content": "newer"},
+            {"id": "msg-4", "session_generation": 4, "content": "newest"},
+        ],
+    )
+
+    assert [row["message_id"] for row in manifest["recent_messages"]] == ["msg-3", "msg-4"]
+    assert manifest["selection"]["history_candidate_count"] == 4
+    assert manifest["selection"]["history_inline_count"] == 2
+    assert manifest["selection"]["history_trimmed_count"] == 2
+    assert manifest["selection"]["status"] == "trimmed"
 
 
 def test_public_context_manifest_projection_exposes_only_counts_flags_and_valid_timestamp():

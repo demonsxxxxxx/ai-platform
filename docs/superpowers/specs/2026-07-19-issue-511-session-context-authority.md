@@ -81,3 +81,44 @@ rendering, legacy degradation, allocator serialization contract, binding happy
 and error paths, fixed callback denial, schema declarations, and existing
 chat/context/repository regressions. This evidence is `local partial` only.
 Independent review and exact-main 211/browser proof remain required for #511.
+
+## Generation 2 review repair
+
+Generation 2 closes the local review findings without broadening #511 into
+parser, provider-resume, UI, or tool-policy work.
+
+- The worker resolves only the run's scoped physical binding and terminalizes a
+  missing or invalid one as `context_snapshot_unavailable`; it never creates a
+  worker-refresh snapshot.
+- Manual context requests cannot create an `executor` row. Share/fork reads the
+  source run's exact binding, so an unbound source returns
+  `context_snapshot_unavailable` rather than choosing a latest row.
+- Schema application performs an idempotent populated-database backfill only
+  when both legacy JSON mirrors agree and point at the exact scoped executor
+  snapshot. Ambiguous or absent rows stay null and are displayed as degraded.
+  The nullable columns keep old-application rollback compatibility.
+- Queue exceptions after commit are compensated in the existing transaction
+  model for chat, direct run creation, copy, retry, and resume. The run is
+  terminal `failed` with the public-safe `queue_enqueue_failed` code and an
+  event/audit record; keyed chat submissions become `enqueue_failed` rather
+  than an accepted-pending fabrication. No outbox or background service is
+  added.
+- The context planner reserves the current user input exactly once before
+  newest-first history eligibility. Count-cap and budget omissions increment
+  the public trimmed count, while retained history remains chronological. The
+  public context window is limited to status, counts, legacy degradation, and
+  authorized safe basenames.
+- Ordinary run/playback projections use that allowlisted `context_window`
+  only—never snapshot IDs, storage locators, provider state, raw prompts, or
+  private payloads. Legacy rows still display in history but cannot produce an
+  implicit `current_run_id` or current status.
+- Multi-agent child snapshot design remains deferred. Its three public
+  admission endpoints reject with `multi_agent_dispatch_not_available` before
+  transaction, candidate claim, child creation, or queue effects; the
+  obsolete deep repository stop is removed.
+
+The opt-in PostgreSQL test uses the repository's
+`AI_PLATFORM_S0A_SCHEMA_TEST_DSN` contract. It applies the schema twice to
+populated rows and covers allocator races, same-ID repeat binding, rebind
+rejection, deferred FK insertion, and the immutable-binding trigger. Local
+absence of that DSN is an explicit skip, not database evidence.
