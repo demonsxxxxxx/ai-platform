@@ -146,6 +146,8 @@ interface AuthOperationOwner {
   generation: number;
   abortController: AbortController;
   expectedMarker: string | null;
+  /** The marker for which this operation last published an owner fence. */
+  publishedSessionMarker: string | null | undefined;
 }
 
 // Auth Provider 组件
@@ -180,6 +182,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       generation: authOperationGenerationRef.current,
       abortController,
       expectedMarker,
+      publishedSessionMarker: undefined,
     };
   }, [invalidateAuthOperation]);
 
@@ -193,6 +196,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isCurrentAuthOperation = useCallback((owner: AuthOperationOwner) => (
     isOwnedAuthOperation(owner) && getAccessToken() === owner.expectedMarker
   ), [isOwnedAuthOperation]);
+
+  const publishAuthIncarnationForCurrentMarker = useCallback((
+    owner: AuthOperationOwner,
+  ): void => {
+    const marker = getAccessToken();
+    if (owner.publishedSessionMarker === marker) return;
+    owner.publishedSessionMarker = marker;
+    publishBrowserAuthIncarnationChange();
+  }, []);
 
   const applyAuthenticatedUser = useCallback((
     currentUser: User,
@@ -211,12 +223,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } else {
       setDynamicPermissions([]);
     }
-    // This is the production same-tab ownership seam for login and principal
-    // refreshes. Run-control listeners fence old work synchronously here;
-    // `storage` is intentionally reserved for cross-tab changes.
-    publishBrowserAuthIncarnationChange();
+    // Principal-only refreshes publish here. Session establishment already
+    // published synchronously before this GET was allowed to await.
+    publishAuthIncarnationForCurrentMarker(owner);
     return true;
-  }, [isCurrentAuthOperation]);
+  }, [isCurrentAuthOperation, publishAuthIncarnationForCurrentMarker]);
 
   const clearAuthPresentation = useCallback((
     owner: AuthOperationOwner,
@@ -227,15 +238,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearTokens();
       owner.expectedMarker = null;
     }
+    // Fence the old owner immediately after a local or cross-tab marker
+    // transition, before any principal hydration can start awaiting.
+    publishAuthIncarnationForCurrentMarker(owner);
     clearAuthScopedCaches();
     setToken(null);
     setUser(null);
     setDynamicPermissions([]);
-    // Logout and cross-tab replacement clear the visible principal through
-    // this path. Publish even when the marker was already replaced elsewhere.
-    publishBrowserAuthIncarnationChange();
     return true;
-  }, [isCurrentAuthOperation]);
+  }, [isCurrentAuthOperation, publishAuthIncarnationForCurrentMarker]);
 
   const applyLoggedOut = useCallback((owner: AuthOperationOwner): boolean => {
     return clearAuthPresentation(owner, true);
@@ -253,9 +264,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const marker = getAccessToken();
     if (!marker) return false;
     owner.expectedMarker = marker;
+    // This is deliberately before getCurrentUser/principal hydration. The
+    // event listener aborts old run-control owners synchronously, so a stale
+    // owner has no admission window while the fresh principal GET is pending.
+    publishAuthIncarnationForCurrentMarker(owner);
     window.dispatchEvent(new CustomEvent("auth:login"));
     return isCurrentAuthOperation(owner);
-  }, [isCurrentAuthOperation, isOwnedAuthOperation]);
+  }, [
+    isCurrentAuthOperation,
+    isOwnedAuthOperation,
+    publishAuthIncarnationForCurrentMarker,
+  ]);
 
   const rollbackOwnedSession = useCallback(async (
     owner: AuthOperationOwner,
@@ -355,9 +374,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         await ensureBrowserAuthContext(owner.abortController.signal);
         if (!isCurrentAuthOperation(owner)) return;
+        if (!hadSessionMarker && !establishLocalSession(owner)) return;
         const currentUser = await getCurrentUserWithOneStaleRepair(owner);
         if (!isCurrentAuthOperation(owner)) return;
-        if (!hadSessionMarker && !establishLocalSession(owner)) return;
         applyAuthenticatedUser(currentUser, owner);
       } catch {
         if (!isCurrentAuthOperation(owner)) return;

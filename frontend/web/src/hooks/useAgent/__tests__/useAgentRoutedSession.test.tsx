@@ -457,6 +457,10 @@ async function loadReactHarness({
       assert.ok(snapshot, "useAgent hook should be mounted");
       return snapshot;
     },
+    get auth() {
+      assert.ok(authSnapshot, "Auth context should be mounted");
+      return authSnapshot;
+    },
     async rotateAuthScope(userId: string, tenantId: string) {
       await rotateAuthScope(userId, tenantId, true);
     },
@@ -4564,6 +4568,125 @@ test("useAgent synchronously aborts a deferred run-control GET from the producti
     await settle(harness.act);
     assert.equal(harness.hook.runControlLifecycle.getSnapshot().playback, null);
   } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent fences the old owner before login's deferred principal GET resolves", async () => {
+  const harness = await loadReactHarness();
+  const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
+    "../../browserAuthCoordinator.ts"
+  );
+  const { authApi } = await import("../../../services/api/auth.ts");
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalAuthLogin = authApi.login;
+  const originalAuthGetCurrentUser = authApi.getCurrentUser;
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = globalThis.fetch;
+  const freshPrincipal = await originalAuthGetCurrentUser();
+  let resolvePrincipal!: (value: typeof freshPrincipal) => void;
+  const deferredPrincipal = new Promise<typeof freshPrincipal>((resolve) => {
+    resolvePrincipal = resolve;
+  });
+  let principalSignal: AbortSignal | undefined;
+  let resolvePlayback!: (value: Response) => void;
+  let playbackSignal: AbortSignal | null = null;
+  let incarnationEvents = 0;
+  const countIncarnationEvent = () => {
+    incarnationEvents += 1;
+  };
+  dom.window.addEventListener(
+    BROWSER_AUTH_INCARCINATION_EVENT,
+    countIncarnationEvent,
+  );
+  authApi.login = (async () => {}) as typeof authApi.login;
+  authApi.getCurrentUser = ((options?: { signal?: AbortSignal }) => {
+    principalSignal = options?.signal;
+    return deferredPrincipal;
+  }) as typeof authApi.getCurrentUser;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-login-order-control",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: "run-login-order-control",
+    events: [{
+      id: "evt-login-order-control",
+      run_id: "run-login-order-control",
+      event_type: "user:message",
+      timestamp: "2026-07-19T00:00:00Z",
+      data: { content: "old owner" },
+    }],
+  });
+  sessionApi.getStatus = (async (sessionId, runId) => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: "failed",
+    raw_status: "failed",
+  })) as typeof sessionApi.getStatus;
+  globalThis.fetch = ((_input, init) =>
+    new Promise<Response>((resolve) => {
+      playbackSignal = init?.signal as AbortSignal;
+      resolvePlayback = resolve;
+    })) as typeof fetch;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory(
+        "session-login-order-control",
+        "run-login-order-control",
+      );
+      harness.hook.runControlLifecycle.open();
+      await Promise.resolve();
+    });
+    assert.ok(playbackSignal);
+
+    let login!: Promise<unknown>;
+    await harness.act(async () => {
+      login = harness.auth.login({ username: "user-a", password: "test-password" });
+      await Promise.resolve();
+    });
+
+    assert.ok(principalSignal, "the new principal GET should be pending");
+    assert.equal(principalSignal?.aborted, false);
+    assert.equal(incarnationEvents, 1, "marker establishment publishes one event");
+    assert.equal(
+      (playbackSignal as AbortSignal).aborted,
+      true,
+      "marker establishment must fence the old run before principal hydration resolves",
+    );
+    assert.equal(harness.hook.runControlLifecycle.getSnapshot().owner, null);
+
+    await harness.act(async () => {
+      resolvePrincipal(freshPrincipal);
+      await login;
+    });
+    assert.equal(incarnationEvents, 1, "principal hydration must not duplicate the event");
+  } finally {
+    resolvePlayback?.(
+      new Response(
+        JSON.stringify({ run_id: "run-login-order-control", timeline: [], events: [], artifacts: [], steps: [], multi_agent: null }),
+      ),
+    );
+    authApi.login = originalAuthLogin;
+    authApi.getCurrentUser = originalAuthGetCurrentUser;
+    dom.window.removeEventListener(
+      BROWSER_AUTH_INCARCINATION_EVENT,
+      countIncarnationEvent,
+    );
     sessionApi.get = originalGet;
     sessionApi.getEvents = originalGetEvents;
     sessionApi.getStatus = originalGetStatus;
