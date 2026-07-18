@@ -1452,6 +1452,45 @@ test("resets reconnect budget only after a unique current-run progress frame", a
   assert.equal(currentContext.retryCountRef.current, 0);
   assert.equal(currentContext.acceptedRunEventSequenceRef.current.sequence, 43);
 
+  const deltaProgressContext = {
+    ...currentContext,
+    abortControllerRef: { current: null },
+    isConnectingRef: { current: false },
+    retryCountRef: { current: MAX_CONSECUTIVE_SSE_RECONNECTS },
+    processedEventIdsRef: { current: new Set<string>() },
+  } satisfies SSEConnectionContext;
+  await assert.rejects(
+    connectToSSE(
+      "session-1",
+      "run-1",
+      "assistant-1",
+      deltaProgressContext,
+      false,
+      async (_input, init) => {
+        await init.onopen?.(new Response(null, { status: 200 }));
+        init.onmessage?.({
+          event: "message:chunk",
+          id: "evt-current-delta",
+          data: JSON.stringify({
+            projection_version: "ai-platform.chat-public-projection.v1",
+            projection_kind: "assistant_delta",
+            run_id: "run-1",
+            event_id: "evt-current-delta",
+            sequence: 44,
+            content: "新进度",
+          }),
+        } as never);
+        await init.onclose?.();
+      },
+    ),
+    /SSE closed before terminal event/,
+  );
+  assert.equal(deltaProgressContext.retryCountRef.current, 0);
+  assert.equal(
+    deltaProgressContext.acceptedRunEventSequenceRef.current.sequence,
+    44,
+  );
+
   const nonProgressContext = {
     ...currentContext,
     abortControllerRef: { current: null },

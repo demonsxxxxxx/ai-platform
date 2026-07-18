@@ -3,8 +3,10 @@ import {
   AlertTriangle,
   Ban,
   CheckCircle,
+  Clock3,
   Download,
   Eye,
+  LoaderCircle,
   ShieldAlert,
   XCircle,
 } from "lucide-react";
@@ -283,7 +285,7 @@ export function MessagePartRenderer({
   }
 
   if (part.type === "run_status") {
-    return <RunStatusItem part={part} />;
+    return <RunStatusItem part={part} isStreaming={isStreaming === true} />;
   }
 
   if (part.type === "tool_permission") {
@@ -324,15 +326,32 @@ function formatEventLabel(value: string): string {
 
 function RunStatusItem({
   part,
+  isStreaming,
 }: {
   part: Extract<MessagePart, { type: "run_status" }>;
+  isStreaming: boolean;
 }) {
+  const isWaiting =
+    part.event_type === "queued" ||
+    part.event_type === "agent_step_blocked" ||
+    part.event_type === "cancel_requested";
+  const isActive =
+    part.event_type === "run_started" ||
+    part.event_type === "tool_call_started" ||
+    part.event_type === "agent_step_started" ||
+    part.event_type === "agent_step_reused" ||
+    part.event_type === "subagent_started" ||
+    part.event_type === "run_child_created";
   const Icon =
     part.severity === "error"
       ? XCircle
       : part.severity === "warning"
         ? AlertTriangle
-        : CheckCircle;
+        : isWaiting
+          ? Clock3
+          : isActive
+            ? LoaderCircle
+            : CheckCircle;
   const tone =
     part.severity === "error"
       ? "border-red-200/70 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-300"
@@ -345,12 +364,19 @@ function RunStatusItem({
 
   return (
     <div
+      role={part.severity === "info" ? "status" : "alert"}
       className={clsx(
         "my-1 flex min-w-0 items-start gap-2 rounded-lg border px-3 py-2 text-sm",
         tone,
       )}
     >
-      <Icon size={15} className="mt-0.5 shrink-0" />
+      <Icon
+        size={15}
+        className={clsx(
+          "mt-0.5 shrink-0",
+          isStreaming && isActive && "animate-spin",
+        )}
+      />
       <div className="min-w-0 flex-1">
         {part.message && (
           <div className="break-words font-medium leading-snug">
