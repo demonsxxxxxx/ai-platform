@@ -1408,6 +1408,35 @@ async def test_preview_artifact_returns_a_public_xlsx_dto_after_authorization(mo
 
 
 @pytest.mark.asyncio
+async def test_preview_artifact_rejects_inconsistent_stored_xlsx_filenames_before_storage_read(monkeypatch):
+    async def fake_get_authorized_artifact(conn, *, tenant_id, user_id, artifact_id):
+        return {
+            "id": artifact_id,
+            "original_name": "report.xlsx",
+            "file_name": "report.xlsm",
+            "storage_key": "private/report.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+
+    class ForbiddenStorage:
+        def __init__(self):
+            raise AssertionError("inconsistent XLSX metadata must fail before storage")
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_artifact", fake_get_authorized_artifact)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await preview_artifact(
+            "art-inconsistent",
+            principal=principal(permissions=["artifact:download"]),
+        )
+
+    assert exc_info.value.status_code == 415
+    assert exc_info.value.detail == "artifact_preview_not_allowed"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "route_name",
     ["get_session", "session_runs", "session_events", "chat_status"],

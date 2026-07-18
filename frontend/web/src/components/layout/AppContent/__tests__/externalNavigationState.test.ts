@@ -130,7 +130,8 @@ test("builds a file preview request for external navigation", () => {
       file_key: "revealed/file-1",
       file_name: "demo.txt",
       file_size: 128,
-      url: "/api/upload/file/revealed/file-1",
+      preview_url: "/api/upload/file/revealed/file-1",
+      download_url: "/api/ai/artifacts/file-1/download",
       source: "reveal_file",
       original_path: "/tmp/demo.txt",
       project_meta: null,
@@ -141,6 +142,8 @@ test("builds a file preview request for external navigation", () => {
       filePath: "/tmp/demo.txt",
       s3Key: "revealed/file-1",
       signedUrl: "/api/upload/file/revealed/file-1",
+      previewUrl: "/api/upload/file/revealed/file-1",
+      downloadUrl: "/api/ai/artifacts/file-1/download",
       fileSize: 128,
     },
   );
@@ -153,7 +156,8 @@ test("keeps allowed platform URLs for external navigation file previews", () => 
       file_key: "revealed/file-api-1",
       file_name: "api.pdf",
       file_size: 128,
-      url: "/api/upload/file/revealed/file-api-1",
+      preview_url: "/api/upload/file/revealed/file-api-1",
+      download_url: "/api/ai/artifacts/file-api-1/download",
       source: "reveal_file",
       original_path: "/tmp/api.pdf",
       project_meta: null,
@@ -164,6 +168,8 @@ test("keeps allowed platform URLs for external navigation file previews", () => 
       filePath: "/tmp/api.pdf",
       s3Key: "revealed/file-api-1",
       signedUrl: "/api/upload/file/revealed/file-api-1",
+      previewUrl: "/api/upload/file/revealed/file-api-1",
+      downloadUrl: "/api/ai/artifacts/file-api-1/download",
       fileSize: 128,
     },
   );
@@ -174,7 +180,8 @@ test("keeps allowed platform URLs for external navigation file previews", () => 
       file_key: "revealed/file-https-1",
       file_name: "https.pdf",
       file_size: 256,
-      url: "https://cdn.example.com/plain.pdf",
+      preview_url: "https://cdn.example.com/plain.pdf",
+      download_url: "https://cdn.example.com/plain.pdf",
       source: "reveal_file",
       original_path: "/tmp/https.pdf",
       project_meta: null,
@@ -195,7 +202,6 @@ test("keeps revealed XLSX preview and download URLs distinct", () => {
     file_key: "revealed/file-xlsx",
     file_name: "checks.xlsx",
     file_size: 128,
-    url: "/api/ai/artifacts/file-xlsx/preview",
     preview_url: "/api/ai/artifacts/file-xlsx/preview",
     download_url: "/api/ai/artifacts/file-xlsx/download",
     mime_type:
@@ -218,13 +224,35 @@ test("keeps revealed XLSX preview and download URLs distinct", () => {
   );
 });
 
+test("does not fall back from a legacy revealed url to a preview or download action", () => {
+  const preview = buildExternalNavigationPreviewRequest({
+    id: "file-legacy-url",
+    file_key: "revealed/file-legacy-url",
+    file_name: "checks.xlsx",
+    file_size: 128,
+    source: "reveal_file",
+    original_path: "checks.xlsx",
+    project_meta: null,
+    url: "/api/ai/artifacts/file-legacy-url/download",
+  } as never);
+
+  assert.equal(preview?.kind, "file");
+  if (preview?.kind !== "file") {
+    throw new Error("expected a file preview request");
+  }
+  assert.equal(preview.previewUrl, undefined);
+  assert.equal(preview.downloadUrl, undefined);
+  assert.equal(preview.signedUrl, undefined);
+});
+
 test("omits disallowed signed URLs for external navigation file previews", () => {
   const httpPreview = buildExternalNavigationPreviewRequest({
     id: "file-http-1",
     file_key: "revealed/file-http-1",
     file_name: "http.pdf",
     file_size: 512,
-    url: "http://cdn.example.com/plain.pdf",
+    preview_url: "http://cdn.example.com/plain.pdf",
+    download_url: "http://cdn.example.com/plain.pdf",
     source: "reveal_file",
     original_path: "/tmp/http.pdf",
     project_meta: null,
@@ -242,7 +270,8 @@ test("omits disallowed signed URLs for external navigation file previews", () =>
     file_key: "revealed/file-internal-1",
     file_name: "internal.pdf",
     file_size: 1024,
-    url: `https://cdn.example.com/${encodedSkillsUrl}`,
+    preview_url: `https://cdn.example.com/${encodedSkillsUrl}`,
+    download_url: `https://cdn.example.com/${encodedSkillsUrl}`,
     source: "reveal_file",
     original_path: "/tmp/internal.pdf",
     project_meta: null,
@@ -265,7 +294,8 @@ test("sanitizes sensitive non-project external preview path and s3 key", () => {
       file_key: `revealed/${encodedSkillsKey}`,
       file_name: "safe-report.pdf",
       file_size: 2048,
-      url: `https://cdn.example.com/${encodedRunsPath}`,
+      preview_url: `https://cdn.example.com/${encodedRunsPath}`,
+      download_url: `https://cdn.example.com/${encodedRunsPath}`,
       source: "reveal_file",
       original_path: `/workspace/${encodedRunsPath}`,
       project_meta: null,
@@ -289,7 +319,8 @@ test("uses an empty safe path when all non-project external path labels are sens
       file_key: encodedRunsPath,
       file_name: encodedSkillsName,
       file_size: 64,
-      url: null,
+      preview_url: null,
+      download_url: null,
       source: "reveal_file",
       original_path: `/workspace/${encodedRunsPath}`,
       project_meta: null,
@@ -435,7 +466,8 @@ test("builds a project preview request for external navigation", () => {
       file_key: "revealed/project-1",
       file_name: "demo-app",
       file_size: 0,
-      url: null,
+      preview_url: null,
+      download_url: null,
       source: "reveal_project",
       original_path: "/workspace/demo-app",
       project_meta: {
@@ -485,7 +517,8 @@ test("sanitizes project_meta before building an external project preview request
     file_key: "revealed/project-2",
     file_name: "secure-app",
     file_size: 0,
-    url: null,
+    preview_url: null,
+    download_url: null,
     source: "reveal_project",
     original_path: `/workspace/${encodeRepeated(".claude/skills/private", 2)}`,
     project_meta: {

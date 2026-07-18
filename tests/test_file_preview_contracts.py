@@ -13,6 +13,7 @@ from app.file_preview_contracts import (
     acquire_xlsx_preview_lease,
     build_xlsx_preview,
     is_xlsx_preview_request,
+    xlsx_preview_identity_from_metadata,
 )
 
 
@@ -97,6 +98,72 @@ def test_xlsx_preview_metadata_requires_the_supported_xlsx_extension_and_mime_ty
         file_name="checks.xlsx",
         content_type="application/vnd.ms-excel",
     )
+
+
+@pytest.mark.parametrize(
+    ("row", "expected_name", "has_xlsx_content_type", "eligible"),
+    [
+        (
+            {
+                "original_name": "report.xlsx",
+                "storage_key": "private/opaque-object",
+                "content_type": XLSX_CONTENT_TYPE,
+            },
+            "report.xlsx",
+            True,
+            True,
+        ),
+        (
+            {
+                "storage_key": "private/export.xlsx",
+                "content_type": XLSX_CONTENT_TYPE,
+            },
+            "export.xlsx",
+            True,
+            True,
+        ),
+        (
+            {
+                "original_name": "report.xlsx",
+                "file_name": "report.xlsm",
+                "storage_key": "private/report.xlsx",
+                "content_type": XLSX_CONTENT_TYPE,
+            },
+            None,
+            True,
+            False,
+        ),
+        (
+            {
+                "storage_key": "private/export.xlsm",
+                "content_type": XLSX_CONTENT_TYPE,
+            },
+            "export.xlsm",
+            True,
+            False,
+        ),
+        (
+            {
+                "storage_key": "private/export.xlsx",
+                "content_type": "application/vnd.ms-excel",
+            },
+            "export.xlsx",
+            False,
+            False,
+        ),
+    ],
+)
+def test_xlsx_preview_identity_uses_stored_metadata_and_fails_closed_on_mismatch(
+    row,
+    expected_name,
+    has_xlsx_content_type,
+    eligible,
+):
+    identity = xlsx_preview_identity_from_metadata(row)
+
+    assert identity.file_name == expected_name
+    assert identity.has_xlsx_content_type is has_xlsx_content_type
+    assert identity.eligible is eligible
 
 
 def test_oversized_xlsx_preview_fails_with_a_stable_public_code():
@@ -286,3 +353,72 @@ def test_unreaped_child_retains_the_permit_until_the_reaper_confirms_exit(monkey
     assert recovered is not None
     recovered.release()
     assert "close" in calls
+
+
+def test_connection_close_error_still_reaps_stubborn_child_before_releasing_lease(monkeypatch):
+    admission = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(file_preview_contracts, "_PREVIEW_ADMISSION", admission)
+    calls: list[str] = []
+
+    class Connection:
+        def close(self):
+            calls.append("connection.close")
+            raise RuntimeError("close failed")
+
+        def poll(self, timeout):
+            raise AssertionError("send close error must stop the request path")
+
+    class Process:
+        alive = False
+
+        def start(self):
+            self.alive = True
+            calls.append("start")
+
+        def is_alive(self):
+            return self.alive
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def kill(self):
+            calls.append("kill")
+
+        def join(self, timeout=0):
+            calls.append(f"join:{timeout}")
+
+        def close(self):
+            calls.append("process.close")
+
+    process = Process()
+
+    class Context:
+        def Pipe(self, *, duplex):
+            assert duplex is False
+            return Connection(), Connection()
+
+        def Process(self, **kwargs):
+            return process
+
+    monkeypatch.setattr(file_preview_contracts.multiprocessing, "get_context", lambda _: Context())
+    lease = acquire_xlsx_preview_lease()
+    assert lease is not None
+
+    result = file_preview_contracts._invoke_isolated_xlsx_parser(
+        raw=b"safe",
+        requirement={},
+        timeout_seconds=0.01,
+        lease=lease,
+    )
+    lease.release()
+
+    assert result == {"status": "failed", "code": "xlsx_preview_unavailable"}
+    assert "terminate" in calls and "kill" in calls
+    assert lease._reaper_thread is not None
+    assert acquire_xlsx_preview_lease() is None
+
+    process.alive = False
+    lease._reaper_thread.join(timeout=1)
+    recovered = acquire_xlsx_preview_lease()
+    assert recovered is not None
+    recovered.release()

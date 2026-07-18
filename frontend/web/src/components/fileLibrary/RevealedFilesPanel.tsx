@@ -104,16 +104,21 @@ export function RevealedFilesPanel({
   );
   const activeImageFile = imagePreviewNavigation.current ?? imageViewerFile;
   const safeActiveImageUrl = resolveSafeRevealedFilePreviewUrl(
-    activeImageFile?.url,
+    activeImageFile?.preview_url,
   );
   const imageViewerSrc = useSafeAttachmentImageSrc(
     safeActiveImageUrl,
     activeImageFile ? (activeImageFile.mime_type ?? "image/png") : null,
   );
   const safePreviewFileUrl = resolveSafeRevealedFilePreviewUrl(
-    previewFile?.url,
+    previewFile?.preview_url,
   );
-  const safeVideoUrl = resolveSafeRevealedFilePreviewUrl(videoViewerFile?.url);
+  const safePreviewFileDownloadUrl = resolveSafeRevealedFilePreviewUrl(
+    previewFile?.download_url,
+  );
+  const safeVideoUrl = resolveSafeRevealedFilePreviewUrl(
+    videoViewerFile?.preview_url,
+  );
   const videoViewerSrc = useSafeAttachmentObjectUrl(
     safeVideoUrl,
     videoViewerFile ? (videoViewerFile.mime_type ?? "video/mp4") : null,
@@ -138,7 +143,7 @@ export function RevealedFilesPanel({
         setImageViewerFile(file);
         return;
       }
-      const safeVideoSrc = resolveSafeRevealedFilePreviewUrl(file.url);
+      const safeVideoSrc = resolveSafeRevealedFilePreviewUrl(file.preview_url);
       if (safeVideoSrc && (file.file_type === "video" || isVideoFile(ext))) {
         setVideoViewerFile(file);
         return;
@@ -249,9 +254,14 @@ export function RevealedFilesPanel({
         {previewFile && (
           <DocumentPreview
             path={previewFile.file_name}
-            signedUrl={
+            previewUrl={
               safePreviewFileUrl
                 ? getFullUrl(safePreviewFileUrl)
+                : undefined
+            }
+            downloadUrl={
+              safePreviewFileDownloadUrl
+                ? getFullUrl(safePreviewFileDownloadUrl)
                 : undefined
             }
             fileSize={previewFile.file_size}

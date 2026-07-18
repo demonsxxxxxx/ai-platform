@@ -11,7 +11,7 @@ from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
-from app.file_preview_contracts import XLSX_CONTENT_TYPE, is_xlsx_preview_request
+from app.file_preview_contracts import xlsx_preview_identity_from_metadata
 from app.models import (
     RevealedFileGroupedListResponse,
     RevealedFileItemResponse,
@@ -80,9 +80,9 @@ def _revealed_item(row: dict[str, Any]) -> RevealedFileItemResponse:
     source = "reveal_project" if file_type == "project" else "reveal_file"
     file_name = _file_name_for(row)
     content_type = str(row.get("content_type") or "")
+    xlsx_identity = xlsx_preview_identity_from_metadata(row)
     preview_allowed = artifact_preview_allowed(content_type) and (
-        content_type.split(";", 1)[0].strip().casefold() != XLSX_CONTENT_TYPE
-        or is_xlsx_preview_request(file_name=file_name, content_type=content_type)
+        not xlsx_identity.has_xlsx_content_type or xlsx_identity.eligible
     )
     preview_url = artifact_preview_url(artifact_id) if artifact_id and preview_allowed else None
     download_url = f"/api/ai/artifacts/{artifact_id}/download" if artifact_id else None

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import hashlib
 import math
 import multiprocessing
@@ -19,7 +20,7 @@ import stat
 import tempfile
 import threading
 import time
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -140,6 +141,29 @@ class XlsxPreviewBusyError(RuntimeError):
     """Raised when the bounded preview admission limit has been reached."""
 
 
+@dataclass(frozen=True)
+class XlsxPreviewIdentity:
+    """One stored-metadata decision for the exact XLSX preview contract."""
+
+    file_name: str | None
+    content_type: str
+
+    @property
+    def has_xlsx_content_type(self) -> bool:
+        """Return whether the stored MIME type selects the XLSX presentation path."""
+
+        return self.content_type.split(";", 1)[0].strip().casefold() == XLSX_CONTENT_TYPE
+
+    @property
+    def eligible(self) -> bool:
+        """Return whether both authoritative filename and MIME select XLSX."""
+
+        return self.file_name is not None and is_xlsx_preview_request(
+            file_name=self.file_name,
+            content_type=self.content_type,
+        )
+
+
 class XlsxPreviewLease:
     """One route-owned permit retained until work and any child reaping finish."""
 
@@ -193,13 +217,13 @@ class XlsxPreviewLease:
                     if not process.is_alive():
                         break
                     process.join(timeout=0.1)
-                except (OSError, ValueError):
+                except Exception:
                     # An uncertain process state must retain the permit and retry.
                     time.sleep(0.05)
             try:
                 process.join(timeout=0)
                 process.close()
-            except (OSError, ValueError):
+            except Exception:
                 pass
         finally:
             with self._lock:
@@ -248,6 +272,42 @@ def is_xlsx_preview_request(*, file_name: object, content_type: object) -> bool:
     normalized_name = PurePosixPath(str(file_name or "").replace("\\", "/")).name
     normalized_type = str(content_type or "").split(";", 1)[0].strip().casefold()
     return normalized_name.casefold().endswith(".xlsx") and normalized_type == XLSX_CONTENT_TYPE
+
+
+def xlsx_preview_identity_from_metadata(
+    row: Mapping[str, object],
+) -> XlsxPreviewIdentity:
+    """Resolve XLSX eligibility from stored file metadata, never a display label.
+
+    ``original_name`` and ``file_name`` are preferred when present.  When both
+    are present they must agree; a disagreement fails closed.  Artifact rows
+    without either field use the persisted storage-key basename, which is also
+    the filename consumed by the authorized preview route.
+    """
+
+    preferred_names: list[str] = []
+    for field_name in ("original_name", "file_name"):
+        name = _stored_metadata_basename(row.get(field_name))
+        if name is not None:
+            preferred_names.append(name)
+    normalized_names = {name.casefold() for name in preferred_names}
+    if len(normalized_names) > 1:
+        file_name = None
+    elif preferred_names:
+        file_name = preferred_names[0]
+    else:
+        file_name = _stored_metadata_basename(row.get("storage_key"))
+    return XlsxPreviewIdentity(
+        file_name=file_name,
+        content_type=str(row.get("content_type") or ""),
+    )
+
+
+def _stored_metadata_basename(value: object) -> str | None:
+    """Return a non-empty basename from a stored filename-like metadata value."""
+
+    normalized = PurePosixPath(str(value or "").replace("\\", "/")).name.strip()
+    return normalized or None
 
 
 def xlsx_preview_max_bytes(*, file_name: object, content_type: object) -> int:
@@ -353,48 +413,79 @@ def _invoke_isolated_xlsx_parser(
         daemon=True,
     )
     started = False
+    result: dict[str, Any]
     try:
         process.start()
         started = True
         send_conn.close()
         if not receive_conn.poll(timeout_seconds):
-            return {"status": "failed", "code": "xlsx_preview_timeout"}
-        try:
-            result = receive_conn.recv()
-        except (EOFError, OSError):
-            result = {"status": "failed", "code": "xlsx_preview_unavailable"}
-        process.join(timeout=0.5)
-        if process.is_alive():
-            return {"status": "failed", "code": "xlsx_preview_unavailable"}
-        if not isinstance(result, dict):
-            return {"status": "failed", "code": "xlsx_preview_unavailable"}
-        return result
-    except (OSError, ValueError):
-        return {"status": "failed", "code": "xlsx_preview_unavailable"}
-    finally:
-        receive_conn.close()
-        send_conn.close()
-        if started:
-            try:
-                if process.is_alive():
-                    reaped = _stop_process(process)
-                else:
-                    process.join(timeout=0)
-                    reaped = not process.is_alive()
-            except (OSError, ValueError):
-                reaped = False
-            if not reaped:
-                lease.retain_until_process_exit(process)
-            else:
-                try:
-                    process.close()
-                except (OSError, ValueError):
-                    pass
+            result = {"status": "failed", "code": "xlsx_preview_timeout"}
         else:
             try:
-                process.close()
-            except (OSError, ValueError):
-                pass
+                result = receive_conn.recv()
+            except (EOFError, OSError):
+                result = {"status": "failed", "code": "xlsx_preview_unavailable"}
+            process.join(timeout=0.5)
+            if process.is_alive() or not isinstance(result, dict):
+                result = {"status": "failed", "code": "xlsx_preview_unavailable"}
+    except Exception:
+        result = {"status": "failed", "code": "xlsx_preview_unavailable"}
+    finally:
+        _finalize_isolated_parser_process(
+            process=process,
+            started=started,
+            lease=lease,
+        )
+        close_failed = not _close_isolated_parser_connections(receive_conn, send_conn)
+        if close_failed:
+            # The public failure is emitted only after process ownership is
+            # either confirmed or retained by the reaper.
+            result = {"status": "failed", "code": "xlsx_preview_unavailable"}
+    return result
+
+
+def _finalize_isolated_parser_process(
+    *,
+    process: multiprocessing.Process,
+    started: bool,
+    lease: XlsxPreviewLease,
+) -> bool:
+    """Stop or retain an isolated child before any connection close can raise."""
+
+    if not started:
+        try:
+            process.close()
+        except Exception:
+            pass
+        return True
+    try:
+        if process.is_alive():
+            reaped = _stop_process(process)
+        else:
+            process.join(timeout=0)
+            reaped = not process.is_alive()
+    except Exception:
+        reaped = False
+    if not reaped:
+        lease.retain_until_process_exit(process)
+        return False
+    try:
+        process.close()
+    except Exception:
+        pass
+    return True
+
+
+def _close_isolated_parser_connections(*connections: Any) -> bool:
+    """Best-effort-close both pipe endpoints without bypassing process ownership."""
+
+    closed_without_error = True
+    for connection in connections:
+        try:
+            connection.close()
+        except Exception:
+            closed_without_error = False
+    return closed_without_error
 
 
 def _stop_process(process: multiprocessing.Process) -> bool:
@@ -408,7 +499,7 @@ def _stop_process(process: multiprocessing.Process) -> bool:
             process.kill()
             process.join(timeout=0.5)
         return not process.is_alive()
-    except (OSError, ValueError):
+    except Exception:
         return False
 
 

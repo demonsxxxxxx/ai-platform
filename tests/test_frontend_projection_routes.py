@@ -145,7 +145,7 @@ def test_revealed_files_keep_non_xlsx_workbooks_download_only(monkeypatch):
         {
             "id": "art-legacy",
             "storage_key": "tenants/default/legacy.xlsm",
-            "label": "legacy.xlsm",
+            "label": "misleading.xlsx",
             "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "size_bytes": 128,
             "run_id": "run_a",

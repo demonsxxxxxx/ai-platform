@@ -18,8 +18,8 @@ from app.file_preview_contracts import (
     XlsxPreviewResponse,
     acquire_xlsx_preview_lease,
     build_xlsx_preview,
-    is_xlsx_preview_request,
     run_xlsx_preview_job,
+    xlsx_preview_identity_from_metadata,
     xlsx_preview_max_bytes,
 )
 from app.models import (
@@ -135,10 +135,10 @@ def _optional_nonnegative_int(value: object) -> int | None:
     return normalized if normalized is not None and normalized >= 0 else None
 
 
-def _input_file_preview_allowed(value: object, *, file_name: object = "") -> bool:
-    content_type = _normalized_content_type(value)
+def _input_file_preview_allowed(file_row: dict[str, object]) -> bool:
+    content_type = _normalized_content_type(file_row.get("content_type"))
     if content_type == XLSX_CONTENT_TYPE:
-        return is_xlsx_preview_request(file_name=file_name, content_type=content_type)
+        return xlsx_preview_identity_from_metadata(file_row).eligible
     return content_type in INPUT_FILE_PREVIEW_CONTENT_TYPES
 
 
@@ -220,7 +220,7 @@ def _input_file_response(
                 run_id=run_id,
                 action="preview",
             )
-            if _input_file_preview_allowed(content_type, file_name=name)
+            if _input_file_preview_allowed(file_row)
             else None
         ),
         download_url=_input_file_url(
@@ -487,14 +487,15 @@ async def preview_input_file(
         run_id=run_id,
         principal=principal,
     )
+    xlsx_identity = xlsx_preview_identity_from_metadata(file_row)
     filename = str(file_row.get("original_name") or file_id)
-    if not _input_file_preview_allowed(
-        file_row.get("content_type"),
-        file_name=filename,
-    ):
+    if not _input_file_preview_allowed(file_row):
         raise HTTPException(status_code=415, detail="input_file_preview_not_allowed")
     content_type = _safe_response_content_type(file_row.get("content_type"))
-    if is_xlsx_preview_request(file_name=filename, content_type=content_type):
+    if xlsx_identity.has_xlsx_content_type:
+        if not xlsx_identity.eligible or xlsx_identity.file_name is None:
+            raise HTTPException(status_code=415, detail="input_file_preview_not_allowed")
+        filename = xlsx_identity.file_name
         max_bytes = xlsx_preview_max_bytes(
             file_name=filename,
             content_type=content_type,
@@ -667,12 +668,11 @@ async def preview_artifact(
             )
     filename = PurePosixPath(str(artifact["storage_key"])).name or f"{artifact_id}.bin"
     content_type = _safe_response_content_type(artifact.get("content_type"))
-    if (
-        _normalized_content_type(content_type) == XLSX_CONTENT_TYPE
-        and not is_xlsx_preview_request(file_name=filename, content_type=content_type)
-    ):
-        raise HTTPException(status_code=415, detail="artifact_preview_not_allowed")
-    if is_xlsx_preview_request(file_name=filename, content_type=content_type):
+    xlsx_identity = xlsx_preview_identity_from_metadata(artifact)
+    if xlsx_identity.has_xlsx_content_type:
+        if not xlsx_identity.eligible or xlsx_identity.file_name is None:
+            raise HTTPException(status_code=415, detail="artifact_preview_not_allowed")
+        filename = xlsx_identity.file_name
         max_bytes = xlsx_preview_max_bytes(
             file_name=filename,
             content_type=content_type,

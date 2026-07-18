@@ -24,6 +24,8 @@ function createFile(
     file_type: overrides.file_type ?? "document",
     mime_type: overrides.mime_type ?? "text/plain",
     file_size: overrides.file_size ?? 12,
+    preview_url: overrides.preview_url ?? null,
+    download_url: overrides.download_url ?? null,
     url: overrides.url ?? null,
     session_id: overrides.session_id ?? "session-1",
     session_name: overrides.session_name ?? "Session 1",
@@ -325,22 +327,28 @@ test("file library document previews do not pass raw revealed file urls to Docum
   const source = readSource("../RevealedFilesPanel.tsx");
 
   assert.match(source, /safePreviewFileUrl/);
+  assert.match(source, /previewUrl=\{/);
+  assert.match(source, /downloadUrl=\{/);
   assert.doesNotMatch(
     source,
     /signedUrl=\{\s*previewFile\.url\s*\?\s*getFullUrl\(previewFile\.url\)/,
   );
+  assert.doesNotMatch(source, /previewFile\?\.url/);
 });
 
-test("file context menu download and open actions use safe revealed file urls", () => {
+test("file context menu keeps explicit revealed preview and download actions separate", () => {
   const source = readSource("../components/FileContextMenu.tsx");
 
   assert.match(source, /resolveSafeRevealedFilePreviewUrl/);
-  assert.match(source, /safeFileUrl/);
+  assert.match(source, /safePreviewUrl/);
+  assert.match(source, /safeDownloadUrl/);
   assert.match(source, /downloadPreviewUrl/);
   assert.match(source, /openPreviewUrl/);
   assert.match(source, /fileName:\s*file\.file_name/);
+  assert.match(source, /file\.preview_url/);
+  assert.match(source, /file\.download_url/);
+  assert.doesNotMatch(source, /file\.url/);
   assert.doesNotMatch(source, /getFullUrl\(file\.url!\)/);
-  assert.doesNotMatch(source, /getFullUrl\(safeFileUrl\)/);
   assert.doesNotMatch(source, /window\.open\(\s*getFullUrl/);
 });
 

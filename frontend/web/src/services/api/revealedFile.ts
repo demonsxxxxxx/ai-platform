@@ -26,6 +26,9 @@ export interface RevealedFileItem {
   file_type: "image" | "video" | "document" | "code" | "project" | "other";
   mime_type: string | null;
   file_size: number;
+  preview_url: string | null;
+  download_url: string | null;
+  /** @deprecated Use preview_url or download_url according to the action. */
   url: string | null;
   session_id: string;
   session_name: string | null;
