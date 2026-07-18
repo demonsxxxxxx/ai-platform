@@ -48,6 +48,22 @@ _WORKBOOK_SHEETS_TAG = f"{{{_SPREADSHEET_XML_NAMESPACE}}}sheets"
 _PACKAGE_RELATIONSHIPS_ROOT_TAG = f"{{{_PACKAGE_RELATIONSHIPS_NAMESPACE}}}Relationships"
 _PACKAGE_RELATIONSHIP_TAG = f"{{{_PACKAGE_RELATIONSHIPS_NAMESPACE}}}Relationship"
 _WORKSHEET_RELATIONSHIP_TYPE = f"{_OFFICE_DOCUMENT_RELATIONSHIPS_NAMESPACE}/worksheet"
+_CONTENT_TYPES_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/content-types"
+_CONTENT_TYPES_ROOT_TAG = f"{{{_CONTENT_TYPES_NAMESPACE}}}Types"
+_CONTENT_TYPES_DEFAULT_TAG = f"{{{_CONTENT_TYPES_NAMESPACE}}}Default"
+_CONTENT_TYPES_OVERRIDE_TAG = f"{{{_CONTENT_TYPES_NAMESPACE}}}Override"
+_CANONICAL_WORKBOOK_PART = "xl/workbook.xml"
+_XLSX_WORKBOOK_CONTENT_TYPE = (
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+)
+_OPENPYXL_WORKBOOK_CONTENT_TYPES = frozenset(
+    {
+        "application/vnd.ms-excel.template.macroEnabled.main+xml",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml",
+        "application/vnd.ms-excel.sheet.macroEnabled.main+xml",
+        _XLSX_WORKBOOK_CONTENT_TYPE,
+    }
+)
 _FORBIDDEN_XML_DECLARATIONS = (b"<!DOCTYPE", b"<!ENTITY")
 _FORBIDDEN_XML_DECLARATION_TEXT = tuple(token.decode("ascii") for token in _FORBIDDEN_XML_DECLARATIONS)
 
@@ -454,11 +470,11 @@ class _WorksheetXmlPreflight:
     reported_max_column: int | None
 
 
-def _resolved_package_target(target: object) -> str:
+def _resolved_package_target(target: object, *, source_part: str) -> str:
     if not isinstance(target, str) or not target or "\x00" in target or "\\" in target:
         raise AttachmentPreprocessingError("xlsx_parse_failed")
     normalized = target
-    parts: list[str] = [] if normalized.startswith("/") else ["xl"]
+    parts: list[str] = [] if normalized.startswith("/") else source_part.split("/")[:-1]
     for part in normalized.split("/"):
         if part in ("", "."):
             continue
@@ -473,6 +489,13 @@ def _resolved_package_target(target: object) -> str:
     if not parts:
         raise AttachmentPreprocessingError("xlsx_parse_failed")
     return "/".join(parts)
+
+
+def _relationships_part_for(source_part: str) -> str:
+    parts = source_part.split("/")
+    if len(parts) < 2:
+        raise AttachmentPreprocessingError("xlsx_workbook_part_unsupported")
+    return "/".join((*parts[:-1], "_rels", f"{parts[-1]}.rels"))
 
 
 def _archive_part_identity(value: object) -> str:
@@ -491,15 +514,21 @@ def _xml_local_name(tag: object) -> str:
     return str(tag).rsplit("}", 1)[-1]
 
 
+@dataclass(frozen=True)
+class _ExactXmlCollectionItem:
+    tag: str
+    attributes: dict[str, str]
+
+
 def _exact_collection_items(
     stream: Any,
     *,
     root_tag: str,
     collection_tag: str | None,
-    child_tag: str,
+    child_tags: frozenset[str],
     error_code: str,
-) -> list[dict[str, str]]:
-    items: list[dict[str, str]] = []
+) -> list[_ExactXmlCollectionItem]:
+    items: list[_ExactXmlCollectionItem] = []
     depth = 0
     root_seen = False
     root_closed = False
@@ -527,16 +556,21 @@ def _exact_collection_items(
                 collection_depth = depth
 
             if collection_depth is not None and depth == collection_depth + 1:
-                if element.tag != child_tag or active_child_depth is not None:
+                if element.tag not in child_tags or active_child_depth is not None:
                     raise AttachmentPreprocessingError(error_code)
                 active_child_depth = depth
             elif active_child_depth is not None and depth > active_child_depth:
                 raise AttachmentPreprocessingError(error_code)
         else:
             if active_child_depth is not None and depth == active_child_depth:
-                if element.tag != child_tag:
+                if element.tag not in child_tags:
                     raise AttachmentPreprocessingError(error_code)
-                items.append(dict(element.attrib))
+                items.append(
+                    _ExactXmlCollectionItem(
+                        tag=str(element.tag),
+                        attributes=dict(element.attrib),
+                    )
+                )
                 active_child_depth = None
             if collection_depth is not None and depth == collection_depth:
                 if collection_tag is not None and element.tag != collection_tag:
@@ -560,24 +594,84 @@ def _exact_collection_items(
     return items
 
 
-def _selected_worksheet_entries(archive: ZipFile) -> tuple[list[tuple[str, str]], int]:
+def _canonical_workbook_part(archive: ZipFile) -> tuple[str, str]:
     try:
-        with archive.open("xl/_rels/workbook.xml.rels", "r") as stream:
+        with archive.open("[Content_Types].xml", "r") as stream:
+            manifest_items = _exact_collection_items(
+                stream,
+                root_tag=_CONTENT_TYPES_ROOT_TAG,
+                collection_tag=None,
+                child_tags=frozenset({_CONTENT_TYPES_DEFAULT_TAG, _CONTENT_TYPES_OVERRIDE_TAG}),
+                error_code="xlsx_content_types_structure_unsupported",
+            )
+        defaults: set[str] = set()
+        override_parts: set[str] = set()
+        workbook_candidates: list[tuple[str, str]] = []
+        for item in manifest_items:
+            attributes = item.attributes
+            if item.tag == _CONTENT_TYPES_DEFAULT_TAG:
+                if set(attributes) != {"Extension", "ContentType"}:
+                    raise AttachmentPreprocessingError("xlsx_content_types_structure_unsupported")
+                extension = attributes.get("Extension")
+                content_type = attributes.get("ContentType")
+                if (
+                    not isinstance(extension, str)
+                    or not extension
+                    or "/" in extension
+                    or "\\" in extension
+                    or extension.casefold() in defaults
+                    or not isinstance(content_type, str)
+                    or not content_type
+                ):
+                    raise AttachmentPreprocessingError("xlsx_content_types_structure_unsupported")
+                defaults.add(extension.casefold())
+                if content_type in _OPENPYXL_WORKBOOK_CONTENT_TYPES:
+                    raise AttachmentPreprocessingError("xlsx_workbook_part_unsupported")
+                continue
+
+            if set(attributes) != {"PartName", "ContentType"}:
+                raise AttachmentPreprocessingError("xlsx_content_types_structure_unsupported")
+            part_name = _archive_part_identity(attributes.get("PartName"))
+            content_type = attributes.get("ContentType")
+            if part_name in override_parts or not isinstance(content_type, str) or not content_type:
+                raise AttachmentPreprocessingError("xlsx_content_types_structure_unsupported")
+            override_parts.add(part_name)
+            if content_type in _OPENPYXL_WORKBOOK_CONTENT_TYPES:
+                workbook_candidates.append((part_name, content_type))
+        if workbook_candidates != [(_CANONICAL_WORKBOOK_PART, _XLSX_WORKBOOK_CONTENT_TYPE)]:
+            raise AttachmentPreprocessingError("xlsx_workbook_part_unsupported")
+    except AttachmentPreprocessingError:
+        raise
+    except (BadZipFile, ElementTree.ParseError, KeyError, OSError, RuntimeError, ValueError) as exc:
+        raise AttachmentPreprocessingError("xlsx_parse_failed") from exc
+    return _CANONICAL_WORKBOOK_PART, _relationships_part_for(_CANONICAL_WORKBOOK_PART)
+
+
+def _selected_worksheet_entries(
+    archive: ZipFile,
+    *,
+    workbook_part: str,
+    relationships_part: str,
+) -> list[tuple[str, str]]:
+    try:
+        with archive.open(relationships_part, "r") as stream:
             relationship_items = _exact_collection_items(
                 stream,
                 root_tag=_PACKAGE_RELATIONSHIPS_ROOT_TAG,
                 collection_tag=None,
-                child_tag=_PACKAGE_RELATIONSHIP_TAG,
+                child_tags=frozenset({_PACKAGE_RELATIONSHIP_TAG}),
                 error_code="xlsx_relationship_structure_unsupported",
             )
 
         worksheet_relationships: dict[str, str] = {}
         relationship_ids: set[str] = set()
+        worksheet_targets: set[str] = set()
         relationship_type_prefix = f"{_OFFICE_DOCUMENT_RELATIONSHIPS_NAMESPACE}/"
         for item in relationship_items:
-            relationship_id = item.get("Id")
-            relationship_type = item.get("Type")
-            target_mode = str(item.get("TargetMode") or "")
+            attributes = item.attributes
+            relationship_id = attributes.get("Id")
+            relationship_type = attributes.get("Type")
+            target_mode = str(attributes.get("TargetMode") or "")
             if (
                 not isinstance(relationship_id, str)
                 or not relationship_id
@@ -589,25 +683,29 @@ def _selected_worksheet_entries(archive: ZipFile) -> tuple[list[tuple[str, str]]
             ):
                 raise AttachmentPreprocessingError("xlsx_relationship_structure_unsupported")
             relationship_ids.add(relationship_id)
-            target = _resolved_package_target(item.get("Target"))
+            target = _resolved_package_target(attributes.get("Target"), source_part=workbook_part)
             if relationship_type == _WORKSHEET_RELATIONSHIP_TYPE:
+                if target in worksheet_targets:
+                    raise AttachmentPreprocessingError("xlsx_relationship_structure_unsupported")
+                worksheet_targets.add(target)
                 worksheet_relationships[relationship_id] = target
 
-        with archive.open("xl/workbook.xml", "r") as stream:
+        with archive.open(workbook_part, "r") as stream:
             sheet_items = _exact_collection_items(
                 stream,
                 root_tag=_WORKBOOK_ROOT_TAG,
                 collection_tag=_WORKBOOK_SHEETS_TAG,
-                child_tag=_WORKBOOK_SHEET_TAG,
+                child_tags=frozenset({_WORKBOOK_SHEET_TAG}),
                 error_code="xlsx_workbook_structure_unsupported",
             )
 
-        selected: list[tuple[str, str]] = []
+        entries: list[tuple[str, str]] = []
         sheet_names: set[str] = set()
         worksheet_paths: set[str] = set()
         for item in sheet_items:
-            sheet_name = item.get("name")
-            relationship_id = item.get(_WORKBOOK_SHEET_RELATIONSHIP_ID)
+            attributes = item.attributes
+            sheet_name = attributes.get("name")
+            relationship_id = attributes.get(_WORKBOOK_SHEET_RELATIONSHIP_ID)
             archive_path = worksheet_relationships.get(str(relationship_id or ""))
             if (
                 not isinstance(sheet_name, str)
@@ -619,13 +717,12 @@ def _selected_worksheet_entries(archive: ZipFile) -> tuple[list[tuple[str, str]]
                 raise AttachmentPreprocessingError("xlsx_workbook_structure_unsupported")
             sheet_names.add(sheet_name)
             worksheet_paths.add(archive_path)
-            if len(selected) < MAX_XLSX_SHEETS:
-                selected.append((sheet_name, archive_path))
+            entries.append((sheet_name, archive_path))
     except AttachmentPreprocessingError:
         raise
     except (BadZipFile, ElementTree.ParseError, KeyError, OSError, RuntimeError, ValueError) as exc:
         raise AttachmentPreprocessingError("xlsx_parse_failed") from exc
-    return selected, len(sheet_items)
+    return entries
 
 
 def _cell_reference_coordinates(value: object) -> tuple[int, int]:
@@ -782,10 +879,15 @@ def _preflight_xlsx_worksheets(
     facts: list[_WorksheetXmlPreflight] = []
     cells_seen = 0
     try:
-        selected_entries, sheet_count = _selected_worksheet_entries(archive)
-        if len({archive_path for _sheet_name, archive_path in selected_entries}) != len(selected_entries):
+        workbook_part, relationships_part = _canonical_workbook_part(archive)
+        worksheet_entries = _selected_worksheet_entries(
+            archive,
+            workbook_part=workbook_part,
+            relationships_part=relationships_part,
+        )
+        if len({archive_path for _sheet_name, archive_path in worksheet_entries}) != len(worksheet_entries):
             raise AttachmentPreprocessingError("xlsx_parse_failed")
-        for sheet_name, archive_path in selected_entries:
+        for sheet_name, archive_path in worksheet_entries:
             sheet_facts, cells_seen = _worksheet_xml_preflight(
                 archive,
                 sheet_name=sheet_name,
@@ -796,7 +898,7 @@ def _preflight_xlsx_worksheets(
             facts.append(sheet_facts)
     finally:
         archive.close()
-    return facts, cells_seen, sheet_count
+    return facts, cells_seen, len(worksheet_entries)
 
 
 def _bounded_cell_payload(cell: Any) -> tuple[dict[str, Any] | None, bool]:
@@ -901,19 +1003,23 @@ def parse_xlsx_attachment(
         sheet_names = list(workbook.sheetnames)
         if len(sheet_names) != preflight_sheet_count:
             raise AttachmentPreprocessingError("xlsx_parse_failed")
-        selected_sheet_names = sheet_names[:MAX_XLSX_SHEETS]
-        if [str(sheet_name) for sheet_name in selected_sheet_names] != [
+        if [str(sheet_name) for sheet_name in sheet_names] != [
             facts.sheet_name for facts in worksheet_preflight
         ]:
             raise AttachmentPreprocessingError("xlsx_parse_failed")
+        for sheet_index, sheet_name in enumerate(sheet_names):
+            worksheet = workbook[sheet_name]
+            actual_archive_path = _archive_part_identity(
+                getattr(worksheet, "_worksheet_path", None)
+            )
+            if actual_archive_path != worksheet_preflight[sheet_index].archive_path:
+                raise AttachmentPreprocessingError("xlsx_parse_failed")
+        selected_sheet_names = sheet_names[:MAX_XLSX_SHEETS]
         if preflight_sheet_count > MAX_XLSX_SHEETS:
             truncated = True
         for sheet_index, sheet_name in enumerate(selected_sheet_names):
             worksheet = workbook[sheet_name]
             xml_facts = worksheet_preflight[sheet_index]
-            actual_archive_path = _archive_part_identity(getattr(worksheet, "_worksheet_path", None))
-            if actual_archive_path != xml_facts.archive_path:
-                raise AttachmentPreprocessingError("xlsx_parse_failed")
             max_row = xml_facts.reported_max_row
             max_column = xml_facts.reported_max_column
             if len(str(sheet_name)) > MAX_XLSX_CELL_CHARS:

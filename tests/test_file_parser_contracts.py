@@ -464,6 +464,139 @@ def _corrupt_exact_collection(path: Path, case: str) -> None:
     path.write_bytes(output.getvalue())
 
 
+def _select_alternate_workbook_with_duplicate_relationships(path: Path) -> None:
+    content_types_namespace = "http://schemas.openxmlformats.org/package/2006/content-types"
+    package_relationships_namespace = (
+        "http://schemas.openxmlformats.org/package/2006/relationships"
+    )
+    source = io.BytesIO(path.read_bytes())
+    output = io.BytesIO()
+    alternate_workbook_path = "alt/workbook.xml"
+    alternate_relationships_path = "alt/_rels/workbook.xml.rels"
+    decoy_path = "xl/worksheets/alternate-decoy.xml"
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        workbook_payload = archive.read("xl/workbook.xml")
+        relationships_root = ElementTree.fromstring(
+            archive.read("xl/_rels/workbook.xml.rels")
+        )
+        worksheet_relationship = next(
+            child
+            for child in relationships_root
+            if child.attrib.get("Type", "").endswith("/worksheet")
+        )
+        duplicate = ElementTree.Element(
+            f"{{{package_relationships_namespace}}}Relationship",
+            dict(worksheet_relationship.attrib),
+        )
+        duplicate.set("Target", f"/{decoy_path}")
+        relationships_root.append(duplicate)
+        alternate_relationships_payload = ElementTree.tostring(
+            relationships_root,
+            encoding="utf-8",
+            xml_declaration=True,
+        )
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            if entry.filename == "[Content_Types].xml":
+                root = ElementTree.fromstring(payload)
+                workbook_override = next(
+                    child
+                    for child in root
+                    if child.tag == f"{{{content_types_namespace}}}Override"
+                    and child.attrib.get("PartName") == "/xl/workbook.xml"
+                )
+                workbook_override.set("PartName", f"/{alternate_workbook_path}")
+                root.append(
+                    ElementTree.Element(
+                        f"{{{content_types_namespace}}}Override",
+                        {
+                            "PartName": f"/{decoy_path}",
+                            "ContentType": (
+                                "application/vnd.openxmlformats-officedocument."
+                                "spreadsheetml.worksheet+xml"
+                            ),
+                        },
+                    )
+                )
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            rewritten.writestr(entry, payload)
+        rewritten.writestr(alternate_workbook_path, workbook_payload)
+        rewritten.writestr(alternate_relationships_path, alternate_relationships_payload)
+        rewritten.writestr(decoy_path, archive.read("xl/worksheets/sheet1.xml"))
+    path.write_bytes(output.getvalue())
+
+
+def _retarget_later_worksheet_to_entity_payload(path: Path, *, sheet_index: int) -> None:
+    content_types_namespace = "http://schemas.openxmlformats.org/package/2006/content-types"
+    source_path = f"xl/worksheets/sheet{sheet_index}.xml"
+    target_path = f"xl/worksheets/sheet{sheet_index}.payload"
+    declaration = b'<!DOCTYPE worksheet [<!ENTITY later "LATER-EXPANDED">]>'
+    source = io.BytesIO(path.read_bytes())
+    output = io.BytesIO()
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            output_name = entry.filename
+            if entry.filename == source_path:
+                insertion = payload.find(b"<worksheet")
+                expected = f"<t>sheet-{sheet_index}</t>".encode("utf-8")
+                assert insertion >= 0 and expected in payload
+                payload = payload[:insertion] + declaration + payload[insertion:]
+                payload = payload.replace(expected, b"<t>&later;</t>", 1)
+                output_name = target_path
+            elif entry.filename == "xl/_rels/workbook.xml.rels":
+                root = ElementTree.fromstring(payload)
+                relationship = next(
+                    child
+                    for child in root
+                    if child.attrib.get("Target", "").endswith(f"/{source_path}")
+                )
+                relationship.set("Target", f"/{target_path}")
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            elif entry.filename == "[Content_Types].xml":
+                root = ElementTree.fromstring(payload)
+                override = next(
+                    child
+                    for child in root
+                    if child.tag == f"{{{content_types_namespace}}}Override"
+                    and child.attrib.get("PartName") == f"/{source_path}"
+                )
+                override.set("PartName", f"/{target_path}")
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            if output_name == entry.filename:
+                rewritten.writestr(entry, payload)
+            else:
+                rewritten.writestr(output_name, payload)
+    path.write_bytes(output.getvalue())
+
+
+def _inject_unreferenced_duplicate_worksheet_target(path: Path) -> None:
+    package_relationships_namespace = (
+        "http://schemas.openxmlformats.org/package/2006/relationships"
+    )
+    source = io.BytesIO(path.read_bytes())
+    output = io.BytesIO()
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            if entry.filename == "xl/_rels/workbook.xml.rels":
+                root = ElementTree.fromstring(payload)
+                worksheet_relationship = next(
+                    child
+                    for child in root
+                    if child.attrib.get("Type", "").endswith("/worksheet")
+                )
+                duplicate = ElementTree.Element(
+                    f"{{{package_relationships_namespace}}}Relationship",
+                    dict(worksheet_relationship.attrib),
+                )
+                duplicate.set("Id", "rUnreferenced")
+                root.append(duplicate)
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            rewritten.writestr(entry, payload)
+    path.write_bytes(output.getvalue())
+
+
 def test_xlsx_parser_emits_bounded_typed_content_and_positive_evidence(tmp_path):
     path = tmp_path / "book.xlsx"
     _write_workbook(path)
@@ -917,6 +1050,130 @@ def test_xlsx_parser_preserves_total_sheet_count_beyond_selected_limit(tmp_path)
     assert parsed.evidence.sheets_processed == MAX_XLSX_SHEETS
     assert parsed.evidence.truncated is True
     assert len(parsed.content["workbook"]["sheets"]) == MAX_XLSX_SHEETS
+
+
+def test_xlsx_parser_rejects_alternate_manifest_workbook_before_openpyxl(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "book.xlsx"
+    workbook = Workbook()
+    workbook.active["A1"] = "canonical-decoy"
+    workbook.save(path)
+    workbook.close()
+    _select_alternate_workbook_with_duplicate_relationships(path)
+    with zipfile.ZipFile(path, "r") as archive:
+        content_types = ElementTree.fromstring(archive.read("[Content_Types].xml"))
+        workbook_override = next(
+            child
+            for child in content_types
+            if child.attrib.get("ContentType")
+            == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+        )
+        assert workbook_override.attrib["PartName"] == "/alt/workbook.xml"
+        alternate_relationships = ElementTree.fromstring(
+            archive.read("alt/_rels/workbook.xml.rels")
+        )
+        relationship_ids = [child.attrib["Id"] for child in alternate_relationships]
+        assert len(relationship_ids) != len(set(relationship_ids))
+
+    def fail_load_workbook(*_args, **_kwargs):
+        raise AssertionError("alternate manifest workbook must fail before openpyxl selection")
+
+    monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
+
+    with pytest.raises(AttachmentPreprocessingError, match="xlsx_workbook_part_unsupported"):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
+
+
+def test_xlsx_parser_rejects_arbitrary_content_types_child_before_openpyxl(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "book.xlsx"
+    _write_workbook(path)
+    source = io.BytesIO(path.read_bytes())
+    output = io.BytesIO()
+    foreign_namespace = "urn:ai-platform:test:content-types"
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            if entry.filename == "[Content_Types].xml":
+                root = ElementTree.fromstring(payload)
+                root.append(ElementTree.Element(f"{{{foreign_namespace}}}item"))
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            rewritten.writestr(entry, payload)
+    path.write_bytes(output.getvalue())
+
+    def fail_load_workbook(*_args, **_kwargs):
+        raise AssertionError("arbitrary content-types child must fail before openpyxl")
+
+    monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
+
+    with pytest.raises(
+        AttachmentPreprocessingError,
+        match="xlsx_content_types_structure_unsupported",
+    ):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
+
+
+def test_xlsx_parser_checks_later_nonstandard_worksheet_before_openpyxl(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "book.xlsx"
+    workbook = Workbook()
+    workbook.active["A1"] = "sheet-1"
+    for index in range(2, MAX_XLSX_SHEETS + 2):
+        workbook.create_sheet(title=f"Sheet{index}")["A1"] = f"sheet-{index}"
+    workbook.save(path)
+    workbook.close()
+    _retarget_later_worksheet_to_entity_payload(
+        path,
+        sheet_index=MAX_XLSX_SHEETS + 1,
+    )
+    with zipfile.ZipFile(path, "r") as archive:
+        later_path = f"xl/worksheets/sheet{MAX_XLSX_SHEETS + 1}.payload"
+        assert later_path in archive.namelist()
+        assert b"<!DOCTYPE" in archive.read(later_path)
+
+    def fail_load_workbook(*_args, **_kwargs):
+        raise AssertionError("later worksheet declarations must fail before openpyxl size parsing")
+
+    monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
+
+    with pytest.raises(AttachmentPreprocessingError, match="xlsx_xml_entities_unsupported"):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
+
+
+def test_xlsx_parser_rejects_unreferenced_duplicate_worksheet_target_before_openpyxl(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "book.xlsx"
+    _write_workbook(path)
+    _inject_unreferenced_duplicate_worksheet_target(path)
+    with zipfile.ZipFile(path, "r") as archive:
+        relationships = ElementTree.fromstring(
+            archive.read("xl/_rels/workbook.xml.rels")
+        )
+        worksheet_targets = [
+            child.attrib["Target"]
+            for child in relationships
+            if child.attrib.get("Type", "").endswith("/worksheet")
+        ]
+        assert len(worksheet_targets) != len(set(worksheet_targets))
+
+    def fail_load_workbook(*_args, **_kwargs):
+        raise AssertionError("duplicate worksheet target must fail before openpyxl")
+
+    monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
+
+    with pytest.raises(
+        AttachmentPreprocessingError,
+        match="xlsx_relationship_structure_unsupported",
+    ):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
 
 
 @pytest.mark.parametrize("utf16", [False, True], ids=["utf8", "utf16"])
