@@ -18,11 +18,18 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException, status
 
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION
+from app.context_retrieval import ContextRetrievalDenied
 from app.executors.claude_agent_sdk_runner import (
     ClaudeAgentSdkNotAvailable,
     ScopedContextRetrievalIdentity,
     _translation_target_language,
     run_claude_agent_sdk,
+)
+from app.file_parser_contracts import (
+    AttachmentPreprocessingError,
+    ParsedAttachmentContext,
+    attachment_requirements_from_contract,
+    parse_xlsx_attachment,
 )
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.context_retrieval_client import PlatformContextRetrievalClient
@@ -265,6 +272,19 @@ def _authorized_capability_subject(subject: dict[str, Any]) -> bool:
     )
 
 
+def _attachment_stage_subject_authorized(request: ExecutorTaskRequest) -> bool:
+    identity = "mcp__ai-platform-context__stage_context_file_to_workspace"
+    return any(
+        str(subject.get("identity") or "") == identity
+        and _authorized_capability_subject(subject)
+        and bool(subject.get("write_capable"))
+        and {"file_id", "max_bytes"}.issubset(
+            {str(key) for key in subject.get("allowed_parameter_keys") or []}
+        )
+        for subject in _task_tool_policy_subjects(request)
+    )
+
+
 def _selected_authorized_file_skill_id(request: ExecutorTaskRequest) -> tuple[str | None, str | None]:
     """Return a controlled Skill only with its canonical builtin execution identities."""
 
@@ -302,6 +322,87 @@ def _resolved_workspace_file(workspace_root: Path, candidate: Path) -> Path | No
     if not resolved.is_file() or candidate.is_symlink():
         return None
     return resolved
+
+
+async def _preprocess_typed_attachments(
+    request: ExecutorTaskRequest,
+    workspace_root: Path,
+    emit_event: ExecutorEventEmitter,
+    *,
+    retrieval: PlatformContextRetrievalClient | None,
+    identity: ScopedContextRetrievalIdentity | None,
+) -> tuple[list[ParsedAttachmentContext], str | None]:
+    """Stage and parse server-required attachments through the scoped broker."""
+
+    manifest = request.config.get("context_manifest")
+    raw_contract = manifest.get("attachment_preprocessing") if isinstance(manifest, dict) else None
+    try:
+        requirements = attachment_requirements_from_contract(raw_contract)
+    except AttachmentPreprocessingError as exc:
+        return [], exc.code
+    if not requirements:
+        return [], None
+    if not _attachment_stage_subject_authorized(request):
+        return [], "attachment_parser_staging_not_authorized"
+    if retrieval is None or identity is None:
+        return [], "attachment_parser_context_retrieval_unavailable"
+    contexts: list[ParsedAttachmentContext] = []
+    for requirement in requirements:
+        if not requirement.supported:
+            return contexts, "attachment_parser_unsupported"
+        await emit_event(
+            AgentEvent(
+                type="tool_call_started",
+                message=f"Platform attachment parser started: {requirement.parser_id}",
+                payload={
+                    "tool_name": "AttachmentParser",
+                    "file_id": requirement.file_id,
+                    "parser_id": requirement.parser_id,
+                    "parser_version": requirement.parser_version,
+                    "source": "platform_attachment_preprocessor",
+                },
+                admin_only=True,
+            )
+        )
+        try:
+            staged = await retrieval.stage_context_file_to_workspace(
+                file_id=requirement.file_id,
+                workspace_root=str(workspace_root),
+                max_bytes=requirement.max_bytes,
+                tenant_id=identity.tenant_id,
+                workspace_id=identity.workspace_id,
+                user_id=identity.user_id,
+                session_id=identity.session_id,
+                run_id=identity.run_id,
+            )
+        except ContextRetrievalDenied:
+            return contexts, "attachment_parser_staging_denied"
+        except Exception:
+            return contexts, "attachment_parser_staging_failed"
+        if int(staged.get("bytes_staged") or -1) < 0 or int(staged.get("bytes_staged") or -1) > requirement.max_bytes:
+            return contexts, "attachment_parser_file_too_large"
+        workspace_path = str(staged.get("workspace_path") or "").replace("\\", "/")
+        staged_path = _resolved_workspace_file(workspace_root, workspace_root / workspace_path)
+        if staged_path is None:
+            return contexts, "attachment_parser_staged_file_invalid"
+        try:
+            parsed = parse_xlsx_attachment(path=staged_path, requirement=requirement)
+        except AttachmentPreprocessingError as exc:
+            return contexts, exc.code
+        contexts.append(parsed)
+        await emit_event(
+            AgentEvent(
+                type="tool_call_completed",
+                message=f"Platform attachment parser completed: {requirement.parser_id}",
+                payload={
+                    "tool_name": "AttachmentParser",
+                    **parsed.evidence.model_dump(mode="json"),
+                    "source": "platform_attachment_preprocessor",
+                },
+                admin_only=True,
+            )
+        )
+    return contexts, None
 
 
 def _user_message_from_skill_prompt(prompt: str) -> str:
@@ -779,25 +880,6 @@ async def _default_executor_runner(
     *,
     callback_sender: CallbackSender = _default_callback_sender,
 ) -> dict[str, Any]:
-    controlled_result = await _run_selected_authorized_file_skill(
-        request,
-        workspace_root,
-        emit_event,
-    )
-    if controlled_result is not None:
-        return controlled_result
-    if getattr(get_settings(), "claude_agent_sdk_enabled", False) is not True:
-        return {
-            "status": "failed",
-            "message": "Claude Agent SDK is disabled",
-            "error_code": "claude_agent_sdk_disabled",
-            "error_message": "Claude Agent SDK is disabled",
-            "sdk_used": False,
-            "executor_mode": "claude_agent_sdk_disabled",
-        }
-
-    skill_ids = _task_skill_ids(request)
-    model_id = str(request.config.get("model") or "") or None
     context_retrieval, context_retrieval_identity, context_retrieval_error = _context_retrieval_for_request(request)
     if context_retrieval_error:
         return {
@@ -808,6 +890,47 @@ async def _default_executor_runner(
             "sdk_used": False,
             "executor_mode": "context_retrieval_invalid",
         }
+    attachment_contexts, attachment_error = await _preprocess_typed_attachments(
+        request,
+        workspace_root,
+        emit_event,
+        retrieval=context_retrieval,
+        identity=context_retrieval_identity,
+    )
+    parser_evidence = [context.evidence.model_dump(mode="json") for context in attachment_contexts]
+    if attachment_error:
+        return {
+            "status": "failed",
+            "message": "Platform attachment preprocessing failed",
+            "error_code": attachment_error,
+            "error_message": "Platform attachment preprocessing failed",
+            "sdk_used": False,
+            "executor_mode": "platform_attachment_preprocessor",
+            "attachment_parser_evidence": parser_evidence,
+        }
+
+    if not attachment_contexts:
+        controlled_result = await _run_selected_authorized_file_skill(
+            request,
+            workspace_root,
+            emit_event,
+        )
+        if controlled_result is not None:
+            controlled_result["attachment_parser_evidence"] = parser_evidence
+            return controlled_result
+    if getattr(get_settings(), "claude_agent_sdk_enabled", False) is not True:
+        return {
+            "status": "failed",
+            "message": "Claude Agent SDK is disabled",
+            "error_code": "claude_agent_sdk_disabled",
+            "error_message": "Claude Agent SDK is disabled",
+            "sdk_used": False,
+            "executor_mode": "claude_agent_sdk_disabled",
+            "attachment_parser_evidence": parser_evidence,
+        }
+
+    skill_ids = _task_skill_ids(request)
+    model_id = str(request.config.get("model") or "") or None
 
     async def on_text(delta: str) -> None:
         if not delta:
@@ -843,6 +966,7 @@ async def _default_executor_runner(
             on_skill_use=on_skill_use,
             tool_policy_subjects=_task_tool_policy_subjects(request),
             execution_policy="sandbox_brokered",
+            attachment_contexts=attachment_contexts,
         )
     except ClaudeAgentSdkNotAvailable as exc:
         return {
@@ -850,6 +974,7 @@ async def _default_executor_runner(
             "error_code": "claude_agent_sdk_unavailable",
             "error_message": f"Claude Agent SDK unavailable: {exc}",
             "sdk_used": False,
+            "attachment_parser_evidence": parser_evidence,
         }
 
     used_sdk = bool(getattr(sdk_result, "used_sdk", False))
@@ -863,6 +988,7 @@ async def _default_executor_runner(
         "executor_mode": "claude_agent_sdk",
         "used_skills": list(getattr(sdk_result, "used_skills", []) or []),
         "used_skills_source": str(getattr(sdk_result, "used_skills_source", "") or ""),
+        "attachment_parser_evidence": parser_evidence,
     }
     if error:
         response["error_code"] = str(error)
@@ -1119,6 +1245,7 @@ def create_executor_app(
             "executor_mode",
             "used_skills",
             "used_skills_source",
+            "attachment_parser_evidence",
         ):
             if key in runner_result and runner_result[key] is not None:
                 response[key] = runner_result[key]

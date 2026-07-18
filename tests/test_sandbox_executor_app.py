@@ -10,8 +10,10 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from openpyxl import Workbook
 
 from app.executors.claude_agent_sdk_runner import build_skill_prompt
+from app.file_parser_contracts import build_attachment_preprocessing_contract
 from app.runtime.kernel_contracts import AgentEvent
 from app.runtime.sandbox.contracts import ExecutorTaskRequest
 from app.runtime.sandbox import executor_app
@@ -115,6 +117,17 @@ def write_minimal_docx(path: Path) -> None:
         )
 
 
+def write_minimal_xlsx(path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet["A1"] = "metric"
+    sheet["B1"] = "value"
+    sheet["A2"] = "total"
+    sheet["B2"] = "=1+2"
+    workbook.save(path)
+    workbook.close()
+
+
 def selected_baoyu_skill_policy() -> list[dict[str, object]]:
     return [
         {
@@ -134,6 +147,25 @@ def selected_baoyu_skill_policy() -> list[dict[str, object]]:
 
 def skill_only_baoyu_policy() -> list[dict[str, object]]:
     return [subject for subject in selected_baoyu_skill_policy() if subject["identity"] == "Skill"]
+
+
+def context_stage_policy() -> list[dict[str, object]]:
+    return [
+        {
+            "identity": "mcp__ai-platform-context__stage_context_file_to_workspace",
+            "registered": True,
+            "declared": True,
+            "active": True,
+            "distributed": True,
+            "identity_authorized": True,
+            "object_authorized": True,
+            "parameters_authorized": True,
+            "risk_level": "medium",
+            "write_capable": True,
+            "allowed_parameter_keys": ["file_id", "max_bytes"],
+            "required_parameter_keys": ["file_id"],
+        }
+    ]
 
 
 def test_executor_health_returns_ready(tmp_path):
@@ -916,6 +948,208 @@ def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, mo
     assert captured["context_retrieval_identity"].tenant_id == "tenant-a"
     assert captured["context_retrieval_identity"].workspace_id == "workspace-a"
     assert captured["context_retrieval_identity"].user_id == "user-a"
+
+
+@pytest.mark.asyncio
+async def test_default_executor_preparses_brokered_xlsx_and_forwards_typed_context(tmp_path, monkeypatch):
+    source = tmp_path / "source.xlsx"
+    write_minimal_xlsx(source)
+    raw = source.read_bytes()
+    source.unlink()
+    captured = {}
+
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_stage(_self, *, file_id, workspace_root, max_bytes, **scope):
+        assert file_id == "file-a"
+        assert max_bytes == 1024 * 1024
+        assert scope == {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-a",
+        }
+        target = Path(workspace_root) / "context" / "file-a" / "book.xlsx"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(raw)
+        return {
+            "file_id": file_id,
+            "workspace_path": "context/file-a/book.xlsx",
+            "bytes_staged": len(raw),
+            "max_bytes": max_bytes,
+        }
+
+    async def fake_sdk(**kwargs):
+        captured["attachment_contexts"] = kwargs["attachment_contexts"]
+        return type(
+            "SdkResult",
+            (),
+            {
+                "used_sdk": True,
+                "message": "xlsx answer",
+                "session_id": "sdk-session-a",
+                "usage": {},
+                "error": None,
+                "used_skills": ["qa-rag-skill"],
+                "used_skills_source": "executor_hook",
+            },
+        )()
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.PlatformContextRetrievalClient.stage_context_file_to_workspace",
+        fake_stage,
+    )
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fake_sdk)
+    payload = task_payload()
+    payload["config"].update(
+        {
+            "skill_ids": ["qa-rag-skill"],
+            "input_files": ["file-a"],
+            "materialized_file_names": ["book.xlsx"],
+            "tool_policy_subjects": context_stage_policy(),
+            "context_manifest": {
+                "schema_version": "ai-platform.context-manifest.v1",
+                "available_retrieval_tools": ["stage_context_file_to_workspace"],
+                "attachment_preprocessing": build_attachment_preprocessing_contract(
+                    file_ids=["file-a"],
+                    file_names=["book.xlsx"],
+                ),
+            },
+            "context_retrieval_scope": {
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "agent_id": "general-agent",
+            },
+        }
+    )
+    request = ExecutorTaskRequest.model_validate(payload)
+
+    async def emit_event(_event):
+        return None
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "completed"
+    assert result["attachment_parser_evidence"][0]["status"] == "parsed"
+    assert result["attachment_parser_evidence"][0]["file_id"] == "file-a"
+    typed_context = captured["attachment_contexts"][0]
+    formula = typed_context.content["workbook"]["sheets"][0]["rows"][1]["cells"][1]
+    assert formula["kind"] == "formula"
+    assert formula["value"] == "=1+2"
+
+
+@pytest.mark.asyncio
+async def test_default_executor_fails_before_sdk_for_malformed_xlsx(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fake_stage(_self, *, file_id, workspace_root, max_bytes, **_scope):
+        target = Path(workspace_root) / "context" / file_id / "book.xlsx"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"not-a-workbook")
+        return {
+            "file_id": file_id,
+            "workspace_path": f"context/{file_id}/book.xlsx",
+            "bytes_staged": len(b"not-a-workbook"),
+            "max_bytes": max_bytes,
+        }
+
+    async def fail_sdk(**_kwargs):
+        raise AssertionError("SDK must not run without positive XLSX parser evidence")
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.PlatformContextRetrievalClient.stage_context_file_to_workspace",
+        fake_stage,
+    )
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.run_claude_agent_sdk", fail_sdk)
+    payload = task_payload()
+    payload["config"].update(
+        {
+            "skill_ids": ["qa-rag-skill"],
+            "input_files": ["file-a"],
+            "materialized_file_names": ["book.xlsx"],
+            "tool_policy_subjects": context_stage_policy(),
+            "context_manifest": {
+                "schema_version": "ai-platform.context-manifest.v1",
+                "attachment_preprocessing": build_attachment_preprocessing_contract(
+                    file_ids=["file-a"],
+                    file_names=["book.xlsx"],
+                ),
+            },
+            "context_retrieval_scope": {
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "agent_id": "general-agent",
+            },
+        }
+    )
+    request = ExecutorTaskRequest.model_validate(payload)
+
+    async def emit_event(_event):
+        return None
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "xlsx_parse_failed"
+    assert result["sdk_used"] is False
+
+
+@pytest.mark.asyncio
+async def test_default_executor_requires_server_context_stage_subject_for_xlsx(tmp_path, monkeypatch):
+    class StubSettings:
+        claude_agent_sdk_enabled = True
+
+    async def fail_stage(*_args, **_kwargs):
+        raise AssertionError("staging must not start without the exact server-owned subject")
+
+    monkeypatch.setattr("app.runtime.sandbox.executor_app.get_settings", lambda: StubSettings())
+    monkeypatch.setattr(
+        "app.runtime.sandbox.executor_app.PlatformContextRetrievalClient.stage_context_file_to_workspace",
+        fail_stage,
+    )
+    payload = task_payload()
+    payload["config"].update(
+        {
+            "skill_ids": ["qa-rag-skill"],
+            "input_files": ["file-a"],
+            "materialized_file_names": ["book.xlsx"],
+            "context_manifest": {
+                "schema_version": "ai-platform.context-manifest.v1",
+                "attachment_preprocessing": build_attachment_preprocessing_contract(
+                    file_ids=["file-a"],
+                    file_names=["book.xlsx"],
+                ),
+            },
+            "context_retrieval_scope": {
+                "tenant_id": "tenant-a",
+                "workspace_id": "workspace-a",
+                "user_id": "user-a",
+                "session_id": "session-a",
+                "run_id": "run-a",
+                "agent_id": "general-agent",
+            },
+        }
+    )
+    request = ExecutorTaskRequest.model_validate(payload)
+
+    async def emit_event(_event):
+        return None
+
+    result = await _default_executor_runner(request, tmp_path, emit_event)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "attachment_parser_staging_not_authorized"
 
 
 def test_executor_execute_fails_closed_for_manifest_without_valid_scope(tmp_path, monkeypatch):

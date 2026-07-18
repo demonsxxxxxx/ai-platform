@@ -1,6 +1,6 @@
 import base64
 import binascii
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import posixpath
 import re
@@ -24,6 +24,12 @@ from app.executors.claude_agent_sdk_runner import (
     build_skill_prompt,
     internal_context_tool_policy_subjects,
     run_claude_agent_sdk,
+)
+from app.file_parser_contracts import (
+    AttachmentPreprocessingError,
+    attachment_requirements_from_contract,
+    build_attachment_preprocessing_contract,
+    validate_required_parser_evidence,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
 from app.runtime.sandbox.container_provider import (
@@ -72,6 +78,21 @@ class PreparedSdkRun:
     allowed_skill_names: list[str]
     staged_skill_names: list[str]
     prompt: str
+    file_content_types: list[str] = field(default_factory=list)
+    materialized_file_ids: list[str] = field(default_factory=list)
+
+
+class _MaterializedFileNames(list[str]):
+    def __init__(
+        self,
+        values: list[str],
+        *,
+        content_types: list[str],
+        file_ids: list[str],
+    ) -> None:
+        super().__init__(values)
+        self.content_types = list(content_types)
+        self.file_ids = list(file_ids)
 
 
 async def resolve_claude_sdk_tool_permission(**_legacy_request: Any) -> dict[str, Any]:
@@ -156,6 +177,18 @@ def _context_manifest_from_pack(context_pack: dict[str, Any]) -> dict[str, Any] 
 
 def _runtime_request_skill_ids(payload: RunPayload, prepared: PreparedSdkRun) -> list[str]:
     return list(prepared.staged_skill_names) or [payload.skill_id]
+
+
+def _attachment_preprocessing_contract(
+    payload: RunPayload,
+    prepared: PreparedSdkRun,
+) -> dict[str, Any]:
+    return build_attachment_preprocessing_contract(
+        file_ids=list(prepared.materialized_file_ids or payload.file_ids),
+        file_names=list(prepared.file_names),
+        content_types=list(prepared.file_content_types),
+        workspace=prepared.workspace,
+    )
 
 
 def _payload_sandbox_mode(payload: RunPayload) -> str:
@@ -732,7 +765,21 @@ class ClaudeAgentWorkerAdapter:
         resolved_workspace = workspace or _run_workspace(settings, payload)
         resolved_workspace_root = workspace_root or settings.claude_agent_workspace_root
         _prepare_run_workspace(resolved_workspace_root, resolved_workspace)
-        file_names = await self._materialize_files(payload, resolved_workspace)
+        materialized_file_names = await self._materialize_files(payload, resolved_workspace)
+        file_names = list(materialized_file_names)
+        raw_content_types = getattr(materialized_file_names, "content_types", [])
+        file_content_types = (
+            [str(value or "") for value in raw_content_types]
+            if isinstance(raw_content_types, list) and len(raw_content_types) == len(file_names)
+            else ["" for _name in file_names]
+        )
+        raw_materialized_file_ids = getattr(materialized_file_names, "file_ids", [])
+        materialized_file_ids = (
+            [str(value or "") for value in raw_materialized_file_ids]
+            if isinstance(raw_materialized_file_ids, list)
+            and len(raw_materialized_file_ids) == len(file_names)
+            else list(payload.file_ids[: len(file_names)])
+        )
 
         skills = BuiltinSkillRegistry(settings.platform_skills_root).list_builtin_skills()
         pinned_manifests = _pinned_skill_manifests(payload)
@@ -819,6 +866,8 @@ class ClaudeAgentWorkerAdapter:
                 allowed_skill_names=allowed_skill_names,
                 staged_skill_names=staged_skill_names,
                 prompt=prompt,
+                file_content_types=file_content_types,
+                materialized_file_ids=materialized_file_ids,
             ),
             None,
         )
@@ -834,6 +883,24 @@ class ClaudeAgentWorkerAdapter:
         settings = get_settings()
         context_pack = self._executor_context_pack(payload)
         context_manifest = _context_manifest_from_pack(context_pack)
+        try:
+            attachment_contract = _attachment_preprocessing_contract(payload, prepared)
+            attachment_requirements = attachment_requirements_from_contract(attachment_contract)
+        except AttachmentPreprocessingError as exc:
+            return self._attachment_parser_failure_result(error_code=exc.code)
+        runtime_context_manifest = dict(context_manifest or {})
+        if attachment_requirements:
+            if context_manifest is None:
+                return self._attachment_parser_failure_result(
+                    error_code="attachment_parser_context_manifest_required"
+                )
+            if "stage_context_file_to_workspace" not in available_context_retrieval_tools(
+                context_manifest
+            ):
+                return self._attachment_parser_failure_result(
+                    error_code="attachment_parser_staging_not_authorized"
+                )
+            runtime_context_manifest["attachment_preprocessing"] = attachment_contract
         request = SandboxRuntimeRequest(
             tenant_id=payload.tenant_id,
             workspace_id=payload.workspace_id,
@@ -855,7 +922,7 @@ class ClaudeAgentWorkerAdapter:
             trace_id=payload.trace_id or standard_trace_id(payload.run_id),
             callback_url=_sandbox_callback_url(settings),
             callback_token_id=f"cbt_{payload.run_id}",
-            context_manifest=dict(context_manifest or {}),
+            context_manifest=runtime_context_manifest,
             context_retrieval_scope=self._context_retrieval_scope_for_payload(payload, context_pack),
             sdk_session_id=sdk_session_id_for_run(payload.run_id),
             governed_permission_wait=False,
@@ -898,6 +965,40 @@ class ClaudeAgentWorkerAdapter:
             },
         )
 
+    def _attachment_parser_failure_result(
+        self,
+        *,
+        error_code: str,
+        sandbox_provider: str = "",
+        runtime_started: bool = False,
+        runtime_terminal_status: str = "",
+        evidence: object = None,
+    ) -> ExecutorResult:
+        return ExecutorResult(
+            status="failed",
+            adapter_version=self.adapter_version,
+            executor_type=self.executor_type,
+            executor_version=self.executor_version,
+            capabilities={**self.capabilities, "platform_skills": True},
+            result={
+                "message": "Platform attachment parser evidence is required for XLSX input.",
+                "error_code": error_code,
+                "sdk_used": False,
+                "delegate_used": False,
+                "worker_boundary": self.executor_type,
+            },
+            artifacts=[],
+            executor_payload={
+                "sdk_used": False,
+                "delegate_used": False,
+                "worker_boundary": self.executor_type,
+                "sandbox_provider": sandbox_provider,
+                "sandbox_runtime_used": runtime_started,
+                "runtime_terminal_status": runtime_terminal_status,
+                "attachment_parser_evidence": evidence if isinstance(evidence, list) else [],
+            },
+        )
+
     def _executor_result_from_sandbox_runtime(
         self,
         payload: RunPayload,
@@ -923,6 +1024,31 @@ class ClaudeAgentWorkerAdapter:
                 sandbox_provider=sandbox_provider,
                 runtime_started=True,
                 runtime_terminal_status=runtime_status,
+            )
+        parser_evidence = executor_response.get("attachment_parser_evidence")
+        try:
+            attachment_requirements = attachment_requirements_from_contract(
+                _attachment_preprocessing_contract(payload, prepared)
+            )
+        except AttachmentPreprocessingError as exc:
+            return self._attachment_parser_failure_result(
+                error_code=exc.code,
+                sandbox_provider=sandbox_provider,
+                runtime_started=True,
+                runtime_terminal_status=runtime_status,
+                evidence=parser_evidence,
+            )
+        evidence_valid, evidence_error = validate_required_parser_evidence(
+            requirements=attachment_requirements,
+            evidence=parser_evidence,
+        )
+        if runtime_status in _SANDBOX_SUCCESS_TERMINAL_STATUSES and not evidence_valid:
+            return self._attachment_parser_failure_result(
+                error_code=evidence_error,
+                sandbox_provider=sandbox_provider,
+                runtime_started=True,
+                runtime_terminal_status=runtime_status,
+                evidence=parser_evidence,
             )
         runtime_sdk_result = type(
             "RuntimeSdkResult",
@@ -960,6 +1086,7 @@ class ClaudeAgentWorkerAdapter:
             "sandbox_runtime_used": True,
             "required_artifact_types": list(_required_artifact_types(payload)),
             "sandbox_timings": sandbox_timings,
+            "attachment_parser_evidence": parser_evidence if isinstance(parser_evidence, list) else [],
         }
         if runtime_status not in _SANDBOX_SUCCESS_TERMINAL_STATUSES:
             error_code = str(executor_response.get("error_code") or "")
@@ -1046,6 +1173,16 @@ class ClaudeAgentWorkerAdapter:
             return preflight_failure
         if prepared is None:
             return None
+        try:
+            attachment_requirements = attachment_requirements_from_contract(
+                _attachment_preprocessing_contract(payload, prepared)
+            )
+        except AttachmentPreprocessingError as exc:
+            return self._attachment_parser_failure_result(error_code=exc.code)
+        if attachment_requirements and not sandbox_required:
+            return self._attachment_parser_failure_result(
+                error_code="attachment_parser_sandbox_required"
+            )
         if sandbox_required:
             return await self._submit_prepared_run_to_sandbox_runtime(
                 payload,
@@ -1248,6 +1385,8 @@ class ClaudeAgentWorkerAdapter:
             raise ValueError("run workspace must not be a symlink")
         storage = ObjectStorage()
         file_names: list[str] = []
+        content_types: list[str] = []
+        materialized_file_ids: list[str] = []
         async with transaction() as conn:
             for file_id in payload.file_ids:
                 row = await repositories.get_run_file(
@@ -1263,7 +1402,13 @@ class ClaudeAgentWorkerAdapter:
                 ensure_creatable_inside(workspace, target, "uploaded file target must stay inside the run workspace")
                 target.write_bytes(storage.get_bytes(storage_key=row["storage_key"]))
                 file_names.append(filename)
-        return file_names
+                content_types.append(str(row.get("content_type") or ""))
+                materialized_file_ids.append(file_id)
+        return _MaterializedFileNames(
+            file_names,
+            content_types=content_types,
+            file_ids=materialized_file_ids,
+        )
 
     def _collect_workspace_artifacts(self, payload: RunPayload, workspace: Path) -> list[ArtifactManifest]:
         artifacts: list[ArtifactManifest] = []

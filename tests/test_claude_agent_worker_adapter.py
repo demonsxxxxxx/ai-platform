@@ -27,6 +27,12 @@ from app.executors.claude_agent_worker import _required_artifact_types
 from app.executors.claude_agent_sdk_runner import _sdk_run_timeout_seconds
 from app.storage import StoredObject
 from app.executors.claude_agent_sdk_runner import build_sdk_env, build_skill_prompt, run_claude_agent_sdk
+from app.file_parser_contracts import (
+    XLSX_CONTENT_TYPE,
+    XLSX_PARSER_ID,
+    XLSX_PARSER_VERSION,
+    ParsedAttachmentContext,
+)
 from app.executors.registry import AdapterRegistry
 from app.runtime.sandbox.container_provider import (
     DockerContainerProvider,
@@ -1215,6 +1221,60 @@ async def test_agent_run_threads_materialized_file_names_in_payload_order(monkey
 
 
 @pytest.mark.asyncio
+async def test_worker_threads_server_xlsx_contract_and_accepts_matching_runtime_evidence(monkeypatch, tmp_path):
+    current_settings = settings(tmp_path, sdk_enabled=True)
+    write_skill(tmp_path / "skills", name="qa-rag-skill", description="Answer from attachments.")
+    pins = _registry_pins(tmp_path / "skills", skill_id="qa-rag-skill")
+    raw = b"xlsx-worker-evidence"
+
+    async def materialize_files(_payload, workspace):
+        (workspace / "book.xlsx").write_bytes(raw)
+        return ["book.xlsx"]
+
+    def executor_response(request):
+        contract = request.context_manifest["attachment_preprocessing"]
+        requirement = contract["requirements"][0]
+        assert requirement["file_id"] == "file_1"
+        assert requirement["expected_byte_count"] == len(raw)
+        assert requirement["expected_sha256"] == hashlib.sha256(raw).hexdigest()
+        return {
+            "status": "accepted",
+            "message": "xlsx answer",
+            "sdk_used": True,
+            "attachment_parser_evidence": [_xlsx_parser_evidence()],
+        }
+
+    adapter = ClaudeAgentWorkerAdapter()
+    monkeypatch.setattr("app.executors.claude_agent_worker.get_settings", lambda: current_settings)
+    monkeypatch.setattr(adapter, "_materialize_files", materialize_files)
+    runtime_requests = install_sandbox_runtime(monkeypatch, executor_response=executor_response)
+    context_manifest = {
+        "schema_version": "ai-platform.context-manifest.v1",
+        "scope": {"run_id": "run_1"},
+        "files": [{"file_id": "file_1", "requires_retrieval": True}],
+        "available_retrieval_tools": ["stage_context_file_to_workspace"],
+    }
+
+    result = await adapter.submit_run(
+        sandbox_writing_payload(
+            agent_id="qa-rag-agent",
+            skill_id="qa-rag-skill",
+            file_ids=["file_1"],
+            skill_manifests=pins,
+            context_pack={
+                "schema_version": "ai-platform.executor-context-pack.v1",
+                "execution_tier": "document_worker",
+                "context_manifest": context_manifest,
+            },
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert len(runtime_requests) == 1
+    assert result.executor_payload["attachment_parser_evidence"] == [_xlsx_parser_evidence()]
+
+
+@pytest.mark.asyncio
 async def test_agent_run_prefers_worker_context_pack_over_snapshot_reparse(monkeypatch, tmp_path):
     current_settings = settings(tmp_path, sdk_enabled=True)
     write_skill(tmp_path / "skills")
@@ -1507,6 +1567,105 @@ def test_sandbox_runtime_fake_provider_result_fails_closed(monkeypatch, tmp_path
 
     assert result.status == "failed"
     assert result.result["error_code"] == "sandbox_real_provider_required"
+
+
+def _xlsx_prepared_run(tmp_path):
+    (tmp_path / "book.xlsx").write_bytes(b"xlsx-worker-evidence")
+    return PreparedSdkRun(
+        workspace=tmp_path,
+        file_names=["book.xlsx"],
+        selected_skills=[],
+        pinned_manifests={},
+        allowed_skill_names=["qa-rag-skill"],
+        staged_skill_names=["qa-rag-skill"],
+        prompt="answer from the workbook",
+    )
+
+
+def _xlsx_parser_evidence(**overrides):
+    evidence = {
+        "file_id": "file_1",
+        "parser_id": XLSX_PARSER_ID,
+        "parser_version": XLSX_PARSER_VERSION,
+        "content_type": XLSX_CONTENT_TYPE,
+        "extension": ".xlsx",
+        "byte_count": len(b"xlsx-worker-evidence"),
+        "sha256": hashlib.sha256(b"xlsx-worker-evidence").hexdigest(),
+        "sheet_count": 1,
+        "sheets_processed": 1,
+        "cells_examined": 4,
+        "nonempty_cells": 4,
+        "rows_emitted": 2,
+        "truncated": False,
+        "status": "parsed",
+    }
+    evidence.update(overrides)
+    return evidence
+
+
+def test_worker_rejects_sandbox_success_without_required_xlsx_parser_evidence(tmp_path):
+    adapter = ClaudeAgentWorkerAdapter()
+
+    result = adapter._executor_result_from_sandbox_runtime(
+        sandbox_writing_payload(
+            agent_id="qa-rag-agent",
+            skill_id="qa-rag-skill",
+            file_ids=["file_1"],
+        ),
+        _xlsx_prepared_run(tmp_path),
+        types.SimpleNamespace(
+            status="accepted",
+            provider="docker",
+            executor_response={"status": "accepted", "message": "claimed success", "sdk_used": True},
+            timings={},
+        ),
+    )
+
+    assert result.status == "failed"
+    assert result.result["error_code"] == "attachment_parser_evidence_missing"
+
+
+@pytest.mark.parametrize(
+    ("evidence", "expected_status", "expected_error"),
+    [
+        (_xlsx_parser_evidence(), "succeeded", None),
+        (_xlsx_parser_evidence(parser_version="999"), "failed", "attachment_parser_evidence_mismatch"),
+    ],
+)
+def test_worker_accepts_only_exact_required_xlsx_parser_evidence(
+    tmp_path,
+    evidence,
+    expected_status,
+    expected_error,
+):
+    adapter = ClaudeAgentWorkerAdapter()
+
+    result = adapter._executor_result_from_sandbox_runtime(
+        sandbox_writing_payload(
+            agent_id="qa-rag-agent",
+            skill_id="qa-rag-skill",
+            file_ids=["file_1"],
+        ),
+        _xlsx_prepared_run(tmp_path),
+        types.SimpleNamespace(
+            status="accepted",
+            provider="docker",
+            executor_response={
+                "status": "accepted",
+                "message": "xlsx answer",
+                "sdk_used": True,
+                "attachment_parser_evidence": [evidence],
+            },
+            timings={},
+        ),
+    )
+
+    assert result.status == expected_status
+    if expected_error is None:
+        assert result.executor_payload["attachment_parser_evidence"] == [evidence]
+        assert result.artifacts == []
+    else:
+        assert result.result["error_code"] == expected_error
 
 
 @pytest.mark.asyncio
@@ -3098,6 +3257,8 @@ def test_build_skill_prompt_rejects_semantically_private_context_pack_metadata()
 
 @pytest.mark.asyncio
 async def test_sdk_runner_deduplicates_result_message(monkeypatch, tmp_path):
+    captured = {}
+
     class TextBlock:
         def __init__(self, text):
             self.text = text
@@ -3120,6 +3281,8 @@ async def test_sdk_runner_deduplicates_result_message(monkeypatch, tmp_path):
             self.kwargs = kwargs
 
     async def query(prompt, options):
+        async for item in prompt:
+            captured["prompt"] = item["message"]["content"]
         yield AssistantMessage([TextBlock("hello from sdk")])
         yield ResultMessage()
 
@@ -3146,10 +3309,26 @@ async def test_sdk_runner_deduplicates_result_message(monkeypatch, tmp_path):
     )
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
     monkeypatch.setattr("app.executors.claude_agent_sdk_runner.get_settings", lambda: current_settings)
-    result = await run_claude_agent_sdk(prompt="hello", cwd=tmp_path, skill_id="general-chat")
+    attachment_context = ParsedAttachmentContext(
+        evidence=_xlsx_parser_evidence(),
+        content={
+            "schema_version": "ai-platform.attachment-context.v1",
+            "file_id": "file_1",
+            "workbook": {"sheet_count": 1, "sheets": []},
+        },
+    )
+    result = await run_claude_agent_sdk(
+        prompt="hello",
+        cwd=tmp_path,
+        skill_id="general-chat",
+        attachment_contexts=[attachment_context],
+    )
 
     assert result.message == "hello from sdk"
     assert result.received_structured_terminal is True
+    assert captured["prompt"].startswith("hello")
+    assert "Platform-preprocessed attachments" in captured["prompt"]
+    assert '"file_id":"file_1"' in captured["prompt"]
 
 
 @pytest.mark.asyncio
