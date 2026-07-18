@@ -15,7 +15,14 @@ from app.repositories import RepositoryConflictError
 from app.routes import lambchat_compat as lambchat_module
 from app.routes import runs as runs_module
 from app.routes.health import admin_status
-from app.routes.files import download_artifact, preview_artifact, upload_file
+from app.routes.files import (
+    download_artifact,
+    download_input_file,
+    list_session_input_files,
+    preview_artifact,
+    preview_input_file,
+    upload_file,
+)
 from app.routes.context import list_run_context_snapshots
 from app.routes.runs import (
     _governed_skill_manifest_pins,
@@ -1416,6 +1423,291 @@ async def test_upload_file_response_does_not_expose_storage_key(monkeypatch):
 
     assert payload == {"file_id": "file_uploaded", "sha256": "sha-a", "size_bytes": 10}
     assert "storage_key" not in payload
+
+
+@pytest.mark.asyncio
+async def test_session_input_file_projection_is_persistent_opaque_and_preview_allowlisted(monkeypatch):
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "session-a")
+        return {"id": session_id, "workspace_id": "workspace-a"}
+
+    async def fake_list_files(conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+        }
+        return [
+            {
+                "id": "file-xlsx",
+                "run_id": "run-source",
+                "original_name": "source.xlsx",
+                "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "size_bytes": 123,
+                "created_at": "2026-07-18T00:00:00Z",
+            },
+            {
+                "id": "file-bin",
+                "run_id": "run-source",
+                "original_name": "payload.bin",
+                "content_type": "application/octet-stream",
+                "size_bytes": 9,
+                "created_at": "2026-07-18T00:00:01Z",
+            },
+        ]
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.files.list_authorized_session_input_files", fake_list_files)
+
+    response = await list_session_input_files("session-a", principal=principal())
+    payload = response.model_dump()
+
+    assert payload["session_id"] == "session-a"
+    assert [item["file_id"] for item in payload["files"]] == ["file-xlsx", "file-bin"]
+    assert payload["files"][0]["preview_url"] == (
+        "/api/ai/files/file-xlsx/preview?session_id=session-a&run_id=run-source"
+    )
+    assert payload["files"][1]["preview_url"] is None
+    assert payload["files"][1]["download_url"].endswith(
+        "/download?session_id=session-a&run_id=run-source"
+    )
+    assert "storage_key" not in str(payload)
+    assert "sha256" not in str(payload)
+
+
+@pytest.mark.asyncio
+async def test_deleted_session_input_file_list_denies_before_projection_read(monkeypatch):
+    async def deleted_session_is_not_authorized(conn, *, tenant_id, user_id, session_id):
+        assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "session-deleted")
+        return None
+
+    async def forbidden_list_files(conn, **kwargs):
+        raise AssertionError("deleted session must fail before input-file projection read")
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.files.get_authorized_session",
+        deleted_session_is_not_authorized,
+    )
+    monkeypatch.setattr(
+        "app.routes.files.list_authorized_session_input_files",
+        forbidden_list_files,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_session_input_files("session-deleted", principal=principal())
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "session_not_found"
+
+
+@pytest.mark.parametrize("route", [preview_input_file, download_input_file])
+@pytest.mark.asyncio
+async def test_deleted_session_input_file_bytes_deny_before_scope_or_storage_read(
+    monkeypatch,
+    route,
+):
+    async def deleted_session_is_not_authorized(conn, *, tenant_id, user_id, session_id):
+        assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "session-deleted")
+        return None
+
+    async def forbidden_scoped_file(conn, **kwargs):
+        raise AssertionError("deleted session must fail before snapshot-scoped file lookup")
+
+    class ForbiddenStorage:
+        def get_bytes(self, *, storage_key):
+            raise AssertionError("deleted session must fail before storage read")
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.files.get_authorized_session",
+        deleted_session_is_not_authorized,
+    )
+    monkeypatch.setattr("app.routes.files.get_scoped_context_file", forbidden_scoped_file)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route(
+            "file-a",
+            session_id="session-deleted",
+            run_id="run-a",
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "input_file_not_found"
+
+
+@pytest.mark.asyncio
+async def test_preview_input_file_reads_storage_only_after_snapshot_authorization(monkeypatch):
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id, "workspace_id": "workspace-a", "user_id": user_id}
+
+    async def fake_get_scoped_context_file(conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-current",
+            "file_id": "file-xlsx",
+        }
+        return {
+            "id": "file-xlsx",
+            "original_name": "source.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "storage_key": "private/source.xlsx",
+        }
+
+    class FakeStorage:
+        def get_bytes(self, *, storage_key):
+            assert storage_key == "private/source.xlsx"
+            return b"xlsx-bytes"
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.files.get_scoped_context_file", fake_get_scoped_context_file)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
+
+    response = await preview_input_file(
+        "file-xlsx",
+        session_id="session-a",
+        run_id="run-current",
+        principal=principal(),
+    )
+
+    assert response.body == b"xlsx-bytes"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-disposition"].startswith("inline;")
+
+
+@pytest.mark.asyncio
+async def test_download_input_file_forces_attachment_and_security_headers(monkeypatch):
+    async def fake_authorized_input_file(**kwargs):
+        return {
+            "id": kwargs["file_id"],
+            "original_name": "payload.bin",
+            "content_type": "application/octet-stream",
+            "storage_key": "private/payload.bin",
+        }
+
+    class FakeStorage:
+        def get_bytes(self, *, storage_key):
+            return b"binary"
+
+    monkeypatch.setattr("app.routes.files._authorized_input_file", fake_authorized_input_file)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
+
+    response = await download_input_file(
+        "file-bin",
+        session_id="session-a",
+        run_id="run-current",
+        principal=principal(),
+    )
+
+    assert response.body == b"binary"
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.asyncio
+async def test_unsafe_input_file_preview_falls_back_to_download_without_storage_read(monkeypatch):
+    async def fake_authorized_input_file(**kwargs):
+        return {
+            "id": kwargs["file_id"],
+            "original_name": "payload.bin",
+            "content_type": "application/octet-stream",
+            "storage_key": "private/payload.bin",
+        }
+
+    class ForbiddenStorage:
+        def get_bytes(self, *, storage_key):
+            raise AssertionError("unpreviewable input must reject before storage read")
+
+    monkeypatch.setattr("app.routes.files._authorized_input_file", fake_authorized_input_file)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await preview_input_file(
+            "file-bin",
+            session_id="session-a",
+            run_id="run-current",
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 415
+    assert exc_info.value.detail == "input_file_preview_not_allowed"
+
+
+@pytest.mark.parametrize("boundary", ["tenant", "user", "session"])
+@pytest.mark.asyncio
+async def test_input_file_preview_cross_owner_denial_precedes_storage_read(monkeypatch, boundary):
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        assert tenant_id
+        assert user_id
+        assert session_id
+        return None
+
+    async def forbidden_scoped_file(conn, **kwargs):
+        raise AssertionError(f"{boundary} denial must precede file lookup")
+
+    class ForbiddenStorage:
+        def get_bytes(self, *, storage_key):
+            raise AssertionError(f"{boundary} denial must precede storage read")
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.files.get_scoped_context_file", forbidden_scoped_file)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await preview_input_file(
+            "file-a",
+            session_id="session-a",
+            run_id="run-a",
+            principal=principal(
+                tenant_id="tenant-other" if boundary == "tenant" else "tenant-a",
+                user_id="user-other" if boundary == "user" else "user-a",
+            ),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "input_file_not_found"
+
+
+@pytest.mark.parametrize("boundary", ["workspace", "unbound", "not_in_snapshot"])
+@pytest.mark.asyncio
+async def test_input_file_preview_scope_denial_precedes_storage_read(monkeypatch, boundary):
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id, "workspace_id": "workspace-a"}
+
+    async def fake_get_scoped_context_file(conn, **kwargs):
+        assert kwargs["workspace_id"] == "workspace-a"
+        return None
+
+    class ForbiddenStorage:
+        def get_bytes(self, *, storage_key):
+            raise AssertionError(f"{boundary} denial must precede storage read")
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.files.get_scoped_context_file", fake_get_scoped_context_file)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await preview_input_file(
+            "file-a",
+            session_id="session-a",
+            run_id="run-a",
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "input_file_not_found"
 
 
 @pytest.mark.asyncio

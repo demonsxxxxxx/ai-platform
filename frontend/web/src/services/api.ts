@@ -40,6 +40,8 @@ export {
   type ChatStreamQueuedResponse,
   type CapabilitySuggestion,
   type SessionListResponse,
+  type SessionInputFile,
+  type SessionInputFilesResponse,
 } from "./api/session";
 export { modelApi } from "./api/model";
 export { skillApi } from "./api/skill";

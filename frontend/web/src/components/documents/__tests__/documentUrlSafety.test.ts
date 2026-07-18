@@ -89,6 +89,18 @@ test("authenticated artifact/file allowlist accepts only ai-platform artifact an
       true,
     );
     assert.equal(
+      isAllowedAuthenticatedArtifactFileUrl(
+        "/api/ai/files/file-1/preview?session_id=session-1&run_id=run-1",
+      ),
+      true,
+    );
+    assert.equal(
+      isAllowedAuthenticatedArtifactFileUrl(
+        "/api/ai/files/file-1/download?session_id=session-1&run_id=run-1",
+      ),
+      true,
+    );
+    assert.equal(
       isAllowedAuthenticatedArtifactFileUrl("/api/upload/file/report.png"),
       true,
     );
@@ -100,6 +112,10 @@ test("authenticated artifact/file allowlist accepts only ai-platform artifact an
     );
 
     assert.equal(isAllowedAuthenticatedArtifactFileUrl("/api/users"), false);
+    assert.equal(
+      isAllowedAuthenticatedArtifactFileUrl("/api/ai/files/file-1"),
+      false,
+    );
     assert.equal(
       isAllowedAuthenticatedArtifactFileUrl("/api/chat/stream"),
       false,

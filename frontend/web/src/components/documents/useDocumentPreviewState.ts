@@ -46,6 +46,7 @@ export interface DocumentPreviewProps {
   content?: string;
   s3Key?: string;
   signedUrl?: string;
+  downloadUrl?: string;
   fileSize?: number;
   imageUrl?: string;
   mimeType?: string;
@@ -78,6 +79,7 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
     content,
     s3Key,
     signedUrl,
+    downloadUrl,
     fileSize,
     imageUrl: externalImageUrl,
     mimeType,
@@ -470,9 +472,10 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
   };
 
   const handleDownload = async () => {
-    const downloadUrl = signedUrl || resolvedUrl || externalImageUrl;
-    if (downloadUrl) {
-      await downloadPreviewUrl({ url: downloadUrl, fileName });
+    const resolvedDownloadUrl =
+      downloadUrl || signedUrl || resolvedUrl || externalImageUrl;
+    if (resolvedDownloadUrl) {
+      await downloadPreviewUrl({ url: resolvedDownloadUrl, fileName });
       return;
     }
 

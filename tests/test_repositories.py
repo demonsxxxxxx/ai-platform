@@ -144,6 +144,44 @@ class SingleRowConnection:
         return SingleRowCursor(self.row)
 
 
+class TwoSnapshotFileMembershipConnection:
+    """Model S1 as persisted authority even though S2 is created later."""
+
+    def __init__(self, *, selected_member: bool, later_member: bool):
+        self.selected_snapshot_id = "ctx-s1"
+        self.snapshots = [
+            {"id": "ctx-s1", "included_file_ids": ["file-a"] if selected_member else []},
+            {"id": "ctx-s2", "included_file_ids": ["file-a"] if later_member else []},
+        ]
+        self.calls: list[tuple[str, tuple]] = []
+
+    async def execute(self, sql, params):
+        normalized = " ".join(sql.split())
+        self.calls.append((normalized, params))
+        is_projection = len(params) == 4
+        exact_snapshot_join = (
+            "authorized_snapshot.id = runs.input_json->>'context_snapshot_id'"
+            if is_projection
+            else "context_snapshot.id = current_run.input_json->>'context_snapshot_id'"
+        )
+        uses_selected_snapshot = exact_snapshot_join in normalized
+        snapshot = self.snapshots[0] if uses_selected_snapshot else self.snapshots[-1]
+        authorized = "file-a" in snapshot["included_file_ids"]
+        row = (
+            {
+                "id": "file-a",
+                "run_id": "run-a",
+                "original_name": "source.txt",
+                "content_type": "text/plain",
+                "size_bytes": 10,
+                "storage_key": "tenants/private/source.txt",
+            }
+            if authorized
+            else None
+        )
+        return SingleRowCursor(row)
+
+
 class _SessionTableConnection:
     def __init__(self, rows):
         self.rows = rows
@@ -2918,6 +2956,9 @@ async def test_scoped_context_file_and_artifact_queries_bind_full_scope():
     assert file_row["id"] == "file-a"
     assert "join runs source_run" in file_conn.sql
     assert "join runs current_run" in file_conn.sql
+    assert "context_snapshot.id = current_run.input_json->>'context_snapshot_id'" in file_conn.sql
+    assert "join lateral" not in file_conn.sql
+    assert "sessions.status = 'active'" in file_conn.sql
     assert "context_snapshot.included_file_ids ? files.id" in file_conn.sql
     assert "source_run.session_id = current_run.session_id" in file_conn.sql
     assert file_conn.params == ("run-a", "tenant-a", "workspace-a", "user-a", "session-a", "run-a", "file-a")
@@ -2928,6 +2969,52 @@ async def test_scoped_context_file_and_artifact_queries_bind_full_scope():
     assert "source_run.session_id = current_run.session_id" in artifact_conn.sql
     assert "artifacts.expires_at is null or artifacts.expires_at > now()" in artifact_conn.sql
     assert artifact_conn.params == ("run-a", "tenant-a", "workspace-a", "user-a", "session-a", "run-a", "artifact-a")
+
+
+@pytest.mark.parametrize(
+    ("selected_member", "later_member", "expected_authorized"),
+    [
+        (True, False, True),
+        (False, True, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_input_file_list_and_read_use_persisted_s1_after_later_s2(
+    selected_member,
+    later_member,
+    expected_authorized,
+):
+    conn = TwoSnapshotFileMembershipConnection(
+        selected_member=selected_member,
+        later_member=later_member,
+    )
+
+    file_row = await get_scoped_context_file(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-a",
+        file_id="file-a",
+    )
+    projected_rows = await repositories.list_authorized_session_input_files(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+    )
+
+    assert conn.selected_snapshot_id == "ctx-s1"
+    assert conn.snapshots[-1]["id"] == "ctx-s2"
+    assert (file_row is not None) is expected_authorized
+    assert bool(projected_rows) is expected_authorized
+    read_sql, projection_sql = (call[0] for call in conn.calls)
+    assert "context_snapshot.id = current_run.input_json->>'context_snapshot_id'" in read_sql
+    assert "authorized_snapshot.id = runs.input_json->>'context_snapshot_id'" in projection_sql
+    assert "join lateral" not in read_sql
+    assert "join lateral" not in projection_sql
 
 
 @pytest.mark.asyncio
@@ -2964,6 +3051,25 @@ async def test_session_context_candidates_bind_owner_scope_and_latest_successful
     assert "order by files.created_at desc" in files_sql
     assert "order by created_at asc" in files_sql
     assert files_params == ("tenant-a", "workspace-a", "user-a", "session-a", 8)
+
+    await repositories.list_authorized_session_input_files(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+    )
+    projection_sql, projection_params = conn.calls[-1]
+    assert "join sessions" in projection_sql
+    assert "join runs" in projection_sql
+    assert "join lateral" not in projection_sql
+    assert "authorized_snapshot.id = runs.input_json->>'context_snapshot_id'" in projection_sql
+    assert "authorized_snapshot.included_file_ids ? files.id" in projection_sql
+    assert "sessions.status = 'active'" in projection_sql
+    assert "sessions.workspace_id = files.workspace_id" in projection_sql
+    assert "sessions.user_id = files.user_id" in projection_sql
+    assert "runs.session_id = files.session_id" in projection_sql
+    assert projection_params == ("tenant-a", "workspace-a", "user-a", "session-a")
 
     await repositories.list_session_context_artifacts(
         conn,

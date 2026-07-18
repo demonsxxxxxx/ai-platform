@@ -40,6 +40,22 @@ export interface SessionRunsQuery {
   trace_id?: string;
 }
 
+export interface SessionInputFile {
+  file_id: string;
+  run_id: string;
+  name: string;
+  mime_type: string;
+  size_bytes: number;
+  preview_url: string | null;
+  download_url: string;
+  created_at?: string | null;
+}
+
+export interface SessionInputFilesResponse {
+  session_id: string;
+  files: SessionInputFile[];
+}
+
 export interface CapabilitySuggestion {
   capability_id: string;
   label: string;
@@ -214,6 +230,10 @@ export function buildSessionRunsUrl(
   }`;
 }
 
+export function buildSessionInputFilesUrl(sessionId: string): string {
+  return `${API_BASE}/api/ai/chat/sessions/${encodeURIComponent(sessionId)}/files`;
+}
+
 export function buildRunCancelUrl(runId: string): string {
   return `${API_BASE}/api/ai/runs/${runId}/cancel`;
 }
@@ -313,6 +333,11 @@ export const sessionApi = {
     options?: SessionRunsQuery,
   ): Promise<{ session_id: string; runs: RunSummary[]; count: number }> {
     return authFetch(buildSessionRunsUrl(sessionId, options));
+  },
+
+  /** Load the authoritative persistent input-file projection for a session. */
+  async getInputFiles(sessionId: string): Promise<SessionInputFilesResponse> {
+    return authFetch(buildSessionInputFilesUrl(sessionId));
   },
 
   /**

@@ -504,6 +504,30 @@ class UploadFileResponse(BaseModel):
     size_bytes: int
 
 
+class SessionInputFileResponse(BaseModel):
+    """Opaque public projection for one snapshot-authorized session input file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_id: str
+    run_id: str
+    name: str
+    mime_type: str
+    size_bytes: int
+    preview_url: str | None = None
+    download_url: str
+    created_at: Any | None = None
+
+
+class SessionInputFilesResponse(BaseModel):
+    """Persistent input-file projection for one exact owned session."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    files: list[SessionInputFileResponse] = Field(default_factory=list)
+
+
 class QueueRunPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

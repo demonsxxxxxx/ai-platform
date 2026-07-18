@@ -1,4 +1,11 @@
-import { Activity, FileText, Package, Server, ShieldCheck } from "lucide-react";
+import {
+  Activity,
+  Download,
+  FileText,
+  Package,
+  Server,
+  ShieldCheck,
+} from "lucide-react";
 import type { ComponentType, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type {
@@ -8,6 +15,13 @@ import type {
   ToolState,
 } from "../types";
 import { workbenchSurface } from "../components/workbench/workbenchSurface";
+import type { SessionInputFile } from "../services/api";
+
+export type SessionFilesProjectionStatus =
+  | "idle"
+  | "loading"
+  | "ready"
+  | "error";
 
 export interface LibreChatSidePanelProps {
   sessionId: string | null;
@@ -15,7 +29,12 @@ export interface LibreChatSidePanelProps {
   messageCount: number;
   skills?: SkillResponse[];
   tools?: ToolState[];
+  /** @deprecated Composer attachments are intentionally not session context. */
   attachments?: MessageAttachment[];
+  sessionFiles?: SessionInputFile[];
+  sessionFilesStatus?: SessionFilesProjectionStatus;
+  onOpenSessionFile?: (file: SessionInputFile) => void;
+  onDownloadSessionFile?: (file: SessionInputFile) => void;
   approvals?: PendingApproval[];
 }
 
@@ -104,6 +123,68 @@ function InlineList({
   );
 }
 
+function SessionFilesList({
+  files,
+  status,
+  onOpen,
+  onDownload,
+  empty,
+  loading,
+  unavailable,
+}: {
+  files: SessionInputFile[];
+  status: SessionFilesProjectionStatus;
+  onOpen?: (file: SessionInputFile) => void;
+  onDownload?: (file: SessionInputFile) => void;
+  empty: string;
+  loading: string;
+  unavailable: string;
+}) {
+  if (status === "loading" || status === "idle") {
+    return <p className={workbenchSurface.mutedText}>{loading}</p>;
+  }
+  if (status === "error") {
+    return (
+      <p
+        role="status"
+        className="text-xs leading-5 text-[var(--theme-text-secondary)]"
+      >
+        {unavailable}
+      </p>
+    );
+  }
+  if (files.length === 0) {
+    return <p className={workbenchSurface.mutedText}>{empty}</p>;
+  }
+  return (
+    <div className="space-y-1.5">
+      {files.map((file) => (
+        <div
+          key={file.file_id}
+          className="flex items-center gap-1 rounded-md bg-[var(--theme-bg-sidebar)] p-1 ring-1 ring-[var(--theme-border)]"
+        >
+          <button
+            type="button"
+            className="min-w-0 flex-1 truncate rounded px-1.5 py-1 text-left text-xs font-medium text-[var(--theme-text-secondary)] hover:text-[var(--theme-text)]"
+            title={file.name}
+            onClick={() => onOpen?.(file)}
+          >
+            {file.name}
+          </button>
+          <button
+            type="button"
+            className="rounded p-1 text-[var(--theme-text-tertiary)] hover:bg-[var(--theme-workbench-panel)] hover:text-[var(--theme-text)]"
+            aria-label={`Download ${file.name}`}
+            onClick={() => onDownload?.(file)}
+          >
+            <Download size={13} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** Renders the right context panel using ai-platform-owned run and projection data. */
 export function LibreChatSidePanel({
   sessionId,
@@ -111,7 +192,10 @@ export function LibreChatSidePanel({
   messageCount,
   skills = [],
   tools = [],
-  attachments = [],
+  sessionFiles = [],
+  sessionFilesStatus = "idle",
+  onOpenSessionFile,
+  onDownloadSessionFile,
   approvals = [],
 }: LibreChatSidePanelProps) {
   const { t } = useTranslation();
@@ -121,13 +205,12 @@ export function LibreChatSidePanel({
   const selectedToolNames = tools
     .filter((tool) => tool.enabled)
     .map((tool) => tool.name);
-  const attachmentNames = attachments.map((attachment) => attachment.name);
   const pendingApprovals = approvals.filter(
     (approval) => approval.status === "pending",
   );
   const selectedSkillsCount = selectedSkillNames.length;
   const selectedToolsCount = selectedToolNames.length;
-  const attachmentsCount = attachments.length;
+  const attachmentsCount = sessionFiles.length;
   const approvalCount = pendingApprovals.length;
 
   return (
@@ -197,11 +280,26 @@ export function LibreChatSidePanel({
             section="files"
             icon={FileText}
             title={t("workbench.contextPanel.files")}
-            count={attachmentsCount}
+            count={
+              sessionFilesStatus === "error"
+                ? "!"
+                : sessionFilesStatus === "ready"
+                  ? attachmentsCount
+                  : "…"
+            }
           >
-            <InlineList
-              items={attachmentNames}
+            <SessionFilesList
+              files={sessionFiles}
+              status={sessionFilesStatus}
+              onOpen={onOpenSessionFile}
+              onDownload={onDownloadSessionFile}
               empty={t("workbench.contextPanel.noFiles")}
+              loading={t("workbench.contextPanel.filesLoading", {
+                defaultValue: "Loading session files…",
+              })}
+              unavailable={t("workbench.contextPanel.filesUnavailable", {
+                defaultValue: "Session files are temporarily unavailable.",
+              })}
             />
           </ContextSection>
 
