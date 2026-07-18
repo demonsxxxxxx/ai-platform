@@ -31,7 +31,12 @@ import {
   type ChatStreamResponse,
 } from "../services/api";
 import { feedbackApi } from "../services/api/feedback";
+import { getAccessToken } from "../services/api/token";
 import { useAuth } from "../hooks/useAuth";
+import {
+  BROWSER_AUTH_INCARCINATION_EVENT,
+  getBrowserAuthIncarnation,
+} from "./browserAuthCoordinator";
 import { Permission } from "../types/auth";
 import {
   type UseAgentOptions,
@@ -78,6 +83,13 @@ import {
   SELECTED_SKILL_RECOVERABLE_CODES,
   type SelectedSkillRecoverableCode,
 } from "./useSelectedSkillTask";
+import {
+  RunControlLifecycle,
+  type RunControlAuthIdentity,
+  type RunControlChild,
+  type RunControlOwner,
+  type RunControlParentIdentity,
+} from "./useAgent/runControlLifecycle";
 
 function getSelectedSkillRecoverableCode(
   error: unknown,
@@ -394,15 +406,55 @@ function authScopesEqual(left: AuthScope | null, right: AuthScope | null): boole
   );
 }
 
+function normalizeRunControlClaims(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean))].sort();
+}
+
+function runControlAuthKey(identity: RunControlAuthIdentity): string {
+  return JSON.stringify([
+    identity.incarnation,
+    identity.sessionMarker,
+    identity.tenantId,
+    identity.userId,
+    identity.roles,
+    identity.permissions,
+    identity.isAdmin,
+    identity.isActive,
+  ]);
+}
+
 /** A terminal result must not leave the composer blocked on a stalled history read. */
 const TERMINAL_HISTORY_HYDRATION_TIMEOUT_MS = 10_000;
 
 export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const { hasAnyPermission, isAuthenticated, user } = useAuth();
+  const [browserAuthIncarnation, setBrowserAuthIncarnation] = useState(
+    getBrowserAuthIncarnation,
+  );
   const canReadFeedback = hasAnyPermission([
     Permission.FEEDBACK_READ,
     Permission.FEEDBACK_WRITE,
   ]);
+  const runControlAuth = useMemo<RunControlAuthIdentity>(
+    () => ({
+      incarnation: browserAuthIncarnation,
+      sessionMarker: getAccessToken(),
+      tenantId: user?.tenant_id ?? "",
+      userId: user?.id ?? "",
+      roles: normalizeRunControlClaims(user?.roles),
+      permissions: normalizeRunControlClaims(user?.permissions),
+      isAdmin: user?.is_admin === true,
+      isActive: user?.is_active === true,
+    }),
+    [browserAuthIncarnation, user],
+  );
+  const runControlAuthIdentity = useMemo(
+    () => runControlAuthKey(runControlAuth),
+    [runControlAuth],
+  );
 
   // State
   const [messages, setMessages] = useState<Message[]>([]);
@@ -431,6 +483,20 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const statusRetryCountRef = useRef(0);
   const isMountedRef = useRef(false);
   const mountedGenerationRef = useRef(0);
+  const chatHistoryGenerationRef = useRef(0);
+  const runControlAuthRevisionRef = useRef(0);
+  const runControlAuthIdentityRef = useRef<string | null>(null);
+  const runControlAuthEventRevisionRef = useRef(0);
+  const appliedRunControlAuthEventRevisionRef = useRef(0);
+  const runControlParentRef = useRef<{
+    sessionId: string;
+    runId: string;
+  } | null>(null);
+  const runControlLifecycleRef = useRef<RunControlLifecycle | null>(null);
+  if (runControlLifecycleRef.current === null) {
+    runControlLifecycleRef.current = new RunControlLifecycle();
+  }
+  const runControlLifecycle = runControlLifecycleRef.current;
 
   // Track processed event IDs to prevent duplicates
   const processedEventIdsRef = useRef<Set<string>>(new Set());
@@ -499,6 +565,71 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+
+  const currentRunControlParent = useCallback(
+    (target = runControlParentRef.current): RunControlParentIdentity | null => {
+      if (!target || !isMountedRef.current) return null;
+      return {
+        chatHistoryGeneration: chatHistoryGenerationRef.current,
+        authRevision: runControlAuthRevisionRef.current,
+        auth: runControlAuth,
+        sessionId: target.sessionId,
+        runId: target.runId,
+      };
+    },
+    [runControlAuth],
+  );
+
+  const bindRunControlParent = useCallback(
+    (nextSessionId: string, nextRunId: string) => {
+      runControlParentRef.current = {
+        sessionId: nextSessionId,
+        runId: nextRunId,
+      };
+      const parent = currentRunControlParent(runControlParentRef.current);
+      if (parent) {
+        runControlLifecycle.bindParent(parent);
+      }
+    },
+    [currentRunControlParent, runControlLifecycle],
+  );
+
+  const invalidateRunControl = useCallback(
+    ({ preserveParent = false }: { preserveParent?: boolean } = {}) => {
+      chatHistoryGenerationRef.current += 1;
+      runControlLifecycle.invalidate();
+      if (!preserveParent) {
+        runControlParentRef.current = null;
+      }
+    },
+    [runControlLifecycle],
+  );
+
+  useLayoutEffect(() => {
+    const handleAuthIncarnationChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ incarnation?: unknown }>).detail;
+      const incarnation =
+        typeof detail?.incarnation === "string"
+          ? detail.incarnation
+          : getBrowserAuthIncarnation();
+      // This handler is the same-tab ownership seam. Abort/invalidate before
+      // scheduling React work so a role refresh, login or logout cannot leave
+      // an old parent alive long enough to begin a mutation.
+      runControlAuthEventRevisionRef.current += 1;
+      runControlAuthRevisionRef.current += 1;
+      invalidateRunControl();
+      setBrowserAuthIncarnation(incarnation);
+    };
+    window.addEventListener(
+      BROWSER_AUTH_INCARCINATION_EVENT,
+      handleAuthIncarnationChange,
+    );
+    return () =>
+      window.removeEventListener(
+        BROWSER_AUTH_INCARCINATION_EVENT,
+        handleAuthIncarnationChange,
+      );
+  }, [invalidateRunControl]);
 
   const clearReconcileOwners = useCallback(() => {
     reconcileOwnerRef.current = null;
@@ -874,6 +1005,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       isMountedRef.current = false;
       mountedGenerationRef.current += 1;
       historyLoadTokenRef.current += 1;
+      invalidateRunControl();
       sessionGenerationRef.current += 1;
       submissionTokenRef.current += 1;
       streamVersionRef.current += 1;
@@ -897,12 +1029,22 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       clearReconcileOwners();
       clearReconnectTimeout(reconnectTimeoutRef);
     };
-  }, [clearReconcileOwners]);
+  }, [clearReconcileOwners, invalidateRunControl]);
 
   // Load message history from backend
   const loadHistory = useCallback(
-    async (targetSessionId: string, targetRunId?: string) => {
+    async (
+      targetSessionId: string,
+      targetRunId?: string,
+      runControlAdoption?: { owner: RunControlOwner },
+    ) => {
       if (!isMountedRef.current) {
+        return null;
+      }
+      const preservesRunControlParent =
+        runControlAdoption !== undefined &&
+        runControlLifecycle.isCurrentOwner(runControlAdoption.owner);
+      if (runControlAdoption && !preservesRunControlParent) {
         return null;
       }
       const mountedGeneration = mountedGenerationRef.current;
@@ -912,6 +1054,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         );
       }
       const historyLoadToken = beginHistoryLoad(historyLoadTokenRef);
+      invalidateRunControl({ preserveParent: preservesRunControlParent });
       const previousSessionId = sessionIdRef.current;
       const previousRunId = currentRunIdRef.current;
       if (previousSessionId !== targetSessionId) {
@@ -1133,6 +1276,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           messagesRef.current = reconstructedMessages;
           setMessages(reconstructedMessages);
 
+          // A restored active or terminal run becomes the authoritative parent
+          // for the persistent playback lifecycle. The lifecycle itself owns
+          // its snapshot; this only binds the parent identity before any panel
+          // read or child adoption can publish.
+          if (historyCurrentRunId) {
+            bindRunControlParent(targetSessionId, historyCurrentRunId);
+          }
+
           const historyMessageId = historyCurrentRunId
             ? ([...reconstructedMessages]
                 .reverse()
@@ -1259,8 +1410,83 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       hydrateTerminalRun,
       reconcileCurrentRun,
       clearReconcileOwners,
+      bindRunControlParent,
+      invalidateRunControl,
+      runControlLifecycle,
     ],
   );
+
+  const adoptRunControlChild = useCallback(
+    async (
+      owner: RunControlOwner,
+      child: RunControlChild,
+    ): Promise<"adopted" | "created_unopened" | "superseded"> => {
+      if (!runControlLifecycle.isCurrentOwner(owner)) {
+        return "superseded";
+      }
+      const parentBefore = runControlParentRef.current;
+      if (
+        !parentBefore ||
+        parentBefore.sessionId !== owner.sessionId ||
+        parentBefore.runId !== owner.runId
+      ) {
+        return "superseded";
+      }
+
+      // This is the only child-adoption call site. It invokes the existing
+      // history loader exactly once and never lets a panel write transcript or
+      // route state directly.
+      const restored = await loadHistory(child.sessionId, child.runId, { owner });
+      if (restored !== null) {
+        const currentParent = runControlParentRef.current;
+        if (
+          currentParent?.sessionId === child.sessionId &&
+          currentParent.runId === child.runId
+        ) {
+          runControlLifecycle.open();
+          return "adopted";
+        }
+        return "superseded";
+      }
+
+      // A null/rejected history read says only that the child was created but
+      // could not be opened. Keep its opaque IDs for an explicit GET-only
+      // reopen, unless a newer session/auth/history owner replaced this parent.
+      const currentParent = currentRunControlParent();
+      if (
+        !currentParent ||
+        currentParent.sessionId !== owner.sessionId ||
+        currentParent.runId !== owner.runId ||
+        currentParent.authRevision !== owner.authRevision
+      ) {
+        return "superseded";
+      }
+      runControlLifecycle.retainCreatedUnopened(currentParent, child);
+      return "created_unopened";
+    },
+    [currentRunControlParent, loadHistory, runControlLifecycle],
+  );
+
+  const reconnectRunControlOwner = useCallback(
+    async (owner: RunControlOwner): Promise<void> => {
+      if (!runControlLifecycle.isCurrentOwner(owner)) return;
+      if (
+        sessionIdRef.current !== owner.sessionId ||
+        currentRunIdRef.current !== owner.runId
+      ) {
+        return;
+      }
+      await reconcileCurrentRun();
+    },
+    [reconcileCurrentRun, runControlLifecycle],
+  );
+
+  useLayoutEffect(() => {
+    runControlLifecycle.configure({
+      adoptRunControlChild,
+      reconnectRunControlOwner,
+    });
+  }, [adoptRunControlChild, reconnectRunControlOwner, runControlLifecycle]);
 
   // Send message
   const sendMessage = useCallback(
@@ -1288,6 +1514,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         );
         return { status: "failed" };
       }
+      // A new user submission replaces the parent run before it can mutate
+      // optimistic transcript state or issue its POST. This fences a pending
+      // retry/resume owner from starting while the next chat admission is open.
+      invalidateRunControl();
       isSendingRef.current = true;
       const submissionToken = ++submissionTokenRef.current;
       const mountedGeneration = mountedGenerationRef.current;
@@ -1568,6 +1798,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           };
           setCurrentRunId(newRunId);
           currentRunIdRef.current = newRunId;
+          const runControlSessionId = newSessionId || requestSessionId;
+          if (runControlSessionId) {
+            bindRunControlParent(runControlSessionId, newRunId);
+          }
           setMessages((prev) =>
             prev.map((m) =>
               m.id === userMessageId
@@ -1717,44 +1951,36 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       reconcileCurrentRun,
       clearReconcileOwners,
       confirmationRecovery,
+      bindRunControlParent,
+      invalidateRunControl,
     ],
   );
 
   const stopGeneration = useCallback(async () => {
     const currentRunId = currentRunIdRef.current;
-    if (!currentRunId) {
+    const currentSessionId = sessionIdRef.current;
+    if (!currentRunId || !currentSessionId) {
       return;
     }
-
-    isSendingRef.current = false;
-    setIsLoading(false);
-    toast.dismiss("chat-queue");
-    setIsInitializingSandbox(false);
-    setSandboxError(null);
-
-    // Clear approvals immediately (don't wait for SSE cancel event which may never arrive)
-    options?.onClearApprovals?.();
-
-    // Clear loading states on all messages and their parts
-    setMessages((prev) =>
-      prev.map((m) => ({
-        ...m,
-        isStreaming: false,
-        parts: clearAllLoadingStates(m.parts || []),
-      })),
-    );
-
-    try {
-      await sessionApi.cancelRun(currentRunId);
-    } catch {
-      console.error("[stopGeneration] Failed to call backend cancel API");
+    const owner = runControlLifecycle.getSnapshot().owner;
+    if (
+      !owner ||
+      owner.sessionId !== currentSessionId ||
+      owner.runId !== currentRunId ||
+      !runControlLifecycle.isCurrentOwner(owner)
+    ) {
+      bindRunControlParent(currentSessionId, currentRunId);
     }
-  }, [options]);
+    // A cancel acknowledgement is only a request. The existing SSE/reconcile
+    // path remains the sole terminal convergence writer for the transcript.
+    await runControlLifecycle.cancel();
+  }, [bindRunControlParent, runControlLifecycle]);
 
   const clearMessages = useCallback(() => {
     // Invalidate every asynchronous owner before clearing React state so a
     // delayed submit or history restore cannot repopulate this blank session.
     historyLoadTokenRef.current += 1;
+    invalidateRunControl();
     sessionGenerationRef.current += 1;
     submissionTokenRef.current += 1;
     streamVersionRef.current += 1;
@@ -1796,7 +2022,26 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     }
     clearReconnectTimeout(reconnectTimeoutRef);
     toast.dismiss("chat-queue");
-  }, [clearReconcileOwners]);
+  }, [clearReconcileOwners, invalidateRunControl]);
+
+  useLayoutEffect(() => {
+    if (runControlAuthIdentityRef.current === runControlAuthIdentity) {
+      return;
+    }
+    // Cross-tab storage handling updates AuthProvider state, while the local
+    // production event has already fenced same-tab changes synchronously.
+    runControlAuthIdentityRef.current = runControlAuthIdentity;
+    if (
+      appliedRunControlAuthEventRevisionRef.current !==
+      runControlAuthEventRevisionRef.current
+    ) {
+      appliedRunControlAuthEventRevisionRef.current =
+        runControlAuthEventRevisionRef.current;
+      return;
+    }
+    runControlAuthRevisionRef.current += 1;
+    invalidateRunControl();
+  }, [invalidateRunControl, runControlAuthIdentity]);
 
   const authScopeAuthenticated = isAuthenticated && Boolean(user);
   const authScopeTenantId = user?.tenant_id ?? "";
@@ -2147,6 +2392,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     clearMessages,
     loadHistory,
     reconnectSSE: handleReconnectSSE,
+    runControlLifecycle,
   };
 }
 

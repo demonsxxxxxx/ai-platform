@@ -89,8 +89,27 @@
     }
   },
   "appName": "AI Platform",
-  "runPlayback": {
-    "artifacts": "Artifacts",
+    "runPlayback": {
+      "actions": {
+        "cancel": "Cancel run",
+        "reconnect": "Reconnect run",
+        "refresh": "Refresh playback",
+        "reopen": "Open created run",
+        "resume": "Resume from checkpoint",
+        "retryRun": "Retry run",
+        "working": "Updating run control…"
+      },
+      "actionStatus": {
+        "adopting": "Opening the created run…",
+        "cancelRequested": "Cancellation was requested. Waiting for the authoritative terminal result.",
+        "cancelling": "Requesting cancellation…",
+        "createdUnopened": "A new run was created, but its history could not be opened. You can open it without creating another run.",
+        "reconnecting": "Reconnecting to the run…",
+        "resuming": "Creating a checkpoint-resume run…",
+        "retrying": "Creating a retry run…",
+        "unconfirmed": "The request result is unconfirmed. Refreshing playback and readiness without replaying it."
+      },
+      "artifacts": "Artifacts",
     "context": {
       "contextPackVersion": "Pack",
       "counts": {

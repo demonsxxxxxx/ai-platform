@@ -134,7 +134,7 @@ test("setTokens writes a fresh non-secret session marker and clears legacy beare
 
     assert.match(
       localStorage.getItem("ai_platform_session_present") ?? "",
-      /^\d+-[a-z0-9]+$/i,
+      /^[a-f0-9]{64}$/i,
     );
     assert.deepEqual(storage.removedKeys, ["access_token", "refresh_token"]);
   } finally {

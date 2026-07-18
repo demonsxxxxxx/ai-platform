@@ -89,8 +89,27 @@
     }
   },
   "appName": "AI Platform",
-  "runPlayback": {
-    "artifacts": "产物",
+    "runPlayback": {
+      "actions": {
+        "cancel": "取消运行",
+        "reconnect": "重新连接运行",
+        "refresh": "刷新回放",
+        "reopen": "打开已创建的运行",
+        "resume": "从检查点恢复",
+        "retryRun": "重试运行",
+        "working": "正在更新运行控制…"
+      },
+      "actionStatus": {
+        "adopting": "正在打开新建运行…",
+        "cancelRequested": "已请求取消，正在等待权威终态结果。",
+        "cancelling": "正在请求取消…",
+        "createdUnopened": "已创建新的运行，但无法打开其历史记录。可直接打开它，不会创建另一个运行。",
+        "reconnecting": "正在重新连接运行…",
+        "resuming": "正在创建检查点恢复运行…",
+        "retrying": "正在创建重试运行…",
+        "unconfirmed": "请求结果尚未确认；正在仅刷新回放和就绪状态，不会重放请求。"
+      },
+      "artifacts": "产物",
     "context": {
       "contextPackVersion": "上下文包",
       "counts": {

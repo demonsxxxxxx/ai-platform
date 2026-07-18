@@ -11,11 +11,11 @@ test("useAuth bootstraps browser auth from the backend cookie session probe", ()
   assert.match(useAuthSource, /const hadSessionMarker = !!owner\.expectedMarker;/);
   assert.match(
     useAuthSource,
-    /const currentUser = await authApi\.getCurrentUser\(\{[\s\S]*signal: owner\.abortController\.signal/,
+    /const currentUser = await getCurrentUserWithOneStaleRepair\(owner\);/,
   );
   assert.match(
     useAuthSource,
-    /if \(!hadSessionMarker && !establishLocalSession\(owner\)\) return;[\s\S]*applyAuthenticatedUser\(currentUser, owner\)/,
+    /if \(!hadSessionMarker && !establishLocalSession\(owner\)\) return;[\s\S]*const currentUser = await getCurrentUserWithOneStaleRepair\(owner\);[\s\S]*applyAuthenticatedUser\(currentUser, owner\)/,
   );
   assert.doesNotMatch(
     useAuthSource,

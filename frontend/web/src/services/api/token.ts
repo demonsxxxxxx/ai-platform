@@ -40,8 +40,15 @@ export function migrateLegacyBearerStorage(): void {
   }
 }
 
-function createSessionMarker(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+function createSessionMarker(): string | null {
+  const cryptoApi = globalThis.crypto;
+  if (!cryptoApi?.getRandomValues) {
+    return null;
+  }
+  return Array.from(
+    cryptoApi.getRandomValues(new Uint8Array(32)),
+    (value) => value.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 export function isSafeRedirectPath(path: string): boolean {
@@ -72,7 +79,15 @@ export function setTokens(_access_token: string, _refresh_token?: string): void 
     return;
   }
   migrateLegacyBearerStorage();
-  storage.setItem(AUTH_SESSION_MARKER_KEY, createSessionMarker());
+  const marker = createSessionMarker();
+  if (marker === null) {
+    // A marker participates in browser ownership. Do not silently substitute
+    // a predictable clock/Math.random value when secure browser entropy is
+    // unavailable; callers fail closed by observing no local session marker.
+    storage.removeItem(AUTH_SESSION_MARKER_KEY);
+    return;
+  }
+  storage.setItem(AUTH_SESSION_MARKER_KEY, marker);
 }
 
 /**

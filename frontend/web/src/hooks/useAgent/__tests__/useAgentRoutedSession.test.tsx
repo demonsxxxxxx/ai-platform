@@ -251,10 +251,14 @@ function installTestDom() {
     HTMLSelectElement: TestElement,
     SVGElement: TestElement,
     CustomEvent: class {
+      readonly detail: unknown;
+
       constructor(
         readonly type: string,
-        readonly init?: { detail?: unknown },
-      ) {}
+        init?: { detail?: unknown },
+      ) {
+        this.detail = init?.detail;
+      }
     },
     IS_REACT_ACT_ENVIRONMENT: true,
   });
@@ -453,6 +457,10 @@ async function loadReactHarness({
       assert.ok(snapshot, "useAgent hook should be mounted");
       return snapshot;
     },
+    get auth() {
+      assert.ok(authSnapshot, "Auth context should be mounted");
+      return authSnapshot;
+    },
     async rotateAuthScope(userId: string, tenantId: string) {
       await rotateAuthScope(userId, tenantId, true);
     },
@@ -461,6 +469,19 @@ async function loadReactHarness({
     },
     async loginAsBeforePassiveEffects(userId: string, tenantId: string) {
       await loginAs(userId, tenantId, false);
+    },
+    async dispatchProductionAuthIncarnation(incarnation: string) {
+      const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
+        "../../browserAuthCoordinator.ts"
+      );
+      await React.act(async () => {
+        dom.window.dispatchEvent(
+          new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
+            detail: { incarnation },
+          }) as unknown as { type: string; [key: string]: unknown },
+        );
+        await Promise.resolve();
+      });
     },
     unmount,
     async cleanup() {
@@ -4237,6 +4258,520 @@ test("useAgent preserves replay-safe reconnect budget from production-shaped his
     sessionApi.getStatus = originalGetStatus;
     sessionApi.markRead = originalMarkRead;
     dom.window.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent adopts a current retry child through one parent history load", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalRetryRun = sessionApi.retryRun;
+  const originalFetch = globalThis.fetch;
+  let childLoads = 0;
+  let retries = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async (sessionId) => {
+    if (sessionId === "session-retry-child") childLoads += 1;
+    return {
+      id: sessionId,
+      agent_id: "general-agent",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      is_active: true,
+      metadata: {},
+    };
+  };
+  sessionApi.getEvents = async (sessionId) => {
+    const runId = sessionId === "session-retry-child" ? "run-retry-child" : "run-parent";
+    return {
+      current_run_id: runId,
+      events: [
+        {
+          id: `evt-${runId}`,
+          run_id: runId,
+          event_type: "user:message",
+          timestamp: "2026-07-19T00:00:00Z",
+          data: { content: runId },
+        },
+      ],
+    };
+  };
+  sessionApi.getStatus = (async (sessionId, runId) => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: "failed",
+    raw_status: "failed",
+  })) as typeof sessionApi.getStatus;
+  sessionApi.retryRun = (async () => {
+    retries += 1;
+    return {
+      session_id: "session-retry-child",
+      run_id: "run-retry-child",
+      status: "queued",
+    };
+  }) as typeof sessionApi.retryRun;
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify({
+        run_id: "run-retry-child",
+        timeline: [],
+        events: [],
+        artifacts: [],
+        steps: [],
+        multi_agent: null,
+      }),
+    )) as typeof fetch;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-parent", "run-parent");
+    });
+    await harness.act(async () => {
+      await harness.hook.runControlLifecycle.retry();
+    });
+    await settle(harness.act);
+
+    assert.equal(retries, 1);
+    assert.equal(childLoads, 1, "the parent must call loadHistory for the child once");
+    assert.equal(harness.hook.sessionId, "session-retry-child");
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.retryRun = originalRetryRun;
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent drops a delayed A retry before it can load A-child after B replaces history", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalRetryRun = sessionApi.retryRun;
+  let resolveRetry!: (value: Awaited<ReturnType<typeof sessionApi.retryRun>>) => void;
+  const pendingRetry = new Promise<Awaited<ReturnType<typeof sessionApi.retryRun>>>(
+    (resolve) => {
+      resolveRetry = resolve;
+    },
+  );
+  let staleChildLoads = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async (sessionId) => {
+    if (sessionId === "session-a-child") staleChildLoads += 1;
+    return {
+      id: sessionId,
+      agent_id: "general-agent",
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      is_active: true,
+      metadata: {},
+    };
+  };
+  sessionApi.getEvents = async (sessionId) => {
+    const runId = sessionId === "session-b" ? "run-b" : "run-a";
+    return {
+      current_run_id: runId,
+      events: [
+        {
+          id: `evt-${runId}`,
+          run_id: runId,
+          event_type: "user:message",
+          timestamp: "2026-07-19T00:00:00Z",
+          data: { content: runId },
+        },
+      ],
+    };
+  };
+  sessionApi.getStatus = (async (sessionId, runId) => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: "failed",
+    raw_status: "failed",
+  })) as typeof sessionApi.getStatus;
+  sessionApi.retryRun = (() => pendingRetry) as typeof sessionApi.retryRun;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-a", "run-a");
+    });
+    let action!: Promise<void>;
+    await harness.act(async () => {
+      action = harness.hook.runControlLifecycle.retry();
+      await Promise.resolve();
+    });
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-b", "run-b");
+    });
+    resolveRetry({
+      session_id: "session-a-child",
+      run_id: "run-a-child",
+      status: "queued",
+    });
+    await action;
+    await settle(harness.act);
+
+    assert.equal(staleChildLoads, 0);
+    assert.equal(harness.hook.sessionId, "session-b");
+    assert.equal(harness.hook.messages[0]?.runId, "run-b");
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.retryRun = originalRetryRun;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent aborts a deferred run-control GET before unmount can publish it", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = globalThis.fetch;
+  let resolvePlayback!: (value: Response) => void;
+  let playbackSignal: AbortSignal | null = null;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-unmount-control",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: "run-unmount-control",
+    events: [
+      {
+        id: "evt-unmount-control",
+        run_id: "run-unmount-control",
+        event_type: "user:message",
+        timestamp: "2026-07-19T00:00:00Z",
+        data: { content: "unmount" },
+      },
+    ],
+  });
+  sessionApi.getStatus = (async (sessionId, runId) => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: "failed",
+    raw_status: "failed",
+  })) as typeof sessionApi.getStatus;
+  globalThis.fetch = ((_input, init) =>
+    new Promise<Response>((resolve) => {
+      playbackSignal = init?.signal as AbortSignal;
+      resolvePlayback = resolve;
+    })) as typeof fetch;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-unmount-control", "run-unmount-control");
+      harness.hook.runControlLifecycle.open();
+      await Promise.resolve();
+    });
+    assert.ok(playbackSignal);
+
+    await harness.unmount();
+    assert.equal((playbackSignal as AbortSignal).aborted, true);
+    resolvePlayback(
+      new Response(
+        JSON.stringify({ run_id: "run-unmount-control", timeline: [], events: [], artifacts: [], steps: [], multi_agent: null }),
+      ),
+    );
+    await Promise.resolve();
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent synchronously aborts a deferred run-control GET from the production auth-incarnation event", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = globalThis.fetch;
+  let resolvePlayback!: (value: Response) => void;
+  let playbackSignal: AbortSignal | null = null;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-auth-event-control",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: "run-auth-event-control",
+    events: [{
+      id: "evt-auth-event-control",
+      run_id: "run-auth-event-control",
+      event_type: "user:message",
+      timestamp: "2026-07-19T00:00:00Z",
+      data: { content: "auth role refresh" },
+    }],
+  });
+  sessionApi.getStatus = (async (sessionId, runId) => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: "failed",
+    raw_status: "failed",
+  })) as typeof sessionApi.getStatus;
+  globalThis.fetch = ((_input, init) =>
+    new Promise<Response>((resolve) => {
+      playbackSignal = init?.signal as AbortSignal;
+      resolvePlayback = resolve;
+    })) as typeof fetch;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory(
+        "session-auth-event-control",
+        "run-auth-event-control",
+      );
+      harness.hook.runControlLifecycle.open();
+      await Promise.resolve();
+    });
+    assert.ok(playbackSignal);
+
+    // This is the production same-tab event, deliberately not a synthetic
+    // storage event. It models the synchronous fence for login/logout/role
+    // refresh before React publishes the new principal.
+    await harness.dispatchProductionAuthIncarnation("incarnation-role-refresh");
+    assert.equal((playbackSignal as AbortSignal).aborted, true);
+    assert.equal(harness.hook.runControlLifecycle.getSnapshot().owner, null);
+
+    resolvePlayback(
+      new Response(
+        JSON.stringify({ run_id: "run-auth-event-control", timeline: [], events: [], artifacts: [], steps: [], multi_agent: null }),
+      ),
+    );
+    await settle(harness.act);
+    assert.equal(harness.hook.runControlLifecycle.getSnapshot().playback, null);
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent fences the old owner before login's deferred principal GET resolves", async () => {
+  const harness = await loadReactHarness();
+  const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
+    "../../browserAuthCoordinator.ts"
+  );
+  const { authApi } = await import("../../../services/api/auth.ts");
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalAuthLogin = authApi.login;
+  const originalAuthGetCurrentUser = authApi.getCurrentUser;
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = globalThis.fetch;
+  const freshPrincipal = await originalAuthGetCurrentUser();
+  let resolvePrincipal!: (value: typeof freshPrincipal) => void;
+  const deferredPrincipal = new Promise<typeof freshPrincipal>((resolve) => {
+    resolvePrincipal = resolve;
+  });
+  let principalSignal: AbortSignal | undefined;
+  let resolvePlayback!: (value: Response) => void;
+  let playbackSignal: AbortSignal | null = null;
+  let incarnationEvents = 0;
+  const countIncarnationEvent = () => {
+    incarnationEvents += 1;
+  };
+  dom.window.addEventListener(
+    BROWSER_AUTH_INCARCINATION_EVENT,
+    countIncarnationEvent,
+  );
+  authApi.login = (async () => {}) as typeof authApi.login;
+  authApi.getCurrentUser = ((options?: { signal?: AbortSignal }) => {
+    principalSignal = options?.signal;
+    return deferredPrincipal;
+  }) as typeof authApi.getCurrentUser;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-login-order-control",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: "run-login-order-control",
+    events: [{
+      id: "evt-login-order-control",
+      run_id: "run-login-order-control",
+      event_type: "user:message",
+      timestamp: "2026-07-19T00:00:00Z",
+      data: { content: "old owner" },
+    }],
+  });
+  sessionApi.getStatus = (async (sessionId, runId) => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: "failed",
+    raw_status: "failed",
+  })) as typeof sessionApi.getStatus;
+  globalThis.fetch = ((_input, init) =>
+    new Promise<Response>((resolve) => {
+      playbackSignal = init?.signal as AbortSignal;
+      resolvePlayback = resolve;
+    })) as typeof fetch;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory(
+        "session-login-order-control",
+        "run-login-order-control",
+      );
+      harness.hook.runControlLifecycle.open();
+      await Promise.resolve();
+    });
+    assert.ok(playbackSignal);
+
+    let login!: Promise<unknown>;
+    await harness.act(async () => {
+      login = harness.auth.login({ username: "user-a", password: "test-password" });
+      await Promise.resolve();
+    });
+
+    assert.ok(principalSignal, "the new principal GET should be pending");
+    assert.equal(principalSignal?.aborted, false);
+    assert.equal(incarnationEvents, 1, "marker establishment publishes one event");
+    assert.equal(
+      (playbackSignal as AbortSignal).aborted,
+      true,
+      "marker establishment must fence the old run before principal hydration resolves",
+    );
+    assert.equal(harness.hook.runControlLifecycle.getSnapshot().owner, null);
+
+    await harness.act(async () => {
+      resolvePrincipal(freshPrincipal);
+      await login;
+    });
+    assert.equal(incarnationEvents, 1, "principal hydration must not duplicate the event");
+  } finally {
+    resolvePlayback?.(
+      new Response(
+        JSON.stringify({ run_id: "run-login-order-control", timeline: [], events: [], artifacts: [], steps: [], multi_agent: null }),
+      ),
+    );
+    authApi.login = originalAuthLogin;
+    authApi.getCurrentUser = originalAuthGetCurrentUser;
+    dom.window.removeEventListener(
+      BROWSER_AUTH_INCARCINATION_EVENT,
+      countIncarnationEvent,
+    );
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent fences an A retry before pending B submission can issue its POST", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalRetryRun = sessionApi.retryRun;
+  const originalSubmitChat = sessionApi.submitChat;
+  let rejectSubmission!: (reason?: unknown) => void;
+  const pendingSubmission = new Promise<ChatStreamResponse>((_resolve, reject) => {
+    rejectSubmission = reject;
+  });
+  let retryPosts = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-a-admission",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: "run-a-admission",
+    events: [{
+      id: "evt-a-admission",
+      run_id: "run-a-admission",
+      event_type: "user:message",
+      timestamp: "2026-07-19T00:00:00Z",
+      data: { content: "run A" },
+    }],
+  });
+  sessionApi.getStatus = (async (sessionId, runId) => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: "failed",
+    raw_status: "failed",
+  })) as typeof sessionApi.getStatus;
+  sessionApi.retryRun = (async () => {
+    retryPosts += 1;
+    return { session_id: "session-a-admission", run_id: "run-a-child", status: "queued" };
+  }) as typeof sessionApi.retryRun;
+  sessionApi.submitChat = (() => pendingSubmission) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-a-admission", "run-a-admission");
+    });
+    let submission!: Promise<unknown>;
+    await harness.act(async () => {
+      submission = harness.hook.sendMessage("begin B") as Promise<unknown>;
+      await Promise.resolve();
+    });
+
+    assert.equal(
+      harness.hook.runControlLifecycle.getSnapshot().owner,
+      null,
+      "B admission must invalidate A before its submit POST settles",
+    );
+    await harness.act(async () => {
+      await harness.hook.runControlLifecycle.retry();
+    });
+    assert.equal(retryPosts, 0, "a pending B admission must fence A's retry POST");
+
+    await harness.act(async () => {
+      rejectSubmission(new Error("test ends the deferred B admission"));
+      await submission;
+    });
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.retryRun = originalRetryRun;
+    sessionApi.submitChat = originalSubmitChat;
     await harness.cleanup();
   }
 });
