@@ -4,12 +4,13 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook
 
-from app.executors.claude_agent_sdk_runner import _attachment_context_prompt_section
+from app.executors.claude_agent_sdk_runner import _attachment_context_data_message
 from app.file_parser_contracts import (
     MAX_XLSX_CELL_CHARS,
     MAX_XLSX_FILE_BYTES,
     MAX_XLSX_ROWS_PER_SHEET,
     AttachmentPreprocessingError,
+    MaterializedAttachmentFact,
     attachment_requirements_from_contract,
     build_attachment_preprocessing_contract,
     is_known_binary_workbook,
@@ -59,9 +60,9 @@ def test_xlsx_parser_emits_bounded_typed_content_and_positive_evidence(tmp_path)
     formula = parsed.content["workbook"]["sheets"][0]["rows"][1]["cells"][1]
     assert formula == {"column": 2, "kind": "formula", "value": "=1+2"}
 
-    prompt_section = _attachment_context_prompt_section([parsed])
-    assert "Platform-preprocessed attachments" in prompt_section
-    assert '"kind":"formula"' in prompt_section
+    data_message = _attachment_context_data_message([parsed])
+    assert '"message_kind":"platform_typed_attachment_data"' in data_message
+    assert '"kind":"formula"' in data_message
 
 
 def test_xlsx_parser_reports_deterministic_truncation(tmp_path):
@@ -123,19 +124,56 @@ def test_platform_registry_uses_server_content_type_when_extension_is_generic(tm
 
 def test_parser_rejects_brokered_bytes_that_do_not_match_worker_materialization(tmp_path):
     path = tmp_path / "book.xlsx"
-    _write_workbook(path)
+    materialized = b"AAAA"
+    path.write_bytes(materialized)
     contract = build_attachment_preprocessing_contract(
-        file_ids=["file-a"],
-        file_names=["book.xlsx"],
-        workspace=tmp_path,
+        attachment_facts=[
+            MaterializedAttachmentFact(
+                file_id="file-a",
+                file_name="book.xlsx",
+                content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                byte_count=len(materialized),
+                sha256=hashlib.sha256(materialized).hexdigest(),
+            )
+        ],
     )
     requirement = attachment_requirements_from_contract(contract)[0]
-    assert requirement.expected_byte_count == path.stat().st_size
-    assert requirement.expected_sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert requirement.expected_byte_count == len(materialized)
+    assert requirement.expected_sha256 == hashlib.sha256(materialized).hexdigest()
 
-    path.write_bytes(b"tampered broker bytes")
+    path.write_bytes(b"BBBB")
     with pytest.raises(AttachmentPreprocessingError, match="attachment_parser_staged_file_mismatch"):
         parse_xlsx_attachment(path=path, requirement=requirement)
+
+
+def test_duplicate_xlsx_basenames_keep_distinct_file_facts_and_requirements():
+    first = b"AAAA"
+    second = b"BBBB"
+    contract = build_attachment_preprocessing_contract(
+        attachment_facts=[
+            MaterializedAttachmentFact(
+                file_id="file-a",
+                file_name="book.xlsx",
+                content_type="application/octet-stream",
+                byte_count=len(first),
+                sha256=hashlib.sha256(first).hexdigest(),
+            ),
+            MaterializedAttachmentFact(
+                file_id="file-b",
+                file_name="book.xlsx",
+                content_type="application/octet-stream",
+                byte_count=len(second),
+                sha256=hashlib.sha256(second).hexdigest(),
+            ),
+        ]
+    )
+
+    requirements = attachment_requirements_from_contract(contract)
+
+    assert [requirement.file_id for requirement in requirements] == ["file-a", "file-b"]
+    assert [requirement.file_name for requirement in requirements] == ["book.xlsx", "book.xlsx"]
+    assert requirements[0].expected_byte_count == requirements[1].expected_byte_count
+    assert requirements[0].expected_sha256 != requirements[1].expected_sha256
 
 
 def test_worker_evidence_validation_rejects_mismatch_and_accepts_exact_record(tmp_path):

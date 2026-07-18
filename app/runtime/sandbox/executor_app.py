@@ -29,6 +29,7 @@ from app.file_parser_contracts import (
     AttachmentPreprocessingError,
     ParsedAttachmentContext,
     attachment_requirements_from_contract,
+    dispatched_context_file_ids,
     parse_xlsx_attachment,
 )
 from app.runtime.kernel_contracts import AgentEvent
@@ -342,6 +343,9 @@ async def _preprocess_typed_attachments(
         return [], exc.code
     if not requirements:
         return [], None
+    manifest_file_ids = dispatched_context_file_ids(manifest)
+    if any(requirement.file_id not in manifest_file_ids for requirement in requirements):
+        return [], "attachment_parser_manifest_file_mismatch"
     if not _attachment_stage_subject_authorized(request):
         return [], "attachment_parser_staging_not_authorized"
     if retrieval is None or identity is None:

@@ -11,7 +11,7 @@ from zipfile import BadZipFile, ZipFile
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.context_manifest import utf8_token_estimate
+from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, utf8_token_estimate
 from app.validation import assert_safe_id
 
 
@@ -83,6 +83,31 @@ class AttachmentParserRequirement(BaseModel):
         normalized = str(value).lower()
         if len(normalized) != 64 or any(character not in "0123456789abcdef" for character in normalized):
             raise ValueError("expected_sha256 must be 64 lowercase hexadecimal characters")
+        return normalized
+
+
+class MaterializedAttachmentFact(BaseModel):
+    """Ordered server fact captured from bytes fetched for one exact file ID."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file_id: str
+    file_name: str
+    content_type: str = ""
+    byte_count: int = Field(ge=0)
+    sha256: str
+
+    @field_validator("file_id")
+    @classmethod
+    def validate_file_id(cls, value: str):
+        return assert_safe_id(value, "file_id")
+
+    @field_validator("sha256")
+    @classmethod
+    def validate_sha256(cls, value: str):
+        normalized = str(value or "").lower()
+        if len(normalized) != 64 or any(character not in "0123456789abcdef" for character in normalized):
+            raise ValueError("sha256 must be 64 lowercase hexadecimal characters")
         return normalized
 
 
@@ -186,21 +211,55 @@ def is_known_binary_workbook(*, file_name: object, content_type: object = "") ->
     )
 
 
+def dispatched_context_file_ids(manifest: object) -> frozenset[str]:
+    """Return the immutable exact file-ID authority dispatched to the sandbox."""
+
+    if not isinstance(manifest, dict) or manifest.get("schema_version") != CONTEXT_MANIFEST_SCHEMA_VERSION:
+        return frozenset()
+    rows = manifest.get("files")
+    if not isinstance(rows, list):
+        return frozenset()
+    return frozenset(
+        str(row.get("file_id") or "").strip()
+        for row in rows
+        if isinstance(row, dict) and str(row.get("file_id") or "").strip()
+    )
+
+
 def build_attachment_preprocessing_contract(
     *,
-    file_ids: list[str],
-    file_names: list[str],
+    file_ids: list[str] | None = None,
+    file_names: list[str] | None = None,
     content_types: list[str] | None = None,
-    workspace: Path | None = None,
+    attachment_facts: list[MaterializedAttachmentFact | dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build server-owned parser requirements from ordered attachment facts."""
 
     requirements: list[AttachmentParserRequirement] = []
-    for index, file_name in enumerate(file_names):
+    normalized_facts: list[MaterializedAttachmentFact | None]
+    if attachment_facts is not None:
+        try:
+            normalized_facts = [
+                fact
+                if isinstance(fact, MaterializedAttachmentFact)
+                else MaterializedAttachmentFact.model_validate(fact)
+                for fact in attachment_facts
+            ]
+        except Exception as exc:
+            raise AttachmentPreprocessingError("attachment_materialized_fact_invalid") from exc
+        ordered_file_ids = [fact.file_id for fact in normalized_facts if fact is not None]
+        ordered_file_names = [fact.file_name for fact in normalized_facts if fact is not None]
+        ordered_content_types = [fact.content_type for fact in normalized_facts if fact is not None]
+    else:
+        ordered_file_ids = list(file_ids or [])
+        ordered_file_names = list(file_names or [])
+        ordered_content_types = list(content_types or [])
+        normalized_facts = [None for _name in ordered_file_names]
+    for index, file_name in enumerate(ordered_file_names):
         extension = _normalized_extension(file_name)
         declared_content_type = (
-            _normalized_content_type(content_types[index])
-            if isinstance(content_types, list) and index < len(content_types)
+            _normalized_content_type(ordered_content_types[index])
+            if index < len(ordered_content_types)
             else ""
         )
         spec = parser_spec_for_attachment(
@@ -213,28 +272,11 @@ def build_attachment_preprocessing_contract(
             and declared_content_type not in _UNSUPPORTED_WORKBOOK_CONTENT_TYPES
         ):
             continue
-        if index >= len(file_ids):
+        if index >= len(ordered_file_ids):
             raise AttachmentPreprocessingError("attachment_parser_file_mapping_invalid")
-        expected_byte_count: int | None = None
-        expected_sha256: str | None = None
-        if workspace is not None:
-            workspace_root = workspace.resolve(strict=False)
-            candidate = workspace / PurePosixPath(str(file_name).replace("\\", "/")).name
-            try:
-                resolved = candidate.resolve(strict=True)
-                resolved.relative_to(workspace_root)
-            except (OSError, ValueError) as exc:
-                raise AttachmentPreprocessingError("attachment_parser_materialized_file_invalid") from exc
-            if candidate.is_symlink() or not resolved.is_file():
-                raise AttachmentPreprocessingError("attachment_parser_materialized_file_invalid")
-            expected_byte_count = resolved.stat().st_size
-            digest = hashlib.sha256()
-            with resolved.open("rb") as source:
-                for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            expected_sha256 = digest.hexdigest()
+        fact = normalized_facts[index]
         requirement = AttachmentParserRequirement(
-            file_id=file_ids[index],
+            file_id=ordered_file_ids[index],
             file_name=PurePosixPath(str(file_name).replace("\\", "/")).name,
             extension=extension,
             content_type=(
@@ -245,8 +287,8 @@ def build_attachment_preprocessing_contract(
             parser_version=spec.parser_version if spec is not None else "0",
             supported=spec is not None,
             max_bytes=spec.max_bytes if spec is not None else 1,
-            expected_byte_count=expected_byte_count,
-            expected_sha256=expected_sha256,
+            expected_byte_count=fact.byte_count if fact is not None else None,
+            expected_sha256=fact.sha256 if fact is not None else None,
         )
         requirements.append(requirement)
     return {

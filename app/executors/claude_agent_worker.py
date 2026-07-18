@@ -1,6 +1,7 @@
 import base64
 import binascii
 from dataclasses import dataclass, field
+import hashlib
 from pathlib import Path
 import posixpath
 import re
@@ -27,8 +28,10 @@ from app.executors.claude_agent_sdk_runner import (
 )
 from app.file_parser_contracts import (
     AttachmentPreprocessingError,
+    MaterializedAttachmentFact,
     attachment_requirements_from_contract,
     build_attachment_preprocessing_contract,
+    dispatched_context_file_ids,
     validate_required_parser_evidence,
 )
 from app.path_safety import ensure_creatable_inside, ensure_path_inside
@@ -78,8 +81,7 @@ class PreparedSdkRun:
     allowed_skill_names: list[str]
     staged_skill_names: list[str]
     prompt: str
-    file_content_types: list[str] = field(default_factory=list)
-    materialized_file_ids: list[str] = field(default_factory=list)
+    attachment_facts: list[MaterializedAttachmentFact] = field(default_factory=list)
 
 
 class _MaterializedFileNames(list[str]):
@@ -87,12 +89,10 @@ class _MaterializedFileNames(list[str]):
         self,
         values: list[str],
         *,
-        content_types: list[str],
-        file_ids: list[str],
+        attachment_facts: list[MaterializedAttachmentFact],
     ) -> None:
         super().__init__(values)
-        self.content_types = list(content_types)
-        self.file_ids = list(file_ids)
+        self.attachment_facts = list(attachment_facts)
 
 
 async def resolve_claude_sdk_tool_permission(**_legacy_request: Any) -> dict[str, Any]:
@@ -183,11 +183,13 @@ def _attachment_preprocessing_contract(
     payload: RunPayload,
     prepared: PreparedSdkRun,
 ) -> dict[str, Any]:
+    if prepared.attachment_facts:
+        return build_attachment_preprocessing_contract(
+            attachment_facts=list(prepared.attachment_facts)
+        )
     return build_attachment_preprocessing_contract(
-        file_ids=list(prepared.materialized_file_ids or payload.file_ids),
+        file_ids=list(payload.file_ids[: len(prepared.file_names)]),
         file_names=list(prepared.file_names),
-        content_types=list(prepared.file_content_types),
-        workspace=prepared.workspace,
     )
 
 
@@ -767,18 +769,13 @@ class ClaudeAgentWorkerAdapter:
         _prepare_run_workspace(resolved_workspace_root, resolved_workspace)
         materialized_file_names = await self._materialize_files(payload, resolved_workspace)
         file_names = list(materialized_file_names)
-        raw_content_types = getattr(materialized_file_names, "content_types", [])
-        file_content_types = (
-            [str(value or "") for value in raw_content_types]
-            if isinstance(raw_content_types, list) and len(raw_content_types) == len(file_names)
-            else ["" for _name in file_names]
-        )
-        raw_materialized_file_ids = getattr(materialized_file_names, "file_ids", [])
-        materialized_file_ids = (
-            [str(value or "") for value in raw_materialized_file_ids]
-            if isinstance(raw_materialized_file_ids, list)
-            and len(raw_materialized_file_ids) == len(file_names)
-            else list(payload.file_ids[: len(file_names)])
+        raw_attachment_facts = getattr(materialized_file_names, "attachment_facts", [])
+        attachment_facts = (
+            list(raw_attachment_facts)
+            if isinstance(raw_attachment_facts, list)
+            and len(raw_attachment_facts) == len(file_names)
+            and all(isinstance(fact, MaterializedAttachmentFact) for fact in raw_attachment_facts)
+            else []
         )
 
         skills = BuiltinSkillRegistry(settings.platform_skills_root).list_builtin_skills()
@@ -866,8 +863,7 @@ class ClaudeAgentWorkerAdapter:
                 allowed_skill_names=allowed_skill_names,
                 staged_skill_names=staged_skill_names,
                 prompt=prompt,
-                file_content_types=file_content_types,
-                materialized_file_ids=materialized_file_ids,
+                attachment_facts=attachment_facts,
             ),
             None,
         )
@@ -893,6 +889,14 @@ class ClaudeAgentWorkerAdapter:
             if context_manifest is None:
                 return self._attachment_parser_failure_result(
                     error_code="attachment_parser_context_manifest_required"
+                )
+            manifest_file_ids = dispatched_context_file_ids(context_manifest)
+            if any(
+                requirement.file_id not in manifest_file_ids
+                for requirement in attachment_requirements
+            ):
+                return self._attachment_parser_failure_result(
+                    error_code="attachment_parser_manifest_file_mismatch"
                 )
             if "stage_context_file_to_workspace" not in available_context_retrieval_tools(
                 context_manifest
@@ -1385,8 +1389,7 @@ class ClaudeAgentWorkerAdapter:
             raise ValueError("run workspace must not be a symlink")
         storage = ObjectStorage()
         file_names: list[str] = []
-        content_types: list[str] = []
-        materialized_file_ids: list[str] = []
+        attachment_facts: list[MaterializedAttachmentFact] = []
         async with transaction() as conn:
             for file_id in payload.file_ids:
                 row = await repositories.get_run_file(
@@ -1400,14 +1403,21 @@ class ClaudeAgentWorkerAdapter:
                 filename = Path(str(row["original_name"] or file_id)).name
                 target = workspace / filename
                 ensure_creatable_inside(workspace, target, "uploaded file target must stay inside the run workspace")
-                target.write_bytes(storage.get_bytes(storage_key=row["storage_key"]))
+                content = storage.get_bytes(storage_key=row["storage_key"])
+                attachment_facts.append(
+                    MaterializedAttachmentFact(
+                        file_id=file_id,
+                        file_name=filename,
+                        content_type=str(row.get("content_type") or ""),
+                        byte_count=len(content),
+                        sha256=hashlib.sha256(content).hexdigest(),
+                    )
+                )
+                target.write_bytes(content)
                 file_names.append(filename)
-                content_types.append(str(row.get("content_type") or ""))
-                materialized_file_ids.append(file_id)
         return _MaterializedFileNames(
             file_names,
-            content_types=content_types,
-            file_ids=materialized_file_ids,
+            attachment_facts=attachment_facts,
         )
 
     def _collect_workspace_artifacts(self, payload: RunPayload, workspace: Path) -> list[ArtifactManifest]:
