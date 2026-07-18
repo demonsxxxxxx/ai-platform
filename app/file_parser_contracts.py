@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import hashlib
 import io
 import json
@@ -7,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
+from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -33,6 +35,11 @@ MAX_XLSX_ZIP_ENTRIES = 2000
 MAX_XLSX_ZIP_ENTRY_BYTES = 8 * 1024 * 1024
 MAX_XLSX_ZIP_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_XLSX_ZIP_COMPRESSION_RATIO = 100
+
+_SPREADSHEET_XML_NAMESPACE = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_WORKSHEET_RELATIONSHIP_SUFFIX = "/worksheet"
+_FORBIDDEN_XML_DECLARATIONS = (b"<!DOCTYPE", b"<!ENTITY")
+_FORBIDDEN_XML_DECLARATION_TEXT = tuple(token.decode("ascii") for token in _FORBIDDEN_XML_DECLARATIONS)
 
 _SUPPORTED_XLSX_EXTENSIONS = frozenset({".xlsx"})
 _UNSUPPORTED_WORKBOOK_EXTENSIONS = frozenset({".xls", ".xlsb", ".xlsm", ".ods"})
@@ -344,6 +351,46 @@ def attachment_requirements_from_contract(value: object) -> list[AttachmentParse
     return requirements
 
 
+def _xml_multibyte_encoding(prefix: bytes) -> str | None:
+    if prefix.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+        return "utf-32"
+    if prefix.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return "utf-16"
+    if prefix.startswith(b"\x00\x00\x00<"):
+        return "utf-32-be"
+    if prefix.startswith(b"<\x00\x00\x00"):
+        return "utf-32-le"
+    if prefix.startswith(b"\x00<"):
+        return "utf-16-be"
+    if prefix.startswith(b"<\x00"):
+        return "utf-16-le"
+    return None
+
+
+def _assert_xml_entry_has_no_dtd_or_entity(archive: ZipFile, entry: Any) -> None:
+    normalized_name = str(entry.filename).replace("\\", "/").casefold()
+    if not normalized_name.endswith((".xml", ".rels")):
+        return
+    try:
+        payload = archive.read(entry)
+        encoding = _xml_multibyte_encoding(payload)
+        if encoding is not None:
+            text = payload.decode(encoding, errors="strict").upper()
+            if any(token in text for token in _FORBIDDEN_XML_DECLARATION_TEXT):
+                raise AttachmentPreprocessingError("xlsx_xml_entities_unsupported")
+            return
+        probe = payload.removeprefix(codecs.BOM_UTF8).lstrip(b" \t\r\n")
+        if b"\x00" in payload or (probe and not probe.startswith(b"<")):
+            raise AttachmentPreprocessingError("xlsx_xml_encoding_unsupported")
+        upper_payload = payload.upper()
+        if any(token in upper_payload for token in _FORBIDDEN_XML_DECLARATIONS):
+            raise AttachmentPreprocessingError("xlsx_xml_entities_unsupported")
+    except AttachmentPreprocessingError:
+        raise
+    except (BadZipFile, OSError, RuntimeError, UnicodeError, ValueError) as exc:
+        raise AttachmentPreprocessingError("xlsx_parse_failed") from exc
+
+
 def _validate_xlsx_archive(raw: bytes) -> None:
     try:
         archive = ZipFile(io.BytesIO(raw))
@@ -370,8 +417,228 @@ def _validate_xlsx_archive(raw: bytes) -> None:
                     raise AttachmentPreprocessingError("xlsx_archive_too_large")
             elif entry.file_size / entry.compress_size > MAX_XLSX_ZIP_COMPRESSION_RATIO:
                 raise AttachmentPreprocessingError("xlsx_archive_too_large")
+            _assert_xml_entry_has_no_dtd_or_entity(archive, entry)
     finally:
         archive.close()
+
+
+@dataclass(frozen=True)
+class _WorksheetXmlPreflight:
+    sheet_name: str
+    archive_path: str
+    stored_cells: int
+    observed_max_row: int
+    observed_max_column: int
+    reported_max_row: int | None
+    reported_max_column: int | None
+
+
+def _xml_local_name(tag: object) -> str:
+    return str(tag).rsplit("}", 1)[-1]
+
+
+def _resolved_package_target(target: object) -> str:
+    if not isinstance(target, str) or not target or "\x00" in target:
+        raise AttachmentPreprocessingError("xlsx_parse_failed")
+    normalized = target.replace("\\", "/")
+    parts: list[str] = [] if normalized.startswith("/") else ["xl"]
+    for part in normalized.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not parts:
+                raise AttachmentPreprocessingError("xlsx_parse_failed")
+            parts.pop()
+            continue
+        if ":" in part:
+            raise AttachmentPreprocessingError("xlsx_parse_failed")
+        parts.append(part)
+    if not parts:
+        raise AttachmentPreprocessingError("xlsx_parse_failed")
+    return "/".join(parts)
+
+
+def _selected_worksheet_entries(archive: ZipFile) -> list[tuple[str, str]]:
+    relationships: dict[str, str] = {}
+    try:
+        with archive.open("xl/_rels/workbook.xml.rels", "r") as stream:
+            for _event, element in ElementTree.iterparse(stream, events=("end",)):
+                if _xml_local_name(element.tag) == "Relationship":
+                    relationship_id = element.attrib.get("Id")
+                    relationship_type = str(element.attrib.get("Type") or "")
+                    target_mode = str(element.attrib.get("TargetMode") or "")
+                    if (
+                        relationship_id
+                        and relationship_type.endswith(_WORKSHEET_RELATIONSHIP_SUFFIX)
+                        and target_mode.casefold() != "external"
+                    ):
+                        target = _resolved_package_target(element.attrib.get("Target"))
+                        if relationship_id in relationships:
+                            raise AttachmentPreprocessingError("xlsx_parse_failed")
+                        relationships[relationship_id] = target
+                element.clear()
+
+        selected: list[tuple[str, str]] = []
+        with archive.open("xl/workbook.xml", "r") as stream:
+            for _event, element in ElementTree.iterparse(stream, events=("end",)):
+                if _xml_local_name(element.tag) == "sheet":
+                    sheet_name = element.attrib.get("name")
+                    relationship_id = next(
+                        (
+                            value
+                            for key, value in element.attrib.items()
+                            if _xml_local_name(key) == "id"
+                        ),
+                        None,
+                    )
+                    archive_path = relationships.get(str(relationship_id or ""))
+                    if not isinstance(sheet_name, str) or not sheet_name or archive_path is None:
+                        raise AttachmentPreprocessingError("xlsx_parse_failed")
+                    selected.append((sheet_name, archive_path))
+                    if len(selected) >= MAX_XLSX_SHEETS:
+                        break
+                element.clear()
+    except AttachmentPreprocessingError:
+        raise
+    except (BadZipFile, ElementTree.ParseError, KeyError, OSError, RuntimeError, ValueError) as exc:
+        raise AttachmentPreprocessingError("xlsx_parse_failed") from exc
+    return selected
+
+
+def _cell_reference_coordinates(value: object) -> tuple[int, int]:
+    if not isinstance(value, str) or not value or len(value) > 10:
+        raise ValueError("invalid cell reference")
+    letter_end = 0
+    while letter_end < len(value) and value[letter_end].isalpha():
+        letter_end += 1
+    letters = value[:letter_end].upper()
+    digits = value[letter_end:]
+    if not (1 <= len(letters) <= 3) or not digits or not digits.isascii() or not digits.isdigit():
+        raise ValueError("invalid cell reference")
+    column = 0
+    for character in letters:
+        if character < "A" or character > "Z":
+            raise ValueError("invalid cell reference")
+        column = column * 26 + ord(character) - ord("A") + 1
+    row = int(digits)
+    if not (1 <= row <= 1_048_576) or not (1 <= column <= 16_384):
+        raise ValueError("invalid cell reference")
+    return row, column
+
+
+def _dimension_bounds(value: object) -> tuple[int | None, int | None]:
+    if not isinstance(value, str):
+        return None, None
+    references = value.split(":")
+    if len(references) not in (1, 2):
+        return None, None
+    try:
+        coordinates = [_cell_reference_coordinates(reference) for reference in references]
+    except ValueError:
+        return None, None
+    return max(row for row, _column in coordinates), max(column for _row, column in coordinates)
+
+
+def _worksheet_xml_preflight(
+    archive: ZipFile,
+    *,
+    sheet_name: str,
+    archive_path: str,
+    cells_seen: int,
+) -> tuple[_WorksheetXmlPreflight, int]:
+    stored_cells = 0
+    observed_max_row = 0
+    observed_max_column = 0
+    reported_max_row: int | None = None
+    reported_max_column: int | None = None
+    dimension_seen = False
+    current_row: int | None = None
+    current_column = 0
+    last_row = 0
+    worksheet_prefix = f"{{{_SPREADSHEET_XML_NAMESPACE}}}"
+    try:
+        with archive.open(archive_path, "r") as stream:
+            for event, element in ElementTree.iterparse(stream, events=("start", "end")):
+                if event == "start" and element.tag == f"{worksheet_prefix}dimension":
+                    if dimension_seen:
+                        reported_max_row = None
+                        reported_max_column = None
+                    else:
+                        reported_max_row, reported_max_column = _dimension_bounds(element.attrib.get("ref"))
+                    dimension_seen = True
+                elif event == "start" and element.tag == f"{worksheet_prefix}row":
+                    raw_row = element.attrib.get("r")
+                    if raw_row is None:
+                        current_row = last_row + 1
+                    elif not raw_row.isascii() or not raw_row.isdigit():
+                        raise ValueError("invalid row reference")
+                    else:
+                        current_row = int(raw_row)
+                    if current_row < 1 or current_row > 1_048_576 or current_row <= last_row:
+                        raise ValueError("invalid row reference")
+                    last_row = current_row
+                    current_column = 0
+                elif event == "start" and element.tag == f"{worksheet_prefix}c":
+                    stored_cells += 1
+                    cells_seen += 1
+                    if cells_seen > MAX_XLSX_CELLS:
+                        raise AttachmentPreprocessingError("xlsx_cell_limit_exceeded")
+                    raw_coordinate = element.attrib.get("r")
+                    if raw_coordinate is None:
+                        if current_row is None:
+                            raise ValueError("cell outside row")
+                        row, column = current_row, current_column + 1
+                    else:
+                        row, column = _cell_reference_coordinates(raw_coordinate)
+                    if current_row is None or row != current_row or column <= current_column:
+                        raise ValueError("invalid cell order")
+                    current_column = column
+                    observed_max_row = max(observed_max_row, row)
+                    observed_max_column = max(observed_max_column, column)
+                elif event == "end" and element.tag == f"{worksheet_prefix}row":
+                    current_row = None
+                if event == "end":
+                    element.clear()
+    except AttachmentPreprocessingError:
+        raise
+    except (BadZipFile, ElementTree.ParseError, KeyError, OSError, RuntimeError, ValueError) as exc:
+        raise AttachmentPreprocessingError("xlsx_parse_failed") from exc
+    return (
+        _WorksheetXmlPreflight(
+            sheet_name=sheet_name,
+            archive_path=archive_path,
+            stored_cells=stored_cells,
+            observed_max_row=observed_max_row,
+            observed_max_column=observed_max_column,
+            reported_max_row=reported_max_row,
+            reported_max_column=reported_max_column,
+        ),
+        cells_seen,
+    )
+
+
+def _preflight_xlsx_worksheets(raw: bytes) -> tuple[list[_WorksheetXmlPreflight], int]:
+    try:
+        archive = ZipFile(io.BytesIO(raw))
+    except (BadZipFile, ValueError) as exc:
+        raise AttachmentPreprocessingError("xlsx_parse_failed") from exc
+    facts: list[_WorksheetXmlPreflight] = []
+    cells_seen = 0
+    try:
+        selected_entries = _selected_worksheet_entries(archive)
+        if len({archive_path for _sheet_name, archive_path in selected_entries}) != len(selected_entries):
+            raise AttachmentPreprocessingError("xlsx_parse_failed")
+        for sheet_name, archive_path in selected_entries:
+            sheet_facts, cells_seen = _worksheet_xml_preflight(
+                archive,
+                sheet_name=sheet_name,
+                archive_path=archive_path,
+                cells_seen=cells_seen,
+            )
+            facts.append(sheet_facts)
+    finally:
+        archive.close()
+    return facts, cells_seen
 
 
 def _bounded_cell_payload(cell: Any) -> tuple[dict[str, Any] | None, bool]:
@@ -444,6 +711,7 @@ def parse_xlsx_attachment(
     if requirement.expected_sha256 is not None and actual_sha256 != requirement.expected_sha256:
         raise AttachmentPreprocessingError("attachment_parser_staged_file_mismatch")
     _validate_xlsx_archive(raw)
+    worksheet_preflight, stored_cells = _preflight_xlsx_worksheets(raw)
 
     try:
         from openpyxl import load_workbook
@@ -462,7 +730,7 @@ def parse_xlsx_attachment(
         "file_id": requirement.file_id,
         "workbook": {"sheets": []},
     }
-    cells_examined = 0
+    cells_examined = stored_cells
     nonempty_cells = 0
     rows_emitted = 0
     sheets_processed = 0
@@ -470,23 +738,35 @@ def parse_xlsx_attachment(
     stop_all = False
     try:
         sheet_names = list(workbook.sheetnames)
+        selected_sheet_names = sheet_names[:MAX_XLSX_SHEETS]
+        if [str(sheet_name) for sheet_name in selected_sheet_names] != [
+            facts.sheet_name for facts in worksheet_preflight
+        ]:
+            raise AttachmentPreprocessingError("xlsx_parse_failed")
         if len(sheet_names) > MAX_XLSX_SHEETS:
             truncated = True
-        for sheet_name in sheet_names[:MAX_XLSX_SHEETS]:
+        for sheet_index, sheet_name in enumerate(selected_sheet_names):
             worksheet = workbook[sheet_name]
-            try:
-                max_row = _reported_dimension_bound(worksheet.max_row)
-            except Exception:
-                max_row = None
-            try:
-                max_column = _reported_dimension_bound(worksheet.max_column)
-            except Exception:
-                max_column = None
+            xml_facts = worksheet_preflight[sheet_index]
+            max_row = xml_facts.reported_max_row
+            max_column = xml_facts.reported_max_column
             if len(str(sheet_name)) > MAX_XLSX_CELL_CHARS:
                 truncated = True
-            if max_row is None or max_column is None:
+            if (
+                max_row is None
+                or max_column is None
+                or max_row < xml_facts.observed_max_row
+                or max_column < xml_facts.observed_max_column
+            ):
+                max_row = None
+                max_column = None
                 truncated = True
             elif max_row > MAX_XLSX_ROWS_PER_SHEET or max_column > MAX_XLSX_COLUMNS_PER_SHEET:
+                truncated = True
+            if (
+                xml_facts.observed_max_row > MAX_XLSX_ROWS_PER_SHEET
+                or xml_facts.observed_max_column > MAX_XLSX_COLUMNS_PER_SHEET
+            ):
                 truncated = True
             sheet_payload: dict[str, Any] = {
                 "name": str(sheet_name)[:MAX_XLSX_CELL_CHARS],
@@ -514,11 +794,6 @@ def parse_xlsx_attachment(
                 for cell in row:
                     if _reported_dimension_bound(getattr(cell, "column", None)) is None:
                         continue
-                    if cells_examined >= MAX_XLSX_CELLS:
-                        truncated = True
-                        stop_all = True
-                        break
-                    cells_examined += 1
                     cell_payload, cell_truncated = _bounded_cell_payload(cell)
                     truncated = truncated or cell_truncated
                     if cell_payload is not None:
@@ -537,6 +812,8 @@ def parse_xlsx_attachment(
                     break
             if stop_all:
                 break
+    except AttachmentPreprocessingError:
+        raise
     except Exception as exc:
         raise AttachmentPreprocessingError("xlsx_parse_failed") from exc
     finally:

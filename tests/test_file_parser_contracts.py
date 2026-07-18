@@ -72,6 +72,41 @@ def _remove_worksheet_dimension(path: Path) -> None:
         assert root.find("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}dimension") is None
 
 
+def _set_worksheet_dimension(path: Path, reference: str) -> None:
+    source = io.BytesIO(path.read_bytes())
+    output = io.BytesIO()
+    worksheet_path = "xl/worksheets/sheet1.xml"
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            if entry.filename == worksheet_path:
+                root = ElementTree.fromstring(payload)
+                dimension = root.find("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}dimension")
+                assert dimension is not None
+                dimension.set("ref", reference)
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            rewritten.writestr(entry, payload)
+    path.write_bytes(output.getvalue())
+
+
+def _inject_worksheet_entity_declaration(path: Path, *, utf16: bool = False) -> None:
+    source = io.BytesIO(path.read_bytes())
+    output = io.BytesIO()
+    worksheet_path = "xl/worksheets/sheet1.xml"
+    declaration = b'<!DOCTYPE worksheet [<!ENTITY unsafe "blocked">]>'
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            if entry.filename == worksheet_path:
+                insertion = payload.find(b"<worksheet")
+                assert insertion >= 0
+                payload = payload[:insertion] + declaration + payload[insertion:]
+                if utf16:
+                    payload = payload.decode("utf-8").encode("utf-16")
+            rewritten.writestr(entry, payload)
+    path.write_bytes(output.getvalue())
+
+
 def _write_dimensionless_validation_workbook(path: Path, *, overflow: bool = False) -> None:
     workbook = Workbook()
     sheet = workbook.active
@@ -93,6 +128,17 @@ def _write_dimensionless_validation_workbook(path: Path, *, overflow: bool = Fal
     workbook.save(path)
     workbook.close()
     _remove_worksheet_dimension(path)
+
+
+def _write_stored_cell_overflow_workbook(path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet["A1"] = "inside-a"
+    sheet["B1"] = "inside-b"
+    for column in range(1, MAX_XLSX_CELLS + 2):
+        sheet.cell(row=MAX_XLSX_ROWS_PER_SHEET + 1, column=column, value=column)
+    workbook.save(path)
+    workbook.close()
 
 
 def test_xlsx_parser_emits_bounded_typed_content_and_positive_evidence(tmp_path):
@@ -163,6 +209,54 @@ def test_xlsx_parser_bounds_dimensionless_row_column_cell_and_prompt_content(tmp
     assert utf8_token_estimate(rendered) <= MAX_XLSX_PROMPT_TOKENS
     assert parsed.evidence.truncated is True
     assert parsed.content["workbook"]["truncated"] is True
+
+
+def test_xlsx_parser_rejects_stored_cell_overflow_before_openpyxl_load(tmp_path, monkeypatch):
+    path = tmp_path / "book.xlsx"
+    _write_stored_cell_overflow_workbook(path)
+    assert path.stat().st_size <= MAX_XLSX_FILE_BYTES
+    with zipfile.ZipFile(path, "r") as archive:
+        assert archive.read("xl/worksheets/sheet1.xml").count(b"<c ") == MAX_XLSX_CELLS + 3
+
+    def fail_load_workbook(*_args, **_kwargs):
+        raise AssertionError("openpyxl must not load content after the XML cell limit is exceeded")
+
+    monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
+
+    with pytest.raises(AttachmentPreprocessingError, match="xlsx_cell_limit_exceeded"):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
+
+
+def test_xlsx_parser_marks_forged_low_dimension_unreliable(tmp_path):
+    path = tmp_path / "book.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet["A1"] = "first"
+    sheet["B2"] = "second"
+    workbook.save(path)
+    workbook.close()
+    _set_worksheet_dimension(path, "A1")
+
+    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+
+    sheet_content = parsed.content["workbook"]["sheets"][0]
+    rendered = json.dumps(sheet_content, ensure_ascii=False, sort_keys=True)
+    assert "first" in rendered
+    assert "second" in rendered
+    assert sheet_content["max_row"] is None
+    assert sheet_content["max_column"] is None
+    assert parsed.evidence.cells_examined == 2
+    assert parsed.evidence.truncated is True
+
+
+@pytest.mark.parametrize("utf16", [False, True], ids=["utf8", "utf16"])
+def test_xlsx_parser_rejects_dtd_and_entity_declarations(tmp_path, utf16):
+    path = tmp_path / "book.xlsx"
+    _write_workbook(path)
+    _inject_worksheet_entity_declaration(path, utf16=utf16)
+
+    with pytest.raises(AttachmentPreprocessingError, match="xlsx_xml_entities_unsupported"):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
 
 
 @pytest.mark.parametrize(
