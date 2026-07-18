@@ -737,7 +737,19 @@ async def test_record_initial_context_snapshot_adds_source_run_artifact_followup
 
 
 @pytest.mark.asyncio
-async def test_context_builder_preserves_only_authorized_retrieval_file_basename(monkeypatch):
+@pytest.mark.parametrize(
+    ("original_name", "expected_name"),
+    [
+        (r"C:\\tenant-private\\报价😀.docx", "报价😀.docx"),
+        ("storage_key", None),
+        ("", None),
+    ],
+)
+async def test_context_builder_preserves_only_authorized_retrieval_file_basename(
+    monkeypatch,
+    original_name,
+    expected_name,
+):
     captured: dict[str, object] = {}
 
     class Connection:
@@ -749,7 +761,7 @@ async def test_context_builder_preserves_only_authorized_retrieval_file_basename
         return [
             {
                 "id": "file-retrieval",
-                "original_name": r"C:\\tenant-private\\报价😀.docx",
+                "original_name": original_name,
                 "storage_key": "tenant-a/private/should-not-reach-manifest",
             }
         ]
@@ -777,15 +789,17 @@ async def test_context_builder_preserves_only_authorized_retrieval_file_basename
     )
 
     manifest_files = captured["payload_json"]["context_manifest"]["files"]
-    assert manifest_files == [
-        {"file_id": "file-retrieval", "requires_retrieval": True, "name": "报价😀.docx"}
-    ]
-    assert context_ref["context_window"]["selected_file_names"] == ["报价😀.docx"]
+    expected_file = {"file_id": "file-retrieval", "requires_retrieval": True}
+    if expected_name:
+        expected_file["name"] = expected_name
+    assert manifest_files == [expected_file]
+    assert context_ref["context_window"]["selected_file_names"] == ([expected_name] if expected_name else [])
     serialized = str({"manifest": manifest_files, "public": context_ref["context_window"]})
     assert "tenant-private" not in serialized
     assert "storage_key" not in serialized
     assert "C:\\" not in serialized
     assert "please retrieve" not in str(manifest_files)
+    assert "file-retrieval" not in str(context_ref["context_window"])
 
 
 @pytest.mark.asyncio

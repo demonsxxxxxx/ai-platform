@@ -224,7 +224,7 @@ def _display_name_from_row(row: dict[str, Any]) -> str:
     label = _safe_text(PurePosixPath(raw_label.replace("\\", "/")).name)
     if label:
         return label
-    return _safe_id(row.get("id") or row.get("file_id") or row.get("artifact_id"))
+    return ""
 
 
 def _message_token_count(value: str) -> int:
