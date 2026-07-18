@@ -24,6 +24,8 @@ function createFile(
     file_type: overrides.file_type ?? "document",
     mime_type: overrides.mime_type ?? "text/plain",
     file_size: overrides.file_size ?? 12,
+    preview_url: overrides.preview_url ?? null,
+    download_url: overrides.download_url ?? null,
     url: overrides.url ?? null,
     session_id: overrides.session_id ?? "session-1",
     session_name: overrides.session_name ?? "Session 1",
@@ -58,25 +60,25 @@ test("collects previewable images from visible session groups in render order", 
     id: "first",
     file_name: "first.png",
     file_type: "image",
-    url: "/api/ai/artifacts/first/download",
+    preview_url: "/api/ai/artifacts/first/preview",
   });
   const second = createFile({
     id: "second",
     file_name: "second.webp",
     file_type: "document",
-    url: "/api/upload/file/second.webp",
+    preview_url: "/api/upload/file/second.webp",
   });
   const missingUrl = createFile({
     id: "missing-url",
     file_name: "missing.png",
     file_type: "image",
-    url: null,
+    preview_url: null,
   });
   const document = createFile({
     id: "document",
     file_name: "notes.pdf",
     file_type: "document",
-    url: "/files/notes.pdf",
+    preview_url: "/files/notes.pdf",
   });
 
   const files = getPreviewableImageFiles([
@@ -98,25 +100,25 @@ test("filters unsafe image preview urls from visible session groups", () => {
     id: "safe-api",
     file_name: "safe.png",
     file_type: "image",
-    url: "/api/ai/artifacts/safe/download",
+    preview_url: "/api/ai/artifacts/safe/preview",
   });
   const safeHttps = createFile({
     id: "safe-https",
     file_name: "safe.webp",
     file_type: "document",
-    url: "https://cdn.example.com/safe.webp",
+    preview_url: "https://cdn.example.com/safe.webp",
   });
   const unsafeHttp = createFile({
     id: "unsafe-http",
     file_name: "http.png",
     file_type: "image",
-    url: "http://cdn.example.com/http.png",
+    preview_url: "http://cdn.example.com/http.png",
   });
   const unsafeInternal = createFile({
     id: "unsafe-internal",
     file_name: "settings.png",
     file_type: "image",
-    url: `/api/ai/artifacts/${encodedSettingsUrl}/download`,
+    preview_url: `/api/ai/artifacts/${encodedSettingsUrl}/preview`,
   });
 
   const files = getPreviewableImageFiles([
@@ -158,6 +160,19 @@ test("revealed file preview urls fail closed to the artifact/file allowlist", ()
   assert.equal(resolveSafeRevealedFilePreviewUrl("runtime.path"), null);
 });
 
+test("revealed image selection ignores legacy and download URLs without preview_url", () => {
+  const legacyOnly = createFile({
+    id: "legacy-only",
+    file_name: "legacy.png",
+    file_type: "image",
+    url: "/api/ai/artifacts/legacy-only/preview",
+    download_url: "/api/ai/artifacts/legacy-only/download",
+  });
+
+  assert.deepEqual(getPreviewableImageFiles([{ files: [legacyOnly] }]), []);
+  assert.notEqual(buildFileCardPreview(legacyOnly).kind, "image");
+});
+
 test("buildFileCardPreview strips unsafe image card URLs before thumbnail render", () => {
   const encodedRunsUrl = encodeURIComponent(
     encodeURIComponent(".claude/runs/run-1/private.png"),
@@ -168,7 +183,7 @@ test("buildFileCardPreview strips unsafe image card URLs before thumbnail render
       file_name: "private.png",
       file_type: "image",
       mime_type: "image/png",
-      url: `/api/ai/artifacts/${encodedRunsUrl}/download`,
+      preview_url: `/api/ai/artifacts/${encodedRunsUrl}/preview`,
     }),
   );
 
@@ -180,7 +195,7 @@ test("buildFileCardPreview strips unsafe image card URLs before thumbnail render
       file_name: "stored.png",
       file_type: "image",
       mime_type: "image/png",
-      url: "/api/ai/artifacts/safe/download",
+      preview_url: "/api/ai/artifacts/safe/preview",
       card_preview: {
         kind: "image",
         title: "Stored preview",
@@ -199,7 +214,7 @@ test("buildFileCardPreview strips unsafe image card URLs before thumbnail render
       file_name: "remote.png",
       file_type: "image",
       mime_type: "image/png",
-      url: "https://cdn.example.com/remote.png",
+      preview_url: "https://cdn.example.com/remote.png",
     }),
   );
 
@@ -211,7 +226,7 @@ test("buildFileCardPreview strips unsafe image card URLs before thumbnail render
       file_name: "stored-https.png",
       file_type: "image",
       mime_type: "image/png",
-      url: "/api/ai/artifacts/safe/download",
+      preview_url: "/api/ai/artifacts/safe/preview",
       card_preview: {
         kind: "image",
         title: "Stored https preview",
@@ -325,22 +340,28 @@ test("file library document previews do not pass raw revealed file urls to Docum
   const source = readSource("../RevealedFilesPanel.tsx");
 
   assert.match(source, /safePreviewFileUrl/);
+  assert.match(source, /previewUrl=\{/);
+  assert.match(source, /downloadUrl=\{/);
   assert.doesNotMatch(
     source,
     /signedUrl=\{\s*previewFile\.url\s*\?\s*getFullUrl\(previewFile\.url\)/,
   );
+  assert.doesNotMatch(source, /previewFile\?\.url/);
 });
 
-test("file context menu download and open actions use safe revealed file urls", () => {
+test("file context menu keeps explicit revealed preview and download actions separate", () => {
   const source = readSource("../components/FileContextMenu.tsx");
 
   assert.match(source, /resolveSafeRevealedFilePreviewUrl/);
-  assert.match(source, /safeFileUrl/);
+  assert.match(source, /safePreviewUrl/);
+  assert.match(source, /safeDownloadUrl/);
   assert.match(source, /downloadPreviewUrl/);
   assert.match(source, /openPreviewUrl/);
   assert.match(source, /fileName:\s*file\.file_name/);
+  assert.match(source, /file\.preview_url/);
+  assert.match(source, /file\.download_url/);
+  assert.doesNotMatch(source, /file\.url/);
   assert.doesNotMatch(source, /getFullUrl\(file\.url!\)/);
-  assert.doesNotMatch(source, /getFullUrl\(safeFileUrl\)/);
   assert.doesNotMatch(source, /window\.open\(\s*getFullUrl/);
 });
 

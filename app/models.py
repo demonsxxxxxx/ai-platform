@@ -1094,6 +1094,10 @@ class RevealedFileItemResponse(BaseModel):
     file_type: Literal["image", "video", "document", "code", "project", "other"] = "other"
     mime_type: str | None = None
     file_size: int = 0
+    preview_url: str | None = None
+    download_url: str | None = None
+    # Compatibility alias for older file-workbench callers that treated `url`
+    # as the preview resource.
     url: str | None = None
     session_id: str
     session_name: str | None = None

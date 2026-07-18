@@ -16,6 +16,8 @@ export {
   isWordFile,
   isWordPreviewFile,
   isExcelFile,
+  isServerXlsxPreviewFile,
+  isCsvFile,
   isPptFile,
   isPptxFile,
   isLegacyPptFile,

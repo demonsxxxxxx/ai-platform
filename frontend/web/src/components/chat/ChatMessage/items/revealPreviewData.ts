@@ -95,6 +95,8 @@ export type RevealPreviewRequest =
       content?: string;
       s3Key?: string;
       signedUrl?: string;
+      previewUrl?: string;
+      downloadUrl?: string;
       imageUrl?: string;
       fileSize?: number;
       mimeType?: string;

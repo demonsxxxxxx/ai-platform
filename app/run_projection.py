@@ -2,6 +2,7 @@ from fastapi import HTTPException
 
 from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
 from app.auth import AuthPrincipal, is_ai_admin
+from app.file_preview_contracts import xlsx_preview_identity_from_metadata
 from app.control_plane_contracts import (
     ARTIFACT_MANIFEST_SCHEMA_VERSION,
     EVENT_ENVELOPE_SCHEMA_VERSION,
@@ -52,6 +53,7 @@ def artifact_card(row: dict[str, object], principal: AuthPrincipal | None = None
     artifact_id = str(row["id"])
     artifact_type = str(row["artifact_type"])
     content_type = str(row.get("content_type") or "application/octet-stream")
+    xlsx_identity = xlsx_preview_identity_from_metadata(row)
     manifest = row.get("manifest_json") if isinstance(row.get("manifest_json"), dict) else {}
     if principal is not None and not is_ai_admin(principal):
         manifest = redact_raw_skill_references(manifest)
@@ -68,7 +70,12 @@ def artifact_card(row: dict[str, object], principal: AuthPrincipal | None = None
         "content_type": content_type,
         "size_bytes": int(row.get("size_bytes") or 0),
         "download_url": artifact_download_url(artifact_id),
-        "preview_url": artifact_preview_url(artifact_id) if artifact_preview_allowed(content_type) else None,
+        "preview_url": (
+            artifact_preview_url(artifact_id)
+            if artifact_preview_allowed(content_type)
+            and (not xlsx_identity.has_xlsx_content_type or xlsx_identity.eligible)
+            else None
+        ),
         "status": "available",
         "lineage": lineage,
         "manifest": artifact_manifest_contract(

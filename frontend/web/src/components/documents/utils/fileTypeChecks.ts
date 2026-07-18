@@ -317,6 +317,16 @@ export function isExcelFile(ext: string): boolean {
   return excelExts.includes(ext);
 }
 
+/** Return whether a file extension uses the server-owned XLSX DTO renderer. */
+export function isServerXlsxPreviewFile(ext: string): boolean {
+  return ext === "xlsx";
+}
+
+/** CSV remains a text preview and never enters the XLSX DTO route. */
+export function isCsvFile(ext: string): boolean {
+  return ext === "csv";
+}
+
 // Check if file is PowerPoint presentation (any format)
 export function isPptFile(ext: string): boolean {
   const pptExts = ["ppt", "pptx", "pot", "potx", "pps", "ppsx", "pptm", "odp"];
@@ -551,7 +561,8 @@ export function isPreviewableFile(ext: string): boolean {
     isImageFile(ext) ||
     isPdfFile(ext) ||
     isWordFile(ext) ||
-    isExcelFile(ext) ||
+    isServerXlsxPreviewFile(ext) ||
+    isCsvFile(ext) ||
     isPptFile(ext) ||
     isCadFile(ext) ||
     isHtmlFile(ext) ||
