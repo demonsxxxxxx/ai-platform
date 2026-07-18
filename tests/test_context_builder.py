@@ -746,12 +746,13 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
             "workspace_id": "workspace-a",
             "user_id": "user-a",
             "session_id": "session-a",
+            "run_id": "run-current",
             "limit": 8,
         }
         return [
-            {"id": "msg-prior-user", "run_id": "run-prior", "role": "user", "content": "translate it"},
-            {"id": "msg-prior-assistant", "run_id": "run-prior", "role": "assistant", "content": "done"},
-            {"id": "msg-current", "run_id": "run-current", "role": "user", "content": "is it still available?"},
+            {"id": "msg-prior-user", "run_id": "run-prior", "role": "user", "content": "translate it", "session_generation": 1, "created_at": "2026-07-19T00:00:01Z"},
+            {"id": "msg-prior-assistant", "run_id": "run-prior", "role": "assistant", "content": "done", "session_generation": 1, "created_at": "2026-07-19T00:00:02Z"},
+            {"id": "msg-current", "run_id": "run-current", "role": "user", "content": "is it still available?", "session_generation": 2, "created_at": "2026-07-19T00:00:03Z"},
         ]
 
     async def fake_list_artifacts(conn, **kwargs):
@@ -780,6 +781,7 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
             "workspace_id": "workspace-a",
             "user_id": "user-a",
             "session_id": "session-a",
+            "run_id": "run-current",
             "limit": 8,
         }
         return [
@@ -807,6 +809,9 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
     async def ignore(*args, **kwargs):
         return None
 
+    async def no_legacy(*args, **kwargs):
+        return False
+
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", fake_list_messages)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", fake_list_files)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_artifacts", fake_list_artifacts)
@@ -814,6 +819,7 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
     monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create)
     monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", ignore)
     monkeypatch.setattr("app.context_builder.repositories.append_event", ignore)
+    monkeypatch.setattr("app.context_builder.repositories.session_has_legacy_run_history", no_legacy)
 
     await record_initial_context_snapshot(
         object(),
@@ -884,6 +890,7 @@ async def test_session_history_manifest_membership_is_clamped_after_eight_messag
     monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", fake_create)
     monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", fake_empty)
     monkeypatch.setattr("app.context_builder.repositories.append_event", fake_empty)
+    monkeypatch.setattr("app.context_builder.repositories.session_has_legacy_run_history", fake_empty)
 
     await record_initial_context_snapshot(
         object(), tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a",

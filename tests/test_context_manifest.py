@@ -183,15 +183,17 @@ def test_context_planner_token_budget_limits_inline_context_material():
         source_run_ids=[],
     )
 
-    assert manifest["recent_messages"][0]["inline_content"] == "one two three four"
+    assert manifest["recent_messages"][0]["inline_content"] is None
     assert manifest["recent_messages"][0]["approx_tokens"] == 18
-    assert manifest["recent_messages"][1]["inline_content"] is None
-    assert manifest["recent_messages"][1]["summary"] == "Content omitted from manifest; use scoped retrieval."
+    assert manifest["recent_messages"][1]["inline_content"] == "five six seven"
     assert manifest["recent_messages"][1]["approx_tokens"] == 14
     assert manifest["files"][0]["inline_preview"] is None
     assert manifest["files"][0]["requires_retrieval"] is True
-    assert manifest["budget"]["inline_tokens_used"] == 18
-    assert manifest["budget"]["inline_budget_exhausted"] is True
+    assert manifest["budget"]["inline_tokens_used"] == 14
+    assert manifest["budget"]["inline_budget_exhausted"] is False
+    assert manifest["selection"]["history_trimmed_count"] == 1
+    assert manifest["selection"]["selection_order"] == "newest_first"
+    assert manifest["selection"]["render_order"] == "chronological"
 
 
 def test_context_planner_uses_one_conservative_utf8_budget_for_cjk_and_emoji():
@@ -218,11 +220,12 @@ def test_context_planner_uses_one_conservative_utf8_budget_for_cjk_and_emoji():
         ],
     )
 
-    assert manifest["recent_messages"][0]["inline_content"] == "你好世界"
+    assert manifest["recent_messages"][0]["inline_content"] is None
     assert manifest["recent_messages"][0]["approx_tokens"] == 12
-    assert manifest["recent_messages"][1]["inline_content"] is None
-    assert manifest["budget"]["inline_tokens_used"] == 12
-    assert manifest["budget"]["inline_budget_exhausted"] is True
+    assert manifest["recent_messages"][1]["inline_content"] == "🧪"
+    assert manifest["budget"]["inline_tokens_used"] == 4
+    assert manifest["budget"]["inline_budget_exhausted"] is False
+    assert manifest["selection"]["history_trimmed_count"] == 1
 
 
 def test_public_context_manifest_projection_exposes_only_counts_flags_and_valid_timestamp():
@@ -261,3 +264,52 @@ def test_public_context_manifest_projection_exposes_only_counts_flags_and_valid_
     assert "msg-secret" not in serialized
     assert "file-secret" not in serialized
     assert "artifact-secret" not in serialized
+
+
+def test_context_planner_marks_legacy_history_degraded_without_exposing_ids_or_prompt_text():
+    planner = ContextPlanner(max_inline_message_chars=80, token_budget=80)
+    manifest = planner.plan(
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-current",
+        agent_id="general-agent",
+        skill_id="general-chat",
+        current_message="current input appears only here",
+        recent_messages=[
+            {
+                "id": "msg-prior",
+                "session_generation": 3,
+                "created_at": "2026-07-19T00:00:01Z",
+                "role": "user",
+                "content": "prior context",
+            }
+        ],
+        files=[
+            {
+                "id": "file-private",
+                "original_name": "accepted-report.txt",
+                "content_type": "text/plain",
+                "size_bytes": 4,
+            }
+        ],
+        legacy_history_excluded=True,
+    )
+
+    projection = public_context_manifest_projection(manifest)
+
+    assert manifest["current_message"] == "current input appears only here"
+    assert manifest["selection"]["status"] == "degraded"
+    assert projection["context_window"] == {
+        "status": "degraded",
+        "selection_version": "session-context-v1",
+        "history_candidate_count": 1,
+        "history_inline_count": 1,
+        "history_trimmed_count": 0,
+        "legacy_history_excluded": True,
+        "selected_file_names": ["accepted-report.txt"],
+    }
+    serialized = json.dumps(projection, ensure_ascii=False)
+    assert "file-private" not in serialized
+    assert "current input appears only here" not in serialized

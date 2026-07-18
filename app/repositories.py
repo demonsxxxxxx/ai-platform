@@ -569,23 +569,21 @@ async def list_scoped_context_messages(
         join runs source_runs on source_runs.id = messages.run_id and source_runs.tenant_id = messages.tenant_id
         join runs current_run on current_run.id = %s and current_run.tenant_id = messages.tenant_id
         join sessions on sessions.id = current_run.session_id and sessions.tenant_id = current_run.tenant_id
-        join lateral (
-          select included_message_ids
-          from run_context_snapshots
-          where tenant_id = current_run.tenant_id
-            and workspace_id = current_run.workspace_id
-            and user_id = current_run.user_id
-            and session_id = current_run.session_id
-            and run_id = current_run.id
-            and context_kind = 'executor'
-          order by created_at desc, id desc
-          limit 1
-        ) context_snapshot on true
+        join run_context_snapshots context_snapshot
+          on context_snapshot.id = current_run.context_snapshot_id
+          and context_snapshot.tenant_id = current_run.tenant_id
+          and context_snapshot.workspace_id = current_run.workspace_id
+          and context_snapshot.user_id = current_run.user_id
+          and context_snapshot.session_id = current_run.session_id
+          and context_snapshot.run_id = current_run.id
+          and context_snapshot.context_kind = 'executor'
         where messages.tenant_id = %s
           and current_run.workspace_id = %s
           and current_run.user_id = %s
           and messages.session_id = %s
           and current_run.id = %s
+          and current_run.input_json->>'context_snapshot_id' = current_run.context_snapshot_id
+          and current_run.input_json->'context_snapshot'->>'context_snapshot_id' = current_run.context_snapshot_id
           and source_runs.workspace_id = current_run.workspace_id
           and source_runs.user_id = current_run.user_id
           and source_runs.session_id = current_run.session_id
@@ -620,7 +618,7 @@ async def get_scoped_context_file(
           and sessions.tenant_id = current_run.tenant_id
           and sessions.status = 'active'
         join run_context_snapshots context_snapshot
-          on context_snapshot.id = current_run.input_json->>'context_snapshot_id'
+          on context_snapshot.id = current_run.context_snapshot_id
           and context_snapshot.tenant_id = current_run.tenant_id
           and context_snapshot.workspace_id = current_run.workspace_id
           and context_snapshot.user_id = current_run.user_id
@@ -632,6 +630,8 @@ async def get_scoped_context_file(
           and current_run.user_id = %s
           and current_run.session_id = %s
           and current_run.id = %s
+          and current_run.input_json->>'context_snapshot_id' = current_run.context_snapshot_id
+          and current_run.input_json->'context_snapshot'->>'context_snapshot_id' = current_run.context_snapshot_id
           and files.workspace_id = current_run.workspace_id
           and files.user_id = current_run.user_id
           and files.session_id = current_run.session_id
@@ -665,23 +665,21 @@ async def get_scoped_context_artifact(
         join runs source_run on source_run.id = artifacts.run_id and source_run.tenant_id = artifacts.tenant_id
         join runs current_run on current_run.id = %s and current_run.tenant_id = artifacts.tenant_id
         join sessions on sessions.id = current_run.session_id and sessions.tenant_id = current_run.tenant_id
-        join lateral (
-          select included_artifact_ids
-          from run_context_snapshots
-          where tenant_id = current_run.tenant_id
-            and workspace_id = current_run.workspace_id
-            and user_id = current_run.user_id
-            and session_id = current_run.session_id
-            and run_id = current_run.id
-            and context_kind = 'executor'
-          order by created_at desc, id desc
-          limit 1
-        ) context_snapshot on true
+        join run_context_snapshots context_snapshot
+          on context_snapshot.id = current_run.context_snapshot_id
+          and context_snapshot.tenant_id = current_run.tenant_id
+          and context_snapshot.workspace_id = current_run.workspace_id
+          and context_snapshot.user_id = current_run.user_id
+          and context_snapshot.session_id = current_run.session_id
+          and context_snapshot.run_id = current_run.id
+          and context_snapshot.context_kind = 'executor'
         where artifacts.tenant_id = %s
           and current_run.workspace_id = %s
           and current_run.user_id = %s
           and current_run.session_id = %s
           and current_run.id = %s
+          and current_run.input_json->>'context_snapshot_id' = current_run.context_snapshot_id
+          and current_run.input_json->'context_snapshot'->>'context_snapshot_id' = current_run.context_snapshot_id
           and source_run.workspace_id = current_run.workspace_id
           and source_run.user_id = current_run.user_id
           and source_run.session_id = current_run.session_id
@@ -703,16 +701,30 @@ async def list_session_context_messages(
     workspace_id: str,
     user_id: str,
     session_id: str,
+    run_id: str,
     limit: int = 8,
 ) -> list[dict[str, Any]]:
     """Return a bounded ordered message tail for one exact owned session."""
 
     cursor = await conn.execute(
         """
+        with current_run as (
+          select runs.session_generation
+          from runs
+          join sessions on sessions.id = runs.session_id
+            and sessions.tenant_id = runs.tenant_id
+          where runs.tenant_id = %s
+            and runs.workspace_id = %s
+            and runs.user_id = %s
+            and runs.session_id = %s
+            and runs.id = %s
+            and sessions.status = 'active'
+            and runs.session_generation is not null
+        )
         select *
         from (
           select messages.id, messages.run_id, messages.role, messages.content,
-                 messages.metadata_json, messages.created_at
+                 messages.metadata_json, messages.created_at, runs.session_generation
           from messages
           join sessions on sessions.id = messages.session_id and sessions.tenant_id = messages.tenant_id
           join runs on runs.id = messages.run_id and runs.tenant_id = messages.tenant_id
@@ -724,12 +736,25 @@ async def list_session_context_messages(
             and runs.workspace_id = sessions.workspace_id
             and runs.user_id = sessions.user_id
             and runs.session_id = sessions.id
-          order by messages.created_at desc, messages.id desc
+            and runs.session_generation is not null
+            and runs.session_generation < (select session_generation from current_run)
+          order by runs.session_generation desc, messages.created_at desc, messages.id desc
           limit %s
         ) recent_messages
-        order by created_at asc, id asc
+        order by session_generation asc, created_at asc, id asc
         """,
-        (tenant_id, session_id, workspace_id, user_id, max(1, int(limit))),
+        (
+            tenant_id,
+            workspace_id,
+            user_id,
+            session_id,
+            run_id,
+            tenant_id,
+            session_id,
+            workspace_id,
+            user_id,
+            max(1, int(limit)),
+        ),
     )
     return list(await cursor.fetchall())
 
@@ -741,16 +766,30 @@ async def list_session_context_files(
     workspace_id: str,
     user_id: str,
     session_id: str,
+    run_id: str,
     limit: int = 8,
 ) -> list[dict[str, Any]]:
     """Return a bounded recent file tail for one exact owned session."""
 
     cursor = await conn.execute(
         """
+        with current_run as (
+          select runs.session_generation
+          from runs
+          join sessions on sessions.id = runs.session_id
+            and sessions.tenant_id = runs.tenant_id
+          where runs.tenant_id = %s
+            and runs.workspace_id = %s
+            and runs.user_id = %s
+            and runs.session_id = %s
+            and runs.id = %s
+            and sessions.status = 'active'
+            and runs.session_generation is not null
+        )
         select *
         from (
           select files.id, files.run_id, files.original_name, files.content_type,
-                 files.size_bytes, files.sha256, files.created_at
+                 files.size_bytes, files.sha256, files.created_at, runs.session_generation
           from files
           join sessions on sessions.id = files.session_id and sessions.tenant_id = files.tenant_id
           join runs on runs.id = files.run_id and runs.tenant_id = files.tenant_id
@@ -764,12 +803,25 @@ async def list_session_context_files(
             and runs.workspace_id = files.workspace_id
             and runs.user_id = files.user_id
             and runs.session_id = files.session_id
-          order by files.created_at desc, files.id desc
+            and runs.session_generation is not null
+            and runs.session_generation < (select session_generation from current_run)
+          order by runs.session_generation desc, files.created_at desc, files.id desc
           limit %s
         ) recent_files
-        order by created_at asc, id asc
+        order by session_generation asc, created_at asc, id asc
         """,
-        (tenant_id, workspace_id, user_id, session_id, max(1, int(limit))),
+        (
+            tenant_id,
+            workspace_id,
+            user_id,
+            session_id,
+            run_id,
+            tenant_id,
+            workspace_id,
+            user_id,
+            session_id,
+            max(1, int(limit)),
+        ),
     )
     return list(await cursor.fetchall())
 
@@ -797,6 +849,17 @@ async def list_session_context_artifacts(
             and runs.user_id = %s
             and runs.session_id = %s
             and runs.id <> %s
+            and runs.session_generation is not null
+            and runs.session_generation < (
+              select session_generation
+              from runs
+              where tenant_id = %s
+                and workspace_id = %s
+                and user_id = %s
+                and session_id = %s
+                and id = %s
+                and session_generation is not null
+            )
             and runs.status = 'succeeded'
             and sessions.workspace_id = runs.workspace_id
             and sessions.user_id = runs.user_id
@@ -807,7 +870,7 @@ async def list_session_context_artifacts(
                 and artifacts.run_id = runs.id
                 and (artifacts.expires_at is null or artifacts.expires_at > now())
             )
-          order by runs.created_at desc, runs.id desc
+          order by runs.session_generation desc
           limit 1
         )
         select artifacts.id, artifacts.run_id, artifacts.trace_id, artifacts.artifact_type,
@@ -827,10 +890,48 @@ async def list_session_context_artifacts(
             session_id,
             exclude_run_id,
             tenant_id,
+            workspace_id,
+            user_id,
+            session_id,
+            exclude_run_id,
+            tenant_id,
             max(1, int(limit)),
         ),
     )
     return list(await cursor.fetchall())
+
+
+async def session_has_legacy_run_history(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+) -> bool:
+    """Report only whether pre-generation same-session history was excluded."""
+
+    cursor = await conn.execute(
+        """
+        select exists (
+          select 1
+          from runs legacy_run
+          join sessions on sessions.id = legacy_run.session_id
+            and sessions.tenant_id = legacy_run.tenant_id
+          where legacy_run.tenant_id = %s
+            and legacy_run.workspace_id = %s
+            and legacy_run.user_id = %s
+            and legacy_run.session_id = %s
+            and legacy_run.id <> %s
+            and legacy_run.session_generation is null
+            and sessions.status = 'active'
+        ) as legacy_history_excluded
+        """,
+        (tenant_id, workspace_id, user_id, session_id, run_id),
+    )
+    row = await cursor.fetchone()
+    return bool(row and row.get("legacy_history_excluded"))
 
 
 async def list_scoped_context_memory_records(
@@ -3415,6 +3516,39 @@ async def create_session(
     return resolved_id
 
 
+async def allocate_session_run_generation(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str | None,
+    session_id: str,
+    agent_id: str,
+) -> int:
+    """Atomically allocate the sole durable creation generation for one session run."""
+
+    cursor = await conn.execute(
+        """
+        update sessions
+        set next_run_generation = next_run_generation + 1,
+            updated_at = now()
+        where tenant_id = %s
+          and workspace_id = %s
+          and user_id is not distinct from %s
+          and id = %s
+          and agent_id = %s
+          and status = 'active'
+        returning next_run_generation
+        """,
+        (tenant_id, workspace_id, user_id, session_id, agent_id),
+    )
+    row = await cursor.fetchone()
+    generation = row.get("next_run_generation") if row else None
+    if not isinstance(generation, int) or isinstance(generation, bool) or generation <= 0:
+        raise RepositoryNotFoundError("session_not_found")
+    return generation
+
+
 async def create_run(
     conn: AsyncConnection,
     *,
@@ -3433,6 +3567,14 @@ async def create_run(
     resolved_run_id = run_id or new_id("run")
     trace_id = standard_trace_id(resolved_run_id)
     await ensure_workspace_belongs_to_tenant(conn, tenant_id=tenant_id, workspace_id=workspace_id)
+    session_generation = await allocate_session_run_generation(
+        conn,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        user_id=user_id,
+        session_id=session_id,
+        agent_id=agent_id,
+    )
     cursor = await conn.execute(
         """
         insert into runs(
@@ -3440,9 +3582,10 @@ async def create_run(
           trace_id, schema_version, executor_schema_version,
           principal_roles, principal_department_id, auth_source,
           status, input_json, queued_at,
+          session_generation,
           input_token_count, output_token_count, total_token_count, estimated_cost_minor
         )
-        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), 0, 0, 0, 0
+        select %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), %s, 0, 0, 0, 0
         from sessions
         where sessions.tenant_id = %s
           and sessions.workspace_id = %s
@@ -3466,6 +3609,7 @@ async def create_run(
             str(principal_department_id or ""),
             auth_source,
             dumps_json(input_json),
+            session_generation,
             tenant_id,
             workspace_id,
             user_id,
@@ -3664,7 +3808,7 @@ async def get_run(conn: AsyncConnection, *, tenant_id: str, run_id: str, for_upd
 
 async def get_run_identity(conn: AsyncConnection, *, run_id: str, for_update: bool = False) -> dict[str, Any] | None:
     sql = (
-        "select id, tenant_id, workspace_id, user_id, session_id, agent_id, status "
+        "select id, tenant_id, workspace_id, user_id, session_id, agent_id, status, context_snapshot_id "
         "from runs where id = %s"
     )
     if for_update:
@@ -3985,34 +4129,71 @@ async def update_run_context_snapshot_ref(
     context_snapshot_id: str,
     context_snapshot: dict[str, Any],
 ) -> None:
-    await conn.execute(
+    if str(context_snapshot.get("context_snapshot_id") or "") != context_snapshot_id:
+        raise RepositoryConflictError("context_snapshot_binding_invalid")
+    cursor = await conn.execute(
         """
         update runs
-        set input_json = jsonb_set(
-          jsonb_set(coalesce(input_json, '{}'::jsonb), '{context_snapshot_id}', %s::jsonb, true),
-          '{context_snapshot}',
-          %s::jsonb,
-          true
-        )
+        set context_snapshot_id = %s,
+            input_json = case
+              when runs.context_snapshot_id is null then jsonb_set(
+                jsonb_set(coalesce(input_json, '{}'::jsonb), '{context_snapshot_id}', %s::jsonb, true),
+                '{context_snapshot}',
+                %s::jsonb,
+                true
+              )
+              else input_json
+            end
         where tenant_id = %s
           and id = %s
+          and exists (
+            select 1
+            from run_context_snapshots
+            where id = %s
+              and tenant_id = runs.tenant_id
+              and workspace_id = runs.workspace_id
+              and user_id = runs.user_id
+              and session_id = runs.session_id
+              and run_id = runs.id
+              and context_kind = 'executor'
+          )
+          and (
+            context_snapshot_id is null
+            and coalesce(input_json->>'context_snapshot_id', '') = ''
+            or (
+              context_snapshot_id = %s
+              and input_json->>'context_snapshot_id' = context_snapshot_id
+            )
+          )
+        returning context_snapshot_id
         """,
         (
+            context_snapshot_id,
             json.dumps(context_snapshot_id, ensure_ascii=False),
             dumps_json(context_snapshot),
             tenant_id,
             run_id,
+            context_snapshot_id,
+            context_snapshot_id,
         ),
     )
+    row = await cursor.fetchone()
+    if row is None or str(row.get("context_snapshot_id") or "") != context_snapshot_id:
+        raise RepositoryConflictError("context_snapshot_binding_invalid")
 
 
 async def list_context_snapshots(conn: AsyncConnection, *, tenant_id: str, user_id: str, run_id: str) -> list[dict[str, Any]]:
     cursor = await conn.execute(
         """
-        select id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
-               schema_version, context_kind, included_message_ids, included_file_ids,
-               included_artifact_ids, included_memory_record_ids, redaction_summary_json,
-               payload_json, created_at
+        select run_context_snapshots.id, run_context_snapshots.tenant_id,
+               run_context_snapshots.workspace_id, run_context_snapshots.user_id,
+               run_context_snapshots.session_id, run_context_snapshots.run_id,
+               run_context_snapshots.trace_id, run_context_snapshots.schema_version,
+               run_context_snapshots.context_kind, run_context_snapshots.included_message_ids,
+               run_context_snapshots.included_file_ids, run_context_snapshots.included_artifact_ids,
+               run_context_snapshots.included_memory_record_ids,
+               run_context_snapshots.redaction_summary_json, run_context_snapshots.payload_json,
+               run_context_snapshots.created_at
         from run_context_snapshots
         where tenant_id = %s and user_id = %s and run_id = %s
         order by created_at desc
@@ -4032,10 +4213,15 @@ async def get_latest_authorized_executor_context_snapshot(
     """Load the latest executor context snapshot, excluding share/fork derivative rows."""
     cursor = await conn.execute(
         """
-        select id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
-               schema_version, context_kind, included_message_ids, included_file_ids,
-               included_artifact_ids, included_memory_record_ids, redaction_summary_json,
-               payload_json, created_at
+        select run_context_snapshots.id, run_context_snapshots.tenant_id,
+               run_context_snapshots.workspace_id, run_context_snapshots.user_id,
+               run_context_snapshots.session_id, run_context_snapshots.run_id,
+               run_context_snapshots.trace_id, run_context_snapshots.schema_version,
+               run_context_snapshots.context_kind, run_context_snapshots.included_message_ids,
+               run_context_snapshots.included_file_ids, run_context_snapshots.included_artifact_ids,
+               run_context_snapshots.included_memory_record_ids,
+               run_context_snapshots.redaction_summary_json, run_context_snapshots.payload_json,
+               run_context_snapshots.created_at
         from run_context_snapshots
         where tenant_id = %s
           and user_id = %s
@@ -4045,6 +4231,48 @@ async def get_latest_authorized_executor_context_snapshot(
         limit 1
         """,
         (tenant_id, user_id, run_id),
+    )
+    return await cursor.fetchone()
+
+
+async def get_bound_executor_context_snapshot(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    """Load exactly the run's immutable physical snapshot binding, never the latest row."""
+
+    cursor = await conn.execute(
+        """
+        select context_snapshot.id, context_snapshot.tenant_id, context_snapshot.workspace_id,
+               context_snapshot.user_id, context_snapshot.session_id, context_snapshot.run_id,
+               context_snapshot.trace_id, context_snapshot.schema_version, context_snapshot.context_kind,
+               context_snapshot.included_message_ids, context_snapshot.included_file_ids,
+               context_snapshot.included_artifact_ids, context_snapshot.included_memory_record_ids,
+               context_snapshot.redaction_summary_json, context_snapshot.payload_json,
+               context_snapshot.created_at
+        from runs
+        join run_context_snapshots context_snapshot
+          on context_snapshot.id = runs.context_snapshot_id
+          and context_snapshot.tenant_id = runs.tenant_id
+          and context_snapshot.workspace_id = runs.workspace_id
+          and context_snapshot.user_id = runs.user_id
+          and context_snapshot.session_id = runs.session_id
+          and context_snapshot.run_id = runs.id
+          and context_snapshot.context_kind = 'executor'
+        where runs.tenant_id = %s
+          and runs.workspace_id = %s
+          and runs.user_id = %s
+          and runs.session_id = %s
+          and runs.id = %s
+          and runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id
+          and runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id
+        """,
+        (tenant_id, workspace_id, user_id, session_id, run_id),
     )
     return await cursor.fetchone()
 
@@ -4090,17 +4318,31 @@ async def get_context_snapshot_for_worker(
     """Load a context snapshot only when it matches the full worker run identity."""
     cursor = await conn.execute(
         """
-        select id, tenant_id, workspace_id, user_id, session_id, run_id, trace_id,
-               schema_version, context_kind, included_message_ids, included_file_ids,
-               included_artifact_ids, included_memory_record_ids, redaction_summary_json,
-               payload_json, created_at
+        select run_context_snapshots.id, run_context_snapshots.tenant_id,
+               run_context_snapshots.workspace_id, run_context_snapshots.user_id,
+               run_context_snapshots.session_id, run_context_snapshots.run_id,
+               run_context_snapshots.trace_id, run_context_snapshots.schema_version,
+               run_context_snapshots.context_kind, run_context_snapshots.included_message_ids,
+               run_context_snapshots.included_file_ids, run_context_snapshots.included_artifact_ids,
+               run_context_snapshots.included_memory_record_ids,
+               run_context_snapshots.redaction_summary_json, run_context_snapshots.payload_json,
+               run_context_snapshots.created_at
         from run_context_snapshots
-        where tenant_id = %s
-          and workspace_id = %s
-          and user_id = %s
-          and session_id = %s
-          and run_id = %s
-          and id = %s
+        join runs on runs.context_snapshot_id = run_context_snapshots.id
+          and runs.tenant_id = run_context_snapshots.tenant_id
+          and runs.workspace_id = run_context_snapshots.workspace_id
+          and runs.user_id = run_context_snapshots.user_id
+          and runs.session_id = run_context_snapshots.session_id
+          and runs.id = run_context_snapshots.run_id
+        where run_context_snapshots.tenant_id = %s
+          and run_context_snapshots.workspace_id = %s
+          and run_context_snapshots.user_id = %s
+          and run_context_snapshots.session_id = %s
+          and run_context_snapshots.run_id = %s
+          and run_context_snapshots.id = %s
+          and run_context_snapshots.context_kind = 'executor'
+          and runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id
+          and runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id
         """,
         (tenant_id, workspace_id, user_id, session_id, run_id, context_snapshot_id),
     )
@@ -7763,6 +8005,9 @@ async def create_multi_agent_dispatch_child_run(
         skill_manifests=skill_manifests,
         release_decision=release_decision_payload,
     )
+    # This legacy child path has no pre-enqueue ContextBuilder seam.  Do not
+    # mint a new generation and let the worker regenerate authority later.
+    raise RepositoryConflictError("context_snapshot_required_before_enqueue")
     skill = await authorize_replay_run_capabilities(
         conn,
         tenant_id=tenant_id,
@@ -7790,15 +8035,23 @@ async def create_multi_agent_dispatch_child_run(
     child_input_json.update(child_execution_snapshot)
 
     child_run_id = new_id("run")
+    session_generation = await allocate_session_run_generation(
+        conn,
+        tenant_id=tenant_id,
+        workspace_id=str(parent["workspace_id"]),
+        user_id=parent.get("user_id"),
+        session_id=str(parent["session_id"]),
+        agent_id=str(parent["agent_id"]),
+    )
     await conn.execute(
         """
         insert into runs(
           id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
           trace_id, schema_version, executor_schema_version,
           principal_roles, principal_department_id, auth_source,
-          status, input_json, queued_at, copied_from_run_id
+          status, input_json, queued_at, copied_from_run_id, session_generation
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
         """,
         (
             child_run_id,
@@ -7816,6 +8069,7 @@ async def create_multi_agent_dispatch_child_run(
             inherited_auth_source,
             dumps_json(child_input_json),
             parent_run_id,
+            session_generation,
         ),
     )
     await insert_run_skill_snapshots_at_creation(
@@ -9568,15 +9822,23 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
     )
     copied_execution_snapshot = copied_run_execution_snapshot(copied_input_json)
     copied_input_json.update(copied_execution_snapshot)
+    session_generation = await allocate_session_run_generation(
+        conn,
+        tenant_id=tenant_id,
+        workspace_id=str(source["workspace_id"]),
+        user_id=user_id,
+        session_id=str(source["session_id"]),
+        agent_id=str(source["agent_id"]),
+    )
     await conn.execute(
         """
         insert into runs(
           id, tenant_id, workspace_id, session_id, user_id, agent_id, skill_id,
           trace_id, schema_version, executor_schema_version,
           principal_roles, principal_department_id, auth_source,
-          status, input_json, queued_at, copied_from_run_id
+          status, input_json, queued_at, copied_from_run_id, session_generation
         )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), %s)
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, 'queued', %s::jsonb, now(), %s, %s)
         """,
         (
             new_run_id,
@@ -9594,6 +9856,7 @@ async def copy_run_as_new_task(conn: AsyncConnection, *, tenant_id: str, user_id
             inherited_auth_source,
             dumps_json(copied_input_json),
             run_id,
+            session_generation,
         ),
     )
     await insert_run_skill_snapshots_at_creation(
@@ -9797,19 +10060,36 @@ async def update_run_input_execution_snapshot(
 ) -> None:
     """Merge one canonical copied-run execution snapshot in a tenant-scoped update."""
     canonical_snapshot = copied_run_execution_snapshot(execution_snapshot)
-    await conn.execute(
+    cursor = await conn.execute(
         """
         update runs
         set input_json = coalesce(input_json, '{}'::jsonb) || %s::jsonb
         where tenant_id = %s
           and id = %s
+          and (
+            context_snapshot_id is null
+            and coalesce(%s::jsonb->>'context_snapshot_id', '') = ''
+            and coalesce(%s::jsonb->'context_snapshot'->>'context_snapshot_id', '') = ''
+            or (
+              context_snapshot_id is not null
+              and %s::jsonb->>'context_snapshot_id' = context_snapshot_id
+              and %s::jsonb->'context_snapshot'->>'context_snapshot_id' = context_snapshot_id
+            )
+          )
+        returning id
         """,
         (
             json.dumps(canonical_snapshot, ensure_ascii=False),
             tenant_id,
             run_id,
+            json.dumps(canonical_snapshot, ensure_ascii=False),
+            json.dumps(canonical_snapshot, ensure_ascii=False),
+            json.dumps(canonical_snapshot, ensure_ascii=False),
+            json.dumps(canonical_snapshot, ensure_ascii=False),
         ),
     )
+    if await cursor.fetchone() is None:
+        raise RepositoryConflictError("context_snapshot_binding_invalid")
 
 
 async def _completed_steps_for_resume(
@@ -10027,8 +10307,10 @@ async def list_authorized_session_input_files(
           and runs.workspace_id = files.workspace_id
           and runs.user_id = files.user_id
           and runs.session_id = files.session_id
+          and runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id
+          and runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id
         join run_context_snapshots authorized_snapshot
-          on authorized_snapshot.id = runs.input_json->>'context_snapshot_id'
+          on authorized_snapshot.id = runs.context_snapshot_id
           and authorized_snapshot.tenant_id = files.tenant_id
           and authorized_snapshot.workspace_id = files.workspace_id
           and authorized_snapshot.user_id = files.user_id
@@ -10699,7 +10981,7 @@ async def list_authorized_session_runs(
         select runs.id, runs.trace_id, runs.schema_version, runs.agent_id, runs.skill_id,
                runs.status, runs.error_code, runs.error_message, runs.created_at, runs.queued_at,
                runs.started_at, runs.finished_at, runs.result_json,
-               queue_admission.queue_admission_ordinal
+               runs.session_generation, queue_admission.queue_admission_ordinal
         from runs
         left join lateral (
           select case
@@ -10722,9 +11004,10 @@ async def list_authorized_session_runs(
         where runs.tenant_id = %s
           and runs.user_id = %s
           and runs.session_id = %s
-        -- queued_at and id are canonical deterministic fallbacks for legacy
-        -- exact ties only; they are not durable run-creation authority (#438).
-        order by runs.created_at desc,
+        -- A non-null generation is the sole current-run authority.  Legacy
+        -- unordered rows remain display-only and never outrank it.
+        order by runs.session_generation desc nulls last,
+                 runs.created_at desc,
                  queue_admission.queue_admission_ordinal desc nulls last,
                  runs.queued_at desc nulls last,
                  runs.id desc

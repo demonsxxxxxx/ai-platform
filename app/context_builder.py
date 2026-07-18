@@ -513,6 +513,7 @@ def _build_initial_context_manifest(
     artifact_ids: list[str],
     memory_record_ids: list[str],
     source_run_ids: list[str],
+    legacy_history_excluded: bool,
 ) -> dict[str, Any]:
     return ContextPlanner().plan(
         tenant_id=tenant_id,
@@ -529,6 +530,7 @@ def _build_initial_context_manifest(
         artifacts=_manifest_artifact_refs(artifact_ids),
         memory_records=[{"id": memory_id, "status": "active"} for memory_id in memory_record_ids if memory_id],
         source_run_ids=source_run_ids,
+        legacy_history_excluded=legacy_history_excluded,
     )
 
 
@@ -556,6 +558,7 @@ async def record_initial_context_snapshot(
     included_artifact_ids: list[str] = []
     source_run_ids: list[str] = []
     source_artifacts: list[dict[str, Any]] = []
+    legacy_history_excluded = False
     if include_session_history:
         session_messages = await repositories.list_session_context_messages(
             conn,
@@ -563,6 +566,7 @@ async def record_initial_context_snapshot(
             workspace_id=workspace_id,
             user_id=user_id,
             session_id=session_id,
+            run_id=run_id,
             limit=8,
         )
         included_message_ids = list(
@@ -591,6 +595,7 @@ async def record_initial_context_snapshot(
             workspace_id=workspace_id,
             user_id=user_id,
             session_id=session_id,
+            run_id=run_id,
             limit=8,
         )
         included_file_ids = list(
@@ -613,6 +618,14 @@ async def record_initial_context_snapshot(
             limit=8,
         )
         source_artifacts.extend(row for row in session_artifacts if isinstance(row, dict))
+        legacy_history_excluded = await repositories.session_has_legacy_run_history(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+        )
     if source_run_id:
         authorized_source_run = await repositories.get_authorized_run(
             conn,
@@ -694,6 +707,7 @@ async def record_initial_context_snapshot(
         artifact_ids=included_artifact_ids,
         memory_record_ids=[],
         source_run_ids=source_run_ids,
+        legacy_history_excluded=legacy_history_excluded,
     )
     memory_policy_summary = {
         "memory_policy_source": str(memory_policy.get("source") or "default"),
@@ -722,6 +736,7 @@ async def record_initial_context_snapshot(
         },
         payload_json=summary,
     )
+    public_manifest = public_context_manifest_projection(summary["context_manifest"])
     context_ref = {
         "schema_version": CONTEXT_SNAPSHOT_SCHEMA_VERSION,
         "context_snapshot_id": snapshot["id"],
@@ -741,7 +756,8 @@ async def record_initial_context_snapshot(
         "execution_tier": summary["execution_tier"],
         "context_pack_version": summary["context_pack_version"],
         "context_pack_generated_at": summary["context_pack_generated_at"],
-        "context_manifest": public_context_manifest_projection(summary["context_manifest"]),
+        "context_manifest": public_manifest,
+        "context_window": public_manifest["context_window"],
     }
     await repositories.update_run_context_snapshot_ref(
         conn,

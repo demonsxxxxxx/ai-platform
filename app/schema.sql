@@ -313,6 +313,7 @@ create table if not exists sessions (
   agent_id text not null references agents(id),
   title text not null default '',
   status text not null default 'active',
+  next_run_generation bigint not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -333,6 +334,8 @@ create table if not exists runs (
   auth_source text,
   status text not null,
   input_json jsonb not null default '{}'::jsonb,
+  context_snapshot_id text,
+  session_generation bigint,
   result_json jsonb not null default '{}'::jsonb,
   error_code text,
   error_message text,
@@ -365,6 +368,11 @@ alter table runs add column if not exists executor_schema_version text not null 
 alter table runs add column if not exists principal_roles jsonb not null default '[]'::jsonb;
 alter table runs add column if not exists principal_department_id text not null default '';
 alter table runs add column if not exists auth_source text;
+-- Existing rows deliberately remain unordered (NULL generation): timestamps and
+-- UUIDs are not a valid historical run-creation authority.
+alter table sessions add column if not exists next_run_generation bigint not null default 0;
+alter table runs add column if not exists context_snapshot_id text;
+alter table runs add column if not exists session_generation bigint;
 alter table runs add column if not exists copied_from_run_id text references runs(id);
 alter table runs add column if not exists cancel_requested_at timestamptz;
 alter table runs add column if not exists cancel_requested_by text;
@@ -380,6 +388,9 @@ alter table runs add column if not exists total_token_count integer not null def
 alter table runs add column if not exists estimated_cost_minor integer not null default 0;
 
 create index if not exists idx_runs_trace_id on runs(trace_id);
+create unique index if not exists idx_runs_session_generation
+  on runs(tenant_id, session_id, session_generation)
+  where session_generation is not null;
 create unique index if not exists idx_runs_context_scope
   on runs(tenant_id, workspace_id, user_id, session_id, id);
 create unique index if not exists idx_sessions_run_scope
@@ -787,6 +798,8 @@ create table if not exists run_context_snapshots (
 
 create index if not exists idx_run_context_snapshots_run
   on run_context_snapshots(tenant_id, run_id, created_at desc);
+create unique index if not exists idx_run_context_snapshots_scope_binding
+  on run_context_snapshots(tenant_id, workspace_id, user_id, session_id, run_id, id);
 
 do $$
 begin
@@ -825,6 +838,59 @@ begin
       add constraint fk_run_context_snapshots_run_scope
       foreign key (tenant_id, workspace_id, user_id, session_id, run_id)
       references runs(tenant_id, workspace_id, user_id, session_id, id);
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'fk_runs_context_snapshot_scope'
+      and conrelid = 'runs'::regclass
+  ) then
+    alter table runs
+      add constraint fk_runs_context_snapshot_scope
+      foreign key (tenant_id, workspace_id, user_id, session_id, id, context_snapshot_id)
+      references run_context_snapshots(tenant_id, workspace_id, user_id, session_id, run_id, id)
+      deferrable initially deferred;
+  end if;
+end $$;
+
+create or replace function ai_platform_prevent_context_snapshot_rebind()
+returns trigger
+language plpgsql
+as $$
+begin
+  if old.context_snapshot_id is not null
+     and new.context_snapshot_id is distinct from old.context_snapshot_id then
+    raise exception 'runs_context_snapshot_id_immutable';
+  end if;
+  if new.context_snapshot_id is not null
+     and coalesce(new.input_json->>'context_snapshot_id', '')
+         is distinct from new.context_snapshot_id then
+    raise exception 'runs_context_snapshot_input_mismatch';
+  end if;
+  if new.context_snapshot_id is not null
+     and coalesce(new.input_json->'context_snapshot'->>'context_snapshot_id', '')
+         is distinct from new.context_snapshot_id then
+    raise exception 'runs_context_snapshot_ref_mismatch';
+  end if;
+  return new;
+end;
+$$;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_trigger
+    where tgname = 'trg_runs_context_snapshot_immutable'
+      and tgrelid = 'runs'::regclass
+  ) then
+    create trigger trg_runs_context_snapshot_immutable
+      before update of context_snapshot_id, input_json on runs
+      for each row execute function ai_platform_prevent_context_snapshot_rebind();
   end if;
 end $$;
 
