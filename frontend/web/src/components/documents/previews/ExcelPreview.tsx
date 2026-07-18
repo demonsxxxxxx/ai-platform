@@ -83,6 +83,14 @@ interface WorkbookSheetRef {
   relationshipId: string;
 }
 
+interface XmlElement {
+  name: string;
+  localName: string;
+  attributes: Map<string, string>;
+  children: XmlElement[];
+  content: Array<string | XmlElement>;
+}
+
 function getFileExtension(value?: string | null): string {
   if (!value) {
     return "";
@@ -165,65 +173,294 @@ function decodeXmlEntities(value: string): string {
   );
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const XML_QNAME = /^[A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?$/;
+
+function invalidXml(): never {
+  throw new Error("excel_preview_invalid_xml");
 }
 
-function localNamePattern(localName: string): string {
-  return `(?:[A-Za-z_][\\w.-]*:)?${escapeRegExp(localName)}\\b`;
+function localName(value: string): string {
+  return value.slice(value.indexOf(":") + 1);
 }
 
-function extractTagText(xml: string, tagName: string): string {
-  const tagPattern = localNamePattern(tagName);
-  const match = new RegExp(
-    `<${tagPattern}[^>]*>([\\s\\S]*?)<\\/${tagPattern}\\s*>`,
-    "i",
-  ).exec(xml);
-  return match ? decodeXmlEntities(match[1]) : "";
-}
-
-function extractInlineText(xml: string): string {
-  const tagPattern = localNamePattern("t");
-  const matches = Array.from(
-    xml.matchAll(
-      new RegExp(`<${tagPattern}[^>]*>([\\s\\S]*?)<\\/${tagPattern}\\s*>`, "gi"),
-    ),
-  );
-  if (matches.length === 0) {
-    return "";
+function findXmlTerminator(
+  xml: string,
+  startIndex: number,
+  terminator: string,
+  assertBudget: () => void,
+): number {
+  for (let index = startIndex; index <= xml.length - terminator.length; index += 1) {
+    if (index % 1_024 === 0) {
+      assertBudget();
+    }
+    if (xml.startsWith(terminator, index)) {
+      return index;
+    }
   }
-  return matches.map((match) => decodeXmlEntities(match[1])).join("");
+  return -1;
 }
 
-function extractAttribute(tag: string, attributeName: string): string | null {
-  const localName = escapeRegExp(attributeName);
-  const match = new RegExp(
-    `(?:^|\\s)(?:[A-Za-z_][\\w.-]*:)?${localName}\\s*=\\s*(["'])([\\s\\S]*?)\\1`,
-    "i",
-  ).exec(tag);
-  return match ? decodeXmlEntities(match[2]) : null;
+function findXmlTagEnd(
+  xml: string,
+  startIndex: number,
+  assertBudget: () => void,
+): number {
+  let quote: string | null = null;
+  for (let index = startIndex; index < xml.length; index += 1) {
+    if (index % 1_024 === 0) {
+      assertBudget();
+    }
+    const char = xml[index];
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      }
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === ">") {
+      return index;
+    }
+  }
+  return -1;
 }
 
-function parseWorkbookSheetRefs(xml: string): WorkbookSheetRef[] {
-  const tagPattern = localNamePattern("sheet");
-  return Array.from(xml.matchAll(new RegExp(`<${tagPattern}[^>]*\\/?>`, "gi")))
-    .map((match) => {
-      const tag = match[0];
-      const name = extractAttribute(tag, "name");
-      const relationshipId = extractAttribute(tag, "id");
+function parseXmlStartTag(tag: string): {
+  element: XmlElement;
+  selfClosing: boolean;
+} {
+  const trimmedTag = tag.trim();
+  const selfClosing = trimmedTag.endsWith("/");
+  const source = selfClosing
+    ? trimmedTag.slice(0, -1).trimEnd()
+    : trimmedTag;
+  let index = 0;
+
+  const skipWhitespace = () => {
+    while (index < source.length && /\s/.test(source[index])) {
+      index += 1;
+    }
+  };
+  const readName = () => {
+    const start = index;
+    while (index < source.length && !/[\s=]/.test(source[index])) {
+      index += 1;
+    }
+    const name = source.slice(start, index);
+    if (!XML_QNAME.test(name)) {
+      invalidXml();
+    }
+    return name;
+  };
+
+  skipWhitespace();
+  const name = readName();
+  const attributes = new Map<string, string>();
+
+  while (index < source.length) {
+    skipWhitespace();
+    if (index >= source.length) {
+      break;
+    }
+    const attributeName = readName();
+    skipWhitespace();
+    if (source[index] !== "=") {
+      invalidXml();
+    }
+    index += 1;
+    skipWhitespace();
+    const quote = source[index];
+    if (quote !== '"' && quote !== "'") {
+      invalidXml();
+    }
+    index += 1;
+    const valueStart = index;
+    while (index < source.length && source[index] !== quote) {
+      index += 1;
+    }
+    if (index >= source.length || attributes.has(attributeName)) {
+      invalidXml();
+    }
+    attributes.set(
+      attributeName,
+      decodeXmlEntities(source.slice(valueStart, index)),
+    );
+    index += 1;
+  }
+
+  return {
+    element: {
+      name,
+      localName: localName(name),
+      attributes,
+      children: [],
+      content: [],
+    },
+    selfClosing,
+  };
+}
+
+function parseOoxmlDocument(
+  xml: string,
+  assertBudget: () => void,
+): XmlElement {
+  let root: XmlElement | null = null;
+  const stack: XmlElement[] = [];
+  let index = 0;
+
+  const appendText = (text: string) => {
+    if (text.length === 0) {
+      return;
+    }
+    const current = stack.at(-1);
+    if (!current) {
+      if (text.trim().length > 0) {
+        invalidXml();
+      }
+      return;
+    }
+    current.content.push(decodeXmlEntities(text));
+  };
+
+  while (index < xml.length) {
+    assertBudget();
+    const tagStart = xml.indexOf("<", index);
+    if (tagStart < 0) {
+      appendText(xml.slice(index));
+      break;
+    }
+    appendText(xml.slice(index, tagStart));
+
+    if (xml.startsWith("<?", tagStart)) {
+      const end = findXmlTerminator(xml, tagStart + 2, "?>", assertBudget);
+      if (end < 0) {
+        invalidXml();
+      }
+      index = end + 2;
+      continue;
+    }
+    if (xml.startsWith("<!--", tagStart)) {
+      const end = findXmlTerminator(xml, tagStart + 4, "-->", assertBudget);
+      if (end < 0) {
+        invalidXml();
+      }
+      index = end + 3;
+      continue;
+    }
+    if (xml.startsWith("<![CDATA[", tagStart)) {
+      const end = findXmlTerminator(xml, tagStart + 9, "]]>", assertBudget);
+      if (end < 0 || stack.length === 0) {
+        invalidXml();
+      }
+      stack.at(-1)?.content.push(xml.slice(tagStart + 9, end));
+      index = end + 3;
+      continue;
+    }
+    if (xml.startsWith("<!", tagStart)) {
+      invalidXml();
+    }
+
+    const tagEnd = findXmlTagEnd(xml, tagStart + 1, assertBudget);
+    if (tagEnd < 0) {
+      invalidXml();
+    }
+    const tag = xml.slice(tagStart + 1, tagEnd);
+    if (tag.startsWith("/")) {
+      const name = tag.slice(1).trim();
+      const current = stack.at(-1);
+      if (!XML_QNAME.test(name) || !current || current.name !== name) {
+        invalidXml();
+      }
+      stack.pop();
+    } else {
+      const { element, selfClosing } = parseXmlStartTag(tag);
+      const parent = stack.at(-1);
+      if (parent) {
+        parent.children.push(element);
+        parent.content.push(element);
+      } else if (!root) {
+        root = element;
+      } else {
+        invalidXml();
+      }
+      if (!selfClosing) {
+        stack.push(element);
+      }
+    }
+    index = tagEnd + 1;
+  }
+
+  if (!root || stack.length > 0) {
+    invalidXml();
+  }
+  return root;
+}
+
+function findXmlElements(element: XmlElement, targetLocalName: string): XmlElement[] {
+  const matches: XmlElement[] = [];
+  const pending = [element];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) {
+      continue;
+    }
+    if (current.localName === targetLocalName) {
+      matches.push(current);
+    }
+    for (let index = current.children.length - 1; index >= 0; index -= 1) {
+      pending.push(current.children[index]);
+    }
+  }
+  return matches;
+}
+
+function getXmlText(element: XmlElement): string {
+  return element.content
+    .map((entry) => (typeof entry === "string" ? entry : getXmlText(entry)))
+    .join("");
+}
+
+function extractTagText(element: XmlElement, tagName: string): string {
+  const match = findXmlElements(element, tagName)[0];
+  return match ? getXmlText(match) : "";
+}
+
+function extractInlineText(element: XmlElement): string {
+  return findXmlElements(element, "t").map(getXmlText).join("");
+}
+
+function extractAttribute(element: XmlElement, attributeName: string): string | null {
+  let value: string | null = null;
+  for (const [name, candidate] of element.attributes) {
+    if (localName(name) !== attributeName) {
+      continue;
+    }
+    if (value != null) {
+      return null;
+    }
+    value = candidate;
+  }
+  return value;
+}
+
+function parseWorkbookSheetRefs(workbook: XmlElement): WorkbookSheetRef[] {
+  return findXmlElements(workbook, "sheet")
+    .map((sheet) => {
+      const name = extractAttribute(sheet, "name");
+      const relationshipId = extractAttribute(sheet, "id");
       return name && relationshipId ? { name, relationshipId } : null;
     })
     .filter((value): value is WorkbookSheetRef => value != null);
 }
 
-function parseWorkbookRelationships(xml: string): Map<string, string> {
-  const tagPattern = localNamePattern("Relationship");
+function parseWorkbookRelationships(relationships: XmlElement | null): Map<string, string> {
+  if (!relationships) {
+    return new Map();
+  }
   return new Map(
-    Array.from(xml.matchAll(new RegExp(`<${tagPattern}[^>]*\\/?>`, "gi")))
-      .map((match) => {
-        const tag = match[0];
-        const id = extractAttribute(tag, "Id");
-        const target = extractAttribute(tag, "Target");
+    findXmlElements(relationships, "Relationship")
+      .map((relationship) => {
+        const id = extractAttribute(relationship, "Id");
+        const target = extractAttribute(relationship, "Target");
         return id && target ? ([id, target] as const) : null;
       })
       .filter((value): value is readonly [string, string] => value != null),
@@ -245,40 +482,35 @@ function decodeColumnReference(columnRef: string): number {
 
 function parseCellValue(
   cellType: string | null,
-  cellBody: string,
+  cell: XmlElement,
   sharedStrings: string[],
 ): string {
   if (cellType === "inlineStr") {
-    return extractInlineText(cellBody);
+    return extractInlineText(cell);
   }
   if (cellType === "s") {
-    const index = Number.parseInt(extractTagText(cellBody, "v"), 10);
+    const index = Number.parseInt(extractTagText(cell, "v"), 10);
     return Number.isFinite(index) ? (sharedStrings[index] ?? "") : "";
   }
   if (cellType === "b") {
-    const raw = extractTagText(cellBody, "v");
+    const raw = extractTagText(cell, "v");
     if (raw === "1") return "TRUE";
     if (raw === "0") return "FALSE";
     return raw;
   }
-  return extractTagText(cellBody, "v") || extractInlineText(cellBody);
+  return extractTagText(cell, "v") || extractInlineText(cell);
 }
 
-function parseSharedStrings(xml: string | null): string[] {
-  if (!xml) {
+function parseSharedStrings(sharedStrings: XmlElement | null): string[] {
+  if (!sharedStrings) {
     return [];
   }
 
-  const tagPattern = localNamePattern("si");
-  return Array.from(
-    xml.matchAll(
-      new RegExp(`<${tagPattern}[^>]*>([\\s\\S]*?)<\\/${tagPattern}\\s*>`, "gi"),
-    ),
-  ).map((match) => extractInlineText(match[1]));
+  return findXmlElements(sharedStrings, "si").map(extractInlineText);
 }
 
 function parseWorksheetRows(
-  xml: string,
+  worksheet: XmlElement,
   sharedStrings: string[],
   options: {
     startMs: number;
@@ -295,20 +527,10 @@ function parseWorksheetRows(
   let cellCount = 0;
   let fallbackRowIndex = 0;
 
-  const rowTagPattern = localNamePattern("row");
-  const cellTagPattern = localNamePattern("c");
-  const rowMatches = xml.matchAll(
-    new RegExp(
-      `<${rowTagPattern}([^>]*)>([\\s\\S]*?)<\\/${rowTagPattern}\\s*>`,
-      "gi",
-    ),
-  );
-  for (const rowMatch of rowMatches) {
+  for (const row of findXmlElements(worksheet, "row")) {
     assertPreviewBudget(options.startMs, options.timeoutMs, options.now);
-    const rowAttrs = rowMatch[1] ?? "";
-    const rowBody = rowMatch[2] ?? "";
     const explicitRowNumber = Number.parseInt(
-      extractAttribute(rowAttrs, "r") ?? "",
+      extractAttribute(row, "r") ?? "",
       10,
     );
     const rowIndex = Number.isFinite(explicitRowNumber)
@@ -320,18 +542,11 @@ function parseWorksheetRows(
 
     const values = rowMap.get(rowIndex) ?? [];
     let fallbackColIndex = 0;
-    const cellMatches = rowBody.matchAll(
-      new RegExp(
-        `<${cellTagPattern}([^>]*?)(?:>([\\s\\S]*?)<\\/${cellTagPattern}\\s*>|\\s*\\/>)`,
-        "gi",
-      ),
-    );
-
-    for (const cellMatch of cellMatches) {
+    for (const cell of row.children.filter(
+      (child) => child.localName === "c",
+    )) {
       assertPreviewBudget(options.startMs, options.timeoutMs, options.now);
-      const cellAttrs = cellMatch[1] ?? "";
-      const cellBody = cellMatch[2] ?? "";
-      const refMatch = (extractAttribute(cellAttrs, "r") ?? "").match(
+      const refMatch = (extractAttribute(cell, "r") ?? "").match(
         /^([A-Z]+)(\d+)$/i,
       );
       const colIndex = refMatch
@@ -341,8 +556,8 @@ function parseWorksheetRows(
         throw new Error("excel_preview_limits_exceeded");
       }
 
-      const cellType = extractAttribute(cellAttrs, "t");
-      values[colIndex] = parseCellValue(cellType, cellBody, sharedStrings);
+      const cellType = extractAttribute(cell, "t");
+      values[colIndex] = parseCellValue(cellType, cell, sharedStrings);
       fallbackColIndex = colIndex + 1;
       highestColIndex = Math.max(highestColIndex, colIndex);
       cellCount += 1;
@@ -413,6 +628,11 @@ function mapExcelPreviewError(
         defaultValue:
           "Workbook preview is unavailable because no recognizable worksheet was found.",
       });
+    case "excel_preview_invalid_xml":
+      return t("documents.excelPreviewInvalidWorkbook", {
+        defaultValue:
+          "Workbook preview is unavailable because the XML is malformed.",
+      });
     case "excel_preview_unsupported_format":
       return t("documents.excelPreviewUnsupportedFormat", {
         defaultValue:
@@ -480,13 +700,23 @@ export async function parseExcelWorkbookPreview(
     throw new Error("excel_preview_missing_workbook_xml");
   }
 
+  const assertXmlBudget = () =>
+    assertPreviewBudget(startMs, timeoutMs, now);
+  const workbook = parseOoxmlDocument(workbookXml, assertXmlBudget);
   const relationshipsXml =
     (await readBoundedWorkbookText("xl/_rels/workbook.xml.rels")) ?? "";
-  const relationshipMap = parseWorkbookRelationships(relationshipsXml);
-  const sharedStrings = parseSharedStrings(
-    await readBoundedWorkbookText("xl/sharedStrings.xml"),
+  const relationshipMap = parseWorkbookRelationships(
+    relationshipsXml
+      ? parseOoxmlDocument(relationshipsXml, assertXmlBudget)
+      : null,
   );
-  const sheetRefs = parseWorkbookSheetRefs(workbookXml);
+  const sharedStringsXml = await readBoundedWorkbookText("xl/sharedStrings.xml");
+  const sharedStrings = parseSharedStrings(
+    sharedStringsXml
+      ? parseOoxmlDocument(sharedStringsXml, assertXmlBudget)
+      : null,
+  );
+  const sheetRefs = parseWorkbookSheetRefs(workbook);
   if (sheetRefs.length === 0) {
     throw new Error("excel_preview_no_recognized_sheet");
   }
@@ -510,7 +740,7 @@ export async function parseExcelWorkbookPreview(
     }
     parsedSheets.push({
       name: sheet.name,
-      data: parseWorksheetRows(sheetXml, sharedStrings, {
+      data: parseWorksheetRows(parseOoxmlDocument(sheetXml, assertXmlBudget), sharedStrings, {
         startMs,
         now,
         timeoutMs,
