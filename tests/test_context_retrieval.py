@@ -215,6 +215,37 @@ async def test_file_and_artifact_reads_are_scoped_limited_and_redacted():
 
 
 @pytest.mark.asyncio
+async def test_read_context_file_rejects_binary_xlsx_instead_of_utf8_decoding():
+    retrieval = ContextRetrieval(
+        InMemoryContextRetrievalRepository(
+            files=[
+                {
+                    "tenant_id": "tenant-a",
+                    "workspace_id": "workspace-a",
+                    "user_id": "user-a",
+                    "session_id": "session-a",
+                    "run_id": "run-a",
+                    "file_id": "file-xlsx",
+                    "original_name": "book.xlsx",
+                    "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "content": "PK binary workbook bytes",
+                }
+            ]
+        )
+    )
+
+    with pytest.raises(ContextRetrievalDenied, match="context_file_parser_required"):
+        await retrieval.read_context_file(
+            tenant_id="tenant-a",
+            workspace_id="workspace-a",
+            user_id="user-a",
+            session_id="session-a",
+            run_id="run-a",
+            file_id="file-xlsx",
+        )
+
+
+@pytest.mark.asyncio
 async def test_search_memory_excludes_deleted_records_and_audits_redaction():
     retrieval = _retrieval()
 

@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from app import repositories
 from app.context_manifest import truncate_utf8_text, utf8_token_estimate
 from app.control_plane_contracts import sanitize_public_payload
+from app.file_parser_contracts import is_known_binary_workbook
 from app.path_safety import ensure_creatable_inside
 
 
@@ -388,6 +389,11 @@ class ContextRetrieval:
             run_id=run_id,
             file_id=file_id,
         )
+        if is_known_binary_workbook(
+            file_name=row.get("original_name") or row.get("name"),
+            content_type=row.get("content_type"),
+        ):
+            raise ContextRetrievalDenied("context_file_parser_required")
         content, truncated = self._bounded_content_from_row(row, max_bytes=max_bytes)
         return self._envelope(
             "context_retrieval.read_context_file",

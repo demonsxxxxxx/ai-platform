@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from app.file_parser_contracts import build_attachment_preprocessing_contract
 from app.runtime.sandbox.container_provider import FakeContainerProvider
 from app.runtime.sandbox.contracts import ContainerLease, ExecutorTaskRequest, SandboxRuntimeRequest, StopResult
 from app.runtime.sandbox.executor_client import SandboxExecutorClient
@@ -154,6 +155,10 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp
             context_manifest={
                 "schema_version": "ai-platform.context-manifest.v1",
                 "available_retrieval_tools": ["read_context_file"],
+                "attachment_preprocessing": build_attachment_preprocessing_contract(
+                    file_ids=["file-a"],
+                    file_names=["book.xlsx"],
+                ),
             },
             context_retrieval_scope={
                 "tenant_id": "tenant-a",
@@ -167,6 +172,9 @@ async def test_runtime_submit_threads_context_manifest_and_scope_to_executor(tmp
     )
 
     assert sent[0].config["context_manifest"]["available_retrieval_tools"] == ["read_context_file"]
+    requirement = sent[0].config["context_manifest"]["attachment_preprocessing"]["requirements"][0]
+    assert requirement["file_id"] == "file-a"
+    assert requirement["parser_id"] == "ai-platform.xlsx.openpyxl"
     assert sent[0].config["context_retrieval_scope"]["user_id"] == "user-a"
     assert sent[0].callback_url == "http://platform.test/api/ai/runtime/callbacks/executor"
     assert sent[0].callback_token_id == "cbt_run-a_exec-run-a"
