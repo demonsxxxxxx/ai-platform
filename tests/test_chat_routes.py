@@ -5,13 +5,16 @@ import json
 
 import pytest
 from fastapi import HTTPException, Response
+from fastapi.testclient import TestClient
 
 from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.models import ChatSessionRequest, ChatStreamRequest, ChatSubmissionResponse, QueueRunPayload
+from app.main import create_app
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError
+from app.settings import Settings
 from app.routes.chat import (
     _admit_chat_submission,
     _preledger_recovery_fingerprint,
@@ -33,6 +36,134 @@ _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilit
 @asynccontextmanager
 async def fake_transaction():
     yield object()
+
+
+@pytest.fixture
+def chat_submission_client(monkeypatch):
+    """Exercise the mounted aliases and their route-local response wrapper."""
+
+    monkeypatch.setattr(
+        "app.auth.get_settings",
+        lambda: Settings(frontend_poc_auth_enabled=True),
+    )
+    with TestClient(create_app(), raise_server_exceptions=False) as client:
+        yield client
+
+
+_CHAT_SUBMISSION_ROUTE_PREFIXES = ("/api", "/api/ai")
+_CHAT_SUBMISSION_CLIENT_HEADERS = {
+    "x-ai-user-id": "user-a",
+    "x-ai-tenant-id": "tenant-a",
+}
+
+
+@pytest.mark.parametrize("prefix", _CHAT_SUBMISSION_ROUTE_PREFIXES)
+def test_chat_submission_resolver_success_is_private_no_store(
+    monkeypatch, chat_submission_client, prefix
+):
+    submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
+
+    async def found_submission(_conn, **_kwargs):
+        return {
+            "submission_id": submission_id,
+            "state": "queued",
+            "outcome_json": {
+                "session_id": "session-1",
+                "run_id": "run-1",
+                "trace_id": "trace-1",
+                "status": "queued",
+                "submission_id": submission_id,
+            },
+        }
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", found_submission)
+
+    response = chat_submission_client.get(
+        f"{prefix}/chat/submissions/{submission_id}",
+        headers=_CHAT_SUBMISSION_CLIENT_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-store"
+
+
+@pytest.mark.parametrize("prefix", _CHAT_SUBMISSION_ROUTE_PREFIXES)
+def test_chat_submission_resolver_missing_is_private_no_store_over_http(
+    monkeypatch, chat_submission_client, prefix
+):
+    async def missing_submission(_conn, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", missing_submission)
+
+    response = chat_submission_client.get(
+        f"{prefix}/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        headers=_CHAT_SUBMISSION_CLIENT_HEADERS,
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "chat_submission_not_found"}
+    assert response.headers["cache-control"] == "private, no-store"
+
+
+@pytest.mark.parametrize("prefix", _CHAT_SUBMISSION_ROUTE_PREFIXES)
+def test_chat_submission_resolver_validation_error_is_private_no_store_over_http(
+    chat_submission_client, prefix
+):
+    response = chat_submission_client.get(
+        f"{prefix}/chat/submissions/not-a-uuid",
+        headers=_CHAT_SUBMISSION_CLIENT_HEADERS,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]
+    assert response.headers["cache-control"] == "private, no-store"
+
+
+@pytest.mark.parametrize("prefix", _CHAT_SUBMISSION_ROUTE_PREFIXES)
+def test_retry_admission_http_error_is_private_no_store_over_http(
+    monkeypatch, chat_submission_client, prefix
+):
+    async def unavailable_recovery(*_args, **_kwargs):
+        raise HTTPException(status_code=503, detail="queue_unavailable")
+
+    monkeypatch.setattr(
+        "app.routes.chat._recover_preledger_chat_submission",
+        unavailable_recovery,
+    )
+
+    response = chat_submission_client.post(
+        f"{prefix}/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4/retry-admission",
+        headers=_CHAT_SUBMISSION_CLIENT_HEADERS,
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "queue_unavailable"}
+    assert response.headers["cache-control"] == "private, no-store"
+
+
+@pytest.mark.parametrize("prefix", _CHAT_SUBMISSION_ROUTE_PREFIXES)
+def test_retry_admission_unhandled_error_is_private_no_store_over_http(
+    monkeypatch, chat_submission_client, prefix
+):
+    async def broken_recovery(*_args, **_kwargs):
+        raise RuntimeError("unexpected persistence failure")
+
+    monkeypatch.setattr(
+        "app.routes.chat._recover_preledger_chat_submission",
+        broken_recovery,
+    )
+
+    response = chat_submission_client.post(
+        f"{prefix}/chat/submissions/7ea93033-30f5-40ea-8a33-2f3c6e7b21c4/retry-admission",
+        headers=_CHAT_SUBMISSION_CLIENT_HEADERS,
+    )
+
+    assert response.status_code == 500
+    assert response.text == "Internal Server Error"
+    assert response.headers["cache-control"] == "private, no-store"
 
 
 def principal(**overrides):

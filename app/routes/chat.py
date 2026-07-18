@@ -1,6 +1,15 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+import logging
 from typing import Any
 from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
+from starlette.responses import PlainTextResponse
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
@@ -56,10 +65,33 @@ from app.skills.registry import BuiltinSkillRegistry
 from app.validation import assert_safe_principal_user_id
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 _MISSING = object()
 _ORIGINAL_ENQUEUE_RUN = enqueue_run
 _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL = "private, no-store"
 _PRELEDGER_RECOVERY_REJECTION_CODE = "chat_submission_retired_before_ledger"
+
+
+class _ChatSubmissionNoStoreRoute(APIRoute):
+    """Make every resolver response non-cacheable without widening router scope."""
+
+    def get_route_handler(self):  # type: ignore[override]
+        original_handler = super().get_route_handler()
+
+        async def no_store_handler(request: Request) -> Response:
+            try:
+                response = await original_handler(request)
+            except HTTPException as exc:
+                response = await http_exception_handler(request, exc)
+            except RequestValidationError as exc:
+                response = await request_validation_exception_handler(request, exc)
+            except Exception:
+                logger.exception("chat submission resolver failed unexpectedly")
+                response = PlainTextResponse("Internal Server Error", status_code=500)
+            response.headers["Cache-Control"] = _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL
+            return response
+
+        return no_store_handler
 
 
 def _chat_submission_http_error(*, status_code: int, code: str) -> HTTPException:
@@ -1538,7 +1570,6 @@ async def chat_stream(
     )
 
 
-@router.get("/chat/submissions/{submission_id}", response_model=ChatSubmissionResponse)
 async def get_chat_submission(
     submission_id: UUID,
     response: Response,
@@ -1560,10 +1591,6 @@ async def get_chat_submission(
     return resolved
 
 
-@router.post(
-    "/chat/submissions/{submission_id}/retry-admission",
-    response_model=ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse,
-)
 async def retry_chat_submission_admission(
     submission_id: UUID,
     response: Response,
@@ -1583,3 +1610,19 @@ async def retry_chat_submission_admission(
     except HTTPException as exc:
         headers = {**(exc.headers or {}), "Cache-Control": _CHAT_SUBMISSION_RESOLUTION_CACHE_CONTROL}
         raise HTTPException(status_code=exc.status_code, detail=exc.detail, headers=headers) from exc
+
+
+router.add_api_route(
+    "/chat/submissions/{submission_id}",
+    get_chat_submission,
+    methods=["GET"],
+    response_model=ChatSubmissionResponse,
+    route_class_override=_ChatSubmissionNoStoreRoute,
+)
+router.add_api_route(
+    "/chat/submissions/{submission_id}/retry-admission",
+    retry_chat_submission_admission,
+    methods=["POST"],
+    response_model=ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse,
+    route_class_override=_ChatSubmissionNoStoreRoute,
+)

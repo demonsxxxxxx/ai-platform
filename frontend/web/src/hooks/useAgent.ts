@@ -139,63 +139,70 @@ function parseChatSubmissionResolution(
       ? (candidate as unknown as ChatSubmissionPreLedgerAbsenceResolution)
       : null;
   }
+
+  if (candidate.state === "enqueue_failed") {
+    // This legacy state has no safely consumable response contract yet. Keep
+    // the durable fence until the server publishes and tests one explicitly.
+    return null;
+  }
+
+  if (candidate.state === "rejected_before_persist") {
+    return candidate.submission_disposition === "rejected_before_persist" &&
+      typeof candidate.rejection_code === "string" &&
+      candidate.rejection_code.trim().length > 0 &&
+      (candidate.outcome === undefined || candidate.outcome === null)
+      ? (candidate as unknown as ChatSubmissionResolution)
+      : null;
+  }
+
   if (
     candidate.state !== "queued" &&
     candidate.state !== "accepted_pending_enqueue" &&
-    candidate.state !== "enqueue_failed" &&
-    candidate.state !== "needs_confirmation" &&
-    candidate.state !== "rejected_before_persist"
+    candidate.state !== "needs_confirmation"
   ) {
     return null;
   }
-  if (
-    candidate.submission_disposition !== undefined &&
-    candidate.submission_disposition !== "rejected_before_persist"
-  ) {
-    return null;
-  }
-  if (
-    candidate.rejection_code !== undefined &&
-    typeof candidate.rejection_code !== "string"
-  ) {
-    return null;
-  }
+
   const outcome = candidate.outcome;
-  if (outcome !== undefined && outcome !== null) {
-    if (typeof outcome !== "object" || Array.isArray(outcome)) {
-      return null;
-    }
-    const outcomeRecord = outcome as Record<string, unknown>;
-    if (
-      outcomeRecord.status !== "queued" &&
-      outcomeRecord.status !== "accepted_pending_enqueue" &&
-      outcomeRecord.status !== "needs_confirmation"
-    ) {
-      return null;
-    }
-    if (
-      outcomeRecord.submission_id !== undefined &&
-      outcomeRecord.submission_id !== submissionId
-    ) {
-      return null;
-    }
-    for (const field of ["session_id", "run_id"] as const) {
-      if (
-        outcomeRecord[field] !== undefined &&
-        outcomeRecord[field] !== null &&
-        typeof outcomeRecord[field] !== "string"
-      ) {
-        return null;
-      }
-    }
-    if (
-      outcomeRecord.status === "needs_confirmation" &&
-      outcomeRecord.suggestions !== undefined &&
-      !Array.isArray(outcomeRecord.suggestions)
-    ) {
-      return null;
-    }
+  if (outcome === null || typeof outcome !== "object" || Array.isArray(outcome)) {
+    return null;
   }
+  const outcomeRecord = outcome as Record<string, unknown>;
+  if (outcomeRecord.submission_id !== submissionId) return null;
+
+  if (
+    candidate.state === "queued" ||
+    candidate.state === "accepted_pending_enqueue"
+  ) {
+    return outcomeRecord.status === candidate.state &&
+      typeof outcomeRecord.session_id === "string" &&
+      outcomeRecord.session_id.length > 0 &&
+      typeof outcomeRecord.run_id === "string" &&
+      outcomeRecord.run_id.length > 0
+      ? (candidate as unknown as ChatSubmissionResolution)
+      : null;
+  }
+
+  if (
+    outcomeRecord.status !== "needs_confirmation" ||
+    !Array.isArray(outcomeRecord.suggestions)
+  ) {
+    return null;
+  }
+  const suggestionsAreValid = outcomeRecord.suggestions.every((suggestion) => {
+    if (suggestion === null || typeof suggestion !== "object" || Array.isArray(suggestion)) {
+      return false;
+    }
+    const suggestionRecord = suggestion as Record<string, unknown>;
+    return (
+      typeof suggestionRecord.capability_id === "string" &&
+      suggestionRecord.capability_id.length > 0 &&
+      typeof suggestionRecord.label === "string" &&
+      suggestionRecord.label.length > 0 &&
+      typeof suggestionRecord.reason === "string"
+    );
+  });
+  if (!suggestionsAreValid) return null;
   return candidate as unknown as ChatSubmissionResolution;
 }
 
@@ -524,7 +531,12 @@ function runControlAuthKey(identity: RunControlAuthIdentity): string {
 const TERMINAL_HISTORY_HYDRATION_TIMEOUT_MS = 10_000;
 
 export function useAgent(options?: UseAgentOptions): UseAgentReturn {
-  const { hasAnyPermission, isAuthenticated, user } = useAuth();
+  const {
+    hasAnyPermission,
+    isAuthenticated,
+    isLoading: isAuthLoading,
+    user,
+  } = useAuth();
   const [browserAuthIncarnation, setBrowserAuthIncarnation] = useState(
     getBrowserAuthIncarnation,
   );
@@ -625,6 +637,9 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const authScopeGenerationRef = useRef(0);
   const submissionUncertaintyRef = useRef<SubmissionUncertainty | null>(null);
   const submissionResolverOwnerRef = useRef<string | null>(null);
+  // An incarnation event proves that the browser credential context changed,
+  // but the authoritative principal can still be awaiting hydration.
+  const submissionAuthIncarnationFenceRef = useRef<string | null>(null);
   const [pendingSubmissionId, setPendingSubmissionId] = useState<string | null>(null);
   // Resolver-only confirmation has no transcript owner. Keep it separate
   // until a later user action rather than inventing an assistant turn.
@@ -709,6 +724,11 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       // This handler is the same-tab ownership seam. Abort/invalidate before
       // scheduling React work so a role refresh, login or logout cannot leave
       // an old parent alive long enough to begin a mutation.
+      submissionAuthIncarnationFenceRef.current = incarnation;
+      authScopeGenerationRef.current += 1;
+      submissionResolverOwnerRef.current = null;
+      submissionTokenRef.current += 1;
+      isSendingRef.current = false;
       runControlAuthEventRevisionRef.current += 1;
       runControlAuthRevisionRef.current += 1;
       invalidateRunControl();
@@ -1593,6 +1613,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       if (!isMountedRef.current) return { status: "failed" };
       if (!content.trim()) return { status: "failed" };
 
+      if (submissionAuthIncarnationFenceRef.current !== null) {
+        return { status: "failed" };
+      }
+
       if (submissionUncertaintyRef.current !== null) {
         const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
           defaultValue: i18n.t("chat.requestFailed"),
@@ -2190,6 +2214,34 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   );
 
   useLayoutEffect(() => {
+    const fencedIncarnation = submissionAuthIncarnationFenceRef.current;
+    if (
+      fencedIncarnation === null ||
+      fencedIncarnation !== browserAuthIncarnation ||
+      isAuthLoading ||
+      (isAuthenticated && authScope === null)
+    ) {
+      return;
+    }
+    // Hydration has now settled on this incarnation. Reinstall only that
+    // principal's durable reference before passive resolver work may begin.
+    submissionAuthIncarnationFenceRef.current = null;
+    if (authScope !== null && installPersistedSubmissionFence(authScope)) {
+      setError(
+        i18n.t("chat.runTerminal.statusUnavailable", {
+          defaultValue: i18n.t("chat.requestFailed"),
+        }),
+      );
+    }
+  }, [
+    authScope,
+    browserAuthIncarnation,
+    installPersistedSubmissionFence,
+    isAuthenticated,
+    isAuthLoading,
+  ]);
+
+  useLayoutEffect(() => {
     const previousAuthScope = authScopeRef.current;
     if (authScopesEqual(previousAuthScope, authScope)) {
       return;
@@ -2227,6 +2279,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const pending = submissionUncertaintyRef.current;
       if (
         !pending ||
+        submissionAuthIncarnationFenceRef.current !== null ||
         pending.submissionId !== submissionId ||
         !authScopesEqual(pending.owner, owner) ||
         !authScopesEqual(authScopeRef.current, owner)
@@ -2238,6 +2291,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       const isCurrentResolution = (expectedSessionGeneration = resolverSessionGeneration) =>
         isMountedRef.current &&
         authScopeGenerationRef.current === authScopeGeneration &&
+        submissionAuthIncarnationFenceRef.current === null &&
         sessionGenerationRef.current === expectedSessionGeneration &&
         authScopesEqual(authScopeRef.current, owner) &&
         submissionUncertaintyRef.current?.submissionId === submissionId &&
@@ -2342,12 +2396,17 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
 
   const retryPendingSubmission = useCallback(async (): Promise<void> => {
     const pending = submissionUncertaintyRef.current;
-    if (!pending || !authScopesEqual(authScopeRef.current, pending.owner)) return;
+    if (
+      !pending ||
+      submissionAuthIncarnationFenceRef.current !== null ||
+      !authScopesEqual(authScopeRef.current, pending.owner)
+    ) return;
     const authScopeGeneration = authScopeGenerationRef.current;
     const retrySessionGeneration = sessionGenerationRef.current;
     const isCurrentRetry = (expectedSessionGeneration = retrySessionGeneration) =>
       isMountedRef.current &&
       authScopeGenerationRef.current === authScopeGeneration &&
+      submissionAuthIncarnationFenceRef.current === null &&
       sessionGenerationRef.current === expectedSessionGeneration &&
       authScopesEqual(authScopeRef.current, pending.owner) &&
       submissionUncertaintyRef.current?.submissionId === pending.submissionId &&
@@ -2427,6 +2486,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   useEffect(() => {
     const pending = submissionUncertaintyRef.current;
     if (
+      submissionAuthIncarnationFenceRef.current !== null ||
       authScope === null ||
       pending === null ||
       pendingSubmissionId !== pending.submissionId ||

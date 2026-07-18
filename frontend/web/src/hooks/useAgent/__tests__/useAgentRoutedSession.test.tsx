@@ -1131,7 +1131,7 @@ test("useAgent clears a stale pre-ledger fence through explicit retry only after
   }
 });
 
-test("useAgent keeps generic, network, legacy, mismatched-ID, and unknown-version GET/retry results fenced", async () => {
+test("useAgent keeps generic, network, malformed, legacy, mismatched-ID, and unknown-version GET/retry results fenced", async () => {
   const ambiguousResolvers = [
     {
       name: "network failure",
@@ -1177,6 +1177,88 @@ test("useAgent keeps generic, network, legacy, mismatched-ID, and unknown-versio
           state: "absent_before_ledger",
         }) as unknown as ChatSubmissionResolution,
     },
+    {
+      name: "rejection without the exact disposition",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "rejected_before_persist",
+          rejection_code: "chat_submission_retired_before_ledger",
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "rejection without a nonempty code",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "rejected_before_persist",
+          submission_disposition: "rejected_before_persist",
+          rejection_code: " ",
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "rejection with a contradictory outcome",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "rejected_before_persist",
+          submission_disposition: "rejected_before_persist",
+          rejection_code: "chat_submission_retired_before_ledger",
+          outcome: {
+            session_id: "session-contradictory",
+            run_id: "run-contradictory",
+            status: "queued",
+            submission_id: submissionId,
+          },
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "queued outcome without the exact submission ID",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "queued",
+          outcome: {
+            session_id: "session-missing-id",
+            run_id: "run-missing-id",
+            status: "queued",
+          },
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "pending admission outcome without a run ID",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "accepted_pending_enqueue",
+          outcome: {
+            session_id: "session-missing-run",
+            status: "accepted_pending_enqueue",
+            submission_id: submissionId,
+          },
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "confirmation outcome with malformed suggestions",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "needs_confirmation",
+          outcome: {
+            status: "needs_confirmation",
+            submission_id: submissionId,
+            suggestions: [{ capability_id: "skill-a", label: "Skill A" }],
+          },
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "unvalidated enqueue failure",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "enqueue_failed",
+        }) as unknown as ChatSubmissionResolution,
+    },
   ];
 
   for (const { name, resolve } of ambiguousResolvers) {
@@ -1215,6 +1297,134 @@ test("useAgent keeps generic, network, legacy, mismatched-ID, and unknown-versio
       sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
       await harness.cleanup();
     }
+  }
+});
+
+test("useAgent blocks A mutations through deferred B hydration and restores only the settled owner fence", async () => {
+  const submissionA = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
+  const submissionB = "82f7e9d6-2d0d-4be7-9d85-8e558fb07d83";
+  clearPersistedSubmissionReferences();
+  dom.window.localStorage.setItem(
+    "ai_platform_chat_submission_references_v1",
+    JSON.stringify([
+      { version: 1, owner: ["tenant-a", "user-a"], submissionId: submissionA },
+      { version: 1, owner: ["tenant-b", "user-b"], submissionId: submissionB },
+    ]),
+  );
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const { authApi } = await import("../../../services/api/auth.ts");
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalAuthLogin = authApi.login;
+  const originalAuthGetCurrentUser = authApi.getCurrentUser;
+  const resolverCalls: string[] = [];
+  let retryCalls = 0;
+  let submitCalls = 0;
+  sessionApi.getChatSubmission = async (submissionId) => {
+    resolverCalls.push(submissionId);
+    throw new ApiRequestError("not found", 404, "chat_submission_not_found");
+  };
+  sessionApi.retryChatSubmissionAdmission = async () => {
+    retryCalls += 1;
+    throw new Error("the incarnation fence should block retry admission");
+  };
+  sessionApi.submitChat = async () => {
+    submitCalls += 1;
+    throw new Error("the incarnation fence should block new admission");
+  };
+  authApi.login = async () => {};
+  const harness = await loadReactHarness({ preserveSubmissionReferences: true });
+
+  try {
+    await settle(harness.act);
+    assert.deepEqual(resolverCalls, [submissionA]);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+
+    const principalA = harness.auth.user;
+    if (principalA === null) {
+      throw new Error("the initial A principal should be hydrated");
+    }
+    const principalB = {
+      ...principalA,
+      id: "user-b",
+      tenant_id: "tenant-b",
+      username: "user-b",
+      email: "user-b@example.test",
+    };
+    let resolveBPrincipal!: (value: NonNullable<typeof harness.auth.user>) => void;
+    let markBPrincipalRequested!: () => void;
+    const bPrincipalRequested = new Promise<void>((resolve) => {
+      markBPrincipalRequested = resolve;
+    });
+    const deferredBPrincipal = new Promise<NonNullable<typeof harness.auth.user>>((resolve) => {
+      resolveBPrincipal = resolve;
+    });
+    authApi.getCurrentUser = (() => {
+      markBPrincipalRequested();
+      return deferredBPrincipal;
+    }) as typeof authApi.getCurrentUser;
+
+    let loginB!: Promise<unknown>;
+    await harness.act(async () => {
+      loginB = harness.auth.login({ username: "user-b", password: "test-password" });
+      await bPrincipalRequested;
+    });
+    const resolverCallsBeforeBHydrates = resolverCalls.length;
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("must not submit as A"), {
+        status: "failed",
+      });
+      await harness.hook.retryPendingSubmission();
+    });
+    assert.equal(submitCalls, 0);
+    assert.equal(retryCalls, 0);
+    assert.equal(resolverCalls.length, resolverCallsBeforeBHydrates);
+    assert.match(
+      persistedSubmissionStorageValues().join("\n"),
+      new RegExp(submissionA),
+      "the A durable reference must survive B's deferred principal read",
+    );
+
+    await harness.act(async () => {
+      resolveBPrincipal(principalB);
+      await loginB;
+    });
+    await settle(harness.act);
+    assert.deepEqual(resolverCalls.slice(resolverCallsBeforeBHydrates), [submissionB]);
+
+    let resolveAPrincipal!: (value: NonNullable<typeof harness.auth.user>) => void;
+    let markAPrincipalRequested!: () => void;
+    const aPrincipalRequested = new Promise<void>((resolve) => {
+      markAPrincipalRequested = resolve;
+    });
+    const deferredAPrincipal = new Promise<NonNullable<typeof harness.auth.user>>((resolve) => {
+      resolveAPrincipal = resolve;
+    });
+    authApi.getCurrentUser = (() => {
+      markAPrincipalRequested();
+      return deferredAPrincipal;
+    }) as typeof authApi.getCurrentUser;
+    let loginA!: Promise<unknown>;
+    await harness.act(async () => {
+      loginA = harness.auth.login({ username: "user-a", password: "test-password" });
+      await aPrincipalRequested;
+    });
+    await harness.act(async () => {
+      resolveAPrincipal(principalA);
+      await loginA;
+    });
+    await settle(harness.act);
+    assert.deepEqual(resolverCalls, [submissionA, submissionB, submissionA]);
+    assert.equal(submitCalls, 0);
+    assert.equal(retryCalls, 0);
+  } finally {
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
+    sessionApi.submitChat = originalSubmitChat;
+    authApi.login = originalAuthLogin;
+    authApi.getCurrentUser = originalAuthGetCurrentUser;
+    await harness.cleanup();
   }
 });
 
