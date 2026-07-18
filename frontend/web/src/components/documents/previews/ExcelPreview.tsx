@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import JSZip from "jszip";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SaxesParser, type SaxesTagNS } from "saxes";
 import { LoadingSpinner } from "../../common/LoadingSpinner";
 
 const excelPreviewStylesPromise =
@@ -131,84 +132,157 @@ async function readWorkbookText(
   return file.async("string");
 }
 
-function decodeXmlEntities(value: string): string {
-  return value.replace(
-    /&(#x?[0-9a-fA-F]+|amp|apos|gt|lt|quot);/g,
-    (entity, token: string) => {
-      switch (token) {
-        case "amp":
-          return "&";
-        case "apos":
-          return "'";
-        case "gt":
-          return ">";
-        case "lt":
-          return "<";
-        case "quot":
-          return '"';
-        default: {
-          const isHex = token.startsWith("#x");
-          const isNumeric = token.startsWith("#");
-          if (!isNumeric) {
-            return entity;
-          }
-          const codePoint = Number.parseInt(
-            token.slice(isHex ? 2 : 1),
-            isHex ? 16 : 10,
-          );
-          return Number.isFinite(codePoint)
-            ? String.fromCodePoint(codePoint)
-            : entity;
-        }
+const EXCEL_PREVIEW_MAX_XML_DEPTH = 64;
+const EXCEL_PREVIEW_MAX_XML_NODES = 50_000;
+const EXCEL_PREVIEW_XML_CHUNK_SIZE = 16 * 1024;
+const OOXML_RELATIONSHIP_NAMESPACES = new Set([
+  "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+  "http://purl.oclc.org/ooxml/officeDocument/relationships",
+]);
+
+type XmlStreamEvents = {
+  onOpenTag?: (tag: SaxesTagNS) => void;
+  onCloseTag?: (tag: SaxesTagNS) => void;
+  onText?: (text: string) => void;
+};
+
+function invalidXml(): never {
+  throw new Error("excel_preview_invalid_xml");
+}
+
+function findAttribute(tag: SaxesTagNS, local: string): string | null {
+  const matches = Object.values(tag.attributes).filter(
+    (attribute) => attribute.local === local,
+  );
+  return matches.length === 1 ? matches[0].value : null;
+}
+
+function parseOoxmlXml(
+  xml: string,
+  assertBudget: () => void,
+  events: XmlStreamEvents,
+): void {
+  let depth = 0;
+  let nodes = 0;
+  const parser = new SaxesParser({ xmlns: true, position: false });
+  parser.on("error", () => invalidXml());
+  parser.on("doctype", () => invalidXml());
+  parser.on("opentagstart", () => {
+    assertBudget();
+    depth += 1;
+    nodes += 1;
+    if (depth > EXCEL_PREVIEW_MAX_XML_DEPTH || nodes > EXCEL_PREVIEW_MAX_XML_NODES) {
+      throw new Error("excel_preview_limits_exceeded");
+    }
+  });
+  parser.on("opentag", (tag) => {
+    assertBudget();
+    events.onOpenTag?.(tag);
+  });
+  parser.on("closetag", (tag) => {
+    assertBudget();
+    events.onCloseTag?.(tag);
+    depth -= 1;
+  });
+  parser.on("text", (text) => {
+    assertBudget();
+    events.onText?.(text);
+  });
+  parser.on("cdata", (text) => {
+    assertBudget();
+    events.onText?.(text);
+  });
+
+  for (let index = 0; index < xml.length; index += EXCEL_PREVIEW_XML_CHUNK_SIZE) {
+    assertBudget();
+    parser.write(xml.slice(index, index + EXCEL_PREVIEW_XML_CHUNK_SIZE));
+    assertBudget();
+  }
+  parser.close();
+  assertBudget();
+}
+
+function parseWorkbookSheetRefs(
+  xml: string,
+  assertBudget: () => void,
+  maxSheets: number,
+): WorkbookSheetRef[] {
+  const sheets: WorkbookSheetRef[] = [];
+  parseOoxmlXml(xml, assertBudget, {
+    onOpenTag(tag) {
+      if (tag.local !== "sheet" || sheets.length >= maxSheets) {
+        return;
+      }
+      const name = findAttribute(tag, "name");
+      const relationship = Object.values(tag.attributes).find(
+        (attribute) =>
+          attribute.local === "id" &&
+          OOXML_RELATIONSHIP_NAMESPACES.has(attribute.uri),
+      );
+      if (name && relationship) {
+        sheets.push({ name, relationshipId: relationship.value });
       }
     },
-  );
+  });
+  return sheets;
 }
 
-function extractTagText(xml: string, tagName: string): string {
-  const match = new RegExp(
-    `<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`,
-    "i",
-  ).exec(xml);
-  return match ? decodeXmlEntities(match[1]) : "";
-}
-
-function extractInlineText(xml: string): string {
-  const matches = Array.from(xml.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/gi));
-  if (matches.length === 0) {
-    return "";
+function parseWorkbookRelationships(
+  xml: string,
+  assertBudget: () => void,
+): Map<string, string> {
+  const relationships = new Map<string, string>();
+  if (!xml) {
+    return relationships;
   }
-  return matches.map((match) => decodeXmlEntities(match[1])).join("");
+  parseOoxmlXml(xml, assertBudget, {
+    onOpenTag(tag) {
+      if (tag.local !== "Relationship") {
+        return;
+      }
+      const id = findAttribute(tag, "Id");
+      const target = findAttribute(tag, "Target");
+      if (id && target) {
+        relationships.set(id, target);
+      }
+    },
+  });
+  return relationships;
 }
 
-function extractAttribute(tag: string, attributeName: string): string | null {
-  const escapedName = attributeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`${escapedName}="([^"]+)"`, "i").exec(tag);
-  return match ? decodeXmlEntities(match[1]) : null;
-}
-
-function parseWorkbookSheetRefs(xml: string): WorkbookSheetRef[] {
-  return Array.from(xml.matchAll(/<sheet\b[^>]*\/?>/gi))
-    .map((match) => {
-      const tag = match[0];
-      const name = extractAttribute(tag, "name");
-      const relationshipId = extractAttribute(tag, "r:id");
-      return name && relationshipId ? { name, relationshipId } : null;
-    })
-    .filter((value): value is WorkbookSheetRef => value != null);
-}
-
-function parseWorkbookRelationships(xml: string): Map<string, string> {
-  return new Map(
-    Array.from(xml.matchAll(/<Relationship\b[^>]*\/?>/gi))
-      .map((match) => {
-        const tag = match[0];
-        const id = extractAttribute(tag, "Id");
-        const target = extractAttribute(tag, "Target");
-        return id && target ? ([id, target] as const) : null;
-      })
-      .filter((value): value is readonly [string, string] => value != null),
-  );
+function parseSharedStrings(
+  xml: string | null,
+  assertBudget: () => void,
+): string[] {
+  if (!xml) {
+    return [];
+  }
+  const sharedStrings: string[] = [];
+  let current: string[] | null = null;
+  let textDepth = 0;
+  parseOoxmlXml(xml, assertBudget, {
+    onOpenTag(tag) {
+      if (tag.local === "si") {
+        current = [];
+      } else if (current && tag.local === "t") {
+        textDepth += 1;
+      }
+    },
+    onCloseTag(tag) {
+      if (current && tag.local === "t") {
+        textDepth -= 1;
+      } else if (tag.local === "si" && current) {
+        sharedStrings.push(current.join(""));
+        current = null;
+      }
+    },
+    onText(text) {
+      if (current && textDepth > 0) {
+        current.push(text);
+      }
+    },
+  });
+  return sharedStrings;
 }
 
 function resolveWorkbookTargetPath(target: string): string {
@@ -222,37 +296,6 @@ function decodeColumnReference(columnRef: string): number {
     value = value * 26 + (char.charCodeAt(0) - 64);
   }
   return Math.max(0, value - 1);
-}
-
-function parseCellValue(
-  cellType: string | null,
-  cellBody: string,
-  sharedStrings: string[],
-): string {
-  if (cellType === "inlineStr") {
-    return extractInlineText(cellBody);
-  }
-  if (cellType === "s") {
-    const index = Number.parseInt(extractTagText(cellBody, "v"), 10);
-    return Number.isFinite(index) ? (sharedStrings[index] ?? "") : "";
-  }
-  if (cellType === "b") {
-    const raw = extractTagText(cellBody, "v");
-    if (raw === "1") return "TRUE";
-    if (raw === "0") return "FALSE";
-    return raw;
-  }
-  return extractTagText(cellBody, "v") || extractInlineText(cellBody);
-}
-
-function parseSharedStrings(xml: string | null): string[] {
-  if (!xml) {
-    return [];
-  }
-
-  return Array.from(xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/gi)).map(
-    (match) => extractInlineText(match[1]),
-  );
 }
 
 function parseWorksheetRows(
@@ -272,53 +315,76 @@ function parseWorksheetRows(
   let highestColIndex = -1;
   let cellCount = 0;
   let fallbackRowIndex = 0;
+  let currentRow: { index: number; values: string[]; fallbackCol: number } | null = null;
+  let currentCell:
+    | { type: string | null; reference: string | null; value: string[]; inline: string[] }
+    | null = null;
+  let textKind: "value" | "inline" | null = null;
 
-  const rowMatches = xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>/gi);
-  for (const rowMatch of rowMatches) {
+  const assertXmlBudget = () =>
     assertPreviewBudget(options.startMs, options.timeoutMs, options.now);
-    const rowAttrs = rowMatch[1] ?? "";
-    const rowBody = rowMatch[2] ?? "";
-    const explicitRowNumber = Number.parseInt(
-      rowAttrs.match(/\br="(\d+)"/i)?.[1] ?? "",
-      10,
-    );
-    const rowIndex = Number.isFinite(explicitRowNumber)
-      ? explicitRowNumber - 1
-      : fallbackRowIndex;
-    if (rowIndex >= options.maxRows) {
-      throw new Error("excel_preview_limits_exceeded");
-    }
-
-    const values = rowMap.get(rowIndex) ?? [];
-    let fallbackColIndex = 0;
-    const cellMatches = rowBody.matchAll(/<c\b([^>]*)(?:>([\s\S]*?)<\/c>|\/>)/gi);
-
-    for (const cellMatch of cellMatches) {
-      assertPreviewBudget(options.startMs, options.timeoutMs, options.now);
-      const cellAttrs = cellMatch[1] ?? "";
-      const cellBody = cellMatch[2] ?? "";
-      const refMatch = cellAttrs.match(/\br="([A-Z]+)(\d+)"/i);
-      const colIndex = refMatch
-        ? decodeColumnReference(refMatch[1].toUpperCase())
-        : fallbackColIndex;
-      if (colIndex >= options.maxCols) {
-        throw new Error("excel_preview_limits_exceeded");
+  parseOoxmlXml(xml, assertXmlBudget, {
+    onOpenTag(tag) {
+      if (tag.local === "row") {
+        const rowNumber = Number.parseInt(findAttribute(tag, "r") ?? "", 10);
+        const index = Number.isFinite(rowNumber) ? rowNumber - 1 : fallbackRowIndex;
+        if (index >= options.maxRows) {
+          throw new Error("excel_preview_limits_exceeded");
+        }
+        currentRow = { index, values: rowMap.get(index) ?? [], fallbackCol: 0 };
+      } else if (currentRow && tag.local === "c") {
+        currentCell = {
+          type: findAttribute(tag, "t"),
+          reference: findAttribute(tag, "r"),
+          value: [],
+          inline: [],
+        };
+      } else if (currentCell && tag.local === "v") {
+        textKind = "value";
+      } else if (currentCell && tag.local === "t") {
+        textKind = "inline";
       }
-
-      const cellType = cellAttrs.match(/\bt="([^"]+)"/i)?.[1] ?? null;
-      values[colIndex] = parseCellValue(cellType, cellBody, sharedStrings);
-      fallbackColIndex = colIndex + 1;
-      highestColIndex = Math.max(highestColIndex, colIndex);
-      cellCount += 1;
-      if (cellCount > options.maxCells) {
-        throw new Error("excel_preview_limits_exceeded");
+    },
+    onCloseTag(tag) {
+      if (tag.local === "v" || tag.local === "t") {
+        textKind = null;
+      } else if (tag.local === "c" && currentRow && currentCell) {
+        const refMatch = (currentCell.reference ?? "").match(/^([A-Z]+)(\d+)$/i);
+        const colIndex = refMatch
+          ? decodeColumnReference(refMatch[1].toUpperCase())
+          : currentRow.fallbackCol;
+        if (colIndex >= options.maxCols) {
+          throw new Error("excel_preview_limits_exceeded");
+        }
+        const raw = currentCell.value.join("");
+        const inline = currentCell.inline.join("");
+        const value = currentCell.type === "inlineStr"
+          ? inline
+          : currentCell.type === "s"
+            ? (sharedStrings[Number.parseInt(raw, 10)] ?? "")
+            : currentCell.type === "b"
+              ? raw === "1" ? "TRUE" : raw === "0" ? "FALSE" : raw
+              : raw || inline;
+        currentRow.values[colIndex] = value;
+        currentRow.fallbackCol = colIndex + 1;
+        highestColIndex = Math.max(highestColIndex, colIndex);
+        cellCount += 1;
+        if (cellCount > options.maxCells) {
+          throw new Error("excel_preview_limits_exceeded");
+        }
+        currentCell = null;
+      } else if (tag.local === "row" && currentRow) {
+        rowMap.set(currentRow.index, currentRow.values);
+        highestRowIndex = Math.max(highestRowIndex, currentRow.index);
+        fallbackRowIndex = currentRow.index + 1;
+        currentRow = null;
       }
-    }
-
-    rowMap.set(rowIndex, values);
-    highestRowIndex = Math.max(highestRowIndex, rowIndex);
-    fallbackRowIndex = rowIndex + 1;
-  }
+    },
+    onText(text) {
+      if (textKind === "value") currentCell?.value.push(text);
+      if (textKind === "inline") currentCell?.inline.push(text);
+    },
+  });
 
   if (highestRowIndex < 0 || highestColIndex < 0) {
     return [];
@@ -371,6 +437,16 @@ function mapExcelPreviewError(
       return t("documents.excelPreviewInvalidWorkbook", {
         defaultValue:
           "Workbook preview is unavailable because the file structure is invalid.",
+      });
+    case "excel_preview_no_recognized_sheet":
+      return t("documents.excelPreviewNoRecognizedSheet", {
+        defaultValue:
+          "Workbook preview is unavailable because no recognizable worksheet was found.",
+      });
+    case "excel_preview_invalid_xml":
+      return t("documents.excelPreviewInvalidWorkbook", {
+        defaultValue:
+          "Workbook preview is unavailable because the XML is malformed.",
       });
     case "excel_preview_unsupported_format":
       return t("documents.excelPreviewUnsupportedFormat", {
@@ -439,19 +515,28 @@ export async function parseExcelWorkbookPreview(
     throw new Error("excel_preview_missing_workbook_xml");
   }
 
+  const assertXmlBudget = () =>
+    assertPreviewBudget(startMs, timeoutMs, now);
+  const maxSheets = options?.maxSheets ?? EXCEL_PREVIEW_MAX_SHEETS;
+  const sheetRefs = parseWorkbookSheetRefs(
+    workbookXml,
+    assertXmlBudget,
+    maxSheets,
+  );
   const relationshipsXml =
     (await readBoundedWorkbookText("xl/_rels/workbook.xml.rels")) ?? "";
-  const relationshipMap = parseWorkbookRelationships(relationshipsXml);
-  const sharedStrings = parseSharedStrings(
-    await readBoundedWorkbookText("xl/sharedStrings.xml"),
+  const relationshipMap = parseWorkbookRelationships(
+    relationshipsXml,
+    assertXmlBudget,
   );
-  const sheets = parseWorkbookSheetRefs(workbookXml).slice(
-    0,
-    options?.maxSheets ?? EXCEL_PREVIEW_MAX_SHEETS,
-  );
+  const sharedStringsXml = await readBoundedWorkbookText("xl/sharedStrings.xml");
+  const sharedStrings = parseSharedStrings(sharedStringsXml, assertXmlBudget);
+  if (sheetRefs.length === 0) {
+    throw new Error("excel_preview_no_recognized_sheet");
+  }
 
   const parsedSheets: SheetData[] = [];
-  for (const sheet of sheets) {
+  for (const sheet of sheetRefs) {
     assertPreviewBudget(startMs, timeoutMs, now);
     const target = relationshipMap.get(sheet.relationshipId);
     if (!target) {

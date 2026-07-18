@@ -124,3 +124,216 @@ test("parseExcelWorkbookPreview reads shared strings and inline text without xls
     },
   ]);
 });
+
+test("parseExcelWorkbookPreview reads Unicode-prefixed OOXML with bound relationship namespaces and quote styles", async () => {
+  const sheets = await parseExcelWorkbookPreview(new ArrayBuffer(32), {
+    loadZip: createZipLoader({
+      "xl/workbook.xml":
+        "<?xml version='1.0' encoding='UTF-8'?><名:workbook xmlns:名='urn:workbook' xmlns:关系='http://schemas.openxmlformats.org/officeDocument/2006/relationships'><名:sheets><名:sheet name='Annex 15 Checks' sheetId='1' 关系:id='rId1'/></名:sheets></名:workbook>",
+      "xl/_rels/workbook.xml.rels":
+        "<?xml version='1.0' encoding='UTF-8'?><pkg:Relationships xmlns:pkg='urn:relationships'><pkg:Relationship Id=\"rId1\" Target=\"worksheets/sheet1.xml\"/></pkg:Relationships>",
+      "xl/sharedStrings.xml":
+        "<?xml version='1.0' encoding='UTF-8'?><s:sst xmlns:s='urn:strings'><s:si><s:t>ACCEPT-XLSX-9472</s:t></s:si></s:sst>",
+      "xl/worksheets/sheet1.xml":
+        "<?xml version='1.0' encoding='UTF-8'?><w:worksheet xmlns:w='urn:worksheet'><w:sheetData><w:row r='1'><w:c r=\"A1\" t='s'><w:v>0</w:v></w:c><w:c r='B1' t=\"inlineStr\"><w:is><w:t>Visible</w:t></w:is></w:c></w:row></w:sheetData></w:worksheet>",
+    }),
+  });
+
+  assert.deepEqual(sheets, [
+    {
+      name: "Annex 15 Checks",
+      data: [["ACCEPT-XLSX-9472", "Visible"]],
+    },
+  ]);
+});
+
+test("parseExcelWorkbookPreview rejects workbook XML with no recognizable worksheet", async () => {
+  await assert.rejects(
+    () =>
+      parseExcelWorkbookPreview(new ArrayBuffer(32), {
+        loadZip: createZipLoader({
+          "xl/workbook.xml":
+            "<?xml version='1.0' encoding='UTF-8'?><x:workbook xmlns:x='urn:workbook'><x:sheets><x:unsupported/></x:sheets></x:workbook>",
+        }),
+      }),
+    /excel_preview_no_recognized_sheet/,
+  );
+});
+
+test("parseExcelWorkbookPreview ignores near-name OOXML tags", async () => {
+  await assert.rejects(
+    () =>
+      parseExcelWorkbookPreview(new ArrayBuffer(32), {
+        loadZip: createZipLoader({
+          "xl/workbook.xml":
+            "<?xml version='1.0'?><x:workbook xmlns:x='urn:workbook' xmlns:rel='http://schemas.openxmlformats.org/officeDocument/2006/relationships'><x:sheets><x:sheet-extra name='not-a-sheet' rel:id='rId1'/></x:sheets></x:workbook>",
+          "xl/_rels/workbook.xml.rels":
+            "<?xml version='1.0'?><pkg:Relationships xmlns:pkg='urn:relationships'><pkg:Relationship-extra Id='rId1' Target='worksheets/sheet1.xml'/></pkg:Relationships>",
+        }),
+      }),
+    /excel_preview_no_recognized_sheet/,
+  );
+
+  await assert.rejects(
+    () =>
+      parseExcelWorkbookPreview(new ArrayBuffer(32), {
+        loadZip: createZipLoader({
+          "xl/workbook.xml":
+            "<?xml version='1.0'?><x:workbook xmlns:x='urn:workbook' xmlns:rel='http://schemas.openxmlformats.org/officeDocument/2006/relationships'><x:sheets><x:sheet name='Sheet1' rel:id='rId1'/></x:sheets></x:workbook>",
+          "xl/_rels/workbook.xml.rels":
+            "<?xml version='1.0'?><pkg:Relationships xmlns:pkg='urn:relationships'><pkg:Relationship-extra Id='rId1' Target='worksheets/sheet1.xml'/></pkg:Relationships>",
+          "xl/worksheets/sheet1.xml":
+            "<?xml version='1.0'?><w:worksheet xmlns:w='urn:worksheet'><w:sheetData/></w:worksheet>",
+        }),
+      }),
+    /excel_preview_missing_workbook_xml/,
+  );
+});
+
+test("parseExcelWorkbookPreview rejects mismatched XML qualified names", async () => {
+  await assert.rejects(
+    () =>
+      parseExcelWorkbookPreview(new ArrayBuffer(32), {
+        loadZip: createZipLoader({
+          "xl/workbook.xml":
+            "<?xml version='1.0'?><x:workbook xmlns:x='urn:workbook' xmlns:rel='http://schemas.openxmlformats.org/officeDocument/2006/relationships'><x:sheets><x:sheet name='Sheet1' rel:id='rId1'/></x:sheets></x:workbook>",
+          "xl/_rels/workbook.xml.rels":
+            "<?xml version='1.0'?><pkg:Relationships xmlns:pkg='urn:relationships'><pkg:Relationship Id='rId1' Target='worksheets/sheet1.xml'/></pkg:Relationships>",
+          "xl/worksheets/sheet1.xml":
+            "<?xml version='1.0'?><w:worksheet xmlns:w='urn:worksheet'><w:sheetData><w:row r='1'><w:c r='A1'/></x:row></w:sheetData></w:worksheet>",
+        }),
+      }),
+    /excel_preview_invalid_xml/,
+  );
+});
+
+test("parseExcelWorkbookPreview applies its parse budget to adversarial unclosed row and cell tags", async () => {
+  let parsingSheet = false;
+  let tick = 0;
+  const entries: ZipMap = {
+    "xl/workbook.xml":
+      "<?xml version='1.0'?><x:workbook xmlns:x='urn:workbook' xmlns:rel='http://schemas.openxmlformats.org/officeDocument/2006/relationships'><x:sheets><x:sheet name='Sheet1' rel:id='rId1'/></x:sheets></x:workbook>",
+    "xl/_rels/workbook.xml.rels":
+      "<?xml version='1.0'?><pkg:Relationships xmlns:pkg='urn:relationships'><pkg:Relationship Id='rId1' Target='worksheets/sheet1.xml'/></pkg:Relationships>",
+    "xl/worksheets/sheet1.xml":
+      `<?xml version='1.0'?><w:worksheet xmlns:w='urn:worksheet'><w:sheetData>${"<w:row><w:c>".repeat(4_000)}</w:sheetData></w:worksheet>`,
+  };
+
+  await assert.rejects(
+    () =>
+      parseExcelWorkbookPreview(new ArrayBuffer(32), {
+        timeoutMs: 10,
+        now() {
+          return parsingSheet ? (tick += 1) : 0;
+        },
+        loadZip: async () => ({
+          file(path: string) {
+            if (path === "xl/worksheets/sheet1.xml") {
+              parsingSheet = true;
+            }
+            const contents = entries[path];
+            if (contents == null) return null;
+            return {
+              async async(type: string) {
+                assert.equal(type, "string");
+                return contents;
+              },
+            };
+          },
+        }),
+      }),
+    /excel_preview_timeout/,
+  );
+});
+
+test("parseExcelWorkbookPreview rejects namespace and entity violations", async () => {
+  const invalidWorkbooks = [
+    "<x:workbook xmlns:x='urn:workbook'><x:sheets><x:sheet name='Sheet1' rel:id='rId1'/></x:sheets></x:workbook>",
+    "<x:workbook xmlns:x='urn:workbook'>&unknown;</x:workbook>",
+    "<x:workbook xmlns:x='urn:workbook' bad='&unknown;'/>",
+    "<x:workbook xmlns:x='urn:workbook' bad='raw < value'/>",
+    "<!DOCTYPE x [<!ENTITY external SYSTEM 'https://example.invalid/entity'>]><x:workbook xmlns:x='urn:workbook'/>",
+  ];
+
+  for (const workbookXml of invalidWorkbooks) {
+    await assert.rejects(
+      () =>
+        parseExcelWorkbookPreview(new ArrayBuffer(32), {
+          loadZip: createZipLoader({ "xl/workbook.xml": workbookXml }),
+        }),
+      /excel_preview_invalid_xml/,
+    );
+  }
+});
+
+test("parseExcelWorkbookPreview enforces XML depth and node limits", async () => {
+  const nested = "<x:n>".repeat(65) + "</x:n>".repeat(65);
+  await assert.rejects(
+    () =>
+      parseExcelWorkbookPreview(new ArrayBuffer(32), {
+        loadZip: createZipLoader({
+          "xl/workbook.xml": `<x:workbook xmlns:x='urn:workbook'>${nested}</x:workbook>`,
+        }),
+      }),
+    /excel_preview_limits_exceeded/,
+  );
+
+  await assert.rejects(
+    () =>
+      parseExcelWorkbookPreview(new ArrayBuffer(32), {
+        loadZip: createZipLoader({
+          "xl/workbook.xml": `<x:workbook xmlns:x='urn:workbook'>${"<x:n/>".repeat(50_001)}</x:workbook>`,
+        }),
+      }),
+    /excel_preview_limits_exceeded/,
+  );
+});
+
+test("parseExcelWorkbookPreview bounds deeply nested inline strings", async () => {
+  const nestedInline = "<w:n>".repeat(65) + "<w:t>value</w:t>" + "</w:n>".repeat(65);
+  await assert.rejects(
+    () =>
+      parseExcelWorkbookPreview(new ArrayBuffer(32), {
+        timeoutMs: EXCEL_PREVIEW_TIMEOUT_MS,
+        loadZip: createZipLoader({
+          "xl/workbook.xml":
+            "<x:workbook xmlns:x='urn:workbook' xmlns:rel='http://schemas.openxmlformats.org/officeDocument/2006/relationships'><x:sheets><x:sheet name='Sheet1' rel:id='rId1'/></x:sheets></x:workbook>",
+          "xl/_rels/workbook.xml.rels":
+            "<pkg:Relationships xmlns:pkg='urn:relationships'><pkg:Relationship Id='rId1' Target='worksheets/sheet1.xml'/></pkg:Relationships>",
+          "xl/worksheets/sheet1.xml":
+            `<w:worksheet xmlns:w='urn:worksheet'><w:sheetData><w:row r='1'><w:c r='A1' t='inlineStr'><w:is>${nestedInline}</w:is></w:c></w:row></w:sheetData></w:worksheet>`,
+        }),
+      }),
+    /excel_preview_limits_exceeded/,
+  );
+});
+
+test("parseExcelWorkbookPreview reads Strict OOXML relationships and cached numeric formulas", async () => {
+  const sheets = await parseExcelWorkbookPreview(new ArrayBuffer(32), {
+    loadZip: createZipLoader({
+      "xl/workbook.xml":
+        "<s:workbook xmlns:s='urn:spreadsheet' xmlns:strictRel='http://purl.oclc.org/ooxml/officeDocument/relationships'><s:sheets><s:sheet name='Strict Sheet' strictRel:id='rIdStrict'/></s:sheets></s:workbook>",
+      "xl/_rels/workbook.xml.rels":
+        "<p:Relationships xmlns:p='urn:package'><p:Relationship Id='rIdStrict' Target='worksheets/sheet1.xml'/></p:Relationships>",
+      "xl/worksheets/sheet1.xml":
+        "<s:worksheet xmlns:s='urn:spreadsheet'><s:sheetData><s:row r='1'><s:c r='A1'><s:f>SUM(40,2)</s:f><s:v>42</s:v></s:c><s:c r='B1'><s:v>3.5</s:v></s:c></s:row></s:sheetData></s:worksheet>",
+    }),
+  });
+
+  assert.deepEqual(sheets, [
+    { name: "Strict Sheet", data: [["42", "3.5"]] },
+  ]);
+});
+
+test("parseExcelWorkbookPreview rejects unclosed XML when saxes closes the document", async () => {
+  await assert.rejects(
+    () =>
+      parseExcelWorkbookPreview(new ArrayBuffer(32), {
+        loadZip: createZipLoader({
+          "xl/workbook.xml":
+            "<x:workbook xmlns:x='urn:workbook'><x:sheets>",
+        }),
+      }),
+    /excel_preview_invalid_xml/,
+  );
+});
