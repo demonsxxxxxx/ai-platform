@@ -146,6 +146,7 @@ export function ChatAppContent({
     stopGeneration,
     clearMessages,
     loadHistory,
+    runControlLifecycle,
   } = useAgent({
     onApprovalRequired: (approval) => {
       addApproval({
@@ -496,6 +497,7 @@ export function ChatAppContent({
     if (!currentRunId) return;
     const panelKey = `run-playback:${currentRunId}`;
     const isMobile = typeof window !== "undefined" && window.innerWidth < 640;
+    runControlLifecycle.open();
     openPersistentToolPanel({
       title: t("runPlayback.title"),
       icon: <History size={16} />,
@@ -504,9 +506,9 @@ export function ChatAppContent({
       panelKey,
       viewMode: isMobile ? "center" : "sidebar",
       mobileFillViewport: true,
-      children: <RunPlaybackPanel runId={currentRunId} panelKey={panelKey} />,
+      children: <RunPlaybackPanel lifecycle={runControlLifecycle} panelKey={panelKey} />,
     });
-  }, [currentRunId, t]);
+  }, [currentRunId, runControlLifecycle, t]);
 
   return (
     <AppShell

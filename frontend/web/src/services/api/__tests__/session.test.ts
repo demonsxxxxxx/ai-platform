@@ -5,6 +5,8 @@ import {
   buildMessageCheckpointUrl,
   buildMessageForkUrl,
   buildRunCancelUrl,
+  buildRunRetryUrl,
+  buildRunResumeUrl,
   buildSessionListUrl,
   buildSessionInputFilesUrl,
   buildSessionRunsUrl,
@@ -14,6 +16,7 @@ import {
   buildSubmitChatBody,
   isChatStreamNeedsConfirmation,
   resolveChatSessionAgentId,
+  sessionApi,
 } from "../session.ts";
 
 test("builds the active session list URL with pagination", () => {
@@ -42,6 +45,49 @@ test("builds the canonical run cancel url", () => {
     buildRunCancelUrl("run-1"),
     "/api/ai/runs/run-1/cancel",
   );
+});
+
+test("builds the canonical retry and checkpoint-resume URLs", () => {
+  assert.equal(
+    buildRunRetryUrl("run/with space"),
+    "/api/ai/runs/run%2Fwith%20space/retry",
+  );
+  assert.equal(
+    buildRunResumeUrl("run/with space"),
+    "/api/ai/runs/run%2Fwith%20space/resume",
+  );
+});
+
+test("run-control mutations use the shared cookie-session transport and forward AbortSignal", async () => {
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const calls: Array<{ url: string; method?: string; signal?: AbortSignal | null }> = [];
+  globalThis.fetch = (async (input, init) => {
+    calls.push({
+      url: String(input),
+      method: init?.method,
+      signal: init?.signal,
+    });
+    return new Response(
+      JSON.stringify({ run_id: "run-child", session_id: "session-child", status: "queued" }),
+    );
+  }) as typeof fetch;
+
+  try {
+    await sessionApi.cancelRun("run-parent", { signal: controller.signal });
+    await sessionApi.retryRun("run-parent", { signal: controller.signal });
+    await sessionApi.resumeRun("run-parent", { signal: controller.signal });
+    assert.deepEqual(
+      calls.map((call) => [call.url, call.method, call.signal]),
+      [
+        ["/api/ai/runs/run-parent/cancel", "POST", controller.signal],
+        ["/api/ai/runs/run-parent/retry", "POST", controller.signal],
+        ["/api/ai/runs/run-parent/resume", "POST", controller.signal],
+      ],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("includes trace_id when looking up a specific run by trace", () => {

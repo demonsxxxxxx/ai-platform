@@ -238,6 +238,25 @@ export function buildRunCancelUrl(runId: string): string {
   return `${API_BASE}/api/ai/runs/${runId}/cancel`;
 }
 
+/** Build the existing retry-as-new-child route for one opaque run id. */
+export function buildRunRetryUrl(runId: string): string {
+  return `${API_BASE}/api/ai/runs/${encodeURIComponent(runId)}/retry`;
+}
+
+/** Build the existing checkpoint-resume-as-new-child route for one run id. */
+export function buildRunResumeUrl(runId: string): string {
+  return `${API_BASE}/api/ai/runs/${encodeURIComponent(runId)}/resume`;
+}
+
+/** A newly queued child produced by the existing run-control routes. */
+export interface RunControlChildResponse {
+  run_id: string;
+  session_id: string;
+  status: string;
+  queue_position?: number;
+  queue_insight?: unknown;
+}
+
 /** Build the single supported Chat submission endpoint. */
 export function buildSubmitChatUrl(agentId = DEFAULT_CHAT_AGENT_ID): string {
   return `${API_BASE}/api/chat/stream?agent_id=${encodeURIComponent(agentId)}`;
@@ -406,13 +425,39 @@ export const sessionApi = {
   /**
    * Cancel a queued or running platform run.
    */
-  async cancelRun(runId: string): Promise<{
+  async cancelRun(
+    runId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<{
     run_id: string;
     session_id?: string | null;
     status: string;
   }> {
     return authFetch(buildRunCancelUrl(runId), {
       method: "POST",
+      signal: options.signal,
+    });
+  },
+
+  /** Create one queued retry child; callers must never replay this POST. */
+  async retryRun(
+    runId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<RunControlChildResponse> {
+    return authFetch(buildRunRetryUrl(runId), {
+      method: "POST",
+      signal: options.signal,
+    });
+  },
+
+  /** Create one queued checkpoint-resume child; callers must never replay it. */
+  async resumeRun(
+    runId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<RunControlChildResponse> {
+    return authFetch(buildRunResumeUrl(runId), {
+      method: "POST",
+      signal: options.signal,
     });
   },
 

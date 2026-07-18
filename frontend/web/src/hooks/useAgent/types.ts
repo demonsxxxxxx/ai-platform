@@ -6,6 +6,7 @@ import type {
   SelectedSkillRequest,
 } from "../../types";
 import type { SelectedSkillRecoverableCode } from "../useSelectedSkillTask";
+import type { RunControlLifecycle } from "./runControlLifecycle";
 
 export type SubmissionOutcome =
   | { status: "accepted" }
@@ -328,6 +329,8 @@ export interface UseAgentReturn {
     targetRunId?: string,
   ) => Promise<SessionConfig | null>;
   reconnectSSE: () => Promise<void>;
+  /** Stable lifecycle subscription used by persistent Run Playback panels. */
+  runControlLifecycle: RunControlLifecycle;
 }
 
 // Session configuration restored from metadata

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import {
@@ -18,7 +18,6 @@ import {
 } from "lucide-react";
 import { LoadingSpinner } from "../../common";
 import type { CollapsibleStatus } from "../../common";
-import { fetchRunPlayback } from "../../../services/api/runPlayback";
 import {
   buildRunPlaybackErrorViewModel,
   buildRunPlaybackLoadingViewModel,
@@ -37,38 +36,29 @@ import {
   openRunPlaybackArtifactPreview,
 } from "./runPlaybackArtifactPreview";
 import { updatePersistentToolPanel } from "../../chat/ChatMessage/items/persistentToolPanelState";
+import {
+  type RunControlLifecycle,
+  type RunControlPhase,
+  type RunControlSnapshot,
+} from "../../../hooks/useAgent/runControlLifecycle";
 
 interface RunPlaybackPanelProps {
-  runId: string;
+  lifecycle: RunControlLifecycle;
   panelKey: string;
 }
 
-export function RunPlaybackPanel({ runId, panelKey }: RunPlaybackPanelProps) {
-  const [reloadToken, setReloadToken] = useState(0);
-  const [viewModel, setViewModel] = useState<RunPlaybackPanelViewModel>(() =>
-    buildRunPlaybackLoadingViewModel(runId),
+export function RunPlaybackPanel({ lifecycle, panelKey }: RunPlaybackPanelProps) {
+  const snapshot = useSyncExternalStore(
+    lifecycle.subscribe,
+    lifecycle.getSnapshot,
+    lifecycle.getSnapshot,
   );
-
-  useEffect(() => {
-    let cancelled = false;
-    setViewModel(buildRunPlaybackLoadingViewModel(runId));
-
-    fetchRunPlayback(runId)
-      .then((response) => {
-        if (!cancelled) {
-          setViewModel(buildRunPlaybackPanelViewModel(response));
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setViewModel(buildRunPlaybackErrorViewModel(runId, error));
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [runId, reloadToken]);
+  const runId =
+    snapshot.owner?.runId ??
+    snapshot.child?.runId ??
+    snapshot.playback?.run_id ??
+    "run";
+  const viewModel = getViewModel(snapshot, runId);
 
   useEffect(() => {
     updatePersistentToolPanel(
@@ -81,24 +71,22 @@ export function RunPlaybackPanel({ runId, panelKey }: RunPlaybackPanelProps) {
     );
   }, [panelKey, runId, viewModel]);
 
-  const handleRetry = () => {
-    setReloadToken((value) => value + 1);
-  };
-
   return (
     <div
       className="flex h-full min-h-0 flex-col bg-[var(--theme-bg-card)] text-[var(--theme-text)] dark:bg-stone-900"
       data-run-playback-panel
       data-run-playback-state={viewModel.state}
+      aria-busy={snapshot.isBusy}
     >
       <SummaryBlock summary={viewModel.summary} />
+      <RunControlActions lifecycle={lifecycle} snapshot={snapshot} />
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
         {viewModel.state === "loading" && <LoadingBlock />}
         {viewModel.state === "error" && (
           <ErrorBlock
             message={viewModel.errorMessage}
-            onRetry={handleRetry}
+            onRetry={() => lifecycle.open()}
           />
         )}
         {viewModel.state === "empty" && <EmptyBlock />}
@@ -118,6 +106,157 @@ export function RunPlaybackPanel({ runId, panelKey }: RunPlaybackPanelProps) {
       </div>
     </div>
   );
+}
+
+function getViewModel(
+  snapshot: RunControlSnapshot,
+  runId: string,
+): RunPlaybackPanelViewModel {
+  if (snapshot.playback) {
+    return buildRunPlaybackPanelViewModel(snapshot.playback);
+  }
+  if (snapshot.rejectionMessage) {
+    return buildRunPlaybackErrorViewModel(
+      runId,
+      new Error(snapshot.rejectionMessage),
+    );
+  }
+  if (snapshot.readError) {
+    return buildRunPlaybackErrorViewModel(
+      runId,
+      new Error(snapshot.readError),
+    );
+  }
+  return buildRunPlaybackLoadingViewModel(runId);
+}
+
+function RunControlActions({
+  lifecycle,
+  snapshot,
+}: {
+  lifecycle: RunControlLifecycle;
+  snapshot: RunControlSnapshot;
+}) {
+  const { t } = useTranslation();
+  const actionMessage = getActionMessage(snapshot, t);
+  const disabled = snapshot.isBusy;
+  const hasAction =
+    snapshot.canCancel ||
+    snapshot.canRetry ||
+    snapshot.canResume ||
+    snapshot.canReconnect ||
+    snapshot.phase === "created_unopened" ||
+    snapshot.phase === "unconfirmed";
+
+  if (!hasAction && !actionMessage && !snapshot.rejectionMessage) {
+    return null;
+  }
+
+  return (
+    <div className="shrink-0 border-b border-[var(--theme-border)] bg-[var(--theme-bg-sidebar)] px-3 py-2 dark:border-stone-800 dark:bg-stone-950/50 sm:px-4">
+      {(actionMessage || snapshot.isBusy) && (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-busy={snapshot.isBusy}
+          className="text-xs text-stone-600 dark:text-stone-300"
+        >
+          {actionMessage || t("runPlayback.actions.working")}
+        </div>
+      )}
+      {snapshot.rejectionMessage && (
+        <div
+          role="alert"
+          className="mt-1 text-xs text-red-700 dark:text-red-300"
+        >
+          {snapshot.rejectionMessage}
+        </div>
+      )}
+      {hasAction && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {snapshot.canCancel && (
+            <RunControlButton
+              label={t("runPlayback.actions.cancel")}
+              disabled={disabled}
+              onClick={() => void lifecycle.cancel()}
+            />
+          )}
+          {snapshot.canRetry && (
+            <RunControlButton
+              label={t("runPlayback.actions.retryRun")}
+              disabled={disabled}
+              onClick={() => void lifecycle.retry()}
+            />
+          )}
+          {snapshot.canResume && (
+            <RunControlButton
+              label={t("runPlayback.actions.resume")}
+              disabled={disabled}
+              onClick={() => void lifecycle.resume()}
+            />
+          )}
+          {snapshot.canReconnect && (
+            <RunControlButton
+              label={t("runPlayback.actions.reconnect")}
+              disabled={disabled}
+              onClick={() => void lifecycle.reconnect()}
+            />
+          )}
+          {snapshot.phase === "created_unopened" && (
+            <RunControlButton
+              label={t("runPlayback.actions.reopen")}
+              disabled={disabled}
+              onClick={() => void lifecycle.reopenChild()}
+            />
+          )}
+          {snapshot.phase === "unconfirmed" && (
+            <RunControlButton
+              label={t("runPlayback.actions.refresh")}
+              disabled={disabled}
+              onClick={() => lifecycle.open()}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RunControlButton({
+  label,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className="inline-flex h-8 items-center rounded-md border border-[var(--theme-border)] bg-[var(--theme-bg-card)] px-2.5 text-xs font-medium text-stone-700 transition-colors hover:bg-[var(--theme-bg-sidebar)] disabled:cursor-not-allowed disabled:opacity-60 dark:border-stone-700 dark:bg-stone-900 dark:text-stone-200 dark:hover:bg-stone-800"
+    >
+      {label}
+    </button>
+  );
+}
+
+function getActionMessage(snapshot: RunControlSnapshot, t: TFunction): string | null {
+  const actionKeys: Partial<Record<RunControlPhase, string>> = {
+    cancelling: "cancelling",
+    cancel_requested: "cancelRequested",
+    retrying: "retrying",
+    resuming: "resuming",
+    adopting: "adopting",
+    created_unopened: "createdUnopened",
+    unconfirmed: "unconfirmed",
+    reconnecting: "reconnecting",
+  };
+  const key = actionKeys[snapshot.phase];
+  return key ? t(`runPlayback.actionStatus.${key}`) : null;
 }
 
 function SummaryBlock({ summary }: { summary: RunPlaybackPanelSummary }) {
@@ -297,7 +436,7 @@ function ErrorBlock({
         className="mt-3 inline-flex h-8 items-center gap-2 rounded-md border border-red-200 bg-[var(--theme-bg-card)] px-2.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 dark:border-red-900/60 dark:bg-red-950/20 dark:text-red-300 dark:hover:bg-red-950/40"
       >
         <RefreshCw size={13} />
-        {t("runPlayback.retry")}
+        {t("runPlayback.actions.refresh")}
       </button>
     </div>
   );

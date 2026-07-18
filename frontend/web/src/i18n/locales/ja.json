@@ -61,8 +61,27 @@
     }
   },
   "appName": "AI Platform",
-  "runPlayback": {
-    "artifacts": "成果物",
+    "runPlayback": {
+      "actions": {
+        "cancel": "実行をキャンセル",
+        "reconnect": "実行に再接続",
+        "refresh": "再生を更新",
+        "reopen": "作成済みの実行を開く",
+        "resume": "チェックポイントから再開",
+        "retryRun": "実行を再試行",
+        "working": "実行制御を更新中…"
+      },
+      "actionStatus": {
+        "adopting": "作成された実行を開いています…",
+        "cancelRequested": "キャンセルが要求されました。権威ある終了結果を待機しています。",
+        "cancelling": "キャンセルを要求しています…",
+        "createdUnopened": "新しい実行は作成されましたが、履歴を開けませんでした。新しい実行を作らずに開けます。",
+        "reconnecting": "実行に再接続しています…",
+        "resuming": "チェックポイント再開実行を作成しています…",
+        "retrying": "再試行実行を作成しています…",
+        "unconfirmed": "要求結果は未確認です。再実行せず、再生と準備状態のみを更新しています。"
+      },
+      "artifacts": "成果物",
     "download": "ダウンロード",
     "empty": "この実行の回放データはまだありません。",
     "error": "実行回放の読み込みに失敗しました",
