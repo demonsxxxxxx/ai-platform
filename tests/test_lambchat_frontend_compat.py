@@ -1332,9 +1332,136 @@ def test_lambchat_sse_stream_cannot_read_cross_tenant_run_events(monkeypatch):
         headers=action_headers(tenant_id="other"),
     )
 
+    assert response.status_code == 404
+    assert response.json()["detail"] == "run_not_found"
+    assert "event: metadata" not in response.text
+    assert "event:" not in response.text
+
+
+@pytest.mark.parametrize("case", ["active", "deleted", "foreign"])
+def test_lambchat_sse_stream_authorizes_exact_run_before_response_or_metadata(monkeypatch, case):
+    calls = 0
+    child_reads = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        nonlocal calls
+        calls += 1
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run_a")
+        if case == "deleted":
+            return None
+        return {
+            "id": run_id,
+            "session_id": "ses_a" if case == "active" else "ses_foreign",
+            "status": "succeeded",
+            "result_json": {"message": "authorized answer"},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def record_event_read(conn, *, tenant_id, run_id):
+        child_reads.append("events")
+        return []
+
+    async def record_artifact_read(conn, *, tenant_id, run_id):
+        child_reads.append("artifacts")
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        record_event_read,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        record_artifact_read,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/chat/sessions/ses_a/stream?run_id=run_a",
+        headers=auth_headers(),
+    )
+
+    if case == "active":
+        assert response.status_code == 200
+        assert response.text.index("event: metadata") < response.text.index("event: message:chunk")
+        assert calls == 2
+        assert child_reads == ["events", "artifacts"]
+    else:
+        assert response.status_code == 404
+        assert response.json()["detail"] == "run_not_found"
+        assert "event: metadata" not in response.text
+        assert "event:" not in response.text
+        assert calls == 1
+        assert child_reads == []
+
+
+def test_lambchat_sse_stream_rechecks_authorization_before_later_child_reads(monkeypatch):
+    calls = 0
+    child_reads = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            return None
+        return {
+            "id": run_id,
+            "session_id": "ses_a",
+            "status": "running",
+            "result_json": {},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def record_event_read(conn, *, tenant_id, run_id):
+        child_reads.append("events")
+        return []
+
+    async def record_artifact_read(conn, *, tenant_id, run_id):
+        child_reads.append("artifacts")
+        return []
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.get_settings",
+        lambda: SimpleNamespace(run_event_stream_max_heartbeats=2),
+    )
+    monkeypatch.setattr("app.routes.lambchat_compat.asyncio.sleep", no_sleep)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        record_event_read,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        record_artifact_read,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/chat/sessions/ses_a/stream?run_id=run_a",
+        headers=auth_headers(),
+    )
+
     assert response.status_code == 200
+    assert calls == 3
+    assert child_reads == ["events", "artifacts"]
+    assert response.text.count("event: metadata") == 1
     assert '"error": "run_not_found"' in response.text
-    assert "assistant_delta" not in response.text
+    assert "event: done" in response.text
 
 
 def test_lambchat_sse_stream_redacts_runtime_private_answer(monkeypatch):
@@ -1456,7 +1583,7 @@ def test_lambchat_sse_stream_uses_configured_long_task_heartbeat_window(monkeypa
     response = client.get("/api/chat/sessions/ses_a/stream?run_id=run_a", headers=auth_headers())
 
     assert response.status_code == 200
-    assert calls["run"] == 2
+    assert calls["run"] == 3
     assert '"error": "stream_timeout"' in response.text
     assert '"status": "timeout"' in response.text
 

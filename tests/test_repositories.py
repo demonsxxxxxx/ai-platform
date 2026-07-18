@@ -144,6 +144,239 @@ class SingleRowConnection:
         return SingleRowCursor(self.row)
 
 
+class _SessionTableConnection:
+    def __init__(self, rows):
+        self.rows = rows
+        self.sql = ""
+        self.params = None
+
+    async def execute(self, sql, params):
+        self.sql = " ".join(sql.split())
+        self.params = params
+        tenant_id, session_id, user_id = params
+        row = next(
+            (
+                candidate
+                for candidate in self.rows
+                if candidate["tenant_id"] == tenant_id
+                and candidate["id"] == session_id
+                and candidate["user_id"] == user_id
+                and ("status = 'active'" not in self.sql or candidate["status"] == "active")
+            ),
+            None,
+        )
+        return SingleRowCursor(row)
+
+
+class _RowsCursor:
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def fetchall(self):
+        return self.rows
+
+
+class _RunSessionTableConnection:
+    def __init__(self, *, run, session):
+        self.run = run
+        self.session = session
+        self.calls = []
+
+    async def execute(self, sql, params):
+        normalized = " ".join(sql.split())
+        self.calls.append((normalized, params))
+        tenant_id, run_id, user_id = params
+        run = self.run
+        row = run if (
+            run["tenant_id"] == tenant_id
+            and run["id"] == run_id
+            and run["user_id"] == user_id
+        ) else None
+        if row is not None and "join sessions" in normalized:
+            session = self.session
+            predicates = [session["id"] == run["session_id"]]
+            if "sessions.tenant_id = runs.tenant_id" in normalized:
+                predicates.append(session["tenant_id"] == run["tenant_id"])
+            if "sessions.workspace_id = runs.workspace_id" in normalized:
+                predicates.append(session["workspace_id"] == run["workspace_id"])
+            if "sessions.user_id = runs.user_id" in normalized:
+                predicates.append(session["user_id"] == run["user_id"])
+            if "sessions.agent_id = runs.agent_id" in normalized:
+                predicates.append(session["agent_id"] == run["agent_id"])
+            if "sessions.status = 'active'" in normalized:
+                predicates.append(session["status"] == "active")
+            if not all(predicates):
+                row = None
+        return SingleRowCursor(row)
+
+
+class _RevealedArtifactTableConnection:
+    def __init__(self, *, artifact, run, session):
+        self.artifact = artifact
+        self.run = run
+        self.session = session
+        self.calls = []
+
+    async def execute(self, sql, params):
+        normalized = " ".join(sql.split())
+        self.calls.append((normalized, params))
+        tenant_id, user_id = params[:2]
+        artifact = self.artifact
+        run = self.run
+        visible = (
+            artifact["tenant_id"] == tenant_id
+            and run["id"] == artifact["run_id"]
+            and run["tenant_id"] == artifact["tenant_id"]
+            and run["user_id"] == user_id
+        )
+        session = self.session
+        session_matches = session["id"] == run["session_id"]
+        if "sessions.tenant_id = runs.tenant_id" in normalized:
+            session_matches = session_matches and session["tenant_id"] == run["tenant_id"]
+        if "sessions.workspace_id = runs.workspace_id" in normalized:
+            session_matches = session_matches and session["workspace_id"] == run["workspace_id"]
+        if "sessions.user_id = runs.user_id" in normalized:
+            session_matches = session_matches and session["user_id"] == run["user_id"]
+        if "sessions.agent_id = runs.agent_id" in normalized:
+            session_matches = session_matches and session["agent_id"] == run["agent_id"]
+        if "sessions.status = 'active'" in normalized:
+            session_matches = session_matches and session["status"] == "active"
+        if "left join sessions" not in normalized:
+            visible = visible and session_matches
+        elif "sessions.status = 'active'" in normalized:
+            visible = visible and session_matches
+        if not visible:
+            return _RowsCursor([])
+        if "group by runs.session_id" in normalized:
+            return _RowsCursor(
+                [
+                    {
+                        "session_id": run["session_id"],
+                        "session_name": session["title"],
+                        "file_count": 1,
+                        "updated_at": artifact["created_at"],
+                    }
+                ]
+            )
+        return _RowsCursor(
+            [
+                {
+                    **artifact,
+                    "run_id": run["id"],
+                    "session_id": run["session_id"],
+                    "workspace_id": run["workspace_id"],
+                    "user_id": run["user_id"],
+                    "session_name": session["title"],
+                }
+            ]
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "lookup",
+    [repositories.get_authorized_session, repositories.get_authorized_lambchat_session],
+)
+async def test_owner_session_lookups_are_active_only_and_keep_principal_scope(lookup):
+    active = {
+        "id": "session-active",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "status": "active",
+    }
+    deleted = {**active, "id": "session-deleted", "status": "deleted"}
+    conn = _SessionTableConnection([active, deleted])
+
+    assert await lookup(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-active",
+    ) == active
+    assert "status = 'active'" in conn.sql
+    assert conn.params == ("tenant-a", "session-active", "user-a")
+
+    assert await lookup(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        session_id="session-deleted",
+    ) is None
+    assert "status = 'active'" in conn.sql
+
+    assert await lookup(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-b",
+        session_id="session-active",
+    ) is None
+    assert conn.params == ("tenant-a", "session-active", "user-b")
+
+
+@pytest.mark.asyncio
+async def test_owner_run_lookup_closes_on_session_delete_and_locks_only_the_run_row():
+    run = {
+        "id": "run-a",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "agent_id": "general-agent",
+        "status": "running",
+    }
+    session = {
+        "id": "session-a",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "status": "active",
+    }
+    conn = _RunSessionTableConnection(run=run, session=session)
+
+    assert await repositories.get_authorized_run(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+        for_update=True,
+    ) == run
+    active_sql, active_params = conn.calls[-1]
+    assert active_sql.startswith("select runs.* from runs join sessions")
+    assert "sessions.tenant_id = runs.tenant_id" in active_sql
+    assert "sessions.workspace_id = runs.workspace_id" in active_sql
+    assert "sessions.user_id = runs.user_id" in active_sql
+    assert "sessions.agent_id = runs.agent_id" in active_sql
+    assert "sessions.status = 'active'" in active_sql
+    assert active_sql.endswith("for update of runs")
+    assert active_params == ("tenant-a", "run-a", "user-a")
+
+    session["status"] = "deleted"
+    assert await repositories.get_authorized_run(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+    ) is None
+
+    session["status"] = "active"
+    session["agent_id"] = "other-agent"
+    assert await repositories.get_authorized_run(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        run_id="run-a",
+    ) is None
+    assert await repositories.get_authorized_run(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-b",
+        run_id="run-a",
+    ) is None
+
+
 @pytest.mark.asyncio
 async def test_session_action_repositories_bind_tenant_and_active_terminal_state():
     conn = RecordingConnection()
@@ -157,6 +390,7 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
     assert "from sessions" in get_sql
     assert "tenant_id = %s and id = %s" in get_sql
     assert "for update" in get_sql
+    assert "status = 'active'" not in get_sql
     assert get_params == ("tenant-a", "session-a")
 
     await repositories.update_session_title(
@@ -190,6 +424,107 @@ async def test_session_action_repositories_bind_tenant_and_active_terminal_state
     assert "tenant_id = %s and session_id = %s" in messages_sql
     assert "order by created_at asc, id asc" in messages_sql
     assert messages_params == ("tenant-a", "session-a")
+
+
+@pytest.mark.asyncio
+async def test_authorized_artifact_requires_an_active_exact_scope_owning_session():
+    artifact = {
+        "id": "artifact-a",
+        "run_id": "run-a",
+        "storage_key": "tenants/tenant-a/runs/run-a/artifact-a.txt",
+    }
+    conn = SingleRowConnection(artifact)
+
+    row = await repositories.get_authorized_artifact(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        artifact_id="artifact-a",
+    )
+
+    assert row == artifact
+    assert "join sessions on sessions.id = runs.session_id" in conn.sql
+    assert "sessions.tenant_id = runs.tenant_id" in conn.sql
+    assert "sessions.workspace_id = runs.workspace_id" in conn.sql
+    assert "sessions.user_id = runs.user_id" in conn.sql
+    assert "sessions.agent_id = runs.agent_id" in conn.sql
+    assert "runs.user_id = %s" in conn.sql
+    assert "sessions.status = 'active'" in conn.sql
+    assert conn.params == ("tenant-a", "artifact-a", "user-a")
+
+
+@pytest.mark.asyncio
+async def test_revealed_artifact_rows_disappear_after_exact_owning_session_is_deleted():
+    artifact = {
+        "id": "artifact-a",
+        "tenant_id": "tenant-a",
+        "run_id": "run-a",
+        "storage_key": "tenants/tenant-a/runs/run-a/artifact-a.txt",
+        "label": "Artifact A",
+        "content_type": "text/plain",
+        "size_bytes": 10,
+        "artifact_type": "document",
+        "created_at": "2026-07-18T00:00:00Z",
+        "trace_id": "trace-a",
+    }
+    run = {
+        "id": "run-a",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "session_id": "session-a",
+        "agent_id": "general-agent",
+    }
+    session = {
+        "id": "session-a",
+        "tenant_id": "tenant-a",
+        "workspace_id": "workspace-a",
+        "user_id": "user-a",
+        "agent_id": "general-agent",
+        "title": "Session A",
+        "status": "active",
+    }
+    conn = _RevealedArtifactTableConnection(artifact=artifact, run=run, session=session)
+
+    assert [row["id"] for row in await repositories.list_revealed_artifacts(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+    )] == ["artifact-a"]
+    assert [row["session_id"] for row in await repositories.list_revealed_artifact_sessions(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+    )] == ["session-a"]
+    for sql, params in conn.calls:
+        assert "join sessions on sessions.id = runs.session_id" in sql
+        assert "left join sessions" not in sql
+        assert "sessions.tenant_id = runs.tenant_id" in sql
+        assert "sessions.workspace_id = runs.workspace_id" in sql
+        assert "sessions.user_id = runs.user_id" in sql
+        assert "sessions.agent_id = runs.agent_id" in sql
+        assert "sessions.status = 'active'" in sql
+        assert params == ("tenant-a", "user-a")
+
+    session["status"] = "deleted"
+    assert await repositories.list_revealed_artifacts(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+    ) == []
+    assert await repositories.list_revealed_artifact_sessions(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+    ) == []
+
+    session["status"] = "active"
+    session["workspace_id"] = "other-workspace"
+    assert await repositories.list_revealed_artifacts(
+        conn,
+        tenant_id="tenant-a",
+        user_id="user-a",
+    ) == []
 
 
 @pytest.mark.asyncio
@@ -8145,7 +8480,9 @@ async def test_get_authorized_run_can_lock_row_for_retry_race_window():
     )
 
     sql, params = conn.calls[0]
-    assert sql.endswith("for update")
+    assert sql.endswith("for update of runs")
+    assert "join sessions on sessions.id = runs.session_id" in sql
+    assert "sessions.status = 'active'" in sql
     assert params == ("tenant-a", "run-a", "user-a")
 
 

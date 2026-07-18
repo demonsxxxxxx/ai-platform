@@ -10,11 +10,13 @@ from fastapi import HTTPException
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
 from app.capability_distribution import CapabilityAuthorizationDenial
-from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload
+from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload, SandboxLeaseRequest
 from app.repositories import RepositoryConflictError
+from app.routes import lambchat_compat as lambchat_module
 from app.routes import runs as runs_module
 from app.routes.health import admin_status
-from app.routes.files import download_artifact, upload_file
+from app.routes.files import download_artifact, preview_artifact, upload_file
+from app.routes.context import list_run_context_snapshots
 from app.routes.runs import (
     _governed_skill_manifest_pins,
     artifact_card,
@@ -23,6 +25,7 @@ from app.routes.runs import (
     get_run,
     get_run_events,
     get_run_playback,
+    get_run_provenance,
     get_run_steps,
     multi_agent_snapshot_from_steps,
     progress_for_status,
@@ -32,7 +35,9 @@ from app.routes.runs import (
     run_playback_summary,
     run_event_response,
     run_step_response,
+    stream_run_events,
 )
+from app.routes.sandbox_leases import create_sandbox_lease
 from app.skills.registry import BuiltinSkill
 
 
@@ -1267,6 +1272,67 @@ async def test_download_artifact_denied_does_not_read_storage(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_preview_artifact_for_deleted_session_is_denied_before_storage_read(monkeypatch):
+    async def fake_get_authorized_artifact(conn, *, tenant_id, user_id, artifact_id):
+        assert (tenant_id, user_id, artifact_id) == ("tenant-a", "user-a", "art-deleted")
+        return None
+
+    class ForbiddenStorage:
+        def get_bytes(self, *, storage_key):
+            raise AssertionError("storage must not be read for artifacts from deleted sessions")
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_artifact", fake_get_authorized_artifact)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await preview_artifact(
+            "art-deleted",
+            principal=principal(permissions=["artifact:download"]),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "artifact_not_found"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route_name",
+    ["get_session", "session_runs", "session_events", "chat_status"],
+)
+async def test_deleted_lambchat_session_reads_deny_before_downstream_reads(monkeypatch, route_name):
+    async def deleted_session_is_not_authorized(conn, *, tenant_id, user_id, session_id):
+        assert (tenant_id, user_id, session_id) == ("tenant-a", "user-a", "ses-deleted")
+        return None
+
+    async def forbidden_downstream_read(*args, **kwargs):
+        raise AssertionError("deleted session must fail before child-resource reads")
+
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        deleted_session_is_not_authorized,
+    )
+    for name in (
+        "get_authorized_run",
+        "list_authorized_session_runs",
+        "list_authorized_user_messages_for_runs",
+        "list_run_events",
+        "list_run_artifacts",
+    ):
+        monkeypatch.setattr(lambchat_module.repositories, name, forbidden_downstream_read)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await getattr(lambchat_module, route_name)(
+            "ses-deleted",
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "session_not_found"
+
+
+@pytest.mark.asyncio
 async def test_upload_file_rejects_cross_user_session(monkeypatch):
     async def fake_ensure_workspace(conn, *, tenant_id, workspace_id):
         return None
@@ -2226,6 +2292,69 @@ async def test_get_run_denied_does_not_list_artifacts_or_events(monkeypatch):
     assert getattr(exc_info.value, "status_code", None) == 404
     assert getattr(exc_info.value, "detail", None) == "run_not_found"
     assert touched == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route",
+    [get_run, get_run_playback, get_run_provenance, get_run_events, get_run_steps, stream_run_events],
+)
+async def test_deleted_session_run_reads_deny_before_child_resource_reads(monkeypatch, route):
+    async def deleted_session_run_is_not_authorized(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-deleted")
+        return None
+
+    async def forbidden_child_read(*args, **kwargs):
+        raise AssertionError("deleted-session run must fail before event, artifact, step, or context reads")
+
+    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.runs.repositories.get_authorized_run",
+        deleted_session_run_is_not_authorized,
+    )
+    for name in ("list_run_artifacts", "list_run_events", "list_run_steps", "list_context_snapshots"):
+        monkeypatch.setattr(runs_module.repositories, name, forbidden_child_read)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await route("run-deleted", principal=principal())
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "run_not_found"
+
+
+@pytest.mark.asyncio
+async def test_deleted_session_run_context_and_lease_deny_before_reads_or_writes(monkeypatch):
+    async def deleted_session_run_is_not_authorized(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-a", "run-deleted")
+        return None
+
+    async def forbidden_child_operation(*args, **kwargs):
+        raise AssertionError("deleted-session run must fail before context or lease operations")
+
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.sandbox_leases.transaction", fake_transaction)
+    monkeypatch.setattr(
+        repository_module,
+        "get_authorized_run",
+        deleted_session_run_is_not_authorized,
+    )
+    monkeypatch.setattr(repository_module, "list_context_snapshots", forbidden_child_operation)
+    monkeypatch.setattr(repository_module, "create_sandbox_lease", forbidden_child_operation)
+    monkeypatch.setattr(repository_module, "append_event", forbidden_child_operation)
+
+    with pytest.raises(HTTPException) as context_exc:
+        await list_run_context_snapshots("run-deleted", principal=principal())
+    assert context_exc.value.status_code == 404
+    assert context_exc.value.detail == "run_not_found"
+
+    with pytest.raises(HTTPException) as lease_exc:
+        await create_sandbox_lease(
+            "run-deleted",
+            SandboxLeaseRequest(sandbox_mode="ephemeral"),
+            principal=principal(),
+        )
+    assert lease_exc.value.status_code == 404
+    assert lease_exc.value.detail == "run_not_found"
 
 
 @pytest.mark.asyncio

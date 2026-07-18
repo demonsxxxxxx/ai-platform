@@ -16,7 +16,7 @@ def headers(permissions: str = "artifact:download") -> dict[str, str]:
     }
 
 
-def install_projection_route_fakes(monkeypatch, *, artifacts=None, sessions=None):
+def install_projection_route_fakes(monkeypatch, *, artifacts=None, sessions=None, session_state=None):
     from app.routes import frontend_projections
 
     class FakeConnection:
@@ -30,13 +30,18 @@ def install_projection_route_fakes(monkeypatch, *, artifacts=None, sessions=None
     artifact_rows = list(artifacts or [])
     session_rows = list(sessions or [])
 
+    def visible(rows):
+        if session_state is not None and session_state.get("status") != "active":
+            return []
+        return [dict(row) for row in rows]
+
     async def fake_list_revealed_artifacts(conn, **kwargs):
         calls.append(("list_revealed_artifacts", kwargs))
-        return [dict(row) for row in artifact_rows]
+        return visible(artifact_rows)
 
     async def fake_list_revealed_sessions(conn, **kwargs):
         calls.append(("list_revealed_sessions", kwargs))
-        return [dict(row) for row in session_rows]
+        return visible(session_rows)
 
     monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
     monkeypatch.setattr(frontend_projections, "transaction", fake_transaction)
@@ -131,6 +136,62 @@ def test_revealed_files_project_authorized_artifacts(monkeypatch):
     assert grouped_response.json()["sessions"][0]["files"][0]["id"] == "art_report"
     assert stats_response.json()["document"] == 1
     assert sessions_response.json() == [{"session_id": "ses_a", "session_name": "QA session", "file_count": 1}]
+
+
+def test_revealed_files_and_session_filters_disappear_after_session_delete(monkeypatch):
+    session_state = {"status": "active"}
+    artifacts = [
+        {
+            "id": "art_report",
+            "storage_key": "tenants/default/report.pdf",
+            "label": "Reviewed Report",
+            "content_type": "application/pdf",
+            "size_bytes": 2048,
+            "run_id": "run_a",
+            "session_id": "ses_a",
+            "session_name": "QA session",
+            "trace_id": "trace_a",
+            "workspace_id": "default",
+            "user_id": "ordinary",
+            "artifact_type": "reviewed_docx",
+            "created_at": "2026-06-28T08:00:00Z",
+        }
+    ]
+    sessions = [
+        {
+            "session_id": "ses_a",
+            "session_name": "QA session",
+            "file_count": 1,
+            "updated_at": "2026-06-28T08:00:00Z",
+        }
+    ]
+    install_projection_route_fakes(
+        monkeypatch,
+        artifacts=artifacts,
+        sessions=sessions,
+        session_state=session_state,
+    )
+    client = TestClient(create_app())
+
+    active_files = client.get("/api/files/revealed", headers=headers())
+    active_sessions = client.get("/api/files/revealed/sessions", headers=headers())
+    assert [item["id"] for item in active_files.json()["items"]] == ["art_report"]
+    assert [item["session_id"] for item in active_sessions.json()] == ["ses_a"]
+
+    session_state["status"] = "deleted"
+    deleted_files = client.get("/api/files/revealed", headers=headers())
+    deleted_grouped = client.get("/api/files/revealed/grouped", headers=headers())
+    deleted_stats = client.get("/api/files/revealed/stats", headers=headers())
+    deleted_sessions = client.get("/api/files/revealed/sessions", headers=headers())
+
+    assert deleted_files.json()["items"] == []
+    assert deleted_files.json()["total"] == 0
+    assert deleted_grouped.json()["sessions"] == []
+    assert deleted_stats.json()["total"] == 0
+    assert deleted_sessions.json() == []
+    assert "art_report" not in "".join(
+        response.text for response in (deleted_files, deleted_grouped, deleted_stats, deleted_sessions)
+    )
 
 
 def test_revealed_files_original_path_does_not_expose_storage_key(monkeypatch):
