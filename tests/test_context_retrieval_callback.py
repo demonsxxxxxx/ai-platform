@@ -53,7 +53,7 @@ def _patch_route(monkeypatch, *, status="running", tools=None, action_result=Non
             "status": status,
         }
 
-    async def get_snapshot(conn, *, tenant_id, user_id, run_id):
+    async def get_snapshot(conn, *, tenant_id, workspace_id, user_id, session_id, run_id):
         refs = {
             "read_session_messages": ("recent_messages", [{"message_id": "message-a"}]),
             "read_context_file": ("files", [{"file_id": "file-a"}]),
@@ -88,7 +88,7 @@ def _patch_route(monkeypatch, *, status="running", tools=None, action_result=Non
     monkeypatch.setattr(callbacks, "get_settings", lambda: type("S", (), {"sandbox_callback_token": "secret"})())
     monkeypatch.setattr(callbacks, "transaction", lambda: _Transaction())
     monkeypatch.setattr(callbacks.repositories, "get_run_identity", get_run_identity)
-    monkeypatch.setattr(callbacks.repositories, "get_latest_authorized_executor_context_snapshot", get_snapshot)
+    monkeypatch.setattr(callbacks.repositories, "get_bound_executor_context_snapshot", get_snapshot)
     monkeypatch.setattr(callbacks.repositories, "append_event", append_event)
     monkeypatch.setattr(callbacks, "ObjectStorage", lambda: object())
     monkeypatch.setattr(callbacks, "RepositoryContextRetrievalRepository", lambda conn, storage: object())
@@ -181,6 +181,25 @@ def test_context_retrieval_callback_rejects_terminal_run_and_cross_snapshot_id(m
     assert denied.status_code == 403
     assert denied.json() == {"detail": "context_scope_denied"}
     assert denied_calls[0][1] == {"artifact_id": "artifact-foreign"}
+
+
+def test_context_retrieval_callback_fails_closed_when_fixed_snapshot_is_unavailable(monkeypatch):
+    calls = _patch_route(monkeypatch)
+    import app.routes.runtime_callbacks as callbacks
+
+    async def missing_snapshot(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(callbacks.repositories, "get_bound_executor_context_snapshot", missing_snapshot)
+    response = TestClient(create_app()).post(
+        "/api/ai/runtime/callbacks/context-retrieval",
+        headers={"X-AI-Platform-Callback-Token": _token("secret")},
+        json=_payload(),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "context_snapshot_unavailable"}
+    assert calls == []
 
 
 @pytest.mark.asyncio

@@ -301,6 +301,7 @@ class RunResponse(BaseModel):
     cancel_requested_by: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    context_window: dict[str, Any] | None = None
 
 
 class RunEventResponse(BaseModel):
@@ -800,7 +801,7 @@ class ChatSubmissionResponse(BaseModel):
     """Principal-scoped durable resolution of one keyed chat submission."""
 
     submission_id: str
-    state: Literal["queued", "accepted_pending_enqueue", "needs_confirmation", "rejected_before_persist"]
+    state: Literal["queued", "accepted_pending_enqueue", "enqueue_failed", "needs_confirmation", "rejected_before_persist"]
     submission_disposition: Literal["rejected_before_persist"] | None = None
     rejection_code: str | None = None
     outcome: ChatStreamResponse | None = None

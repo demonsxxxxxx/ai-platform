@@ -31,7 +31,6 @@ from app.control_plane_contracts import (
 from app.context_builder import (
     ensure_public_context_provenance,
     executor_context_pack_from_snapshot,
-    record_initial_context_snapshot,
 )
 from app.context_manifest import CONTEXT_MANIFEST_SCHEMA_VERSION, sanitize_context_manifest_payload
 from app.db import transaction
@@ -1849,39 +1848,22 @@ async def _ensure_worker_context_snapshot(
     *,
     trace_id: str,
     run_identity: dict[str, str] | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     identity = run_identity or _payload_identity(payload)
-    if _has_context_snapshot(payload):
-        scoped_snapshot = await repositories.get_context_snapshot_for_worker(
-            conn,
-            tenant_id=identity["tenant_id"],
-            workspace_id=identity["workspace_id"],
-            user_id=identity["user_id"],
-            session_id=identity["session_id"],
-            run_id=identity["run_id"],
-            context_snapshot_id=str(payload.context_snapshot_id),
-        )
-        if scoped_snapshot is not None:
-            context_ref = _context_snapshot_ref_from_row(scoped_snapshot)
-            return {
-                "context_snapshot_id": str(context_ref["context_snapshot_id"]),
-                "context_snapshot": context_ref,
-            }
-    context_ref = await record_initial_context_snapshot(
+    # The repository joins the physical runs.context_snapshot_id to the exact
+    # scoped executor row; the locked JSON value is only a mirror check.
+    scoped_snapshot = await repositories.get_context_snapshot_for_worker(
         conn,
         tenant_id=identity["tenant_id"],
         workspace_id=identity["workspace_id"],
         user_id=identity["user_id"],
         session_id=identity["session_id"],
         run_id=identity["run_id"],
-        trace_id=trace_id,
-        agent_id=identity["agent_id"],
-        skill_id=identity["skill_id"],
-        input_payload=payload.input,
-        message_ids=[],
-        file_ids=payload.file_ids,
-        source="worker_refresh",
+        context_snapshot_id=str(payload.context_snapshot_id or ""),
     )
+    if scoped_snapshot is None:
+        return None
+    context_ref = _context_snapshot_ref_from_row(scoped_snapshot)
     return {
         "context_snapshot_id": str(context_ref["context_snapshot_id"]),
         "context_snapshot": context_ref,
@@ -2213,6 +2195,47 @@ async def process_run_payload(
                 )
                 return terminal_after_transaction.outcome
             context_ref = await _ensure_worker_context_snapshot(conn, payload, trace_id=trace_id, run_identity=run_identity)
+            if context_ref is None:
+                error_code = "context_snapshot_unavailable"
+                error_message = "Run context snapshot is unavailable"
+                terminal_written, reconciled_parent = await _fail_run_and_reconcile_with_write(
+                    conn,
+                    payload=payload,
+                    tenant_id=run_identity["tenant_id"],
+                    run_id=run_identity["run_id"],
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+                if not terminal_written:
+                    terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                        WorkerOutcome(
+                            "skipped",
+                            run_identity["run_id"],
+                            "stale_terminal_state",
+                            "Run already reached a terminal state",
+                        ),
+                        payload,
+                        None,
+                    )
+                    return terminal_after_transaction.outcome
+                await repositories.append_event(
+                    conn,
+                    tenant_id=run_identity["tenant_id"],
+                    run_id=run_identity["run_id"],
+                    event_type="error",
+                    stage="context",
+                    message=error_message,
+                    payload={
+                        "visible_to_user": False,
+                        "error_code": error_code,
+                    },
+                )
+                terminal_after_transaction = _WorkerTerminalAfterTransaction(
+                    WorkerOutcome("failed", run_identity["run_id"], error_code, error_message),
+                    payload,
+                    reconciled_parent,
+                )
+                return terminal_after_transaction.outcome
             if not _ordinary_run_uses_runtime_sandbox(
                 payload,
                 context_snapshot=context_ref["context_snapshot"],
