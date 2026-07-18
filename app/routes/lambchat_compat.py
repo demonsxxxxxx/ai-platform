@@ -1129,8 +1129,18 @@ async def chat_session_stream(
     run_id: str,
     principal: AuthPrincipal = Depends(require_principal),
 ) -> StreamingResponse:
+    async with transaction() as conn:
+        initial_run = await repositories.get_authorized_run(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+        )
+    if initial_run is None or initial_run.get("session_id") != session_id:
+        raise HTTPException(status_code=404, detail="run_not_found")
+
     async def stream():
-        yield _sse("metadata", {"session_id": session_id, "run_id": run_id})
+        metadata_emitted = False
         last_status = ""
         seen_event_ids: set[str] = set()
         max_heartbeats = max(int(get_settings().run_event_stream_max_heartbeats), 1)
@@ -1142,20 +1152,27 @@ async def chat_session_stream(
                     user_id=principal.user_id,
                     run_id=run_id,
                 )
-                run_events = (
-                    await repositories.list_run_events(conn, tenant_id=principal.tenant_id, run_id=run_id)
-                    if run is not None
-                    else []
-                )
-                artifacts = (
-                    await repositories.list_run_artifacts(conn, tenant_id=principal.tenant_id, run_id=run_id)
-                    if run is not None
-                    else []
-                )
-            if run is None or run["session_id"] != session_id:
+                if run is None or run.get("session_id") != session_id:
+                    run_events = []
+                    artifacts = []
+                else:
+                    run_events = await repositories.list_run_events(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        run_id=run_id,
+                    )
+                    artifacts = await repositories.list_run_artifacts(
+                        conn,
+                        tenant_id=principal.tenant_id,
+                        run_id=run_id,
+                    )
+            if run is None or run.get("session_id") != session_id:
                 yield _sse("error", {"error": "run_not_found"})
                 yield _sse("done", {})
                 return
+            if not metadata_emitted:
+                yield _sse("metadata", {"session_id": session_id, "run_id": run_id})
+                metadata_emitted = True
             status = _platform_status(str(run["status"]))
             try:
                 compatibility_events = _compatibility_events_for_run(
