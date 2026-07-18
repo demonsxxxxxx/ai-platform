@@ -3,7 +3,10 @@ import test from "node:test";
 
 import type { UseAgentReturn } from "../types.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
-import type { ChatStreamResponse } from "../../../services/api/session.ts";
+import type {
+  ChatStreamResponse,
+  ChatSubmissionResolution,
+} from "../../../services/api/session.ts";
 
 type Listener = (event: { type: string; [key: string]: unknown }) => void;
 
@@ -984,6 +987,205 @@ test("useAgent retains an unknown submission and blocks an automatic duplicate",
       assert.equal(harness.hook.messages.length, 1);
     } finally {
       sessionApi.submitChat = originalSubmitChat;
+      await harness.cleanup();
+    }
+  }
+});
+
+test("useAgent clears a stale pre-ledger fence only after the versioned resolver proof", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const { authApi } = await import("../../../services/api/auth.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalLogout = authApi.logout;
+  const originalLogin = authApi.login;
+  let submissions = 0;
+  let resolverCalls = 0;
+  let returnAuthoritativeAbsence = false;
+  sessionApi.submitChat = (async () => {
+    submissions += 1;
+    if (submissions === 1) {
+      throw new ApiRequestError("gateway failure", 500, "queue_unavailable");
+    }
+    return { status: "needs_confirmation", suggestions: [] };
+  }) as typeof sessionApi.submitChat;
+  sessionApi.getChatSubmission = async (submissionId) => {
+    resolverCalls += 1;
+    if (!returnAuthoritativeAbsence) {
+      throw new ApiRequestError(
+        "legacy resolver not found",
+        404,
+        "chat_submission_not_found",
+      );
+    }
+    return {
+      protocol_version: "chat_submission_resolution.v2",
+      submission_id: submissionId,
+      state: "absent_before_ledger",
+    };
+  };
+  authApi.logout = async () => {};
+  authApi.login = async () => {};
+
+  try {
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("migration-lost submission"), {
+        status: "failed",
+      });
+    });
+    await settle(harness.act);
+    assert.equal(resolverCalls, 1);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+
+    await harness.act(async () => {
+      harness.hook.clearMessages();
+      assert.deepEqual(await harness.hook.sendMessage("New Chat must not clear it"), {
+        status: "failed",
+      });
+    });
+    assert.equal(submissions, 1);
+
+    await harness.act(async () => {
+      assert.equal(await harness.auth.logout(), true);
+    });
+    await settle(harness.act);
+    returnAuthoritativeAbsence = true;
+    await harness.act(async () => {
+      await harness.auth.login({ username: "user-a", password: "test-password" });
+    });
+    await settle(harness.act);
+
+    assert.equal(resolverCalls, 2);
+    assert.equal(harness.hook.canRetryPendingSubmission, false);
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("recovered same principal"), {
+        status: "accepted",
+      });
+    });
+    assert.equal(submissions, 2);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    authApi.logout = originalLogout;
+    authApi.login = originalLogin;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent clears a stale pre-ledger fence through explicit retry only after the versioned proof", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
+  let submissions = 0;
+  sessionApi.submitChat = (async () => {
+    submissions += 1;
+    if (submissions === 1) {
+      throw new ApiRequestError("gateway failure", 500, "queue_unavailable");
+    }
+    return { status: "needs_confirmation", suggestions: [] };
+  }) as typeof sessionApi.submitChat;
+  sessionApi.getChatSubmission = async () => {
+    throw new ApiRequestError("legacy resolver not found", 404, "chat_submission_not_found");
+  };
+  sessionApi.retryChatSubmissionAdmission = async (submissionId) => ({
+    protocol_version: "chat_submission_resolution.v2",
+    submission_id: submissionId,
+    state: "absent_before_ledger",
+  });
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.sendMessage("retry pre-ledger submission");
+    });
+    await settle(harness.act);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+
+    await harness.act(async () => {
+      await harness.hook.retryPendingSubmission();
+    });
+    assert.equal(harness.hook.canRetryPendingSubmission, false);
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("retry recovery is clear"), {
+        status: "accepted",
+      });
+    });
+    assert.equal(submissions, 2);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent keeps generic, network, legacy, and unknown-version resolver results fenced", async () => {
+  const ambiguousResolvers = [
+    {
+      name: "network failure",
+      resolve: async (_submissionId: string) => {
+        throw new Error("resolver network loss");
+      },
+    },
+    {
+      name: "generic 404",
+      resolve: async (_submissionId: string) => {
+        throw new ApiRequestError("not found", 404, "not_found");
+      },
+    },
+    {
+      name: "legacy submission 404",
+      resolve: async (_submissionId: string) => {
+        throw new ApiRequestError("not found", 404, "chat_submission_not_found");
+      },
+    },
+    {
+      name: "unknown protocol version",
+      resolve: async (submissionId: string) =>
+        ({
+          protocol_version: "chat_submission_resolution.v1",
+          submission_id: submissionId,
+          state: "absent_before_ledger",
+        }) as unknown as ChatSubmissionResolution,
+    },
+  ];
+
+  for (const { name, resolve } of ambiguousResolvers) {
+    const harness = await loadReactHarness();
+    const { sessionApi } = await import("../../../services/api/session.ts");
+    const originalSubmitChat = sessionApi.submitChat;
+    const originalGetChatSubmission = sessionApi.getChatSubmission;
+    const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
+    let submissions = 0;
+    sessionApi.submitChat = (async () => {
+      submissions += 1;
+      throw new ApiRequestError("gateway failure", 500, "queue_unavailable");
+    }) as typeof sessionApi.submitChat;
+    sessionApi.getChatSubmission = async (submissionId) => resolve(submissionId);
+    sessionApi.retryChatSubmissionAdmission = async (submissionId) => resolve(submissionId);
+
+    try {
+      await harness.act(async () => {
+        await harness.hook.sendMessage(`ambiguous resolver: ${name}`);
+      });
+      await settle(harness.act);
+      assert.equal(harness.hook.canRetryPendingSubmission, true, name);
+
+      await harness.act(async () => {
+        harness.hook.clearMessages();
+        assert.deepEqual(await harness.hook.sendMessage(`must remain locked: ${name}`), {
+          status: "failed",
+        });
+        await harness.hook.retryPendingSubmission();
+      });
+      assert.equal(submissions, 1, name);
+      assert.equal(harness.hook.canRetryPendingSubmission, true, name);
+    } finally {
+      sessionApi.submitChat = originalSubmitChat;
+      sessionApi.getChatSubmission = originalGetChatSubmission;
+      sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
       await harness.cleanup();
     }
   }

@@ -15,6 +15,7 @@ from app.models import (
     ChatSessionRequest,
     ChatSessionResponse,
     ChatSessionsResponse,
+    ChatSubmissionPreLedgerAbsenceResponse,
     ChatStreamRequest,
     ChatStreamResponse,
     ChatSubmissionResponse,
@@ -114,6 +115,27 @@ def _chat_submission_resolution(row: dict[str, Any]) -> ChatSubmissionResponse:
         rejection_code=str(row["rejection_code"]) if row.get("rejection_code") else None,
         outcome=ChatStreamResponse.model_validate(outcome) if isinstance(outcome, dict) and outcome else None,
     )
+
+
+async def _resolve_chat_submission(
+    *,
+    principal: AuthPrincipal,
+    submission_id: str,
+) -> ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse:
+    """Resolve one principal-scoped ledger row or prove its pre-ledger absence."""
+
+    async with transaction() as conn:
+        submission = await repositories.get_chat_submission(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            submission_id=submission_id,
+        )
+    if submission is None:
+        # This exact versioned 200 response is deliberately distinct from
+        # generic 404s so clients can clear only a proven pre-ledger fence.
+        return ChatSubmissionPreLedgerAbsenceResponse(submission_id=submission_id)
+    return _chat_submission_resolution(submission)
 
 
 async def _persist_pre_persistence_rejection(
@@ -1441,30 +1463,36 @@ async def chat_stream(
     )
 
 
-@router.get("/chat/submissions/{submission_id}", response_model=ChatSubmissionResponse)
+@router.get(
+    "/chat/submissions/{submission_id}",
+    response_model=ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse,
+)
 async def get_chat_submission(
     submission_id: UUID,
     principal: AuthPrincipal = Depends(require_principal),
-) -> ChatSubmissionResponse:
+) -> ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse:
     """Resolve a durable client submission without inferring from session history."""
 
-    async with transaction() as conn:
-        submission = await repositories.get_chat_submission(
-            conn,
-            tenant_id=principal.tenant_id,
-            user_id=principal.user_id,
-            submission_id=str(submission_id),
-        )
-    if submission is None:
-        raise HTTPException(status_code=404, detail="chat_submission_not_found")
-    return _chat_submission_resolution(submission)
+    return await _resolve_chat_submission(
+        principal=principal,
+        submission_id=str(submission_id),
+    )
 
 
-@router.post("/chat/submissions/{submission_id}/retry-admission", response_model=ChatSubmissionResponse)
+@router.post(
+    "/chat/submissions/{submission_id}/retry-admission",
+    response_model=ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse,
+)
 async def retry_chat_submission_admission(
     submission_id: UUID,
     principal: AuthPrincipal = Depends(require_principal),
-) -> ChatSubmissionResponse:
+) -> ChatSubmissionResponse | ChatSubmissionPreLedgerAbsenceResponse:
     """Explicitly retry queue admission for one already-created run only."""
 
+    resolved = await _resolve_chat_submission(
+        principal=principal,
+        submission_id=str(submission_id),
+    )
+    if isinstance(resolved, ChatSubmissionPreLedgerAbsenceResponse):
+        return resolved
     return await _admit_chat_submission(principal=principal, submission_id=str(submission_id))

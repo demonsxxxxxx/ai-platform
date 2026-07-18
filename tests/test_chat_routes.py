@@ -20,6 +20,7 @@ from app.routes.chat import (
     get_chat_submission,
     list_messages,
     list_sessions,
+    retry_chat_submission_admission,
     _file_row_matches_request_scope,
 )
 from app.queue import QueueAdmissionMetadata, QueueAdmissionRejected
@@ -272,7 +273,7 @@ async def test_keyed_rejection_provisions_principal_before_saved_workspace_ledge
 
 
 @pytest.mark.asyncio
-async def test_chat_submission_resolver_is_exactly_principal_scoped(monkeypatch):
+async def test_chat_submission_resolver_returns_versioned_absence_for_exact_principal_scope(monkeypatch):
     calls = []
 
     async def missing_submission(conn, **kwargs):
@@ -282,13 +283,41 @@ async def test_chat_submission_resolver_is_exactly_principal_scoped(monkeypatch)
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_chat_submission", missing_submission, raising=False)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await get_chat_submission(
-            "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
-            principal=principal(tenant_id="tenant-b", user_id="user-b"),
-        )
+    response = await get_chat_submission(
+        "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        principal=principal(tenant_id="tenant-b", user_id="user-b"),
+    )
 
-    assert exc_info.value.status_code == 404
+    assert response.protocol_version == "chat_submission_resolution.v2"
+    assert response.state == "absent_before_ledger"
+    assert response.submission_id == "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
+    assert calls == [
+        {
+            "tenant_id": "tenant-b",
+            "user_id": "user-b",
+            "submission_id": "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_retry_admission_returns_versioned_absence_before_attempting_admission(monkeypatch):
+    calls = []
+
+    async def missing_submission(conn, **kwargs):
+        calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", missing_submission, raising=False)
+
+    response = await retry_chat_submission_admission(
+        "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        principal=principal(tenant_id="tenant-b", user_id="user-b"),
+    )
+
+    assert response.protocol_version == "chat_submission_resolution.v2"
+    assert response.state == "absent_before_ledger"
     assert calls == [
         {
             "tenant_id": "tenant-b",

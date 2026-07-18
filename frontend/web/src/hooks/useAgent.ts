@@ -30,6 +30,11 @@ import {
   type CapabilitySuggestion,
   type ChatStreamResponse,
 } from "../services/api";
+import {
+  CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION,
+  type ChatSubmissionPreLedgerAbsenceResolution,
+  type ChatSubmissionResolution,
+} from "../services/api/session";
 import { feedbackApi } from "../services/api/feedback";
 import { getAccessToken } from "../services/api/token";
 import { useAuth } from "../hooks/useAuth";
@@ -108,6 +113,21 @@ function isProvenPrePersistenceChatRejection(error: unknown): boolean {
     error.status >= 400 &&
     error.status < 500 &&
     error.submissionDisposition === "rejected_before_persist"
+  );
+}
+
+function isAuthoritativePreLedgerAbsence(
+  resolution: ChatSubmissionResolution,
+  submissionId: string,
+): resolution is ChatSubmissionPreLedgerAbsenceResolution {
+  if (resolution === null || typeof resolution !== "object") {
+    return false;
+  }
+  const candidate = resolution as Partial<ChatSubmissionPreLedgerAbsenceResolution>;
+  return (
+    candidate.protocol_version === CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION &&
+    candidate.submission_id === submissionId &&
+    candidate.state === "absent_before_ledger"
   );
 }
 
@@ -2154,6 +2174,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       try {
         const resolution = await sessionApi.getChatSubmission(submissionId);
         if (!isCurrentResolution()) return;
+        if (isAuthoritativePreLedgerAbsence(resolution, submissionId)) {
+          const previous = pending.previousMessages || [];
+          messagesRef.current = previous;
+          setMessages(previous);
+          setError(null);
+          advancePersistedSubmissionFence(owner, submissionId);
+          return;
+        }
         const outcome = resolution.outcome;
         if (resolution.state === "rejected_before_persist") {
           const previous = pending.previousMessages || [];
@@ -2246,6 +2274,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         pending.submissionId,
       );
       if (!isCurrentRetry()) return;
+      if (isAuthoritativePreLedgerAbsence(resolution, pending.submissionId)) {
+        const previous = pending.previousMessages || [];
+        messagesRef.current = previous;
+        setMessages(previous);
+        setError(null);
+        advancePersistedSubmissionFence(pending.owner, pending.submissionId);
+        return;
+      }
       if (resolution.state === "rejected_before_persist") {
         const previous = pending.previousMessages || [];
         messagesRef.current = previous;

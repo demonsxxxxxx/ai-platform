@@ -99,7 +99,10 @@ export type ChatStreamResponse =
   | ChatStreamPendingAdmissionResponse
   | ChatStreamNeedsConfirmationResponse;
 
-export interface ChatSubmissionResolution {
+export const CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION =
+  "chat_submission_resolution.v2" as const;
+
+export interface DurableChatSubmissionResolution {
   submission_id: string;
   state:
     | "queued"
@@ -110,6 +113,17 @@ export interface ChatSubmissionResolution {
   rejection_code?: string;
   outcome?: ChatStreamResponse;
 }
+
+/** A server-versioned, principal-scoped proof that no ledger row exists yet. */
+export interface ChatSubmissionPreLedgerAbsenceResolution {
+  protocol_version: typeof CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION;
+  submission_id: string;
+  state: "absent_before_ledger";
+}
+
+export type ChatSubmissionResolution =
+  | DurableChatSubmissionResolution
+  | ChatSubmissionPreLedgerAbsenceResolution;
 
 /** Compatibility status projection with its authoritative platform value. */
 export interface ChatRunStatusResponse {
