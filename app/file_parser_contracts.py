@@ -606,7 +606,8 @@ def _canonical_workbook_part(archive: ZipFile) -> tuple[str, str]:
             )
         defaults: set[str] = set()
         override_parts: set[str] = set()
-        workbook_candidates: list[tuple[str, str]] = []
+        workbook_defaults: list[tuple[str, str]] = []
+        workbook_overrides: list[tuple[str, str]] = []
         for item in manifest_items:
             attributes = item.attributes
             if item.tag == _CONTENT_TYPES_DEFAULT_TAG:
@@ -626,19 +627,31 @@ def _canonical_workbook_part(archive: ZipFile) -> tuple[str, str]:
                     raise AttachmentPreprocessingError("xlsx_content_types_structure_unsupported")
                 defaults.add(extension.casefold())
                 if content_type in _OPENPYXL_WORKBOOK_CONTENT_TYPES:
-                    raise AttachmentPreprocessingError("xlsx_workbook_part_unsupported")
+                    workbook_defaults.append((extension, content_type))
                 continue
 
             if set(attributes) != {"PartName", "ContentType"}:
                 raise AttachmentPreprocessingError("xlsx_content_types_structure_unsupported")
-            part_name = _archive_part_identity(attributes.get("PartName"))
+            raw_part_name = attributes.get("PartName")
+            if not isinstance(raw_part_name, str) or not raw_part_name.startswith("/"):
+                raise AttachmentPreprocessingError("xlsx_content_types_structure_unsupported")
+            part_name = _archive_part_identity(raw_part_name)
             content_type = attributes.get("ContentType")
             if part_name in override_parts or not isinstance(content_type, str) or not content_type:
                 raise AttachmentPreprocessingError("xlsx_content_types_structure_unsupported")
             override_parts.add(part_name)
             if content_type in _OPENPYXL_WORKBOOK_CONTENT_TYPES:
-                workbook_candidates.append((part_name, content_type))
-        if workbook_candidates != [(_CANONICAL_WORKBOOK_PART, _XLSX_WORKBOOK_CONTENT_TYPE)]:
+                workbook_overrides.append((raw_part_name, content_type))
+
+        supported = (
+            workbook_overrides
+            == [(f"/{_CANONICAL_WORKBOOK_PART}", _XLSX_WORKBOOK_CONTENT_TYPE)]
+            and not workbook_defaults
+        ) or (
+            not workbook_overrides
+            and workbook_defaults == [("xml", _XLSX_WORKBOOK_CONTENT_TYPE)]
+        )
+        if not supported:
             raise AttachmentPreprocessingError("xlsx_workbook_part_unsupported")
     except AttachmentPreprocessingError:
         raise
@@ -701,21 +714,34 @@ def _selected_worksheet_entries(
 
         entries: list[tuple[str, str]] = []
         sheet_names: set[str] = set()
+        sheet_ids: set[int] = set()
         worksheet_paths: set[str] = set()
         for item in sheet_items:
             attributes = item.attributes
             sheet_name = attributes.get("name")
+            raw_sheet_id = attributes.get("sheetId")
             relationship_id = attributes.get(_WORKBOOK_SHEET_RELATIONSHIP_ID)
             archive_path = worksheet_relationships.get(str(relationship_id or ""))
+            try:
+                if not isinstance(raw_sheet_id, str):
+                    raise ValueError
+                sheet_id = int(raw_sheet_id)
+            except (TypeError, ValueError) as exc:
+                raise AttachmentPreprocessingError(
+                    "xlsx_workbook_structure_unsupported"
+                ) from exc
             if (
                 not isinstance(sheet_name, str)
                 or not sheet_name
                 or sheet_name in sheet_names
+                or sheet_id <= 0
+                or sheet_id in sheet_ids
                 or archive_path is None
                 or archive_path in worksheet_paths
             ):
                 raise AttachmentPreprocessingError("xlsx_workbook_structure_unsupported")
             sheet_names.add(sheet_name)
+            sheet_ids.add(sheet_id)
             worksheet_paths.add(archive_path)
             entries.append((sheet_name, archive_path))
     except AttachmentPreprocessingError:

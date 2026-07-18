@@ -597,6 +597,87 @@ def _inject_unreferenced_duplicate_worksheet_target(path: Path) -> None:
     path.write_bytes(output.getvalue())
 
 
+def _use_canonical_xml_default_for_workbook(path: Path) -> None:
+    content_types_namespace = "http://schemas.openxmlformats.org/package/2006/content-types"
+    workbook_content_type = (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+    )
+    source = io.BytesIO(path.read_bytes())
+    output = io.BytesIO()
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            if entry.filename == "[Content_Types].xml":
+                root = ElementTree.fromstring(payload)
+                workbook_override = next(
+                    child
+                    for child in root
+                    if child.tag == f"{{{content_types_namespace}}}Override"
+                    and child.attrib.get("PartName") == "/xl/workbook.xml"
+                )
+                root.remove(workbook_override)
+                xml_default = next(
+                    child
+                    for child in root
+                    if child.tag == f"{{{content_types_namespace}}}Default"
+                    and child.attrib.get("Extension") == "xml"
+                )
+                xml_default.set("ContentType", workbook_content_type)
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            rewritten.writestr(entry, payload)
+    path.write_bytes(output.getvalue())
+
+
+def _set_canonical_workbook_override_part_name(path: Path, part_name: str) -> None:
+    content_types_namespace = "http://schemas.openxmlformats.org/package/2006/content-types"
+    source = io.BytesIO(path.read_bytes())
+    output = io.BytesIO()
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            if entry.filename == "[Content_Types].xml":
+                root = ElementTree.fromstring(payload)
+                workbook_override = next(
+                    child
+                    for child in root
+                    if child.tag == f"{{{content_types_namespace}}}Override"
+                    and child.attrib.get("PartName") == "/xl/workbook.xml"
+                )
+                workbook_override.set("PartName", part_name)
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            rewritten.writestr(entry, payload)
+    path.write_bytes(output.getvalue())
+
+
+def _corrupt_workbook_sheet_id(path: Path, case: str) -> None:
+    spreadsheet_namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    source = io.BytesIO(path.read_bytes())
+    output = io.BytesIO()
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            if entry.filename == "xl/workbook.xml":
+                root = ElementTree.fromstring(payload)
+                sheets = list(root.findall(f".//{{{spreadsheet_namespace}}}sheet"))
+                assert sheets
+                if case == "missing":
+                    sheets[0].attrib.pop("sheetId")
+                elif case == "duplicate":
+                    assert len(sheets) >= 2
+                    sheets[1].set("sheetId", sheets[0].attrib["sheetId"])
+                elif case == "malformed":
+                    sheets[0].set("sheetId", "not-an-integer")
+                elif case == "zero":
+                    sheets[0].set("sheetId", "0")
+                elif case == "negative":
+                    sheets[0].set("sheetId", "-1")
+                else:
+                    raise AssertionError(f"unknown sheetId corruption case: {case}")
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            rewritten.writestr(entry, payload)
+    path.write_bytes(output.getvalue())
+
+
 def test_xlsx_parser_emits_bounded_typed_content_and_positive_evidence(tmp_path):
     path = tmp_path / "book.xlsx"
     _write_workbook(path)
@@ -1083,6 +1164,83 @@ def test_xlsx_parser_rejects_alternate_manifest_workbook_before_openpyxl(
     monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
 
     with pytest.raises(AttachmentPreprocessingError, match="xlsx_workbook_part_unsupported"):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
+
+
+def test_xlsx_parser_accepts_canonical_xml_default_workbook(tmp_path):
+    path = tmp_path / "book.xlsx"
+    _write_workbook(path)
+    _use_canonical_xml_default_for_workbook(path)
+
+    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+
+    assert parsed.evidence.status == "parsed"
+    assert parsed.evidence.sheet_count == 1
+    assert parsed.content["workbook"]["sheets"][0]["name"] == "Data"
+
+
+def test_xlsx_parser_accepts_dimensionless_fixture_with_canonical_xml_default(tmp_path):
+    path = tmp_path / "book.xlsx"
+    _write_dimensionless_validation_workbook(path)
+    _use_canonical_xml_default_for_workbook(path)
+
+    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+
+    rendered = json.dumps(parsed.content, ensure_ascii=False, sort_keys=True)
+    assert "GMP-VAL-002 Requirement" in rendered
+    assert "ACCEPT-XLSX-9472" in rendered
+    assert parsed.evidence.status == "parsed"
+    assert parsed.evidence.cells_examined == 26
+    assert parsed.evidence.rows_emitted == 7
+    assert parsed.evidence.truncated is True
+
+
+def test_xlsx_parser_rejects_relative_workbook_override_before_openpyxl(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "book.xlsx"
+    _write_workbook(path)
+    _set_canonical_workbook_override_part_name(path, "xl/workbook.xml")
+
+    def fail_load_workbook(*_args, **_kwargs):
+        raise AssertionError("relative Override PartName must fail before openpyxl")
+
+    monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
+
+    with pytest.raises(
+        AttachmentPreprocessingError,
+        match="xlsx_content_types_structure_unsupported",
+    ):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["missing", "duplicate", "malformed", "zero", "negative"],
+)
+def test_xlsx_parser_rejects_invalid_sheet_id_before_openpyxl(
+    tmp_path,
+    monkeypatch,
+    case,
+):
+    path = tmp_path / "book.xlsx"
+    workbook = Workbook()
+    workbook.active["A1"] = "first"
+    workbook.create_sheet(title="Second")["A1"] = "second"
+    workbook.save(path)
+    workbook.close()
+    _corrupt_workbook_sheet_id(path, case)
+
+    def fail_load_workbook(*_args, **_kwargs):
+        raise AssertionError("invalid sheetId must fail before openpyxl")
+
+    monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
+
+    with pytest.raises(
+        AttachmentPreprocessingError,
+        match="xlsx_workbook_structure_unsupported",
+    ):
         parse_xlsx_attachment(path=path, requirement=_requirement())
 
 
