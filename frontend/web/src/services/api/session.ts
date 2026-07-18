@@ -103,10 +103,12 @@ export const CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION =
   "chat_submission_resolution.v2" as const;
 
 export interface DurableChatSubmissionResolution {
+  protocol_version?: typeof CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION;
   submission_id: string;
   state:
     | "queued"
     | "accepted_pending_enqueue"
+    | "enqueue_failed"
     | "needs_confirmation"
     | "rejected_before_persist";
   submission_disposition?: "rejected_before_persist";
@@ -507,7 +509,7 @@ export const sessionApi = {
   },
 
   async getChatSubmission(submissionId: string): Promise<ChatSubmissionResolution> {
-    return authFetch(buildChatSubmissionUrl(submissionId));
+    return authFetch(buildChatSubmissionUrl(submissionId), { cache: "no-store" });
   },
 
   async retryChatSubmissionAdmission(submissionId: string): Promise<ChatSubmissionResolution> {

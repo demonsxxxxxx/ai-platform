@@ -992,12 +992,13 @@ test("useAgent retains an unknown submission and blocks an automatic duplicate",
   }
 });
 
-test("useAgent clears a stale pre-ledger fence only after the versioned resolver proof", async () => {
+test("useAgent preserves a stale fence through New Chat and same-principal login until explicit tombstone recovery", async () => {
   const harness = await loadReactHarness();
   const { sessionApi } = await import("../../../services/api/session.ts");
   const { authApi } = await import("../../../services/api/auth.ts");
   const originalSubmitChat = sessionApi.submitChat;
   const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
   const originalLogout = authApi.logout;
   const originalLogin = authApi.login;
   let submissions = 0;
@@ -1012,12 +1013,16 @@ test("useAgent clears a stale pre-ledger fence only after the versioned resolver
   }) as typeof sessionApi.submitChat;
   sessionApi.getChatSubmission = async (submissionId) => {
     resolverCalls += 1;
+    void submissionId;
+    throw new ApiRequestError(
+      "legacy resolver not found",
+      404,
+      "chat_submission_not_found",
+    );
+  };
+  sessionApi.retryChatSubmissionAdmission = async (submissionId) => {
     if (!returnAuthoritativeAbsence) {
-      throw new ApiRequestError(
-        "legacy resolver not found",
-        404,
-        "chat_submission_not_found",
-      );
+      throw new ApiRequestError("recovery not found", 404, "chat_submission_not_found");
     }
     return {
       protocol_version: "chat_submission_resolution.v2",
@@ -1057,6 +1062,10 @@ test("useAgent clears a stale pre-ledger fence only after the versioned resolver
     await settle(harness.act);
 
     assert.equal(resolverCalls, 2);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+    await harness.act(async () => {
+      await harness.hook.retryPendingSubmission();
+    });
     assert.equal(harness.hook.canRetryPendingSubmission, false);
     await harness.act(async () => {
       assert.deepEqual(await harness.hook.sendMessage("recovered same principal"), {
@@ -1067,6 +1076,7 @@ test("useAgent clears a stale pre-ledger fence only after the versioned resolver
   } finally {
     sessionApi.submitChat = originalSubmitChat;
     sessionApi.getChatSubmission = originalGetChatSubmission;
+    sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
     authApi.logout = originalLogout;
     authApi.login = originalLogin;
     await harness.cleanup();
@@ -1121,7 +1131,7 @@ test("useAgent clears a stale pre-ledger fence through explicit retry only after
   }
 });
 
-test("useAgent keeps generic, network, legacy, and unknown-version resolver results fenced", async () => {
+test("useAgent keeps generic, network, legacy, mismatched-ID, and unknown-version GET/retry results fenced", async () => {
   const ambiguousResolvers = [
     {
       name: "network failure",
@@ -1147,6 +1157,23 @@ test("useAgent keeps generic, network, legacy, and unknown-version resolver resu
         ({
           protocol_version: "chat_submission_resolution.v1",
           submission_id: submissionId,
+          state: "absent_before_ledger",
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "unversioned absence",
+      resolve: async (submissionId: string) =>
+        ({
+          submission_id: submissionId,
+          state: "absent_before_ledger",
+        }) as unknown as ChatSubmissionResolution,
+    },
+    {
+      name: "mismatched submission ID",
+      resolve: async (_submissionId: string) =>
+        ({
+          protocol_version: "chat_submission_resolution.v2",
+          submission_id: "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
           state: "absent_before_ledger",
         }) as unknown as ChatSubmissionResolution,
     },

@@ -4,16 +4,17 @@ import hashlib
 import json
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from app import repositories as repository_module
 from app.auth import AuthPrincipal
 from app.capability_distribution import CapabilityAuthorizationDenial
-from app.models import ChatSessionRequest, ChatStreamRequest, QueueRunPayload
+from app.models import ChatSessionRequest, ChatStreamRequest, ChatSubmissionResponse, QueueRunPayload
 from app.queue_payload_validation import queue_payload_invalid_detail
 from app.repositories import RepositoryConflictError
 from app.routes.chat import (
     _admit_chat_submission,
+    _preledger_recovery_fingerprint,
     _validate_queue_payload_for_enqueue,
     chat_stream,
     create_chat_session,
@@ -273,7 +274,7 @@ async def test_keyed_rejection_provisions_principal_before_saved_workspace_ledge
 
 
 @pytest.mark.asyncio
-async def test_chat_submission_resolver_returns_versioned_absence_for_exact_principal_scope(monkeypatch):
+async def test_chat_submission_resolver_missing_is_read_only_and_fail_closed(monkeypatch):
     calls = []
 
     async def missing_submission(conn, **kwargs):
@@ -282,15 +283,25 @@ async def test_chat_submission_resolver_returns_versioned_absence_for_exact_prin
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
     monkeypatch.setattr(repository_module, "get_chat_submission", missing_submission, raising=False)
-
-    response = await get_chat_submission(
-        "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
-        principal=principal(tenant_id="tenant-b", user_id="user-b"),
+    monkeypatch.setattr(
+        repository_module,
+        "claim_chat_submission",
+        lambda *_args, **_kwargs: pytest.fail("GET must not claim a tombstone"),
+        raising=False,
     )
+    response = Response()
 
-    assert response.protocol_version == "chat_submission_resolution.v2"
-    assert response.state == "absent_before_ledger"
-    assert response.submission_id == "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
+    with pytest.raises(HTTPException) as exc_info:
+        await get_chat_submission(
+            "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+            response=response,
+            principal=principal(tenant_id="tenant-b", user_id="user-b"),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "chat_submission_not_found"
+    assert exc_info.value.headers == {"Cache-Control": "private, no-store"}
+    assert response.headers["Cache-Control"] == "private, no-store"
     assert calls == [
         {
             "tenant_id": "tenant-b",
@@ -302,29 +313,197 @@ async def test_chat_submission_resolver_returns_versioned_absence_for_exact_prin
 
 @pytest.mark.asyncio
 async def test_retry_admission_returns_versioned_absence_before_attempting_admission(monkeypatch):
-    calls = []
+    calls: list[tuple[str, dict[str, object]]] = []
 
-    async def missing_submission(conn, **kwargs):
-        calls.append(kwargs)
-        return None
+    async def ensure_principal(_conn, **kwargs):
+        calls.append(("ensure", kwargs))
+
+    async def claim_tombstone(_conn, **kwargs):
+        calls.append(("claim", kwargs))
+        return {"submission_id": kwargs["submission_id"], "state": "resolving"}, True
+
+    async def finalize_tombstone(_conn, **kwargs):
+        calls.append(("finalize", kwargs))
+
+    async def forbidden_admission(*_args, **_kwargs):
+        raise AssertionError("a new tombstone must not attempt queue admission")
 
     monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
-    monkeypatch.setattr(repository_module, "get_chat_submission", missing_submission, raising=False)
+    monkeypatch.setattr(repository_module, "ensure_submission_principal", ensure_principal, raising=False)
+    monkeypatch.setattr(repository_module, "claim_chat_submission", claim_tombstone, raising=False)
+    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize_tombstone, raising=False)
+    monkeypatch.setattr("app.routes.chat._admit_chat_submission", forbidden_admission)
+    response_headers = Response()
 
     response = await retry_chat_submission_admission(
         "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        response=response_headers,
         principal=principal(tenant_id="tenant-b", user_id="user-b"),
     )
 
     assert response.protocol_version == "chat_submission_resolution.v2"
     assert response.state == "absent_before_ledger"
-    assert calls == [
-        {
-            "tenant_id": "tenant-b",
-            "user_id": "user-b",
-            "submission_id": "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    assert response_headers.headers["Cache-Control"] == "private, no-store"
+    assert [name for name, _kwargs in calls] == ["ensure", "claim", "finalize"]
+    assert calls[1][1]["workspace_id"] is None
+    assert calls[2][1]["state"] == "rejected_before_persist"
+    assert calls[2][1]["submission_disposition"] == "rejected_before_persist"
+    assert calls[2][1]["rejection_code"] == "chat_submission_retired_before_ledger"
+
+
+@pytest.mark.asyncio
+async def test_chat_submission_get_resolves_a_durable_recovery_tombstone(monkeypatch):
+    request_principal = principal(tenant_id="tenant-b", user_id="user-b")
+    submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
+
+    async def durable_tombstone(_conn, **_kwargs):
+        return {
+            "submission_id": submission_id,
+            "state": "rejected_before_persist",
+            "submission_disposition": "rejected_before_persist",
+            "rejection_code": "chat_submission_retired_before_ledger",
+            "request_fingerprint_sha256": _preledger_recovery_fingerprint(request_principal),
+            "outcome_json": {},
         }
-    ]
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", durable_tombstone, raising=False)
+    response_headers = Response()
+
+    response = await get_chat_submission(
+        submission_id,
+        response=response_headers,
+        principal=request_principal,
+    )
+
+    assert response.state == "rejected_before_persist"
+    assert response.submission_disposition == "rejected_before_persist"
+    assert response.rejection_code == "chat_submission_retired_before_ledger"
+    assert response_headers.headers["Cache-Control"] == "private, no-store"
+
+
+@pytest.mark.asyncio
+async def test_retry_admission_preserves_existing_submission_admission(monkeypatch):
+    submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
+    admitted: list[str] = []
+
+    async def ensure_principal(*_args, **_kwargs):
+        return None
+
+    async def existing_submission(_conn, **_kwargs):
+        return {
+            "submission_id": submission_id,
+            "state": "accepted_pending_enqueue",
+            "request_fingerprint_sha256": "a" * 64,
+            "outcome_json": _pending_submission_row()["outcome_json"],
+        }, False
+
+    async def admit(*, principal: AuthPrincipal, submission_id: str):
+        assert principal.user_id == "user-a"
+        admitted.append(submission_id)
+        return ChatSubmissionResponse(
+            submission_id=submission_id,
+            state="accepted_pending_enqueue",
+            outcome=_pending_submission_row()["outcome_json"],
+        )
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "ensure_submission_principal", ensure_principal, raising=False)
+    monkeypatch.setattr(repository_module, "claim_chat_submission", existing_submission, raising=False)
+    monkeypatch.setattr("app.routes.chat._admit_chat_submission", admit)
+
+    response = await retry_chat_submission_admission(
+        submission_id,
+        response=Response(),
+        principal=principal(),
+    )
+
+    assert response.state == "accepted_pending_enqueue"
+    assert admitted == [submission_id]
+
+
+@pytest.mark.asyncio
+async def test_retry_admission_error_keeps_resolution_response_private_and_uncached(monkeypatch):
+    submission_id = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4"
+
+    async def ensure_principal(*_args, **_kwargs):
+        return None
+
+    async def existing_submission(_conn, **_kwargs):
+        return {
+            "submission_id": submission_id,
+            "state": "accepted_pending_enqueue",
+            "request_fingerprint_sha256": "a" * 64,
+            "outcome_json": _pending_submission_row()["outcome_json"],
+        }, False
+
+    async def missing_admission(*_args, **_kwargs):
+        raise HTTPException(status_code=404, detail="chat_submission_not_found")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "ensure_submission_principal", ensure_principal, raising=False)
+    monkeypatch.setattr(repository_module, "claim_chat_submission", existing_submission, raising=False)
+    monkeypatch.setattr("app.routes.chat._admit_chat_submission", missing_admission)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await retry_chat_submission_admission(
+            submission_id,
+            response=Response(),
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.headers == {"Cache-Control": "private, no-store"}
+
+
+@pytest.mark.asyncio
+async def test_late_chat_post_is_rejected_after_recovery_tombstone_wins(monkeypatch):
+    request = ChatStreamRequest(
+        message="late original request",
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+    request_principal = principal()
+    tombstone = {
+        "submission_id": str(request.submission_id),
+        "state": "rejected_before_persist",
+        "submission_disposition": "rejected_before_persist",
+        "rejection_code": "chat_submission_retired_before_ledger",
+        "request_fingerprint_sha256": _preledger_recovery_fingerprint(request_principal),
+        "outcome_json": {},
+    }
+    claim_calls = 0
+
+    async def initially_missing(*_args, **_kwargs):
+        return None
+
+    async def ensure_principal(*_args, **_kwargs):
+        return None
+
+    async def tombstone_wins(_conn, **_kwargs):
+        nonlocal claim_calls
+        claim_calls += 1
+        return tombstone, False
+
+    def forbidden_route(*_args, **_kwargs):
+        raise AssertionError("a tombstone must prevent intent routing and run creation")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", initially_missing, raising=False)
+    monkeypatch.setattr(repository_module, "ensure_submission_principal", ensure_principal, raising=False)
+    monkeypatch.setattr(repository_module, "claim_chat_submission", tombstone_wins, raising=False)
+    monkeypatch.setattr("app.routes.chat.route_intent", forbidden_route)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await chat_stream(request, principal=request_principal)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {
+        "code": "chat_submission_retired_before_ledger",
+        "submission_disposition": "rejected_before_persist",
+    }
+    # Validation persistence rechecks the already-retired UUID after the
+    # deterministic rejection; neither claim may route or create a run.
+    assert claim_calls == 2
 
 
 def _pending_submission_row(*, state: str = "accepted_pending_enqueue") -> dict[str, object]:

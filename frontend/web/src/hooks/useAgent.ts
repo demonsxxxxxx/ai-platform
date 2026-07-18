@@ -116,19 +116,93 @@ function isProvenPrePersistenceChatRejection(error: unknown): boolean {
   );
 }
 
+function parseChatSubmissionResolution(
+  value: unknown,
+  submissionId: string,
+): ChatSubmissionResolution | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const candidate = value as Record<string, unknown>;
+  const protocolVersion = candidate.protocol_version;
+  if (
+    protocolVersion !== undefined &&
+    protocolVersion !== CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION
+  ) {
+    return null;
+  }
+  if (candidate.submission_id !== submissionId) {
+    return null;
+  }
+  if (candidate.state === "absent_before_ledger") {
+    return protocolVersion === CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION
+      ? (candidate as unknown as ChatSubmissionPreLedgerAbsenceResolution)
+      : null;
+  }
+  if (
+    candidate.state !== "queued" &&
+    candidate.state !== "accepted_pending_enqueue" &&
+    candidate.state !== "enqueue_failed" &&
+    candidate.state !== "needs_confirmation" &&
+    candidate.state !== "rejected_before_persist"
+  ) {
+    return null;
+  }
+  if (
+    candidate.submission_disposition !== undefined &&
+    candidate.submission_disposition !== "rejected_before_persist"
+  ) {
+    return null;
+  }
+  if (
+    candidate.rejection_code !== undefined &&
+    typeof candidate.rejection_code !== "string"
+  ) {
+    return null;
+  }
+  const outcome = candidate.outcome;
+  if (outcome !== undefined && outcome !== null) {
+    if (typeof outcome !== "object" || Array.isArray(outcome)) {
+      return null;
+    }
+    const outcomeRecord = outcome as Record<string, unknown>;
+    if (
+      outcomeRecord.status !== "queued" &&
+      outcomeRecord.status !== "accepted_pending_enqueue" &&
+      outcomeRecord.status !== "needs_confirmation"
+    ) {
+      return null;
+    }
+    if (
+      outcomeRecord.submission_id !== undefined &&
+      outcomeRecord.submission_id !== submissionId
+    ) {
+      return null;
+    }
+    for (const field of ["session_id", "run_id"] as const) {
+      if (
+        outcomeRecord[field] !== undefined &&
+        outcomeRecord[field] !== null &&
+        typeof outcomeRecord[field] !== "string"
+      ) {
+        return null;
+      }
+    }
+    if (
+      outcomeRecord.status === "needs_confirmation" &&
+      outcomeRecord.suggestions !== undefined &&
+      !Array.isArray(outcomeRecord.suggestions)
+    ) {
+      return null;
+    }
+  }
+  return candidate as unknown as ChatSubmissionResolution;
+}
+
 function isAuthoritativePreLedgerAbsence(
   resolution: ChatSubmissionResolution,
-  submissionId: string,
 ): resolution is ChatSubmissionPreLedgerAbsenceResolution {
-  if (resolution === null || typeof resolution !== "object") {
-    return false;
-  }
-  const candidate = resolution as Partial<ChatSubmissionPreLedgerAbsenceResolution>;
-  return (
-    candidate.protocol_version === CHAT_SUBMISSION_RESOLUTION_PROTOCOL_VERSION &&
-    candidate.submission_id === submissionId &&
-    candidate.state === "absent_before_ledger"
-  );
+  return resolution.state === "absent_before_ledger";
 }
 
 function formatConfirmationMessage(suggestions: CapabilitySuggestion[]): string {
@@ -2172,9 +2246,21 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         defaultValue: i18n.t("chat.requestFailed"),
       });
       try {
-        const resolution = await sessionApi.getChatSubmission(submissionId);
+        const response = await sessionApi.getChatSubmission(submissionId);
         if (!isCurrentResolution()) return;
-        if (isAuthoritativePreLedgerAbsence(resolution, submissionId)) {
+        const resolution = parseChatSubmissionResolution(response, submissionId);
+        if (resolution === null) {
+          submissionUncertaintyRef.current = {
+            sessionId: submissionUncertaintyRef.current?.sessionId || null,
+            submissionId,
+            owner,
+            previousMessages: submissionUncertaintyRef.current?.previousMessages,
+          };
+          setPendingSubmissionId(submissionId);
+          setError(statusUnavailable);
+          return;
+        }
+        if (isAuthoritativePreLedgerAbsence(resolution)) {
           const previous = pending.previousMessages || [];
           messagesRef.current = previous;
           setMessages(previous);
@@ -2270,11 +2356,16 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       defaultValue: i18n.t("chat.requestFailed"),
     });
     try {
-      const resolution = await sessionApi.retryChatSubmissionAdmission(
+      const response = await sessionApi.retryChatSubmissionAdmission(
         pending.submissionId,
       );
       if (!isCurrentRetry()) return;
-      if (isAuthoritativePreLedgerAbsence(resolution, pending.submissionId)) {
+      const resolution = parseChatSubmissionResolution(response, pending.submissionId);
+      if (resolution === null) {
+        setError(statusUnavailable);
+        return;
+      }
+      if (isAuthoritativePreLedgerAbsence(resolution)) {
         const previous = pending.previousMessages || [];
         messagesRef.current = previous;
         setMessages(previous);
