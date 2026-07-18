@@ -135,8 +135,10 @@ async function readWorkbookText(
 const EXCEL_PREVIEW_MAX_XML_DEPTH = 64;
 const EXCEL_PREVIEW_MAX_XML_NODES = 50_000;
 const EXCEL_PREVIEW_XML_CHUNK_SIZE = 16 * 1024;
-const OOXML_RELATIONSHIP_NAMESPACE =
-  "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const OOXML_RELATIONSHIP_NAMESPACES = new Set([
+  "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+  "http://purl.oclc.org/ooxml/officeDocument/relationships",
+]);
 
 type XmlStreamEvents = {
   onOpenTag?: (tag: SaxesTagNS) => void;
@@ -215,7 +217,7 @@ function parseWorkbookSheetRefs(
       const relationship = Object.values(tag.attributes).find(
         (attribute) =>
           attribute.local === "id" &&
-          attribute.uri === OOXML_RELATIONSHIP_NAMESPACE,
+          OOXML_RELATIONSHIP_NAMESPACES.has(attribute.uri),
       );
       if (name && relationship) {
         sheets.push({ name, relationshipId: relationship.value });

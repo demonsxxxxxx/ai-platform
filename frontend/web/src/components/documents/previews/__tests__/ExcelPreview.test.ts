@@ -307,3 +307,33 @@ test("parseExcelWorkbookPreview bounds deeply nested inline strings", async () =
     /excel_preview_limits_exceeded/,
   );
 });
+
+test("parseExcelWorkbookPreview reads Strict OOXML relationships and cached numeric formulas", async () => {
+  const sheets = await parseExcelWorkbookPreview(new ArrayBuffer(32), {
+    loadZip: createZipLoader({
+      "xl/workbook.xml":
+        "<s:workbook xmlns:s='urn:spreadsheet' xmlns:strictRel='http://purl.oclc.org/ooxml/officeDocument/relationships'><s:sheets><s:sheet name='Strict Sheet' strictRel:id='rIdStrict'/></s:sheets></s:workbook>",
+      "xl/_rels/workbook.xml.rels":
+        "<p:Relationships xmlns:p='urn:package'><p:Relationship Id='rIdStrict' Target='worksheets/sheet1.xml'/></p:Relationships>",
+      "xl/worksheets/sheet1.xml":
+        "<s:worksheet xmlns:s='urn:spreadsheet'><s:sheetData><s:row r='1'><s:c r='A1'><s:f>SUM(40,2)</s:f><s:v>42</s:v></s:c><s:c r='B1'><s:v>3.5</s:v></s:c></s:row></s:sheetData></s:worksheet>",
+    }),
+  });
+
+  assert.deepEqual(sheets, [
+    { name: "Strict Sheet", data: [["42", "3.5"]] },
+  ]);
+});
+
+test("parseExcelWorkbookPreview rejects unclosed XML when saxes closes the document", async () => {
+  await assert.rejects(
+    () =>
+      parseExcelWorkbookPreview(new ArrayBuffer(32), {
+        loadZip: createZipLoader({
+          "xl/workbook.xml":
+            "<x:workbook xmlns:x='urn:workbook'><x:sheets>",
+        }),
+      }),
+    /excel_preview_invalid_xml/,
+  );
+});
