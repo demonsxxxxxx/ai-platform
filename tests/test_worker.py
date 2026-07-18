@@ -5675,9 +5675,26 @@ async def test_worker_records_general_chat_token_events(monkeypatch):
             if event_sink:
                 await event_sink(
                     event_type="assistant_delta",
+                    stage="thinking",
+                    message="private reasoning",
+                    payload={"delta": "private reasoning", "visible_to_user": True},
+                )
+                await event_sink(
+                    event_type="assistant_delta",
                     stage="message",
-                    message="你好",
-                    payload={"delta": "你好", "visible_to_user": True},
+                    message="raw sdk fallback",
+                    payload={"content": "raw sdk fallback", "visible_to_user": True},
+                )
+                await event_sink(
+                    event_type="assistant_delta",
+                    stage="message",
+                    message="executor text must not persist",
+                    payload={
+                        "delta": "你好",
+                        "visible_to_user": True,
+                        "tool_args": {"path": "/var/lib/private"},
+                        "raw_sdk_event": {"type": "content_block_delta"},
+                    },
                 )
             return ExecutorResult(
                 status="succeeded",
@@ -5715,7 +5732,16 @@ async def test_worker_records_general_chat_token_events(monkeypatch):
     outcome = await process_run_payload(payload, registry=Registry(), worker_id="worker-stream")
 
     assert outcome.status == "succeeded"
-    assert any(event["event_type"] == "assistant_delta" for event in events)
+    assistant_deltas = [event for event in events if event["event_type"] == "assistant_delta"]
+    assert len(assistant_deltas) == 1
+    assert assistant_deltas[0]["stage"] == "answer"
+    assert assistant_deltas[0]["message"] == ""
+    assert assistant_deltas[0]["payload"] == {
+        "delta": "你好",
+        "source": "worker_answer_delta_v1",
+        "visible_to_user": True,
+        "severity": "info",
+    }
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ import type {
   SubagentStackItem,
   UseAgentOptions,
 } from "./types";
+import { isSequencedPublicChatEvent } from "./types";
 import { clearAllLoadingStates } from "./messageParts";
 import { convertAttachments, processMessageEvent } from "./eventProcessor";
 import {
@@ -52,7 +53,7 @@ export interface EventHandlerContext {
   dismissQueueToast?: () => void;
 }
 
-/** Durable, bounded progress cursor for the active session/run stream. */
+/** Durable, bounded public-event cursor for the active session/run stream. */
 export interface AcceptedRunEventSequence {
   sessionId: string | null;
   runId: string | null;
@@ -200,18 +201,18 @@ export function handleStreamEvent(
     }
   }
 
-  const progressSequence = runEventSequence(data);
+  const sequencedPublicEvent = isSequencedPublicChatEvent(eventType, data);
+  const progressSequence = sequencedPublicEvent ? runEventSequence(data) : null;
   const progressSessionId = binding?.sessionId ?? ctx.sessionIdRef.current;
   const progressRunId = binding?.runId ?? eventRunId;
   const acceptedProgress = ctx.acceptedRunEventSequenceRef?.current;
-  // Sequenced run_event frames can only be accepted through the durable
-  // cursor. A partial caller without that cursor must fail closed instead of
-  // accidentally restoring the reconnect budget.
-  if (eventType === "run_event" && progressSequence !== null && !acceptedProgress) {
+  // Sequenced public run/projection frames can only be accepted through the
+  // durable cursor. A partial caller without that cursor must fail closed.
+  if (sequencedPublicEvent && progressSequence !== null && !acceptedProgress) {
     return false;
   }
   if (
-    eventType === "run_event" &&
+    sequencedPublicEvent &&
     progressSequence !== null &&
     progressSessionId &&
     progressRunId &&
@@ -233,7 +234,7 @@ export function handleStreamEvent(
     ctx.processedEventIdsRef.current.add(eventId);
   }
   if (
-    eventType === "run_event" &&
+    sequencedPublicEvent &&
     progressSequence !== null &&
     progressSessionId &&
     progressRunId

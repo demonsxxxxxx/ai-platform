@@ -12,6 +12,37 @@ export type SubmissionOutcome =
   | { status: "recoverable_error"; code: SelectedSkillRecoverableCode }
   | { status: "failed" };
 
+export const CHAT_PUBLIC_PROJECTION_VERSION =
+  "ai-platform.chat-public-projection.v1";
+
+export const CHAT_PUBLIC_PROGRESS_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "queued",
+  "run_started",
+  "tool_call_started",
+  "tool_call_completed",
+  "agent_step_started",
+  "agent_step_reused",
+  "agent_step_completed",
+  "agent_step_blocked",
+  "agent_step_failed",
+  "subagent_started",
+  "subagent_completed",
+  "subagent_failed",
+  "run_child_created",
+  "capability_selected",
+  "intent_detected",
+  "intent_confirmed",
+  "context_snapshot_created",
+  "file_bound",
+  "artifact_created",
+  "cancel_requested",
+  "cancel_requested_but_completed",
+]);
+
+export type AssistantTextProjectionKind =
+  | "assistant_delta"
+  | "assistant_final";
+
 // Event types from backend
 export type EventType =
   | "metadata"
@@ -102,6 +133,11 @@ export interface EventData {
   // queue_update event fields
   status?: string;
   queue_position?: number;
+  // Versioned public Chat projection fields
+  projection_version?: string;
+  projection_kind?: string;
+  progress_kind?: string;
+  wait_reason?: string | null;
   // ai-platform run_event fields
   event_id?: string;
   sequence?: number;
@@ -128,6 +164,40 @@ export interface EventData {
   updated_index?: number;
   // summary event fields
   summary_id?: string;
+}
+
+/** True only for the versioned public assistant-text projection contract. */
+export function isAssistantTextProjection(
+  data: EventData,
+): data is EventData & {
+  projection_version: typeof CHAT_PUBLIC_PROJECTION_VERSION;
+  projection_kind: AssistantTextProjectionKind;
+  content: string;
+} {
+  return (
+    data.projection_version === CHAT_PUBLIC_PROJECTION_VERSION &&
+    (data.projection_kind === "assistant_delta" ||
+      data.projection_kind === "assistant_final") &&
+    typeof data.content === "string"
+  );
+}
+
+/** A persisted sequence that proves new public progress on this run. */
+export function isSequencedPublicChatEvent(
+  eventType: string,
+  data: EventData,
+): boolean {
+  const hasSequence =
+    typeof data.sequence === "number" &&
+    Number.isSafeInteger(data.sequence) &&
+    data.sequence >= 0;
+  return (
+    hasSequence &&
+    (eventType === "run_event" ||
+      (eventType === "message:chunk" &&
+        isAssistantTextProjection(data) &&
+        data.projection_kind === "assistant_delta"))
+  );
 }
 
 export interface UseAgentOptions {
@@ -161,6 +231,8 @@ export interface SubagentStackItem {
 
 // History event data structure
 export interface HistoryEventData {
+  projection_version?: string;
+  projection_kind?: string;
   content?: string;
   detail_kind?: string;
   detail_code?: string;
@@ -181,6 +253,8 @@ export interface HistoryEventData {
   event_type?: string;
   stage?: string;
   severity?: string;
+  progress_kind?: string;
+  wait_reason?: string | null;
   message?: string;
   payload?: Record<string, unknown>;
   tool_permission_card?: Record<string, unknown>;
