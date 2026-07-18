@@ -8,8 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
+from app.artifact_preview import artifact_preview_allowed, artifact_preview_url
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
+from app.file_preview_contracts import XLSX_CONTENT_TYPE, is_xlsx_preview_request
 from app.models import (
     RevealedFileGroupedListResponse,
     RevealedFileItemResponse,
@@ -76,14 +78,24 @@ def _revealed_item(row: dict[str, Any]) -> RevealedFileItemResponse:
     session_id = str(row.get("session_id") or "")
     file_type = _file_type_for(row)
     source = "reveal_project" if file_type == "project" else "reveal_file"
+    file_name = _file_name_for(row)
+    content_type = str(row.get("content_type") or "")
+    preview_allowed = artifact_preview_allowed(content_type) and (
+        content_type.split(";", 1)[0].strip().casefold() != XLSX_CONTENT_TYPE
+        or is_xlsx_preview_request(file_name=file_name, content_type=content_type)
+    )
+    preview_url = artifact_preview_url(artifact_id) if artifact_id and preview_allowed else None
+    download_url = f"/api/ai/artifacts/{artifact_id}/download" if artifact_id else None
     return RevealedFileItemResponse(
         id=artifact_id,
         file_key=artifact_id,
-        file_name=_file_name_for(row),
+        file_name=file_name,
         file_type=file_type,  # type: ignore[arg-type]
-        mime_type=str(row.get("content_type") or "") or None,
+        mime_type=content_type or None,
         file_size=int(row.get("size_bytes") or 0),
-        url=f"/api/ai/artifacts/{artifact_id}/download" if artifact_id else None,
+        preview_url=preview_url,
+        download_url=download_url,
+        url=preview_url,
         session_id=session_id,
         session_name=row.get("session_name"),
         trace_id=str(row.get("trace_id") or standard_trace_id(run_id or artifact_id)),

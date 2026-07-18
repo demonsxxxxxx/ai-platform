@@ -8,6 +8,8 @@ existing attachment parser; it never implements a second OOXML parser.
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import math
 import multiprocessing
@@ -16,7 +18,8 @@ from pathlib import Path, PurePosixPath
 import stat
 import tempfile
 import threading
-from typing import Any, Literal
+import time
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -37,6 +40,10 @@ MAX_CONCURRENT_XLSX_PREVIEWS = 2
 _XLSX_STAGING_FILENAME = "preview.xlsx"
 _FORMULA_REDACTED_PLACEHOLDER = "[formula omitted]"
 _PREVIEW_ADMISSION = threading.BoundedSemaphore(MAX_CONCURRENT_XLSX_PREVIEWS)
+_PREVIEW_EXECUTOR = ThreadPoolExecutor(
+    max_workers=MAX_CONCURRENT_XLSX_PREVIEWS,
+    thread_name_prefix="xlsx-preview",
+)
 _XLSX_PREVIEW_WARNINGS = (
     "styles_not_rendered",
     "charts_not_rendered",
@@ -109,9 +116,6 @@ class XlsxPreviewResponse(BaseModel):
     schema_version: Literal[FILE_PREVIEW_SCHEMA_VERSION] = FILE_PREVIEW_SCHEMA_VERSION
     kind: Literal["xlsx_table"] = "xlsx_table"
     status: Literal["ready", "truncated", "failed"]
-    source_sha256: str = Field(min_length=64, max_length=64)
-    parser_id: str
-    parser_version: str
     content: XlsxPreviewContent | None = None
     truncated: bool = False
     warnings: list[str] = Field(default_factory=list)
@@ -134,6 +138,108 @@ class XlsxPreviewResponse(BaseModel):
 
 class XlsxPreviewBusyError(RuntimeError):
     """Raised when the bounded preview admission limit has been reached."""
+
+
+class XlsxPreviewLease:
+    """One route-owned permit retained until work and any child reaping finish."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._released = False
+        self._release_requested = False
+        self._reaper_active = False
+        self._reaper_thread: threading.Thread | None = None
+
+    def release(self) -> None:
+        """Release the permit once no tracked child remains alive."""
+
+        with self._lock:
+            self._release_requested = True
+            if self._released or self._reaper_active:
+                return
+            self._released = True
+        _PREVIEW_ADMISSION.release()
+
+    def defer_release_until(self, future: asyncio.Future[Any]) -> None:
+        """Keep the permit while a cancelled request's executor work continues."""
+
+        future.add_done_callback(lambda _future: self.release())
+
+    def retain_until_process_exit(self, process: multiprocessing.Process) -> None:
+        """Track an unreaped child and release only after its exit is confirmed."""
+
+        with self._lock:
+            if self._released or self._reaper_active:
+                return
+            self._reaper_active = True
+            reaper = threading.Thread(
+                target=self._reap_process,
+                args=(process,),
+                name="xlsx-preview-reaper",
+                daemon=True,
+            )
+            self._reaper_thread = reaper
+        try:
+            reaper.start()
+        except RuntimeError:
+            # Keep the permit held rather than admitting more work with an
+            # untracked child whose exit cannot yet be confirmed.
+            return
+
+    def _reap_process(self, process: multiprocessing.Process) -> None:
+        try:
+            while True:
+                try:
+                    if not process.is_alive():
+                        break
+                    process.join(timeout=0.1)
+                except (OSError, ValueError):
+                    # An uncertain process state must retain the permit and retry.
+                    time.sleep(0.05)
+            try:
+                process.join(timeout=0)
+                process.close()
+            except (OSError, ValueError):
+                pass
+        finally:
+            with self._lock:
+                self._reaper_active = False
+                should_release = self._release_requested and not self._released
+                if should_release:
+                    self._released = True
+            if should_release:
+                _PREVIEW_ADMISSION.release()
+
+
+def acquire_xlsx_preview_lease() -> XlsxPreviewLease | None:
+    """Fail closed when all preview permits are held by reads, parses, or reapers."""
+
+    if not _PREVIEW_ADMISSION.acquire(blocking=False):
+        return None
+    return XlsxPreviewLease()
+
+
+async def run_xlsx_preview_job(
+    *,
+    lease: XlsxPreviewLease,
+    job: Callable[[], XlsxPreviewResponse],
+) -> XlsxPreviewResponse:
+    """Run one leased storage-and-parse job on the dedicated bounded executor."""
+
+    loop = asyncio.get_running_loop()
+    try:
+        future = loop.run_in_executor(_PREVIEW_EXECUTOR, job)
+    except Exception:
+        lease.release()
+        raise
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        lease.defer_release_until(future)
+        raise
+    finally:
+        if future.done():
+            lease.release()
 
 
 def is_xlsx_preview_request(*, file_name: object, content_type: object) -> bool:
@@ -162,6 +268,7 @@ def build_xlsx_preview(
     file_id: str,
     file_name: str,
     content_type: str,
+    lease: XlsxPreviewLease,
     expected_sha256: str | None = None,
     expected_byte_count: int | None = None,
     timeout_seconds: float = XLSX_PREVIEW_TIMEOUT_SECONDS,
@@ -177,17 +284,11 @@ def build_xlsx_preview(
     spec = parser_spec_for_attachment(file_name=file_name, content_type=content_type)
     if spec is None or not is_xlsx_preview_request(file_name=file_name, content_type=content_type):
         return _failed_preview(
-            source_sha256=source_sha256,
-            parser_id=spec.parser_id if spec else "",
-            parser_version=spec.parser_version if spec else "",
             code="xlsx_preview_unsupported",
         )
 
     if len(raw) > spec.max_bytes:
         return _failed_preview(
-            source_sha256=source_sha256,
-            parser_id=spec.parser_id,
-            parser_version=spec.parser_version,
             code="xlsx_preview_file_too_large",
         )
 
@@ -205,26 +306,16 @@ def build_xlsx_preview(
         )
     except (TypeError, ValueError):
         return _failed_preview(
-            source_sha256=source_sha256,
-            parser_id=spec.parser_id,
-            parser_version=spec.parser_version,
             code="xlsx_preview_unavailable",
         )
-    if not _PREVIEW_ADMISSION.acquire(blocking=False):
-        raise XlsxPreviewBusyError("xlsx_preview_busy")
-    try:
-        child_result = _invoke_isolated_xlsx_parser(
-            raw=raw,
-            requirement=requirement.model_dump(mode="json"),
-            timeout_seconds=timeout_seconds,
-        )
-    finally:
-        _PREVIEW_ADMISSION.release()
+    child_result = _invoke_isolated_xlsx_parser(
+        raw=raw,
+        requirement=requirement.model_dump(mode="json"),
+        timeout_seconds=timeout_seconds,
+        lease=lease,
+    )
     if child_result["status"] != "parsed":
         return _failed_preview(
-            source_sha256=source_sha256,
-            parser_id=spec.parser_id,
-            parser_version=spec.parser_version,
             code=child_result["code"],
         )
 
@@ -232,16 +323,14 @@ def build_xlsx_preview(
         parsed = ParsedAttachmentContext.model_validate(child_result["parsed"])
     except (TypeError, ValueError):
         return _failed_preview(
-            source_sha256=source_sha256,
-            parser_id=spec.parser_id,
-            parser_version=spec.parser_version,
             code="xlsx_preview_unavailable",
         )
-    if parsed.evidence.sha256 != source_sha256:
+    if (
+        parsed.evidence.sha256 != source_sha256
+        or parsed.evidence.parser_id != spec.parser_id
+        or parsed.evidence.parser_version != spec.parser_version
+    ):
         return _failed_preview(
-            source_sha256=source_sha256,
-            parser_id=spec.parser_id,
-            parser_version=spec.parser_version,
             code="xlsx_preview_unavailable",
         )
     return _preview_from_parsed_context(parsed)
@@ -252,6 +341,7 @@ def _invoke_isolated_xlsx_parser(
     raw: bytes,
     requirement: dict[str, Any],
     timeout_seconds: float,
+    lease: XlsxPreviewLease,
 ) -> dict[str, Any]:
     """Run exactly one parser call and reap the child on every parent outcome."""
 
@@ -285,25 +375,41 @@ def _invoke_isolated_xlsx_parser(
         receive_conn.close()
         send_conn.close()
         if started:
-            if process.is_alive():
-                _stop_process(process)
+            try:
+                if process.is_alive():
+                    reaped = _stop_process(process)
+                else:
+                    process.join(timeout=0)
+                    reaped = not process.is_alive()
+            except (OSError, ValueError):
+                reaped = False
+            if not reaped:
+                lease.retain_until_process_exit(process)
             else:
-                process.join(timeout=0)
-        try:
-            process.close()
-        except (OSError, ValueError):
-            pass
+                try:
+                    process.close()
+                except (OSError, ValueError):
+                    pass
+        else:
+            try:
+                process.close()
+            except (OSError, ValueError):
+                pass
 
 
-def _stop_process(process: multiprocessing.Process) -> None:
+def _stop_process(process: multiprocessing.Process) -> bool:
     """Terminate, then kill if needed, so timed-out previews never leak a child."""
 
-    if process.is_alive():
-        process.terminate()
-    process.join(timeout=0.5)
-    if process.is_alive():
-        process.kill()
+    try:
+        if process.is_alive():
+            process.terminate()
         process.join(timeout=0.5)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=0.5)
+        return not process.is_alive()
+    except (OSError, ValueError):
+        return False
 
 
 def _parse_xlsx_preview_child(
@@ -403,16 +509,10 @@ def _public_failure_code(value: str) -> PreviewFailureCode:
 
 def _failed_preview(
     *,
-    source_sha256: str,
-    parser_id: str,
-    parser_version: str,
     code: PreviewFailureCode,
 ) -> XlsxPreviewResponse:
     return XlsxPreviewResponse(
         status="failed",
-        source_sha256=source_sha256,
-        parser_id=parser_id,
-        parser_version=parser_version,
         error=FilePreviewError(code=code),
     )
 
@@ -424,9 +524,6 @@ def _preview_from_parsed_context(parsed: ParsedAttachmentContext) -> XlsxPreview
     raw_sheets = workbook.get("sheets") if isinstance(workbook, dict) else None
     if not isinstance(raw_sheets, list):
         return _failed_preview(
-            source_sha256=parsed.evidence.sha256,
-            parser_id=parsed.evidence.parser_id,
-            parser_version=parsed.evidence.parser_version,
             code="xlsx_preview_unavailable",
         )
     try:
@@ -443,17 +540,11 @@ def _preview_from_parsed_context(parsed: ParsedAttachmentContext) -> XlsxPreview
         )
     except (TypeError, ValueError):
         return _failed_preview(
-            source_sha256=parsed.evidence.sha256,
-            parser_id=parsed.evidence.parser_id,
-            parser_version=parsed.evidence.parser_version,
             code="xlsx_preview_unavailable",
         )
     truncated = parsed.evidence.truncated
     return XlsxPreviewResponse(
         status="truncated" if truncated else "ready",
-        source_sha256=parsed.evidence.sha256,
-        parser_id=parsed.evidence.parser_id,
-        parser_version=parsed.evidence.parser_version,
         content=content,
         truncated=truncated,
         warnings=list(_XLSX_PREVIEW_WARNINGS),

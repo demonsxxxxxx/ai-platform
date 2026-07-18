@@ -9,8 +9,8 @@ from openpyxl import Workbook
 
 from app import file_preview_contracts
 from app.file_preview_contracts import (
-    XlsxPreviewBusyError,
     _stage_xlsx_preview_bytes,
+    acquire_xlsx_preview_lease,
     build_xlsx_preview,
     is_xlsx_preview_request,
 )
@@ -33,9 +33,18 @@ def _workbook_bytes(*, formulas: list[str] | None = None) -> bytes:
     return buffer.getvalue()
 
 
+def _build_preview(**kwargs):
+    lease = acquire_xlsx_preview_lease()
+    assert lease is not None
+    try:
+        return build_xlsx_preview(lease=lease, **kwargs)
+    finally:
+        lease.release()
+
+
 def test_xlsx_preview_uses_the_registered_parser_and_returns_only_the_presentation_dto():
     raw = _workbook_bytes()
-    preview = build_xlsx_preview(
+    preview = _build_preview(
         raw=raw,
         file_id="file-preview",
         file_name="checks.xlsx",
@@ -45,21 +54,22 @@ def test_xlsx_preview_uses_the_registered_parser_and_returns_only_the_presentati
     )
 
     assert preview.status == "ready"
-    assert preview.source_sha256 == hashlib.sha256(raw).hexdigest()
-    assert preview.parser_id == "ai-platform.xlsx.openpyxl"
     assert preview.content is not None
     assert preview.content.sheets[0].name == "Checks"
     assert preview.content.sheets[0].rows[1].cells[0].value == "ACCEPT-XLSX-9472"
     assert preview.error is None
     assert "storage_key" not in preview.model_dump_json()
     assert "workbook.xml" not in preview.model_dump_json()
+    assert "source_sha256" not in preview.model_dump_json()
+    assert "parser_id" not in preview.model_dump_json()
+    assert "parser_version" not in preview.model_dump_json()
 
 
 def test_xlsx_preview_redacts_local_and_external_formula_source():
     raw = _workbook_bytes(
         formulas=["=SUM(40,2)", "='[private-book.xlsx]Sheet1'!A1"],
     )
-    preview = build_xlsx_preview(
+    preview = _build_preview(
         raw=raw,
         file_id="file-formulas",
         file_name="checks.xlsx",
@@ -90,7 +100,7 @@ def test_xlsx_preview_metadata_requires_the_supported_xlsx_extension_and_mime_ty
 
 
 def test_oversized_xlsx_preview_fails_with_a_stable_public_code():
-    preview = build_xlsx_preview(
+    preview = _build_preview(
         raw=b"0" * (1024 * 1024 + 1),
         file_id="file-large",
         file_name="large.xlsx",
@@ -139,17 +149,12 @@ def test_xlsx_staging_uses_the_fixed_path_with_windows_semantics(monkeypatch):
 
 def test_xlsx_preview_admission_fails_fast_without_queue(monkeypatch):
     admission = threading.BoundedSemaphore(1)
-    assert admission.acquire(blocking=False)
     monkeypatch.setattr(file_preview_contracts, "_PREVIEW_ADMISSION", admission)
 
-    with pytest.raises(XlsxPreviewBusyError):
-        build_xlsx_preview(
-            raw=_workbook_bytes(),
-            file_id="file-busy",
-            file_name="checks.xlsx",
-            content_type=XLSX_CONTENT_TYPE,
-        )
-    admission.release()
+    lease = acquire_xlsx_preview_lease()
+    assert lease is not None
+    assert acquire_xlsx_preview_lease() is None
+    lease.release()
 
 
 def test_timeout_reaps_and_closes_the_child_process(monkeypatch):
@@ -198,13 +203,86 @@ def test_timeout_reaps_and_closes_the_child_process(monkeypatch):
             return Process()
 
     monkeypatch.setattr(file_preview_contracts.multiprocessing, "get_context", lambda _: Context())
+    lease = acquire_xlsx_preview_lease()
+    assert lease is not None
     result = file_preview_contracts._invoke_isolated_xlsx_parser(
         raw=b"safe",
         requirement={},
         timeout_seconds=0.01,
+        lease=lease,
     )
+    lease.release()
 
     assert result == {"status": "failed", "code": "xlsx_preview_timeout"}
     assert "terminate" in calls
     assert "join:0.5" in calls
     assert "process.close" in calls
+
+
+def test_unreaped_child_retains_the_permit_until_the_reaper_confirms_exit(monkeypatch):
+    admission = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(file_preview_contracts, "_PREVIEW_ADMISSION", admission)
+    allow_exit = threading.Event()
+    calls: list[str] = []
+
+    class Connection:
+        def poll(self, timeout):
+            return False
+
+        def close(self):
+            return None
+
+    class Process:
+        alive = False
+
+        def start(self):
+            self.alive = True
+
+        def is_alive(self):
+            return self.alive
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def kill(self):
+            calls.append("kill")
+
+        def join(self, timeout=0):
+            allow_exit.wait(min(timeout, 0.01))
+
+        def close(self):
+            calls.append("close")
+
+    process = Process()
+
+    class Context:
+        def Pipe(self, *, duplex):
+            assert duplex is False
+            return Connection(), Connection()
+
+        def Process(self, **kwargs):
+            return process
+
+    monkeypatch.setattr(file_preview_contracts.multiprocessing, "get_context", lambda _: Context())
+    lease = acquire_xlsx_preview_lease()
+    assert lease is not None
+
+    result = file_preview_contracts._invoke_isolated_xlsx_parser(
+        raw=b"safe",
+        requirement={},
+        timeout_seconds=0.01,
+        lease=lease,
+    )
+    lease.release()
+
+    assert result == {"status": "failed", "code": "xlsx_preview_timeout"}
+    assert acquire_xlsx_preview_lease() is None
+    assert "terminate" in calls and "kill" in calls
+
+    process.alive = False
+    assert lease._reaper_thread is not None
+    lease._reaper_thread.join(timeout=1)
+    recovered = acquire_xlsx_preview_lease()
+    assert recovered is not None
+    recovered.release()
+    assert "close" in calls

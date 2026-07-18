@@ -15,9 +15,11 @@ from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
 from app.file_preview_contracts import (
     XLSX_CONTENT_TYPE,
-    XlsxPreviewBusyError,
+    XlsxPreviewResponse,
+    acquire_xlsx_preview_lease,
     build_xlsx_preview,
     is_xlsx_preview_request,
+    run_xlsx_preview_job,
     xlsx_preview_max_bytes,
 )
 from app.models import (
@@ -140,30 +142,11 @@ def _input_file_preview_allowed(value: object, *, file_name: object = "") -> boo
     return content_type in INPUT_FILE_PREVIEW_CONTENT_TYPES
 
 
-async def _read_bounded_xlsx_preview_bytes(
+async def _build_xlsx_preview_response(
     *,
     storage_key: str,
     declared_size_bytes: object,
     max_bytes: int,
-) -> bytes:
-    """Read an authorized XLSX only after both metadata and streamed byte caps pass."""
-
-    declared_size = _optional_nonnegative_int(declared_size_bytes)
-    if declared_size is not None and declared_size > max_bytes:
-        raise HTTPException(status_code=413, detail="xlsx_preview_file_too_large")
-    try:
-        return await asyncio.to_thread(
-            ObjectStorage().get_bytes_bounded,
-            storage_key=storage_key,
-            max_bytes=max_bytes,
-        )
-    except ObjectStorageSizeLimitError as exc:
-        raise HTTPException(status_code=413, detail="xlsx_preview_file_too_large") from exc
-
-
-async def _build_xlsx_preview_response(
-    *,
-    raw: bytes,
     file_id: str,
     file_name: str,
     content_type: str,
@@ -171,20 +154,37 @@ async def _build_xlsx_preview_response(
     expected_sha256: str | None = None,
     expected_byte_count: int | None = None,
 ) -> JSONResponse:
-    """Build one server preview or expose bounded admission pressure as public 503."""
+    """Read and parse one ACL-authorized XLSX under one shared preview lease."""
 
-    try:
-        preview = await asyncio.to_thread(
-            build_xlsx_preview,
+    declared_size = _optional_nonnegative_int(declared_size_bytes)
+    if declared_size is not None and declared_size > max_bytes:
+        raise HTTPException(status_code=413, detail="xlsx_preview_file_too_large")
+    lease = acquire_xlsx_preview_lease()
+    if lease is None:
+        raise HTTPException(status_code=503, detail="xlsx_preview_busy")
+
+    def build_preview() -> XlsxPreviewResponse:
+        raw = ObjectStorage().get_bytes_bounded(
+            storage_key=storage_key,
+            max_bytes=max_bytes,
+        )
+        return build_xlsx_preview(
             raw=raw,
             file_id=file_id,
             file_name=file_name,
             content_type=content_type,
+            lease=lease,
             expected_sha256=expected_sha256,
             expected_byte_count=expected_byte_count,
         )
-    except XlsxPreviewBusyError as exc:
-        raise HTTPException(status_code=503, detail="xlsx_preview_busy") from exc
+
+    try:
+        preview = await run_xlsx_preview_job(
+            lease=lease,
+            job=build_preview,
+        )
+    except ObjectStorageSizeLimitError as exc:
+        raise HTTPException(status_code=413, detail="xlsx_preview_file_too_large") from exc
     return JSONResponse(
         content=preview.model_dump(mode="json"),
         headers=headers,
@@ -499,13 +499,10 @@ async def preview_input_file(
             file_name=filename,
             content_type=content_type,
         )
-        content = await _read_bounded_xlsx_preview_bytes(
+        return await _build_xlsx_preview_response(
             storage_key=str(file_row["storage_key"]),
             declared_size_bytes=file_row.get("size_bytes"),
             max_bytes=max_bytes,
-        )
-        return await _build_xlsx_preview_response(
-            raw=content,
             file_id=file_id,
             file_name=filename,
             content_type=content_type,
@@ -680,13 +677,10 @@ async def preview_artifact(
             file_name=filename,
             content_type=content_type,
         )
-        content = await _read_bounded_xlsx_preview_bytes(
+        return await _build_xlsx_preview_response(
             storage_key=str(artifact["storage_key"]),
             declared_size_bytes=artifact.get("size_bytes"),
             max_bytes=max_bytes,
-        )
-        return await _build_xlsx_preview_response(
-            raw=content,
             file_id=artifact_id,
             file_name=filename,
             content_type=content_type,

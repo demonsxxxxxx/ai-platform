@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 const excelPreviewStylesPromise =
   typeof document === "undefined"
@@ -45,9 +45,6 @@ export interface XlsxPreviewDto {
   schema_version: typeof FILE_PREVIEW_SCHEMA_VERSION;
   kind: "xlsx_table";
   status: "ready" | "truncated" | "failed";
-  source_sha256: string;
-  parser_id: string;
-  parser_version: string;
   content: { sheets: XlsxPreviewSheet[]; sheet_count: number } | null;
   truncated: boolean;
   warnings: string[];
@@ -166,9 +163,6 @@ export function parseXlsxPreviewDto(payload: string): XlsxPreviewDto {
       "schema_version",
       "kind",
       "status",
-      "source_sha256",
-      "parser_id",
-      "parser_version",
       "content",
       "truncated",
       "warnings",
@@ -177,10 +171,6 @@ export function parseXlsxPreviewDto(payload: string): XlsxPreviewDto {
     value.schema_version !== FILE_PREVIEW_SCHEMA_VERSION ||
     value.kind !== "xlsx_table" ||
     !["ready", "truncated", "failed"].includes(String(value.status)) ||
-    typeof value.source_sha256 !== "string" ||
-    !/^[a-f0-9]{64}$/.test(value.source_sha256) ||
-    typeof value.parser_id !== "string" ||
-    typeof value.parser_version !== "string" ||
     typeof value.truncated !== "boolean" ||
     !Array.isArray(value.warnings) ||
     !value.warnings.every((warning) => typeof warning === "string")
@@ -203,9 +193,6 @@ export function parseXlsxPreviewDto(payload: string): XlsxPreviewDto {
       schema_version: FILE_PREVIEW_SCHEMA_VERSION,
       kind: "xlsx_table",
       status: "failed",
-      source_sha256: value.source_sha256,
-      parser_id: value.parser_id,
-      parser_version: value.parser_version,
       content: null,
       truncated: false,
       warnings: value.warnings as string[],
@@ -300,7 +287,9 @@ const ExcelPreview = memo(function ExcelPreview({
     row: number;
     col: number;
   } | null>(null);
+  const previewInstanceId = useId();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const sheetTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const { progress, hasOverflow } = useScrollIndicator(scrollContainerRef);
 
   const parsedPreview = useMemo(() => {
@@ -319,7 +308,7 @@ const ExcelPreview = memo(function ExcelPreview({
 
   const sheets = preview?.content?.sheets ?? [];
   const currentSheet = sheets[activeSheet];
-  const tabPanelId = "xlsx-preview-table";
+  const tabPanelId = `${previewInstanceId}-xlsx-preview-table`;
 
   const totalCols = useMemo(() => {
     if (!currentSheet) return 0;
@@ -369,6 +358,7 @@ const ExcelPreview = memo(function ExcelPreview({
       if (nextIndex !== null) {
         event.preventDefault();
         setActiveSheet(nextIndex);
+        sheetTabRefs.current[nextIndex]?.focus();
       }
     },
     [activeSheet, sheets.length],
@@ -423,11 +413,14 @@ const ExcelPreview = memo(function ExcelPreview({
           {sheets.map((sheet, index) => (
             <button
               key={`${index}:${sheet.name}`}
-              id={`xlsx-preview-tab-${index}`}
+              id={`${previewInstanceId}-xlsx-preview-tab-${index}`}
               role="tab"
               aria-controls={tabPanelId}
               aria-selected={activeSheet === index}
               tabIndex={activeSheet === index ? 0 : -1}
+              ref={(element) => {
+                sheetTabRefs.current[index] = element;
+              }}
               onClick={() => setActiveSheet(index)}
               onKeyDown={handleSheetKeyDown}
               className={`px-3 py-0.5 text-[11px] font-medium rounded-sm whitespace-nowrap transition-all ${
@@ -463,7 +456,7 @@ const ExcelPreview = memo(function ExcelPreview({
         </p>
       )}
 
-      <div id={tabPanelId} role="tabpanel" aria-labelledby={`xlsx-preview-tab-${activeSheet}`} ref={scrollContainerRef} className="flex-1 overflow-auto relative overscroll-x-contain [-webkit-overflow-scrolling:touch] excel-preview-scroll border-x border-stone-300 dark:border-stone-600">
+      <div id={tabPanelId} role="tabpanel" aria-labelledby={`${previewInstanceId}-xlsx-preview-tab-${activeSheet}`} ref={scrollContainerRef} className="flex-1 overflow-auto relative overscroll-x-contain [-webkit-overflow-scrolling:touch] excel-preview-scroll border-x border-stone-300 dark:border-stone-600">
         <table className="border-collapse w-max min-w-full text-[13px]">
           <thead>
             <tr className="sticky top-0 z-10">

@@ -22,6 +22,22 @@ export interface ExternalNavigationState {
   targetFile?: ExternalNavigationTargetFile | null;
 }
 
+type RevealedFileNavigationProjection = Pick<
+  RevealedFileItem,
+  | "id"
+  | "file_key"
+  | "file_name"
+  | "file_size"
+  | "url"
+  | "source"
+  | "original_path"
+  | "project_meta"
+> & {
+  mime_type?: string | null;
+  preview_url?: string | null;
+  download_url?: string | null;
+};
+
 export function shouldResetExternalNavigateFlag(
   locationState: ExternalNavigationState | null | undefined,
 ): boolean {
@@ -107,17 +123,7 @@ function buildExternalNavigationTargetFile(file: {
 }
 
 export function buildExternalNavigationPreviewRequest(
-  file: Pick<
-    RevealedFileItem,
-    | "id"
-    | "file_key"
-    | "file_name"
-    | "file_size"
-    | "url"
-    | "source"
-    | "original_path"
-    | "project_meta"
-  >,
+  file: RevealedFileNavigationProjection,
 ): RevealPreviewRequest | null {
   if (file.source === "reveal_project") {
     const project = buildSanitizedProjectRevealDataFromMeta({
@@ -138,7 +144,9 @@ export function buildExternalNavigationPreviewRequest(
 
   const filePath = getSafeExternalFilePath(file);
   const s3Key = getSafeExternalFileS3Key(file.file_key);
-  const signedUrl = getAllowedExternalFileSignedUrl(file.url);
+  const previewUrl = getAllowedExternalFileSignedUrl(file.preview_url);
+  const signedUrl = previewUrl ?? getAllowedExternalFileSignedUrl(file.url);
+  const downloadUrl = getAllowedExternalFileSignedUrl(file.download_url);
 
   return {
     kind: "file",
@@ -146,7 +154,10 @@ export function buildExternalNavigationPreviewRequest(
     filePath,
     ...(s3Key ? { s3Key } : {}),
     ...(signedUrl ? { signedUrl } : {}),
+    ...(previewUrl ? { previewUrl } : {}),
+    ...(downloadUrl ? { downloadUrl } : {}),
     fileSize: file.file_size,
+    ...(file.mime_type ? { mimeType: file.mime_type } : {}),
   };
 }
 

@@ -28,6 +28,28 @@ function normalizeArtifactUrl(value: string | null | undefined): string | null {
   return url && isAllowedRevealArtifactUrl(url) ? url : null;
 }
 
+function normalizeArtifactPreviewUrl(
+  value: string | null | undefined,
+): string | null {
+  const url = normalizeArtifactUrl(value);
+  if (!url) return null;
+  try {
+    const pathname = new URL(url, "http://localhost").pathname;
+    const segments = pathname.split("/").filter(Boolean);
+    return (
+      segments.length === 5 &&
+      segments[0] === "api" &&
+      segments[1] === "ai" &&
+      (segments[2] === "artifacts" || segments[2] === "files") &&
+      segments[4] === "preview"
+    )
+      ? url
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeSize(value: number | null | undefined): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0
     ? value
@@ -85,14 +107,13 @@ function buildPreviewKey(input: {
 export function buildArtifactPreviewRequest<T extends ArtifactPreviewInput>(
   artifact: T,
 ): Extract<RevealPreviewRequest, { kind: "file" }> | null {
-  const previewUrl = normalizeArtifactUrl(
+  const previewUrl = normalizeArtifactPreviewUrl(
     artifact.preview_url ?? artifact.previewUrl,
   );
   const downloadUrl = normalizeArtifactUrl(
     artifact.download_url ?? artifact.downloadUrl,
   );
-  const url = previewUrl ?? downloadUrl;
-  if (!url) {
+  if (!previewUrl) {
     return null;
   }
 
@@ -106,9 +127,11 @@ export function buildArtifactPreviewRequest<T extends ArtifactPreviewInput>(
 
   return {
     kind: "file",
-    previewKey: buildPreviewKey({ artifactId, filePath, url }),
+    previewKey: buildPreviewKey({ artifactId, filePath, url: previewUrl }),
     filePath,
-    signedUrl: url,
+    signedUrl: previewUrl,
+    previewUrl,
+    ...(downloadUrl ? { downloadUrl } : {}),
     ...(fileSize !== undefined ? { fileSize } : {}),
     ...(mimeType ? { mimeType } : {}),
   };

@@ -1346,7 +1346,6 @@ async def test_admin_preview_of_deleted_artifact_session_is_non_oracular_before_
 @pytest.mark.asyncio
 async def test_preview_artifact_returns_a_public_xlsx_dto_after_authorization(monkeypatch):
     raw = b"xlsx-artifact-bytes"
-    source_sha256 = hashlib.sha256(raw).hexdigest()
     calls = {}
 
     async def fake_get_authorized_artifact(conn, *, tenant_id, user_id, artifact_id):
@@ -1372,9 +1371,6 @@ async def test_preview_artifact_returns_a_public_xlsx_dto_after_authorization(mo
         calls.update(kwargs)
         return XlsxPreviewResponse(
             status="ready",
-            source_sha256=source_sha256,
-            parser_id="ai-platform.xlsx.openpyxl",
-            parser_version="1",
             content={"sheet_count": 1, "sheets": [{"name": "Checks", "rows": []}]},
         )
 
@@ -1389,6 +1385,8 @@ async def test_preview_artifact_returns_a_public_xlsx_dto_after_authorization(mo
     )
     payload = json.loads(response.body)
 
+    lease = calls.pop("lease")
+    assert lease.__class__.__name__ == "XlsxPreviewLease"
     assert calls == {
         "raw": raw,
         "file_id": "art-xlsx",
@@ -1401,6 +1399,9 @@ async def test_preview_artifact_returns_a_public_xlsx_dto_after_authorization(mo
     assert payload["kind"] == "xlsx_table"
     assert payload["content"]["sheets"][0]["name"] == "Checks"
     assert "storage_key" not in payload
+    assert "source_sha256" not in payload
+    assert "parser_id" not in payload
+    assert "parser_version" not in payload
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert "content-disposition" not in response.headers
@@ -1698,9 +1699,6 @@ async def test_preview_input_file_reads_storage_only_after_snapshot_authorizatio
         calls.update(kwargs)
         return XlsxPreviewResponse(
             status="failed",
-            source_sha256=source_sha256,
-            parser_id="ai-platform.xlsx.openpyxl",
-            parser_version="1",
             error={"code": "xlsx_preview_failed"},
         )
 
@@ -1718,6 +1716,8 @@ async def test_preview_input_file_reads_storage_only_after_snapshot_authorizatio
     )
 
     payload = json.loads(response.body)
+    lease = calls.pop("lease")
+    assert lease.__class__.__name__ == "XlsxPreviewLease"
     assert calls == {
         "raw": raw,
         "file_id": "file-xlsx",
@@ -1864,7 +1864,9 @@ async def test_preview_input_file_rejects_streamed_oversize_before_parser(monkey
 
 @pytest.mark.asyncio
 async def test_preview_input_file_returns_public_busy_status_without_queueing(monkeypatch):
-    from app.file_preview_contracts import XlsxPreviewBusyError
+    import threading
+
+    from app import file_preview_contracts
 
     async def fake_authorized_input_file(**kwargs):
         return {
@@ -1875,24 +1877,26 @@ async def test_preview_input_file_returns_public_busy_status_without_queueing(mo
             "size_bytes": 4,
         }
 
-    class FakeStorage:
-        def get_bytes_bounded(self, *, storage_key, max_bytes):
-            return b"safe"
-
-    def busy_preview(**kwargs):
-        raise XlsxPreviewBusyError("xlsx_preview_busy")
+    class ForbiddenStorage:
+        def __init__(self):
+            raise AssertionError("busy preview must reject before storage initialization")
 
     monkeypatch.setattr("app.routes.files._authorized_input_file", fake_authorized_input_file)
-    monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
-    monkeypatch.setattr("app.routes.files.build_xlsx_preview", busy_preview)
+    monkeypatch.setattr(file_preview_contracts, "_PREVIEW_ADMISSION", threading.BoundedSemaphore(1))
+    held_lease = file_preview_contracts.acquire_xlsx_preview_lease()
+    assert held_lease is not None
+    monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
 
-    with pytest.raises(HTTPException) as exc_info:
-        await preview_input_file(
-            "file-busy",
-            session_id="session-a",
-            run_id="run-current",
-            principal=principal(),
-        )
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await preview_input_file(
+                "file-busy",
+                session_id="session-a",
+                run_id="run-current",
+                principal=principal(),
+            )
+    finally:
+        held_lease.release()
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "xlsx_preview_busy"

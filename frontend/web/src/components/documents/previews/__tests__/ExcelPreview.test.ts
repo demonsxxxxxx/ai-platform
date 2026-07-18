@@ -6,16 +6,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import ExcelPreview, { parseXlsxPreviewDto } from "../ExcelPreview.tsx";
 
-const sourceSha256 = "a".repeat(64);
-
 function dto(overrides: Record<string, unknown> = {}) {
   return JSON.stringify({
     schema_version: "ai-platform.file-preview.v1",
     kind: "xlsx_table",
     status: "ready",
-    source_sha256: sourceSha256,
-    parser_id: "ai-platform.xlsx.openpyxl",
-    parser_version: "1",
     content: {
       sheet_count: 1,
       sheets: [
@@ -89,6 +84,10 @@ test("fails closed for malformed or unexpected preview responses", () => {
   );
   assert.throws(
     () => parseXlsxPreviewDto(dto({ storage_key: "private/secret.xlsx" })),
+    /invalid_xlsx_preview_dto/,
+  );
+  assert.throws(
+    () => parseXlsxPreviewDto(dto({ source_sha256: "a".repeat(64) })),
     /invalid_xlsx_preview_dto/,
   );
   assert.throws(

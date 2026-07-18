@@ -189,6 +189,35 @@ test("keeps allowed platform URLs for external navigation file previews", () => 
   );
 });
 
+test("keeps revealed XLSX preview and download URLs distinct", () => {
+  const preview = buildExternalNavigationPreviewRequest({
+    id: "file-xlsx",
+    file_key: "revealed/file-xlsx",
+    file_name: "checks.xlsx",
+    file_size: 128,
+    url: "/api/ai/artifacts/file-xlsx/preview",
+    preview_url: "/api/ai/artifacts/file-xlsx/preview",
+    download_url: "/api/ai/artifacts/file-xlsx/download",
+    mime_type:
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    source: "reveal_file",
+    original_path: "checks.xlsx",
+    project_meta: null,
+  });
+
+  assert.equal(preview?.kind, "file");
+  if (preview?.kind !== "file") {
+    throw new Error("expected a file preview");
+  }
+  assert.equal(preview.previewUrl, "/api/ai/artifacts/file-xlsx/preview");
+  assert.equal(preview.downloadUrl, "/api/ai/artifacts/file-xlsx/download");
+  assert.equal(preview.signedUrl, preview.previewUrl);
+  assert.equal(
+    preview.mimeType,
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  );
+});
+
 test("omits disallowed signed URLs for external navigation file previews", () => {
   const httpPreview = buildExternalNavigationPreviewRequest({
     id: "file-http-1",

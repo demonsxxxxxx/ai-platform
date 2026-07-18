@@ -51,6 +51,7 @@ export interface DocumentPreviewProps {
   content?: string;
   s3Key?: string;
   signedUrl?: string;
+  previewUrl?: string;
   downloadUrl?: string;
   fileSize?: number;
   imageUrl?: string;
@@ -87,12 +88,33 @@ export function assertSafeDocumentPreviewUrl(
   }
 }
 
+function isExactXlsxPreviewUrl(value: string | undefined): value is string {
+  if (!value || !isAllowedAuthenticatedArtifactFileUrl(value)) {
+    return false;
+  }
+  try {
+    const base =
+      typeof window === "undefined" ? "http://localhost" : window.location.origin;
+    const segments = new URL(value, base).pathname.split("/").filter(Boolean);
+    return (
+      segments.length === 5 &&
+      segments[0] === "api" &&
+      segments[1] === "ai" &&
+      (segments[2] === "artifacts" || segments[2] === "files") &&
+      segments[4] === "preview"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function useDocumentPreviewState(props: DocumentPreviewProps) {
   const {
     path,
     content,
     s3Key,
     signedUrl,
+    previewUrl,
     downloadUrl,
     fileSize,
     imageUrl: externalImageUrl,
@@ -146,11 +168,12 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
         path,
         content ?? "",
         s3Key ?? "",
+        previewUrl ?? "",
         signedUrl ?? "",
         externalImageUrl ?? "",
         mimeType ?? "",
       ].join("\u0000"),
-    [content, externalImageUrl, mimeType, path, s3Key, signedUrl],
+    [content, externalImageUrl, mimeType, path, previewUrl, s3Key, signedUrl],
   );
 
   // Mobile detection
@@ -195,11 +218,15 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
 
   // MIME-based fallback
   const mime = mimeType?.split(";", 1)[0]?.trim().toLowerCase();
+  const xlsxPreviewUrl = isExactXlsxPreviewUrl(previewUrl)
+    ? previewUrl
+    : isExactXlsxPreviewUrl(signedUrl)
+      ? signedUrl
+      : undefined;
   const xlsxPreviewFile =
     isServerXlsxPreviewFile(ext) &&
     mime === XLSX_CONTENT_TYPE &&
-    !!signedUrl &&
-    isAllowedAuthenticatedArtifactFileUrl(signedUrl);
+    !!xlsxPreviewUrl;
   const resolvedImageFile = imageFile || !!mime?.startsWith("image/");
   const resolvedVideoFile = videoFile || !!mime?.startsWith("video/");
   const resolvedAudioFile = audioFile || !!mime?.startsWith("audio/");
@@ -334,10 +361,13 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
         return;
       }
 
-      if (s3Key || signedUrl) {
+      if (s3Key || previewUrl || signedUrl) {
         try {
           const url =
-            signedUrl || (s3Key ? await uploadApi.getSignedUrl(s3Key) : null);
+            xlsxPreviewUrl ||
+            previewUrl ||
+            signedUrl ||
+            (s3Key ? await uploadApi.getSignedUrl(s3Key) : null);
 
           if (!url) {
             throw new Error("No URL available");
@@ -484,7 +514,7 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, content, s3Key, signedUrl, externalImageUrl, mimeType]);
+  }, [path, content, s3Key, previewUrl, signedUrl, externalImageUrl, mimeType]);
 
   // Blob URL cleanup
   useEffect(() => {
@@ -524,7 +554,10 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
 
   const handleDownload = async () => {
     const resolvedDownloadUrl =
-      downloadUrl || signedUrl || resolvedUrl || externalImageUrl;
+      downloadUrl ||
+      (isExactXlsxPreviewUrl(signedUrl) ? undefined : signedUrl) ||
+      (!xlsxPreviewFile ? resolvedUrl : undefined) ||
+      externalImageUrl;
     if (resolvedDownloadUrl) {
       await downloadPreviewUrl({ url: resolvedDownloadUrl, fileName });
       return;
@@ -563,6 +596,7 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
     mobileFillViewport: props.mobileFillViewport,
     s3Key,
     signedUrl,
+    previewUrl,
     externalImageUrl,
 
     // Translation

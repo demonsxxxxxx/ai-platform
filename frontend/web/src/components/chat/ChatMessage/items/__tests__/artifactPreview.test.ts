@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { buildArtifactPreviewRequest } from "../artifactPreview.ts";
 
-test("builds a file preview request from download_url when preview_url is null", () => {
+test("does not use download_url as a preview fallback when preview_url is null", () => {
   const preview = buildArtifactPreviewRequest({
     artifact_id: "artifact-1",
     artifact_type: "office",
@@ -15,15 +15,7 @@ test("builds a file preview request from download_url when preview_url is null",
     preview_url: null,
   });
 
-  assert.deepEqual(preview, {
-    kind: "file",
-    previewKey: "artifact:artifact-1",
-    filePath: "review.docx",
-    signedUrl: "/api/ai/artifacts/artifact-1/download",
-    fileSize: 128,
-    mimeType:
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  });
+  assert.equal(preview, null);
 });
 
 test("keeps private artifact fields out of preview requests", () => {
@@ -33,7 +25,7 @@ test("keeps private artifact fields out of preview requests", () => {
     content_type: "application/pdf",
     size_bytes: 256,
     download_url: "/api/ai/artifacts/artifact-2/download",
-    preview_url: null,
+    preview_url: "/api/ai/artifacts/artifact-2/preview",
     storage_key: "tenant/private/report.pdf",
     work_dir: "/workspace/.claude/runs/run-1",
     manifest: { storage_key: "tenant/private/manifest.json" },
@@ -43,7 +35,8 @@ test("keeps private artifact fields out of preview requests", () => {
 
   assert.equal(preview?.filePath, "report.pdf");
   assert.equal(preview?.previewKey, "artifact:artifact-2");
-  assert.equal(preview?.signedUrl, "/api/ai/artifacts/artifact-2/download");
+  assert.equal(preview?.previewUrl, "/api/ai/artifacts/artifact-2/preview");
+  assert.equal(preview?.downloadUrl, "/api/ai/artifacts/artifact-2/download");
   const serializedPreview = JSON.stringify(preview);
   assert.doesNotMatch(serializedPreview, /storage_key|work_dir|manifest/);
   assert.doesNotMatch(serializedPreview, /\.claude|command_sha256/);
@@ -74,7 +67,7 @@ test("rejects unsafe artifact preview URLs before they enter preview state", () 
   assert.equal(encodedInternalPreview, null);
 });
 
-test("falls back from an unsafe artifact preview URL to a safe download URL", () => {
+test("does not fall back from an unsafe artifact preview URL to download", () => {
   const preview = buildArtifactPreviewRequest({
     artifact_id: "artifact-safe-fallback",
     label: "fallback.pdf",
@@ -83,10 +76,22 @@ test("falls back from an unsafe artifact preview URL to a safe download URL", ()
     preview_url: "http://cdn.example.com/unsafe.pdf",
   });
 
-  assert.equal(
-    preview?.signedUrl,
-    "/api/ai/artifacts/artifact-safe-fallback/download",
-  );
+  assert.equal(preview, null);
+});
+
+test("requires the exact preview action for XLSX preview requests", () => {
+  const preview = buildArtifactPreviewRequest({
+    artifact_id: "artifact-xlsx",
+    label: "checks.xlsx",
+    content_type:
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    download_url: "/api/ai/artifacts/artifact-xlsx/download",
+    preview_url: "/api/ai/artifacts/artifact-xlsx/preview",
+  });
+
+  assert.equal(preview?.previewUrl, "/api/ai/artifacts/artifact-xlsx/preview");
+  assert.equal(preview?.downloadUrl, "/api/ai/artifacts/artifact-xlsx/download");
+  assert.notEqual(preview?.previewUrl, preview?.downloadUrl);
 });
 
 test("returns null when an artifact has no previewable or downloadable URL", () => {
