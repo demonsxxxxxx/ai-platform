@@ -1,3 +1,4 @@
+import asyncio
 import codecs
 import io
 import re
@@ -6,11 +7,21 @@ from urllib.parse import quote
 import zipfile
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi.responses import JSONResponse
 
 from app.artifact_preview import artifact_preview_allowed
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
+from app.file_preview_contracts import (
+    XLSX_CONTENT_TYPE,
+    XlsxPreviewResponse,
+    acquire_xlsx_preview_lease,
+    build_xlsx_preview,
+    run_xlsx_preview_job,
+    xlsx_preview_identity_from_metadata,
+    xlsx_preview_max_bytes,
+)
 from app.models import (
     SessionInputFileResponse,
     SessionInputFilesResponse,
@@ -24,12 +35,13 @@ from app.repositories import (
     ensure_workspace,
     get_admin_artifact,
     get_authorized_artifact,
+    get_authorized_run,
     get_authorized_session,
     get_scoped_context_file,
     list_authorized_session_input_files,
     new_id,
 )
-from app.storage import ObjectStorage
+from app.storage import ObjectStorage, ObjectStorageSizeLimitError
 from app.validation import assert_safe_id
 
 router = APIRouter()
@@ -115,8 +127,68 @@ def _safe_response_content_type(value: object) -> str:
     return "application/octet-stream"
 
 
-def _input_file_preview_allowed(value: object) -> bool:
-    return _normalized_content_type(value) in INPUT_FILE_PREVIEW_CONTENT_TYPES
+def _optional_nonnegative_int(value: object) -> int | None:
+    try:
+        normalized = int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    return normalized if normalized is not None and normalized >= 0 else None
+
+
+def _input_file_preview_allowed(file_row: dict[str, object]) -> bool:
+    content_type = _normalized_content_type(file_row.get("content_type"))
+    if content_type == XLSX_CONTENT_TYPE:
+        return xlsx_preview_identity_from_metadata(file_row).eligible
+    return content_type in INPUT_FILE_PREVIEW_CONTENT_TYPES
+
+
+async def _build_xlsx_preview_response(
+    *,
+    storage_key: str,
+    declared_size_bytes: object,
+    max_bytes: int,
+    file_id: str,
+    file_name: str,
+    content_type: str,
+    headers: dict[str, str],
+    expected_sha256: str | None = None,
+    expected_byte_count: int | None = None,
+) -> JSONResponse:
+    """Read and parse one ACL-authorized XLSX under one shared preview lease."""
+
+    declared_size = _optional_nonnegative_int(declared_size_bytes)
+    if declared_size is not None and declared_size > max_bytes:
+        raise HTTPException(status_code=413, detail="xlsx_preview_file_too_large")
+    lease = acquire_xlsx_preview_lease()
+    if lease is None:
+        raise HTTPException(status_code=503, detail="xlsx_preview_busy")
+
+    def build_preview() -> XlsxPreviewResponse:
+        raw = ObjectStorage().get_bytes_bounded(
+            storage_key=storage_key,
+            max_bytes=max_bytes,
+        )
+        return build_xlsx_preview(
+            raw=raw,
+            file_id=file_id,
+            file_name=file_name,
+            content_type=content_type,
+            lease=lease,
+            expected_sha256=expected_sha256,
+            expected_byte_count=expected_byte_count,
+        )
+
+    try:
+        preview = await run_xlsx_preview_job(
+            lease=lease,
+            job=build_preview,
+        )
+    except ObjectStorageSizeLimitError as exc:
+        raise HTTPException(status_code=413, detail="xlsx_preview_file_too_large") from exc
+    return JSONResponse(
+        content=preview.model_dump(mode="json"),
+        headers=headers,
+    )
 
 
 def _input_file_url(*, file_id: str, session_id: str, run_id: str, action: str) -> str:
@@ -133,11 +205,12 @@ def _input_file_response(
 ) -> SessionInputFileResponse:
     file_id = str(file_row["id"])
     run_id = str(file_row["run_id"])
+    name = str(file_row.get("original_name") or file_id)
     content_type = _safe_response_content_type(file_row.get("content_type"))
     return SessionInputFileResponse(
         file_id=file_id,
         run_id=run_id,
-        name=str(file_row.get("original_name") or file_id),
+        name=name,
         mime_type=content_type,
         size_bytes=max(0, int(file_row.get("size_bytes") or 0)),
         preview_url=(
@@ -147,7 +220,7 @@ def _input_file_response(
                 run_id=run_id,
                 action="preview",
             )
-            if _input_file_preview_allowed(content_type)
+            if _input_file_preview_allowed(file_row)
             else None
         ),
         download_url=_input_file_url(
@@ -414,13 +487,38 @@ async def preview_input_file(
         run_id=run_id,
         principal=principal,
     )
-    if not _input_file_preview_allowed(file_row.get("content_type")):
-        raise HTTPException(status_code=415, detail="input_file_preview_not_allowed")
+    xlsx_identity = xlsx_preview_identity_from_metadata(file_row)
     filename = str(file_row.get("original_name") or file_id)
+    if not _input_file_preview_allowed(file_row):
+        raise HTTPException(status_code=415, detail="input_file_preview_not_allowed")
+    content_type = _safe_response_content_type(file_row.get("content_type"))
+    if xlsx_identity.has_xlsx_content_type:
+        if not xlsx_identity.eligible or xlsx_identity.file_name is None:
+            raise HTTPException(status_code=415, detail="input_file_preview_not_allowed")
+        filename = xlsx_identity.file_name
+        max_bytes = xlsx_preview_max_bytes(
+            file_name=filename,
+            content_type=content_type,
+        )
+        return await _build_xlsx_preview_response(
+            storage_key=str(file_row["storage_key"]),
+            declared_size_bytes=file_row.get("size_bytes"),
+            max_bytes=max_bytes,
+            file_id=file_id,
+            file_name=filename,
+            content_type=content_type,
+            expected_sha256=str(file_row.get("sha256") or "") or None,
+            expected_byte_count=_optional_nonnegative_int(file_row.get("size_bytes")),
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Input-File-Id": file_id,
+            },
+        )
     content = ObjectStorage().get_bytes(storage_key=str(file_row["storage_key"]))
     return Response(
         content=content,
-        media_type=_safe_response_content_type(file_row.get("content_type")),
+        media_type=content_type,
         headers={
             "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename, safe='')}",
             "Cache-Control": "no-store",
@@ -531,8 +629,23 @@ async def preview_artifact(
         )
         admin_preview = False
         if artifact is None and is_ai_admin(principal):
-            artifact = await get_admin_artifact(conn, tenant_id=tenant_id, artifact_id=artifact_id)
-            admin_preview = artifact is not None
+            admin_candidate = await get_admin_artifact(
+                conn,
+                tenant_id=tenant_id,
+                artifact_id=artifact_id,
+            )
+            target_user_id = str(admin_candidate.get("target_user_id") or "") if admin_candidate else ""
+            target_run_id = str(admin_candidate.get("run_id") or "") if admin_candidate else ""
+            if target_user_id and target_run_id:
+                active_run = await get_authorized_run(
+                    conn,
+                    tenant_id=tenant_id,
+                    user_id=target_user_id,
+                    run_id=target_run_id,
+                )
+                if active_run is not None:
+                    artifact = admin_candidate
+                    admin_preview = True
         if artifact is None:
             raise HTTPException(status_code=404, detail="artifact_not_found")
         if not artifact_preview_allowed(artifact.get("content_type")):
@@ -554,10 +667,34 @@ async def preview_artifact(
                 },
             )
     filename = PurePosixPath(str(artifact["storage_key"])).name or f"{artifact_id}.bin"
+    content_type = _safe_response_content_type(artifact.get("content_type"))
+    xlsx_identity = xlsx_preview_identity_from_metadata(artifact)
+    if xlsx_identity.has_xlsx_content_type:
+        if not xlsx_identity.eligible or xlsx_identity.file_name is None:
+            raise HTTPException(status_code=415, detail="artifact_preview_not_allowed")
+        filename = xlsx_identity.file_name
+        max_bytes = xlsx_preview_max_bytes(
+            file_name=filename,
+            content_type=content_type,
+        )
+        return await _build_xlsx_preview_response(
+            storage_key=str(artifact["storage_key"]),
+            declared_size_bytes=artifact.get("size_bytes"),
+            max_bytes=max_bytes,
+            file_id=artifact_id,
+            file_name=filename,
+            content_type=content_type,
+            expected_byte_count=_optional_nonnegative_int(artifact.get("size_bytes")),
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Artifact-Id": artifact_id,
+            },
+        )
     content = ObjectStorage().get_bytes(storage_key=artifact["storage_key"])
     return Response(
         content=content,
-        media_type=artifact["content_type"] or "application/octet-stream",
+        media_type=content_type,
         headers={
             "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
             "Cache-Control": "no-store",

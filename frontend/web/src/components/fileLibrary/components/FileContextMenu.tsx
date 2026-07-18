@@ -26,10 +26,14 @@ export function FileContextMenu({
   if (!menu) return null;
 
   const isProject = file.file_type === "project";
-  const safeFileUrl = isProject
+  const safePreviewUrl = isProject
     ? null
-    : resolveSafeRevealedFilePreviewUrl(file.url);
-  const hasUrl = !!safeFileUrl;
+    : resolveSafeRevealedFilePreviewUrl(file.preview_url);
+  const safeDownloadUrl = isProject
+    ? null
+    : resolveSafeRevealedFilePreviewUrl(file.download_url);
+  const hasPreviewUrl = !!safePreviewUrl;
+  const hasDownloadUrl = !!safeDownloadUrl;
 
   const items: {
     icon: typeof MessageSquare;
@@ -48,28 +52,28 @@ export function FileContextMenu({
         : t("fileLibrary.context.favorite"),
       action: () => onToggleFavorite(file),
     },
-    ...(hasUrl
+    ...(hasDownloadUrl
       ? [
           {
             icon: Download,
             label: t("fileLibrary.context.download"),
             action: () => {
               void downloadPreviewUrl({
-                url: safeFileUrl,
+                url: safeDownloadUrl,
                 fileName: file.file_name || "download",
               });
             },
           },
         ]
       : []),
-    ...(hasUrl
+    ...(hasPreviewUrl
       ? [
           {
             icon: ExternalLink,
             label: t("fileLibrary.context.openInNewTab"),
             action: () => {
               void openPreviewUrl({
-                url: safeFileUrl,
+                url: safePreviewUrl,
                 fileName: file.file_name,
                 mimeType: file.mime_type,
               });

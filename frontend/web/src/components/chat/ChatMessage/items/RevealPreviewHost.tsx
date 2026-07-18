@@ -320,6 +320,8 @@ export function RevealPreviewHost({
         content={preview.content}
         s3Key={preview.s3Key}
         signedUrl={preview.signedUrl}
+        previewUrl={preview.previewUrl}
+        downloadUrl={preview.downloadUrl}
         imageUrl={preview.imageUrl}
         fileSize={preview.fileSize}
         mimeType={preview.mimeType}

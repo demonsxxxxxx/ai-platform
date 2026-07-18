@@ -5,10 +5,12 @@ import {
   getFileTypeInfo,
   getFileLinkInfo,
   isCadFile,
+  isCsvFile,
   isDwgFile,
   isDxfFile,
   isFileLink,
   isPreviewableFile,
+  isServerXlsxPreviewFile,
 } from "../index";
 
 Object.defineProperty(globalThis, "window", {
@@ -41,6 +43,18 @@ test("treats CAD files as previewable links", () => {
 test("does not mark ebook formats as previewable without a renderer", () => {
   assert.equal(isPreviewableFile("epub"), false);
   assert.equal(isPreviewableFile("mobi"), false);
+});
+
+test("routes only .xlsx to the server DTO while preserving CSV text preview", () => {
+  assert.equal(isServerXlsxPreviewFile("xlsx"), true);
+  assert.equal(isServerXlsxPreviewFile("xlsm"), false);
+  assert.equal(isCsvFile("csv"), true);
+  assert.equal(isPreviewableFile("xlsx"), true);
+  assert.equal(isPreviewableFile("csv"), true);
+  assert.equal(isPreviewableFile("xls"), false);
+  assert.equal(isPreviewableFile("xlsm"), false);
+  assert.equal(isPreviewableFile("xlsb"), false);
+  assert.equal(isPreviewableFile("ods"), false);
 });
 
 test("recognizes CAD links from labels and download query metadata", () => {

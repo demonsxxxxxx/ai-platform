@@ -5,6 +5,7 @@ import {
   clearDocumentFetchCaches,
   fetchDocumentArrayBuffer,
   fetchDocumentText,
+  fetchXlsxPreviewJson,
   shouldUseAuthenticatedDocumentRequest,
 } from "../documentFetchCache.ts";
 import { clearAuthState } from "../../../services/api/tokenManager.ts";
@@ -150,6 +151,36 @@ test("fetchDocumentText uses authenticated fetch for upload file URLs", async ()
   assert.equal(text, "upload-text");
 });
 
+test("fetchXlsxPreviewJson requires a protected URL and an application/json response", async () => {
+  const payload = await fetchXlsxPreviewJson(
+    "/api/ai/files/file-1/preview?session_id=session-1&run_id=run-1",
+    {
+      authenticatedRequest: async () =>
+        new Response('{"kind":"xlsx_table"}', {
+          headers: { "content-type": "application/json; charset=utf-8" },
+        }),
+    },
+  );
+  assert.equal(payload, '{"kind":"xlsx_table"}');
+
+  await assert.rejects(
+    () =>
+      fetchXlsxPreviewJson("/api/ai/files/file-1/preview", {
+        authenticatedRequest: async () =>
+          new Response("PK", {
+            headers: {
+              "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            },
+          }),
+      }),
+    /Unexpected XLSX preview content type/,
+  );
+  await assert.rejects(
+    () => fetchXlsxPreviewJson("https://example.com/book.xlsx"),
+    /Unsafe unauthenticated XLSX preview URL/,
+  );
+});
+
 test("fetchDocumentText does not cache protected platform artifact bytes across auth scope", async () => {
   clearDocumentFetchCaches();
   let authenticatedCount = 0;
@@ -185,7 +216,11 @@ test("clearAuthState clears document fetch caches when tokens are cleared", asyn
     assert.equal(first, "public-1");
     assert.equal(second, "public-2");
     assert.deepEqual(stubs.events, ["auth:logout"]);
-    assert.deepEqual(stubs.removedKeys, ["access_token", "refresh_token"]);
+    assert.deepEqual(stubs.removedKeys, [
+      "ai_platform_session_present",
+      "access_token",
+      "refresh_token",
+    ]);
   } finally {
     stubs.restore();
     clearDocumentFetchCaches();

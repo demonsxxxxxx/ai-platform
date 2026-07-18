@@ -1,15 +1,18 @@
 from contextlib import asynccontextmanager
 import base64
 import hashlib
+import io
 import json
 from pathlib import Path
 
+from openpyxl import Workbook
 import pytest
 from fastapi import HTTPException
 
 from app import repositories as repository_module
 from app.auth import AuthPrincipal, is_ai_admin
 from app.capability_distribution import CapabilityAuthorizationDenial
+from app.file_preview_contracts import XlsxPreviewResponse
 from app.models import ChatStreamRequest, CreateRunRequest, QueueRunPayload, SandboxLeaseRequest
 from app.repositories import RepositoryConflictError
 from app.routes import lambchat_compat as lambchat_module
@@ -1294,6 +1297,137 @@ async def test_preview_artifact_for_deleted_session_is_denied_before_storage_rea
 
 
 @pytest.mark.asyncio
+async def test_admin_preview_of_deleted_artifact_session_is_non_oracular_before_storage_read(monkeypatch):
+    async def no_ordinary_artifact(conn, *, tenant_id, user_id, artifact_id):
+        return None
+
+    async def stale_admin_artifact(conn, *, tenant_id, artifact_id):
+        return {
+            "id": artifact_id,
+            "run_id": "run-deleted",
+            "target_user_id": "user-deleted",
+            "storage_key": "private/deleted.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+
+    async def deleted_target_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("tenant-a", "user-deleted", "run-deleted")
+        return None
+
+    class ForbiddenStorage:
+        def get_bytes(self, *, storage_key):
+            raise AssertionError("deleted admin target must fail before storage read")
+
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            raise AssertionError("deleted admin target must fail before bounded storage read")
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_artifact", no_ordinary_artifact)
+    monkeypatch.setattr("app.routes.files.get_admin_artifact", stale_admin_artifact)
+    monkeypatch.setattr("app.routes.files.get_authorized_run", deleted_target_run)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await preview_artifact("art-deleted", principal=principal(roles=["admin"]))
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "artifact_not_found"
+
+
+@pytest.mark.asyncio
+async def test_preview_artifact_returns_a_public_xlsx_dto_after_authorization(monkeypatch):
+    raw = b"xlsx-artifact-bytes"
+    calls = {}
+
+    async def fake_get_authorized_artifact(conn, *, tenant_id, user_id, artifact_id):
+        assert (tenant_id, user_id, artifact_id) == ("tenant-a", "user-a", "art-xlsx")
+        return {
+            "id": artifact_id,
+            "storage_key": "private/export.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "size_bytes": len(raw),
+        }
+
+    class FakeStorage:
+        def get_bytes(self, *, storage_key):
+            assert storage_key == "private/export.xlsx"
+            return raw
+
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            assert storage_key == "private/export.xlsx"
+            assert max_bytes >= len(raw)
+            return raw
+
+    def fake_build_xlsx_preview(**kwargs):
+        calls.update(kwargs)
+        return XlsxPreviewResponse(
+            status="ready",
+            content={"sheet_count": 1, "sheets": [{"name": "Checks", "rows": []}]},
+        )
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_artifact", fake_get_authorized_artifact)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.routes.files.build_xlsx_preview", fake_build_xlsx_preview)
+
+    response = await preview_artifact(
+        "art-xlsx",
+        principal=principal(permissions=["artifact:download"]),
+    )
+    payload = json.loads(response.body)
+
+    lease = calls.pop("lease")
+    assert lease.__class__.__name__ == "XlsxPreviewLease"
+    assert calls == {
+        "raw": raw,
+        "file_id": "art-xlsx",
+        "file_name": "export.xlsx",
+        "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "expected_sha256": None,
+        "expected_byte_count": len(raw),
+    }
+    assert payload["schema_version"] == "ai-platform.file-preview.v1"
+    assert payload["kind"] == "xlsx_table"
+    assert payload["content"]["sheets"][0]["name"] == "Checks"
+    assert "storage_key" not in payload
+    assert "source_sha256" not in payload
+    assert "parser_id" not in payload
+    assert "parser_version" not in payload
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "content-disposition" not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_preview_artifact_rejects_inconsistent_stored_xlsx_filenames_before_storage_read(monkeypatch):
+    async def fake_get_authorized_artifact(conn, *, tenant_id, user_id, artifact_id):
+        return {
+            "id": artifact_id,
+            "original_name": "report.xlsx",
+            "file_name": "report.xlsm",
+            "storage_key": "private/report.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+
+    class ForbiddenStorage:
+        def __init__(self):
+            raise AssertionError("inconsistent XLSX metadata must fail before storage")
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_artifact", fake_get_authorized_artifact)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await preview_artifact(
+            "art-inconsistent",
+            principal=principal(permissions=["artifact:download"]),
+        )
+
+    assert exc_info.value.status_code == 415
+    assert exc_info.value.detail == "artifact_preview_not_allowed"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "route_name",
     ["get_session", "session_runs", "session_events", "chat_status"],
@@ -1446,6 +1580,14 @@ async def test_session_input_file_projection_is_persistent_opaque_and_preview_al
                 "size_bytes": 9,
                 "created_at": "2026-07-18T00:00:01Z",
             },
+            {
+                "id": "file-xlsm",
+                "run_id": "run-source",
+                "original_name": "macro.xlsm",
+                "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "size_bytes": 456,
+                "created_at": "2026-07-18T00:00:02Z",
+            },
         ]
 
     monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
@@ -1456,11 +1598,16 @@ async def test_session_input_file_projection_is_persistent_opaque_and_preview_al
     payload = response.model_dump()
 
     assert payload["session_id"] == "session-a"
-    assert [item["file_id"] for item in payload["files"]] == ["file-xlsx", "file-bin"]
+    assert [item["file_id"] for item in payload["files"]] == [
+        "file-xlsx",
+        "file-bin",
+        "file-xlsm",
+    ]
     assert payload["files"][0]["preview_url"] == (
         "/api/ai/files/file-xlsx/preview?session_id=session-a&run_id=run-source"
     )
     assert payload["files"][1]["preview_url"] is None
+    assert payload["files"][2]["preview_url"] is None
     assert payload["files"][1]["download_url"].endswith(
         "/download?session_id=session-a&run_id=run-source"
     )
@@ -1533,6 +1680,10 @@ async def test_deleted_session_input_file_bytes_deny_before_scope_or_storage_rea
 
 @pytest.mark.asyncio
 async def test_preview_input_file_reads_storage_only_after_snapshot_authorization(monkeypatch):
+    raw = b"xlsx-bytes"
+    source_sha256 = hashlib.sha256(raw).hexdigest()
+    calls = {}
+
     async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
         return {"id": session_id, "workspace_id": "workspace-a", "user_id": user_id}
 
@@ -1550,17 +1701,32 @@ async def test_preview_input_file_reads_storage_only_after_snapshot_authorizatio
             "original_name": "source.xlsx",
             "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             "storage_key": "private/source.xlsx",
+            "sha256": source_sha256,
+            "size_bytes": len(raw),
         }
 
     class FakeStorage:
         def get_bytes(self, *, storage_key):
             assert storage_key == "private/source.xlsx"
-            return b"xlsx-bytes"
+            return raw
+
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            assert storage_key == "private/source.xlsx"
+            assert max_bytes >= len(raw)
+            return raw
+
+    def fake_build_xlsx_preview(**kwargs):
+        calls.update(kwargs)
+        return XlsxPreviewResponse(
+            status="failed",
+            error={"code": "xlsx_preview_failed"},
+        )
 
     monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
     monkeypatch.setattr("app.routes.files.get_authorized_session", fake_get_authorized_session)
     monkeypatch.setattr("app.routes.files.get_scoped_context_file", fake_get_scoped_context_file)
     monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
+    monkeypatch.setattr("app.routes.files.build_xlsx_preview", fake_build_xlsx_preview)
 
     response = await preview_input_file(
         "file-xlsx",
@@ -1569,10 +1735,191 @@ async def test_preview_input_file_reads_storage_only_after_snapshot_authorizatio
         principal=principal(),
     )
 
-    assert response.body == b"xlsx-bytes"
+    payload = json.loads(response.body)
+    lease = calls.pop("lease")
+    assert lease.__class__.__name__ == "XlsxPreviewLease"
+    assert calls == {
+        "raw": raw,
+        "file_id": "file-xlsx",
+        "file_name": "source.xlsx",
+        "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "expected_sha256": source_sha256,
+        "expected_byte_count": len(raw),
+    }
+    assert payload["status"] == "failed"
+    assert payload["error"] == {"code": "xlsx_preview_failed"}
+    assert "private/source.xlsx" not in response.body.decode()
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-content-type-options"] == "nosniff"
-    assert response.headers["content-disposition"].startswith("inline;")
+    assert "content-disposition" not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_preview_input_file_uses_bounded_storage_and_the_real_child_parser(monkeypatch):
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Checks"
+    worksheet.append(["requirement"])
+    worksheet.append(["ACCEPT-XLSX-9472"])
+    stream = io.BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    raw = stream.getvalue()
+    source_sha256 = hashlib.sha256(raw).hexdigest()
+    calls = []
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id, "workspace_id": "workspace-a", "user_id": user_id}
+
+    async def fake_get_scoped_context_file(conn, **kwargs):
+        return {
+            "id": "file-real",
+            "original_name": "checks.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "storage_key": "private/checks.xlsx",
+            "sha256": source_sha256,
+            "size_bytes": len(raw),
+        }
+
+    class FakeStorage:
+        def get_bytes(self, *, storage_key):
+            raise AssertionError("XLSX preview must not use the unbounded storage read")
+
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            calls.append((storage_key, max_bytes))
+            return raw
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.files.get_scoped_context_file", fake_get_scoped_context_file)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
+
+    response = await preview_input_file(
+        "file-real",
+        session_id="session-a",
+        run_id="run-current",
+        principal=principal(),
+    )
+    payload = json.loads(response.body)
+
+    assert calls == [("private/checks.xlsx", 1024 * 1024)]
+    assert payload["status"] == "ready"
+    assert payload["content"]["sheets"][0]["rows"][1]["cells"][0]["value"] == "ACCEPT-XLSX-9472"
+
+
+@pytest.mark.asyncio
+async def test_preview_input_file_returns_a_public_failure_from_the_real_child_parser(monkeypatch):
+    raw = b"not an XLSX archive"
+
+    async def fake_get_authorized_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id, "workspace_id": "workspace-a", "user_id": user_id}
+
+    async def fake_get_scoped_context_file(conn, **kwargs):
+        return {
+            "id": "file-invalid",
+            "original_name": "checks.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "storage_key": "private/checks.xlsx",
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "size_bytes": len(raw),
+        }
+
+    class FakeStorage:
+        def get_bytes(self, *, storage_key):
+            raise AssertionError("XLSX preview must not use the unbounded storage read")
+
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            assert (storage_key, max_bytes) == ("private/checks.xlsx", 1024 * 1024)
+            return raw
+
+    monkeypatch.setattr("app.routes.files.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.files.get_authorized_session", fake_get_authorized_session)
+    monkeypatch.setattr("app.routes.files.get_scoped_context_file", fake_get_scoped_context_file)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
+
+    response = await preview_input_file(
+        "file-invalid",
+        session_id="session-a",
+        run_id="run-current",
+        principal=principal(),
+    )
+    payload = json.loads(response.body)
+
+    assert payload["status"] == "failed"
+    assert payload["error"] == {"code": "xlsx_preview_failed"}
+    assert "archive" not in response.body.decode()
+
+
+@pytest.mark.asyncio
+async def test_preview_input_file_rejects_streamed_oversize_before_parser(monkeypatch):
+    async def fake_authorized_input_file(**kwargs):
+        return {
+            "id": kwargs["file_id"],
+            "original_name": "checks.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "storage_key": "private/checks.xlsx",
+            "size_bytes": 1,
+        }
+
+    class OversizedStorage:
+        def get_bytes_bounded(self, *, storage_key, max_bytes):
+            from app.storage import ObjectStorageSizeLimitError
+
+            raise ObjectStorageSizeLimitError("object_size_limit_exceeded")
+
+    monkeypatch.setattr("app.routes.files._authorized_input_file", fake_authorized_input_file)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", OversizedStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await preview_input_file(
+            "file-large",
+            session_id="session-a",
+            run_id="run-current",
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 413
+    assert exc_info.value.detail == "xlsx_preview_file_too_large"
+
+
+@pytest.mark.asyncio
+async def test_preview_input_file_returns_public_busy_status_without_queueing(monkeypatch):
+    import threading
+
+    from app import file_preview_contracts
+
+    async def fake_authorized_input_file(**kwargs):
+        return {
+            "id": kwargs["file_id"],
+            "original_name": "checks.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "storage_key": "private/checks.xlsx",
+            "size_bytes": 4,
+        }
+
+    class ForbiddenStorage:
+        def __init__(self):
+            raise AssertionError("busy preview must reject before storage initialization")
+
+    monkeypatch.setattr("app.routes.files._authorized_input_file", fake_authorized_input_file)
+    monkeypatch.setattr(file_preview_contracts, "_PREVIEW_ADMISSION", threading.BoundedSemaphore(1))
+    held_lease = file_preview_contracts.acquire_xlsx_preview_lease()
+    assert held_lease is not None
+    monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
+
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await preview_input_file(
+                "file-busy",
+                session_id="session-a",
+                run_id="run-current",
+                principal=principal(),
+            )
+    finally:
+        held_lease.release()
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "xlsx_preview_busy"
 
 
 @pytest.mark.asyncio
@@ -1580,14 +1927,14 @@ async def test_download_input_file_forces_attachment_and_security_headers(monkey
     async def fake_authorized_input_file(**kwargs):
         return {
             "id": kwargs["file_id"],
-            "original_name": "payload.bin",
-            "content_type": "application/octet-stream",
-            "storage_key": "private/payload.bin",
+            "original_name": "source.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "storage_key": "private/source.xlsx",
         }
 
     class FakeStorage:
         def get_bytes(self, *, storage_key):
-            return b"binary"
+            return b"xlsx-original-bytes"
 
     monkeypatch.setattr("app.routes.files._authorized_input_file", fake_authorized_input_file)
     monkeypatch.setattr("app.routes.files.ObjectStorage", FakeStorage)
@@ -1599,7 +1946,7 @@ async def test_download_input_file_forces_attachment_and_security_headers(monkey
         principal=principal(),
     )
 
-    assert response.body == b"binary"
+    assert response.body == b"xlsx-original-bytes"
     assert response.headers["content-disposition"].startswith("attachment;")
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-content-type-options"] == "nosniff"
@@ -1625,6 +1972,35 @@ async def test_unsafe_input_file_preview_falls_back_to_download_without_storage_
     with pytest.raises(HTTPException) as exc_info:
         await preview_input_file(
             "file-bin",
+            session_id="session-a",
+            run_id="run-current",
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 415
+    assert exc_info.value.detail == "input_file_preview_not_allowed"
+
+
+@pytest.mark.asyncio
+async def test_macro_named_input_file_is_download_only_before_storage_read(monkeypatch):
+    async def fake_authorized_input_file(**kwargs):
+        return {
+            "id": kwargs["file_id"],
+            "original_name": "macro.xlsm",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "storage_key": "private/macro.xlsm",
+        }
+
+    class ForbiddenStorage:
+        def get_bytes(self, *, storage_key):
+            raise AssertionError("macro workbook preview must reject before storage read")
+
+    monkeypatch.setattr("app.routes.files._authorized_input_file", fake_authorized_input_file)
+    monkeypatch.setattr("app.routes.files.ObjectStorage", ForbiddenStorage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await preview_input_file(
+            "file-xlsm",
             session_id="session-a",
             run_id="run-current",
             principal=principal(),

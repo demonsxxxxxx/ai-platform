@@ -99,6 +99,34 @@ def test_projection_module_owns_run_progress_event_step_and_artifact_cards():
     assert "storage_key" not in str(card)
 
 
+def test_artifact_card_uses_stored_filename_for_xlsx_preview_eligibility():
+    valid = artifact_card(
+        {
+            "id": "artifact-valid",
+            "artifact_type": "spreadsheet",
+            "label": "misleading.xlsm",
+            "storage_key": "private/export.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "manifest_json": {},
+            "created_at": None,
+        }
+    )
+    legacy = artifact_card(
+        {
+            "id": "artifact-legacy",
+            "artifact_type": "spreadsheet",
+            "label": "misleading.xlsx",
+            "storage_key": "private/export.xlsm",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "manifest_json": {},
+            "created_at": None,
+        }
+    )
+
+    assert valid["preview_url"] == "/api/ai/artifacts/artifact-valid/preview"
+    assert legacy["preview_url"] is None
+
+
 def test_projection_projects_terminal_tool_permission_cards_without_decision_controls():
     event = run_event_response(
         "run-a",

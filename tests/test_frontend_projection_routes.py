@@ -129,13 +129,43 @@ def test_revealed_files_project_authorized_artifacts(monkeypatch):
     assert item["file_key"] == "art_report"
     assert item["file_name"] == "Reviewed Report"
     assert item["file_type"] == "document"
-    assert item["url"] == "/api/ai/artifacts/art_report/download"
+    assert item["preview_url"] == "/api/ai/artifacts/art_report/preview"
+    assert item["download_url"] == "/api/ai/artifacts/art_report/download"
+    assert item["url"] == item["preview_url"]
     assert item["session_id"] == "ses_a"
     assert item["session_name"] == "QA session"
     assert item["is_favorite"] is False
     assert grouped_response.json()["sessions"][0]["files"][0]["id"] == "art_report"
     assert stats_response.json()["document"] == 1
     assert sessions_response.json() == [{"session_id": "ses_a", "session_name": "QA session", "file_count": 1}]
+
+
+def test_revealed_files_keep_non_xlsx_workbooks_download_only(monkeypatch):
+    artifacts = [
+        {
+            "id": "art-legacy",
+            "storage_key": "tenants/default/legacy.xlsm",
+            "label": "misleading.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "size_bytes": 128,
+            "run_id": "run_a",
+            "session_id": "ses_a",
+            "workspace_id": "default",
+            "user_id": "ordinary",
+            "artifact_type": "spreadsheet",
+            "created_at": "2026-06-28T08:00:00Z",
+        }
+    ]
+    install_projection_route_fakes(monkeypatch, artifacts=artifacts)
+    client = TestClient(create_app())
+
+    response = client.get("/api/files/revealed", headers=headers("artifact:download"))
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["preview_url"] is None
+    assert item["url"] is None
+    assert item["download_url"] == "/api/ai/artifacts/art-legacy/download"
 
 
 def test_revealed_files_and_session_filters_disappear_after_session_delete(monkeypatch):

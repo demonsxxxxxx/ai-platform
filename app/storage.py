@@ -14,6 +14,10 @@ class StoredObject:
     size_bytes: int
 
 
+class ObjectStorageSizeLimitError(ValueError):
+    """Raised when a streamed object exceeds a caller-owned byte limit."""
+
+
 class ObjectStorage:
     def __init__(self) -> None:
         settings = get_settings()
@@ -52,6 +56,27 @@ class ObjectStorage:
         body = response["Body"]
         try:
             return body.read()
+        finally:
+            body.close()
+
+    def get_bytes_bounded(self, *, storage_key: str, max_bytes: int) -> bytes:
+        """Read one object in bounded chunks and always close its response body."""
+
+        if max_bytes < 0:
+            raise ValueError("max_bytes must be non-negative")
+        response = self.client.get_object(Bucket=self.bucket, Key=storage_key)
+        body = response["Body"]
+        chunks: list[bytes] = []
+        byte_count = 0
+        try:
+            while True:
+                chunk = body.read(min(64 * 1024, max_bytes - byte_count + 1))
+                if not chunk:
+                    return b"".join(chunks)
+                byte_count += len(chunk)
+                if byte_count > max_bytes:
+                    raise ObjectStorageSizeLimitError("object_size_limit_exceeded")
+                chunks.append(chunk)
         finally:
             body.close()
 

@@ -43,7 +43,7 @@ export function getSessionNavigationTarget(
 }
 
 export function isPreviewableImageFile(file: RevealedFileItem): boolean {
-  if (!resolveSafeRevealedFilePreviewUrl(file.url)) return false;
+  if (!resolveSafeRevealedFilePreviewUrl(file.preview_url)) return false;
   return (
     file.file_type === "image" || isImageFile(getFileExtension(file.file_name))
   );
@@ -327,8 +327,8 @@ export function buildFileCardPreview(file: RevealedFileItem): FileCardPreview {
   const title = stripExtension(file.file_name);
   const description = compactLine(file.description);
 
-  if (file.file_type === "image" && file.url) {
-    const imageUrl = resolveSafeRevealedFilePreviewUrl(file.url);
+  if (file.file_type === "image" && file.preview_url) {
+    const imageUrl = resolveSafeRevealedFilePreviewUrl(file.preview_url);
     return {
       kind: "image",
       title,
