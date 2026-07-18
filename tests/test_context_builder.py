@@ -737,8 +737,70 @@ async def test_record_initial_context_snapshot_adds_source_run_artifact_followup
 
 
 @pytest.mark.asyncio
+async def test_context_builder_preserves_only_authorized_retrieval_file_basename(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class Connection:
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("authorized file metadata must use its scoped repository seam")
+
+    async def authorized_files(_conn, **kwargs):
+        assert kwargs["file_ids"] == ["file-retrieval"]
+        return [
+            {
+                "id": "file-retrieval",
+                "original_name": r"C:\\tenant-private\\报价😀.docx",
+                "storage_key": "tenant-a/private/should-not-reach-manifest",
+            }
+        ]
+
+    async def policy(*_args, **_kwargs):
+        return {"source": "default", "memory_enabled": True, "long_term_memory_enabled": False, "retention_days": 90}
+
+    async def create(_conn, **kwargs):
+        captured.update(kwargs)
+        return {"id": "ctx-retrieval"}
+
+    async def ignore(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.context_builder.repositories.list_authorized_context_file_rows", authorized_files)
+    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", policy)
+    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", create)
+    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", ignore)
+    monkeypatch.setattr("app.context_builder.repositories.append_event", ignore)
+
+    context_ref = await record_initial_context_snapshot(
+        Connection(), tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a",
+        run_id="run-current", trace_id="trace-current", agent_id="general-agent", skill_id="general-chat",
+        input_payload={"message": "please retrieve"}, message_ids=[], file_ids=["file-retrieval"], source="chat_stream",
+    )
+
+    manifest_files = captured["payload_json"]["context_manifest"]["files"]
+    assert manifest_files == [
+        {"file_id": "file-retrieval", "requires_retrieval": True, "name": "报价😀.docx"}
+    ]
+    assert context_ref["context_window"]["selected_file_names"] == ["报价😀.docx"]
+    serialized = str({"manifest": manifest_files, "public": context_ref["context_window"]})
+    assert "tenant-private" not in serialized
+    assert "storage_key" not in serialized
+    assert "C:\\" not in serialized
+    assert "please retrieve" not in str(manifest_files)
+
+
+@pytest.mark.asyncio
 async def test_record_initial_context_snapshot_builds_bounded_same_session_continuity(monkeypatch):
     captured = {}
+
+    async def fake_count_messages(conn, **kwargs):
+        assert kwargs == {
+            "tenant_id": "tenant-a",
+            "workspace_id": "workspace-a",
+            "user_id": "user-a",
+            "session_id": "session-a",
+            "run_id": "run-current",
+        }
+        return 2
 
     async def fake_list_messages(conn, **kwargs):
         assert kwargs == {
@@ -812,6 +874,7 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
     async def no_legacy(*args, **kwargs):
         return False
 
+    monkeypatch.setattr("app.context_builder.repositories.count_session_context_messages", fake_count_messages)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", fake_list_messages)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", fake_list_files)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_artifacts", fake_list_artifacts)
@@ -867,6 +930,9 @@ async def test_record_initial_context_snapshot_builds_bounded_same_session_conti
 async def test_session_history_manifest_membership_is_clamped_after_eight_message_snapshot_limit(monkeypatch):
     captured = {}
 
+    async def fake_count_messages(_conn, **_kwargs):
+        return 8
+
     async def fake_list_messages(_conn, **_kwargs):
         return [
             {"id": f"msg-prior-{index}", "run_id": "run-prior", "role": "user", "content": f"prior-{index}"}
@@ -883,6 +949,7 @@ async def test_session_history_manifest_membership_is_clamped_after_eight_messag
         captured.update(kwargs)
         return {"id": "ctx-current"}
 
+    monkeypatch.setattr("app.context_builder.repositories.count_session_context_messages", fake_count_messages)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", fake_list_messages)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", fake_empty)
     monkeypatch.setattr("app.context_builder.repositories.list_session_context_artifacts", fake_empty)
@@ -904,6 +971,70 @@ async def test_session_history_manifest_membership_is_clamped_after_eight_messag
     assert included == [*(f"msg-prior-{index}" for index in range(2, 9)), "msg-current"]
     assert manifest_ids == [f"msg-prior-{index}" for index in range(2, 9)]
     assert set(manifest_ids) < set(included)
+
+
+@pytest.mark.asyncio
+async def test_context_builder_counts_long_history_before_fetching_bounded_newest_tail(monkeypatch):
+    captured: dict[str, object] = {}
+    call_order: list[str] = []
+
+    async def count_messages(_conn, **kwargs):
+        call_order.append("count")
+        assert kwargs["run_id"] == "run-current"
+        return 13
+
+    async def list_messages(_conn, **kwargs):
+        call_order.append("list")
+        assert kwargs["limit"] == 8
+        return [
+            {
+                "id": f"msg-{index}",
+                "run_id": f"run-{index}",
+                "role": "user",
+                "content": f"历史内容 {index}",
+                "session_generation": index,
+                "created_at": f"2026-07-19T00:00:{index:02d}Z",
+            }
+            for index in range(6, 14)
+        ]
+
+    async def empty(*_args, **_kwargs):
+        return []
+
+    async def no_legacy(*_args, **_kwargs):
+        return False
+
+    async def policy(*_args, **_kwargs):
+        return {"source": "default", "memory_enabled": True, "long_term_memory_enabled": False, "retention_days": 90}
+
+    async def create(_conn, **kwargs):
+        captured.update(kwargs)
+        return {"id": "ctx-current"}
+
+    monkeypatch.setattr("app.context_builder.repositories.count_session_context_messages", count_messages)
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_messages", list_messages)
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_files", empty)
+    monkeypatch.setattr("app.context_builder.repositories.list_session_context_artifacts", empty)
+    monkeypatch.setattr("app.context_builder.repositories.session_has_legacy_run_history", no_legacy)
+    monkeypatch.setattr("app.context_builder.repositories.get_effective_memory_policy", policy)
+    monkeypatch.setattr("app.context_builder.repositories.create_context_snapshot", create)
+    monkeypatch.setattr("app.context_builder.repositories.update_run_context_snapshot_ref", empty)
+    monkeypatch.setattr("app.context_builder.repositories.append_event", empty)
+
+    await record_initial_context_snapshot(
+        object(), tenant_id="tenant-a", workspace_id="workspace-a", user_id="user-a", session_id="session-a",
+        run_id="run-current", trace_id="trace-current", agent_id="general-agent", skill_id="general-chat",
+        input_payload={"message": "现在的问题"}, message_ids=[], file_ids=[], source="chat_stream",
+        include_session_history=True,
+    )
+
+    manifest = captured["payload_json"]["context_manifest"]
+    assert call_order == ["count", "list"]
+    assert manifest["selection"]["history_candidate_count"] == 13
+    assert manifest["selection"]["history_inline_count"] == 8
+    assert manifest["selection"]["history_trimmed_count"] == 5
+    assert manifest["selection"]["status"] == "trimmed"
+    assert [row["message_id"] for row in manifest["recent_messages"]] == [f"msg-{index}" for index in range(6, 14)]
 
 
 @pytest.mark.asyncio

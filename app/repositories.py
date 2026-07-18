@@ -759,6 +759,66 @@ async def list_session_context_messages(
     return list(await cursor.fetchall())
 
 
+async def count_session_context_messages(
+    conn: AsyncConnection,
+    *,
+    tenant_id: str,
+    workspace_id: str,
+    user_id: str,
+    session_id: str,
+    run_id: str,
+) -> int:
+    """Count eligible ordered session history without loading its content."""
+
+    cursor = await conn.execute(
+        """
+        with current_run as (
+          select runs.session_generation
+          from runs
+          join sessions on sessions.id = runs.session_id
+            and sessions.tenant_id = runs.tenant_id
+          where runs.tenant_id = %s
+            and runs.workspace_id = %s
+            and runs.user_id = %s
+            and runs.session_id = %s
+            and runs.id = %s
+            and sessions.status = 'active'
+            and runs.session_generation is not null
+        )
+        select count(*) as context_message_count
+        from messages
+        join sessions on sessions.id = messages.session_id and sessions.tenant_id = messages.tenant_id
+        join runs on runs.id = messages.run_id and runs.tenant_id = messages.tenant_id
+        where messages.tenant_id = %s
+          and messages.session_id = %s
+          and sessions.workspace_id = %s
+          and sessions.user_id = %s
+          and sessions.status = 'active'
+          and runs.workspace_id = sessions.workspace_id
+          and runs.user_id = sessions.user_id
+          and runs.session_id = sessions.id
+          and runs.session_generation is not null
+          and runs.session_generation < (select session_generation from current_run)
+        """,
+        (
+            tenant_id,
+            workspace_id,
+            user_id,
+            session_id,
+            run_id,
+            tenant_id,
+            session_id,
+            workspace_id,
+            user_id,
+        ),
+    )
+    row = await cursor.fetchone()
+    try:
+        return max(0, int((row or {}).get("context_message_count") or 0))
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
 async def list_session_context_files(
     conn: AsyncConnection,
     *,

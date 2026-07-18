@@ -22,7 +22,7 @@ from app.routes.chat import (
     list_sessions,
     _file_row_matches_request_scope,
 )
-from app.queue import QueueAdmissionMetadata
+from app.queue import QueueAdmissionMetadata, QueueAdmissionRejected
 
 
 _ORIGINAL_AUTHORIZE_RUN_CAPABILITIES = repository_module.authorize_run_capabilities
@@ -325,7 +325,7 @@ def _durable_run_row(*, status: str = "queued") -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_retry_admission_marks_committed_submission_enqueue_failed_when_redis_fails(monkeypatch):
+async def test_retry_admission_marks_committed_submission_enqueue_failed_only_for_definitive_rejection(monkeypatch):
     submission = _pending_submission_row()
     finalized: list[dict[str, object]] = []
 
@@ -336,7 +336,10 @@ async def test_retry_admission_marks_committed_submission_enqueue_failed_when_re
         return _durable_run_row()
 
     async def fail_enqueue(_payload):
-        raise RuntimeError("redis unavailable after database commit")
+        raise QueueAdmissionRejected("queue_payload_invalid")
+
+    async def no_existing_admission(_payload):
+        return None
 
     async def finalize(*_args, **kwargs):
         finalized.append(kwargs)
@@ -354,6 +357,7 @@ async def test_retry_admission_marks_committed_submission_enqueue_failed_when_re
     monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", fail_enqueue)
+    monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing_admission)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
     monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", mark_enqueue_failed, raising=False)
 
@@ -372,6 +376,90 @@ async def test_retry_admission_marks_committed_submission_enqueue_failed_when_re
         "state": "enqueue_failed",
         "rejection_code": "queue_enqueue_failed",
     }]
+
+
+@pytest.mark.asyncio
+async def test_retry_admission_keeps_unknown_enqueue_outcome_recoverable_without_failure_transition(monkeypatch):
+    submission = _pending_submission_row()
+    enqueue_calls: list[dict[str, object]] = []
+
+    async def get_submission(*_args, **_kwargs):
+        return submission
+
+    async def get_run(*_args, **_kwargs):
+        return _durable_run_row()
+
+    async def enqueue(payload):
+        enqueue_calls.append(payload)
+        raise RuntimeError("redis connection dropped after write")
+
+    async def no_exact_admission(_payload):
+        return None
+
+    async def forbidden_failure_transition(*_args, **_kwargs):
+        raise AssertionError("an unknown enqueue result must not terminalize the run")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
+    monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
+    monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
+    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.read_queue_admission", no_exact_admission)
+    monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", forbidden_failure_transition, raising=False)
+    monkeypatch.setattr(repository_module, "finalize_chat_submission", forbidden_failure_transition, raising=False)
+
+    response = await _admit_chat_submission(
+        principal=principal(),
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+
+    assert response.state == "accepted_pending_enqueue"
+    assert len(enqueue_calls) == 1
+    assert submission["state"] == "accepted_pending_enqueue"
+
+
+@pytest.mark.asyncio
+async def test_retry_admission_reconciles_concurrent_redis_success_without_terminalizing(monkeypatch):
+    submission = _pending_submission_row()
+    calls: list[str] = []
+
+    async def get_submission(*_args, **_kwargs):
+        return submission
+
+    async def get_run(*_args, **_kwargs):
+        return _durable_run_row()
+
+    async def enqueue(_payload):
+        calls.append("enqueue")
+        raise RuntimeError("caller lost enqueue acknowledgement")
+
+    async def read_admission(_payload):
+        calls.append("read")
+        if calls.count("read") == 1:
+            return None
+        submission["state"] = "queued"
+        submission["outcome_json"] = {**submission["outcome_json"], "status": "queued"}
+        return QueueAdmissionMetadata(1, 9, "stable-message-id", "redis_readback_queued")
+
+    async def forbidden_failure_transition(*_args, **_kwargs):
+        raise AssertionError("concurrent success must not be replaced by enqueue_failed")
+
+    monkeypatch.setattr("app.routes.chat.transaction", fake_transaction)
+    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
+    monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
+    monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
+    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.read_queue_admission", read_admission)
+    monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", forbidden_failure_transition, raising=False)
+    monkeypatch.setattr(repository_module, "finalize_chat_submission", forbidden_failure_transition, raising=False)
+
+    response = await _admit_chat_submission(
+        principal=principal(),
+        submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+    )
+
+    assert response.state == "queued"
+    assert calls == ["read", "enqueue", "read"]
 
 
 @pytest.mark.asyncio
@@ -405,7 +493,10 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
         return _durable_run_row()
 
     async def fail_enqueue(_payload):
-        raise RuntimeError("redis unavailable after database commit")
+        raise QueueAdmissionRejected("queue_payload_invalid")
+
+    async def no_existing_admission(_payload):
+        return None
 
     async def mark_enqueue_failed(conn, **kwargs):
         conn.pending.append(("run", kwargs["run_id"]))
@@ -423,6 +514,7 @@ async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(m
     monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", fail_enqueue)
+    monkeypatch.setattr("app.routes.chat.read_queue_admission", no_existing_admission)
     monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", mark_enqueue_failed, raising=False)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
 
@@ -488,6 +580,9 @@ async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(
         enqueued_payloads.append(payload)
         return QueueAdmissionMetadata(1, 7, "stable-message-id")
 
+    async def read_admission(_payload):
+        return QueueAdmissionMetadata(1, 7, "stable-message-id") if enqueued_payloads else None
+
     async def append_event(*_args, **_kwargs):
         return None
 
@@ -504,6 +599,7 @@ async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(
     monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
     monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
     monkeypatch.setattr("app.routes.chat._enqueue_chat_run", enqueue)
+    monkeypatch.setattr("app.routes.chat.read_queue_admission", read_admission)
     monkeypatch.setattr(repository_module, "append_event", append_event, raising=False)
     monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
 
@@ -518,8 +614,7 @@ async def test_retry_admission_reuses_queue_identity_after_a_ledger_update_loss(
     )
 
     assert response.state == "queued"
-    assert len(enqueued_payloads) == 2
-    assert enqueued_payloads[0] == enqueued_payloads[1]
+    assert len(enqueued_payloads) == 1
 
 
 @pytest.mark.asyncio

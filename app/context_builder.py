@@ -526,6 +526,7 @@ def _build_initial_context_manifest(
     skill_id: str,
     input_payload: dict[str, Any],
     prior_messages: list[dict[str, Any]],
+    history_candidate_count: int,
     file_ids: list[str],
     artifact_ids: list[str],
     memory_record_ids: list[str],
@@ -543,6 +544,7 @@ def _build_initial_context_manifest(
         skill_id=skill_id,
         current_message=_manifest_current_message(input_payload),
         recent_messages=prior_messages,
+        history_candidate_count=history_candidate_count,
         context_chips=_manifest_context_chips(input_payload),
         files=_manifest_file_refs(file_ids, authorized_file_rows),
         artifacts=_manifest_artifact_refs(artifact_ids),
@@ -577,7 +579,16 @@ async def record_initial_context_snapshot(
     source_run_ids: list[str] = []
     source_artifacts: list[dict[str, Any]] = []
     legacy_history_excluded = False
+    history_candidate_count = 0
     if include_session_history:
+        history_candidate_count = await repositories.count_session_context_messages(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+        )
         session_messages = await repositories.list_session_context_messages(
             conn,
             tenant_id=tenant_id,
@@ -731,6 +742,7 @@ async def record_initial_context_snapshot(
         skill_id=skill_id,
         input_payload=input_payload,
         prior_messages=prior_messages,
+        history_candidate_count=history_candidate_count,
         file_ids=included_file_ids,
         artifact_ids=included_artifact_ids,
         memory_record_ids=[],

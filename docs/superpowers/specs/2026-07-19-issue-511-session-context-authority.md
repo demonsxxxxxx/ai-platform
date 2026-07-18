@@ -97,11 +97,12 @@ parser, provider-resume, UI, or tool-policy work.
   when both legacy JSON mirrors agree and point at the exact scoped executor
   snapshot. Ambiguous or absent rows stay null and are displayed as degraded.
   The nullable columns keep old-application rollback compatibility.
-- Queue exceptions after commit are compensated in the existing transaction
-  model for chat, direct run creation, copy, retry, and resume. The run is
-  terminal `failed` with the public-safe `queue_enqueue_failed` code and an
-  event/audit record; keyed chat submissions become `enqueue_failed` rather
-  than an accepted-pending fabrication. No outbox or background service is
+- Queue outcomes after commit use the existing transaction model for chat,
+  direct run creation, copy, retry, and resume. A definitive pre-admission
+  rejection can transition the run with the public-safe
+  `queue_enqueue_failed` code and an event/audit record; outcome-unknown
+  keyed chat attempts remain recoverable rather than fabricating either
+  `enqueue_failed` or a second enqueue. No outbox or background service is
   added.
 - The context planner reserves the current user input exactly once before
   newest-first history eligibility. Count-cap and budget omissions increment
@@ -122,3 +123,31 @@ The opt-in PostgreSQL test uses the repository's
 populated rows and covers allocator races, same-ID repeat binding, rebind
 rejection, deferred FK insertion, and the immutable-binding trigger. Local
 absence of that DSN is an explicit skip, not database evidence.
+
+## Generation 4 final architecture repair
+
+Generation 4 refines the local seams without changing the Context v1 scope.
+
+- A keyed chat retry first reads the deterministic immutable Redis message ID.
+  If an enqueue call then raises, the same bounded readback distinguishes an
+  observed queued/leased/retry admission from an unknown outcome. Unknown
+  outcomes remain `accepted_pending_enqueue` and are recoverable through the
+  existing retry-admission path; no terminal failure is fabricated and no
+  second enqueue command is sent for an observed identity. Only the queue
+  module's typed local, pre-admission rejection can transition a queued run
+  and submission to `queue_enqueue_failed` in a separate committed
+  compensation transaction.
+- The deferred multi-agent guard is also invoked by worker maintenance before
+  settings, candidate listing, claims, writes, or enqueue. Configuration does
+  not override the public `multi_agent_dispatch_not_available` decision.
+- Context assembly counts scoped, ordered historical candidates before it
+  reads the bounded newest-eight tail. The count query contains no message
+  content, so public trimmed/degraded status remains truthful for long
+  histories without unbounded material loading.
+- Retrieval-only file entries retain an authorized, sanitized basename only.
+  They carry no content, storage key, or source path; the allowlisted public
+  `context_window.selected_file_names` is derived from that basename metadata.
+
+This repair adds no outbox, schema change, parser evidence, long-term Memory,
+provider resume, preview/UI work, or multi-agent child-snapshot design. The
+opt-in PostgreSQL gate remains a controller-owned integration requirement.

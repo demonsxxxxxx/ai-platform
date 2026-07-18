@@ -3044,6 +3044,24 @@ async def test_session_context_candidates_bind_owner_scope_and_latest_successful
         "tenant-a", "session-a", "workspace-a", "user-a", 8,
     )
 
+    await repositories.count_session_context_messages(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-current",
+    )
+    count_sql, count_params = conn.calls[-1]
+    assert "count(*) as context_message_count" in count_sql
+    assert "messages.content" not in count_sql
+    assert "order by" not in count_sql
+    assert "limit" not in count_sql
+    assert count_params == (
+        "tenant-a", "workspace-a", "user-a", "session-a", "run-current",
+        "tenant-a", "session-a", "workspace-a", "user-a",
+    )
+
     await repositories.list_session_context_files(
         conn,
         tenant_id="tenant-a",

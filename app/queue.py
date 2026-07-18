@@ -4,6 +4,7 @@ import json
 import time
 from typing import Any
 
+from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
@@ -458,6 +459,10 @@ class QueueAdmissionMetadata:
     source: str = "redis_metadata"
 
 
+class QueueAdmissionRejected(ValueError):
+    """A deterministic local rejection that occurs before Redis admission begins."""
+
+
 async def get_redis() -> Redis:
     settings = get_settings()
     return Redis.from_url(settings.redis_url, decode_responses=True)
@@ -532,7 +537,10 @@ def _dead_letter_json(
 async def enqueue_run_with_metadata(payload: dict[str, Any]) -> QueueAdmissionMetadata:
     """Enqueue a run and return the Redis-derived admission ordinal."""
 
-    validated = QueueRunPayload.model_validate(payload)
+    try:
+        validated = QueueRunPayload.model_validate(payload)
+    except ValidationError as exc:
+        raise QueueAdmissionRejected("queue_payload_invalid") from exc
     keys = get_queue_keys()
     redis = await get_redis()
     raw = validated.model_dump_json()
@@ -582,6 +590,79 @@ async def enqueue_run_with_metadata(payload: dict[str, Any]) -> QueueAdmissionMe
 async def enqueue_run(payload: dict[str, Any]) -> int:
     metadata = await enqueue_run_with_metadata(payload)
     return metadata.queue_position
+
+
+def _queue_metadata_matches_run(
+    raw_metadata: object,
+    *,
+    tenant_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    """Decode one bounded Redis metadata row only when it belongs to this run."""
+
+    try:
+        metadata = json.loads(raw_metadata)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    if metadata.get("tenant_id") != tenant_id or metadata.get("run_id") != run_id:
+        return None
+    return metadata
+
+
+async def read_queue_admission(payload: dict[str, Any]) -> QueueAdmissionMetadata | None:
+    """Boundedly reconcile one immutable enqueue attempt without enqueuing again.
+
+    The deterministic payload hash identifies the exact Redis message.  The
+    read checks queued, leased, and retry metadata only; it never scans queue
+    contents or sends another enqueue command.
+    """
+
+    try:
+        validated = QueueRunPayload.model_validate(payload)
+    except ValidationError as exc:
+        raise QueueAdmissionRejected("queue_payload_invalid") from exc
+    keys = get_queue_keys()
+    raw = validated.model_dump_json()
+    message_id = message_id_for_raw(raw)
+    redis = await get_redis()
+    try:
+        queued_metadata = _queue_metadata_matches_run(
+            await redis.hget(keys.queued_meta, message_id),
+            tenant_id=validated.tenant_id,
+            run_id=validated.run_id,
+        )
+        if queued_metadata is not None:
+            rank = await redis.zrank(keys.queued_order, message_id)
+            if rank is not None:
+                position = int(rank) + 1
+                sequence = int(queued_metadata.get("sequence") or position)
+                return QueueAdmissionMetadata(
+                    queue_position=position,
+                    queue_admission_ordinal=sequence,
+                    message_id=message_id,
+                    source="redis_readback_queued",
+                )
+        for metadata_key, source in (
+            (keys.processing_meta, "redis_readback_processing"),
+            (keys.retry_meta, "redis_readback_retry"),
+        ):
+            metadata = _queue_metadata_matches_run(
+                await redis.hget(metadata_key, message_id),
+                tenant_id=validated.tenant_id,
+                run_id=validated.run_id,
+            )
+            if metadata is not None:
+                return QueueAdmissionMetadata(
+                    queue_position=0,
+                    queue_admission_ordinal=0,
+                    message_id=message_id,
+                    source=source,
+                )
+        return None
+    finally:
+        await redis.aclose()
 
 
 async def remove_queued_run(*, tenant_id: str, run_id: str) -> int:

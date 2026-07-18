@@ -32,7 +32,14 @@ from app.projection_redaction import (
     redact_raw_skill_references,
     sanitize_user_control_input,
 )
-from app.queue import QueueAdmissionMetadata, enqueue_run, enqueue_run_with_metadata, get_queue_insight
+from app.queue import (
+    QueueAdmissionMetadata,
+    QueueAdmissionRejected,
+    enqueue_run,
+    enqueue_run_with_metadata,
+    get_queue_insight,
+    read_queue_admission,
+)
 from app.repositories import RepositoryConflictError, RepositoryNotFoundError
 from app.settings import get_settings
 from app.skills.lifecycle import is_user_runnable_status
@@ -261,19 +268,66 @@ async def _admit_chat_submission(
             }
         )
 
+    queue_admission: QueueAdmissionMetadata | None = None
+    enqueue_error: Exception | None = None
     try:
-        queue_admission = await _enqueue_chat_run(queue_payload)
+        # Retry admission can recover a successful Redis write whose durable
+        # acknowledgement was lost.  Read its exact immutable message first
+        # so a retry never sends a second enqueue command.
+        queue_admission = await read_queue_admission(queue_payload)
+        if queue_admission is None:
+            queue_admission = await _enqueue_chat_run(queue_payload)
     except Exception as exc:
-        # The initial run/submission was committed before enqueue.  Record the
-        # resulting terminal state in a new transaction before returning 503;
-        # raising from the planning transaction would otherwise roll this back.
+        enqueue_error = exc
+        if not isinstance(exc, QueueAdmissionRejected):
+            # A network exception can occur after Redis accepted the exact
+            # message.  Read the deterministic message-id state once before
+            # changing durable truth; this path never enqueues a second time.
+            try:
+                queue_admission = await read_queue_admission(queue_payload)
+            except Exception:
+                queue_admission = None
+    if enqueue_error is not None and queue_admission is None:
+        exc = enqueue_error
         async with transaction() as conn:
+            current_submission = await repositories.get_chat_submission(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                submission_id=submission_id,
+                for_update=True,
+            )
+            if current_submission is None:
+                raise HTTPException(status_code=404, detail="chat_submission_not_found")
+            # Never replace a concurrent success (or a previously settled
+            # terminal result) with a local enqueue conclusion.
+            if str(current_submission.get("state")) != "accepted_pending_enqueue":
+                return _chat_submission_resolution(current_submission)
+            if not isinstance(exc, QueueAdmissionRejected):
+                # The outcome remains unknown.  The durable submission is
+                # recoverable through retry-admission and immutable Redis
+                # idempotency, without this request posting again.
+                return _chat_submission_resolution(current_submission)
+            current_run = await repositories.get_authorized_run(
+                conn,
+                tenant_id=principal.tenant_id,
+                user_id=principal.user_id,
+                run_id=run_id,
+                for_update=True,
+            )
+            if current_run is None:
+                raise HTTPException(status_code=404, detail="run_not_found")
+            if str(current_run.get("status") or "") != "queued":
+                return _chat_submission_resolution(current_submission)
+            # Only the queue module's deterministic pre-admission rejection
+            # can produce enqueue_failed.  This transaction is distinct from
+            # planning and commits before the HTTP error.
             await repositories.mark_run_enqueue_failed(
                 conn,
                 tenant_id=principal.tenant_id,
                 user_id=principal.user_id,
                 run_id=run_id,
-                trace_id=str(run.get("trace_id") or standard_trace_id(run_id)),
+                trace_id=str(current_run.get("trace_id") or standard_trace_id(run_id)),
             )
             await repositories.finalize_chat_submission(
                 conn,
@@ -297,6 +351,8 @@ async def _admit_chat_submission(
         )
         if submission is None:
             raise HTTPException(status_code=404, detail="chat_submission_not_found")
+        if str(submission.get("state")) in {"rejected_before_persist", "enqueue_failed", "needs_confirmation"}:
+            return _chat_submission_resolution(submission)
         prior_outcome = _chat_stream_response_from_submission(submission)
         queued_outcome = prior_outcome.model_copy(
             update={

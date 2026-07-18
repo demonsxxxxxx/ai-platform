@@ -218,9 +218,12 @@ def _safe_nonnegative_int(value: object) -> int:
 
 
 def _display_name_from_row(row: dict[str, Any]) -> str:
-    label = _safe_text(row.get("original_name") or row.get("label") or row.get("name"))
+    raw_label = str(row.get("original_name") or row.get("label") or row.get("name") or "").strip()
+    # Strip an object/storage or client path before the public-safety filter so
+    # an authorized original basename remains useful without leaking its path.
+    label = _safe_text(PurePosixPath(raw_label.replace("\\", "/")).name)
     if label:
-        return PurePosixPath(label.replace("\\", "/")).name
+        return label
     return _safe_id(row.get("id") or row.get("file_id") or row.get("artifact_id"))
 
 
@@ -283,6 +286,7 @@ class ContextPlanner:
         memory_records: list[dict[str, Any]] | None = None,
         source_run_ids: list[str] | None = None,
         legacy_history_excluded: bool = False,
+        history_candidate_count: int | None = None,
     ) -> dict[str, Any]:
         """Return the bounded manifest that is safe to include as a prompt index."""
         budget = _InlineBudget(self.token_budget, self.max_inline_history_bytes)
@@ -290,7 +294,11 @@ class ContextPlanner:
         # before selecting historical messages, using the same UTF-8-safe
         # estimator as every other inline candidate.
         budget.reserve_current(current_message)
-        message_refs, history_selection = self._message_refs(list(recent_messages or []), budget=budget)
+        message_refs, history_selection = self._message_refs(
+            list(recent_messages or []),
+            budget=budget,
+            history_candidate_count=history_candidate_count,
+        )
         file_refs = self._file_refs(list(files or []), budget=budget)
         artifact_refs = self._artifact_refs(list(artifacts or []))
         memory_refs = self._memory_refs(list(memory_records or []))
@@ -404,10 +412,11 @@ class ContextPlanner:
         rows: list[dict[str, Any]],
         *,
         budget: "_InlineBudget",
+        history_candidate_count: int | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """Select newest eligible history first, then return it chronologically."""
 
-        candidate_count = len(rows)
+        candidate_count = max(len(rows), _safe_nonnegative_int(history_candidate_count))
         newest_first = sorted(rows, key=_message_sort_key, reverse=True)[: self.recent_message_limit]
         result: list[tuple[tuple[int, str, str], dict[str, Any]]] = []
         inline_count = 0
@@ -468,12 +477,15 @@ class ContextPlanner:
         result: list[dict[str, Any]] = []
         for row in rows:
             if row.get("requires_retrieval") and not row.get("content_type") and not row.get("text_preview"):
-                result.append(
-                    {
-                        "file_id": _safe_id(row.get("file_id") or row.get("id")),
-                        "requires_retrieval": True,
-                    }
-                )
+                item = {
+                    "file_id": _safe_id(row.get("file_id") or row.get("id")),
+                    "requires_retrieval": True,
+                }
+                if row.get("original_name"):
+                    display_name = _display_name_from_row(row)
+                    if display_name:
+                        item["name"] = display_name
+                result.append(item)
                 continue
             size_bytes = int(row.get("size_bytes") or 0)
             content_type = _safe_text(row.get("content_type"), limit=128)

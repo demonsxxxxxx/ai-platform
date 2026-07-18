@@ -614,6 +614,47 @@ async def test_enqueue_run_with_metadata_deduplicates_an_identical_run_admission
 
 
 @pytest.mark.asyncio
+async def test_read_queue_admission_recovers_exact_queued_identity_without_reenqueue(monkeypatch):
+    payload = queue_payload(run_id="run-readback", tenant_id="tenant-a").model_dump()
+    fake = FakeRedis()
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+    enqueued = await queue.enqueue_run_with_metadata(payload)
+    readback = await queue.read_queue_admission(payload)
+
+    assert readback is not None
+    assert readback.message_id == enqueued.message_id
+    assert readback.queue_position == 1
+    assert readback.queue_admission_ordinal == enqueued.queue_admission_ordinal
+    assert readback.source == "redis_readback_queued"
+    assert len(fake.eval_calls) == 1
+    assert fake.lrange_calls == []
+
+
+@pytest.mark.asyncio
+async def test_read_queue_admission_recovers_exact_processing_identity_without_queue_scan(monkeypatch):
+    payload = queue_payload(run_id="run-readback-processing", tenant_id="tenant-a").model_dump()
+    fake = FakeRedis()
+    raw = QueueRunPayload.model_validate(payload).model_dump_json()
+    message_id = queue.message_id_for_raw(raw)
+    fake.meta[message_id] = json.dumps({"tenant_id": "tenant-a", "run_id": "run-readback-processing"})
+
+    async def get_redis():
+        return fake
+
+    monkeypatch.setattr("app.queue.get_redis", get_redis)
+    readback = await queue.read_queue_admission(payload)
+
+    assert readback is not None
+    assert readback.message_id == message_id
+    assert readback.source == "redis_readback_processing"
+    assert fake.lrange_calls == []
+
+
+@pytest.mark.asyncio
 async def test_enqueue_run_with_metadata_does_not_requeue_a_processing_identity(monkeypatch):
     payload = queue_payload(run_id="run-processing", tenant_id="tenant-a").model_dump()
     fake = FakeRedis()
