@@ -375,6 +375,72 @@ async def test_retry_admission_marks_committed_submission_enqueue_failed_when_re
 
 
 @pytest.mark.asyncio
+async def test_retry_admission_commits_enqueue_compensation_before_503_escapes(monkeypatch):
+    """The queue failure must not roll back its terminal submission transition."""
+
+    submission = _pending_submission_row()
+    committed: list[tuple[str, object]] = []
+    transaction_outcomes: list[tuple[str, list[tuple[str, object]]]] = []
+
+    class TransactionState:
+        def __init__(self) -> None:
+            self.pending: list[tuple[str, object]] = []
+
+    @asynccontextmanager
+    async def transaction_with_rollback_tracking():
+        state = TransactionState()
+        try:
+            yield state
+        except BaseException:
+            transaction_outcomes.append(("rollback", list(state.pending)))
+            raise
+        else:
+            committed.extend(state.pending)
+            transaction_outcomes.append(("commit", list(state.pending)))
+
+    async def get_submission(*_args, **_kwargs):
+        return submission
+
+    async def get_run(*_args, **_kwargs):
+        return _durable_run_row()
+
+    async def fail_enqueue(_payload):
+        raise RuntimeError("redis unavailable after database commit")
+
+    async def mark_enqueue_failed(conn, **kwargs):
+        conn.pending.append(("run", kwargs["run_id"]))
+        return repository_module.ToolPermissionTerminalizationProgress(
+            completed=True,
+            status="failed",
+            did_transition=True,
+        )
+
+    async def finalize(conn, **kwargs):
+        conn.pending.append(("submission", kwargs["state"]))
+
+    monkeypatch.setattr("app.routes.chat.transaction", transaction_with_rollback_tracking)
+    monkeypatch.setattr(repository_module, "get_chat_submission", get_submission, raising=False)
+    monkeypatch.setattr(repository_module, "get_authorized_run", get_run, raising=False)
+    monkeypatch.setattr("app.routes.chat._validate_queue_payload_for_enqueue", lambda payload: payload)
+    monkeypatch.setattr("app.routes.chat._enqueue_chat_run", fail_enqueue)
+    monkeypatch.setattr(repository_module, "mark_run_enqueue_failed", mark_enqueue_failed, raising=False)
+    monkeypatch.setattr(repository_module, "finalize_chat_submission", finalize, raising=False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _admit_chat_submission(
+            principal=principal(),
+            submission_id="7ea93033-30f5-40ea-8a33-2f3c6e7b21c4",
+        )
+
+    assert exc_info.value.status_code == 503
+    assert committed == [("run", "run-durable"), ("submission", "enqueue_failed")]
+    assert transaction_outcomes == [
+        ("commit", []),
+        ("commit", [("run", "run-durable"), ("submission", "enqueue_failed")]),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_retry_admission_does_not_requeue_a_processing_run(monkeypatch):
     submission = _pending_submission_row()
     finalized: list[dict[str, object]] = []

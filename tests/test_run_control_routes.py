@@ -88,6 +88,21 @@ async def fake_transaction():
     yield EmptyPropagationConnection()
 
 
+def forbidden_deferred_multi_agent_transaction():
+    """Make a deferred dispatch test fail if the route opens a transaction."""
+
+    raise AssertionError("deferred multi-agent dispatch must not open a transaction")
+
+
+def stub_session_generation(monkeypatch, generation: int = 1) -> None:
+    """Keep copy-contract fakes focused on their execution-snapshot assertions."""
+
+    async def allocate_session_run_generation(*_args, **_kwargs) -> int:
+        return generation
+
+    monkeypatch.setattr(repository_module, "allocate_session_run_generation", allocate_session_run_generation)
+
+
 @pytest.fixture(autouse=True)
 def allow_existing_run_control_route_tests_to_stub_auth_snapshot_update(monkeypatch):
     async def update_auth_snapshot(*_args, **_kwargs):
@@ -1919,7 +1934,7 @@ def test_admin_multi_agent_dispatch_claim_records_ledger_event_and_audit(monkeyp
         "app.routes.runs.get_settings",
         lambda: type("S", (), {"multi_agent_dispatch_lease_ttl_seconds": 123})(),
     )
-    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.transaction", forbidden_deferred_multi_agent_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.get_run", fake_get_run)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
     monkeypatch.setattr("app.routes.runs.repositories.claim_multi_agent_dispatch_step", fake_claim, raising=False)
@@ -1931,36 +1946,13 @@ def test_admin_multi_agent_dispatch_claim_records_ledger_event_and_audit(monkeyp
         headers=admin_headers(),
     )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["contract_version"] == "ai-platform.multi-agent-dispatch-claim.v1"
-    assert body["status"] == "claimed"
-    assert body["dispatch_id"] == "dispatch-code"
-    assert body["event_id"] == "evt-code"
-    assert body["audit_id"] == "aud-code"
-    assert body["step"]["status"] == "running"
-    assert body["step"]["payload"]["dispatch_state"] == "claimed"
-    assert calls == [
-        (
-            "claim",
-            {
-                "tenant_id": "default",
-                "run_id": "run-ready",
-                "claimed_by": "admin-a",
-                "trace_id": "trace-ready",
-                "step_key": "code",
-                "step_kind": "agent",
-                "title": "Code",
-                "role": "coder",
-                "sequence": 2,
-                "depends_on": ["plan"],
-                "lease_ttl_seconds": 123,
-            },
-        )
-    ]
+    assert response.status_code == 409
+    assert response.json()["detail"] == "multi_agent_dispatch_not_available"
+    assert calls == []
 
 
 def test_admin_multi_agent_dispatch_claim_rejects_unsafe_dependency_without_writes(monkeypatch):
+    calls = []
     async def fake_get_run(conn, *, tenant_id, run_id, for_update=False):
         row = readiness_run_row(status="running")
         row["input_json"] = {
@@ -1997,7 +1989,7 @@ def test_admin_multi_agent_dispatch_claim_rejects_unsafe_dependency_without_writ
         raise AssertionError("unsafe dependency must not be claimed")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.transaction", forbidden_deferred_multi_agent_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.get_run", fake_get_run)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
     monkeypatch.setattr("app.routes.runs.repositories.claim_multi_agent_dispatch_step", fail_claim, raising=False)
@@ -2010,7 +2002,8 @@ def test_admin_multi_agent_dispatch_claim_rejects_unsafe_dependency_without_writ
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "unsafe_step_reference"
+    assert response.json()["detail"] == "multi_agent_dispatch_not_available"
+    assert calls == []
 
 
 def test_multi_agent_dispatch_claim_requires_admin(monkeypatch):
@@ -2066,10 +2059,6 @@ def test_multi_agent_dispatch_tick_revocation_denies_before_claim_child_or_enque
         },
     }
 
-    @asynccontextmanager
-    async def tick_transaction():
-        yield object()
-
     async def fake_get_run(conn, *, tenant_id, run_id, for_update=False):
         calls.append(("get_run", tenant_id, run_id, for_update))
         return run
@@ -2083,7 +2072,7 @@ def test_multi_agent_dispatch_tick_revocation_denies_before_claim_child_or_enque
         raise AssertionError("revoked parent must not dispatch")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.runs.transaction", tick_transaction)
+    monkeypatch.setattr("app.routes.runs.transaction", forbidden_deferred_multi_agent_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.get_run", fake_get_run, raising=False)
     monkeypatch.setattr("app.routes.runs._authorize_persisted_run_for_queue", deny_persisted, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fail_dispatch, raising=False)
@@ -2094,18 +2083,13 @@ def test_multi_agent_dispatch_tick_revocation_denies_before_claim_child_or_enque
 
     response = client.post("/api/ai/runs/run-parent/multi-agent/dispatch/tick", headers=admin_headers())
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "capability_not_authorized"
-    assert calls == [
-        ("get_run", "default", "run-parent", True),
-        ("authorize", "default", "run-parent", run),
-    ]
+    assert response.status_code == 409
+    assert response.json()["detail"] == "multi_agent_dispatch_not_available"
+    assert calls == []
 
 
 def test_multi_agent_dispatch_tick_rejects_when_no_ready_step(monkeypatch):
-    @asynccontextmanager
-    async def tick_transaction():
-        yield object()
+    calls = []
 
     async def fake_get_run(conn, *, tenant_id, run_id, for_update=False):
         assert (tenant_id, run_id, for_update) == ("default", "run-parent", True)
@@ -2132,7 +2116,7 @@ def test_multi_agent_dispatch_tick_rejects_when_no_ready_step(monkeypatch):
         raise AssertionError("no-ready tick must not claim a step")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.runs.transaction", tick_transaction)
+    monkeypatch.setattr("app.routes.runs.transaction", forbidden_deferred_multi_agent_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.get_run", fake_get_run, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.claim_multi_agent_dispatch_step", fail_claim, raising=False)
@@ -2141,7 +2125,8 @@ def test_multi_agent_dispatch_tick_rejects_when_no_ready_step(monkeypatch):
     response = client.post("/api/ai/runs/run-parent/multi-agent/dispatch/tick", headers=admin_headers())
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "no_ready_steps"
+    assert response.json()["detail"] == "multi_agent_dispatch_not_available"
+    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -2154,9 +2139,7 @@ def test_multi_agent_dispatch_tick_rejects_when_no_ready_step(monkeypatch):
     ],
 )
 def test_multi_agent_dispatch_tick_rejects_when_only_ready_step_is_unsafe(monkeypatch, unsafe_step_key):
-    @asynccontextmanager
-    async def tick_transaction():
-        yield object()
+    calls = []
 
     async def fake_get_run(conn, *, tenant_id, run_id, for_update=False):
         assert (tenant_id, run_id, for_update) == ("default", "run-parent", True)
@@ -2183,7 +2166,7 @@ def test_multi_agent_dispatch_tick_rejects_when_only_ready_step_is_unsafe(monkey
         raise AssertionError("unsafe tick must not claim a step")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.runs.transaction", tick_transaction)
+    monkeypatch.setattr("app.routes.runs.transaction", forbidden_deferred_multi_agent_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.get_run", fake_get_run, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.claim_multi_agent_dispatch_step", fail_claim, raising=False)
@@ -2192,15 +2175,12 @@ def test_multi_agent_dispatch_tick_rejects_when_only_ready_step_is_unsafe(monkey
     response = client.post("/api/ai/runs/run-parent/multi-agent/dispatch/tick", headers=admin_headers())
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "no_safe_ready_steps"
+    assert response.json()["detail"] == "multi_agent_dispatch_not_available"
+    assert calls == []
 
 
 def test_multi_agent_dispatch_tick_routes_child_through_atomic_execution_snapshot(monkeypatch):
     calls = []
-
-    @asynccontextmanager
-    async def tick_transaction():
-        yield object()
 
     async def fake_get_run(conn, *, tenant_id, run_id, for_update=False):
         calls.append(("get_run", tenant_id, run_id, for_update))
@@ -2354,7 +2334,7 @@ def test_multi_agent_dispatch_tick_routes_child_through_atomic_execution_snapsho
         "app.routes.runs.get_settings",
         lambda: type("S", (), {"multi_agent_dispatch_lease_ttl_seconds": 300, "max_active_runs_per_user": 3})(),
     )
-    monkeypatch.setattr("app.routes.runs.transaction", tick_transaction)
+    monkeypatch.setattr("app.routes.runs.transaction", forbidden_deferred_multi_agent_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.get_run", fake_get_run, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.claim_multi_agent_dispatch_step", fake_claim, raising=False)
@@ -2375,48 +2355,13 @@ def test_multi_agent_dispatch_tick_routes_child_through_atomic_execution_snapsho
 
     response = client.post("/api/ai/runs/run-parent/multi-agent/dispatch/tick", headers=admin_headers())
 
-    assert response.status_code == 200
-    assert response.json() == {
-        "contract_version": "ai-platform.multi-agent-dispatch-tick.v1",
-        "parent_run_id": "run-parent",
-        "dispatch_id": "dispatch-code",
-        "step_key": "code",
-        "step_id": "step-code",
-        "status": "queued",
-        "child_run_id": "run-child",
-        "session_id": "session-a",
-        "queue_position": 7,
-        "queue_insight": {"queued": 1},
-        "claim_event_id": "evt-claim",
-        "claim_audit_id": "aud-claim",
-        "handoff_event_id": "evt-handoff",
-        "child_event_id": "evt-child-created",
-        "handoff_audit_id": "aud-handoff",
-    }
-    assert [item[0] for item in calls] == [
-        "get_run",
-        "list_steps",
-        "claim",
-        "handoff",
-        "context",
-        "execution_snapshot",
-        "enqueue",
-        "queue_insight",
-    ]
-    context = next(item for item in calls if item[0] == "context")
-    assert context[1:] == ("multi_agent_dispatch_tick", "run-parent")
-    snapshot = next(item[1] for item in calls if item[0] == "execution_snapshot")
-    queued_payload = next(item[1] for item in calls if item[0] == "enqueue")
-    assert snapshot == {
-        "tenant_id": "default",
-        "run_id": "run-child",
-        "execution_snapshot": repository_module.copied_run_execution_snapshot(queued_payload),
-    }
-    assert queued_payload["model_id"] == "model-catalog-tick-child"
-    assert queued_payload["model_value"] == "provider-model-tick-child"
+    assert response.status_code == 409
+    assert response.json()["detail"] == "multi_agent_dispatch_not_available"
+    assert calls == []
 
 
 def test_admin_multi_agent_dispatch_claim_maps_repository_conflict_to_409(monkeypatch):
+    calls = []
     async def fake_get_run(conn, *, tenant_id, run_id, for_update=False):
         row = readiness_run_row(status="running")
         row["input_json"] = {
@@ -2465,10 +2410,11 @@ def test_admin_multi_agent_dispatch_claim_maps_repository_conflict_to_409(monkey
         ]
 
     async def fake_claim(conn, **kwargs):
+        calls.append(("claim", kwargs))
         raise RepositoryConflictError("dispatch_step_not_persisted")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.transaction", forbidden_deferred_multi_agent_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.get_run", fake_get_run)
     monkeypatch.setattr("app.routes.runs.repositories.list_run_steps", fake_list_run_steps)
     monkeypatch.setattr("app.routes.runs.repositories.claim_multi_agent_dispatch_step", fake_claim, raising=False)
@@ -2481,7 +2427,8 @@ def test_admin_multi_agent_dispatch_claim_maps_repository_conflict_to_409(monkey
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "dispatch_step_not_persisted"
+    assert response.json()["detail"] == "multi_agent_dispatch_not_available"
+    assert calls == []
 
 
 def test_multi_agent_dispatch_hidden_claim_event_is_absent_from_ordinary_events(monkeypatch):
@@ -2583,7 +2530,7 @@ def test_multi_agent_dispatch_handoff_revocation_denies_before_child_or_enqueue(
         raise AssertionError("revoked parent must not enqueue")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.transaction", forbidden_deferred_multi_agent_transaction)
     monkeypatch.setattr("app.routes.runs._authorize_persisted_run_for_queue", deny_persisted, raising=False)
     monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fail_child, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
@@ -2594,9 +2541,9 @@ def test_multi_agent_dispatch_handoff_revocation_denies_before_child_or_enqueue(
         headers=admin_headers(),
     )
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "capability_not_authorized"
-    assert calls == [("authorize", "default", "run-parent", None)]
+    assert response.status_code == 409
+    assert response.json()["detail"] == "multi_agent_dispatch_not_available"
+    assert calls == []
 
 
 def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues(monkeypatch):
@@ -2715,7 +2662,7 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
         return {"tenant_id": tenant_id, "reason": "worker_available"}
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.transaction", forbidden_deferred_multi_agent_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fake_handoff, raising=False)
     monkeypatch.setattr("app.routes.runs._governed_skill_manifest_pins", fake_governed_skill_manifest_pins)
     monkeypatch.setattr("app.routes.runs.record_initial_context_snapshot", fake_record_initial_context_snapshot)
@@ -2740,83 +2687,23 @@ def test_admin_multi_agent_dispatch_handoff_creates_owner_child_run_and_enqueues
         headers=admin_headers(),
     )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body == {
-        "contract_version": "ai-platform.multi-agent-dispatch-handoff.v1",
-        "parent_run_id": "run-ready",
-        "dispatch_id": "dispatch-code",
-        "step_key": "code",
-        "step_id": "step-code",
-        "status": "queued",
-        "child_run_id": "run-child",
-        "session_id": "ses-owner",
-        "queue_position": 4,
-        "queue_insight": {"tenant_id": "default", "reason": "worker_available"},
-        "event_id": "evt-handoff",
-        "child_event_id": "evt-child",
-        "audit_id": "aud-handoff",
-    }
-    assert calls["handoff"] == [("default", "run-ready", "dispatch-code", "admin-a", 3)]
-    assert calls["context"][0]["source"] == "multi_agent_dispatch_handoff"
-    assert calls["context"][0]["source_run_id"] == "run-ready"
-    assert calls["context"][0]["user_id"] == "user-a"
-    assert calls["context"][0]["run_id"] == "run-child"
-    assert calls["queue"][0]["user_id"] == "user-a"
-    assert calls["queue"][0]["run_id"] == "run-child"
-    assert calls["queue"][0]["context_snapshot_id"] == "ctx-child"
-    assert calls["queue"][0]["context_snapshot"]["source"] == "multi_agent_dispatch_handoff"
-    assert calls["queue"][0]["skill_version"] == "hash-parent"
-    assert calls["queue"][0]["release_decision"]["selected_version"] == "hash-parent"
-    assert calls["queue"][0]["model_id"] == "model-catalog-handoff-child"
-    assert calls["queue"][0]["model_value"] == "provider-model-handoff-child"
-    assert calls["execution_snapshot"] == [
-        {
-            "tenant_id": "default",
-            "run_id": "run-child",
-            "execution_snapshot": repository_module.copied_run_execution_snapshot(calls["queue"][0]),
-        }
-    ]
-    assert calls["execution_snapshot"][0]["execution_snapshot"]["release_decision"] == parent_release_decision
-    assert calls["execution_snapshot"][0]["execution_snapshot"]["skill_manifests"] == parent_skill_manifests
-    locked_payload = QueueRunPayload.model_validate(
-        {
-            "tenant_id": "default",
-            "workspace_id": "default",
-            "user_id": "user-a",
-            "session_id": "ses-owner",
-            "run_id": "run-child",
-            "agent_id": "general-agent",
-            "skill_id": "general-chat",
-            **{
-                field: persisted_input_json[field]
-                for field in QueueRunPayload.model_fields
-                if field in persisted_input_json
-            },
-        }
-    )
-    assert locked_payload.model_dump(mode="json") == calls["queue"][0]
-    assert calls["step"][0]["source"] == "multi_agent_dispatch_handoff"
-    assert calls["auth_snapshot"] == [
-        {
-            "tenant_id": "default",
-            "run_id": "run-child",
-            "principal_roles": ["qa_operator", "user"],
-            "principal_department_id": "qa",
-            "auth_source": "session-token",
-        }
-    ]
+    assert response.status_code == 409
+    assert response.json()["detail"] == "multi_agent_dispatch_not_available"
+    assert all(not values for values in calls.values())
 
 
 def test_admin_multi_agent_dispatch_handoff_rejects_duplicate_without_enqueue(monkeypatch):
+    calls = []
+
     async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by, active_run_admission_limit):
+        calls.append(("handoff", dispatch_id))
         raise RepositoryConflictError("dispatch_already_handed_off")
 
     async def fail_enqueue(payload):
         raise AssertionError("duplicate handoff must not enqueue")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.transaction", forbidden_deferred_multi_agent_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fake_handoff, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
     client = TestClient(create_app())
@@ -2827,7 +2714,8 @@ def test_admin_multi_agent_dispatch_handoff_rejects_duplicate_without_enqueue(mo
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "dispatch_already_handed_off"
+    assert response.json()["detail"] == "multi_agent_dispatch_not_available"
+    assert calls == []
 
 
 def test_admin_multi_agent_dispatch_handoff_commits_release_on_admission_conflict(monkeypatch):
@@ -2851,7 +2739,7 @@ def test_admin_multi_agent_dispatch_handoff_commits_release_on_admission_conflic
         raise AssertionError("admission conflict must not enqueue")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.runs.transaction", transaction_with_exit_probe)
+    monkeypatch.setattr("app.routes.runs.transaction", forbidden_deferred_multi_agent_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fake_handoff, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
     client = TestClient(create_app())
@@ -2862,19 +2750,22 @@ def test_admin_multi_agent_dispatch_handoff_commits_release_on_admission_conflic
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "user_active_run_limit_exceeded"
-    assert tx_clean_exits == [True]
+    assert response.json()["detail"] == "multi_agent_dispatch_not_available"
+    assert tx_clean_exits == []
 
 
 def test_admin_multi_agent_dispatch_handoff_rejects_expired_claim_without_enqueue(monkeypatch):
+    calls = []
+
     async def fake_handoff(conn, *, tenant_id, parent_run_id, dispatch_id, handed_off_by, active_run_admission_limit):
+        calls.append(("handoff", dispatch_id))
         raise RepositoryConflictError("dispatch_claim_expired")
 
     async def fail_enqueue(payload):
         raise AssertionError("expired handoff must not enqueue")
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
-    monkeypatch.setattr("app.routes.runs.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.runs.transaction", forbidden_deferred_multi_agent_transaction)
     monkeypatch.setattr("app.routes.runs.repositories.create_multi_agent_dispatch_child_run", fake_handoff, raising=False)
     monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
     client = TestClient(create_app())
@@ -2885,7 +2776,8 @@ def test_admin_multi_agent_dispatch_handoff_rejects_expired_claim_without_enqueu
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "dispatch_claim_expired"
+    assert response.json()["detail"] == "multi_agent_dispatch_not_available"
+    assert calls == []
 
 
 def test_run_control_readiness_returns_not_found_without_loading_steps(monkeypatch):
@@ -3967,6 +3859,7 @@ def test_copy_run_plan_redacts_runtime_private_step_titles_for_ordinary_user(mon
 
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monkeypatch):
+    stub_session_generation(monkeypatch)
     from app import repositories
 
     class RecordingConnection:
@@ -4084,6 +3977,7 @@ async def test_copy_run_as_new_task_returns_full_execution_input_for_queue(monke
 
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monkeypatch):
+    stub_session_generation(monkeypatch)
     from app import repositories
     import json
 
@@ -4164,6 +4058,7 @@ async def test_copy_run_as_new_task_uses_rollout_selected_previous_version(monke
 
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_auth_snapshot_persists_trace_contract_and_principal(monkeypatch):
+    stub_session_generation(monkeypatch)
     from app import repositories
 
     class RecordingConnection:
@@ -4231,6 +4126,7 @@ async def test_copy_run_as_new_task_auth_snapshot_persists_trace_contract_and_pr
 
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_adds_session_message_anchor_for_history(monkeypatch):
+    stub_session_generation(monkeypatch)
     from app import repositories
     import json
 
@@ -4296,6 +4192,7 @@ async def test_copy_run_as_new_task_adds_session_message_anchor_for_history(monk
 
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_adds_completed_step_outputs_to_resume(monkeypatch):
+    stub_session_generation(monkeypatch)
     from app import repositories
 
     class FakeCursor:
@@ -4639,6 +4536,7 @@ async def test_resume_run_as_new_task_records_resume_events_and_audit(monkeypatc
 
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_drops_user_controlled_resume_when_no_verified_outputs(monkeypatch):
+    stub_session_generation(monkeypatch)
     from app import repositories
 
     class FakeCursor:
@@ -4696,6 +4594,7 @@ async def test_copy_run_as_new_task_drops_user_controlled_resume_when_no_verifie
 
 @pytest.mark.asyncio
 async def test_copy_run_as_new_task_preserves_chained_checkpoint_producer_lineage(monkeypatch):
+    stub_session_generation(monkeypatch)
     from app import repositories
 
     class FakeCursor:
@@ -4916,6 +4815,7 @@ async def test_retry_run_as_new_task_auth_snapshot_records_retry_events_and_audi
 
 @pytest.mark.asyncio
 async def test_create_multi_agent_dispatch_child_run_records_parent_child_events_and_audit(monkeypatch):
+    stub_session_generation(monkeypatch)
     from app import repositories
     import json
 
@@ -5232,6 +5132,7 @@ async def test_create_multi_agent_dispatch_child_run_enforces_owner_admission(mo
 
 @pytest.mark.asyncio
 async def test_create_multi_agent_dispatch_child_run_builds_single_step_resume_input(monkeypatch):
+    stub_session_generation(monkeypatch)
     from app import repositories
 
     class Cursor:

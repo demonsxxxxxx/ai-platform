@@ -192,6 +192,9 @@ async def _admit_chat_submission(
 ) -> ChatSubmissionResponse:
     """Admit one already-persisted run without replaying chat creation work."""
 
+    # Keep the row-locking/queue-plan transaction separate from the external
+    # queue call.  In particular, an enqueue exception must not roll back the
+    # durable failure transition that makes the accepted submission truthful.
     async with transaction() as conn:
         submission = await repositories.get_chat_submission(
             conn,
@@ -257,9 +260,14 @@ async def _admit_chat_submission(
                 **execution_snapshot,
             }
         )
-        try:
-            queue_admission = await _enqueue_chat_run(queue_payload)
-        except Exception:
+
+    try:
+        queue_admission = await _enqueue_chat_run(queue_payload)
+    except Exception as exc:
+        # The initial run/submission was committed before enqueue.  Record the
+        # resulting terminal state in a new transaction before returning 503;
+        # raising from the planning transaction would otherwise roll this back.
+        async with transaction() as conn:
             await repositories.mark_run_enqueue_failed(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -275,7 +283,20 @@ async def _admit_chat_submission(
                 state="enqueue_failed",
                 rejection_code="queue_enqueue_failed",
             )
-            raise HTTPException(status_code=503, detail="queue_enqueue_failed")
+        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
+
+    # Record the queue identity in a fresh transaction as well.  This can be
+    # retried from the durable submission if an acknowledgement write fails.
+    async with transaction() as conn:
+        submission = await repositories.get_chat_submission(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            submission_id=submission_id,
+            for_update=True,
+        )
+        if submission is None:
+            raise HTTPException(status_code=404, detail="chat_submission_not_found")
         prior_outcome = _chat_stream_response_from_submission(submission)
         queued_outcome = prior_outcome.model_copy(
             update={

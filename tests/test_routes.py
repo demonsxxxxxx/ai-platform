@@ -3485,6 +3485,75 @@ async def test_create_run_capability_distribution_ensures_user_and_binds_auth_sn
 
 
 @pytest.mark.asyncio
+async def test_create_run_commits_enqueue_failure_compensation_in_a_second_transaction(monkeypatch):
+    """A direct create must persist its failure state after the creation commit."""
+
+    committed: list[list[tuple[str, str]]] = []
+
+    class TransactionState:
+        def __init__(self) -> None:
+            self.pending: list[tuple[str, str]] = []
+
+    @asynccontextmanager
+    async def tracked_transaction():
+        state = TransactionState()
+        try:
+            yield state
+        except BaseException:
+            raise
+        else:
+            committed.append(list(state.pending))
+
+    async def resolve_skill(_conn, **_kwargs):
+        return skill()
+
+    async def ensure_user(_conn, **_kwargs):
+        return None
+
+    async def create_session(_conn, **_kwargs):
+        return "ses-enqueue-failure"
+
+    async def create_durable_run(conn, **kwargs):
+        conn.pending.append(("run_created", str(kwargs["run_id"])))
+        return str(kwargs["run_id"])
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def fail_enqueue(_payload):
+        raise RuntimeError("queue unavailable")
+
+    async def mark_enqueue_failed(conn, **kwargs):
+        conn.pending.append(("run_failed", str(kwargs["run_id"])))
+        return True
+
+    monkeypatch.setattr("app.routes.runs.transaction", tracked_transaction)
+    monkeypatch.setattr("app.routes.runs.repositories.resolve_agent_skill", resolve_skill)
+    monkeypatch.setattr("app.routes.runs.repositories.ensure_user", ensure_user)
+    monkeypatch.setattr("app.routes.runs.repositories.create_session", create_session)
+    monkeypatch.setattr("app.routes.runs.repositories.create_run", create_durable_run)
+    monkeypatch.setattr("app.routes.runs.repositories.bind_files_to_run", noop)
+    monkeypatch.setattr("app.routes.runs.repositories.append_event", noop)
+    monkeypatch.setattr("app.routes.runs.enqueue_run", fail_enqueue)
+    monkeypatch.setattr("app.routes.runs.repositories.mark_run_enqueue_failed", mark_enqueue_failed)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_run(
+            CreateRunRequest(
+                workspace_id="default",
+                agent_id="qa-word-review",
+                capability_id="document_review",
+            ),
+            principal=principal(),
+        )
+
+    assert exc_info.value.status_code == 503
+    assert len(committed) == 2
+    assert committed[0] and committed[0][0][0] == "run_created"
+    assert committed[1] == [("run_failed", committed[0][0][1])]
+
+
+@pytest.mark.asyncio
 async def test_create_run_selected_skill_maps_stale_lock_to_stable_409_before_writes(monkeypatch):
     calls = []
 
