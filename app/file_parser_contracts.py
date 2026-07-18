@@ -37,7 +37,14 @@ MAX_XLSX_ZIP_TOTAL_BYTES = 32 * 1024 * 1024
 MAX_XLSX_ZIP_COMPRESSION_RATIO = 100
 
 _SPREADSHEET_XML_NAMESPACE = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-_WORKSHEET_RELATIONSHIP_SUFFIX = "/worksheet"
+_OFFICE_DOCUMENT_RELATIONSHIPS_NAMESPACE = (
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+)
+_PACKAGE_RELATIONSHIPS_NAMESPACE = "http://schemas.openxmlformats.org/package/2006/relationships"
+_WORKBOOK_SHEET_TAG = f"{{{_SPREADSHEET_XML_NAMESPACE}}}sheet"
+_WORKBOOK_SHEET_RELATIONSHIP_ID = f"{{{_OFFICE_DOCUMENT_RELATIONSHIPS_NAMESPACE}}}id"
+_PACKAGE_RELATIONSHIP_TAG = f"{{{_PACKAGE_RELATIONSHIPS_NAMESPACE}}}Relationship"
+_WORKSHEET_RELATIONSHIP_TYPE = f"{_OFFICE_DOCUMENT_RELATIONSHIPS_NAMESPACE}/worksheet"
 _FORBIDDEN_XML_DECLARATIONS = (b"<!DOCTYPE", b"<!ENTITY")
 _FORBIDDEN_XML_DECLARATION_TEXT = tuple(token.decode("ascii") for token in _FORBIDDEN_XML_DECLARATIONS)
 
@@ -433,14 +440,10 @@ class _WorksheetXmlPreflight:
     reported_max_column: int | None
 
 
-def _xml_local_name(tag: object) -> str:
-    return str(tag).rsplit("}", 1)[-1]
-
-
 def _resolved_package_target(target: object) -> str:
-    if not isinstance(target, str) or not target or "\x00" in target:
+    if not isinstance(target, str) or not target or "\x00" in target or "\\" in target:
         raise AttachmentPreprocessingError("xlsx_parse_failed")
-    normalized = target.replace("\\", "/")
+    normalized = target
     parts: list[str] = [] if normalized.startswith("/") else ["xl"]
     for part in normalized.split("/"):
         if part in ("", "."):
@@ -458,19 +461,31 @@ def _resolved_package_target(target: object) -> str:
     return "/".join(parts)
 
 
+def _archive_part_identity(value: object) -> str:
+    if not isinstance(value, str) or not value or "\x00" in value or "\\" in value:
+        raise AttachmentPreprocessingError("xlsx_parse_failed")
+    normalized = value
+    if normalized.startswith("/"):
+        normalized = normalized[1:]
+    parts = normalized.split("/")
+    if not parts or any(part in ("", ".", "..") or ":" in part for part in parts):
+        raise AttachmentPreprocessingError("xlsx_parse_failed")
+    return "/".join(parts)
+
+
 def _selected_worksheet_entries(archive: ZipFile) -> list[tuple[str, str]]:
     relationships: dict[str, str] = {}
     try:
         with archive.open("xl/_rels/workbook.xml.rels", "r") as stream:
             for _event, element in ElementTree.iterparse(stream, events=("end",)):
-                if _xml_local_name(element.tag) == "Relationship":
+                if element.tag == _PACKAGE_RELATIONSHIP_TAG:
                     relationship_id = element.attrib.get("Id")
                     relationship_type = str(element.attrib.get("Type") or "")
                     target_mode = str(element.attrib.get("TargetMode") or "")
                     if (
                         relationship_id
-                        and relationship_type.endswith(_WORKSHEET_RELATIONSHIP_SUFFIX)
-                        and target_mode.casefold() != "external"
+                        and relationship_type == _WORKSHEET_RELATIONSHIP_TYPE
+                        and target_mode in ("", "Internal")
                     ):
                         target = _resolved_package_target(element.attrib.get("Target"))
                         if relationship_id in relationships:
@@ -481,16 +496,9 @@ def _selected_worksheet_entries(archive: ZipFile) -> list[tuple[str, str]]:
         selected: list[tuple[str, str]] = []
         with archive.open("xl/workbook.xml", "r") as stream:
             for _event, element in ElementTree.iterparse(stream, events=("end",)):
-                if _xml_local_name(element.tag) == "sheet":
+                if element.tag == _WORKBOOK_SHEET_TAG:
                     sheet_name = element.attrib.get("name")
-                    relationship_id = next(
-                        (
-                            value
-                            for key, value in element.attrib.items()
-                            if _xml_local_name(key) == "id"
-                        ),
-                        None,
-                    )
+                    relationship_id = element.attrib.get(_WORKBOOK_SHEET_RELATIONSHIP_ID)
                     archive_path = relationships.get(str(relationship_id or ""))
                     if not isinstance(sheet_name, str) or not sheet_name or archive_path is None:
                         raise AttachmentPreprocessingError("xlsx_parse_failed")
@@ -536,7 +544,12 @@ def _dimension_bounds(value: object) -> tuple[int | None, int | None]:
         coordinates = [_cell_reference_coordinates(reference) for reference in references]
     except ValueError:
         return None, None
-    return max(row for row, _column in coordinates), max(column for _row, column in coordinates)
+    if len(coordinates) == 1:
+        return coordinates[0]
+    (start_row, start_column), (end_row, end_column) = coordinates
+    if start_row > end_row or start_column > end_column:
+        return None, None
+    return end_row, end_column
 
 
 def _worksheet_xml_preflight(
@@ -748,6 +761,9 @@ def parse_xlsx_attachment(
         for sheet_index, sheet_name in enumerate(selected_sheet_names):
             worksheet = workbook[sheet_name]
             xml_facts = worksheet_preflight[sheet_index]
+            actual_archive_path = _archive_part_identity(getattr(worksheet, "_worksheet_path", None))
+            if actual_archive_path != xml_facts.archive_path:
+                raise AttachmentPreprocessingError("xlsx_parse_failed")
             max_row = xml_facts.reported_max_row
             max_column = xml_facts.reported_max_column
             if len(str(sheet_name)) > MAX_XLSX_CELL_CHARS:

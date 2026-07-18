@@ -6,7 +6,7 @@ from pathlib import Path
 from xml.etree import ElementTree
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from app.context_manifest import utf8_token_estimate
 from app.executors.claude_agent_sdk_runner import _attachment_context_data_message
@@ -141,6 +141,94 @@ def _write_stored_cell_overflow_workbook(path: Path) -> None:
     workbook.close()
 
 
+def _write_exact_cell_limit_overflow_workbook(path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet["A1"] = "inside"
+    for column in range(1, MAX_XLSX_CELLS + 1):
+        sheet.cell(row=MAX_XLSX_ROWS_PER_SHEET + 1, column=column, value=column)
+    workbook.save(path)
+    workbook.close()
+
+
+def _inject_foreign_relationship_id_decoy(path: Path) -> None:
+    spreadsheet_namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    office_relationships_namespace = (
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    )
+    package_relationships_namespace = (
+        "http://schemas.openxmlformats.org/package/2006/relationships"
+    )
+    content_types_namespace = "http://schemas.openxmlformats.org/package/2006/content-types"
+    markup_compatibility_namespace = (
+        "http://schemas.openxmlformats.org/markup-compatibility/2006"
+    )
+    foreign_namespace = "urn:ai-platform:test:foreign"
+    ElementTree.register_namespace("r", office_relationships_namespace)
+    ElementTree.register_namespace("mc", markup_compatibility_namespace)
+    ElementTree.register_namespace("foo", foreign_namespace)
+    source = io.BytesIO(path.read_bytes())
+    output = io.BytesIO()
+    decoy_path = "xl/worksheets/decoy.xml"
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            if entry.filename == "xl/workbook.xml":
+                root = ElementTree.fromstring(payload)
+                root.set(f"{{{markup_compatibility_namespace}}}Ignorable", "foo")
+                sheet = root.find(f".//{{{spreadsheet_namespace}}}sheet")
+                assert sheet is not None
+                real_relationship_id = sheet.attrib.pop(
+                    f"{{{office_relationships_namespace}}}id"
+                )
+                sheet.set(f"{{{foreign_namespace}}}id", "rFake")
+                sheet.set(
+                    f"{{{office_relationships_namespace}}}id",
+                    real_relationship_id,
+                )
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            elif entry.filename == "xl/_rels/workbook.xml.rels":
+                root = ElementTree.fromstring(payload)
+                root.insert(
+                    0,
+                    ElementTree.Element(
+                        f"{{{package_relationships_namespace}}}Relationship",
+                        {
+                            "Id": "rFake",
+                            "Type": f"{office_relationships_namespace}/worksheet",
+                            "Target": f"/{decoy_path}",
+                        },
+                    ),
+                )
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            elif entry.filename == "[Content_Types].xml":
+                root = ElementTree.fromstring(payload)
+                root.append(
+                    ElementTree.Element(
+                        f"{{{content_types_namespace}}}Override",
+                        {
+                            "PartName": f"/{decoy_path}",
+                            "ContentType": (
+                                "application/vnd.openxmlformats-officedocument."
+                                "spreadsheetml.worksheet+xml"
+                            ),
+                        },
+                    )
+                )
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            rewritten.writestr(entry, payload)
+        rewritten.writestr(
+            decoy_path,
+            (
+                f'<worksheet xmlns="{spreadsheet_namespace}">'
+                '<dimension ref="A1"/><sheetData><row r="1">'
+                '<c r="A1" t="inlineStr"><is><t>decoy</t></is></c>'
+                "</row></sheetData></worksheet>"
+            ).encode("utf-8"),
+        )
+    path.write_bytes(output.getvalue())
+
+
 def test_xlsx_parser_emits_bounded_typed_content_and_positive_evidence(tmp_path):
     path = tmp_path / "book.xlsx"
     _write_workbook(path)
@@ -247,6 +335,97 @@ def test_xlsx_parser_marks_forged_low_dimension_unreliable(tmp_path):
     assert sheet_content["max_column"] is None
     assert parsed.evidence.cells_examined == 2
     assert parsed.evidence.truncated is True
+
+
+@pytest.mark.parametrize(
+    ("reference", "expected_row", "expected_column", "expected_truncated"),
+    [
+        ("B2:A1", None, None, True),
+        ("A2:B1", None, None, True),
+        ("B1:A2", None, None, True),
+        ("A1:B2", 2, 2, False),
+    ],
+    ids=["both-reversed", "row-reversed", "column-reversed", "valid"],
+)
+def test_xlsx_parser_validates_dimension_range_direction(
+    tmp_path,
+    reference,
+    expected_row,
+    expected_column,
+    expected_truncated,
+):
+    path = tmp_path / "book.xlsx"
+    workbook = Workbook()
+    workbook.active["A1"] = "stored"
+    workbook.save(path)
+    workbook.close()
+    _set_worksheet_dimension(path, reference)
+
+    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+
+    sheet_content = parsed.content["workbook"]["sheets"][0]
+    assert sheet_content["max_row"] == expected_row
+    assert sheet_content["max_column"] == expected_column
+    assert parsed.evidence.truncated is expected_truncated
+
+
+def test_xlsx_parser_ignores_foreign_id_and_rejects_real_sheet_overflow_before_openpyxl(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "book.xlsx"
+    _write_exact_cell_limit_overflow_workbook(path)
+    _inject_foreign_relationship_id_decoy(path)
+    assert path.stat().st_size <= MAX_XLSX_FILE_BYTES
+    with zipfile.ZipFile(path, "r") as archive:
+        assert archive.read("xl/worksheets/sheet1.xml").count(b"<c ") == MAX_XLSX_CELLS + 1
+        assert archive.read("xl/worksheets/decoy.xml").count(b"<c ") == 1
+        workbook_root = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+        workbook_sheet = workbook_root.find(
+            ".//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}sheet"
+        )
+        assert workbook_sheet is not None
+        attribute_names = list(workbook_sheet.attrib)
+        foreign_id = "{urn:ai-platform:test:foreign}id"
+        real_id = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+        assert attribute_names.index(foreign_id) < attribute_names.index(real_id)
+    workbook_probe = load_workbook(path, read_only=True, data_only=False, keep_links=False)
+    assert workbook_probe.sheetnames == ["Sheet"]
+    assert workbook_probe["Sheet"]._worksheet_path == "xl/worksheets/sheet1.xml"
+    workbook_probe.close()
+
+    def fail_load_workbook(*_args, **_kwargs):
+        raise AssertionError("real worksheet overflow must fail before openpyxl loads the decoy workbook")
+
+    monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
+
+    with pytest.raises(AttachmentPreprocessingError, match="xlsx_cell_limit_exceeded"):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
+
+
+def test_xlsx_parser_rejects_openpyxl_worksheet_part_mismatch(tmp_path, monkeypatch):
+    path = tmp_path / "book.xlsx"
+    _write_workbook(path)
+
+    class FakeWorksheet:
+        _worksheet_path = "xl/worksheets/decoy.xml"
+
+    class FakeWorkbook:
+        sheetnames = ["Data"]
+        closed = False
+
+        def __getitem__(self, _sheet_name):
+            return FakeWorksheet()
+
+        def close(self):
+            self.closed = True
+
+    fake_workbook = FakeWorkbook()
+    monkeypatch.setattr("openpyxl.load_workbook", lambda *_args, **_kwargs: fake_workbook)
+
+    with pytest.raises(AttachmentPreprocessingError, match="xlsx_parse_failed"):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
+    assert fake_workbook.closed is True
 
 
 @pytest.mark.parametrize("utf16", [False, True], ids=["utf8", "utf16"])
