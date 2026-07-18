@@ -124,3 +124,38 @@ test("parseExcelWorkbookPreview reads shared strings and inline text without xls
     },
   ]);
 });
+
+test("parseExcelWorkbookPreview reads prefixed OOXML with arbitrary relationship prefixes and quote styles", async () => {
+  const sheets = await parseExcelWorkbookPreview(new ArrayBuffer(32), {
+    loadZip: createZipLoader({
+      "xl/workbook.xml":
+        "<?xml version='1.0' encoding='UTF-8'?><x:workbook xmlns:x='urn:workbook' xmlns:rel='http://schemas.openxmlformats.org/officeDocument/2006/relationships'><x:sheets><x:sheet name='Annex 15 Checks' sheetId='1' rel:id='rId1'/></x:sheets></x:workbook>",
+      "xl/_rels/workbook.xml.rels":
+        "<?xml version='1.0' encoding='UTF-8'?><pkg:Relationships xmlns:pkg='urn:relationships'><pkg:Relationship Id=\"rId1\" Target=\"worksheets/sheet1.xml\"/></pkg:Relationships>",
+      "xl/sharedStrings.xml":
+        "<?xml version='1.0' encoding='UTF-8'?><s:sst xmlns:s='urn:strings'><s:si><s:t>ACCEPT-XLSX-9472</s:t></s:si></s:sst>",
+      "xl/worksheets/sheet1.xml":
+        "<?xml version='1.0' encoding='UTF-8'?><w:worksheet xmlns:w='urn:worksheet'><w:sheetData><w:row r='1'><w:c r=\"A1\" t='s'><w:v>0</w:v></w:c><w:c r='B1' t=\"inlineStr\"><w:is><w:t>Visible</w:t></w:is></w:c></w:row></w:sheetData></w:worksheet>",
+    }),
+  });
+
+  assert.deepEqual(sheets, [
+    {
+      name: "Annex 15 Checks",
+      data: [["ACCEPT-XLSX-9472", "Visible"]],
+    },
+  ]);
+});
+
+test("parseExcelWorkbookPreview rejects workbook XML with no recognizable worksheet", async () => {
+  await assert.rejects(
+    () =>
+      parseExcelWorkbookPreview(new ArrayBuffer(32), {
+        loadZip: createZipLoader({
+          "xl/workbook.xml":
+            "<?xml version='1.0' encoding='UTF-8'?><x:workbook xmlns:x='urn:workbook'><x:sheets><x:unsupported/></x:sheets></x:workbook>",
+        }),
+      }),
+    /excel_preview_no_recognized_sheet/,
+  );
+});

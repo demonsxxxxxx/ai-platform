@@ -165,16 +165,30 @@ function decodeXmlEntities(value: string): string {
   );
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function localNamePattern(localName: string): string {
+  return `(?:[A-Za-z_][\\w.-]*:)?${escapeRegExp(localName)}\\b`;
+}
+
 function extractTagText(xml: string, tagName: string): string {
+  const tagPattern = localNamePattern(tagName);
   const match = new RegExp(
-    `<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`,
+    `<${tagPattern}[^>]*>([\\s\\S]*?)<\\/${tagPattern}\\s*>`,
     "i",
   ).exec(xml);
   return match ? decodeXmlEntities(match[1]) : "";
 }
 
 function extractInlineText(xml: string): string {
-  const matches = Array.from(xml.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/gi));
+  const tagPattern = localNamePattern("t");
+  const matches = Array.from(
+    xml.matchAll(
+      new RegExp(`<${tagPattern}[^>]*>([\\s\\S]*?)<\\/${tagPattern}\\s*>`, "gi"),
+    ),
+  );
   if (matches.length === 0) {
     return "";
   }
@@ -182,25 +196,30 @@ function extractInlineText(xml: string): string {
 }
 
 function extractAttribute(tag: string, attributeName: string): string | null {
-  const escapedName = attributeName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`${escapedName}="([^"]+)"`, "i").exec(tag);
-  return match ? decodeXmlEntities(match[1]) : null;
+  const localName = escapeRegExp(attributeName);
+  const match = new RegExp(
+    `(?:^|\\s)(?:[A-Za-z_][\\w.-]*:)?${localName}\\s*=\\s*(["'])([\\s\\S]*?)\\1`,
+    "i",
+  ).exec(tag);
+  return match ? decodeXmlEntities(match[2]) : null;
 }
 
 function parseWorkbookSheetRefs(xml: string): WorkbookSheetRef[] {
-  return Array.from(xml.matchAll(/<sheet\b[^>]*\/?>/gi))
+  const tagPattern = localNamePattern("sheet");
+  return Array.from(xml.matchAll(new RegExp(`<${tagPattern}[^>]*\\/?>`, "gi")))
     .map((match) => {
       const tag = match[0];
       const name = extractAttribute(tag, "name");
-      const relationshipId = extractAttribute(tag, "r:id");
+      const relationshipId = extractAttribute(tag, "id");
       return name && relationshipId ? { name, relationshipId } : null;
     })
     .filter((value): value is WorkbookSheetRef => value != null);
 }
 
 function parseWorkbookRelationships(xml: string): Map<string, string> {
+  const tagPattern = localNamePattern("Relationship");
   return new Map(
-    Array.from(xml.matchAll(/<Relationship\b[^>]*\/?>/gi))
+    Array.from(xml.matchAll(new RegExp(`<${tagPattern}[^>]*\\/?>`, "gi")))
       .map((match) => {
         const tag = match[0];
         const id = extractAttribute(tag, "Id");
@@ -250,9 +269,12 @@ function parseSharedStrings(xml: string | null): string[] {
     return [];
   }
 
-  return Array.from(xml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/gi)).map(
-    (match) => extractInlineText(match[1]),
-  );
+  const tagPattern = localNamePattern("si");
+  return Array.from(
+    xml.matchAll(
+      new RegExp(`<${tagPattern}[^>]*>([\\s\\S]*?)<\\/${tagPattern}\\s*>`, "gi"),
+    ),
+  ).map((match) => extractInlineText(match[1]));
 }
 
 function parseWorksheetRows(
@@ -273,13 +295,20 @@ function parseWorksheetRows(
   let cellCount = 0;
   let fallbackRowIndex = 0;
 
-  const rowMatches = xml.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>/gi);
+  const rowTagPattern = localNamePattern("row");
+  const cellTagPattern = localNamePattern("c");
+  const rowMatches = xml.matchAll(
+    new RegExp(
+      `<${rowTagPattern}([^>]*)>([\\s\\S]*?)<\\/${rowTagPattern}\\s*>`,
+      "gi",
+    ),
+  );
   for (const rowMatch of rowMatches) {
     assertPreviewBudget(options.startMs, options.timeoutMs, options.now);
     const rowAttrs = rowMatch[1] ?? "";
     const rowBody = rowMatch[2] ?? "";
     const explicitRowNumber = Number.parseInt(
-      rowAttrs.match(/\br="(\d+)"/i)?.[1] ?? "",
+      extractAttribute(rowAttrs, "r") ?? "",
       10,
     );
     const rowIndex = Number.isFinite(explicitRowNumber)
@@ -291,13 +320,20 @@ function parseWorksheetRows(
 
     const values = rowMap.get(rowIndex) ?? [];
     let fallbackColIndex = 0;
-    const cellMatches = rowBody.matchAll(/<c\b([^>]*)(?:>([\s\S]*?)<\/c>|\/>)/gi);
+    const cellMatches = rowBody.matchAll(
+      new RegExp(
+        `<${cellTagPattern}([^>]*?)(?:>([\\s\\S]*?)<\\/${cellTagPattern}\\s*>|\\s*\\/>)`,
+        "gi",
+      ),
+    );
 
     for (const cellMatch of cellMatches) {
       assertPreviewBudget(options.startMs, options.timeoutMs, options.now);
       const cellAttrs = cellMatch[1] ?? "";
       const cellBody = cellMatch[2] ?? "";
-      const refMatch = cellAttrs.match(/\br="([A-Z]+)(\d+)"/i);
+      const refMatch = (extractAttribute(cellAttrs, "r") ?? "").match(
+        /^([A-Z]+)(\d+)$/i,
+      );
       const colIndex = refMatch
         ? decodeColumnReference(refMatch[1].toUpperCase())
         : fallbackColIndex;
@@ -305,7 +341,7 @@ function parseWorksheetRows(
         throw new Error("excel_preview_limits_exceeded");
       }
 
-      const cellType = cellAttrs.match(/\bt="([^"]+)"/i)?.[1] ?? null;
+      const cellType = extractAttribute(cellAttrs, "t");
       values[colIndex] = parseCellValue(cellType, cellBody, sharedStrings);
       fallbackColIndex = colIndex + 1;
       highestColIndex = Math.max(highestColIndex, colIndex);
@@ -371,6 +407,11 @@ function mapExcelPreviewError(
       return t("documents.excelPreviewInvalidWorkbook", {
         defaultValue:
           "Workbook preview is unavailable because the file structure is invalid.",
+      });
+    case "excel_preview_no_recognized_sheet":
+      return t("documents.excelPreviewNoRecognizedSheet", {
+        defaultValue:
+          "Workbook preview is unavailable because no recognizable worksheet was found.",
       });
     case "excel_preview_unsupported_format":
       return t("documents.excelPreviewUnsupportedFormat", {
@@ -445,7 +486,11 @@ export async function parseExcelWorkbookPreview(
   const sharedStrings = parseSharedStrings(
     await readBoundedWorkbookText("xl/sharedStrings.xml"),
   );
-  const sheets = parseWorkbookSheetRefs(workbookXml).slice(
+  const sheetRefs = parseWorkbookSheetRefs(workbookXml);
+  if (sheetRefs.length === 0) {
+    throw new Error("excel_preview_no_recognized_sheet");
+  }
+  const sheets = sheetRefs.slice(
     0,
     options?.maxSheets ?? EXCEL_PREVIEW_MAX_SHEETS,
   );
