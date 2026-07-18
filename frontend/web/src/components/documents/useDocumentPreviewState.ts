@@ -241,6 +241,7 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
     setArrayBuffer(null);
     setExcalidrawData("");
     setResolvedUrl(null);
+    let cancelled = false;
 
     const loadContent = async () => {
       if (externalImageUrl) {
@@ -410,10 +411,16 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
             setData({ content: "", path });
           } else if (unsupportedPreviewFile) {
             setData({ content: "", path });
-          } else if (wordPreviewFile || excelFile) {
+          } else if (wordPreviewFile) {
             const buffer = await fetchDocumentArrayBuffer(url);
             setArrayBuffer(buffer);
             setData({ content: "", path });
+          } else if (excelFile) {
+            const previewJson = await fetchDocumentText(url);
+            if (cancelled) return;
+            setData({ content: previewJson, path });
+            setLoading(false);
+            return;
           } else {
             const text = await fetchDocumentText(url);
             setData({ content: text, path });
@@ -421,8 +428,10 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
           setLoading(false);
         } catch (err) {
           console.error("Failed to load file from S3:", err);
-          setError(t("documents.failedToLoadFromS3", "从存储加载文件失败"));
-          setLoading(false);
+          if (!cancelled) {
+            setError(t("documents.failedToLoadFromS3", "从存储加载文件失败"));
+            setLoading(false);
+          }
         }
         return;
       }
@@ -432,6 +441,9 @@ export function useDocumentPreviewState(props: DocumentPreviewProps) {
     };
 
     loadContent();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, content, s3Key, signedUrl, externalImageUrl, mimeType]);
 

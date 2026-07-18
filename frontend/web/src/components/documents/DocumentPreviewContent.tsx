@@ -296,10 +296,10 @@ export default function DocumentPreviewContent({
     );
   }
 
-  if (excelFile && arrayBuffer) {
+  if (excelFile && data?.content) {
     return (
       <Suspense fallback={suspenseFallback}>
-        <ExcelPreview arrayBuffer={arrayBuffer} fileName={fileName} t={t} />
+        <ExcelPreview previewJson={data.content} t={t} />
       </Suspense>
     );
   }

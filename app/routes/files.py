@@ -1,3 +1,4 @@
+import asyncio
 import codecs
 import io
 import re
@@ -6,11 +7,17 @@ from urllib.parse import quote
 import zipfile
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi.responses import JSONResponse
 
 from app.artifact_preview import artifact_preview_allowed
 from app.auth import AuthPrincipal, is_ai_admin, require_principal
 from app.control_plane_contracts import standard_trace_id
 from app.db import transaction
+from app.file_preview_contracts import (
+    XLSX_CONTENT_TYPE,
+    build_xlsx_preview,
+    is_xlsx_preview_request,
+)
 from app.models import (
     SessionInputFileResponse,
     SessionInputFilesResponse,
@@ -115,8 +122,19 @@ def _safe_response_content_type(value: object) -> str:
     return "application/octet-stream"
 
 
-def _input_file_preview_allowed(value: object) -> bool:
-    return _normalized_content_type(value) in INPUT_FILE_PREVIEW_CONTENT_TYPES
+def _optional_nonnegative_int(value: object) -> int | None:
+    try:
+        normalized = int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+    return normalized if normalized is not None and normalized >= 0 else None
+
+
+def _input_file_preview_allowed(value: object, *, file_name: object = "") -> bool:
+    content_type = _normalized_content_type(value)
+    if content_type == XLSX_CONTENT_TYPE:
+        return is_xlsx_preview_request(file_name=file_name, content_type=content_type)
+    return content_type in INPUT_FILE_PREVIEW_CONTENT_TYPES
 
 
 def _input_file_url(*, file_id: str, session_id: str, run_id: str, action: str) -> str:
@@ -133,11 +151,12 @@ def _input_file_response(
 ) -> SessionInputFileResponse:
     file_id = str(file_row["id"])
     run_id = str(file_row["run_id"])
+    name = str(file_row.get("original_name") or file_id)
     content_type = _safe_response_content_type(file_row.get("content_type"))
     return SessionInputFileResponse(
         file_id=file_id,
         run_id=run_id,
-        name=str(file_row.get("original_name") or file_id),
+        name=name,
         mime_type=content_type,
         size_bytes=max(0, int(file_row.get("size_bytes") or 0)),
         preview_url=(
@@ -147,7 +166,7 @@ def _input_file_response(
                 run_id=run_id,
                 action="preview",
             )
-            if _input_file_preview_allowed(content_type)
+            if _input_file_preview_allowed(content_type, file_name=name)
             else None
         ),
         download_url=_input_file_url(
@@ -414,13 +433,35 @@ async def preview_input_file(
         run_id=run_id,
         principal=principal,
     )
-    if not _input_file_preview_allowed(file_row.get("content_type")):
-        raise HTTPException(status_code=415, detail="input_file_preview_not_allowed")
     filename = str(file_row.get("original_name") or file_id)
+    if not _input_file_preview_allowed(
+        file_row.get("content_type"),
+        file_name=filename,
+    ):
+        raise HTTPException(status_code=415, detail="input_file_preview_not_allowed")
     content = ObjectStorage().get_bytes(storage_key=str(file_row["storage_key"]))
+    content_type = _safe_response_content_type(file_row.get("content_type"))
+    if is_xlsx_preview_request(file_name=filename, content_type=content_type):
+        preview = await asyncio.to_thread(
+            build_xlsx_preview,
+            raw=content,
+            file_id=file_id,
+            file_name=filename,
+            content_type=content_type,
+            expected_sha256=str(file_row.get("sha256") or "") or None,
+            expected_byte_count=_optional_nonnegative_int(file_row.get("size_bytes")),
+        )
+        return JSONResponse(
+            content=preview.model_dump(mode="json"),
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Input-File-Id": file_id,
+            },
+        )
     return Response(
         content=content,
-        media_type=_safe_response_content_type(file_row.get("content_type")),
+        media_type=content_type,
         headers={
             "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename, safe='')}",
             "Cache-Control": "no-store",
@@ -554,10 +595,33 @@ async def preview_artifact(
                 },
             )
     filename = PurePosixPath(str(artifact["storage_key"])).name or f"{artifact_id}.bin"
+    content_type = _safe_response_content_type(artifact.get("content_type"))
+    if (
+        _normalized_content_type(content_type) == XLSX_CONTENT_TYPE
+        and not is_xlsx_preview_request(file_name=filename, content_type=content_type)
+    ):
+        raise HTTPException(status_code=415, detail="artifact_preview_not_allowed")
     content = ObjectStorage().get_bytes(storage_key=artifact["storage_key"])
+    if is_xlsx_preview_request(file_name=filename, content_type=content_type):
+        preview = await asyncio.to_thread(
+            build_xlsx_preview,
+            raw=content,
+            file_id=artifact_id,
+            file_name=filename,
+            content_type=content_type,
+            expected_byte_count=_optional_nonnegative_int(artifact.get("size_bytes")),
+        )
+        return JSONResponse(
+            content=preview.model_dump(mode="json"),
+            headers={
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+                "X-Artifact-Id": artifact_id,
+            },
+        )
     return Response(
         content=content,
-        media_type=artifact["content_type"] or "application/octet-stream",
+        media_type=content_type,
         headers={
             "Content-Disposition": f"inline; filename*=UTF-8''{quote(filename)}",
             "Cache-Control": "no-store",

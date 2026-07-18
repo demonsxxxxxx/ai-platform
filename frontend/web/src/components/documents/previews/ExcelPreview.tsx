@@ -1,7 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import JSZip from "jszip";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SaxesParser, type SaxesTagNS } from "saxes";
 import { LoadingSpinner } from "../../common/LoadingSpinner";
 
 const excelPreviewStylesPromise =
@@ -13,15 +11,54 @@ if (excelPreviewStylesPromise) {
   void excelPreviewStylesPromise;
 }
 
-export const EXCEL_PREVIEW_MAX_BYTES = 5 * 1024 * 1024;
-export const EXCEL_PREVIEW_TIMEOUT_MS = 1_500;
-const EXCEL_PREVIEW_MAX_ENTRY_BYTES = 2 * 1024 * 1024;
-const EXCEL_PREVIEW_MAX_TOTAL_UNCOMPRESSED_BYTES = 4 * 1024 * 1024;
-const EXCEL_PREVIEW_MAX_SHEETS = 8;
-const EXCEL_PREVIEW_MAX_ROWS = 200;
-const EXCEL_PREVIEW_MAX_COLS = 50;
-const EXCEL_PREVIEW_MAX_CELLS =
-  EXCEL_PREVIEW_MAX_ROWS * EXCEL_PREVIEW_MAX_COLS;
+const FILE_PREVIEW_SCHEMA_VERSION = "ai-platform.file-preview.v1";
+const XLSX_PREVIEW_FAILURE_CODES = new Set([
+  "xlsx_preview_encrypted_unsupported",
+  "xlsx_preview_failed",
+  "xlsx_preview_file_too_large",
+  "xlsx_preview_limits_exceeded",
+  "xlsx_preview_macros_unsupported",
+  "xlsx_preview_timeout",
+  "xlsx_preview_unavailable",
+  "xlsx_preview_unsupported",
+]);
+
+type Translation = (key: string, options?: Record<string, unknown>) => string;
+type CellValue = string | number | boolean;
+
+export interface XlsxPreviewCell {
+  column: number;
+  kind: "boolean" | "datetime" | "formula" | "number" | "text";
+  value: CellValue;
+}
+
+export interface XlsxPreviewRow {
+  row: number;
+  cells: XlsxPreviewCell[];
+}
+
+export interface XlsxPreviewSheet {
+  name: string;
+  rows: XlsxPreviewRow[];
+}
+
+export interface XlsxPreviewDto {
+  schema_version: typeof FILE_PREVIEW_SCHEMA_VERSION;
+  kind: "xlsx_table";
+  status: "ready" | "truncated" | "failed";
+  source_sha256: string;
+  parser_id: string;
+  parser_version: string;
+  content: { sheets: XlsxPreviewSheet[]; sheet_count: number } | null;
+  truncated: boolean;
+  warnings: string[];
+  error: { code: string } | null;
+}
+
+interface ExcelPreviewProps {
+  previewJson: string;
+  t: Translation;
+}
 
 function useScrollIndicator(
   containerRef: React.RefObject<HTMLDivElement | null>,
@@ -56,512 +93,145 @@ function useScrollIndicator(
   return { progress, hasOverflow };
 }
 
-interface ExcelPreviewProps {
-  arrayBuffer: ArrayBuffer;
-  fileName: string;
-  t: (key: string, options?: Record<string, unknown>) => string;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-interface SheetData {
-  name: string;
-  data: string[][];
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
-interface WorkbookZipFile {
-  async(type: "string"): Promise<string>;
-  _data?: {
-    compressedSize?: number;
-    uncompressedSize?: number;
+function isPositiveInteger(value: unknown): value is number {
+  return isNonNegativeInteger(value) && value >= 1;
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function parsePreviewCell(value: unknown): XlsxPreviewCell {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["column", "kind", "value"]) ||
+    !isPositiveInteger(value.column) ||
+    !["boolean", "datetime", "formula", "number", "text"].includes(
+      String(value.kind),
+    ) ||
+    !["string", "number", "boolean"].includes(typeof value.value)
+  ) {
+    throw new Error("invalid_xlsx_preview_dto");
+  }
+  return {
+    column: value.column,
+    kind: value.kind as XlsxPreviewCell["kind"],
+    value: value.value as CellValue,
   };
 }
 
-interface WorkbookZipLike {
-  file(path: string): WorkbookZipFile | null;
-}
-
-interface WorkbookSheetRef {
-  name: string;
-  relationshipId: string;
-}
-
-function getFileExtension(value?: string | null): string {
-  if (!value) {
-    return "";
+function parsePreviewRow(value: unknown): XlsxPreviewRow {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["row", "cells"]) ||
+    !isPositiveInteger(value.row) ||
+    !Array.isArray(value.cells)
+  ) {
+    throw new Error("invalid_xlsx_preview_dto");
   }
-  const normalized = value.replace(/\\/g, "/");
-  const segment = normalized.split("/").pop() ?? "";
-  const lastDot = segment.lastIndexOf(".");
-  return lastDot <= 0 ? "" : segment.slice(lastDot + 1).toLowerCase();
+  return { row: value.row, cells: value.cells.map(parsePreviewCell) };
 }
 
-function isSupportedBrowserWorkbook(fileName?: string | null): boolean {
-  const extension = getFileExtension(fileName);
-  return extension === "xlsx" || extension === "xlsm";
-}
-
-function getNow(): number {
-  return typeof performance !== "undefined" ? performance.now() : Date.now();
-}
-
-function assertPreviewBudget(
-  startMs: number,
-  timeoutMs: number,
-  now: () => number,
-): void {
-  if (now() - startMs > timeoutMs) {
-    throw new Error("excel_preview_timeout");
+function parsePreviewSheet(value: unknown): XlsxPreviewSheet {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["name", "rows"]) ||
+    typeof value.name !== "string" ||
+    !value.name ||
+    !Array.isArray(value.rows)
+  ) {
+    throw new Error("invalid_xlsx_preview_dto");
   }
+  return { name: value.name, rows: value.rows.map(parsePreviewRow) };
 }
 
-async function loadWorkbookZip(arrayBuffer: ArrayBuffer): Promise<WorkbookZipLike> {
-  return JSZip.loadAsync(arrayBuffer);
-}
-
-async function readWorkbookText(
-  zip: WorkbookZipLike,
-  path: string,
-  maxEntryBytes = EXCEL_PREVIEW_MAX_ENTRY_BYTES,
-): Promise<string | null> {
-  const file = zip.file(path);
-  if (!file) {
-    return null;
+/** Validate the server-owned presentation DTO; no workbook bytes are parsed here. */
+export function parseXlsxPreviewDto(payload: string): XlsxPreviewDto {
+  let value: unknown;
+  try {
+    value = JSON.parse(payload);
+  } catch {
+    throw new Error("invalid_xlsx_preview_dto");
   }
-  if ((file._data?.uncompressedSize ?? 0) > maxEntryBytes) {
-    throw new Error("excel_preview_entry_too_large");
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "schema_version",
+      "kind",
+      "status",
+      "source_sha256",
+      "parser_id",
+      "parser_version",
+      "content",
+      "truncated",
+      "warnings",
+      "error",
+    ]) ||
+    value.schema_version !== FILE_PREVIEW_SCHEMA_VERSION ||
+    value.kind !== "xlsx_table" ||
+    !["ready", "truncated", "failed"].includes(String(value.status)) ||
+    typeof value.source_sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.source_sha256) ||
+    typeof value.parser_id !== "string" ||
+    typeof value.parser_version !== "string" ||
+    typeof value.truncated !== "boolean" ||
+    !Array.isArray(value.warnings) ||
+    !value.warnings.every((warning) => typeof warning === "string")
+  ) {
+    throw new Error("invalid_xlsx_preview_dto");
   }
-  return file.async("string");
-}
 
-const EXCEL_PREVIEW_MAX_XML_DEPTH = 64;
-const EXCEL_PREVIEW_MAX_XML_NODES = 50_000;
-const EXCEL_PREVIEW_XML_CHUNK_SIZE = 16 * 1024;
-const OOXML_RELATIONSHIP_NAMESPACES = new Set([
-  "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
-  "http://purl.oclc.org/ooxml/officeDocument/relationships",
-]);
-
-type XmlStreamEvents = {
-  onOpenTag?: (tag: SaxesTagNS) => void;
-  onCloseTag?: (tag: SaxesTagNS) => void;
-  onText?: (text: string) => void;
-};
-
-function invalidXml(): never {
-  throw new Error("excel_preview_invalid_xml");
-}
-
-function findAttribute(tag: SaxesTagNS, local: string): string | null {
-  const matches = Object.values(tag.attributes).filter(
-    (attribute) => attribute.local === local,
-  );
-  return matches.length === 1 ? matches[0].value : null;
-}
-
-function parseOoxmlXml(
-  xml: string,
-  assertBudget: () => void,
-  events: XmlStreamEvents,
-): void {
-  let depth = 0;
-  let nodes = 0;
-  const parser = new SaxesParser({ xmlns: true, position: false });
-  parser.on("error", () => invalidXml());
-  parser.on("doctype", () => invalidXml());
-  parser.on("opentagstart", () => {
-    assertBudget();
-    depth += 1;
-    nodes += 1;
-    if (depth > EXCEL_PREVIEW_MAX_XML_DEPTH || nodes > EXCEL_PREVIEW_MAX_XML_NODES) {
-      throw new Error("excel_preview_limits_exceeded");
+  if (value.status === "failed") {
+    if (
+      value.content !== null ||
+      value.truncated ||
+      !isRecord(value.error) ||
+      !hasOnlyKeys(value.error, ["code"]) ||
+      typeof value.error.code !== "string" ||
+      !XLSX_PREVIEW_FAILURE_CODES.has(value.error.code)
+    ) {
+      throw new Error("invalid_xlsx_preview_dto");
     }
-  });
-  parser.on("opentag", (tag) => {
-    assertBudget();
-    events.onOpenTag?.(tag);
-  });
-  parser.on("closetag", (tag) => {
-    assertBudget();
-    events.onCloseTag?.(tag);
-    depth -= 1;
-  });
-  parser.on("text", (text) => {
-    assertBudget();
-    events.onText?.(text);
-  });
-  parser.on("cdata", (text) => {
-    assertBudget();
-    events.onText?.(text);
-  });
-
-  for (let index = 0; index < xml.length; index += EXCEL_PREVIEW_XML_CHUNK_SIZE) {
-    assertBudget();
-    parser.write(xml.slice(index, index + EXCEL_PREVIEW_XML_CHUNK_SIZE));
-    assertBudget();
+    return {
+      schema_version: FILE_PREVIEW_SCHEMA_VERSION,
+      kind: "xlsx_table",
+      status: "failed",
+      source_sha256: value.source_sha256,
+      parser_id: value.parser_id,
+      parser_version: value.parser_version,
+      content: null,
+      truncated: false,
+      warnings: value.warnings as string[],
+      error: { code: value.error.code },
+    };
   }
-  parser.close();
-  assertBudget();
-}
 
-function parseWorkbookSheetRefs(
-  xml: string,
-  assertBudget: () => void,
-  maxSheets: number,
-): WorkbookSheetRef[] {
-  const sheets: WorkbookSheetRef[] = [];
-  parseOoxmlXml(xml, assertBudget, {
-    onOpenTag(tag) {
-      if (tag.local !== "sheet" || sheets.length >= maxSheets) {
-        return;
-      }
-      const name = findAttribute(tag, "name");
-      const relationship = Object.values(tag.attributes).find(
-        (attribute) =>
-          attribute.local === "id" &&
-          OOXML_RELATIONSHIP_NAMESPACES.has(attribute.uri),
-      );
-      if (name && relationship) {
-        sheets.push({ name, relationshipId: relationship.value });
-      }
+  if (
+    !isRecord(value.content) ||
+    !hasOnlyKeys(value.content, ["sheets", "sheet_count"]) ||
+    !Array.isArray(value.content.sheets) ||
+    !isNonNegativeInteger(value.content.sheet_count) ||
+    value.error !== null ||
+    (value.status === "ready" && value.truncated) ||
+    (value.status === "truncated" && !value.truncated)
+  ) {
+    throw new Error("invalid_xlsx_preview_dto");
+  }
+  return {
+    ...(value as Omit<XlsxPreviewDto, "content">),
+    content: {
+      sheet_count: value.content.sheet_count,
+      sheets: value.content.sheets.map(parsePreviewSheet),
     },
-  });
-  return sheets;
-}
-
-function parseWorkbookRelationships(
-  xml: string,
-  assertBudget: () => void,
-): Map<string, string> {
-  const relationships = new Map<string, string>();
-  if (!xml) {
-    return relationships;
-  }
-  parseOoxmlXml(xml, assertBudget, {
-    onOpenTag(tag) {
-      if (tag.local !== "Relationship") {
-        return;
-      }
-      const id = findAttribute(tag, "Id");
-      const target = findAttribute(tag, "Target");
-      if (id && target) {
-        relationships.set(id, target);
-      }
-    },
-  });
-  return relationships;
-}
-
-function parseSharedStrings(
-  xml: string | null,
-  assertBudget: () => void,
-): string[] {
-  if (!xml) {
-    return [];
-  }
-  const sharedStrings: string[] = [];
-  let current: string[] | null = null;
-  let textDepth = 0;
-  parseOoxmlXml(xml, assertBudget, {
-    onOpenTag(tag) {
-      if (tag.local === "si") {
-        current = [];
-      } else if (current && tag.local === "t") {
-        textDepth += 1;
-      }
-    },
-    onCloseTag(tag) {
-      if (current && tag.local === "t") {
-        textDepth -= 1;
-      } else if (tag.local === "si" && current) {
-        sharedStrings.push(current.join(""));
-        current = null;
-      }
-    },
-    onText(text) {
-      if (current && textDepth > 0) {
-        current.push(text);
-      }
-    },
-  });
-  return sharedStrings;
-}
-
-function resolveWorkbookTargetPath(target: string): string {
-  const normalized = target.replace(/\\/g, "/").replace(/^\.?\//, "");
-  return normalized.startsWith("xl/") ? normalized : `xl/${normalized}`;
-}
-
-function decodeColumnReference(columnRef: string): number {
-  let value = 0;
-  for (const char of columnRef) {
-    value = value * 26 + (char.charCodeAt(0) - 64);
-  }
-  return Math.max(0, value - 1);
-}
-
-function parseWorksheetRows(
-  xml: string,
-  sharedStrings: string[],
-  options: {
-    startMs: number;
-    now: () => number;
-    timeoutMs: number;
-    maxRows: number;
-    maxCols: number;
-    maxCells: number;
-  },
-): string[][] {
-  const rowMap = new Map<number, string[]>();
-  let highestRowIndex = -1;
-  let highestColIndex = -1;
-  let cellCount = 0;
-  let fallbackRowIndex = 0;
-  let currentRow: { index: number; values: string[]; fallbackCol: number } | null = null;
-  let currentCell:
-    | { type: string | null; reference: string | null; value: string[]; inline: string[] }
-    | null = null;
-  let textKind: "value" | "inline" | null = null;
-
-  const assertXmlBudget = () =>
-    assertPreviewBudget(options.startMs, options.timeoutMs, options.now);
-  parseOoxmlXml(xml, assertXmlBudget, {
-    onOpenTag(tag) {
-      if (tag.local === "row") {
-        const rowNumber = Number.parseInt(findAttribute(tag, "r") ?? "", 10);
-        const index = Number.isFinite(rowNumber) ? rowNumber - 1 : fallbackRowIndex;
-        if (index >= options.maxRows) {
-          throw new Error("excel_preview_limits_exceeded");
-        }
-        currentRow = { index, values: rowMap.get(index) ?? [], fallbackCol: 0 };
-      } else if (currentRow && tag.local === "c") {
-        currentCell = {
-          type: findAttribute(tag, "t"),
-          reference: findAttribute(tag, "r"),
-          value: [],
-          inline: [],
-        };
-      } else if (currentCell && tag.local === "v") {
-        textKind = "value";
-      } else if (currentCell && tag.local === "t") {
-        textKind = "inline";
-      }
-    },
-    onCloseTag(tag) {
-      if (tag.local === "v" || tag.local === "t") {
-        textKind = null;
-      } else if (tag.local === "c" && currentRow && currentCell) {
-        const refMatch = (currentCell.reference ?? "").match(/^([A-Z]+)(\d+)$/i);
-        const colIndex = refMatch
-          ? decodeColumnReference(refMatch[1].toUpperCase())
-          : currentRow.fallbackCol;
-        if (colIndex >= options.maxCols) {
-          throw new Error("excel_preview_limits_exceeded");
-        }
-        const raw = currentCell.value.join("");
-        const inline = currentCell.inline.join("");
-        const value = currentCell.type === "inlineStr"
-          ? inline
-          : currentCell.type === "s"
-            ? (sharedStrings[Number.parseInt(raw, 10)] ?? "")
-            : currentCell.type === "b"
-              ? raw === "1" ? "TRUE" : raw === "0" ? "FALSE" : raw
-              : raw || inline;
-        currentRow.values[colIndex] = value;
-        currentRow.fallbackCol = colIndex + 1;
-        highestColIndex = Math.max(highestColIndex, colIndex);
-        cellCount += 1;
-        if (cellCount > options.maxCells) {
-          throw new Error("excel_preview_limits_exceeded");
-        }
-        currentCell = null;
-      } else if (tag.local === "row" && currentRow) {
-        rowMap.set(currentRow.index, currentRow.values);
-        highestRowIndex = Math.max(highestRowIndex, currentRow.index);
-        fallbackRowIndex = currentRow.index + 1;
-        currentRow = null;
-      }
-    },
-    onText(text) {
-      if (textKind === "value") currentCell?.value.push(text);
-      if (textKind === "inline") currentCell?.inline.push(text);
-    },
-  });
-
-  if (highestRowIndex < 0 || highestColIndex < 0) {
-    return [];
-  }
-
-  const rows: string[][] = [];
-  for (let rowIndex = 0; rowIndex <= highestRowIndex; rowIndex += 1) {
-    assertPreviewBudget(options.startMs, options.timeoutMs, options.now);
-    const source = rowMap.get(rowIndex) ?? [];
-    rows.push(
-      Array.from(
-        { length: highestColIndex + 1 },
-        (_, colIndex) => source[colIndex] ?? "",
-      ),
-    );
-  }
-  return rows;
-}
-
-function mapExcelPreviewError(
-  error: unknown,
-  t: (key: string, options?: Record<string, unknown>) => string,
-): string {
-  if (!(error instanceof Error)) {
-    return t("documents.excelParseError");
-  }
-
-  switch (error.message) {
-    case "excel_preview_file_too_large":
-      return t("documents.excelPreviewTooLarge", {
-        defaultValue:
-          "Workbook preview is unavailable because the file exceeds the browser safety size limit.",
-      });
-    case "excel_preview_limits_exceeded":
-      return t("documents.excelPreviewLimitsExceeded", {
-        defaultValue:
-          "Workbook preview is unavailable because the sheet exceeds the browser safety limits.",
-      });
-    case "excel_preview_timeout":
-      return t("documents.excelPreviewTimeout", {
-        defaultValue:
-          "Workbook preview timed out before a safe browser preview could be produced.",
-      });
-    case "excel_preview_entry_too_large":
-      return t("documents.excelPreviewEntryTooLarge", {
-        defaultValue:
-          "Workbook preview is unavailable because the unpacked sheet data exceeds the browser safety limits.",
-      });
-    case "excel_preview_missing_workbook_xml":
-      return t("documents.excelPreviewInvalidWorkbook", {
-        defaultValue:
-          "Workbook preview is unavailable because the file structure is invalid.",
-      });
-    case "excel_preview_no_recognized_sheet":
-      return t("documents.excelPreviewNoRecognizedSheet", {
-        defaultValue:
-          "Workbook preview is unavailable because no recognizable worksheet was found.",
-      });
-    case "excel_preview_invalid_xml":
-      return t("documents.excelPreviewInvalidWorkbook", {
-        defaultValue:
-          "Workbook preview is unavailable because the XML is malformed.",
-      });
-    case "excel_preview_unsupported_format":
-      return t("documents.excelPreviewUnsupportedFormat", {
-        defaultValue:
-          "This workbook format is not available for in-browser preview. Download the file to inspect it safely.",
-      });
-    default:
-      return error.message || t("documents.excelParseError");
-  }
-}
-
-/**
- * Build a bounded browser preview for supported OOXML workbooks.
- */
-export async function parseExcelWorkbookPreview(
-  arrayBuffer: ArrayBuffer,
-  options?: {
-    loadZip?: (arrayBuffer: ArrayBuffer) => Promise<WorkbookZipLike>;
-    fileName?: string;
-    now?: () => number;
-    timeoutMs?: number;
-    maxBytes?: number;
-    maxEntryBytes?: number;
-    maxTotalUncompressedBytes?: number;
-    maxSheets?: number;
-    maxRows?: number;
-    maxCols?: number;
-    maxCells?: number;
-  },
-): Promise<SheetData[]> {
-  if (options?.fileName && !isSupportedBrowserWorkbook(options.fileName)) {
-    throw new Error("excel_preview_unsupported_format");
-  }
-
-  const maxBytes = options?.maxBytes ?? EXCEL_PREVIEW_MAX_BYTES;
-  if (arrayBuffer.byteLength > maxBytes) {
-    throw new Error("excel_preview_file_too_large");
-  }
-
-  const maxEntryBytes = options?.maxEntryBytes ?? EXCEL_PREVIEW_MAX_ENTRY_BYTES;
-  const maxTotalUncompressedBytes =
-    options?.maxTotalUncompressedBytes ??
-    EXCEL_PREVIEW_MAX_TOTAL_UNCOMPRESSED_BYTES;
-  const now = options?.now ?? getNow;
-  const timeoutMs = options?.timeoutMs ?? EXCEL_PREVIEW_TIMEOUT_MS;
-  const startMs = now();
-  const zip = await (options?.loadZip ?? loadWorkbookZip)(arrayBuffer);
-  assertPreviewBudget(startMs, timeoutMs, now);
-
-  let totalUncompressedBytes = 0;
-  const readBoundedWorkbookText = async (path: string): Promise<string | null> => {
-    const file = zip.file(path);
-    const entryBytes = file?._data?.uncompressedSize ?? 0;
-    if (entryBytes > maxEntryBytes) {
-      throw new Error("excel_preview_entry_too_large");
-    }
-    totalUncompressedBytes += entryBytes;
-    if (totalUncompressedBytes > maxTotalUncompressedBytes) {
-      throw new Error("excel_preview_entry_too_large");
-    }
-    return readWorkbookText(zip, path, maxEntryBytes);
   };
-
-  const workbookXml = await readBoundedWorkbookText("xl/workbook.xml");
-  if (!workbookXml) {
-    throw new Error("excel_preview_missing_workbook_xml");
-  }
-
-  const assertXmlBudget = () =>
-    assertPreviewBudget(startMs, timeoutMs, now);
-  const maxSheets = options?.maxSheets ?? EXCEL_PREVIEW_MAX_SHEETS;
-  const sheetRefs = parseWorkbookSheetRefs(
-    workbookXml,
-    assertXmlBudget,
-    maxSheets,
-  );
-  const relationshipsXml =
-    (await readBoundedWorkbookText("xl/_rels/workbook.xml.rels")) ?? "";
-  const relationshipMap = parseWorkbookRelationships(
-    relationshipsXml,
-    assertXmlBudget,
-  );
-  const sharedStringsXml = await readBoundedWorkbookText("xl/sharedStrings.xml");
-  const sharedStrings = parseSharedStrings(sharedStringsXml, assertXmlBudget);
-  if (sheetRefs.length === 0) {
-    throw new Error("excel_preview_no_recognized_sheet");
-  }
-
-  const parsedSheets: SheetData[] = [];
-  for (const sheet of sheetRefs) {
-    assertPreviewBudget(startMs, timeoutMs, now);
-    const target = relationshipMap.get(sheet.relationshipId);
-    if (!target) {
-      throw new Error("excel_preview_missing_workbook_xml");
-    }
-    const sheetXml = await readBoundedWorkbookText(
-      resolveWorkbookTargetPath(target),
-    );
-    if (!sheetXml) {
-      throw new Error("excel_preview_missing_workbook_xml");
-    }
-    parsedSheets.push({
-      name: sheet.name,
-      data: parseWorksheetRows(sheetXml, sharedStrings, {
-        startMs,
-        now,
-        timeoutMs,
-        maxRows: options?.maxRows ?? EXCEL_PREVIEW_MAX_ROWS,
-        maxCols: options?.maxCols ?? EXCEL_PREVIEW_MAX_COLS,
-        maxCells: options?.maxCells ?? EXCEL_PREVIEW_MAX_CELLS,
-      }),
-    });
-  }
-
-  return parsedSheets;
 }
 
 function colLabel(index: number): string {
@@ -576,15 +246,57 @@ function colLabel(index: number): string {
 
 function isNumeric(v: unknown): boolean {
   if (v == null || v === "") return false;
-  return !isNaN(Number(v));
+  return !Number.isNaN(Number(v));
+}
+
+function mapExcelPreviewError(error: unknown, t: Translation): string {
+  const code = error instanceof Error ? error.message : "";
+  if (code === "invalid_xlsx_preview_dto") {
+    return t("documents.excelPreviewInvalidResponse", {
+      defaultValue: "Workbook preview returned an invalid response. Download the original file to inspect it.",
+    });
+  }
+  switch (code) {
+    case "xlsx_preview_file_too_large":
+    case "xlsx_preview_limits_exceeded":
+      return t("documents.excelPreviewLimitsExceeded", {
+        defaultValue:
+          "Workbook preview is unavailable because the sheet exceeds the server safety limits.",
+      });
+    case "xlsx_preview_timeout":
+    case "xlsx_preview_unavailable":
+      return t("documents.excelPreviewTimeout", {
+        defaultValue:
+          "Workbook preview is temporarily unavailable. Download the original file to inspect it.",
+      });
+    case "xlsx_preview_encrypted_unsupported":
+      return t("documents.excelPreviewEncrypted", {
+        defaultValue:
+          "Encrypted workbooks are not available for preview. Download the original file to inspect it.",
+      });
+    case "xlsx_preview_macros_unsupported":
+      return t("documents.excelPreviewMacrosUnsupported", {
+        defaultValue:
+          "Macro-enabled workbooks are not available for preview. Download the original file to inspect it.",
+      });
+    case "xlsx_preview_unsupported":
+      return t("documents.excelPreviewUnsupportedFormat", {
+        defaultValue:
+          "This workbook format is not available for preview. Download the original file to inspect it.",
+      });
+    default:
+      return t("documents.excelParseError", {
+        defaultValue:
+          "Workbook preview could not be produced safely. Download the original file to inspect it.",
+      });
+  }
 }
 
 const ExcelPreview = memo(function ExcelPreview({
-  arrayBuffer,
-  fileName: _fileName,
+  previewJson,
   t,
 }: ExcelPreviewProps) {
-  const [sheets, setSheets] = useState<SheetData[]>([]);
+  const [preview, setPreview] = useState<XlsxPreviewDto | null>(null);
   const [activeSheet, setActiveSheet] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -596,58 +308,53 @@ const ExcelPreview = memo(function ExcelPreview({
   const { progress, hasOverflow } = useScrollIndicator(scrollContainerRef);
 
   useEffect(() => {
-    let cancelled = false;
+    try {
+      const nextPreview = parseXlsxPreviewDto(previewJson);
+      setPreview(nextPreview);
+      setActiveSheet(0);
+      setHoveredCell(null);
+      setError(
+        nextPreview.status === "failed"
+          ? mapExcelPreviewError(new Error(nextPreview.error?.code), t)
+          : null,
+      );
+    } catch (nextError) {
+      setPreview(null);
+      setError(mapExcelPreviewError(nextError, t));
+    } finally {
+      setLoading(false);
+    }
+  }, [previewJson, t]);
 
-    const parseExcel = async () => {
-      try {
-        const sheetData = await parseExcelWorkbookPreview(arrayBuffer, {
-          fileName: _fileName,
-        });
-        if (cancelled) {
-          return;
-        }
-        setSheets(sheetData);
-        setActiveSheet(0);
-        setError(null);
-      } catch (err) {
-        console.error("Excel parse error:", err);
-        if (!cancelled) {
-          setError(mapExcelPreviewError(err, t));
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    };
-
-    void parseExcel();
-    return () => {
-      cancelled = true;
-    };
-  }, [arrayBuffer, _fileName, t]);
-
+  const sheets = preview?.content?.sheets ?? [];
   const currentSheet = sheets[activeSheet];
 
-  const totalRows = useMemo(() => {
-    if (!currentSheet) return 0;
-    return currentSheet.data.length;
-  }, [currentSheet]);
-
   const totalCols = useMemo(() => {
-    if (!currentSheet || currentSheet.data.length === 0) return 0;
-    return currentSheet.data[0].length;
+    if (!currentSheet) return 0;
+    return currentSheet.rows.reduce(
+      (highest, row) =>
+        Math.max(highest, ...row.cells.map((cell) => cell.column)),
+      0,
+    );
   }, [currentSheet]);
 
-  const headerRow = useMemo(() => {
-    if (!currentSheet || currentSheet.data.length === 0) return [];
-    return currentSheet.data[0];
-  }, [currentSheet]);
+  const headerRow = currentSheet?.rows[0];
+  const dataRows = currentSheet?.rows.slice(1) ?? [];
 
-  const dataRows = useMemo(() => {
-    if (!currentSheet || currentSheet.data.length <= 1) return [];
-    return currentSheet.data.slice(1);
-  }, [currentSheet]);
+  const getCellValue = useCallback(
+    (rowIndex: number, colIndex: number): string => {
+      const cell = currentSheet?.rows[rowIndex]?.cells.find(
+        (candidate) => candidate.column === colIndex + 1,
+      );
+      return cell == null ? "" : String(cell.value);
+    },
+    [currentSheet],
+  );
+
+  const getSheetRowNumber = useCallback(
+    (rowIndex: number): number => currentSheet?.rows[rowIndex]?.row ?? rowIndex + 1,
+    [currentSheet],
+  );
 
   const handleCellHover = useCallback((rowIndex: number, colIndex: number) => {
     setHoveredCell({ row: rowIndex, col: colIndex });
@@ -678,18 +385,7 @@ const ExcelPreview = memo(function ExcelPreview({
     );
   }
 
-  function getCellValue(rowIndex: number, colIndex: number): string {
-    if (rowIndex === -1) {
-      return headerRow[colIndex] != null ? String(headerRow[colIndex]) : "";
-    }
-    if (dataRows[rowIndex]) {
-      const v = dataRows[rowIndex][colIndex];
-      return v != null && v !== "" ? String(v) : "";
-    }
-    return "";
-  }
-
-  const displayRows = totalRows;
+  const displayRows = currentSheet?.rows.length ?? 0;
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-stone-950">
@@ -699,15 +395,15 @@ const ExcelPreview = memo(function ExcelPreview({
         </span>
         <span className="text-[12px] text-stone-500 dark:text-stone-400 truncate font-mono min-w-[3rem]">
           {hoveredCell
-            ? `${colLabel(hoveredCell.col)}${hoveredCell.row + 1}`
+            ? `${colLabel(hoveredCell.col)}${getSheetRowNumber(hoveredCell.row)}`
             : "A1"}
         </span>
         <span className="h-4 w-px bg-stone-300 dark:bg-stone-600 shrink-0" />
         <span className="text-[12px] text-stone-700 dark:text-stone-300 truncate">
           {hoveredCell
             ? getCellValue(hoveredCell.row, hoveredCell.col)
-            : headerRow.length > 0
-              ? String(headerRow[0] ?? "")
+            : headerRow
+              ? getCellValue(0, 0)
               : ""}
         </span>
       </div>
@@ -715,27 +411,18 @@ const ExcelPreview = memo(function ExcelPreview({
       <div className="flex items-center gap-0.5 px-1 py-0 bg-stone-100 dark:bg-stone-900 border-b border-stone-300 dark:border-stone-700 shrink-0">
         <button
           type="button"
-          onClick={() => setActiveSheet((p) => Math.max(0, p - 1))}
+          onClick={() => setActiveSheet((current) => Math.max(0, current - 1))}
           disabled={activeSheet === 0}
           className="p-1 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 disabled:opacity-30 disabled:cursor-default transition-colors"
         >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="15 18 9 12 15 6" />
           </svg>
         </button>
         <div className="flex-1 flex items-center gap-0.5 overflow-x-auto px-1 py-1">
-          {sheets.map((sheet: SheetData, index) => (
+          {sheets.map((sheet, index) => (
             <button
-              key={sheet.name}
+              key={`${index}:${sheet.name}`}
               onClick={() => setActiveSheet(index)}
               className={`px-3 py-0.5 text-[11px] font-medium rounded-sm whitespace-nowrap transition-all ${
                 activeSheet === index
@@ -750,44 +437,33 @@ const ExcelPreview = memo(function ExcelPreview({
         <button
           type="button"
           onClick={() =>
-            setActiveSheet((p) => Math.min(sheets.length - 1, p + 1))
+            setActiveSheet((current) => Math.min(sheets.length - 1, current + 1))
           }
           disabled={activeSheet === sheets.length - 1}
           className="p-1 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 disabled:opacity-30 disabled:cursor-default transition-colors"
         >
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <polyline points="9 18 15 12 9 6" />
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="9 6 15 12 9 18" />
           </svg>
         </button>
       </div>
 
-      <div
-        ref={scrollContainerRef}
-        className="flex-1 overflow-auto relative overscroll-x-contain [-webkit-overflow-scrolling:touch] excel-preview-scroll border-x border-stone-300 dark:border-stone-600"
-      >
+      {preview?.status === "truncated" && (
+        <p className="px-3 py-1.5 text-xs text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-900">
+          {t("documents.excelPreviewTruncated", {
+            defaultValue: "Showing a bounded table preview; download the original workbook for complete data.",
+          })}
+        </p>
+      )}
+
+      <div ref={scrollContainerRef} className="flex-1 overflow-auto relative overscroll-x-contain [-webkit-overflow-scrolling:touch] excel-preview-scroll border-x border-stone-300 dark:border-stone-600">
         <table className="border-collapse w-max min-w-full text-[13px]">
           <thead>
             <tr className="sticky top-0 z-10">
               <th className="sticky left-0 z-20 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border-r border-b border-stone-300 dark:border-stone-600 select-none" />
-              {Array.from({ length: totalCols }, (_, i) => (
-                <th
-                  key={i}
-                  className={`min-w-[60px] sm:min-w-[80px] h-6 px-0 py-0 text-center text-[11px] font-normal text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border border-stone-300 dark:border-stone-600 select-none leading-6 ${
-                    hoveredCell?.col === i
-                      ? "bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300"
-                      : ""
-                  }`}
-                >
-                  {colLabel(i)}
+              {Array.from({ length: totalCols }, (_, index) => (
+                <th key={index} className={`min-w-[60px] sm:min-w-[80px] h-6 px-0 py-0 text-center text-[11px] font-normal text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border border-stone-300 dark:border-stone-600 select-none leading-6 ${hoveredCell?.col === index ? "bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300" : ""}`}>
+                  {colLabel(index)}
                 </th>
               ))}
             </tr>
@@ -795,68 +471,24 @@ const ExcelPreview = memo(function ExcelPreview({
           <tbody>
             {Array.from({ length: displayRows }, (_, rawRowIndex) => {
               const isHeader = rawRowIndex === 0;
-              const rowIndex = isHeader ? -1 : rawRowIndex - 1;
-              const isRowHovered =
-                hoveredCell && !isHeader && hoveredCell.row === rawRowIndex - 1;
-
+              const isRowHovered = hoveredCell && !isHeader && hoveredCell.row === rawRowIndex;
               return (
-                <tr key={rawRowIndex}>
-                  <td
-                    className={`sticky left-0 z-10 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] bg-stone-100 dark:bg-stone-800 border-r border-b border-stone-300 dark:border-stone-600 select-none tabular-nums leading-6 touch-none [box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.06)] dark:[box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.3)] ${
-                      isHeader
-                        ? "text-stone-400 dark:text-stone-500"
-                        : isRowHovered
-                          ? "text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/40"
-                          : "text-stone-500 dark:text-stone-400"
-                    }`}
-                  >
-                    {isHeader ? "" : rawRowIndex}
+                <tr key={currentSheet?.rows[rawRowIndex]?.row ?? rawRowIndex}>
+                  <td className={`sticky left-0 z-10 w-8 sm:w-10 min-w-[2rem] sm:min-w-[2.5rem] max-w-[2rem] sm:max-w-[2.5rem] px-0 py-0 text-center text-[11px] bg-stone-100 dark:bg-stone-800 border-r border-b border-stone-300 dark:border-stone-600 select-none tabular-nums leading-6 touch-none [box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.06)] dark:[box-shadow:2px_0_4px_-1px_rgba(0,0,0,0.3)] ${isHeader ? "text-stone-400 dark:text-stone-500" : isRowHovered ? "text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/40" : "text-stone-500 dark:text-stone-400"}`}>
+                    {isHeader ? "" : getSheetRowNumber(rawRowIndex)}
                   </td>
                   {Array.from({ length: totalCols }, (_, colIndex) => {
-                    const value = getCellValue(rowIndex, colIndex);
-                    const num = isNumeric(value);
-                    const isCellHovered =
-                      hoveredCell &&
-                      !isHeader &&
-                      hoveredCell.row === rawRowIndex - 1 &&
-                      hoveredCell.col === colIndex;
-
+                    const value = getCellValue(rawRowIndex, colIndex);
+                    const isCellHovered = hoveredCell && !isHeader && hoveredCell.row === rawRowIndex && hoveredCell.col === colIndex;
                     if (isHeader) {
                       return (
-                        <th
-                          key={colIndex}
-                          onMouseEnter={() => handleCellHover(0, colIndex)}
-                          onMouseLeave={handleCellLeave}
-                          className={`min-h-[24px] min-w-[60px] sm:min-w-[80px] px-2 py-0 text-[13px] leading-6 border border-stone-300 dark:border-stone-600 whitespace-nowrap text-left font-semibold text-stone-700 dark:text-stone-300 bg-stone-50 dark:bg-stone-800/60 ${
-                            isCellHovered
-                              ? "!outline outline-2 outline-stone-500 dark:outline-stone-400 outline-offset-[-1px] bg-stone-100/60 dark:bg-stone-800/40 !border-stone-400 dark:!border-stone-500"
-                              : ""
-                          }`}
-                        >
+                        <th key={colIndex} onMouseEnter={() => handleCellHover(rawRowIndex, colIndex)} onMouseLeave={handleCellLeave} className={`min-h-[24px] min-w-[60px] sm:min-w-[80px] px-2 py-0 text-[13px] leading-6 border border-stone-300 dark:border-stone-600 whitespace-nowrap text-left font-semibold text-stone-700 dark:text-stone-300 bg-stone-50 dark:bg-stone-800/60 ${isCellHovered ? "!outline outline-2 outline-stone-500 dark:outline-stone-400 outline-offset-[-1px] bg-stone-100/60 dark:bg-stone-800/40 !border-stone-400 dark:!border-stone-500" : ""}`}>
                           {value || " "}
                         </th>
                       );
                     }
-
                     return (
-                      <td
-                        key={colIndex}
-                        onMouseEnter={() =>
-                          handleCellHover(rawRowIndex - 1, colIndex)
-                        }
-                        onMouseLeave={handleCellLeave}
-                        className={`min-h-[24px] min-w-[60px] sm:min-w-[80px] px-2 py-0 text-[13px] leading-6 border border-stone-200 dark:border-stone-700/80 whitespace-nowrap text-stone-800 dark:text-stone-200 ${
-                          num
-                            ? "text-right tabular-nums font-mono"
-                            : "text-left"
-                        } ${
-                          isCellHovered
-                            ? "!outline outline-2 outline-stone-500 dark:outline-stone-400 outline-offset-[-1px] bg-stone-100/60 dark:bg-stone-800/40 !border-stone-400 dark:!border-stone-500"
-                            : isRowHovered
-                              ? "bg-stone-50/70 dark:bg-stone-800/30"
-                              : ""
-                        }`}
-                      >
+                      <td key={colIndex} onMouseEnter={() => handleCellHover(rawRowIndex, colIndex)} onMouseLeave={handleCellLeave} className={`min-h-[24px] min-w-[60px] sm:min-w-[80px] px-2 py-0 text-[13px] leading-6 border border-stone-200 dark:border-stone-700/80 whitespace-nowrap text-stone-800 dark:text-stone-200 ${isNumeric(value) ? "text-right tabular-nums font-mono" : "text-left"} ${isCellHovered ? "!outline outline-2 outline-stone-500 dark:outline-stone-400 outline-offset-[-1px] bg-stone-100/60 dark:bg-stone-800/40 !border-stone-400 dark:!border-stone-500" : isRowHovered ? "bg-stone-50/70 dark:bg-stone-800/30" : ""}`}>
                         {value || " "}
                       </td>
                     );
@@ -867,7 +499,7 @@ const ExcelPreview = memo(function ExcelPreview({
           </tbody>
         </table>
 
-        {totalRows === 0 && (
+        {displayRows === 0 && (
           <div className="flex flex-col items-center justify-center py-20 text-stone-400 dark:text-stone-500">
             <p className="text-sm">{t("documents.noData") || "No data"}</p>
           </div>
@@ -876,40 +508,21 @@ const ExcelPreview = memo(function ExcelPreview({
         {hasOverflow && (
           <div className="absolute bottom-0 left-0 right-0 h-1 z-30 pointer-events-none">
             <div className="h-full bg-stone-300/40 dark:bg-stone-600/40" />
-            <div
-              className="absolute top-0 h-full bg-stone-400 dark:bg-stone-500 transition-[left] duration-75"
-              style={{
-                width: `${Math.max(10, (1 - progress) * 100)}%`,
-                left: `${progress * 100}%`,
-              }}
-            />
+            <div className="absolute top-0 h-full bg-stone-400 dark:bg-stone-500 transition-[left] duration-75" style={{ width: `${Math.max(10, (1 - progress) * 100)}%`, left: `${progress * 100}%` }} />
           </div>
         )}
       </div>
 
-      <div className="flex items-center justify-between px-3 py-1 text-[11px] text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border-t border-stone-300 dark:border-stone-600 shrink-0">
+      <div className="flex items-center justify-between gap-3 px-3 py-1 text-[11px] text-stone-500 dark:text-stone-400 bg-stone-100 dark:bg-stone-800 border-t border-stone-300 dark:border-stone-600 shrink-0">
         <span className="tabular-nums">
-          {sheets.length > 1 && (
-            <span className="mr-2 text-stone-400 dark:text-stone-500">
-              {currentSheet?.name}
-            </span>
-          )}
-          {t("documents.excelRowsAndCols", {
-            rows: dataRows.length,
-            cols: totalCols,
+          {sheets.length > 1 && <span className="mr-2 text-stone-400 dark:text-stone-500">{currentSheet?.name}</span>}
+          {t("documents.excelRowsAndCols", { rows: dataRows.length, cols: totalCols })}
+        </span>
+        <span className="text-right">
+          {t("documents.excelPreviewLimitations", {
+            defaultValue: "Styles, charts, formula recalculation, macros, and external links are not reproduced.",
           })}
         </span>
-        <div className="flex items-center gap-3">
-          {hoveredCell && (
-            <span className="px-1.5 rounded bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 font-mono">
-              {colLabel(hoveredCell.col)}
-              {hoveredCell.row + 1}
-            </span>
-          )}
-          <span className="text-stone-400 dark:text-stone-500">
-            {t("documents.excelReady")}
-          </span>
-        </div>
       </div>
     </div>
   );
