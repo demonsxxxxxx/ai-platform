@@ -401,6 +401,12 @@ def _prompt_content_within_caps(content: dict[str, Any]) -> bool:
     return len(rendered) <= MAX_XLSX_PROMPT_CHARS and utf8_token_estimate(rendered) <= MAX_XLSX_PROMPT_TOKENS
 
 
+def _reported_dimension_bound(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
 def parse_xlsx_attachment(
     *,
     path: Path,
@@ -468,11 +474,19 @@ def parse_xlsx_attachment(
             truncated = True
         for sheet_name in sheet_names[:MAX_XLSX_SHEETS]:
             worksheet = workbook[sheet_name]
-            max_row = max(0, int(worksheet.max_row or 0))
-            max_column = max(0, int(worksheet.max_column or 0))
+            try:
+                max_row = _reported_dimension_bound(worksheet.max_row)
+            except Exception:
+                max_row = None
+            try:
+                max_column = _reported_dimension_bound(worksheet.max_column)
+            except Exception:
+                max_column = None
             if len(str(sheet_name)) > MAX_XLSX_CELL_CHARS:
                 truncated = True
-            if max_row > MAX_XLSX_ROWS_PER_SHEET or max_column > MAX_XLSX_COLUMNS_PER_SHEET:
+            if max_row is None or max_column is None:
+                truncated = True
+            elif max_row > MAX_XLSX_ROWS_PER_SHEET or max_column > MAX_XLSX_COLUMNS_PER_SHEET:
                 truncated = True
             sheet_payload: dict[str, Any] = {
                 "name": str(sheet_name)[:MAX_XLSX_CELL_CHARS],
@@ -487,18 +501,19 @@ def parse_xlsx_attachment(
                 sheets_processed -= 1
                 truncated = True
                 break
-            if max_row == 0 or max_column == 0:
-                continue
             for row_index, row in enumerate(
                 worksheet.iter_rows(
                     min_row=1,
-                    max_row=min(max_row, MAX_XLSX_ROWS_PER_SHEET),
-                    max_col=min(max_column, MAX_XLSX_COLUMNS_PER_SHEET),
+                    min_col=1,
+                    max_row=MAX_XLSX_ROWS_PER_SHEET,
+                    max_col=MAX_XLSX_COLUMNS_PER_SHEET,
                 ),
                 start=1,
             ):
                 row_cells: list[dict[str, Any]] = []
                 for cell in row:
+                    if _reported_dimension_bound(getattr(cell, "column", None)) is None:
+                        continue
                     if cells_examined >= MAX_XLSX_CELLS:
                         truncated = True
                         stop_all = True

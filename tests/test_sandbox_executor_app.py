@@ -2,12 +2,14 @@ import asyncio
 import functools
 import gc
 import hashlib
+import io
 import json
 import shutil
 import threading
 import time
 import zipfile
 from pathlib import Path
+from xml.etree import ElementTree
 
 import pytest
 from fastapi.testclient import TestClient
@@ -127,6 +129,34 @@ def write_minimal_xlsx(path: Path, *, formula: str = "=1+2") -> None:
     sheet["B2"] = formula
     workbook.save(path)
     workbook.close()
+
+
+def write_dimensionless_validation_xlsx(path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Validation"
+    sheet.append(["Requirement", "Evidence"])
+    sheet.append(["GMP-VAL-002 Requirement", "ACCEPT-XLSX-9472"])
+    workbook.save(path)
+    workbook.close()
+
+    source = io.BytesIO(path.read_bytes())
+    output = io.BytesIO()
+    worksheet_path = "xl/worksheets/sheet1.xml"
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            if entry.filename == worksheet_path:
+                root = ElementTree.fromstring(payload)
+                dimension = root.find("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}dimension")
+                assert dimension is not None
+                root.remove(dimension)
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            rewritten.writestr(entry, payload)
+    path.write_bytes(output.getvalue())
+    with zipfile.ZipFile(path, "r") as archive:
+        root = ElementTree.fromstring(archive.read(worksheet_path))
+        assert root.find("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}dimension") is None
 
 
 def selected_baoyu_skill_policy() -> list[dict[str, object]]:
@@ -952,9 +982,9 @@ def test_executor_execute_rehydrates_context_retrieval_for_manifest(tmp_path, mo
 
 
 @pytest.mark.asyncio
-async def test_default_executor_preparses_brokered_xlsx_and_forwards_typed_context(tmp_path, monkeypatch):
+async def test_default_executor_preparses_dimensionless_xlsx_and_forwards_typed_context(tmp_path, monkeypatch):
     source = tmp_path / "source.xlsx"
-    write_minimal_xlsx(source)
+    write_dimensionless_validation_xlsx(source)
     raw = source.read_bytes()
     source.unlink()
     captured = {}
@@ -1038,12 +1068,17 @@ async def test_default_executor_preparses_brokered_xlsx_and_forwards_typed_conte
     result = await _default_executor_runner(request, tmp_path, emit_event)
 
     assert result["status"] == "completed"
-    assert result["attachment_parser_evidence"][0]["status"] == "parsed"
-    assert result["attachment_parser_evidence"][0]["file_id"] == "file-a"
+    evidence = result["attachment_parser_evidence"][0]
+    assert evidence["status"] == "parsed"
+    assert evidence["file_id"] == "file-a"
+    assert evidence["nonempty_cells"] >= 4
+    assert evidence["rows_emitted"] == 2
+    assert evidence["truncated"] is True
     typed_context = captured["attachment_contexts"][0]
-    formula = typed_context.content["workbook"]["sheets"][0]["rows"][1]["cells"][1]
-    assert formula["kind"] == "formula"
-    assert formula["value"] == "=1+2"
+    rendered = json.dumps(typed_context.content, ensure_ascii=False, sort_keys=True)
+    assert "Validation" in rendered
+    assert "GMP-VAL-002 Requirement" in rendered
+    assert "ACCEPT-XLSX-9472" in rendered
 
 
 @pytest.mark.asyncio
