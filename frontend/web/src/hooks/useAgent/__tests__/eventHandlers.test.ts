@@ -321,6 +321,95 @@ test("retains the run-event sequence replay guard after the event-id cap", () =>
   assert.equal(ctx.setMessagesCalls(), 1);
 });
 
+test("uses the durable sequence for assistant deltas and final replacement", () => {
+  const ctx = createContext(
+    [
+      {
+        id: "assistant-1",
+        role: "assistant",
+        content: "A",
+        timestamp: new Date(),
+        parts: [{ type: "text", content: "A" }],
+        isStreaming: true,
+      },
+    ],
+    null,
+  );
+  ctx.currentRunIdRef.current = "run-active";
+  ctx.acceptedRunEventSequenceRef!.current = {
+    sessionId: "session-1",
+    runId: "run-active",
+    sequence: 7,
+  };
+  const binding = {
+    sessionId: "session-1",
+    runId: "run-active",
+    streamVersion: 0,
+  };
+
+  const acceptedDelta = handleStreamEvent(
+    {
+      event: "message:chunk",
+      data: JSON.stringify({
+        projection_version: "ai-platform.chat-public-projection.v1",
+        projection_kind: "assistant_delta",
+        run_id: "run-active",
+        event_id: "evt-delta-8",
+        sequence: 8,
+        content: "B",
+      }),
+    },
+    "assistant-1",
+    "evt-delta-8",
+    undefined,
+    ctx,
+    binding,
+  );
+  const rejectedReplay = handleStreamEvent(
+    {
+      event: "message:chunk",
+      data: JSON.stringify({
+        projection_version: "ai-platform.chat-public-projection.v1",
+        projection_kind: "assistant_delta",
+        run_id: "run-active",
+        event_id: "evt-delta-8-replayed",
+        sequence: 8,
+        content: "B",
+      }),
+    },
+    "assistant-1",
+    "evt-delta-8-replayed",
+    undefined,
+    ctx,
+    binding,
+  );
+  const acceptedFinal = handleStreamEvent(
+    {
+      event: "message:chunk",
+      data: JSON.stringify({
+        projection_version: "ai-platform.chat-public-projection.v1",
+        projection_kind: "assistant_final",
+        run_id: "run-active",
+        content: "AB!",
+      }),
+    },
+    "assistant-1",
+    "run-active:final",
+    undefined,
+    ctx,
+    binding,
+  );
+
+  assert.equal(acceptedDelta, true);
+  assert.equal(rejectedReplay, false);
+  assert.equal(acceptedFinal, true);
+  assert.equal(ctx.acceptedRunEventSequenceRef!.current.sequence, 8);
+  assert.equal(ctx.messages()[0]?.content, "AB!");
+  assert.deepEqual(ctx.messages()[0]?.parts, [
+    { type: "text", content: "AB!" },
+  ]);
+});
+
 test("creates a new streaming assistant for a running run after the latest user message", () => {
   const messages: Message[] = [
     {

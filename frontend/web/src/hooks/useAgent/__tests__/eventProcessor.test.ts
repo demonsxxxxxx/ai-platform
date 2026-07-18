@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { MessagePart } from "../../../types";
 import { processMessageEvent } from "../eventProcessor.ts";
+import { isAssistantTextProjection } from "../types.ts";
 
 test("merges streamed summary chunks inside a subagent by summary id", () => {
   let parts: MessagePart[] = [
@@ -120,6 +121,161 @@ test("keeps user-actionable ai-platform run warnings visible", () => {
   assert.equal(part.severity, "warning");
   assert.equal(part.sequence, 4);
   assert.doesNotMatch(JSON.stringify(part), /storage_key|tenants\/default/);
+});
+
+test("streams versioned assistant deltas and converges to one canonical final", () => {
+  assert.equal(
+    isAssistantTextProjection({
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_final",
+      content: "canonical",
+    }),
+    true,
+  );
+  const progressAndPartial: MessagePart[] = [
+    {
+      type: "run_status",
+      event_id: "evt-progress",
+      event_type: "run_started",
+      stage: "status",
+      message: "任务已开始处理",
+      severity: "info",
+    },
+    { type: "text", content: "Hel" },
+  ];
+
+  const delta = processMessageEvent(
+    "message:chunk",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_delta",
+      event_id: "evt-delta",
+      sequence: 3,
+      run_id: "run-a",
+      content: "lo",
+    },
+    progressAndPartial,
+    "Hel",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+
+  assert.equal(delta.content, "Hello");
+  assert.deepEqual(
+    delta.parts.filter((part) => part.type === "text"),
+    [{ type: "text", content: "Hello" }],
+  );
+
+  const final = processMessageEvent(
+    "message:chunk",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_final",
+      run_id: "run-a",
+      content: "Hello, world!",
+    },
+    [...delta.parts, { type: "text", content: " stale duplicate" }],
+    delta.content,
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+  const replayedFinal = processMessageEvent(
+    "message:chunk",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      projection_kind: "assistant_final",
+      run_id: "run-a",
+      content: "Hello, world!",
+    },
+    final.parts,
+    final.content,
+    [],
+    0,
+    [],
+    false,
+    "message-1",
+  );
+
+  assert.equal(replayedFinal.content, "Hello, world!");
+  assert.deepEqual(replayedFinal.parts, [
+    { type: "text", content: "Hello, world!" },
+  ]);
+});
+
+test("shows only versioned allowlisted info progress in stream and history", () => {
+  const internal = processMessageEvent(
+    "run_event",
+    {
+      event_id: "evt-internal",
+      sequence: 4,
+      event_type: "run_started",
+      stage: "status",
+      message: "unversioned internal text",
+      severity: "info",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    false,
+    "message-1",
+  );
+  assert.equal(internal.parts.length, 0);
+
+  const started = processMessageEvent(
+    "run_event",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      event_id: "evt-started",
+      sequence: 5,
+      event_type: "run_started",
+      stage: "status",
+      message: "任务已开始处理",
+      severity: "info",
+    },
+    [],
+    "",
+    [],
+    0,
+    [],
+    true,
+    "message-1",
+  );
+  const waiting = processMessageEvent(
+    "run_event",
+    {
+      projection_version: "ai-platform.chat-public-projection.v1",
+      event_id: "evt-waiting",
+      sequence: 6,
+      event_type: "agent_step_blocked",
+      stage: "wait",
+      message: "正在等待前置步骤",
+      severity: "info",
+    },
+    started.parts,
+    "",
+    [],
+    0,
+    [],
+    false,
+    "message-1",
+  );
+
+  assert.equal(waiting.parts.length, 1);
+  assert.equal(waiting.parts[0]?.type, "run_status");
+  assert.equal(
+    waiting.parts[0]?.type === "run_status"
+      ? waiting.parts[0].event_id
+      : null,
+    "evt-waiting",
+  );
 });
 
 test("projects tool permission request run events into a confirmation part with allowlisted fields", () => {

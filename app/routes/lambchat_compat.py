@@ -13,10 +13,11 @@ from app.models import LoginRequest, SessionRenameRequest
 from app import repositories, session_actions
 from app.routes.auth import _login_principal
 from app.routes.files import upload_file as upload_platform_file
-from app.projection_redaction import capability_id_from_skill, public_agent_id_for_projection, redact_raw_skill_references
+from app.projection_redaction import capability_id_from_skill, public_agent_id_for_projection
 from app.control_plane_contracts import EVENT_ENVELOPE_SCHEMA_VERSION, sanitize_public_text, standard_trace_id
 from app.routes.runs import artifact_card, event_visible_to_principal, run_event_response
 from app.settings import get_settings
+from app.tool_permission_projection import tool_permission_public_event_payload
 
 router = APIRouter()
 
@@ -75,15 +76,36 @@ def _public_terminal_text(run: dict[str, Any], principal: AuthPrincipal) -> str:
     return ""
 
 
+def _sanitize_chat_answer_text(run: dict[str, Any], value: object) -> str:
+    """Remove public-text hazards plus identifiers owned by the active run."""
+    content = sanitize_public_text(value)
+    if not content:
+        return ""
+    raw_skill_id = str(run.get("skill_id") or "")
+    raw_agent_id = str(run.get("agent_id") or "")
+    public_agent_id = public_agent_id_for_projection(raw_agent_id, raw_skill_id)
+    private_identifiers = [raw_skill_id]
+    if raw_agent_id and public_agent_id != raw_agent_id:
+        private_identifiers.append(raw_agent_id)
+    if any(identifier and identifier in content for identifier in private_identifiers):
+        return ""
+    return content
+
+
 def _terminal_final_payload(
-    run: dict[str, Any], principal: AuthPrincipal
+    run: dict[str, Any],
 ) -> tuple[str, dict[str, str], str] | None:
     """Return the safe final user-facing payload that precedes terminal replay."""
     status = _platform_status(str(run.get("status") or ""))
     if status == "succeeded":
+        canonical_answer = _sanitize_chat_answer_text(run, _run_answer(run)) or "任务完成"
         return (
             "message:chunk",
-            {"content": _public_terminal_text(run, principal) or "任务完成"},
+            {
+                "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+                "projection_kind": "assistant_final",
+                "content": canonical_answer,
+            },
             "info",
         )
     if status == "failed":
@@ -109,6 +131,242 @@ class _CompatibilityWireEvent:
     terminal: bool = False
 
 
+CHAT_PUBLIC_PROJECTION_VERSION = "ai-platform.chat-public-projection.v1"
+CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
+
+
+@dataclass(frozen=True)
+class _ChatPublicRunEventProjection:
+    """Controlled Chat presentation for one explicitly allowlisted run event."""
+
+    event_type: str
+    stage: str
+    message: str
+    progress_kind: str
+    wait_reason: str | None = None
+
+
+CHAT_PUBLIC_RUN_EVENT_PROJECTIONS = {
+    "queued": _ChatPublicRunEventProjection(
+        "queued", "queue", "任务正在排队", "waiting", "queue_capacity"
+    ),
+    "worker_started": _ChatPublicRunEventProjection(
+        "run_started", "status", "任务已开始处理", "active"
+    ),
+    "run_started": _ChatPublicRunEventProjection(
+        "run_started", "status", "任务已开始处理", "active"
+    ),
+    "mcp_tool_call_started": _ChatPublicRunEventProjection(
+        "tool_call_started", "tool", "正在执行受控步骤", "active"
+    ),
+    "tool_call_started": _ChatPublicRunEventProjection(
+        "tool_call_started", "tool", "正在执行受控步骤", "active"
+    ),
+    "mcp_tool_call_completed": _ChatPublicRunEventProjection(
+        "tool_call_completed", "tool", "受控步骤已完成", "completed"
+    ),
+    "tool_call_completed": _ChatPublicRunEventProjection(
+        "tool_call_completed", "tool", "受控步骤已完成", "completed"
+    ),
+    "agent_step_started": _ChatPublicRunEventProjection(
+        "agent_step_started", "agent", "正在处理当前步骤", "active"
+    ),
+    "agent_step_reused": _ChatPublicRunEventProjection(
+        "agent_step_reused", "agent", "正在复用已完成步骤", "active"
+    ),
+    "agent_step_completed": _ChatPublicRunEventProjection(
+        "agent_step_completed", "agent", "当前步骤已完成", "completed"
+    ),
+    "agent_step_blocked": _ChatPublicRunEventProjection(
+        "agent_step_blocked", "wait", "正在等待前置步骤", "waiting", "dependencies"
+    ),
+    "agent_step_failed": _ChatPublicRunEventProjection(
+        "agent_step_failed", "agent", "当前步骤未能完成", "failed"
+    ),
+    "subagent_started": _ChatPublicRunEventProjection(
+        "subagent_started", "agent", "正在协同处理", "active"
+    ),
+    "subagent_completed": _ChatPublicRunEventProjection(
+        "subagent_completed", "agent", "协同处理已完成", "completed"
+    ),
+    "subagent_failed": _ChatPublicRunEventProjection(
+        "subagent_failed", "agent", "协同处理未能完成", "failed"
+    ),
+    "run_multi_agent_child_created": _ChatPublicRunEventProjection(
+        "run_child_created", "agent", "已安排协同任务", "active"
+    ),
+    "run_child_created": _ChatPublicRunEventProjection(
+        "run_child_created", "agent", "已安排协同任务", "active"
+    ),
+    "skill_selected": _ChatPublicRunEventProjection(
+        "capability_selected", "planning", "已选择处理能力", "completed"
+    ),
+    "capability_selected": _ChatPublicRunEventProjection(
+        "capability_selected", "planning", "已选择处理能力", "completed"
+    ),
+    "intent_detected": _ChatPublicRunEventProjection(
+        "intent_detected", "planning", "已识别处理方式", "completed"
+    ),
+    "intent_confirmed": _ChatPublicRunEventProjection(
+        "intent_confirmed", "planning", "已确认处理方式", "completed"
+    ),
+    "context_snapshot_created": _ChatPublicRunEventProjection(
+        "context_snapshot_created", "context", "已准备运行上下文", "completed"
+    ),
+    "file_bound": _ChatPublicRunEventProjection(
+        "file_bound", "context", "已准备输入文件", "completed"
+    ),
+    "artifact_created": _ChatPublicRunEventProjection(
+        "artifact_created", "artifact", "已生成结果文件", "completed"
+    ),
+    "mcp_tool_denied": _ChatPublicRunEventProjection(
+        "tool_denied", "policy", "工具调用被阻止", "blocked"
+    ),
+    "tool_denied": _ChatPublicRunEventProjection(
+        "tool_denied", "policy", "工具调用被阻止", "blocked"
+    ),
+    "tool_permission_requested": _ChatPublicRunEventProjection(
+        "tool_permission_card", "policy", "正在等待权限决策", "waiting", "permission"
+    ),
+    "tool_permission_decided": _ChatPublicRunEventProjection(
+        "tool_permission_card", "policy", "权限决策已记录", "completed"
+    ),
+    "tool_permission_terminalized": _ChatPublicRunEventProjection(
+        "tool_permission_card", "policy", "权限请求已结束", "completed"
+    ),
+    "cancel_requested": _ChatPublicRunEventProjection(
+        "cancel_requested", "status", "正在取消任务", "waiting", "cancellation"
+    ),
+    "cancel_requested_but_completed": _ChatPublicRunEventProjection(
+        "cancel_requested_but_completed", "status", "任务已在取消前完成", "completed"
+    ),
+    "error": _ChatPublicRunEventProjection(
+        "error", "status", "run_failed", "failed"
+    ),
+}
+
+
+def _chat_event_marked_visible(event: dict[str, Any]) -> bool:
+    """Honor an explicit hidden marker even for the public admin Chat surface."""
+    if event.get("visible_to_user") is not None:
+        return bool(event.get("visible_to_user"))
+    payload = event.get("payload_json")
+    if isinstance(payload, dict) and payload.get("visible_to_user") is not None:
+        return bool(payload.get("visible_to_user"))
+    return True
+
+
+def _chat_projection_payload(
+    raw_event_type: str,
+    envelope: dict[str, Any],
+    *,
+    run_id: str,
+) -> dict[str, object]:
+    """Retain only fields explicitly required by a public Chat presentation."""
+    payload = envelope.get("payload")
+    if not isinstance(payload, dict):
+        return {}
+    if raw_event_type in {
+        "tool_permission_requested",
+        "tool_permission_decided",
+        "tool_permission_terminalized",
+    }:
+        card_source = payload.get("tool_permission_card")
+        permission_payload = tool_permission_public_event_payload(
+            run_id=run_id,
+            event_type=raw_event_type,
+            payload=card_source if isinstance(card_source, dict) else payload,
+        )
+        card = permission_payload.get("tool_permission_card")
+        return {"tool_permission_card": card} if isinstance(card, dict) else {}
+    if raw_event_type in {"skill_selected", "capability_selected"}:
+        capability_id = payload.get("capability_id")
+        return {"capability_id": capability_id} if isinstance(capability_id, str) else {}
+    if raw_event_type == "queued":
+        queue_position = payload.get("queue_position")
+        if isinstance(queue_position, int) and not isinstance(queue_position, bool) and queue_position > 0:
+            return {"queue_position": queue_position}
+    return {}
+
+
+def _public_run_event_envelope(
+    run_id: str,
+    event: dict[str, Any],
+    principal: AuthPrincipal,
+) -> dict[str, object] | None:
+    """Project one persisted event through the explicit public Chat allowlist."""
+    raw_event_type = str(event.get("event_type") or "")
+    presentation = CHAT_PUBLIC_RUN_EVENT_PROJECTIONS.get(raw_event_type)
+    if presentation is None:
+        return None
+    projected = run_event_response(run_id, event, principal=principal)
+    severity = str(projected.get("severity") or "info")
+    if presentation.progress_kind == "failed":
+        severity = "error"
+    elif presentation.progress_kind == "blocked" and severity == "info":
+        severity = "warning"
+    elif severity not in {"info", "warning", "error"}:
+        severity = "info"
+    payload = _chat_projection_payload(raw_event_type, projected, run_id=run_id)
+    message = presentation.message
+    queue_position = payload.get("queue_position")
+    if raw_event_type == "queued" and isinstance(queue_position, int):
+        message = f"任务正在排队（第 {queue_position} 位）"
+    return {
+        "id": str(projected["id"]),
+        "schema_version": str(projected["schema_version"]),
+        "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+        "event_id": str(projected["event_id"]),
+        "sequence": int(projected["sequence"]),
+        "run_id": run_id,
+        "event_type": presentation.event_type,
+        "type": presentation.event_type,
+        "stage": presentation.stage,
+        "message": message,
+        "severity": severity,
+        "visible_to_user": True,
+        "progress_kind": presentation.progress_kind,
+        "wait_reason": presentation.wait_reason,
+        "payload": payload,
+        "created_at": projected.get("created_at"),
+    }
+
+
+def _assistant_delta_projection(
+    run: dict[str, Any],
+    event: dict[str, Any],
+    principal: AuthPrincipal,
+) -> dict[str, object] | None:
+    """Return a sanitized delta frame without carrying any executor payload."""
+    run_id = str(run["id"])
+    projected = run_event_response(run_id, event, principal=principal)
+    payload = projected.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    if projected.get("stage") != "answer":
+        return None
+    if set(payload) != {"delta", "source", "visible_to_user", "severity"}:
+        return None
+    if payload.get("source") != CHAT_ASSISTANT_DELTA_SOURCE:
+        return None
+    if payload.get("visible_to_user") is not True or payload.get("severity") != "info":
+        return None
+    raw_delta = payload.get("delta")
+    if not isinstance(raw_delta, str):
+        return None
+    content = _sanitize_chat_answer_text(run, raw_delta)
+    if not content:
+        return None
+    return {
+        "projection_version": CHAT_PUBLIC_PROJECTION_VERSION,
+        "projection_kind": "assistant_delta",
+        "event_id": str(projected["event_id"]),
+        "sequence": int(projected["sequence"]),
+        "run_id": run_id,
+        "content": content,
+    }
+
+
 def _event_sequence_sort_key(event: dict[str, Any], position: int) -> tuple[int, int]:
     """Keep persisted compatibility playback monotonic even with malformed rows."""
     try:
@@ -129,6 +387,7 @@ def _compatibility_events_for_run(
     run_id = str(run["id"])
     trace_id = str(run.get("trace_id") or standard_trace_id(run_id))
     compatibility_events: list[_CompatibilityWireEvent] = []
+    status = _platform_status(str(run.get("status") or ""))
 
     for message in user_messages or []:
         message_id = str(message.get("id") or "")
@@ -163,20 +422,69 @@ def _compatibility_events_for_run(
         key=lambda item: _event_sequence_sort_key(item[1], item[0]),
     ):
         raw_event_type = str(event.get("event_type") or "")
+        if raw_event_type in CHAT_STREAM_TERMINAL_EVENT_TYPES:
+            continue
         if (
-            raw_event_type in CHAT_STREAM_REPLAY_SKIP_EVENT_TYPES
-            or raw_event_type in CHAT_STREAM_TERMINAL_EVENT_TYPES
+            not _chat_event_marked_visible(event)
             or not event_visible_to_principal(event, principal)
         ):
             continue
-        envelope = run_event_response(run_id, event, principal=principal)
-        history_data = _event_payload(
-            event,
-            principal,
-            envelope["payload"],
-            event_type=str(envelope["event_type"]),
-            stage=str(envelope["stage"]),
-        )
+        if raw_event_type == "assistant_delta":
+            # Deltas exist only while the run is active. A terminal first
+            # connection and terminal history both converge directly to the
+            # canonical final snapshot below.
+            if status in {"succeeded", "failed", "cancelled"}:
+                continue
+            delta = _assistant_delta_projection(run, event, principal)
+            if delta is None:
+                continue
+            compatibility_events.append(
+                _CompatibilityWireEvent(
+                    id=str(event["id"]),
+                    stream_event_type="message:chunk",
+                    stream_data=delta,
+                    history_event={
+                        "id": event["id"],
+                        "schema_version": EVENT_ENVELOPE_SCHEMA_VERSION,
+                        "trace_id": str(event.get("trace_id") or trace_id),
+                        "type": "message:chunk",
+                        "event_type": "message:chunk",
+                        "stage": "answer",
+                        "severity": "info",
+                        "visible_to_user": True,
+                        "payload": delta,
+                        "sequence": delta["sequence"],
+                        "data": delta,
+                        "timestamp": event.get("created_at"),
+                        "run_id": run_id,
+                    },
+                )
+            )
+            continue
+        envelope = _public_run_event_envelope(run_id, event, principal)
+        if envelope is None:
+            continue
+        payload = envelope["payload"] if isinstance(envelope.get("payload"), dict) else {}
+        history_data = {
+            "projection_version": envelope["projection_version"],
+            "event_id": envelope["event_id"],
+            "run_id": run_id,
+            "event_type": envelope["event_type"],
+            "stage": envelope["stage"],
+            "message": envelope["message"],
+            "severity": envelope["severity"],
+            "progress_kind": envelope["progress_kind"],
+            "wait_reason": envelope["wait_reason"],
+            "payload": payload,
+            "created_at": envelope.get("created_at"),
+        }
+        if envelope["event_type"] == "error":
+            history_data["error"] = envelope["message"]
+        elif envelope["stage"] == "queue":
+            history_data["status"] = "queued"
+        else:
+            history_data["content"] = envelope["message"]
+            history_data["status"] = envelope["stage"]
         compatibility_events.append(
             _CompatibilityWireEvent(
                 id=str(event["id"]),
@@ -185,7 +493,7 @@ def _compatibility_events_for_run(
                 history_event={
                     "id": event["id"],
                     "schema_version": envelope["schema_version"],
-                    "trace_id": envelope["trace_id"],
+                    "trace_id": str(event.get("trace_id") or trace_id),
                     # Production history preserves the public persisted event
                     # type at the outer level; it is not a synthetic run_event.
                     "type": envelope["type"],
@@ -230,8 +538,7 @@ def _compatibility_events_for_run(
             )
         )
 
-    status = _platform_status(str(run.get("status") or ""))
-    final_payload = _terminal_final_payload(run, principal)
+    final_payload = _terminal_final_payload(run)
     if final_payload is not None:
         event_type, payload, severity = final_payload
         final_data = {"run_id": run_id, **payload}
@@ -308,34 +615,6 @@ def _lambchat_status(status: str) -> str:
         "queued": "pending",
         "running": "running",
     }.get(status, status)
-
-
-def _event_payload(
-    row: dict[str, Any],
-    principal: AuthPrincipal,
-    payload: dict[str, Any] | None = None,
-    *,
-    event_type: str | None = None,
-    stage: str | None = None,
-) -> dict[str, Any]:
-    if payload is None:
-        raw_payload = row.get("payload_json") or {}
-        if not isinstance(raw_payload, dict):
-            raw_payload = {}
-        if not is_ai_admin(principal):
-            redacted = redact_raw_skill_references(raw_payload)
-            raw_payload = redacted if isinstance(redacted, dict) else {}
-        payload = raw_payload
-    message = str(row.get("message") or "")
-    if not is_ai_admin(principal):
-        message = sanitize_public_text(message)
-    public_event_type = event_type or str(row.get("event_type") or "")
-    public_stage = stage or str(row.get("stage") or "")
-    if public_event_type == "error":
-        return {"error": message or "run_failed", **payload}
-    if public_stage == "queue":
-        return {"status": "queued", "message": message, **payload}
-    return {"content": message, "status": public_stage, **payload}
 
 
 @router.post("/auth/login")
@@ -423,7 +702,6 @@ UI_PERMISSIONS = [
     "notification:admin",
 ]
 
-CHAT_STREAM_REPLAY_SKIP_EVENT_TYPES = {"assistant_delta"}
 CHAT_STREAM_TERMINAL_EVENT_TYPES = {"run_succeeded", "run_failed", "run_cancelled", "run_canceled"}
 
 

@@ -4,7 +4,7 @@ import test from "node:test";
 import type { MessagePart } from "../../../../types";
 import { getVisibleMessageParts } from "../messagePartVisibility.ts";
 
-test("hides routine run status cards from chat message rendering", () => {
+test("shows allowlisted public progress but hides raw internal status cards", () => {
   const parts: MessagePart[] = [
     {
       type: "run_status",
@@ -54,7 +54,7 @@ test("hides routine run status cards from chat message rendering", () => {
 
   assert.deepEqual(
     getVisibleMessageParts(parts).map((part) => part.type),
-    ["text"],
+    ["run_status", "run_status", "run_status", "text"],
   );
 });
 

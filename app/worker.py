@@ -307,6 +307,32 @@ AGENT_STEP_EVENT_STATUS = {
     "agent_step_failed": "failed",
 }
 
+CHAT_ASSISTANT_DELTA_SOURCE = "worker_answer_delta_v1"
+_ASSISTANT_DELTA_INPUT_STAGES = frozenset({"message", "assistant"})
+
+
+def _canonical_assistant_delta_event(
+    *,
+    stage: str,
+    payload: dict[str, Any] | None,
+) -> tuple[str, str, dict[str, Any]] | None:
+    """Return the sole persisted answer-delta shape accepted from executors."""
+    if stage not in _ASSISTANT_DELTA_INPUT_STAGES or not isinstance(payload, dict):
+        return None
+    delta = payload.get("delta")
+    if not isinstance(delta, str) or not delta:
+        return None
+    return (
+        "answer",
+        "",
+        {
+            "delta": delta,
+            "source": CHAT_ASSISTANT_DELTA_SOURCE,
+            "visible_to_user": True,
+            "severity": "info",
+        },
+    )
+
 
 def _sanitize_artifact_manifest(value: Any) -> Any:
     if isinstance(value, dict):
@@ -2233,25 +2259,38 @@ async def process_run_payload(
         message: str,
         payload: dict[str, Any] | None = None,
     ) -> None:
+        event_stage = stage
+        event_message = message
         event_payload = payload
-        async with transaction() as conn:
-            await append_user_event(
-                conn,
-                tenant_id=run_payload.tenant_id,
-                run_id=run_payload.run_id,
-                event_type=event_type,
+        persist_event = True
+        if event_type == "assistant_delta":
+            canonical_delta = _canonical_assistant_delta_event(
                 stage=stage,
-                message=message,
-                payload=event_payload,
+                payload=payload,
             )
-            await _record_run_step_from_event(
-                conn,
-                tenant_id=run_payload.tenant_id,
-                run_id=run_payload.run_id,
-                event_type=event_type,
-                message=message,
-                payload=event_payload,
-            )
+            if canonical_delta is None:
+                persist_event = False
+            else:
+                event_stage, event_message, event_payload = canonical_delta
+        async with transaction() as conn:
+            if persist_event:
+                await append_user_event(
+                    conn,
+                    tenant_id=run_payload.tenant_id,
+                    run_id=run_payload.run_id,
+                    event_type=event_type,
+                    stage=event_stage,
+                    message=event_message,
+                    payload=event_payload,
+                )
+                await _record_run_step_from_event(
+                    conn,
+                    tenant_id=run_payload.tenant_id,
+                    run_id=run_payload.run_id,
+                    event_type=event_type,
+                    message=event_message,
+                    payload=event_payload,
+                )
             if await repositories.is_cancel_requested(
                 conn,
                 tenant_id=run_payload.tenant_id,
