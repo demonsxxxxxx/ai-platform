@@ -18,6 +18,7 @@ from app.file_parser_contracts import (
     MAX_XLSX_PROMPT_CHARS,
     MAX_XLSX_PROMPT_TOKENS,
     MAX_XLSX_ROWS_PER_SHEET,
+    MAX_XLSX_SHEETS,
     AttachmentPreprocessingError,
     MaterializedAttachmentFact,
     attachment_requirements_from_contract,
@@ -277,7 +278,11 @@ def _overflow_worksheet_xml() -> bytes:
         return archive.read("xl/worksheets/sheet1.xml")
 
 
-def _inject_foreign_relationship_lookalike(path: Path) -> None:
+def _inject_foreign_relationship_lookalike(
+    path: Path,
+    *,
+    local_name: str = "Relationship",
+) -> None:
     office_relationships_namespace = (
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
     )
@@ -307,7 +312,7 @@ def _inject_foreign_relationship_lookalike(path: Path) -> None:
                 assert exact_relationship is not None
                 root.append(
                     ElementTree.Element(
-                        f"{{{foreign_namespace}}}Relationship",
+                        f"{{{foreign_namespace}}}{local_name}",
                         {
                             "Id": exact_relationship.attrib["Id"],
                             "Type": f"{office_relationships_namespace}/worksheet",
@@ -336,7 +341,7 @@ def _inject_foreign_relationship_lookalike(path: Path) -> None:
     path.write_bytes(output.getvalue())
 
 
-def _inject_foreign_sheet_lookalike(path: Path) -> None:
+def _inject_foreign_sheet_lookalike(path: Path, *, local_name: str = "sheet") -> None:
     spreadsheet_namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
     office_relationships_namespace = (
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -361,7 +366,7 @@ def _inject_foreign_sheet_lookalike(path: Path) -> None:
                 assert sheets is not None and exact_sheet is not None
                 sheets.append(
                     ElementTree.Element(
-                        f"{{{foreign_namespace}}}sheet",
+                        f"{{{foreign_namespace}}}{local_name}",
                         {
                             "name": "Foreign",
                             "sheetId": "2",
@@ -371,6 +376,89 @@ def _inject_foreign_sheet_lookalike(path: Path) -> None:
                         },
                     )
                 )
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            rewritten.writestr(entry, payload)
+    path.write_bytes(output.getvalue())
+
+
+def _retarget_worksheet_to_entity_payload(path: Path) -> None:
+    office_relationships_namespace = (
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    )
+    package_relationships_namespace = (
+        "http://schemas.openxmlformats.org/package/2006/relationships"
+    )
+    content_types_namespace = "http://schemas.openxmlformats.org/package/2006/content-types"
+    source_path = "xl/worksheets/sheet1.xml"
+    target_path = "xl/worksheets/sheet1.payload"
+    declaration = b'<!DOCTYPE worksheet [<!ENTITY injected "EXPANDED">]>'
+    source = io.BytesIO(path.read_bytes())
+    output = io.BytesIO()
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            output_name = entry.filename
+            if entry.filename == source_path:
+                insertion = payload.find(b"<worksheet")
+                assert insertion >= 0 and b"<t>exact</t>" in payload
+                payload = payload[:insertion] + declaration + payload[insertion:]
+                payload = payload.replace(b"<t>exact</t>", b"<t>&injected;</t>", 1)
+                output_name = target_path
+            elif entry.filename == "xl/_rels/workbook.xml.rels":
+                root = ElementTree.fromstring(payload)
+                worksheet_relationship = next(
+                    child
+                    for child in root
+                    if child.tag
+                    == f"{{{package_relationships_namespace}}}Relationship"
+                    and child.attrib.get("Type")
+                    == f"{office_relationships_namespace}/worksheet"
+                )
+                worksheet_relationship.set("Target", f"/{target_path}")
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            elif entry.filename == "[Content_Types].xml":
+                root = ElementTree.fromstring(payload)
+                worksheet_override = next(
+                    child
+                    for child in root
+                    if child.tag == f"{{{content_types_namespace}}}Override"
+                    and child.attrib.get("PartName") == f"/{source_path}"
+                )
+                worksheet_override.set("PartName", f"/{target_path}")
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            if output_name == entry.filename:
+                rewritten.writestr(entry, payload)
+            else:
+                rewritten.writestr(output_name, payload)
+    path.write_bytes(output.getvalue())
+
+
+def _corrupt_exact_collection(path: Path, case: str) -> None:
+    spreadsheet_namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    package_relationships_namespace = (
+        "http://schemas.openxmlformats.org/package/2006/relationships"
+    )
+    foreign_namespace = "urn:ai-platform:test:collection"
+    source = io.BytesIO(path.read_bytes())
+    output = io.BytesIO()
+    with zipfile.ZipFile(source, "r") as archive, zipfile.ZipFile(output, "w") as rewritten:
+        for entry in archive.infolist():
+            payload = archive.read(entry.filename)
+            if case == "wrong-relationships-root" and entry.filename == "xl/_rels/workbook.xml.rels":
+                root = ElementTree.fromstring(payload)
+                root.tag = f"{{{foreign_namespace}}}Relationships"
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            elif case == "nested-relationship" and entry.filename == "xl/_rels/workbook.xml.rels":
+                root = ElementTree.fromstring(payload)
+                relationship = root.find(
+                    f"{{{package_relationships_namespace}}}Relationship"
+                )
+                assert relationship is not None
+                relationship.append(ElementTree.Element(f"{{{foreign_namespace}}}nested"))
+                payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            elif case == "duplicate-sheets" and entry.filename == "xl/workbook.xml":
+                root = ElementTree.fromstring(payload)
+                root.append(ElementTree.Element(f"{{{spreadsheet_namespace}}}sheets"))
                 payload = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
             rewritten.writestr(entry, payload)
     path.write_bytes(output.getvalue())
@@ -696,6 +784,139 @@ def test_xlsx_parser_rejects_foreign_sheet_lookalike_before_openpyxl_load(tmp_pa
         match="xlsx_workbook_structure_unsupported",
     ):
         parse_xlsx_attachment(path=path, requirement=_requirement())
+
+
+def test_xlsx_parser_checks_selected_arbitrary_extension_payload_before_openpyxl(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "book.xlsx"
+    workbook = Workbook()
+    workbook.active["A1"] = "exact"
+    workbook.save(path)
+    workbook.close()
+    _retarget_worksheet_to_entity_payload(path)
+    with zipfile.ZipFile(path, "r") as archive:
+        assert "xl/worksheets/sheet1.xml" not in archive.namelist()
+        payload = archive.read("xl/worksheets/sheet1.payload")
+        assert b"<!DOCTYPE" in payload
+        assert b"&injected;" in payload
+
+    def fail_load_workbook(*_args, **_kwargs):
+        raise AssertionError("arbitrary-extension worksheet entities must fail before openpyxl")
+
+    monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
+
+    with pytest.raises(AttachmentPreprocessingError, match="xlsx_xml_entities_unsupported"):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
+
+
+def test_xlsx_parser_rejects_arbitrary_relationship_child_before_openpyxl(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "book.xlsx"
+    workbook = Workbook()
+    workbook.active["A1"] = "decoy"
+    workbook.save(path)
+    workbook.close()
+    _inject_foreign_relationship_lookalike(path, local_name="redirect")
+    with zipfile.ZipFile(path, "r") as archive:
+        relationships = ElementTree.fromstring(
+            archive.read("xl/_rels/workbook.xml.rels")
+        )
+        assert any(
+            child.tag == "{urn:ai-platform:test:foreign-relationship}redirect"
+            for child in relationships
+        )
+        assert archive.read("xl/worksheets/real.xml").count(b"<c ") == MAX_XLSX_CELLS + 1
+
+    def fail_load_workbook(*_args, **_kwargs):
+        raise AssertionError("arbitrary Relationship child must fail before openpyxl")
+
+    monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
+
+    with pytest.raises(
+        AttachmentPreprocessingError,
+        match="xlsx_relationship_structure_unsupported",
+    ):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
+
+
+def test_xlsx_parser_rejects_arbitrary_seventeenth_sheet_child_before_openpyxl(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "book.xlsx"
+    workbook = Workbook()
+    workbook.active["A1"] = "sheet-1"
+    for index in range(2, MAX_XLSX_SHEETS + 1):
+        workbook.create_sheet(title=f"Sheet{index}")["A1"] = f"sheet-{index}"
+    workbook.save(path)
+    workbook.close()
+    _inject_foreign_sheet_lookalike(path, local_name="item")
+    with zipfile.ZipFile(path, "r") as archive:
+        workbook_root = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+        sheets = workbook_root.find(
+            "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}sheets"
+        )
+        assert sheets is not None and len(sheets) == MAX_XLSX_SHEETS + 1
+        assert sheets[-1].tag == "{urn:ai-platform:test:foreign-sheet}item"
+
+    def fail_load_workbook(*_args, **_kwargs):
+        raise AssertionError("arbitrary seventeenth sheet child must fail before openpyxl")
+
+    monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
+
+    with pytest.raises(
+        AttachmentPreprocessingError,
+        match="xlsx_workbook_structure_unsupported",
+    ):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_code"),
+    [
+        ("wrong-relationships-root", "xlsx_relationship_structure_unsupported"),
+        ("nested-relationship", "xlsx_relationship_structure_unsupported"),
+        ("duplicate-sheets", "xlsx_workbook_structure_unsupported"),
+    ],
+)
+def test_xlsx_parser_rejects_malformed_exact_collections_before_openpyxl(
+    tmp_path,
+    monkeypatch,
+    case,
+    expected_code,
+):
+    path = tmp_path / "book.xlsx"
+    _write_workbook(path)
+    _corrupt_exact_collection(path, case)
+
+    def fail_load_workbook(*_args, **_kwargs):
+        raise AssertionError("malformed exact collection must fail before openpyxl")
+
+    monkeypatch.setattr("openpyxl.load_workbook", fail_load_workbook)
+
+    with pytest.raises(AttachmentPreprocessingError, match=expected_code):
+        parse_xlsx_attachment(path=path, requirement=_requirement())
+
+
+def test_xlsx_parser_preserves_total_sheet_count_beyond_selected_limit(tmp_path):
+    path = tmp_path / "book.xlsx"
+    workbook = Workbook()
+    workbook.active["A1"] = "sheet-1"
+    for index in range(2, MAX_XLSX_SHEETS + 2):
+        workbook.create_sheet(title=f"Sheet{index}")["A1"] = f"sheet-{index}"
+    workbook.save(path)
+    workbook.close()
+
+    parsed = parse_xlsx_attachment(path=path, requirement=_requirement())
+
+    assert parsed.evidence.sheet_count == MAX_XLSX_SHEETS + 1
+    assert parsed.evidence.sheets_processed == MAX_XLSX_SHEETS
+    assert parsed.evidence.truncated is True
+    assert len(parsed.content["workbook"]["sheets"]) == MAX_XLSX_SHEETS
 
 
 @pytest.mark.parametrize("utf16", [False, True], ids=["utf8", "utf16"])
