@@ -473,12 +473,18 @@ def _archive_part_identity(value: object) -> str:
     return "/".join(parts)
 
 
+def _xml_local_name(tag: object) -> str:
+    return str(tag).rsplit("}", 1)[-1]
+
+
 def _selected_worksheet_entries(archive: ZipFile) -> list[tuple[str, str]]:
     relationships: dict[str, str] = {}
     try:
         with archive.open("xl/_rels/workbook.xml.rels", "r") as stream:
             for _event, element in ElementTree.iterparse(stream, events=("end",)):
-                if element.tag == _PACKAGE_RELATIONSHIP_TAG:
+                if _xml_local_name(element.tag) == "Relationship":
+                    if element.tag != _PACKAGE_RELATIONSHIP_TAG:
+                        raise AttachmentPreprocessingError("xlsx_relationship_structure_unsupported")
                     relationship_id = element.attrib.get("Id")
                     relationship_type = str(element.attrib.get("Type") or "")
                     target_mode = str(element.attrib.get("TargetMode") or "")
@@ -496,15 +502,16 @@ def _selected_worksheet_entries(archive: ZipFile) -> list[tuple[str, str]]:
         selected: list[tuple[str, str]] = []
         with archive.open("xl/workbook.xml", "r") as stream:
             for _event, element in ElementTree.iterparse(stream, events=("end",)):
-                if element.tag == _WORKBOOK_SHEET_TAG:
+                if _xml_local_name(element.tag) == "sheet":
+                    if element.tag != _WORKBOOK_SHEET_TAG:
+                        raise AttachmentPreprocessingError("xlsx_workbook_structure_unsupported")
                     sheet_name = element.attrib.get("name")
                     relationship_id = element.attrib.get(_WORKBOOK_SHEET_RELATIONSHIP_ID)
                     archive_path = relationships.get(str(relationship_id or ""))
                     if not isinstance(sheet_name, str) or not sheet_name or archive_path is None:
                         raise AttachmentPreprocessingError("xlsx_parse_failed")
-                    selected.append((sheet_name, archive_path))
-                    if len(selected) >= MAX_XLSX_SHEETS:
-                        break
+                    if len(selected) < MAX_XLSX_SHEETS:
+                        selected.append((sheet_name, archive_path))
                 element.clear()
     except AttachmentPreprocessingError:
         raise
@@ -569,29 +576,23 @@ def _worksheet_xml_preflight(
     current_column = 0
     last_row = 0
     worksheet_prefix = f"{{{_SPREADSHEET_XML_NAMESPACE}}}"
+    dimension_tag = f"{worksheet_prefix}dimension"
+    row_tag = f"{worksheet_prefix}row"
+    cell_tag = f"{worksheet_prefix}c"
+    depth = 0
+    active_row_depth: int | None = None
     try:
         with archive.open(archive_path, "r") as stream:
             for event, element in ElementTree.iterparse(stream, events=("start", "end")):
-                if event == "start" and element.tag == f"{worksheet_prefix}dimension":
-                    if dimension_seen:
-                        reported_max_row = None
-                        reported_max_column = None
-                    else:
-                        reported_max_row, reported_max_column = _dimension_bounds(element.attrib.get("ref"))
-                    dimension_seen = True
-                elif event == "start" and element.tag == f"{worksheet_prefix}row":
-                    raw_row = element.attrib.get("r")
-                    if raw_row is None:
-                        current_row = last_row + 1
-                    elif not raw_row.isascii() or not raw_row.isdigit():
-                        raise ValueError("invalid row reference")
-                    else:
-                        current_row = int(raw_row)
-                    if current_row < 1 or current_row > 1_048_576 or current_row <= last_row:
-                        raise ValueError("invalid row reference")
-                    last_row = current_row
-                    current_column = 0
-                elif event == "start" and element.tag == f"{worksheet_prefix}c":
+                if event == "start":
+                    depth += 1
+                if (
+                    event == "start"
+                    and active_row_depth is not None
+                    and depth == active_row_depth + 1
+                ):
+                    if element.tag != cell_tag:
+                        raise AttachmentPreprocessingError("xlsx_worksheet_structure_unsupported")
                     stored_cells += 1
                     cells_seen += 1
                     if cells_seen > MAX_XLSX_CELLS:
@@ -608,10 +609,34 @@ def _worksheet_xml_preflight(
                     current_column = column
                     observed_max_row = max(observed_max_row, row)
                     observed_max_column = max(observed_max_column, column)
-                elif event == "end" and element.tag == f"{worksheet_prefix}row":
+                elif event == "start" and element.tag == dimension_tag:
+                    if dimension_seen:
+                        reported_max_row = None
+                        reported_max_column = None
+                    else:
+                        reported_max_row, reported_max_column = _dimension_bounds(element.attrib.get("ref"))
+                    dimension_seen = True
+                elif event == "start" and element.tag == row_tag:
+                    if active_row_depth is not None:
+                        raise AttachmentPreprocessingError("xlsx_worksheet_structure_unsupported")
+                    active_row_depth = depth
+                    raw_row = element.attrib.get("r")
+                    if raw_row is None:
+                        current_row = last_row + 1
+                    elif not raw_row.isascii() or not raw_row.isdigit():
+                        raise ValueError("invalid row reference")
+                    else:
+                        current_row = int(raw_row)
+                    if current_row < 1 or current_row > 1_048_576 or current_row <= last_row:
+                        raise ValueError("invalid row reference")
+                    last_row = current_row
+                    current_column = 0
+                elif event == "end" and element.tag == row_tag and depth == active_row_depth:
+                    active_row_depth = None
                     current_row = None
                 if event == "end":
                     element.clear()
+                    depth -= 1
     except AttachmentPreprocessingError:
         raise
     except (BadZipFile, ElementTree.ParseError, KeyError, OSError, RuntimeError, ValueError) as exc:
