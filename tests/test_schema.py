@@ -260,6 +260,24 @@ def test_schema_declares_context_snapshot_run_scope_guard():
     assert "references runs(tenant_id, workspace_id, user_id, session_id, id)" in schema
 
 
+def test_schema_declares_additive_session_generation_and_immutable_snapshot_binding():
+    schema = Path("app/schema.sql").read_text(encoding="utf-8")
+
+    assert "next_run_generation bigint not null default 0" in schema
+    assert "alter table sessions add column if not exists next_run_generation" in schema
+    assert "alter table runs add column if not exists context_snapshot_id text;" in schema
+    assert "alter table runs add column if not exists session_generation bigint;" in schema
+    assert "idx_runs_session_generation" in schema
+    assert "where session_generation is not null" in schema
+    assert "idx_run_context_snapshots_scope_binding" in schema
+    assert "fk_runs_context_snapshot_scope" in schema
+    assert "deferrable initially deferred" in schema
+    assert "ai_platform_prevent_context_snapshot_rebind" in schema
+    assert "runs_context_snapshot_id_immutable" in schema
+    assert "runs_context_snapshot_input_mismatch" in schema
+    assert "runs_context_snapshot_ref_mismatch" in schema
+
+
 def test_schema_scope_guards_use_null_safe_identity_comparisons():
     schema = Path("app/schema.sql").read_text(encoding="utf-8")
 

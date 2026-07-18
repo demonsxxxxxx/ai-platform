@@ -125,6 +125,43 @@ async def test_run_worker_maintenance_uses_configured_queue_visibility_timeout(m
 
 
 @pytest.mark.asyncio
+async def test_worker_maintenance_keeps_multi_agent_dispatch_deferred_before_candidate_scan(monkeypatch):
+    from app import multi_agent_dispatcher
+
+    class Settings:
+        queue_lease_visibility_timeout_seconds = 12
+        multi_agent_dispatch_worker_enabled = True
+        multi_agent_dispatch_worker_interval_seconds = 30.0
+        multi_agent_dispatch_worker_limit = 1
+        default_tenant_id = "default"
+
+    calls: list[tuple[str, object]] = []
+
+    def forbidden_transaction():
+        raise AssertionError("maintenance dispatch must not claim or write deferred work")
+
+    async def forbidden_candidates(*_args, **_kwargs):
+        raise AssertionError("maintenance dispatch must not scan deferred candidates")
+
+    async def reclaim_expired_leases(**kwargs):
+        calls.append(("reclaim", kwargs))
+        return {"reclaimed": 0, "dead_lettered": 0}
+
+    monkeypatch.setattr(multi_agent_dispatcher, "transaction", forbidden_transaction)
+    monkeypatch.setattr(
+        multi_agent_dispatcher.repositories,
+        "list_multi_agent_dispatch_candidate_run_ids",
+        forbidden_candidates,
+        raising=False,
+    )
+    monkeypatch.setattr("app.worker_main.queue.reclaim_expired_leases", reclaim_expired_leases)
+
+    await worker_main.run_worker_maintenance(Settings())
+
+    assert calls == [("reclaim", {"visibility_timeout_seconds": 12})]
+
+
+@pytest.mark.asyncio
 async def test_permission_terminalization_maintenance_drains_bounded_durable_run_work_items(monkeypatch):
     calls = []
 

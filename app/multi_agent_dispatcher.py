@@ -11,7 +11,7 @@ from app.db import transaction
 from app.queue import enqueue_run
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError, RepositoryNotFoundError
 from app.run_control_readiness import dispatch_tick_candidate
-from app.routes.runs import prepare_copied_run_for_queue
+from app.routes.runs import _raise_multi_agent_dispatch_not_available, prepare_copied_run_for_queue
 from app.settings import get_settings
 from app.skills.pinning import SkillVersionMaterializationError
 
@@ -167,6 +167,16 @@ async def dispatch_multi_agent_ready_steps_for_worker(
 ) -> list[dict[str, object]]:
     """Run one bounded worker-side multi-agent dispatch maintenance pass."""
     global _next_multi_agent_dispatch_at
+
+    # Multi-agent dispatch is intentionally deferred.  Invoke the same
+    # authoritative admission guard as public routes before reading settings,
+    # listing candidates, claiming work, or touching the queue.
+    try:
+        _raise_multi_agent_dispatch_not_available()
+    except HTTPException as exc:
+        if exc.status_code == 409 and exc.detail == "multi_agent_dispatch_not_available":
+            return []
+        raise
 
     settings = settings or get_settings()
     if not bool(getattr(settings, "multi_agent_dispatch_worker_enabled", False)):

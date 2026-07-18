@@ -217,12 +217,16 @@ async def executor_context_retrieval_callback(
         workspace_id = str(run_identity.get("workspace_id") or "")
         user_id = str(run_identity.get("user_id") or "")
         agent_id = str(run_identity.get("agent_id") or "")
-        snapshot = await repositories.get_latest_authorized_executor_context_snapshot(
+        snapshot = await repositories.get_bound_executor_context_snapshot(
             conn,
             tenant_id=tenant_id,
+            workspace_id=workspace_id,
             user_id=user_id,
+            session_id=request.session_id,
             run_id=request.run_id,
         )
+        if snapshot is None:
+            raise HTTPException(status_code=409, detail="context_snapshot_unavailable")
         payload = snapshot.get("payload_json") if isinstance(snapshot, dict) else None
         manifest = payload.get("context_manifest") if isinstance(payload, dict) else None
         if request.action not in available_context_retrieval_tools(manifest):

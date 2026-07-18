@@ -1013,9 +1013,8 @@ async def session_events(
             target_runs = [target]
             current_run_id = run_id
         else:
-            # Reuse the repository's canonical compatibility ordering. Its
-            # queued_at/id fallback prevents legacy exact-tie query flips but
-            # intentionally does not claim durable creation authority (#438).
+            # Display ordering is deterministic, but only a generation-bearing
+            # row may be reported as the session's current authority.
             target_runs = await repositories.list_authorized_session_runs(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -1023,7 +1022,11 @@ async def session_events(
                 session_id=session_id,
                 limit=50,
             )
-            current_run_id = str(target_runs[0]["id"]) if target_runs else None
+            current = next(
+                (row for row in target_runs if row.get("session_generation") is not None),
+                None,
+            )
+            current_run_id = str(current["id"]) if current is not None else None
         target_run_ids = [str(run["id"]) for run in target_runs]
         authorized_user_messages = await repositories.list_authorized_user_messages_for_runs(
             conn,
@@ -1109,8 +1112,8 @@ async def chat_status(
             if target is None or target.get("session_id") != session_id:
                 raise HTTPException(status_code=404, detail="run_not_found")
         else:
-            # Preserve legacy latest-run behavior only for callers that did
-            # not identify a run.
+            # Legacy rows remain visible through the history route, but cannot
+            # become an implicit current-status authority.
             rows = await repositories.list_authorized_session_runs(
                 conn,
                 tenant_id=principal.tenant_id,
@@ -1118,7 +1121,7 @@ async def chat_status(
                 session_id=session_id,
                 limit=10,
             )
-            target = rows[0] if rows else None
+            target = next((row for row in rows if row.get("session_generation") is not None), None)
     raw_status = _platform_status(str(target["status"])) if target else "idle"
     return {"session_id": session_id, "run_id": run_id, "status": _lambchat_status(raw_status), "raw_status": raw_status}
 

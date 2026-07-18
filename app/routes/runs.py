@@ -9,7 +9,8 @@ from fastapi.responses import StreamingResponse
 from app import repositories
 from app.auth import AuthPrincipal, is_ai_admin, normalize_roles, require_principal
 from app.capabilities import get_capability
-from app.context_builder import ensure_public_context_provenance, record_initial_context_snapshot
+from app.context_builder import record_initial_context_snapshot
+from app.context_manifest import public_context_manifest_projection
 from app.db import transaction
 from app.models import (
     CreateRunRequest,
@@ -87,11 +88,18 @@ MULTI_AGENT_DISPATCH_CLAIM_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-
 MULTI_AGENT_DISPATCH_HANDOFF_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-handoff.v1"
 MULTI_AGENT_DISPATCH_TICK_CONTRACT_VERSION = "ai-platform.multi-agent-dispatch-tick.v1"
 _CAPABILITY_REVOCATION_LIFECYCLE_ERRORS = {"agent_or_skill_not_found", "skill_inactive", "mcp_tool_disabled"}
+_MULTI_AGENT_DISPATCH_NOT_AVAILABLE = "multi_agent_dispatch_not_available"
 
 
 def _raise_if_capability_revoked(exc: Exception) -> None:
     if str(exc) in _CAPABILITY_REVOCATION_LIFECYCLE_ERRORS:
         raise HTTPException(status_code=403, detail="capability_not_authorized") from exc
+
+
+def _raise_multi_agent_dispatch_not_available() -> None:
+    """Reject deferred multi-agent admission before any claim or child mutation."""
+
+    raise HTTPException(status_code=409, detail=_MULTI_AGENT_DISPATCH_NOT_AVAILABLE)
 
 
 async def _audit_capability_denial(
@@ -413,37 +421,29 @@ def _run_context_ref_from_payload(
 ) -> dict[str, object] | None:
     if not isinstance(context_snapshot, dict):
         return None
-    context_ref = ensure_public_context_provenance(
-        context_snapshot,
-        source="stored_context_snapshot",
-        message_count=message_count,
-        file_count=file_count,
-        artifact_count=artifact_count,
-        memory_record_count=memory_record_count,
-        preserve_stored_input_keys=True,
-    )
-    used_context_summary = context_ref.get("used_context_summary")
-    referenced_materials = context_ref.get("referenced_materials")
-    if not isinstance(used_context_summary, dict) or not isinstance(referenced_materials, dict):
-        return None
+    manifest = context_snapshot.get("context_manifest")
+    if not isinstance(manifest, dict):
+        return {"context_window": _degraded_context_window()}
+    projection = public_context_manifest_projection(manifest)
+    context_window = projection.get("context_window")
     return {
-        "source": used_context_summary.get("source"),
-        "referenced_materials": {
-            "message_count": _safe_public_count(referenced_materials.get("message_count")),
-            "file_count": _safe_public_count(referenced_materials.get("file_count")),
-            "artifact_count": _safe_public_count(referenced_materials.get("artifact_count")),
-            "memory_record_count": _safe_public_count(referenced_materials.get("memory_record_count")),
-        },
-        "used_context_summary": {
-            "source": used_context_summary.get("source"),
-            "input_keys": used_context_summary.get("input_keys") if isinstance(used_context_summary.get("input_keys"), list) else [],
-            "memory_policy_source": used_context_summary.get("memory_policy_source") or "not_recorded",
-            "long_term_memory_read": bool(used_context_summary.get("long_term_memory_read")),
-        },
-        "latest_artifact_version": context_ref.get("latest_artifact_version"),
-        "execution_tier": context_ref.get("execution_tier"),
-        "context_pack_version": context_ref.get("context_pack_version"),
-        "context_pack_generated_at": context_ref.get("context_pack_generated_at"),
+        "context_window": context_window
+        if isinstance(context_window, dict)
+        else _degraded_context_window(),
+    }
+
+
+def _degraded_context_window() -> dict[str, object]:
+    """Return the safe public state when an exact context binding is unavailable."""
+
+    return {
+        "status": "degraded",
+        "selection_version": "session-context-v1",
+        "history_candidate_count": 0,
+        "history_inline_count": 0,
+        "history_trimmed_count": 0,
+        "legacy_history_excluded": False,
+        "selected_file_names": [],
     }
 
 
@@ -598,6 +598,24 @@ async def queue_insight_for_status(status: str, tenant_id: str, *, user_id: str 
     if normalize_run_status(status) != "queued":
         return None
     return await get_queue_insight(tenant_id, user_id=user_id)
+
+
+async def _compensate_enqueue_failure(
+    *,
+    principal: AuthPrincipal,
+    run_id: str,
+    trace_id: str | None = None,
+) -> None:
+    """Leave a committed run in a truthful terminal state when queue admission fails."""
+
+    async with transaction() as conn:
+        await repositories.mark_run_enqueue_failed(
+            conn,
+            tenant_id=principal.tenant_id,
+            user_id=principal.user_id,
+            run_id=run_id,
+            trace_id=trace_id or standard_trace_id(run_id),
+        )
 
 
 def _resume_checkpoint_lineage(
@@ -1118,7 +1136,11 @@ async def create_run(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RepositoryConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    await enqueue_run(queue_payload)
+    try:
+        await enqueue_run(queue_payload)
+    except Exception as exc:
+        await _compensate_enqueue_failure(principal=principal, run_id=run_id)
+        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return CreateRunResponse(run_id=run_id, session_id=session_id, status="queued")
 
 
@@ -1158,7 +1180,11 @@ async def copy_run(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if copied is None:
         raise HTTPException(status_code=404, detail="run_not_found")
-    queue_position = await enqueue_run(queue_payload)
+    try:
+        queue_position = await enqueue_run(queue_payload)
+    except Exception as exc:
+        await _compensate_enqueue_failure(principal=principal, run_id=str(copied["run_id"]))
+        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return RunControlResponse(
         run_id=copied["run_id"],
         session_id=copied["session_id"],
@@ -1204,7 +1230,11 @@ async def retry_run(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if copied is None:
         raise HTTPException(status_code=404, detail="run_not_found")
-    queue_position = await enqueue_run(queue_payload)
+    try:
+        queue_position = await enqueue_run(queue_payload)
+    except Exception as exc:
+        await _compensate_enqueue_failure(principal=principal, run_id=str(copied["run_id"]))
+        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return RunControlResponse(
         run_id=copied["run_id"],
         session_id=copied["session_id"],
@@ -1251,7 +1281,11 @@ async def resume_run(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if copied is None:
         raise HTTPException(status_code=404, detail="run_not_found")
-    queue_position = await enqueue_run(queue_payload)
+    try:
+        queue_position = await enqueue_run(queue_payload)
+    except Exception as exc:
+        await _compensate_enqueue_failure(principal=principal, run_id=str(copied["run_id"]))
+        raise HTTPException(status_code=503, detail="queue_enqueue_failed") from exc
     return RunControlResponse(
         run_id=copied["run_id"],
         session_id=copied["session_id"],
@@ -1322,6 +1356,7 @@ async def claim_multi_agent_dispatch(
 ) -> MultiAgentDispatchClaimResponse:
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="admin_required")
+    _raise_multi_agent_dispatch_not_available()
     try:
         async with transaction() as conn:
             run = await repositories.get_run(conn, tenant_id=principal.tenant_id, run_id=run_id, for_update=True)
@@ -1371,6 +1406,7 @@ async def handoff_multi_agent_dispatch(
 
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="admin_required")
+    _raise_multi_agent_dispatch_not_available()
     conflict_detail: str | None = None
     try:
         async with transaction() as conn:
@@ -1448,6 +1484,7 @@ async def tick_multi_agent_dispatch(
 
     if not is_ai_admin(principal):
         raise HTTPException(status_code=403, detail="admin_required")
+    _raise_multi_agent_dispatch_not_available()
     conflict_detail: str | None = None
     try:
         async with transaction() as conn:
@@ -1773,6 +1810,16 @@ async def get_run(
         artifacts = await repositories.list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id) if run else []
         events = await repositories.list_run_events(conn, tenant_id=tenant_id, run_id=run_id) if run else []
         steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id) if run else []
+        bound_context_snapshot = None
+        if run is not None and hasattr(conn, "execute"):
+            bound_context_snapshot = await repositories.get_bound_executor_context_snapshot(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=str(run.get("workspace_id") or ""),
+                user_id=principal.user_id,
+                session_id=str(run.get("session_id") or ""),
+                run_id=run_id,
+            )
     if run is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     run_status = str(run["status"])
@@ -1801,6 +1848,8 @@ async def get_run(
         result_payload = sanitize_public_payload(redact_raw_skill_references(result_payload))
     if not isinstance(input_payload, dict):
         input_payload = {}
+    input_payload.pop("context_snapshot_id", None)
+    input_payload.pop("context_snapshot", None)
     if not isinstance(result_payload, dict):
         result_payload = {}
     error_code = (
@@ -1809,6 +1858,11 @@ async def get_run(
         else ("run_failed" if run.get("error_code") else None)
     )
     error_message = sanitize_public_text(run.get("error_message"))
+    context_ref = (
+        run_context_ref_from_snapshot_row(bound_context_snapshot)
+        if isinstance(bound_context_snapshot, dict)
+        else {"context_window": _degraded_context_window()}
+    )
     return RunResponse(
         run_id=run["id"],
         session_id=run["session_id"],
@@ -1831,6 +1885,7 @@ async def get_run(
         cancel_requested_by=run.get("cancel_requested_by"),
         error_code=error_code,
         error_message=error_message,
+        context_window=context_ref["context_window"],
     )
 
 
@@ -1861,12 +1916,16 @@ async def get_run_playback(
         )
         artifacts = await repositories.list_run_artifacts(conn, tenant_id=tenant_id, run_id=run_id)
         steps = await repositories.list_run_steps(conn, tenant_id=tenant_id, run_id=run_id)
-        context_snapshots = await repositories.list_context_snapshots(
-            conn,
-            tenant_id=tenant_id,
-            user_id=principal.user_id,
-            run_id=run_id,
-        )
+        bound_context_snapshot = None
+        if hasattr(conn, "execute"):
+            bound_context_snapshot = await repositories.get_bound_executor_context_snapshot(
+                conn,
+                tenant_id=tenant_id,
+                workspace_id=str(run.get("workspace_id") or ""),
+                user_id=principal.user_id,
+                session_id=str(run.get("session_id") or ""),
+                run_id=run_id,
+            )
 
     projected_events = [
         run_event_response(run_id, row, principal=principal)
@@ -1877,9 +1936,9 @@ async def get_run_playback(
     step_cards = [run_step_response(row, principal=principal) for row in steps]
     next_after_sequence = next_sequence_from_rows(events, fallback=after_sequence)
     latest_context_ref = (
-        run_context_ref_from_snapshot_row(context_snapshots[0])
-        if context_snapshots
-        else run_context_ref(run)
+        run_context_ref_from_snapshot_row(bound_context_snapshot)
+        if isinstance(bound_context_snapshot, dict)
+        else {"context_window": _degraded_context_window()}
     )
     return {
         "contract_version": RUN_PLAYBACK_CONTRACT_VERSION,
@@ -1893,6 +1952,7 @@ async def get_run_playback(
         "steps": step_cards,
         "multi_agent": multi_agent_snapshot_from_steps(run_id, steps, principal=principal),
         "context_ref": latest_context_ref,
+        "context_window": latest_context_ref["context_window"],
     }
 
 
