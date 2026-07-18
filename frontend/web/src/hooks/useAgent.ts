@@ -141,9 +141,14 @@ function parseChatSubmissionResolution(
   }
 
   if (candidate.state === "enqueue_failed") {
-    // This legacy state has no safely consumable response contract yet. Keep
-    // the durable fence until the server publishes and tests one explicitly.
-    return null;
+    return (
+      (candidate.submission_disposition === undefined ||
+        candidate.submission_disposition === null) &&
+      candidate.rejection_code === "queue_enqueue_failed" &&
+      (candidate.outcome === undefined || candidate.outcome === null)
+    )
+      ? (candidate as unknown as ChatSubmissionResolution)
+      : null;
   }
 
   if (candidate.state === "rejected_before_persist") {
@@ -1733,6 +1738,38 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           ...agentOptions,
         };
 
+        // Option getters are application extension seams. A getter can
+        // synchronously publish an auth-incarnation event, so validate the
+        // same ownership facts immediately before the irreversible POST.
+        if (
+          submissionTokenRef.current !== submissionToken ||
+          submissionAuthIncarnationFenceRef.current !== null ||
+          authScopeRef.current !== submissionOwner
+        ) {
+          const statusUnavailable = i18n.t("chat.runTerminal.statusUnavailable", {
+            defaultValue: i18n.t("chat.requestFailed"),
+          });
+          messagesRef.current = previousMessages;
+          setMessages(previousMessages);
+          // Keep the newly persisted key: no POST was observed, but only the
+          // durable resolver may authoritatively prove it absent.
+          submissionUncertaintyRef.current = {
+            sessionId: requestSessionId,
+            submissionId,
+            owner: submissionOwner,
+            previousMessages,
+          };
+          setPendingSubmissionId(submissionId);
+          setError(statusUnavailable);
+          setConnectionStatus("disconnected");
+          setIsInitializingSandbox(false);
+          setIsLoading(false);
+          if (submissionTokenRef.current === submissionToken) {
+            isSendingRef.current = false;
+          }
+          return { status: "failed" };
+        }
+
         const submitData: ChatStreamResponse = await sessionApi.submitChat(
           content,
           requestSessionId ?? undefined,
@@ -2331,6 +2368,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
           advancePersistedSubmissionFence(owner, submissionId);
           return;
         }
+        if (resolution.state === "enqueue_failed") {
+          const previous = pending.previousMessages || [];
+          messagesRef.current = previous;
+          setMessages(previous);
+          setError(i18n.t("chat.runTerminal.failed"));
+          advancePersistedSubmissionFence(owner, submissionId);
+          return;
+        }
         if (
           resolution.state === "queued" &&
           outcome?.session_id &&
@@ -2440,6 +2485,14 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         advancePersistedSubmissionFence(pending.owner, pending.submissionId);
         return;
       }
+      if (resolution.state === "enqueue_failed") {
+        const previous = pending.previousMessages || [];
+        messagesRef.current = previous;
+        setMessages(previous);
+        setError(i18n.t("chat.runTerminal.failed"));
+        advancePersistedSubmissionFence(pending.owner, pending.submissionId);
+        return;
+      }
       if (
         resolution.state === "queued" &&
         resolution.outcome?.session_id &&
@@ -2509,7 +2562,13 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         submissionResolverOwnerRef.current = null;
       }
     });
-  }, [authScope, pendingSubmissionId, resolvePersistedSubmission]);
+  }, [
+    authScope,
+    browserAuthIncarnation,
+    isAuthLoading,
+    pendingSubmissionId,
+    resolvePersistedSubmission,
+  ]);
 
   // Reconnect function
   const handleReconnectSSE = reconcileCurrentRun;

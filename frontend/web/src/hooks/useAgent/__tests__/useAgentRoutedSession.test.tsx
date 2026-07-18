@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { UseAgentReturn } from "../types.ts";
+import type { UseAgentOptions, UseAgentReturn } from "../types.ts";
 import { ApiRequestError } from "../../../services/api/fetch.ts";
 import type {
   ChatStreamResponse,
@@ -296,10 +296,12 @@ function persistedSubmissionStorageValues(): string[] {
 }
 
 async function loadReactHarness({
+  agentOptions,
   strict = false,
   onAuthScopeLayout,
   preserveSubmissionReferences = false,
 }: {
+  agentOptions?: UseAgentOptions;
   strict?: boolean;
   onAuthScopeLayout?: () => void;
   preserveSubmissionReferences?: boolean;
@@ -340,7 +342,7 @@ async function loadReactHarness({
 
   function Probe() {
     authSnapshot = useAuth();
-    snapshot = useAgent();
+    snapshot = useAgent(agentOptions);
     return null;
   }
 
@@ -1252,7 +1254,7 @@ test("useAgent keeps generic, network, malformed, legacy, mismatched-ID, and unk
         }) as unknown as ChatSubmissionResolution,
     },
     {
-      name: "unvalidated enqueue failure",
+      name: "malformed enqueue failure without the exact code",
       resolve: async (submissionId: string) =>
         ({
           submission_id: submissionId,
@@ -1291,6 +1293,223 @@ test("useAgent keeps generic, network, malformed, legacy, mismatched-ID, and unk
       });
       assert.equal(submissions, 1, name);
       assert.equal(harness.hook.canRetryPendingSubmission, true, name);
+    } finally {
+      sessionApi.submitChat = originalSubmitChat;
+      sessionApi.getChatSubmission = originalGetChatSubmission;
+      sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
+      await harness.cleanup();
+    }
+  }
+});
+
+test("useAgent preserves a durable A fence when a re-entrant auth event supersedes submit", async () => {
+  const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
+    "../../browserAuthCoordinator.ts"
+  );
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalSubmitChat = sessionApi.submitChat;
+  let submitCalls = 0;
+  let firedIncarnation = false;
+  sessionApi.submitChat = async () => {
+    submitCalls += 1;
+    throw new Error("the pre-submit ownership check should block this POST");
+  };
+  const harness = await loadReactHarness({
+    agentOptions: {
+      getAgentOptions: () => {
+        if (!firedIncarnation) {
+          firedIncarnation = true;
+          dom.window.dispatchEvent(
+            new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
+              detail: { incarnation: "reentrant-submit-fence" },
+            }) as unknown as { type: string; [key: string]: unknown },
+          );
+        }
+        return {};
+      },
+    },
+  });
+
+  try {
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("re-entrant auth event"), {
+        status: "failed",
+      });
+    });
+    assert.equal(firedIncarnation, true);
+    assert.equal(submitCalls, 0);
+    assert.equal(harness.hook.messages.length, 0);
+    assert.equal(harness.hook.isLoading, false);
+    assert.equal(harness.hook.canRetryPendingSubmission, true);
+    assert.match(
+      persistedSubmissionStorageValues().join("\n"),
+      /"owner":\["tenant-a","user-a"\]/,
+      "the resolver key is retained for the original A owner",
+    );
+
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("still fail closed"), {
+        status: "failed",
+      });
+    });
+    assert.equal(submitCalls, 0);
+  } finally {
+    sessionApi.submitChat = originalSubmitChat;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent fences send, resolver, and retry through deferred same-principal refresh", async () => {
+  const submissionA = "7ea93033-30f5-40ea-8a33-2f3c6e7b21c4";
+  clearPersistedSubmissionReferences();
+  dom.window.localStorage.setItem(
+    "ai_platform_chat_submission_references_v1",
+    JSON.stringify([
+      { version: 1, owner: ["tenant-a", "user-a"], submissionId: submissionA },
+    ]),
+  );
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const { authApi } = await import("../../../services/api/auth.ts");
+  const originalGetChatSubmission = sessionApi.getChatSubmission;
+  const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
+  const originalSubmitChat = sessionApi.submitChat;
+  const originalAuthLogin = authApi.login;
+  const originalAuthGetCurrentUser = authApi.getCurrentUser;
+  const resolverCalls: string[] = [];
+  let retryCalls = 0;
+  let submitCalls = 0;
+  sessionApi.getChatSubmission = async (submissionId) => {
+    resolverCalls.push(submissionId);
+    throw new ApiRequestError("not found", 404, "chat_submission_not_found");
+  };
+  sessionApi.retryChatSubmissionAdmission = async () => {
+    retryCalls += 1;
+    throw new Error("refresh fence should block retry admission");
+  };
+  sessionApi.submitChat = async () => {
+    submitCalls += 1;
+    throw new Error("refresh fence should block chat admission");
+  };
+  const harness = await loadReactHarness({ preserveSubmissionReferences: true });
+  authApi.login = async () => {};
+
+  try {
+    await harness.loginAsBeforePassiveEffects("user-a", "tenant-a");
+    await settle(harness.act);
+    assert.deepEqual(resolverCalls, [submissionA]);
+    const principalA = harness.auth.user;
+    if (principalA === null) {
+      throw new Error("the initial A principal should be hydrated");
+    }
+    let resolvePrincipal!: (value: NonNullable<typeof harness.auth.user>) => void;
+    let markPrincipalRequested!: () => void;
+    const principalRequested = new Promise<void>((resolve) => {
+      markPrincipalRequested = resolve;
+    });
+    const deferredPrincipal = new Promise<NonNullable<typeof harness.auth.user>>((resolve) => {
+      resolvePrincipal = resolve;
+    });
+    authApi.getCurrentUser = (() => {
+      markPrincipalRequested();
+      return deferredPrincipal;
+    }) as typeof authApi.getCurrentUser;
+
+    let refresh!: Promise<unknown>;
+    await harness.act(async () => {
+      refresh = harness.auth.refreshUser();
+      await principalRequested;
+    });
+    const resolverCallsBeforeRefreshSettles = resolverCalls.length;
+    await harness.act(async () => {
+      assert.deepEqual(await harness.hook.sendMessage("must wait for refresh"), {
+        status: "failed",
+      });
+      await harness.hook.retryPendingSubmission();
+    });
+    assert.equal(submitCalls, 0);
+    assert.equal(retryCalls, 0);
+    assert.equal(resolverCalls.length, resolverCallsBeforeRefreshSettles);
+
+    await harness.act(async () => {
+      resolvePrincipal(principalA);
+      await refresh;
+    });
+    await settle(harness.act);
+    assert.deepEqual(
+      resolverCalls.slice(resolverCallsBeforeRefreshSettles),
+      [submissionA],
+    );
+    assert.match(
+      persistedSubmissionStorageValues().join("\n"),
+      new RegExp(submissionA),
+      "the settled same-principal refresh must reinstall A's durable reference",
+    );
+    assert.equal(submitCalls, 0);
+    assert.equal(retryCalls, 0);
+  } finally {
+    sessionApi.getChatSubmission = originalGetChatSubmission;
+    sessionApi.retryChatSubmissionAdmission = originalRetryAdmission;
+    sessionApi.submitChat = originalSubmitChat;
+    authApi.login = originalAuthLogin;
+    authApi.getCurrentUser = originalAuthGetCurrentUser;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent clears only exact enqueue failures from GET and retry resolution", async () => {
+  const exactEnqueueFailure = (submissionId: string) =>
+    ({
+      submission_id: submissionId,
+      state: "enqueue_failed",
+      submission_disposition: null,
+      rejection_code: "queue_enqueue_failed",
+      outcome: null,
+    }) as unknown as ChatSubmissionResolution;
+
+  for (const resolutionPath of ["GET", "retry"] as const) {
+    const harness = await loadReactHarness();
+    const { sessionApi } = await import("../../../services/api/session.ts");
+    const originalSubmitChat = sessionApi.submitChat;
+    const originalGetChatSubmission = sessionApi.getChatSubmission;
+    const originalRetryAdmission = sessionApi.retryChatSubmissionAdmission;
+    let submissions = 0;
+    let retryAdmissions = 0;
+    sessionApi.submitChat = (async () => {
+      submissions += 1;
+      if (submissions === 1) {
+        throw new Error("response lost after enqueue failure");
+      }
+      return { status: "needs_confirmation", suggestions: [] };
+    }) as typeof sessionApi.submitChat;
+    sessionApi.getChatSubmission = async (submissionId) => {
+      if (resolutionPath === "GET") return exactEnqueueFailure(submissionId);
+      throw new ApiRequestError("not found", 404, "chat_submission_not_found");
+    };
+    sessionApi.retryChatSubmissionAdmission = async (submissionId) => {
+      retryAdmissions += 1;
+      return exactEnqueueFailure(submissionId);
+    };
+
+    try {
+      await harness.act(async () => {
+        await harness.hook.sendMessage(`enqueue failure via ${resolutionPath}`);
+      });
+      await settle(harness.act);
+      if (resolutionPath === "retry") {
+        assert.equal(harness.hook.canRetryPendingSubmission, true);
+        await harness.act(async () => {
+          await harness.hook.retryPendingSubmission();
+        });
+      }
+      assert.equal(harness.hook.canRetryPendingSubmission, false, resolutionPath);
+      assert.ok(harness.hook.error, "the terminal enqueue failure is visible");
+      await harness.act(async () => {
+        assert.deepEqual(await harness.hook.sendMessage("new submission is allowed"), {
+          status: "accepted",
+        });
+      });
+      assert.equal(submissions, 2, resolutionPath);
+      assert.equal(retryAdmissions, resolutionPath === "retry" ? 1 : 0);
     } finally {
       sessionApi.submitChat = originalSubmitChat;
       sessionApi.getChatSubmission = originalGetChatSubmission;

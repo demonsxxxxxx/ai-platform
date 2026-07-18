@@ -344,7 +344,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refreshUser = useCallback(async (): Promise<AuthOperationOutcome> => {
     const owner = beginAuthOperation();
-    if (isCurrentAuthOperation(owner)) setIsLoading(true);
+    if (isCurrentAuthOperation(owner)) {
+      setIsLoading(true);
+      // A same-principal refresh still replaces the authoritative projection.
+      // Publish before the first await so dependent mutations cannot cross
+      // the deferred principal hydration boundary.
+      publishAuthIncarnationForCurrentMarker(owner);
+    }
     try {
       await ensureBrowserAuthContext(owner.abortController.signal);
       if (!isCurrentAuthOperation(owner)) return cancelledAuthOperation();
@@ -359,6 +365,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     beginAuthOperation,
     hydrateOwnedUser,
     isCurrentAuthOperation,
+    publishAuthIncarnationForCurrentMarker,
   ]);
 
   // 初始化：检查现有 token 并获取用户信息
