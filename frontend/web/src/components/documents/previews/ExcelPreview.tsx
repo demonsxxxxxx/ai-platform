@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import JSZip from "jszip";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { SaxesParser, type SaxesTagNS } from "saxes";
 import { LoadingSpinner } from "../../common/LoadingSpinner";
 
 const excelPreviewStylesPromise =
@@ -83,14 +84,6 @@ interface WorkbookSheetRef {
   relationshipId: string;
 }
 
-interface XmlElement {
-  name: string;
-  localName: string;
-  attributes: Map<string, string>;
-  children: XmlElement[];
-  content: Array<string | XmlElement>;
-}
-
 function getFileExtension(value?: string | null): string {
   if (!value) {
     return "";
@@ -139,332 +132,155 @@ async function readWorkbookText(
   return file.async("string");
 }
 
-function decodeXmlEntities(value: string): string {
-  return value.replace(
-    /&(#x?[0-9a-fA-F]+|amp|apos|gt|lt|quot);/g,
-    (entity, token: string) => {
-      switch (token) {
-        case "amp":
-          return "&";
-        case "apos":
-          return "'";
-        case "gt":
-          return ">";
-        case "lt":
-          return "<";
-        case "quot":
-          return '"';
-        default: {
-          const isHex = token.startsWith("#x");
-          const isNumeric = token.startsWith("#");
-          if (!isNumeric) {
-            return entity;
-          }
-          const codePoint = Number.parseInt(
-            token.slice(isHex ? 2 : 1),
-            isHex ? 16 : 10,
-          );
-          return Number.isFinite(codePoint)
-            ? String.fromCodePoint(codePoint)
-            : entity;
-        }
-      }
-    },
-  );
-}
+const EXCEL_PREVIEW_MAX_XML_DEPTH = 64;
+const EXCEL_PREVIEW_MAX_XML_NODES = 50_000;
+const EXCEL_PREVIEW_XML_CHUNK_SIZE = 16 * 1024;
+const OOXML_RELATIONSHIP_NAMESPACE =
+  "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
-const XML_QNAME = /^[A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?$/;
+type XmlStreamEvents = {
+  onOpenTag?: (tag: SaxesTagNS) => void;
+  onCloseTag?: (tag: SaxesTagNS) => void;
+  onText?: (text: string) => void;
+};
 
 function invalidXml(): never {
   throw new Error("excel_preview_invalid_xml");
 }
 
-function localName(value: string): string {
-  return value.slice(value.indexOf(":") + 1);
-}
-
-function findXmlTerminator(
-  xml: string,
-  startIndex: number,
-  terminator: string,
-  assertBudget: () => void,
-): number {
-  for (let index = startIndex; index <= xml.length - terminator.length; index += 1) {
-    if (index % 1_024 === 0) {
-      assertBudget();
-    }
-    if (xml.startsWith(terminator, index)) {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function findXmlTagEnd(
-  xml: string,
-  startIndex: number,
-  assertBudget: () => void,
-): number {
-  let quote: string | null = null;
-  for (let index = startIndex; index < xml.length; index += 1) {
-    if (index % 1_024 === 0) {
-      assertBudget();
-    }
-    const char = xml[index];
-    if (quote) {
-      if (char === quote) {
-        quote = null;
-      }
-    } else if (char === '"' || char === "'") {
-      quote = char;
-    } else if (char === ">") {
-      return index;
-    }
-  }
-  return -1;
-}
-
-function parseXmlStartTag(tag: string): {
-  element: XmlElement;
-  selfClosing: boolean;
-} {
-  const trimmedTag = tag.trim();
-  const selfClosing = trimmedTag.endsWith("/");
-  const source = selfClosing
-    ? trimmedTag.slice(0, -1).trimEnd()
-    : trimmedTag;
-  let index = 0;
-
-  const skipWhitespace = () => {
-    while (index < source.length && /\s/.test(source[index])) {
-      index += 1;
-    }
-  };
-  const readName = () => {
-    const start = index;
-    while (index < source.length && !/[\s=]/.test(source[index])) {
-      index += 1;
-    }
-    const name = source.slice(start, index);
-    if (!XML_QNAME.test(name)) {
-      invalidXml();
-    }
-    return name;
-  };
-
-  skipWhitespace();
-  const name = readName();
-  const attributes = new Map<string, string>();
-
-  while (index < source.length) {
-    skipWhitespace();
-    if (index >= source.length) {
-      break;
-    }
-    const attributeName = readName();
-    skipWhitespace();
-    if (source[index] !== "=") {
-      invalidXml();
-    }
-    index += 1;
-    skipWhitespace();
-    const quote = source[index];
-    if (quote !== '"' && quote !== "'") {
-      invalidXml();
-    }
-    index += 1;
-    const valueStart = index;
-    while (index < source.length && source[index] !== quote) {
-      index += 1;
-    }
-    if (index >= source.length || attributes.has(attributeName)) {
-      invalidXml();
-    }
-    attributes.set(
-      attributeName,
-      decodeXmlEntities(source.slice(valueStart, index)),
-    );
-    index += 1;
-  }
-
-  return {
-    element: {
-      name,
-      localName: localName(name),
-      attributes,
-      children: [],
-      content: [],
-    },
-    selfClosing,
-  };
-}
-
-function parseOoxmlDocument(
-  xml: string,
-  assertBudget: () => void,
-): XmlElement {
-  let root: XmlElement | null = null;
-  const stack: XmlElement[] = [];
-  let index = 0;
-
-  const appendText = (text: string) => {
-    if (text.length === 0) {
-      return;
-    }
-    const current = stack.at(-1);
-    if (!current) {
-      if (text.trim().length > 0) {
-        invalidXml();
-      }
-      return;
-    }
-    current.content.push(decodeXmlEntities(text));
-  };
-
-  while (index < xml.length) {
-    assertBudget();
-    const tagStart = xml.indexOf("<", index);
-    if (tagStart < 0) {
-      appendText(xml.slice(index));
-      break;
-    }
-    appendText(xml.slice(index, tagStart));
-
-    if (xml.startsWith("<?", tagStart)) {
-      const end = findXmlTerminator(xml, tagStart + 2, "?>", assertBudget);
-      if (end < 0) {
-        invalidXml();
-      }
-      index = end + 2;
-      continue;
-    }
-    if (xml.startsWith("<!--", tagStart)) {
-      const end = findXmlTerminator(xml, tagStart + 4, "-->", assertBudget);
-      if (end < 0) {
-        invalidXml();
-      }
-      index = end + 3;
-      continue;
-    }
-    if (xml.startsWith("<![CDATA[", tagStart)) {
-      const end = findXmlTerminator(xml, tagStart + 9, "]]>", assertBudget);
-      if (end < 0 || stack.length === 0) {
-        invalidXml();
-      }
-      stack.at(-1)?.content.push(xml.slice(tagStart + 9, end));
-      index = end + 3;
-      continue;
-    }
-    if (xml.startsWith("<!", tagStart)) {
-      invalidXml();
-    }
-
-    const tagEnd = findXmlTagEnd(xml, tagStart + 1, assertBudget);
-    if (tagEnd < 0) {
-      invalidXml();
-    }
-    const tag = xml.slice(tagStart + 1, tagEnd);
-    if (tag.startsWith("/")) {
-      const name = tag.slice(1).trim();
-      const current = stack.at(-1);
-      if (!XML_QNAME.test(name) || !current || current.name !== name) {
-        invalidXml();
-      }
-      stack.pop();
-    } else {
-      const { element, selfClosing } = parseXmlStartTag(tag);
-      const parent = stack.at(-1);
-      if (parent) {
-        parent.children.push(element);
-        parent.content.push(element);
-      } else if (!root) {
-        root = element;
-      } else {
-        invalidXml();
-      }
-      if (!selfClosing) {
-        stack.push(element);
-      }
-    }
-    index = tagEnd + 1;
-  }
-
-  if (!root || stack.length > 0) {
-    invalidXml();
-  }
-  return root;
-}
-
-function findXmlElements(element: XmlElement, targetLocalName: string): XmlElement[] {
-  const matches: XmlElement[] = [];
-  const pending = [element];
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current) {
-      continue;
-    }
-    if (current.localName === targetLocalName) {
-      matches.push(current);
-    }
-    for (let index = current.children.length - 1; index >= 0; index -= 1) {
-      pending.push(current.children[index]);
-    }
-  }
-  return matches;
-}
-
-function getXmlText(element: XmlElement): string {
-  return element.content
-    .map((entry) => (typeof entry === "string" ? entry : getXmlText(entry)))
-    .join("");
-}
-
-function extractTagText(element: XmlElement, tagName: string): string {
-  const match = findXmlElements(element, tagName)[0];
-  return match ? getXmlText(match) : "";
-}
-
-function extractInlineText(element: XmlElement): string {
-  return findXmlElements(element, "t").map(getXmlText).join("");
-}
-
-function extractAttribute(element: XmlElement, attributeName: string): string | null {
-  let value: string | null = null;
-  for (const [name, candidate] of element.attributes) {
-    if (localName(name) !== attributeName) {
-      continue;
-    }
-    if (value != null) {
-      return null;
-    }
-    value = candidate;
-  }
-  return value;
-}
-
-function parseWorkbookSheetRefs(workbook: XmlElement): WorkbookSheetRef[] {
-  return findXmlElements(workbook, "sheet")
-    .map((sheet) => {
-      const name = extractAttribute(sheet, "name");
-      const relationshipId = extractAttribute(sheet, "id");
-      return name && relationshipId ? { name, relationshipId } : null;
-    })
-    .filter((value): value is WorkbookSheetRef => value != null);
-}
-
-function parseWorkbookRelationships(relationships: XmlElement | null): Map<string, string> {
-  if (!relationships) {
-    return new Map();
-  }
-  return new Map(
-    findXmlElements(relationships, "Relationship")
-      .map((relationship) => {
-        const id = extractAttribute(relationship, "Id");
-        const target = extractAttribute(relationship, "Target");
-        return id && target ? ([id, target] as const) : null;
-      })
-      .filter((value): value is readonly [string, string] => value != null),
+function findAttribute(tag: SaxesTagNS, local: string): string | null {
+  const matches = Object.values(tag.attributes).filter(
+    (attribute) => attribute.local === local,
   );
+  return matches.length === 1 ? matches[0].value : null;
+}
+
+function parseOoxmlXml(
+  xml: string,
+  assertBudget: () => void,
+  events: XmlStreamEvents,
+): void {
+  let depth = 0;
+  let nodes = 0;
+  const parser = new SaxesParser({ xmlns: true, position: false });
+  parser.on("error", () => invalidXml());
+  parser.on("doctype", () => invalidXml());
+  parser.on("opentagstart", () => {
+    assertBudget();
+    depth += 1;
+    nodes += 1;
+    if (depth > EXCEL_PREVIEW_MAX_XML_DEPTH || nodes > EXCEL_PREVIEW_MAX_XML_NODES) {
+      throw new Error("excel_preview_limits_exceeded");
+    }
+  });
+  parser.on("opentag", (tag) => {
+    assertBudget();
+    events.onOpenTag?.(tag);
+  });
+  parser.on("closetag", (tag) => {
+    assertBudget();
+    events.onCloseTag?.(tag);
+    depth -= 1;
+  });
+  parser.on("text", (text) => {
+    assertBudget();
+    events.onText?.(text);
+  });
+  parser.on("cdata", (text) => {
+    assertBudget();
+    events.onText?.(text);
+  });
+
+  for (let index = 0; index < xml.length; index += EXCEL_PREVIEW_XML_CHUNK_SIZE) {
+    assertBudget();
+    parser.write(xml.slice(index, index + EXCEL_PREVIEW_XML_CHUNK_SIZE));
+    assertBudget();
+  }
+  parser.close();
+  assertBudget();
+}
+
+function parseWorkbookSheetRefs(
+  xml: string,
+  assertBudget: () => void,
+  maxSheets: number,
+): WorkbookSheetRef[] {
+  const sheets: WorkbookSheetRef[] = [];
+  parseOoxmlXml(xml, assertBudget, {
+    onOpenTag(tag) {
+      if (tag.local !== "sheet" || sheets.length >= maxSheets) {
+        return;
+      }
+      const name = findAttribute(tag, "name");
+      const relationship = Object.values(tag.attributes).find(
+        (attribute) =>
+          attribute.local === "id" &&
+          attribute.uri === OOXML_RELATIONSHIP_NAMESPACE,
+      );
+      if (name && relationship) {
+        sheets.push({ name, relationshipId: relationship.value });
+      }
+    },
+  });
+  return sheets;
+}
+
+function parseWorkbookRelationships(
+  xml: string,
+  assertBudget: () => void,
+): Map<string, string> {
+  const relationships = new Map<string, string>();
+  if (!xml) {
+    return relationships;
+  }
+  parseOoxmlXml(xml, assertBudget, {
+    onOpenTag(tag) {
+      if (tag.local !== "Relationship") {
+        return;
+      }
+      const id = findAttribute(tag, "Id");
+      const target = findAttribute(tag, "Target");
+      if (id && target) {
+        relationships.set(id, target);
+      }
+    },
+  });
+  return relationships;
+}
+
+function parseSharedStrings(
+  xml: string | null,
+  assertBudget: () => void,
+): string[] {
+  if (!xml) {
+    return [];
+  }
+  const sharedStrings: string[] = [];
+  let current: string[] | null = null;
+  let textDepth = 0;
+  parseOoxmlXml(xml, assertBudget, {
+    onOpenTag(tag) {
+      if (tag.local === "si") {
+        current = [];
+      } else if (current && tag.local === "t") {
+        textDepth += 1;
+      }
+    },
+    onCloseTag(tag) {
+      if (current && tag.local === "t") {
+        textDepth -= 1;
+      } else if (tag.local === "si" && current) {
+        sharedStrings.push(current.join(""));
+        current = null;
+      }
+    },
+    onText(text) {
+      if (current && textDepth > 0) {
+        current.push(text);
+      }
+    },
+  });
+  return sharedStrings;
 }
 
 function resolveWorkbookTargetPath(target: string): string {
@@ -480,37 +296,8 @@ function decodeColumnReference(columnRef: string): number {
   return Math.max(0, value - 1);
 }
 
-function parseCellValue(
-  cellType: string | null,
-  cell: XmlElement,
-  sharedStrings: string[],
-): string {
-  if (cellType === "inlineStr") {
-    return extractInlineText(cell);
-  }
-  if (cellType === "s") {
-    const index = Number.parseInt(extractTagText(cell, "v"), 10);
-    return Number.isFinite(index) ? (sharedStrings[index] ?? "") : "";
-  }
-  if (cellType === "b") {
-    const raw = extractTagText(cell, "v");
-    if (raw === "1") return "TRUE";
-    if (raw === "0") return "FALSE";
-    return raw;
-  }
-  return extractTagText(cell, "v") || extractInlineText(cell);
-}
-
-function parseSharedStrings(sharedStrings: XmlElement | null): string[] {
-  if (!sharedStrings) {
-    return [];
-  }
-
-  return findXmlElements(sharedStrings, "si").map(extractInlineText);
-}
-
 function parseWorksheetRows(
-  worksheet: XmlElement,
+  xml: string,
   sharedStrings: string[],
   options: {
     startMs: number;
@@ -526,50 +313,76 @@ function parseWorksheetRows(
   let highestColIndex = -1;
   let cellCount = 0;
   let fallbackRowIndex = 0;
+  let currentRow: { index: number; values: string[]; fallbackCol: number } | null = null;
+  let currentCell:
+    | { type: string | null; reference: string | null; value: string[]; inline: string[] }
+    | null = null;
+  let textKind: "value" | "inline" | null = null;
 
-  for (const row of findXmlElements(worksheet, "row")) {
+  const assertXmlBudget = () =>
     assertPreviewBudget(options.startMs, options.timeoutMs, options.now);
-    const explicitRowNumber = Number.parseInt(
-      extractAttribute(row, "r") ?? "",
-      10,
-    );
-    const rowIndex = Number.isFinite(explicitRowNumber)
-      ? explicitRowNumber - 1
-      : fallbackRowIndex;
-    if (rowIndex >= options.maxRows) {
-      throw new Error("excel_preview_limits_exceeded");
-    }
-
-    const values = rowMap.get(rowIndex) ?? [];
-    let fallbackColIndex = 0;
-    for (const cell of row.children.filter(
-      (child) => child.localName === "c",
-    )) {
-      assertPreviewBudget(options.startMs, options.timeoutMs, options.now);
-      const refMatch = (extractAttribute(cell, "r") ?? "").match(
-        /^([A-Z]+)(\d+)$/i,
-      );
-      const colIndex = refMatch
-        ? decodeColumnReference(refMatch[1].toUpperCase())
-        : fallbackColIndex;
-      if (colIndex >= options.maxCols) {
-        throw new Error("excel_preview_limits_exceeded");
+  parseOoxmlXml(xml, assertXmlBudget, {
+    onOpenTag(tag) {
+      if (tag.local === "row") {
+        const rowNumber = Number.parseInt(findAttribute(tag, "r") ?? "", 10);
+        const index = Number.isFinite(rowNumber) ? rowNumber - 1 : fallbackRowIndex;
+        if (index >= options.maxRows) {
+          throw new Error("excel_preview_limits_exceeded");
+        }
+        currentRow = { index, values: rowMap.get(index) ?? [], fallbackCol: 0 };
+      } else if (currentRow && tag.local === "c") {
+        currentCell = {
+          type: findAttribute(tag, "t"),
+          reference: findAttribute(tag, "r"),
+          value: [],
+          inline: [],
+        };
+      } else if (currentCell && tag.local === "v") {
+        textKind = "value";
+      } else if (currentCell && tag.local === "t") {
+        textKind = "inline";
       }
-
-      const cellType = extractAttribute(cell, "t");
-      values[colIndex] = parseCellValue(cellType, cell, sharedStrings);
-      fallbackColIndex = colIndex + 1;
-      highestColIndex = Math.max(highestColIndex, colIndex);
-      cellCount += 1;
-      if (cellCount > options.maxCells) {
-        throw new Error("excel_preview_limits_exceeded");
+    },
+    onCloseTag(tag) {
+      if (tag.local === "v" || tag.local === "t") {
+        textKind = null;
+      } else if (tag.local === "c" && currentRow && currentCell) {
+        const refMatch = (currentCell.reference ?? "").match(/^([A-Z]+)(\d+)$/i);
+        const colIndex = refMatch
+          ? decodeColumnReference(refMatch[1].toUpperCase())
+          : currentRow.fallbackCol;
+        if (colIndex >= options.maxCols) {
+          throw new Error("excel_preview_limits_exceeded");
+        }
+        const raw = currentCell.value.join("");
+        const inline = currentCell.inline.join("");
+        const value = currentCell.type === "inlineStr"
+          ? inline
+          : currentCell.type === "s"
+            ? (sharedStrings[Number.parseInt(raw, 10)] ?? "")
+            : currentCell.type === "b"
+              ? raw === "1" ? "TRUE" : raw === "0" ? "FALSE" : raw
+              : raw || inline;
+        currentRow.values[colIndex] = value;
+        currentRow.fallbackCol = colIndex + 1;
+        highestColIndex = Math.max(highestColIndex, colIndex);
+        cellCount += 1;
+        if (cellCount > options.maxCells) {
+          throw new Error("excel_preview_limits_exceeded");
+        }
+        currentCell = null;
+      } else if (tag.local === "row" && currentRow) {
+        rowMap.set(currentRow.index, currentRow.values);
+        highestRowIndex = Math.max(highestRowIndex, currentRow.index);
+        fallbackRowIndex = currentRow.index + 1;
+        currentRow = null;
       }
-    }
-
-    rowMap.set(rowIndex, values);
-    highestRowIndex = Math.max(highestRowIndex, rowIndex);
-    fallbackRowIndex = rowIndex + 1;
-  }
+    },
+    onText(text) {
+      if (textKind === "value") currentCell?.value.push(text);
+      if (textKind === "inline") currentCell?.inline.push(text);
+    },
+  });
 
   if (highestRowIndex < 0 || highestColIndex < 0) {
     return [];
@@ -702,31 +515,26 @@ export async function parseExcelWorkbookPreview(
 
   const assertXmlBudget = () =>
     assertPreviewBudget(startMs, timeoutMs, now);
-  const workbook = parseOoxmlDocument(workbookXml, assertXmlBudget);
+  const maxSheets = options?.maxSheets ?? EXCEL_PREVIEW_MAX_SHEETS;
+  const sheetRefs = parseWorkbookSheetRefs(
+    workbookXml,
+    assertXmlBudget,
+    maxSheets,
+  );
   const relationshipsXml =
     (await readBoundedWorkbookText("xl/_rels/workbook.xml.rels")) ?? "";
   const relationshipMap = parseWorkbookRelationships(
-    relationshipsXml
-      ? parseOoxmlDocument(relationshipsXml, assertXmlBudget)
-      : null,
+    relationshipsXml,
+    assertXmlBudget,
   );
   const sharedStringsXml = await readBoundedWorkbookText("xl/sharedStrings.xml");
-  const sharedStrings = parseSharedStrings(
-    sharedStringsXml
-      ? parseOoxmlDocument(sharedStringsXml, assertXmlBudget)
-      : null,
-  );
-  const sheetRefs = parseWorkbookSheetRefs(workbook);
+  const sharedStrings = parseSharedStrings(sharedStringsXml, assertXmlBudget);
   if (sheetRefs.length === 0) {
     throw new Error("excel_preview_no_recognized_sheet");
   }
-  const sheets = sheetRefs.slice(
-    0,
-    options?.maxSheets ?? EXCEL_PREVIEW_MAX_SHEETS,
-  );
 
   const parsedSheets: SheetData[] = [];
-  for (const sheet of sheets) {
+  for (const sheet of sheetRefs) {
     assertPreviewBudget(startMs, timeoutMs, now);
     const target = relationshipMap.get(sheet.relationshipId);
     if (!target) {
@@ -740,7 +548,7 @@ export async function parseExcelWorkbookPreview(
     }
     parsedSheets.push({
       name: sheet.name,
-      data: parseWorksheetRows(parseOoxmlDocument(sheetXml, assertXmlBudget), sharedStrings, {
+      data: parseWorksheetRows(sheetXml, sharedStrings, {
         startMs,
         now,
         timeoutMs,
