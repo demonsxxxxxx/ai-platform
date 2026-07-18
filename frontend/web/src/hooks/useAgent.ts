@@ -31,7 +31,12 @@ import {
   type ChatStreamResponse,
 } from "../services/api";
 import { feedbackApi } from "../services/api/feedback";
+import { getAccessToken } from "../services/api/token";
 import { useAuth } from "../hooks/useAuth";
+import {
+  BROWSER_AUTH_INCARCINATION_EVENT,
+  getBrowserAuthIncarnation,
+} from "./browserAuthCoordinator";
 import { Permission } from "../types/auth";
 import {
   type UseAgentOptions,
@@ -408,17 +413,9 @@ function normalizeRunControlClaims(value: unknown): string[] {
     .filter(Boolean))].sort();
 }
 
-function readBrowserSessionMarker(): string | null {
-  try {
-    const value = localStorage.getItem("ai_platform_session_present");
-    return typeof value === "string" && value ? value : null;
-  } catch {
-    return null;
-  }
-}
-
 function runControlAuthKey(identity: RunControlAuthIdentity): string {
   return JSON.stringify([
+    identity.incarnation,
     identity.sessionMarker,
     identity.tenantId,
     identity.userId,
@@ -434,8 +431,8 @@ const TERMINAL_HISTORY_HYDRATION_TIMEOUT_MS = 10_000;
 
 export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const { hasAnyPermission, isAuthenticated, user } = useAuth();
-  const [browserSessionMarker, setBrowserSessionMarker] = useState(
-    readBrowserSessionMarker,
+  const [browserAuthIncarnation, setBrowserAuthIncarnation] = useState(
+    getBrowserAuthIncarnation,
   );
   const canReadFeedback = hasAnyPermission([
     Permission.FEEDBACK_READ,
@@ -443,7 +440,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   ]);
   const runControlAuth = useMemo<RunControlAuthIdentity>(
     () => ({
-      sessionMarker: browserSessionMarker,
+      incarnation: browserAuthIncarnation,
+      sessionMarker: getAccessToken(),
       tenantId: user?.tenant_id ?? "",
       userId: user?.id ?? "",
       roles: normalizeRunControlClaims(user?.roles),
@@ -451,20 +449,12 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       isAdmin: user?.is_admin === true,
       isActive: user?.is_active === true,
     }),
-    [browserSessionMarker, user],
+    [browserAuthIncarnation, user],
   );
   const runControlAuthIdentity = useMemo(
     () => runControlAuthKey(runControlAuth),
     [runControlAuth],
   );
-
-  useEffect(() => {
-    const refreshSessionMarker = () => {
-      setBrowserSessionMarker(readBrowserSessionMarker());
-    };
-    window.addEventListener("storage", refreshSessionMarker);
-    return () => window.removeEventListener("storage", refreshSessionMarker);
-  }, []);
 
   // State
   const [messages, setMessages] = useState<Message[]>([]);
@@ -496,6 +486,8 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
   const chatHistoryGenerationRef = useRef(0);
   const runControlAuthRevisionRef = useRef(0);
   const runControlAuthIdentityRef = useRef<string | null>(null);
+  const runControlAuthEventRevisionRef = useRef(0);
+  const appliedRunControlAuthEventRevisionRef = useRef(0);
   const runControlParentRef = useRef<{
     sessionId: string;
     runId: string;
@@ -612,6 +604,32 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     },
     [runControlLifecycle],
   );
+
+  useLayoutEffect(() => {
+    const handleAuthIncarnationChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ incarnation?: unknown }>).detail;
+      const incarnation =
+        typeof detail?.incarnation === "string"
+          ? detail.incarnation
+          : getBrowserAuthIncarnation();
+      // This handler is the same-tab ownership seam. Abort/invalidate before
+      // scheduling React work so a role refresh, login or logout cannot leave
+      // an old parent alive long enough to begin a mutation.
+      runControlAuthEventRevisionRef.current += 1;
+      runControlAuthRevisionRef.current += 1;
+      invalidateRunControl();
+      setBrowserAuthIncarnation(incarnation);
+    };
+    window.addEventListener(
+      BROWSER_AUTH_INCARCINATION_EVENT,
+      handleAuthIncarnationChange,
+    );
+    return () =>
+      window.removeEventListener(
+        BROWSER_AUTH_INCARCINATION_EVENT,
+        handleAuthIncarnationChange,
+      );
+  }, [invalidateRunControl]);
 
   const clearReconcileOwners = useCallback(() => {
     reconcileOwnerRef.current = null;
@@ -1496,6 +1514,10 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
         );
         return { status: "failed" };
       }
+      // A new user submission replaces the parent run before it can mutate
+      // optimistic transcript state or issue its POST. This fences a pending
+      // retry/resume owner from starting while the next chat admission is open.
+      invalidateRunControl();
       isSendingRef.current = true;
       const submissionToken = ++submissionTokenRef.current;
       const mountedGeneration = mountedGenerationRef.current;
@@ -1930,6 +1952,7 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
       clearReconcileOwners,
       confirmationRecovery,
       bindRunControlParent,
+      invalidateRunControl,
     ],
   );
 
@@ -2005,9 +2028,17 @@ export function useAgent(options?: UseAgentOptions): UseAgentReturn {
     if (runControlAuthIdentityRef.current === runControlAuthIdentity) {
       return;
     }
-    // Roles, permissions, active/admin flags and the non-secret browser marker
-    // are part of a RunControl owner. Rotate before passive reads can publish.
+    // Cross-tab storage handling updates AuthProvider state, while the local
+    // production event has already fenced same-tab changes synchronously.
     runControlAuthIdentityRef.current = runControlAuthIdentity;
+    if (
+      appliedRunControlAuthEventRevisionRef.current !==
+      runControlAuthEventRevisionRef.current
+    ) {
+      appliedRunControlAuthEventRevisionRef.current =
+        runControlAuthEventRevisionRef.current;
+      return;
+    }
     runControlAuthRevisionRef.current += 1;
     invalidateRunControl();
   }, [invalidateRunControl, runControlAuthIdentity]);

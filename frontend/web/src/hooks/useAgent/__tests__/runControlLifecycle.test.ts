@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { ApiRequestError } from "../../../services/api/fetch.ts";
 import { sessionApi } from "../../../services/api/session.ts";
 import {
   RunControlLifecycle,
@@ -16,6 +17,7 @@ function parent(
     chatHistoryGeneration: historyGeneration,
     authRevision: overrides.authRevision ?? 1,
     auth: {
+      incarnation: "incarnation-a",
       sessionMarker: "marker-a",
       tenantId: "tenant-a",
       userId: "user-a",
@@ -181,6 +183,48 @@ test("RunControlLifecycle keeps cancel acknowledgement separate from terminal co
       ),
     );
     sessionApi.cancelRun = originalCancel;
+    sessionApi.getStatus = originalStatus;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("RunControlLifecycle treats a post-commit retry 5xx as unconfirmed and GET-only", async () => {
+  const lifecycle = new RunControlLifecycle();
+  const originalRetry = sessionApi.retryRun;
+  const originalStatus = sessionApi.getStatus;
+  const originalFetch = globalThis.fetch;
+  let mutations = 0;
+  let statusReads = 0;
+  let playbackReads = 0;
+  sessionApi.retryRun = (async () => {
+    mutations += 1;
+    throw new ApiRequestError("gateway response lost after commit", 502);
+  }) as typeof sessionApi.retryRun;
+  sessionApi.getStatus = (async () => {
+    statusReads += 1;
+    return { session_id: "session-a", run_id: "run-a", status: "running" };
+  }) as typeof sessionApi.getStatus;
+  globalThis.fetch = (async () => {
+    playbackReads += 1;
+    return new Response(
+      JSON.stringify({ run_id: "run-a", timeline: [], events: [], artifacts: [], steps: [], multi_agent: null }),
+    );
+  }) as typeof fetch;
+  lifecycle.configure({
+    adoptRunControlChild: async () => "superseded",
+    reconnectRunControlOwner: async () => {},
+  });
+  lifecycle.bindParent(parent());
+
+  try {
+    await lifecycle.retry();
+    await Promise.resolve();
+    assert.equal(mutations, 1, "unknown 5xx must not replay the POST");
+    assert.equal(lifecycle.getSnapshot().phase, "unconfirmed");
+    assert.equal(statusReads, 1, "recovery may only read readiness");
+    assert.equal(playbackReads, 1, "recovery may only read playback");
+  } finally {
+    sessionApi.retryRun = originalRetry;
     sessionApi.getStatus = originalStatus;
     globalThis.fetch = originalFetch;
   }

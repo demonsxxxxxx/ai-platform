@@ -11,6 +11,8 @@ export const BROWSER_AUTH_CONTEXT_LOCK_NAME =
 export const BROWSER_AUTH_CONTEXT_V2_DB_NAME =
   "ai-platform-browser-auth-context-v2";
 export const BROWSER_AUTH_CONTEXT_V2_STORE_NAME = "coordination";
+/** Same-tab notification that the authenticated browser principal changed. */
+export const BROWSER_AUTH_INCARCINATION_EVENT = "ai-platform:auth-incarnation";
 
 const BROWSER_AUTH_CONTEXT_V2_RECORD_KEY = "current";
 const BROWSER_AUTH_CONTEXT_V2_DB_VERSION = 1;
@@ -18,6 +20,7 @@ const ACQUISITION_TIMEOUT_MS = 10_000;
 const OWNER_LEASE_MS = 5_000;
 const ACQUISITION_RETRY_MS = 25;
 const BASE64URL_RE = /^[A-Za-z0-9_-]{43}$/;
+let currentBrowserAuthIncarnation: string | null = null;
 
 interface BrowserLockManager {
   request<T>(
@@ -131,6 +134,38 @@ function browserLocks(): BrowserLockManager | null {
 
 function browserIndexedDb(): IDBFactory | null {
   return typeof indexedDB === "undefined" ? null : indexedDB;
+}
+
+function rememberBrowserAuthIncarnation(incarnation: string): void {
+  currentBrowserAuthIncarnation = incarnation;
+}
+
+/**
+ * Returns the coordinator's collision-resistant browser incarnation when it
+ * is known in this tab. The V1 coordinator's stable nonce has the same secure
+ * random construction; V2 exposes its persisted browser_incarnation.
+ */
+export function getBrowserAuthIncarnation(): string | null {
+  if (currentBrowserAuthIncarnation !== null) {
+    return currentBrowserAuthIncarnation;
+  }
+  return browserLocks() ? existingNonce(browserStorage()) : null;
+}
+
+/**
+ * Publish a same-tab authenticated-principal change. Storage remains the
+ * cross-tab coordination channel; listeners must fence ownership synchronously
+ * from this event rather than awaiting a render or a storage notification.
+ */
+export function publishBrowserAuthIncarnationChange(): void {
+  if (typeof window === "undefined" || typeof window.dispatchEvent !== "function") {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
+      detail: { incarnation: getBrowserAuthIncarnation() },
+    }),
+  );
 }
 
 function isRebootstrapRequired(error: unknown): boolean {
@@ -816,6 +851,7 @@ async function ensureV2BrowserAuthContext(
   try {
     owned = await acquireV2Owner(signal);
     const current = await assertV2Owner(owned, signal);
+    rememberBrowserAuthIncarnation(current.incarnation);
     if (current.pendingRotation) {
       // Login recovery may only repair an exact confirmed server context. A
       // pending rotation needs the ordinary coordinator's ticketed protocol;
@@ -857,6 +893,7 @@ async function ensureV2BrowserAuthContext(
         signal,
       );
       const fresh = await assertV2Owner(owned, signal);
+      rememberBrowserAuthIncarnation(fresh.incarnation);
       if (
         fresh.confirmedGeneration !== 0
         || fresh.currentGeneration !== 1
@@ -935,6 +972,7 @@ async function ensureV1BrowserAuthContext(
     async () => {
       throwIfAborted(signal);
       const stableNonce = existingNonce(storage) ?? createNonce();
+      rememberBrowserAuthIncarnation(stableNonce);
       await bootstrapAndPublishNonce(storage, stableNonce, signal);
     },
   );

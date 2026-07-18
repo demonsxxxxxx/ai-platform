@@ -209,6 +209,7 @@ test("mounted RunPlaybackPanel ignores an aborted stale owner read after run rep
     chatHistoryGeneration: 1,
     authRevision: 1,
     auth: {
+      incarnation: "incarnation-a",
       sessionMarker: "marker-a",
       tenantId: "tenant-a",
       userId: "user-a",
@@ -262,6 +263,7 @@ test("mounted RunPlaybackPanel ignores an aborted stale owner read after run rep
         chatHistoryGeneration: 2,
         authRevision: 1,
         auth: {
+          incarnation: "incarnation-a",
           sessionMarker: "marker-a",
           tenantId: "tenant-a",
           userId: "user-a",
@@ -313,6 +315,7 @@ test("mounted RunPlaybackPanel rejects a late read after marker and role rotatio
     chatHistoryGeneration: 1,
     authRevision: 1,
     auth: {
+      incarnation: "incarnation-a",
       sessionMarker: "marker-a",
       tenantId: "tenant-a",
       userId: "user-a",
@@ -348,6 +351,7 @@ test("mounted RunPlaybackPanel rejects a late read after marker and role rotatio
         chatHistoryGeneration: 1,
         authRevision: 2,
         auth: {
+          incarnation: "incarnation-b",
           sessionMarker: "marker-b",
           tenantId: "tenant-a",
           userId: "user-a",

@@ -30,6 +30,7 @@ import { classifyBrowserAuthStorageEvent } from "./browserAuthStorage";
 import {
   ensureBrowserAuthContext,
   ensureBrowserAuthContextBeforeLogin,
+  publishBrowserAuthIncarnationChange,
 } from "./browserAuthCoordinator";
 import { DEFAULT_THINKING_LEVEL_STORAGE_KEY } from "../components/layout/AppContent/useAgentOptions";
 import {
@@ -210,6 +211,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } else {
       setDynamicPermissions([]);
     }
+    // This is the production same-tab ownership seam for login and principal
+    // refreshes. Run-control listeners fence old work synchronously here;
+    // `storage` is intentionally reserved for cross-tab changes.
+    publishBrowserAuthIncarnationChange();
     return true;
   }, [isCurrentAuthOperation]);
 
@@ -226,6 +231,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setToken(null);
     setUser(null);
     setDynamicPermissions([]);
+    // Logout and cross-tab replacement clear the visible principal through
+    // this path. Publish even when the marker was already replaced elsewhere.
+    publishBrowserAuthIncarnationChange();
     return true;
   }, [isCurrentAuthOperation]);
 

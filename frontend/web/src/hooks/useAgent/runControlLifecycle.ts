@@ -32,6 +32,8 @@ export type RunControlAction = "cancel" | "retry" | "resume";
  * fence; the lifecycle never renders or persists them.
  */
 export interface RunControlAuthIdentity {
+  /** Coordinator-issued, crypto-random browser-auth incarnation. */
+  incarnation: string | null;
   sessionMarker: string | null;
   tenantId: string;
   userId: string;
@@ -137,12 +139,20 @@ function isResumableStatus(value: string | null): boolean {
   return value !== null && ["failed", "cancelled"].includes(value);
 }
 
+function isDefinitiveMutationRejection(error: ApiRequestError): boolean {
+  // Only a server-confirmed authorization or precondition failure proves that
+  // retry/resume did not create a child. Timeouts, throttling and every 5xx
+  // can occur after commit, so they must remain unconfirmed and GET-only.
+  return [401, 403, 404, 409, 410, 412, 422].includes(error.status);
+}
+
 function parentIdentityKey(parent: RunControlParentIdentity): string {
   return JSON.stringify([
     parent.chatHistoryGeneration,
     parent.authRevision,
     parent.sessionId,
     parent.runId,
+    parent.auth.incarnation,
     parent.auth.sessionMarker,
     parent.auth.tenantId,
     parent.auth.userId,
@@ -457,7 +467,7 @@ export class RunControlLifecycle {
       ) {
         return;
       }
-      if (error instanceof ApiRequestError) {
+      if (error instanceof ApiRequestError && isDefinitiveMutationRejection(error)) {
         owner.phase = "rejected";
         this.publishForOwner(owner, {
           phase: "rejected",

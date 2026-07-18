@@ -251,10 +251,14 @@ function installTestDom() {
     HTMLSelectElement: TestElement,
     SVGElement: TestElement,
     CustomEvent: class {
+      readonly detail: unknown;
+
       constructor(
         readonly type: string,
-        readonly init?: { detail?: unknown },
-      ) {}
+        init?: { detail?: unknown },
+      ) {
+        this.detail = init?.detail;
+      }
     },
     IS_REACT_ACT_ENVIRONMENT: true,
   });
@@ -461,6 +465,19 @@ async function loadReactHarness({
     },
     async loginAsBeforePassiveEffects(userId: string, tenantId: string) {
       await loginAs(userId, tenantId, false);
+    },
+    async dispatchProductionAuthIncarnation(incarnation: string) {
+      const { BROWSER_AUTH_INCARCINATION_EVENT } = await import(
+        "../../browserAuthCoordinator.ts"
+      );
+      await React.act(async () => {
+        dom.window.dispatchEvent(
+          new CustomEvent(BROWSER_AUTH_INCARCINATION_EVENT, {
+            detail: { incarnation },
+          }) as unknown as { type: string; [key: string]: unknown },
+        );
+        await Promise.resolve();
+      });
     },
     unmount,
     async cleanup() {
@@ -4476,6 +4493,162 @@ test("useAgent aborts a deferred run-control GET before unmount can publish it",
     sessionApi.getStatus = originalGetStatus;
     sessionApi.markRead = originalMarkRead;
     globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent synchronously aborts a deferred run-control GET from the production auth-incarnation event", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalFetch = globalThis.fetch;
+  let resolvePlayback!: (value: Response) => void;
+  let playbackSignal: AbortSignal | null = null;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-auth-event-control",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: "run-auth-event-control",
+    events: [{
+      id: "evt-auth-event-control",
+      run_id: "run-auth-event-control",
+      event_type: "user:message",
+      timestamp: "2026-07-19T00:00:00Z",
+      data: { content: "auth role refresh" },
+    }],
+  });
+  sessionApi.getStatus = (async (sessionId, runId) => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: "failed",
+    raw_status: "failed",
+  })) as typeof sessionApi.getStatus;
+  globalThis.fetch = ((_input, init) =>
+    new Promise<Response>((resolve) => {
+      playbackSignal = init?.signal as AbortSignal;
+      resolvePlayback = resolve;
+    })) as typeof fetch;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory(
+        "session-auth-event-control",
+        "run-auth-event-control",
+      );
+      harness.hook.runControlLifecycle.open();
+      await Promise.resolve();
+    });
+    assert.ok(playbackSignal);
+
+    // This is the production same-tab event, deliberately not a synthetic
+    // storage event. It models the synchronous fence for login/logout/role
+    // refresh before React publishes the new principal.
+    await harness.dispatchProductionAuthIncarnation("incarnation-role-refresh");
+    assert.equal((playbackSignal as AbortSignal).aborted, true);
+    assert.equal(harness.hook.runControlLifecycle.getSnapshot().owner, null);
+
+    resolvePlayback(
+      new Response(
+        JSON.stringify({ run_id: "run-auth-event-control", timeline: [], events: [], artifacts: [], steps: [], multi_agent: null }),
+      ),
+    );
+    await settle(harness.act);
+    assert.equal(harness.hook.runControlLifecycle.getSnapshot().playback, null);
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    globalThis.fetch = originalFetch;
+    await harness.cleanup();
+  }
+});
+
+test("useAgent fences an A retry before pending B submission can issue its POST", async () => {
+  const harness = await loadReactHarness();
+  const { sessionApi } = await import("../../../services/api/session.ts");
+  const originalGet = sessionApi.get;
+  const originalGetEvents = sessionApi.getEvents;
+  const originalGetStatus = sessionApi.getStatus;
+  const originalMarkRead = sessionApi.markRead;
+  const originalRetryRun = sessionApi.retryRun;
+  const originalSubmitChat = sessionApi.submitChat;
+  let rejectSubmission!: (reason?: unknown) => void;
+  const pendingSubmission = new Promise<ChatStreamResponse>((_resolve, reject) => {
+    rejectSubmission = reject;
+  });
+  let retryPosts = 0;
+  sessionApi.markRead = async () => {};
+  sessionApi.get = async () => ({
+    id: "session-a-admission",
+    agent_id: "general-agent",
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    is_active: true,
+    metadata: {},
+  });
+  sessionApi.getEvents = async () => ({
+    current_run_id: "run-a-admission",
+    events: [{
+      id: "evt-a-admission",
+      run_id: "run-a-admission",
+      event_type: "user:message",
+      timestamp: "2026-07-19T00:00:00Z",
+      data: { content: "run A" },
+    }],
+  });
+  sessionApi.getStatus = (async (sessionId, runId) => ({
+    session_id: sessionId,
+    run_id: runId,
+    status: "failed",
+    raw_status: "failed",
+  })) as typeof sessionApi.getStatus;
+  sessionApi.retryRun = (async () => {
+    retryPosts += 1;
+    return { session_id: "session-a-admission", run_id: "run-a-child", status: "queued" };
+  }) as typeof sessionApi.retryRun;
+  sessionApi.submitChat = (() => pendingSubmission) as typeof sessionApi.submitChat;
+
+  try {
+    await harness.act(async () => {
+      await harness.hook.loadHistory("session-a-admission", "run-a-admission");
+    });
+    let submission!: Promise<unknown>;
+    await harness.act(async () => {
+      submission = harness.hook.sendMessage("begin B") as Promise<unknown>;
+      await Promise.resolve();
+    });
+
+    assert.equal(
+      harness.hook.runControlLifecycle.getSnapshot().owner,
+      null,
+      "B admission must invalidate A before its submit POST settles",
+    );
+    await harness.act(async () => {
+      await harness.hook.runControlLifecycle.retry();
+    });
+    assert.equal(retryPosts, 0, "a pending B admission must fence A's retry POST");
+
+    await harness.act(async () => {
+      rejectSubmission(new Error("test ends the deferred B admission"));
+      await submission;
+    });
+  } finally {
+    sessionApi.get = originalGet;
+    sessionApi.getEvents = originalGetEvents;
+    sessionApi.getStatus = originalGetStatus;
+    sessionApi.markRead = originalMarkRead;
+    sessionApi.retryRun = originalRetryRun;
+    sessionApi.submitChat = originalSubmitChat;
     await harness.cleanup();
   }
 });
