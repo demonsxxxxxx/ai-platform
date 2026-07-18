@@ -116,6 +116,8 @@ class RecordingConnection:
     async def execute(self, sql, params):
         normalized = " ".join(sql.split())
         self.calls.append((normalized, params))
+        if normalized.startswith("update sessions set next_run_generation"):
+            return SingleRowCursor({"next_run_generation": 1})
         if "select clock_timestamp() as authority_now" in normalized:
             return SingleRowCursor({"authority_now": datetime(2026, 7, 16, tzinfo=timezone.utc)})
         return FakeCursor()
@@ -160,9 +162,9 @@ class TwoSnapshotFileMembershipConnection:
         self.calls.append((normalized, params))
         is_projection = len(params) == 4
         exact_snapshot_join = (
-            "authorized_snapshot.id = runs.input_json->>'context_snapshot_id'"
+            "authorized_snapshot.id = runs.context_snapshot_id"
             if is_projection
-            else "context_snapshot.id = current_run.input_json->>'context_snapshot_id'"
+            else "context_snapshot.id = current_run.context_snapshot_id"
         )
         uses_selected_snapshot = exact_snapshot_join in normalized
         snapshot = self.snapshots[0] if uses_selected_snapshot else self.snapshots[-1]
@@ -2905,7 +2907,7 @@ async def test_list_scoped_context_messages_filters_full_scope_and_limits_rows()
     assert "join sessions" in conn.sql
     assert "join runs source_runs" in conn.sql
     assert "join runs current_run" in conn.sql
-    assert "join lateral" in conn.sql
+    assert "context_snapshot.id = current_run.context_snapshot_id" in conn.sql
     assert "context_snapshot.included_message_ids ? messages.id" in conn.sql
     assert "source_runs.session_id = current_run.session_id" in conn.sql
     assert conn.params == ("run-a", "tenant-a", "workspace-a", "user-a", "session-a", "run-a", 25, 5)
@@ -2956,7 +2958,7 @@ async def test_scoped_context_file_and_artifact_queries_bind_full_scope():
     assert file_row["id"] == "file-a"
     assert "join runs source_run" in file_conn.sql
     assert "join runs current_run" in file_conn.sql
-    assert "context_snapshot.id = current_run.input_json->>'context_snapshot_id'" in file_conn.sql
+    assert "context_snapshot.id = current_run.context_snapshot_id" in file_conn.sql
     assert "join lateral" not in file_conn.sql
     assert "sessions.status = 'active'" in file_conn.sql
     assert "context_snapshot.included_file_ids ? files.id" in file_conn.sql
@@ -3011,8 +3013,8 @@ async def test_input_file_list_and_read_use_persisted_s1_after_later_s2(
     assert (file_row is not None) is expected_authorized
     assert bool(projected_rows) is expected_authorized
     read_sql, projection_sql = (call[0] for call in conn.calls)
-    assert "context_snapshot.id = current_run.input_json->>'context_snapshot_id'" in read_sql
-    assert "authorized_snapshot.id = runs.input_json->>'context_snapshot_id'" in projection_sql
+    assert "context_snapshot.id = current_run.context_snapshot_id" in read_sql
+    assert "authorized_snapshot.id = runs.context_snapshot_id" in projection_sql
     assert "join lateral" not in read_sql
     assert "join lateral" not in projection_sql
 
@@ -3027,15 +3029,38 @@ async def test_session_context_candidates_bind_owner_scope_and_latest_successful
         workspace_id="workspace-a",
         user_id="user-a",
         session_id="session-a",
+        run_id="run-current",
         limit=8,
     )
     messages_sql, messages_params = conn.calls[-1]
     assert "sessions.status = 'active'" in messages_sql
     assert "runs.workspace_id = sessions.workspace_id" in messages_sql
     assert "runs.user_id = sessions.user_id" in messages_sql
-    assert "order by messages.created_at desc" in messages_sql
-    assert "order by created_at asc" in messages_sql
-    assert messages_params == ("tenant-a", "session-a", "workspace-a", "user-a", 8)
+    assert "runs.session_generation <" in messages_sql
+    assert "order by runs.session_generation desc" in messages_sql
+    assert "order by session_generation asc" in messages_sql
+    assert messages_params == (
+        "tenant-a", "workspace-a", "user-a", "session-a", "run-current",
+        "tenant-a", "session-a", "workspace-a", "user-a", 8,
+    )
+
+    await repositories.count_session_context_messages(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        run_id="run-current",
+    )
+    count_sql, count_params = conn.calls[-1]
+    assert "count(*) as context_message_count" in count_sql
+    assert "messages.content" not in count_sql
+    assert "order by" not in count_sql
+    assert "limit" not in count_sql
+    assert count_params == (
+        "tenant-a", "workspace-a", "user-a", "session-a", "run-current",
+        "tenant-a", "session-a", "workspace-a", "user-a",
+    )
 
     await repositories.list_session_context_files(
         conn,
@@ -3043,14 +3068,19 @@ async def test_session_context_candidates_bind_owner_scope_and_latest_successful
         workspace_id="workspace-a",
         user_id="user-a",
         session_id="session-a",
+        run_id="run-current",
         limit=8,
     )
     files_sql, files_params = conn.calls[-1]
     assert "sessions.status = 'active'" in files_sql
     assert "runs.session_id = files.session_id" in files_sql
-    assert "order by files.created_at desc" in files_sql
-    assert "order by created_at asc" in files_sql
-    assert files_params == ("tenant-a", "workspace-a", "user-a", "session-a", 8)
+    assert "runs.session_generation <" in files_sql
+    assert "order by runs.session_generation desc" in files_sql
+    assert "order by session_generation asc" in files_sql
+    assert files_params == (
+        "tenant-a", "workspace-a", "user-a", "session-a", "run-current",
+        "tenant-a", "workspace-a", "user-a", "session-a", 8,
+    )
 
     await repositories.list_authorized_session_input_files(
         conn,
@@ -3063,7 +3093,7 @@ async def test_session_context_candidates_bind_owner_scope_and_latest_successful
     assert "join sessions" in projection_sql
     assert "join runs" in projection_sql
     assert "join lateral" not in projection_sql
-    assert "authorized_snapshot.id = runs.input_json->>'context_snapshot_id'" in projection_sql
+    assert "authorized_snapshot.id = runs.context_snapshot_id" in projection_sql
     assert "authorized_snapshot.included_file_ids ? files.id" in projection_sql
     assert "sessions.status = 'active'" in projection_sql
     assert "sessions.workspace_id = files.workspace_id" in projection_sql
@@ -3086,6 +3116,11 @@ async def test_session_context_candidates_bind_owner_scope_and_latest_successful
     assert "runs.id <> %s" in artifacts_sql
     assert "artifacts.expires_at is null or artifacts.expires_at > now()" in artifacts_sql
     assert artifacts_params == (
+        "tenant-a",
+        "workspace-a",
+        "user-a",
+        "session-a",
+        "run-current",
         "tenant-a",
         "workspace-a",
         "user-a",
@@ -3986,6 +4021,94 @@ async def test_create_run_binds_normalized_auth_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_session_generation_allocator_serializes_allocation_at_the_session_row():
+    class GenerationConnection:
+        def __init__(self):
+            self.calls = []
+            self.next_generation = 0
+
+        async def execute(self, sql, params):
+            normalized = " ".join(sql.split())
+            self.calls.append((normalized, params))
+            self.next_generation += 1
+            return SingleRowCursor({"next_run_generation": self.next_generation})
+
+    conn = GenerationConnection()
+    first = await repositories.allocate_session_run_generation(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        agent_id="general-agent",
+    )
+    second = await repositories.allocate_session_run_generation(
+        conn,
+        tenant_id="tenant-a",
+        workspace_id="workspace-a",
+        user_id="user-a",
+        session_id="session-a",
+        agent_id="general-agent",
+    )
+
+    assert (first, second) == (1, 2)
+    sql, params = conn.calls[0]
+    assert sql.startswith("update sessions set next_run_generation = next_run_generation + 1")
+    assert "user_id is not distinct from %s" in sql
+    assert "returning next_run_generation" in sql
+    assert params == ("tenant-a", "workspace-a", "user-a", "session-a", "general-agent")
+
+
+@pytest.mark.asyncio
+async def test_context_snapshot_binding_rejects_a_mismatched_public_reference_before_sql():
+    class NoQueryConnection:
+        async def execute(self, *_args, **_kwargs):
+            raise AssertionError("mismatched snapshot reference must not execute SQL")
+
+    with pytest.raises(RepositoryConflictError, match="context_snapshot_binding_invalid"):
+        await repositories.update_run_context_snapshot_ref(
+            NoQueryConnection(),
+            tenant_id="tenant-a",
+            run_id="run-a",
+            context_snapshot_id="ctx-a",
+            context_snapshot={"context_snapshot_id": "ctx-other"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_context_snapshot_binding_requires_same_scope_executor_and_allows_only_exact_repeat():
+    conn = SingleRowConnection({"context_snapshot_id": "ctx-a"})
+
+    await repositories.update_run_context_snapshot_ref(
+        conn,
+        tenant_id="tenant-a",
+        run_id="run-a",
+        context_snapshot_id="ctx-a",
+        context_snapshot={"context_snapshot_id": "ctx-a", "source": "chat_stream"},
+    )
+
+    assert "context_kind = 'executor'" in conn.sql
+    assert "context_snapshot_id is null" in conn.sql
+    assert "context_snapshot_id = %s" in conn.sql
+    assert "input_json->>'context_snapshot_id' = context_snapshot_id" in conn.sql
+    assert conn.params[-2:] == ("ctx-a", "ctx-a")
+
+
+@pytest.mark.asyncio
+async def test_context_snapshot_binding_fails_closed_when_the_database_rejects_scope_or_rebinding():
+    conn = SingleRowConnection(None)
+
+    with pytest.raises(RepositoryConflictError, match="context_snapshot_binding_invalid"):
+        await repositories.update_run_context_snapshot_ref(
+            conn,
+            tenant_id="tenant-a",
+            run_id="run-a",
+            context_snapshot_id="ctx-other",
+            context_snapshot={"context_snapshot_id": "ctx-other", "source": "chat_stream"},
+        )
+
+
+@pytest.mark.asyncio
 async def test_create_session_validates_workspace_tenant_before_insert(monkeypatch):
     calls = []
 
@@ -4143,14 +4266,13 @@ async def test_create_run_rejects_session_scope_mismatch_before_insert_returns()
         )
 
     sql, params = conn.calls[-1]
-    assert "insert into runs" in sql
-    assert "from sessions" in sql
-    assert "sessions.tenant_id = %s" in sql
-    assert "sessions.workspace_id = %s" in sql
-    assert "sessions.user_id = %s" in sql
-    assert "sessions.id = %s" in sql
-    assert "sessions.agent_id = %s" in sql
-    assert "returning id" in sql
+    assert sql.startswith("update sessions set next_run_generation")
+    assert "tenant_id = %s" in sql
+    assert "workspace_id = %s" in sql
+    assert "user_id is not distinct from %s" in sql
+    assert "id = %s" in sql
+    assert "agent_id = %s" in sql
+    assert "returning next_run_generation" in sql
     assert "session-cross-scope" in params
 
 
@@ -4502,6 +4624,9 @@ async def test_get_context_snapshot_for_worker_scopes_by_full_run_identity():
     assert "session_id = %s" in conn.sql
     assert "run_id = %s" in conn.sql
     assert "id = %s" in conn.sql
+    assert "join runs on runs.context_snapshot_id = run_context_snapshots.id" in conn.sql
+    assert "runs.input_json->>'context_snapshot_id' = runs.context_snapshot_id" in conn.sql
+    assert "runs.input_json->'context_snapshot'->>'context_snapshot_id' = runs.context_snapshot_id" in conn.sql
     assert conn.params == ("tenant-a", "workspace-a", "user-a", "session-a", "run-a", "ctx-a")
 
 
@@ -4595,7 +4720,7 @@ async def test_list_context_share_snapshots_for_target_session_filters_public_pa
 
 
 @pytest.mark.asyncio
-async def test_get_latest_authorized_executor_context_snapshot_excludes_share_fork_rows():
+async def test_executor_context_compatibility_lookup_uses_physical_run_binding():
     class ExecutorSnapshotCursor:
         async def fetchone(self):
             return {"id": "ctx-executor", "context_kind": "executor"}
@@ -4620,12 +4745,13 @@ async def test_get_latest_authorized_executor_context_snapshot_excludes_share_fo
     )
 
     assert row["id"] == "ctx-executor"
-    assert "from run_context_snapshots" in conn.sql
-    assert "tenant_id = %s" in conn.sql
-    assert "user_id = %s" in conn.sql
-    assert "run_id = %s" in conn.sql
-    assert "context_kind = 'executor'" in conn.sql
-    assert "limit 1" in conn.sql
+    assert "from runs" in conn.sql
+    assert "context_snapshot.id = runs.context_snapshot_id" in conn.sql
+    assert "runs.tenant_id = %s" in conn.sql
+    assert "runs.user_id = %s" in conn.sql
+    assert "runs.id = %s" in conn.sql
+    assert "context_snapshot.context_kind = 'executor'" in conn.sql
+    assert "order by" not in conn.sql
     assert conn.params == ("tenant-a", "user-a", "run-source")
 
 
@@ -9557,6 +9683,10 @@ async def test_update_run_input_execution_snapshot_atomically_replaces_canonical
         json.dumps(execution_snapshot, ensure_ascii=False),
         "default",
         "run-a",
+        json.dumps(execution_snapshot, ensure_ascii=False),
+        json.dumps(execution_snapshot, ensure_ascii=False),
+        json.dumps(execution_snapshot, ensure_ascii=False),
+        json.dumps(execution_snapshot, ensure_ascii=False),
     )
 
 
@@ -9590,6 +9720,10 @@ async def test_update_run_input_execution_snapshot_explicitly_replaces_null_and_
         json.dumps(execution_snapshot, ensure_ascii=False),
         "tenant-a",
         "run-empty",
+        json.dumps(execution_snapshot, ensure_ascii=False),
+        json.dumps(execution_snapshot, ensure_ascii=False),
+        json.dumps(execution_snapshot, ensure_ascii=False),
+        json.dumps(execution_snapshot, ensure_ascii=False),
     )
 
 

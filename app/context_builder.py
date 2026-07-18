@@ -490,8 +490,25 @@ def _manifest_context_chips(input_payload: dict[str, Any]) -> list[str]:
     return []
 
 
-def _manifest_file_refs(file_ids: list[str]) -> list[dict[str, Any]]:
-    return [{"id": file_id, "requires_retrieval": True} for file_id in file_ids if file_id]
+def _manifest_file_refs(file_ids: list[str], rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Keep only authorized file basenames alongside private retrieval identities."""
+
+    names_by_id = {
+        str(row.get("id") or ""): str(row.get("original_name") or "")
+        for row in rows or []
+        if isinstance(row, dict) and row.get("id") and row.get("original_name")
+    }
+    return [
+        {
+            "id": file_id,
+            "original_name": names_by_id[file_id],
+            "requires_retrieval": True,
+        }
+        if file_id in names_by_id
+        else {"id": file_id, "requires_retrieval": True}
+        for file_id in file_ids
+        if file_id
+    ]
 
 
 def _manifest_artifact_refs(artifact_ids: list[str]) -> list[dict[str, Any]]:
@@ -509,10 +526,13 @@ def _build_initial_context_manifest(
     skill_id: str,
     input_payload: dict[str, Any],
     prior_messages: list[dict[str, Any]],
+    history_candidate_count: int,
     file_ids: list[str],
     artifact_ids: list[str],
     memory_record_ids: list[str],
     source_run_ids: list[str],
+    legacy_history_excluded: bool,
+    authorized_file_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return ContextPlanner().plan(
         tenant_id=tenant_id,
@@ -524,11 +544,13 @@ def _build_initial_context_manifest(
         skill_id=skill_id,
         current_message=_manifest_current_message(input_payload),
         recent_messages=prior_messages,
+        history_candidate_count=history_candidate_count,
         context_chips=_manifest_context_chips(input_payload),
-        files=_manifest_file_refs(file_ids),
+        files=_manifest_file_refs(file_ids, authorized_file_rows),
         artifacts=_manifest_artifact_refs(artifact_ids),
         memory_records=[{"id": memory_id, "status": "active"} for memory_id in memory_record_ids if memory_id],
         source_run_ids=source_run_ids,
+        legacy_history_excluded=legacy_history_excluded,
     )
 
 
@@ -556,13 +578,24 @@ async def record_initial_context_snapshot(
     included_artifact_ids: list[str] = []
     source_run_ids: list[str] = []
     source_artifacts: list[dict[str, Any]] = []
+    legacy_history_excluded = False
+    history_candidate_count = 0
     if include_session_history:
+        history_candidate_count = await repositories.count_session_context_messages(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+        )
         session_messages = await repositories.list_session_context_messages(
             conn,
             tenant_id=tenant_id,
             workspace_id=workspace_id,
             user_id=user_id,
             session_id=session_id,
+            run_id=run_id,
             limit=8,
         )
         included_message_ids = list(
@@ -591,6 +624,7 @@ async def record_initial_context_snapshot(
             workspace_id=workspace_id,
             user_id=user_id,
             session_id=session_id,
+            run_id=run_id,
             limit=8,
         )
         included_file_ids = list(
@@ -613,6 +647,14 @@ async def record_initial_context_snapshot(
             limit=8,
         )
         source_artifacts.extend(row for row in session_artifacts if isinstance(row, dict))
+        legacy_history_excluded = await repositories.session_has_legacy_run_history(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            run_id=run_id,
+        )
     if source_run_id:
         authorized_source_run = await repositories.get_authorized_run(
             conn,
@@ -662,6 +704,16 @@ async def record_initial_context_snapshot(
         ),
         None,
     )
+    authorized_file_rows: list[dict[str, Any]] = []
+    if hasattr(conn, "execute"):
+        authorized_file_rows = await repositories.list_authorized_context_file_rows(
+            conn,
+            tenant_id=tenant_id,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            session_id=session_id,
+            file_ids=included_file_ids,
+        )
     memory_policy = await repositories.get_effective_memory_policy(
         conn,
         tenant_id=tenant_id,
@@ -690,10 +742,13 @@ async def record_initial_context_snapshot(
         skill_id=skill_id,
         input_payload=input_payload,
         prior_messages=prior_messages,
+        history_candidate_count=history_candidate_count,
         file_ids=included_file_ids,
         artifact_ids=included_artifact_ids,
         memory_record_ids=[],
         source_run_ids=source_run_ids,
+        legacy_history_excluded=legacy_history_excluded,
+        authorized_file_rows=authorized_file_rows,
     )
     memory_policy_summary = {
         "memory_policy_source": str(memory_policy.get("source") or "default"),
@@ -722,6 +777,7 @@ async def record_initial_context_snapshot(
         },
         payload_json=summary,
     )
+    public_manifest = public_context_manifest_projection(summary["context_manifest"])
     context_ref = {
         "schema_version": CONTEXT_SNAPSHOT_SCHEMA_VERSION,
         "context_snapshot_id": snapshot["id"],
@@ -741,7 +797,8 @@ async def record_initial_context_snapshot(
         "execution_tier": summary["execution_tier"],
         "context_pack_version": summary["context_pack_version"],
         "context_pack_generated_at": summary["context_pack_generated_at"],
-        "context_manifest": public_context_manifest_projection(summary["context_manifest"]),
+        "context_manifest": public_manifest,
+        "context_window": public_manifest["context_window"],
     }
     await repositories.update_run_context_snapshot_ref(
         conn,

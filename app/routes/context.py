@@ -346,6 +346,10 @@ async def create_run_context_snapshot(
         )
         if run is None:
             raise HTTPException(status_code=404, detail="run_not_found")
+        if request.context_kind == "executor":
+            # Executor snapshots are server-built and physically bound before
+            # enqueue.  A client-created row must never become run authority.
+            raise HTTPException(status_code=409, detail="context_snapshot_authority_reserved")
         trace_id = str(run.get("trace_id") or standard_trace_id(run_id))
         redaction_summary = sanitize_public_payload(request.redaction_summary)
         if not isinstance(redaction_summary, dict):
@@ -430,14 +434,16 @@ async def create_share_context_snapshot(
         if target_session is None:
             raise HTTPException(status_code=404, detail="target_session_not_found")
         trace_id = str(run.get("trace_id") or standard_trace_id(run_id))
-        source_snapshot = await repositories.get_latest_authorized_executor_context_snapshot(
+        source_snapshot = await repositories.get_bound_executor_context_snapshot(
             conn,
             tenant_id=principal.tenant_id,
+            workspace_id=workspace_id,
             user_id=principal.user_id,
+            session_id=source_session_id,
             run_id=run_id,
         )
         if source_snapshot is None:
-            raise HTTPException(status_code=409, detail="source_context_snapshot_not_found")
+            raise HTTPException(status_code=409, detail="context_snapshot_unavailable")
         source_payload = sanitize_public_payload(
             source_snapshot.get("payload_json") if isinstance(source_snapshot.get("payload_json"), dict) else {}
         )

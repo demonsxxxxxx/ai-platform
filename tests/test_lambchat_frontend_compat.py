@@ -1737,7 +1737,7 @@ def test_lambchat_status_keeps_latest_selection_scoped_to_tenant_and_user(monkey
 
     async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
         calls.append(("runs", tenant_id, user_id, session_id, limit))
-        return [{"id": "run-latest", "status": "running"}]
+        return [{"id": "run-latest", "status": "running", "session_generation": 1}]
 
     monkeypatch.setattr("app.auth.get_settings", auth_settings)
     monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
@@ -1824,6 +1824,7 @@ def test_lambchat_session_runs_redacts_raw_skill_agent_id_for_ordinary_user(monk
                 "agent_id": "baoyu-translate",
                 "skill_id": "baoyu-translate",
                 "status": "running",
+                "session_generation": 1,
                 "error_message": None,
                 "created_at": None,
                 "finished_at": None,
@@ -1943,6 +1944,7 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
                 "agent_id": "qa-word-review",
                 "skill_id": "qa-file-reviewer",
                 "status": "running",
+                "session_generation": 1,
                 "error_message": None,
                 "created_at": None,
                 "finished_at": None,
@@ -2403,13 +2405,10 @@ def test_lambchat_routes_keep_running_latest_run_stable_with_legacy_queued_at_ti
         200,
         200,
     ]
-    assert [first_events.json()["current_run_id"], second_events.json()["current_run_id"]] == [
-        "run-created-newer",
-        "run-created-newer",
-    ]
+    assert [first_events.json()["current_run_id"], second_events.json()["current_run_id"]] == [None, None]
     assert [first_status.json()["raw_status"], second_status.json()["raw_status"]] == [
-        "running",
-        "running",
+        "idle",
+        "idle",
     ]
 
 

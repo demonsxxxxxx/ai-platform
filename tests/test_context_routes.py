@@ -169,7 +169,7 @@ def test_create_context_snapshot_records_snapshot_and_event(monkeypatch):
         "/api/ai/runs/run-a/context/snapshots",
         headers=headers(),
         json={
-            "context_kind": "executor",
+            "context_kind": "replay",
             "included_message_ids": ["msg-a"],
             "included_file_ids": ["file-a"],
             "included_artifact_ids": ["art-a"],
@@ -237,12 +237,39 @@ def test_create_context_snapshot_maps_member_failure_without_creating_event(monk
     response = client.post(
         "/api/ai/runs/run-a/context/snapshots",
         headers=headers(),
-        json={"included_message_ids": ["msg-unverified"]},
+        json={"context_kind": "replay", "included_message_ids": ["msg-unverified"]},
     )
 
     assert response.status_code == 409
     assert response.json() == {"detail": "context_snapshot_material_invalid"}
     assert [call[0] for call in calls] == ["snapshot"]
+
+
+def test_manual_executor_context_snapshot_is_rejected_before_snapshot_write(monkeypatch):
+    calls = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        return {"id": run_id, "workspace_id": "workspace-a", "session_id": "session-a", "trace_id": "trace-a"}
+
+    async def fail_create(*_args, **_kwargs):
+        calls.append("snapshot")
+        raise AssertionError("manual executor snapshots must not be created")
+
+    monkeypatch.setattr("app.auth.get_settings", lambda: Settings(frontend_poc_auth_enabled=True))
+    monkeypatch.setattr("app.routes.context.transaction", fake_transaction)
+    monkeypatch.setattr("app.routes.context.repositories.get_authorized_run", fake_get_authorized_run)
+    monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fail_create)
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/ai/runs/run-a/context/snapshots",
+        headers=headers(),
+        json={"context_kind": "executor"},
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "context_snapshot_authority_reserved"}
+    assert calls == []
 
 
 def test_context_snapshot_response_omits_raw_material_ids_from_public_projection(monkeypatch):
@@ -371,7 +398,7 @@ def test_context_snapshot_response_projects_context_manifest_without_inline_priv
     assert "please process payroll draft" not in serialized
     assert "private conversation text" not in serialized
     assert "salary preview" not in serialized
-    assert "salary.xlsx" not in serialized
+    assert "salary.xlsx" in serialized
     assert "storage_key" not in serialized
     assert "tenants/tenant-a/private" not in serialized
 
@@ -535,7 +562,7 @@ def test_create_context_snapshot_rejects_forged_public_provenance_and_forbidden_
         "/api/ai/runs/run-a/context/snapshots",
         headers=headers(),
         json={
-            "context_kind": "executor",
+            "context_kind": "replay",
             "included_message_ids": ["msg-a"],
             "redaction_summary": {
                 "memory_policy_source": "trusted-policy",
@@ -637,7 +664,7 @@ def test_create_context_snapshot_redacts_payload_before_persisting(monkeypatch):
         "/api/ai/runs/run-a/context/snapshots",
         headers=headers(),
         json={
-            "context_kind": "executor",
+            "context_kind": "replay",
             "redaction_summary": {
                 "source": "manual",
                 "client_secret": "client-secret-context",
@@ -691,8 +718,8 @@ def test_create_share_context_snapshot_binds_source_run_and_target_session(monke
             "agent_id": "general-agent",
         }
 
-    async def fake_get_latest_authorized_executor_context_snapshot(conn, *, tenant_id, user_id, run_id):
-        calls.append(("source_executor_snapshot", tenant_id, user_id, run_id))
+    async def fake_get_bound_executor_context_snapshot(conn, *, tenant_id, workspace_id, user_id, session_id, run_id):
+        calls.append(("source_executor_snapshot", tenant_id, workspace_id, user_id, session_id, run_id))
         return {
             "id": "ctx-source",
             "tenant_id": tenant_id,
@@ -754,8 +781,8 @@ def test_create_share_context_snapshot_binds_source_run_and_target_session(monke
         fake_get_authorized_context_target_session,
     )
     monkeypatch.setattr(
-        "app.routes.context.repositories.get_latest_authorized_executor_context_snapshot",
-        fake_get_latest_authorized_executor_context_snapshot,
+        "app.routes.context.repositories.get_bound_executor_context_snapshot",
+        fake_get_bound_executor_context_snapshot,
     )
     monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fake_create_context_snapshot)
     monkeypatch.setattr("app.routes.context.repositories.append_event", fake_append_event)
@@ -825,7 +852,7 @@ def test_create_share_context_snapshot_binds_source_run_and_target_session(monke
         "long_term_memory_read": False,
     }
     assert ("target_session", "tenant-a", "workspace-a", "user-a", "session-target") in calls
-    assert ("source_executor_snapshot", "tenant-a", "user-a", "run-source") in calls
+    assert ("source_executor_snapshot", "tenant-a", "workspace-a", "user-a", "session-source", "run-source") in calls
     assert next(item[1] for item in calls if item[0] == "event")["event_type"] == "context_snapshot_created"
     serialized = response.text + str(snapshot_call)
     assert "raw_storage_key" not in serialized
@@ -854,7 +881,7 @@ def test_create_share_context_snapshot_maps_member_failure_without_creating_even
     async def fake_get_authorized_context_target_session(conn, *, tenant_id, workspace_id, user_id, session_id):
         return {"id": session_id, "workspace_id": workspace_id, "user_id": user_id, "status": "active"}
 
-    async def fake_get_latest_authorized_executor_context_snapshot(conn, *, tenant_id, user_id, run_id):
+    async def fake_get_bound_executor_context_snapshot(conn, *, tenant_id, workspace_id, user_id, session_id, run_id):
         return {
             "id": "ctx-source",
             "included_message_ids": ["msg-source"],
@@ -878,8 +905,8 @@ def test_create_share_context_snapshot_maps_member_failure_without_creating_even
         fake_get_authorized_context_target_session,
     )
     monkeypatch.setattr(
-        "app.routes.context.repositories.get_latest_authorized_executor_context_snapshot",
-        fake_get_latest_authorized_executor_context_snapshot,
+        "app.routes.context.repositories.get_bound_executor_context_snapshot",
+        fake_get_bound_executor_context_snapshot,
     )
     monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fake_create_context_snapshot)
     monkeypatch.setattr("app.routes.context.repositories.append_event", fail_append_event)
@@ -983,8 +1010,8 @@ def test_create_share_context_snapshot_rejects_missing_source_context_snapshot(m
         calls.append(("target_session", tenant_id, workspace_id, user_id, session_id))
         return {"id": session_id, "workspace_id": workspace_id, "user_id": user_id, "status": "active"}
 
-    async def fake_get_latest_authorized_executor_context_snapshot(conn, *, tenant_id, user_id, run_id):
-        calls.append(("source_executor_snapshot", tenant_id, user_id, run_id))
+    async def fake_get_bound_executor_context_snapshot(conn, *, tenant_id, workspace_id, user_id, session_id, run_id):
+        calls.append(("source_executor_snapshot", tenant_id, workspace_id, user_id, session_id, run_id))
         return None
 
     async def fail_create_context_snapshot(*args, **kwargs):
@@ -998,8 +1025,8 @@ def test_create_share_context_snapshot_rejects_missing_source_context_snapshot(m
         fake_get_authorized_context_target_session,
     )
     monkeypatch.setattr(
-        "app.routes.context.repositories.get_latest_authorized_executor_context_snapshot",
-        fake_get_latest_authorized_executor_context_snapshot,
+        "app.routes.context.repositories.get_bound_executor_context_snapshot",
+        fake_get_bound_executor_context_snapshot,
     )
     monkeypatch.setattr("app.routes.context.repositories.create_context_snapshot", fail_create_context_snapshot)
     client = TestClient(create_app())
@@ -1011,11 +1038,11 @@ def test_create_share_context_snapshot_rejects_missing_source_context_snapshot(m
     )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == "source_context_snapshot_not_found"
+    assert response.json()["detail"] == "context_snapshot_unavailable"
     assert calls == [
         ("source_run", "tenant-a", "user-a", "run-source"),
         ("target_session", "tenant-a", "workspace-a", "user-a", "session-target"),
-        ("source_executor_snapshot", "tenant-a", "user-a", "run-source"),
+        ("source_executor_snapshot", "tenant-a", "workspace-a", "user-a", "session-source", "run-source"),
     ]
 
 

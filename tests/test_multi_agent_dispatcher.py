@@ -1,7 +1,17 @@
 import pytest
 
+from app import multi_agent_dispatcher
 from app.capability_distribution import CapabilityAuthorizationDenial
 from app.repositories import RepositoryAuthorizationError, RepositoryConflictError
+
+
+@pytest.fixture(autouse=True)
+def enable_deferred_dispatcher_inner_flow_for_legacy_mechanics(monkeypatch, request):
+    """Keep isolated future-flow mechanics covered without weakening the live guard test."""
+
+    if request.node.name == "test_worker_dispatcher_is_deferred_before_config_or_candidate_scan":
+        return
+    monkeypatch.setattr(multi_agent_dispatcher, "_raise_multi_agent_dispatch_not_available", lambda: None)
 
 
 def test_settings_accept_malformed_dispatcher_numeric_env_for_pass_level_fail_closed(monkeypatch):
@@ -18,8 +28,6 @@ def test_settings_accept_malformed_dispatcher_numeric_env_for_pass_level_fail_cl
 
 @pytest.mark.asyncio
 async def test_worker_dispatcher_skips_when_disabled(monkeypatch):
-    from app import multi_agent_dispatcher
-
     class Settings:
         multi_agent_dispatch_worker_enabled = False
         multi_agent_dispatch_worker_interval_seconds = 30.0
@@ -47,9 +55,34 @@ async def test_worker_dispatcher_skips_when_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_worker_dispatcher_dispatches_candidate_parent_and_enqueues_child(monkeypatch):
-    from app import multi_agent_dispatcher
+async def test_worker_dispatcher_is_deferred_before_config_or_candidate_scan(monkeypatch):
+    class Settings:
+        multi_agent_dispatch_worker_enabled = True
+        multi_agent_dispatch_worker_interval_seconds = 30.0
+        multi_agent_dispatch_worker_limit = 1
+        default_tenant_id = "default"
 
+    def forbidden_transaction():
+        raise AssertionError("deferred dispatch must not open a transaction")
+
+    async def forbidden_candidates(*_args, **_kwargs):
+        raise AssertionError("deferred dispatch must not list candidates")
+
+    monkeypatch.setattr(multi_agent_dispatcher, "transaction", forbidden_transaction)
+    monkeypatch.setattr(
+        multi_agent_dispatcher.repositories,
+        "list_multi_agent_dispatch_candidate_run_ids",
+        forbidden_candidates,
+        raising=False,
+    )
+
+    result = await multi_agent_dispatcher.dispatch_multi_agent_ready_steps_for_worker(Settings(), now=10.0)
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_worker_dispatcher_dispatches_candidate_parent_and_enqueues_child(monkeypatch):
     calls = []
 
     class Settings:
