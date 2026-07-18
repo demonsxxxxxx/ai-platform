@@ -666,7 +666,8 @@ def test_lambchat_sse_stream_replays_run_events_and_artifact_cards(monkeypatch):
     assert response.status_code == 200
     assert "event: run_event" in response.text
     assert '"event_type": "tool_denied"' in response.text
-    assert "tool permission required" in response.text
+    assert "工具调用被阻止" in response.text
+    assert "tool permission required" not in response.text
     assert "event: artifact_card" in response.text
     assert '"artifact_id": "art-reviewed"' in response.text
     assert '"/api/ai/artifacts/art-reviewed/download"' in response.text
@@ -918,7 +919,549 @@ def test_lambchat_sse_stream_does_not_duplicate_answer_when_assistant_delta_was_
 
     assert response.status_code == 200
     assert response.text.count("hello from worker") == 1
-    assert "assistant_delta" not in response.text
+    assert '"projection_kind": "assistant_final"' in response.text
+    assert "evt-delta" not in response.text
+
+
+def test_lambchat_sse_stream_projects_only_safe_versioned_chat_progress(monkeypatch):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id) == ("default", "user-a")
+        return {
+            "id": run_id,
+            "session_id": "ses_a",
+            "agent_id": "qa-word-review",
+            "skill_id": "qa-file-reviewer",
+            "status": "running",
+            "result_json": {},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        base = {
+            "trace_id": "trace-run-a",
+            "schema_version": "ai-platform.event-envelope.v1",
+            "severity": "info",
+            "visible_to_user": True,
+            "error_code": None,
+            "created_at": None,
+        }
+        return [
+            {
+                **base,
+                "id": "evt-queued",
+                "sequence": 1,
+                "event_type": "queued",
+                "stage": "queue",
+                "message": "internal queue source",
+                "visible_to_user": False,
+                "payload_json": {"queue_position": 3, "visible_to_user": False},
+            },
+            {
+                **base,
+                "id": "evt-worker",
+                "sequence": 2,
+                "event_type": "worker_started",
+                "stage": "worker",
+                "message": "worker alpha at /var/lib/private",
+                "payload_json": {"worker_id": "worker-alpha", "visible_to_user": True},
+            },
+            {
+                **base,
+                "id": "evt-delta",
+                "sequence": 3,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "payload_json": {
+                    "delta": "安全回答",
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+            },
+            {
+                **base,
+                "id": "evt-tool",
+                "sequence": 4,
+                "event_type": "tool_call_started",
+                "stage": "tool",
+                "message": "Bash /var/lib/private",
+                "payload_json": {
+                    "tool_id": "Bash",
+                    "args": {"command": "read /var/lib/private"},
+                    "visible_to_user": True,
+                },
+            },
+            {
+                **base,
+                "id": "evt-skill-delta",
+                "sequence": 5,
+                "event_type": "assistant_delta",
+                "stage": "message",
+                "message": "ignored fallback",
+                "payload_json": {
+                    "delta": "internal qa-file-reviewer detail",
+                    "source": "untrusted_sdk_event",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+            },
+            {
+                **base,
+                "id": "evt-thinking",
+                "sequence": 6,
+                "event_type": "thinking",
+                "stage": "sdk",
+                "message": "private chain of thought",
+                "payload_json": {"visible_to_user": True},
+            },
+            {
+                **base,
+                "id": "evt-content-fallback",
+                "sequence": 7,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "payload_json": {
+                    "content": "content fallback must stay hidden",
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+            },
+            {
+                **base,
+                "id": "evt-message-fallback",
+                "sequence": 8,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "message fallback must stay hidden",
+                "payload_json": {
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+            },
+            {
+                **base,
+                "id": "evt-extra-fields",
+                "sequence": 9,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "payload_json": {
+                    "delta": "delta with untrusted extras",
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                    "tool_args": {"path": "/var/lib/private"},
+                    "raw_sdk_event": {"type": "content_block_delta"},
+                },
+            },
+        ]
+
+    async def empty_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.get_settings",
+        lambda: SimpleNamespace(run_event_stream_max_heartbeats=1),
+    )
+    monkeypatch.setattr("app.routes.lambchat_compat.asyncio.sleep", no_sleep)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        fake_list_run_events,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        empty_artifacts,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/chat/sessions/ses_a/stream?run_id=run_a",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert '"projection_version": "ai-platform.chat-public-projection.v1"' in response.text
+    assert '"projection_kind": "assistant_delta"' in response.text
+    assert '"event_id": "evt-delta"' in response.text
+    assert '"sequence": 3' in response.text
+    assert '"content": "安全回答"' in response.text
+    assert "evt-queued" not in response.text
+    assert '"queue_position": 3' not in response.text
+    assert "internal queue source" not in response.text
+    assert '"event_type": "run_started"' in response.text
+    assert '"event_type": "tool_call_started"' in response.text
+    assert "任务已开始处理" in response.text
+    assert "正在执行受控步骤" in response.text
+    assert "worker-alpha" not in response.text
+    assert "private chain of thought" not in response.text
+    assert "/var/lib/private" not in response.text
+    assert '"tool_id": "Bash"' not in response.text
+    assert '"args"' not in response.text
+    assert "qa-file-reviewer" not in response.text
+    assert "evt-skill-delta" not in response.text
+    assert "evt-thinking" not in response.text
+    assert "evt-content-fallback" not in response.text
+    assert "content fallback must stay hidden" not in response.text
+    assert "evt-message-fallback" not in response.text
+    assert "message fallback must stay hidden" not in response.text
+    assert "evt-extra-fields" not in response.text
+    assert "delta with untrusted extras" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("user_id", "roles"),
+    [("user-a", "user"), ("admin-a", "admin")],
+)
+def test_lambchat_sse_rebuilds_permission_cards_for_every_principal(
+    monkeypatch,
+    user_id,
+    roles,
+):
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert tenant_id == "default"
+        return {
+            "id": run_id,
+            "session_id": "ses_a",
+            "agent_id": "general-agent",
+            "skill_id": "general-chat",
+            "status": "running",
+            "result_json": {},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "evt-permission",
+                "trace_id": "trace-run-a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 1,
+                "event_type": "tool_permission_requested",
+                "stage": "policy",
+                "message": "raw permission message /var/lib/private",
+                "severity": "info",
+                "visible_to_user": True,
+                "error_code": None,
+                "payload_json": {
+                    "visible_to_user": True,
+                    "tool_permission_card": {
+                        "schema_version": "forged-schema",
+                        "permission_request_id": "req-a",
+                        "run_id": "run-foreign",
+                        "tool_id": "file-write",
+                        "tool_call_id": "call-a",
+                        "action": "execute",
+                        "risk_level": "high",
+                        "write_capable": True,
+                        "reason": "需要写入文件",
+                        "status": "pending",
+                        "decision": None,
+                        "request_payload": {"path": "/var/lib/private"},
+                        "args": {"path": "/var/lib/private"},
+                        "raw_command": "write /var/lib/private",
+                        "injected_extra": "must-not-pass",
+                    },
+                },
+                "created_at": None,
+            }
+        ]
+
+    async def empty_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.get_settings",
+        lambda: SimpleNamespace(run_event_stream_max_heartbeats=1),
+    )
+    monkeypatch.setattr("app.routes.lambchat_compat.asyncio.sleep", no_sleep)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        fake_list_run_events,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        empty_artifacts,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/chat/sessions/ses_a/stream?run_id=run_a",
+        headers=action_headers(user_id=user_id, roles=roles),
+    )
+
+    assert response.status_code == 200
+    assert '"schema_version": "ai-platform.tool-permission-card.v1"' in response.text
+    assert '"permission_request_id": "req-a"' in response.text
+    assert '"run_id": "run_a"' in response.text
+    assert '"tool_id": "file-write"' in response.text
+    assert '"risk_level": "high"' in response.text
+    assert '"write_capable": true' in response.text
+    assert "forged-schema" not in response.text
+    assert "run-foreign" not in response.text
+    assert "request_payload" not in response.text
+    assert '"args"' not in response.text
+    assert "raw_command" not in response.text
+    assert "injected_extra" not in response.text
+    assert "must-not-pass" not in response.text
+    assert "/var/lib/private" not in response.text
+
+
+def test_lambchat_active_history_replays_versioned_delta_once_with_sequence(monkeypatch):
+    async def fake_get_authorized_lambchat_session(conn, *, tenant_id, user_id, session_id):
+        return {"id": session_id}
+
+    async def fake_list_authorized_session_runs(conn, *, tenant_id, user_id, session_id, limit):
+        return [
+            {
+                "id": "run_a",
+                "trace_id": "trace_run_a",
+                "status": "running",
+                "result_json": {},
+                "error_message": None,
+            }
+        ]
+
+    async def fake_list_run_events(conn, *, tenant_id, run_id):
+        return [
+            {
+                "id": "evt-delta",
+                "trace_id": "trace_run_a",
+                "schema_version": "ai-platform.event-envelope.v1",
+                "sequence": 7,
+                "event_type": "assistant_delta",
+                "stage": "answer",
+                "message": "",
+                "severity": "info",
+                "visible_to_user": True,
+                "payload_json": {
+                    "delta": "partial",
+                    "source": "worker_answer_delta_v1",
+                    "visible_to_user": True,
+                    "severity": "info",
+                },
+                "created_at": None,
+            }
+        ]
+
+    async def empty_artifacts(conn, *, tenant_id, run_id):
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_lambchat_session",
+        fake_get_authorized_lambchat_session,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_authorized_session_runs",
+        fake_list_authorized_session_runs,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        fake_list_run_events,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        empty_artifacts,
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/sessions/ses_a/events", headers=auth_headers())
+
+    assert response.status_code == 200
+    events = response.json()["events"]
+    assert len(events) == 1
+    assert events[0]["event_type"] == "message:chunk"
+    assert events[0]["sequence"] == 7
+    assert events[0]["payload"] == {
+        "projection_version": "ai-platform.chat-public-projection.v1",
+        "projection_kind": "assistant_delta",
+        "event_id": "evt-delta",
+        "sequence": 7,
+        "run_id": "run_a",
+        "content": "partial",
+    }
+
+
+def test_lambchat_sse_stream_cannot_read_cross_tenant_run_events(monkeypatch):
+    async def missing_authorized_run(conn, *, tenant_id, user_id, run_id):
+        assert (tenant_id, user_id, run_id) == ("other", "user-a", "run_a")
+        return None
+
+    async def forbidden_event_read(*args, **kwargs):
+        raise AssertionError("unauthorized run must not reach event storage")
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        missing_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        forbidden_event_read,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/chat/sessions/ses_a/stream?run_id=run_a",
+        headers=action_headers(tenant_id="other"),
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "run_not_found"
+    assert "event: metadata" not in response.text
+    assert "event:" not in response.text
+
+
+@pytest.mark.parametrize("case", ["active", "deleted", "foreign"])
+def test_lambchat_sse_stream_authorizes_exact_run_before_response_or_metadata(monkeypatch, case):
+    calls = 0
+    child_reads = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        nonlocal calls
+        calls += 1
+        assert (tenant_id, user_id, run_id) == ("default", "user-a", "run_a")
+        if case == "deleted":
+            return None
+        return {
+            "id": run_id,
+            "session_id": "ses_a" if case == "active" else "ses_foreign",
+            "status": "succeeded",
+            "result_json": {"message": "authorized answer"},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def record_event_read(conn, *, tenant_id, run_id):
+        child_reads.append("events")
+        return []
+
+    async def record_artifact_read(conn, *, tenant_id, run_id):
+        child_reads.append("artifacts")
+        return []
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        record_event_read,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        record_artifact_read,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/chat/sessions/ses_a/stream?run_id=run_a",
+        headers=auth_headers(),
+    )
+
+    if case == "active":
+        assert response.status_code == 200
+        assert response.text.index("event: metadata") < response.text.index("event: message:chunk")
+        assert calls == 2
+        assert child_reads == ["events", "artifacts"]
+    else:
+        assert response.status_code == 404
+        assert response.json()["detail"] == "run_not_found"
+        assert "event: metadata" not in response.text
+        assert "event:" not in response.text
+        assert calls == 1
+        assert child_reads == []
+
+
+def test_lambchat_sse_stream_rechecks_authorization_before_later_child_reads(monkeypatch):
+    calls = 0
+    child_reads = []
+
+    async def fake_get_authorized_run(conn, *, tenant_id, user_id, run_id):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            return None
+        return {
+            "id": run_id,
+            "session_id": "ses_a",
+            "status": "running",
+            "result_json": {},
+            "error_code": None,
+            "error_message": None,
+        }
+
+    async def record_event_read(conn, *, tenant_id, run_id):
+        child_reads.append("events")
+        return []
+
+    async def record_artifact_read(conn, *, tenant_id, run_id):
+        child_reads.append("artifacts")
+        return []
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("app.auth.get_settings", auth_settings)
+    monkeypatch.setattr("app.routes.lambchat_compat.transaction", fake_transaction)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.get_settings",
+        lambda: SimpleNamespace(run_event_stream_max_heartbeats=2),
+    )
+    monkeypatch.setattr("app.routes.lambchat_compat.asyncio.sleep", no_sleep)
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.get_authorized_run",
+        fake_get_authorized_run,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_events",
+        record_event_read,
+    )
+    monkeypatch.setattr(
+        "app.routes.lambchat_compat.repositories.list_run_artifacts",
+        record_artifact_read,
+    )
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/chat/sessions/ses_a/stream?run_id=run_a",
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert calls == 3
+    assert child_reads == ["events", "artifacts"]
+    assert response.text.count("event: metadata") == 1
+    assert '"error": "run_not_found"' in response.text
+    assert "event: done" in response.text
 
 
 def test_lambchat_sse_stream_redacts_runtime_private_answer(monkeypatch):
@@ -945,6 +1488,15 @@ def test_lambchat_sse_stream_redacts_runtime_private_answer(monkeypatch):
     assert "written to" not in response.text
     assert "event: message:chunk" in response.text
     assert "任务完成" in response.text
+
+    admin_response = client.get(
+        "/api/chat/sessions/ses_a/stream?run_id=run_a",
+        headers=action_headers(roles="admin"),
+    )
+    assert admin_response.status_code == 200
+    assert "/home/" not in admin_response.text
+    assert "written to" not in admin_response.text
+    assert "任务完成" in admin_response.text
 
 
 def test_lambchat_sse_stream_redacts_runtime_private_error(monkeypatch):
@@ -1031,7 +1583,7 @@ def test_lambchat_sse_stream_uses_configured_long_task_heartbeat_window(monkeypa
     response = client.get("/api/chat/sessions/ses_a/stream?run_id=run_a", headers=auth_headers())
 
     assert response.status_code == 200
-    assert calls["run"] == 2
+    assert calls["run"] == 3
     assert '"error": "stream_timeout"' in response.text
     assert '"status": "timeout"' in response.text
 
@@ -1478,6 +2030,21 @@ def test_lambchat_session_events_project_g2_envelope_and_redact_skills(monkeypat
     assert event["sequence"] == 37
     assert "sequence" not in event["data"]
     assert event["payload"]["capability_id"] == "document_review"
+    assert event["data"] == {
+        "projection_version": "ai-platform.chat-public-projection.v1",
+        "event_id": "evt_a",
+        "run_id": "run_a",
+        "event_type": "capability_selected",
+        "stage": "planning",
+        "message": "已选择处理能力",
+        "severity": "info",
+        "progress_kind": "completed",
+        "wait_reason": None,
+        "payload": {"capability_id": "document_review"},
+        "created_at": None,
+        "content": "已选择处理能力",
+        "status": "planning",
+    }
     assert "skill_id" not in str(event)
     assert "skill_ids" not in str(event)
     assert "storage_key" not in str(event)
@@ -2023,8 +2590,13 @@ def test_lambchat_session_answer_event_uses_g2_envelope(monkeypatch):
     assert event["trace_id"] == "trace_run_a"
     assert event["type"] == "message:chunk"
     assert event["stage"] == "answer"
-    assert event["payload"] == {"run_id": "run_a", "content": "hello"}
-    assert event["data"] == {"run_id": "run_a", "content": "hello"}
+    assert event["payload"] == {
+        "run_id": "run_a",
+        "projection_version": "ai-platform.chat-public-projection.v1",
+        "projection_kind": "assistant_final",
+        "content": "hello",
+    }
+    assert event["data"] == event["payload"]
     assert "sequence" not in event
 
 
@@ -2255,7 +2827,7 @@ def test_lambchat_session_event_data_redacts_runtime_private_message(monkeypatch
 
     assert response.status_code == 200
     event = response.json()["events"][0]
-    assert event["payload"] == {"visible_to_user": True}
+    assert event["payload"] == {}
     assert event["data"]["error"] == "run_failed"
     assert "runtime211" not in str(event)
     assert "/home/xinlin.jiang/qa-review-queue-runtime" not in str(event)

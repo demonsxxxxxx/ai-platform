@@ -616,7 +616,9 @@ async def get_scoped_context_file(
         from files
         join runs source_run on source_run.id = files.run_id and source_run.tenant_id = files.tenant_id
         join runs current_run on current_run.id = %s and current_run.tenant_id = files.tenant_id
-        join sessions on sessions.id = current_run.session_id and sessions.tenant_id = current_run.tenant_id
+        join sessions on sessions.id = current_run.session_id
+          and sessions.tenant_id = current_run.tenant_id
+          and sessions.status = 'active'
         join run_context_snapshots context_snapshot
           on context_snapshot.id = current_run.input_json->>'context_snapshot_id'
           and context_snapshot.tenant_id = current_run.tenant_id
@@ -3682,14 +3684,20 @@ async def get_authorized_run(
     run_id: str,
     for_update: bool = False,
 ) -> dict[str, Any] | None:
-    lock_clause = "for update" if for_update else ""
+    lock_clause = "for update of runs" if for_update else ""
     cursor = await conn.execute(
         f"""
-        select *
+        select runs.*
         from runs
-        where tenant_id = %s
-          and id = %s
-          and user_id = %s
+        join sessions on sessions.id = runs.session_id
+          and sessions.tenant_id = runs.tenant_id
+          and sessions.workspace_id = runs.workspace_id
+          and sessions.user_id = runs.user_id
+          and sessions.agent_id = runs.agent_id
+        where runs.tenant_id = %s
+          and runs.id = %s
+          and runs.user_id = %s
+          and sessions.status = 'active'
         {lock_clause}
         """,
         (tenant_id, run_id, user_id),
@@ -3711,6 +3719,7 @@ async def get_authorized_session(
         where tenant_id = %s
           and id = %s
           and user_id = %s
+          and status = 'active'
         """,
         (tenant_id, session_id, user_id),
     )
@@ -10012,6 +10021,7 @@ async def list_authorized_session_input_files(
           and sessions.tenant_id = files.tenant_id
           and sessions.workspace_id = files.workspace_id
           and sessions.user_id = files.user_id
+          and sessions.status = 'active'
         join runs on runs.id = files.run_id
           and runs.tenant_id = files.tenant_id
           and runs.workspace_id = files.workspace_id
@@ -10351,9 +10361,15 @@ async def get_authorized_artifact(
         select artifacts.*
         from artifacts
         join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
+        join sessions on sessions.id = runs.session_id
+          and sessions.tenant_id = runs.tenant_id
+          and sessions.workspace_id = runs.workspace_id
+          and sessions.user_id = runs.user_id
+          and sessions.agent_id = runs.agent_id
         where artifacts.tenant_id = %s
           and artifacts.id = %s
           and runs.user_id = %s
+          and sessions.status = 'active'
         """,
         (tenant_id, artifact_id, user_id),
     )
@@ -10398,6 +10414,7 @@ async def list_revealed_artifacts(
     filters = [
         "artifacts.tenant_id = %s",
         "runs.user_id = %s",
+        "sessions.status = 'active'",
     ]
     params: list[Any] = [tenant_id, user_id]
     if session_id:
@@ -10428,7 +10445,11 @@ async def list_revealed_artifacts(
           sessions.title as session_name
         from artifacts
         join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
-        left join sessions on sessions.id = runs.session_id and sessions.tenant_id = runs.tenant_id
+        join sessions on sessions.id = runs.session_id
+          and sessions.tenant_id = runs.tenant_id
+          and sessions.workspace_id = runs.workspace_id
+          and sessions.user_id = runs.user_id
+          and sessions.agent_id = runs.agent_id
         where {" and ".join(filters)}
         order by {order_column} {order_direction}, artifacts.created_at desc
         limit 500
@@ -10451,6 +10472,7 @@ async def list_revealed_artifact_sessions(
     filters = [
         "artifacts.tenant_id = %s",
         "runs.user_id = %s",
+        "sessions.status = 'active'",
     ]
     params: list[Any] = [tenant_id, user_id]
     if project_id:
@@ -10469,7 +10491,11 @@ async def list_revealed_artifact_sessions(
           max(artifacts.created_at) as updated_at
         from artifacts
         join runs on runs.id = artifacts.run_id and runs.tenant_id = artifacts.tenant_id
-        left join sessions on sessions.id = runs.session_id and sessions.tenant_id = runs.tenant_id
+        join sessions on sessions.id = runs.session_id
+          and sessions.tenant_id = runs.tenant_id
+          and sessions.workspace_id = runs.workspace_id
+          and sessions.user_id = runs.user_id
+          and sessions.agent_id = runs.agent_id
         where {" and ".join(filters)}
         group by runs.session_id
         order by updated_at desc
@@ -10572,6 +10598,7 @@ async def get_authorized_lambchat_session(
         where tenant_id = %s
           and id = %s
           and user_id = %s
+          and status = 'active'
         """,
         (tenant_id, session_id, user_id),
     )

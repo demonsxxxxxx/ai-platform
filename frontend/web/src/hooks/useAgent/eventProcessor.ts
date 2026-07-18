@@ -25,7 +25,13 @@ import type {
 } from "../../types";
 import i18n from "../../i18n";
 import { translateBackendError } from "../../utils/backendErrors";
-import type { EventData, SubagentStackItem } from "./types";
+import {
+  CHAT_PUBLIC_PROGRESS_EVENT_TYPES,
+  CHAT_PUBLIC_PROJECTION_VERSION,
+  isAssistantTextProjection,
+  type EventData,
+  type SubagentStackItem,
+} from "./types";
 import {
   addPartToDepth,
   createSubagentPart,
@@ -308,8 +314,20 @@ export function processMessageEvent(
     // ---- Message chunk events ----
 
     case "message:chunk": {
+      const assistantProjection = isAssistantTextProjection(data);
+      if (data.projection_version && !assistantProjection) break;
       const chunkContent = data.content || "";
       if (!chunkContent) break;
+
+      if (
+        assistantProjection &&
+        data.projection_kind === "assistant_final"
+      ) {
+        if (depth > 0) break;
+        result.parts = replaceAssistantTextWithFinal(parts, chunkContent);
+        result.content = chunkContent;
+        break;
+      }
 
       if (depth > 0) {
         const textPart = {
@@ -716,15 +734,35 @@ function upsertRunStatusPart(
   parts: MessagePart[],
   runStatusPart: RunStatusPart,
 ): MessagePart[] {
-  return parts.some(
-    (p) => p.type === "run_status" && p.event_id === runStatusPart.event_id,
-  )
-    ? parts.map((p) =>
-        p.type === "run_status" && p.event_id === runStatusPart.event_id
-          ? runStatusPart
-          : p,
-      )
-    : [...parts, runStatusPart];
+  if (
+    parts.some(
+      (part) =>
+        part.type === "run_status" &&
+        part.event_id === runStatusPart.event_id,
+    )
+  ) {
+    return parts.map((part) =>
+      part.type === "run_status" &&
+      part.event_id === runStatusPart.event_id
+        ? runStatusPart
+        : part,
+    );
+  }
+  if (CHAT_PUBLIC_PROGRESS_EVENT_TYPES.has(runStatusPart.event_type)) {
+    let replaced = false;
+    const nextParts = parts.flatMap((part): MessagePart[] => {
+      const replaceable =
+        part.type === "run_status" &&
+        part.severity === "info" &&
+        CHAT_PUBLIC_PROGRESS_EVENT_TYPES.has(part.event_type);
+      if (!replaceable) return [part];
+      if (replaced) return [];
+      replaced = true;
+      return [runStatusPart];
+    });
+    return replaced ? nextParts : [...nextParts, runStatusPart];
+  }
+  return [...parts, runStatusPart];
 }
 
 function shouldProjectRunStatus(data: EventData): boolean {
@@ -736,12 +774,43 @@ function shouldProjectRunStatus(data: EventData): boolean {
     return true;
   }
   const eventType = String(data.event_type || data.type || "").toLowerCase();
+  if (
+    data.projection_version === CHAT_PUBLIC_PROJECTION_VERSION &&
+    CHAT_PUBLIC_PROGRESS_EVENT_TYPES.has(eventType)
+  ) {
+    return true;
+  }
   return (
     eventType.includes("error") ||
     eventType.includes("failed") ||
     eventType.includes("denied") ||
     eventType.includes("blocked")
   );
+}
+
+function replaceAssistantTextWithFinal(
+  parts: MessagePart[],
+  content: string,
+): MessagePart[] {
+  let replacedText = false;
+  const converged = parts.flatMap((part): MessagePart[] => {
+    if (
+      part.type === "run_status" &&
+      part.severity === "info" &&
+      CHAT_PUBLIC_PROGRESS_EVENT_TYPES.has(part.event_type)
+    ) {
+      return [];
+    }
+    if (part.type !== "text" || part.depth) {
+      return [part];
+    }
+    if (replacedText) {
+      return [];
+    }
+    replacedText = true;
+    return [{ ...part, content }];
+  });
+  return replacedText ? converged : [...converged, { type: "text", content }];
 }
 
 /** Replace an existing platform artifact card by artifact id. */

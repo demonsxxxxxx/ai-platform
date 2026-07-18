@@ -11,7 +11,12 @@ import {
   refreshAccessToken,
 } from "../../services/api/tokenManager";
 import { getRefreshToken } from "../../services/api/token";
-import type { EventType, StreamEvent } from "./types";
+import {
+  isSequencedPublicChatEvent,
+  type EventData,
+  type EventType,
+  type StreamEvent,
+} from "./types";
 import { handleStreamEvent, type EventHandlerContext } from "./eventHandlers";
 import { clearAllLoadingStates } from "./messageParts";
 import {
@@ -256,22 +261,16 @@ function explicitRunId(data: Record<string, unknown>): string | null {
 }
 
 /**
- * A persisted run_event sequence is the only progress signal authoritative
- * enough to restore a reconnect budget. Open, ping, synthetic frames, and
- * non-run events may be replayed without proving new backend progress.
+ * A persisted public event sequence is the only signal authoritative enough
+ * to restore a reconnect budget. Synthetic and final snapshot frames may be
+ * replayed without proving new backend progress.
  */
 function isAcceptedRunProgress(
   eventType: string,
   data: Record<string, unknown>,
   terminal: boolean,
 ): boolean {
-  return (
-    !terminal &&
-    eventType === "run_event" &&
-    typeof data.sequence === "number" &&
-    Number.isSafeInteger(data.sequence) &&
-    data.sequence >= 0
-  );
+  return !terminal && isSequencedPublicChatEvent(eventType, data as EventData);
 }
 
 export function getSSECloseAction({
